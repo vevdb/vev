@@ -85,6 +85,7 @@ This layer owns:
 - optional C ABI
 - later JVM/Clojure wrapper
 - possible later server wrapper or daemon mode
+- possible later transactor/peer packaging model
 
 The C ABI should be a packaging boundary, not the internal architecture.
 
@@ -116,6 +117,40 @@ That especially applies to:
 This does not require designing network protocols now.
 It only requires avoiding unnecessary dependence on in-process-only behavior in
 the public semantic model.
+
+## Possible future out-of-process models
+
+If Spor later runs out of process, there are at least two plausible shapes:
+
+### 1. Simple daemon/server wrapper
+
+This is the lighter option:
+
+- one process owns the engine
+- clients talk to it over an API
+- the semantic core remains essentially the same
+
+This is the most straightforward "server mode" interpretation.
+
+### 2. Transactor/peer-style split
+
+This is the stronger Datomic-like option:
+
+- a write authority/transactor process
+- application-side libraries or peers
+- some local read/query behavior outside the write authority
+
+This is explicitly a possible future direction, but not a current
+architectural commitment.
+
+It would require additional design around:
+
+- snapshot identity/versioning
+- cache and sync strategy
+- index or segment distribution
+- trust and failure boundaries
+
+The current project should only preserve the option, not optimize for it yet.
 
 ## In-memory model
 
