@@ -6,6 +6,7 @@ The intended identity is:
 
 - native
 - embedded
+- embedded-first, not embedded-only
 - local-first
 - immutable snapshot reads
 - Datomic-flavored Datalog query syntax
@@ -39,6 +40,7 @@ The first implementation should optimize for:
 - Datomic/DataScript-compatible syntax at the API boundary wherever practical
 - parsed query AST inside the engine
 - functional semantics at the boundary, local mutation allowed in implementation
+- semantic boundaries should stay transportable as plain data
 - SQLite first for durable storage
 - C ABI later as a packaging boundary
 - Clojure/JVM wrapper later on top of the native boundary
