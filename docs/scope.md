@@ -2,7 +2,7 @@
 
 ## First identity
 
-Odinlog should start as an embedded Datalog database for native applications,
+Spor should start as an embedded Datalog database for native applications,
 not as a general-purpose database server.
 
 The first useful end state is:
@@ -43,10 +43,10 @@ DataScript is the semantic reference for:
 - index expectations
 
 Datomic/DataScript should also be the primary syntax reference at the boundary.
-Odinlog should prefer tutorial and example compatibility over inventing a new
+Spor should prefer tutorial and example compatibility over inventing a new
 native-facing surface unless a divergence is clearly justified.
 
-But Odinlog should not assume:
+But Spor should not assume:
 
 - persistent Clojure collections
 - Clojure protocol/type machinery
@@ -55,7 +55,7 @@ But Odinlog should not assume:
 
 ## Semantic style
 
-Odinlog should prefer functional semantics at the public boundary:
+Spor should prefer functional semantics at the public boundary:
 
 - database snapshots are immutable read values
 - transactions conceptually take data and return data

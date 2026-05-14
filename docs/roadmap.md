@@ -58,7 +58,7 @@ Backend:
 
 Goal:
 
-- use Odinlog in one or two real local tools
+- use Spor in one or two real local tools
 - verify whether tx metadata plus `Tx_Report` is enough for app-level reactions
 
 Questions:

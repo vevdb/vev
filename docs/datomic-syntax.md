@@ -2,16 +2,16 @@
 
 ## Goal
 
-Pin down the Datomic/DataScript syntax that Odinlog should preserve at the
+Pin down the Datomic/DataScript syntax that Spor should preserve at the
 boundary so that existing tutorials, examples, and habits transfer with minimal
 friction.
 
 This document is about boundary syntax and user-visible semantics.
-It does not require Odinlog to copy Datomic's internal implementation.
+It does not require Spor to copy Datomic's internal implementation.
 
 ## Compatibility rule
 
-Odinlog should preserve Datomic/DataScript syntax wherever practical for:
+Spor should preserve Datomic/DataScript syntax wherever practical for:
 
 - transaction data
 - transaction metadata
@@ -30,7 +30,7 @@ not strings, with three main transaction forms:
 - map forms
 - transaction functions
 
-The first-phase Odinlog direction should be:
+The first-phase Spor direction should be:
 
 - support Datomic list forms first
 - support Datomic map forms next
@@ -38,7 +38,7 @@ The first-phase Odinlog direction should be:
 
 ### Transaction list forms
 
-These are the core transaction forms Odinlog should match first:
+These are the core transaction forms Spor should match first:
 
 ```clojure
 [:db/add e a v]
@@ -54,7 +54,7 @@ Important compatibility notes from Datomic:
 
 ### Entity identifiers in tx data
 
-Datomic allows several ways to identify entities in transaction data. Odinlog
+Datomic allows several ways to identify entities in transaction data. Spor
 should aim to preserve this model:
 
 - entity ids
@@ -91,7 +91,7 @@ Examples:
 
 ### Transaction metadata
 
-Odinlog should follow Datomic's reified transaction model as closely as
+Spor should follow Datomic's reified transaction model as closely as
 practical.
 
 The key Datomic convention is the reserved tempid:
@@ -111,13 +111,13 @@ Example:
  [:db/add 42 :user/name "Anna"]]
 ```
 
-This should be the default transaction-context model for Odinlog instead of
+This should be the default transaction-context model for Spor instead of
 inventing a different metadata syntax.
 
 ## Query data
 
 The official Datomic query reference defines queries as Datalog data.
-Odinlog should preserve that boundary shape.
+Spor should preserve that boundary shape.
 
 The core query shape is:
 
@@ -148,7 +148,7 @@ Datomic data patterns have the general shape:
 [src-var? (variable | constant | '_')+]
 ```
 
-The most important practical pattern for Odinlog phase 1 is:
+The most important practical pattern for Spor phase 1 is:
 
 ```clojure
 [?e :attr ?v]
@@ -163,7 +163,7 @@ Phase 1 should also be prepared for these common variations:
 
 ### Deferred query features
 
-These are part of Datomic's query language, but Odinlog should defer them until
+These are part of Datomic's query language, but Spor should defer them until
 the core path is stable:
 
 - `:with`
@@ -177,12 +177,12 @@ the core path is stable:
 The important rule is:
 
 - unsupported Datomic syntax should be documented as unsupported
-- it should not be replaced with an Odinlog-specific query surface
+- it should not be replaced with a Spor-specific query surface
 
 ## Pull patterns
 
 The official Datomic pull reference defines pull patterns as EDN data.
-Odinlog should preserve that surface.
+Spor should preserve that surface.
 
 ### Pull pattern core grammar
 
@@ -238,7 +238,7 @@ Again, the rule is to defer support, not invent different syntax.
 ## Internal representation
 
 The compatibility rule applies at the boundary.
-Inside Odinlog, parsed forms should become typed Odin data structures:
+Inside Spor, parsed forms should become typed Odin data structures:
 
 - tx data -> typed transaction input
 - query data -> typed query AST
