@@ -216,6 +216,20 @@ Why used here:
 - accumulating query bindings
 - accumulating final result rows
 
+There is also a second form used in the copy helpers:
+
+```odin
+append(&out, ..datoms[:])
+```
+
+The `..` means "pass each element as its own argument". The `[:]` turns the
+dynamic array into a plain slice view first.
+
+Why used here:
+- it is a concise way to copy all elements from one growable array into
+  another
+- it is more idiomatic than writing a manual loop when you just want a clone
+
 ## Pointers With `^` and `&`
 
 There are two pointer-related forms used here:
