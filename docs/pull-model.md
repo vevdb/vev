@@ -5,6 +5,9 @@
 Define how Odinlog should support Datomic/DataScript-style pull without
 inventing a new surface syntax.
 
+The exact syntax compatibility target is summarized in
+[docs/datomic-syntax.md](datomic-syntax.md).
+
 The main rule is:
 
 - pull syntax at the boundary should stay as close as practical to
