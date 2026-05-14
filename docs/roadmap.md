@@ -34,6 +34,11 @@ Goal:
 - basic pull
 - entity-style access if it still fits the design cleanly
 
+Preferred boundary:
+
+- Datomic/DataScript-compatible pull syntax first
+- typed internal pull representation second
+
 ## Phase 3: Durable proof
 
 Goal:

@@ -208,6 +208,9 @@ That shape is valuable because it:
 
 Pull should operate on DB snapshots and entity ids.
 
+The boundary syntax should stay close to Datomic/DataScript pull syntax so that
+existing examples and tutorials transfer directly where practical.
+
 Entity-style lazy wrappers are optional.
 The key requirement is semantic clarity, not cloning DataScript's exact
 implementation style.
