@@ -4,12 +4,16 @@
 
 Interop should come after the semantic engine is coherent.
 
+Future server packaging, if it exists, should wrap the same semantic core
+rather than force a different internal model.
+
 The right order is:
 
 1. native Odin API
 2. stable internal semantic model
 3. narrow C ABI
 4. host-specific wrappers
+5. only later, if justified, server/daemon packaging
 
 ## Native API
 
@@ -80,3 +84,6 @@ For foreign consumers, the safest boundary is:
 - results as a portable encoded format
 
 This keeps the ABI stable even if internal ASTs evolve.
+
+It also helps preserve a possible future transport boundary if Spor later runs
+out of process.

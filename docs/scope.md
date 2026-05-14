@@ -2,8 +2,8 @@
 
 ## First identity
 
-Spor should start as an embedded Datalog database for native applications,
-not as a general-purpose database server.
+Spor should start as an embedded-first Datalog database for native
+applications, not as a general-purpose database server.
 
 The first useful end state is:
 
@@ -14,6 +14,10 @@ The first useful end state is:
 - Datomic-flavored Datalog queries
 - Datomic/DataScript-shaped transaction and pull syntax
 - pull/entity-style reads
+
+This does not mean embedded-only forever.
+Server mode should remain a plausible later packaging/deployment option, but it
+should not shape phase-1 priorities.
 
 ## What this project is
 
@@ -31,6 +35,9 @@ The first useful end state is:
 - a distributed system
 - a search engine
 - a custom storage engine project for its own sake
+
+Not being a network database at first does not mean the core should become so
+process-specific that a server wrapper later becomes awkward or unnatural.
 
 ## Why DataScript still matters
 
@@ -74,6 +81,26 @@ The important distinction is:
 
 - semantic model should be functional in character
 - implementation strategy may be imperative internally
+
+## Transportable boundaries
+
+To keep future server mode viable, Spor should prefer semantic boundaries that
+can be represented as plain data:
+
+- transaction input
+- transaction report
+- query input
+- query result
+- pull input
+- pull result
+- transaction metadata
+
+This does not mean designing RPC or wire protocols now.
+It means avoiding phase-1 decisions that depend on:
+
+- arbitrary in-process callbacks as part of transaction semantics
+- opaque host-language object identity in public APIs
+- result shapes that are difficult to serialize cleanly
 
 ## First use cases
 

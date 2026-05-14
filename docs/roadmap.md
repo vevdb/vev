@@ -11,6 +11,7 @@ Outcomes:
 - query model pinned down
 - interop direction pinned down
 - semantic style pinned down
+- embedded-first/server-possible stance pinned down
 
 ## Phase 1: In-memory proof
 
@@ -74,6 +75,18 @@ Goal:
 
 - define and expose a narrow stable C ABI
 - build a small wrapper for JVM/Clojure use if still justified
+
+## Phase 6: Optional packaging expansion
+
+Goal:
+
+- evaluate whether Spor should also run behind a small server/daemon wrapper
+
+Constraint:
+
+- this should be a packaging/deployment mode built on the same semantic core
+- it should not require redesigning transaction/query/pull semantics
+- it should only happen if real usage justifies it
 
 ## Current rule
 

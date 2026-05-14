@@ -8,6 +8,9 @@ Storage and foreign-language integration should sit at the edges.
 The semantic boundary should be functional in character even if the internal
 implementation uses local mutation.
 
+The execution model should remain embedded-first without making a future server
+packaging mode unnecessarily difficult.
+
 That means the architecture should separate:
 
 1. semantic core
@@ -81,8 +84,38 @@ This layer owns:
 - native public API
 - optional C ABI
 - later JVM/Clojure wrapper
+- possible later server wrapper or daemon mode
 
 The C ABI should be a packaging boundary, not the internal architecture.
+
+## Embedded-first, server-possible
+
+Spor should optimize for embedded use first:
+
+- direct in-process calls
+- simple local deployment
+- explicit ownership of the connection by the application
+
+At the same time, the architecture should avoid choices that would make a
+future server mode unusually hard.
+
+The main rule is:
+
+- semantic boundaries should remain explicit and transportable as plain data
+
+That especially applies to:
+
+- tx input
+- tx report
+- query input
+- query result
+- pull input
+- pull result
+- tx metadata
+
+This does not require designing network protocols now.
+It only requires avoiding unnecessary dependence on in-process-only behavior in
+the public semantic model.
 
 ## In-memory model
 
@@ -136,6 +169,10 @@ In the embedded case, the simplest model is:
 
 That avoids introducing callback registration or observer semantics into the
 database core before they are clearly needed.
+
+This also keeps the reaction boundary easy to preserve if Spor later runs
+behind a server process. The same `Tx_Report`-style semantics can remain the
+commit boundary even if the delivery mechanism changes.
 
 If same-transaction derivation is ever added later, it should be deterministic
 engine behavior or registered transaction logic, not ad hoc per-call callbacks.
