@@ -10,6 +10,7 @@ Outcomes:
 - architecture pinned down
 - query model pinned down
 - interop direction pinned down
+- semantic style pinned down
 
 ## Phase 1: In-memory proof
 

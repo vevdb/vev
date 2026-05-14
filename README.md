@@ -38,6 +38,7 @@ The first implementation should optimize for:
 - engine core in plain Odin
 - Datomic/DataScript-compatible syntax at the API boundary wherever practical
 - parsed query AST inside the engine
+- functional semantics at the boundary, local mutation allowed in implementation
 - SQLite first for durable storage
 - C ABI later as a packaging boundary
 - Clojure/JVM wrapper later on top of the native boundary

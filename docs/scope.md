@@ -21,6 +21,7 @@ The first useful end state is:
 - a local-first database
 - a graph/query-oriented alternative to writing ad hoc SQL by hand
 - something that may later be consumed from Odin, Clojure, and other hosts
+- a system that should preserve functional-style semantics at its boundaries
 
 ## What this project is not, at first
 
@@ -51,6 +52,28 @@ But Odinlog should not assume:
 - Clojure protocol/type machinery
 - Clojure laziness
 - exact internal code structure
+
+## Semantic style
+
+Odinlog should prefer functional semantics at the public boundary:
+
+- database snapshots are immutable read values
+- transactions conceptually take data and return data
+- queries conceptually take a DB value and return results
+- pull conceptually takes a DB value, pattern, and entity id and returns data
+
+This does not require purely functional implementation style.
+Inside the engine, local mutation is acceptable and expected where it improves:
+
+- clarity
+- memory behavior
+- construction of intermediate results
+- parser and index-building code
+
+The important distinction is:
+
+- semantic model should be functional in character
+- implementation strategy may be imperative internally
 
 ## First use cases
 

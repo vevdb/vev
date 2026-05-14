@@ -5,6 +5,9 @@
 The semantic engine should own the database model.
 Storage and foreign-language integration should sit at the edges.
 
+The semantic boundary should be functional in character even if the internal
+implementation uses local mutation.
+
 That means the architecture should separate:
 
 1. semantic core
@@ -28,6 +31,24 @@ This layer owns:
 - pull/entity behavior
 
 This is the most important layer to stabilize.
+
+The preferred semantic shape of this layer is:
+
+- input data in
+- output data out
+- immutable DB values for reads
+- explicit transaction results for writes
+
+This does not forbid local mutation inside the implementation. In fact, local
+mutation is expected in places such as:
+
+- parsers
+- temporary buffers
+- index construction
+- scratch query evaluation structures
+
+The rule is to keep mutation local and implementation-oriented rather than
+making it part of the public semantic model.
 
 ### 2. Query frontend
 
