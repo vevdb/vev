@@ -43,8 +43,11 @@ The first implementation should optimize for:
 
 ## Documents
 
+- [ODIN_NOTES.md](ODIN_NOTES.md)
 - [docs/scope.md](docs/scope.md)
 - [docs/architecture.md](docs/architecture.md)
+- [docs/data-model.md](docs/data-model.md)
+- [docs/indexes.md](docs/indexes.md)
 - [docs/query-model.md](docs/query-model.md)
 - [docs/interop.md](docs/interop.md)
 - [docs/roadmap.md](docs/roadmap.md)
