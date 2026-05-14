@@ -9,6 +9,7 @@ The intended identity is:
 - local-first
 - immutable snapshot reads
 - Datomic-flavored Datalog query syntax
+- Datomic/DataScript transaction and pull syntax where practical
 - durable storage behind a narrow adapter boundary
 - future multi-language consumption through a stable native ABI
 
@@ -35,11 +36,26 @@ The first implementation should optimize for:
 ## Design stance
 
 - engine core in plain Odin
-- Datalog syntax as text at the API boundary
+- Datomic/DataScript-compatible syntax at the API boundary wherever practical
 - parsed query AST inside the engine
 - SQLite first for durable storage
 - C ABI later as a packaging boundary
 - Clojure/JVM wrapper later on top of the native boundary
+
+## Compatibility rule
+
+Odinlog should preserve Datomic/DataScript syntax and mental model wherever
+practical.
+
+That means:
+
+- transaction input should look like Datomic/DataScript transaction data
+- query input should look like Datomic/DataScript Datalog data
+- pull input should stay close to Datomic/DataScript pull syntax
+- transaction metadata should follow the Datomic transaction-context model
+
+Divergence should only happen when native embedding constraints or implementation
+clarity require it, not because a new syntax looks nicer in Odin.
 
 ## Documents
 
