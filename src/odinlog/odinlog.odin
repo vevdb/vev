@@ -142,8 +142,8 @@ term_var :: proc(name: string) -> Term {
 // A later version can replace this with structural sharing or indexes.
 clone_datoms :: proc(datoms: [dynamic]Datom) -> [dynamic]Datom {
 	out, _ := make([dynamic]Datom, 0, len(datoms))
-	for datum in datoms {
-		append(&out, datum)
+	if len(datoms) > 0 {
+		append(&out, ..datoms[:])
 	}
 	return out
 }
@@ -152,8 +152,8 @@ clone_datoms :: proc(datoms: [dynamic]Datom) -> [dynamic]Datom {
 // to copy the current variable assignments before trying another match.
 clone_binding :: proc(binding: Binding) -> Binding {
 	out, _ := make(Binding, 0, len(binding))
-	for item in binding {
-		append(&out, item)
+	if len(binding) > 0 {
+		append(&out, ..binding[:])
 	}
 	return out
 }
