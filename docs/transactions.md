@@ -109,7 +109,7 @@ For many applications, transaction metadata plus tx reports is enough.
 That is the default stance Odinlog should take first:
 
 - prefer tx metadata
-- add listeners later
+- let application code react to transaction results directly
 - delay event-stream design until a real gap appears
 
 ## Transaction report
@@ -128,30 +128,17 @@ This gives callers:
 - the exact fact delta
 - tempid resolution
 - transaction context in one place
+- the boundary where embedded applications react after commit
 
-## Post-commit listeners
+In the embedded single-process case, this is usually enough:
 
-The first reaction model should be post-commit listeners, not in-transaction
-callbacks passed per call.
+1. transact
+2. receive `Tx_Report`
+3. inspect `tx_data` and `tx_meta`
+4. perform application work such as SSE push, cache updates, or projection refresh
 
-Why:
-
-- simpler semantics
-- easier replay/debugging
-- cleaner interop story
-- closer to Datomic's observation model
-
-Listeners should:
-
-- observe a committed transaction report
-- be optional
-- run after commit
-
-Listeners should not:
-
-- decide whether the transaction commits
-- perform the database's semantic work
-- be treated as part of atomic commit
+That keeps reaction logic in application code rather than introducing a
+subscription mechanism inside the database core.
 
 ## Later extension point
 
