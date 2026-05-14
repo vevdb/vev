@@ -22,6 +22,7 @@ This layer owns:
 - schema
 - immutable DB snapshots
 - transactions
+- transaction metadata
 - indexes
 - query planning/execution
 - pull/entity behavior
@@ -86,6 +87,31 @@ The public model should distinguish:
 
 That is one of the most valuable pieces of the DataScript/Datomic mental model
 and should remain central.
+
+## Transaction context and reactions
+
+The first extension beyond plain fact transactions should be transaction
+metadata, not a mandatory event/projection/outbox subsystem.
+
+Recommended order:
+
+1. fact transactions
+2. tx report with tx metadata
+3. optional post-commit listeners
+4. only later, if justified, first-class event streams
+
+This keeps the core small while still supporting application concerns such as:
+
+- provenance
+- auditing
+- request correlation
+- UI or SSE updates after commit
+
+Post-commit listeners should be treated as observers of committed results, not
+as part of atomic commit semantics.
+
+If same-transaction derivation is ever added later, it should be deterministic
+engine behavior or registered transaction logic, not ad hoc per-call callbacks.
 
 ## Backend strategy
 

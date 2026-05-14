@@ -145,6 +145,39 @@ The first transaction syntax should stay close to Datomic/DataScript:
 Map/entity shorthand can be later if it helps ergonomics, but should not block
 the first proof.
 
+## Transaction metadata
+
+Transactions should also support optional transaction-level metadata.
+
+This is the first place Odinlog should capture domain context such as:
+
+- actor/user id
+- request id
+- command source
+- import batch id
+- reason/cause
+- correlation ids for application workflows
+
+This should be modeled after Datomic's reified transaction entity rather than
+as a separate event system in phase 1.
+
+Important distinction:
+
+- datoms describe state assertions or retractions
+- transaction metadata describes the context of the transaction as a whole
+
+That makes transaction metadata the preferred first mechanism for:
+
+- provenance
+- auditing
+- request tracing
+- "why did this transaction happen?"
+
+It is not intended to model multiple distinct domain events inside one
+transaction. If Odinlog eventually needs first-class event streams, that
+should be a later layer built on top of the transaction model rather than
+phase-1 core semantics.
+
 ## Transaction report
 
 The transaction result should expose a DataScript-like report shape:
