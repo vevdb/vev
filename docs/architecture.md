@@ -97,7 +97,7 @@ Recommended order:
 
 1. fact transactions
 2. tx report with tx metadata
-3. optional post-commit listeners
+3. application-owned post-commit work based on `Tx_Report`
 4. only later, if justified, first-class event streams
 
 This keeps the core small while still supporting application concerns such as:
@@ -107,8 +107,14 @@ This keeps the core small while still supporting application concerns such as:
 - request correlation
 - UI or SSE updates after commit
 
-Post-commit listeners should be treated as observers of committed results, not
-as part of atomic commit semantics.
+In the embedded case, the simplest model is:
+
+1. call `transact`
+2. receive `Tx_Report`
+3. perform follow-up work in the application
+
+That avoids introducing callback registration or observer semantics into the
+database core before they are clearly needed.
 
 If same-transaction derivation is ever added later, it should be deterministic
 engine behavior or registered transaction logic, not ad hoc per-call callbacks.

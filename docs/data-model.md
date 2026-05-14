@@ -173,6 +173,16 @@ That makes transaction metadata the preferred first mechanism for:
 - request tracing
 - "why did this transaction happen?"
 
+In the embedded use case, the intended application flow is:
+
+1. transact
+2. receive `Tx_Report`
+3. inspect `tx_data` and `tx_meta`
+4. do follow-up work in application code
+
+That means Odinlog does not need a built-in listener mechanism in the first
+phase to support post-commit reactions.
+
 It is not intended to model multiple distinct domain events inside one
 transaction. If Odinlog eventually needs first-class event streams, that
 should be a later layer built on top of the transaction model rather than
