@@ -4,6 +4,9 @@
 
 The canonical query syntax should be Datomic/DataScript-style Datalog data.
 
+The exact syntax compatibility target is summarized in
+[docs/datomic-syntax.md](datomic-syntax.md).
+
 That means queries are represented externally as EDN-like values such as:
 
 ```clojure

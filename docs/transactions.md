@@ -5,6 +5,9 @@
 Define the first transaction model for Odinlog without overcommitting to a
 separate event-sourcing subsystem too early.
 
+The exact syntax compatibility target is summarized in
+[docs/datomic-syntax.md](datomic-syntax.md).
+
 The intended direction is Datomic-like:
 
 - datoms remain the core state model
