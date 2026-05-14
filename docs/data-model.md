@@ -2,7 +2,7 @@
 
 ## Goal
 
-Define the semantic model Odinlog wants to preserve regardless of storage
+Define the semantic model Spor wants to preserve regardless of storage
 backend or host language wrapper.
 
 This is the layer that should feel recognizably Datomic/DataScript-like.
@@ -149,7 +149,7 @@ the first proof.
 
 Transactions should also support optional transaction-level metadata.
 
-This is the first place Odinlog should capture domain context such as:
+This is the first place Spor should capture domain context such as:
 
 - actor/user id
 - request id
@@ -180,11 +180,11 @@ In the embedded use case, the intended application flow is:
 3. inspect `tx_data` and `tx_meta`
 4. do follow-up work in application code
 
-That means Odinlog does not need a built-in listener mechanism in the first
+That means Spor does not need a built-in listener mechanism in the first
 phase to support post-commit reactions.
 
 It is not intended to model multiple distinct domain events inside one
-transaction. If Odinlog eventually needs first-class event streams, that
+transaction. If Spor eventually needs first-class event streams, that
 should be a later layer built on top of the transaction model rather than
 phase-1 core semantics.
 

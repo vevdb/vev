@@ -2,7 +2,7 @@
 
 ## Goal
 
-Define the first transaction model for Odinlog without overcommitting to a
+Define the first transaction model for Spor without overcommitting to a
 separate event-sourcing subsystem too early.
 
 The exact syntax compatibility target is summarized in
@@ -52,7 +52,7 @@ That transaction identity is useful for:
 
 ## Transaction metadata
 
-Odinlog should support optional metadata on the transaction as a whole.
+Spor should support optional metadata on the transaction as a whole.
 
 This is the preferred first mechanism for carrying domain context such as:
 
@@ -117,7 +117,7 @@ distinguish:
 
 For many applications, transaction metadata plus tx reports is enough.
 
-That is the default stance Odinlog should take first:
+That is the default stance Spor should take first:
 
 - prefer tx metadata
 - let application code react to transaction results directly
@@ -153,7 +153,7 @@ subscription mechanism inside the database core.
 
 ## Later extension point
 
-If Odinlog later needs stronger same-transaction behavior, the next step should
+If Spor later needs stronger same-transaction behavior, the next step should
 be deterministic transaction-time derivation configured as part of the
 connection or engine, not arbitrary user callbacks passed into `transact`.
 

@@ -1,4 +1,4 @@
-package odinlog
+package spor
 
 // A query term is either:
 // - a concrete entity id

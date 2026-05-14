@@ -1,4 +1,4 @@
-# odinlog
+# spor
 
 An embedded Datalog database written in Odin.
 
@@ -45,7 +45,7 @@ The first implementation should optimize for:
 
 ## Compatibility rule
 
-Odinlog should preserve Datomic/DataScript syntax and mental model wherever
+Spor should preserve Datomic/DataScript syntax and mental model wherever
 practical.
 
 That means:

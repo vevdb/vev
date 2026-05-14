@@ -2,7 +2,7 @@
 
 ## Goal
 
-Define how Odinlog should support Datomic/DataScript-style pull without
+Define how Spor should support Datomic/DataScript-style pull without
 inventing a new surface syntax.
 
 The exact syntax compatibility target is summarized in
@@ -24,10 +24,10 @@ It gives callers:
 - nested traversal for refs
 - a stable, tutorial-friendly way to ask for shaped data
 
-For Odinlog, the biggest value is not novelty. It is compatibility:
+For Spor, the biggest value is not novelty. It is compatibility:
 
 - existing examples should transfer
-- application code should not need a custom Odinlog-only pull dialect
+- application code should not need a custom Spor-only pull dialect
 - future JVM/Clojure interop becomes easier
 
 ## Canonical boundary syntax
@@ -117,7 +117,7 @@ Priority order should be:
 3. direct pull semantics
 4. only then, optional entity-style convenience wrappers
 
-That keeps Odinlog centered on explicit data access instead of lazy wrapper
+That keeps Spor centered on explicit data access instead of lazy wrapper
 magic.
 
 ## Compatibility rule
@@ -131,5 +131,5 @@ Preferred approach:
 - only introduce syntax differences when there is a concrete embedding or
   implementation reason
 
-The project should not create an Odinlog-specific pull language just because
+The project should not create a Spor-specific pull language just because
 the engine is written in Odin.
