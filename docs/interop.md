@@ -14,6 +14,7 @@ The right order is:
 3. narrow C ABI
 4. host-specific wrappers
 5. only later, if justified, server/daemon packaging
+6. only later, if justified, transactor/peer-style packaging
 
 ## Native API
 
@@ -87,3 +88,7 @@ This keeps the ABI stable even if internal ASTs evolve.
 
 It also helps preserve a possible future transport boundary if Spor later runs
 out of process.
+
+If Spor ever explores a transactor/peer split, these same explicit plain-data
+boundaries will still be valuable. They should make the model more plausible
+without forcing the project to commit to it today.

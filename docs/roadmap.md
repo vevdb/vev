@@ -80,13 +80,18 @@ Goal:
 
 Goal:
 
-- evaluate whether Spor should also run behind a small server/daemon wrapper
+- evaluate whether Spor should also run behind an out-of-process packaging mode
 
 Constraint:
 
 - this should be a packaging/deployment mode built on the same semantic core
 - it should not require redesigning transaction/query/pull semantics
 - it should only happen if real usage justifies it
+
+Possible shapes:
+
+- simple server/daemon wrapper
+- later, if justified, transactor/peer-style split
 
 ## Current rule
 

@@ -19,6 +19,13 @@ This does not mean embedded-only forever.
 Server mode should remain a plausible later packaging/deployment option, but it
 should not shape phase-1 priorities.
 
+Possible later out-of-process shapes include:
+
+- a simple daemon/API wrapper around the same engine
+- a stronger transactor/peer-style split
+
+Neither should be treated as the current commitment.
+
 ## What this project is
 
 - a native engine
