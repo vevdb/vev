@@ -12,6 +12,7 @@ The first useful end state is:
 - immutable DB snapshots for reads
 - transaction API for writes
 - Datomic-flavored Datalog queries
+- Datomic/DataScript-shaped transaction and pull syntax
 - pull/entity-style reads
 
 ## What this project is
@@ -39,6 +40,10 @@ DataScript is the semantic reference for:
 - Datalog query model
 - pull/entity behavior
 - index expectations
+
+Datomic/DataScript should also be the primary syntax reference at the boundary.
+Odinlog should prefer tutorial and example compatibility over inventing a new
+native-facing surface unless a divergence is clearly justified.
 
 But Odinlog should not assume:
 

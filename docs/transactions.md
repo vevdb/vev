@@ -11,6 +11,7 @@ The intended direction is Datomic-like:
 - transactions are reified
 - transactions can carry metadata
 - callers receive a transaction report
+- transaction syntax should stay close to Datomic/DataScript transaction data
 
 ## Base transaction shape
 
@@ -22,6 +23,10 @@ The first transaction input should stay close to Datomic/DataScript:
 ```
 
 This keeps the semantic core direct and easy to inspect.
+
+It also preserves the value of existing Datomic/DataScript tutorials and tx-data
+examples. Divergence here should be treated as costly and only justified by
+real embedding constraints.
 
 ## Reified transactions
 
@@ -61,6 +66,9 @@ Examples of the kind of meaning this can capture:
 - "this came from the nightly CRM import"
 - "this transaction belongs to request req-123"
 - "this was triggered by profile-edit UI flow"
+
+The preferred direction is to mirror Datomic's transaction-context model as
+closely as practical rather than inventing a new transaction-metadata syntax.
 
 ## Facts vs transaction metadata
 

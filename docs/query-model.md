@@ -2,7 +2,7 @@
 
 ## Main choice
 
-The canonical query syntax should be Datomic-flavored Datalog data.
+The canonical query syntax should be Datomic/DataScript-style Datalog data.
 
 That means queries are represented externally as EDN-like values such as:
 
@@ -13,6 +13,12 @@ That means queries are represented externally as EDN-like values such as:
  [?e :user/email ?email]
  [?e :user/name ?name]]
 ```
+
+The project goal here is compatibility first:
+
+- existing Datomic/DataScript tutorials should transfer directly where practical
+- example queries should usually be copyable with minimal or no change
+- any syntax divergence should be documented as a deliberate constraint-driven choice
 
 ## Native API stance
 
@@ -25,6 +31,9 @@ Recommended split:
 - parsed query representation: typed AST
 - execution API: parsed query object
 - convenience API: parse-and-run helper
+
+This split preserves Datomic syntax at the boundary while still letting the
+engine use direct Odin data structures internally.
 
 ## Why not only strings?
 
@@ -60,6 +69,9 @@ Start with a tight slice:
 - scalar equality/predicate clauses as needed
 - rules only after base query flow works
 - pull after basic query/transact is stable
+
+Phase 1 should bias toward the subset most commonly shown in Datomic/DataScript
+examples so learning material transfers early.
 
 ## Pull model
 
