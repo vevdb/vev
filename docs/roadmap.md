@@ -25,6 +25,7 @@ Success shape:
 - datoms exist
 - core indexes exist
 - one or two query forms work
+- transaction metadata exists in tx reports
 
 ## Phase 2: Pull and entity reads
 
@@ -52,12 +53,29 @@ Backend:
 Goal:
 
 - use Odinlog in one or two real local tools
+- verify whether tx metadata plus listeners is enough for app-level reactions
 
 Questions:
 
 - where is this better than SQLite directly?
 - where is it worse?
 - what debugging/inspection tools are immediately missing?
+- is a separate event layer still necessary once tx metadata is in use?
+
+## Phase 4.5: Listeners
+
+Goal:
+
+- add optional post-commit listeners on the connection
+- prove a simple "react to committed tx and push application updates" story
+
+Constraint:
+
+- listeners observe committed transactions
+- listeners are not part of the transaction's atomic semantics
+
+This is the first place to test SSE-style application integration before
+introducing a richer event model.
 
 ## Phase 5: Interop boundary
 

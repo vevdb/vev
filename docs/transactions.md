@@ -1,0 +1,162 @@
+# Transactions
+
+## Goal
+
+Define the first transaction model for Odinlog without overcommitting to a
+separate event-sourcing subsystem too early.
+
+The intended direction is Datomic-like:
+
+- datoms remain the core state model
+- transactions are reified
+- transactions can carry metadata
+- callers receive a transaction report
+
+## Base transaction shape
+
+The first transaction input should stay close to Datomic/DataScript:
+
+```text
+[:db/add e a v]
+[:db/retract e a v]
+```
+
+This keeps the semantic core direct and easy to inspect.
+
+## Reified transactions
+
+Every successful transaction should have a transaction identity.
+
+Conceptually, each datom is associated with:
+
+- entity `e`
+- attribute `a`
+- value `v`
+- transaction `tx`
+- added flag `added`
+
+That transaction identity is useful for:
+
+- auditing
+- debugging
+- tracing state changes
+- attaching transaction-level context
+
+## Transaction metadata
+
+Odinlog should support optional metadata on the transaction as a whole.
+
+This is the preferred first mechanism for carrying domain context such as:
+
+- actor id
+- request id
+- command source
+- import source
+- reason/cause
+- correlation ids
+
+Examples of the kind of meaning this can capture:
+
+- "user 7 changed this"
+- "this came from the nightly CRM import"
+- "this transaction belongs to request req-123"
+- "this was triggered by profile-edit UI flow"
+
+## Facts vs transaction metadata
+
+These two things solve different problems.
+
+Facts answer:
+
+- what is true now?
+
+Transaction metadata answers:
+
+- under what context did this transaction happen?
+
+Example:
+
+```text
+[:db/add 42 :user/name "Anna"]
+```
+
+This says the current name is `Anna`.
+
+Transaction metadata can add:
+
+- actor `7`
+- reason `:profile-edit`
+- request id `req-123`
+
+That is usually enough for:
+
+- provenance
+- audit context
+- operational tracing
+
+without introducing a separate event stream yet.
+
+## Why not a first-class event layer yet
+
+A separate event model is only justified if the application truly needs to
+distinguish:
+
+- resulting state
+- from domain happenings as first-class records
+
+For many applications, transaction metadata plus tx reports is enough.
+
+That is the default stance Odinlog should take first:
+
+- prefer tx metadata
+- add listeners later
+- delay event-stream design until a real gap appears
+
+## Transaction report
+
+The transaction result should expose a shape close to:
+
+- `db_before`
+- `db_after`
+- `tx_data`
+- `tempids`
+- `tx_meta`
+
+This gives callers:
+
+- immutable before/after snapshots
+- the exact fact delta
+- tempid resolution
+- transaction context in one place
+
+## Post-commit listeners
+
+The first reaction model should be post-commit listeners, not in-transaction
+callbacks passed per call.
+
+Why:
+
+- simpler semantics
+- easier replay/debugging
+- cleaner interop story
+- closer to Datomic's observation model
+
+Listeners should:
+
+- observe a committed transaction report
+- be optional
+- run after commit
+
+Listeners should not:
+
+- decide whether the transaction commits
+- perform the database's semantic work
+- be treated as part of atomic commit
+
+## Later extension point
+
+If Odinlog later needs stronger same-transaction behavior, the next step should
+be deterministic transaction-time derivation configured as part of the
+connection or engine, not arbitrary user callbacks passed into `transact`.
+
+That is a later design step, not a phase-1 requirement.

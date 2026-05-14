@@ -48,6 +48,7 @@ The first implementation should optimize for:
 - [docs/architecture.md](docs/architecture.md)
 - [docs/data-model.md](docs/data-model.md)
 - [docs/indexes.md](docs/indexes.md)
+- [docs/transactions.md](docs/transactions.md)
 - [docs/query-model.md](docs/query-model.md)
 - [docs/interop.md](docs/interop.md)
 - [docs/roadmap.md](docs/roadmap.md)
