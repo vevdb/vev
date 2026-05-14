@@ -83,6 +83,14 @@ The sequence should be:
 3. pull
 4. rules/advanced features
 
+The pull syntax itself should stay close to Datomic/DataScript pull syntax.
+The preferred project stance is:
+
+- pull patterns at the boundary should look like familiar Datomic/DataScript patterns
+- internal representation can be a typed Odin pull AST
+- any unsupported pull feature should be documented as "not implemented yet",
+  not replaced with a different surface syntax
+
 ## OdinL role
 
 OdinL may later provide a nicer surface for query literals, but that should be

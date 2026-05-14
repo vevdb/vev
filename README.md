@@ -66,5 +66,6 @@ clarity require it, not because a new syntax looks nicer in Odin.
 - [docs/indexes.md](docs/indexes.md)
 - [docs/transactions.md](docs/transactions.md)
 - [docs/query-model.md](docs/query-model.md)
+- [docs/pull-model.md](docs/pull-model.md)
 - [docs/interop.md](docs/interop.md)
 - [docs/roadmap.md](docs/roadmap.md)
