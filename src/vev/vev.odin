@@ -1,4 +1,4 @@
-package spor
+package vev
 
 // A query term is either:
 // - a concrete entity id

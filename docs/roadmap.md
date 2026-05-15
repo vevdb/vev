@@ -59,7 +59,7 @@ Backend:
 
 Goal:
 
-- use Spor in one or two real local tools
+- use Vev in one or two real local tools
 - verify whether tx metadata plus `Tx_Report` is enough for app-level reactions
 
 Questions:
@@ -80,7 +80,7 @@ Goal:
 
 Goal:
 
-- evaluate whether Spor should also run behind an out-of-process packaging mode
+- evaluate whether Vev should also run behind an out-of-process packaging mode
 
 Constraint:
 

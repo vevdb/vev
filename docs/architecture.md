@@ -91,7 +91,7 @@ The C ABI should be a packaging boundary, not the internal architecture.
 
 ## Embedded-first, server-possible
 
-Spor should optimize for embedded use first:
+Vev should optimize for embedded use first:
 
 - direct in-process calls
 - simple local deployment
@@ -120,7 +120,7 @@ the public semantic model.
 
 ## Possible future out-of-process models
 
-If Spor later runs out of process, there are at least two plausible shapes:
+If Vev later runs out of process, there are at least two plausible shapes:
 
 ### 1. Simple daemon/server wrapper
 
@@ -205,7 +205,7 @@ In the embedded case, the simplest model is:
 That avoids introducing callback registration or observer semantics into the
 database core before they are clearly needed.
 
-This also keeps the reaction boundary easy to preserve if Spor later runs
+This also keeps the reaction boundary easy to preserve if Vev later runs
 behind a server process. The same `Tx_Report`-style semantics can remain the
 commit boundary even if the delivery mechanism changes.
 

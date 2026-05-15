@@ -2,7 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
-import "spor"
+import "vev"
 
 // main is a tiny executable proof rather than a real test harness.
 // It demonstrates the smallest end-to-end flow we care about right now:
@@ -10,11 +10,11 @@ import "spor"
 // assert that snapshot semantics behave as expected.
 main :: proc() {
   // Start with an empty mutable connection.
-  conn := spor.create_conn()
+  conn := vev.create_conn()
 
   // Insert two facts about the same entity.
   // This is the direct in-memory equivalent of a very small `:db/add` batch.
-  report := spor.transact(&conn, []spor.Tx_Op{
+  report := vev.transact(&conn, []vev.Tx_Op{
     {
       kind = .Add,
       e    = 1,
@@ -36,24 +36,24 @@ main :: proc() {
   // where
   //   [?e :user/email "a@example.com"]
   //   [?e :user/name ?name]
-  query := spor.Query{
+  query := vev.Query{
     find = "name",
-    clauses = []spor.Clause{
+    clauses = []vev.Clause{
       {
-	e = spor.term_var("e"),
+	e = vev.term_var("e"),
 	a = ":user/email",
-	v = spor.term_string("a@example.com"),
+	v = vev.term_string("a@example.com"),
       },
       {
-	e = spor.term_var("e"),
+	e = vev.term_var("e"),
 	a = ":user/name",
-	v = spor.term_var("name"),
+	v = vev.term_var("name"),
       },
     },
   }
 
   // Evaluate against the connection's current immutable snapshot.
-  results := spor.q(conn.db, query)
+  results := vev.q(conn.db, query)
 
   // The proof succeeds only if:
   // - the old snapshot was empty
