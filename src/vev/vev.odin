@@ -34,15 +34,13 @@ Resolved_Value :: struct {
 }
 
 // Datom is the fundamental fact unit:
-// entity, attribute, value, and the transaction id that asserted it.
-//
-// We intentionally omit `added` for this first proof because we only support
-// adds and not retracts.
+// entity, attribute, value, the transaction id that asserted it, added for whether fact addition or retraction
 Datom :: struct {
   e:  u64,
   a:  string,
   v:  string,
   tx: u64,
+  added: bool,
 }
 
 // DB is an immutable snapshot from the caller's point of view.
@@ -60,9 +58,12 @@ Conn :: struct {
   next_tx: u64,
 }
 
-// We only support adds for the first proof.
+// Conn{db = DB{}, next_tx = 1}
+
+// A transaction operation can either be adding or retracting facts
 Tx_Op_Kind :: enum {
   Add,
+  Retract,
 }
 
 // A transaction op is deliberately flat for now.
@@ -225,10 +226,22 @@ transact :: proc(conn: ^Conn, ops: []Tx_Op) -> Tx_Report {
     switch op.kind {
     case .Add:
       datom := Datom{
-	e  = op.e,
-	a  = op.a,
-	v  = op.v,
-	tx = conn.next_tx,
+	e     = op.e,
+	a     = op.a,
+	v     = op.v,
+	tx    = conn.next_tx,
+        added = true
+      }
+      append(&after_datoms, datom)
+      append(&tx_data, datom)
+
+    case .Retract:
+      datom := Datom{
+        e     = op.e,
+	a     = op.a,
+	v     = op.v,
+	tx    = conn.next_tx,
+        added = false
       }
       append(&after_datoms, datom)
       append(&tx_data, datom)
