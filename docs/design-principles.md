@@ -3,11 +3,11 @@
 ## Goal
 
 Capture the small set of project-level engineering decisions that should remain
-stable as Spor grows.
+stable as Vev grows.
 
 ## Functional semantics, imperative implementation
 
-Spor should think functionally about semantics and allow local mutation in
+Vev should think functionally about semantics and allow local mutation in
 implementation.
 
 That means the public-facing model should look like:
@@ -28,7 +28,7 @@ Examples:
 
 This is not a requirement for purely functional implementation style.
 
-Spor is being built in Odin, and the implementation should freely use local
+Vev is being built in Odin, and the implementation should freely use local
 mutation where it improves:
 
 - clarity
@@ -69,4 +69,4 @@ This principle works well with the Datomic/DataScript direction:
 - boundary semantics stay value-oriented
 - internal implementation remains Odin-native
 
-That is the intended balance for Spor.
+That is the intended balance for Vev.

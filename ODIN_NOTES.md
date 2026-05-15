@@ -2,11 +2,11 @@
 
 This project is intentionally starting with a very small subset of Odin.
 The goal of this note is to explain the specific Odin features used in the
-first in-memory `spor` proof and why they appear in the code.
+first in-memory `vev` proof and why they appear in the code.
 
 The two files to read alongside this note are:
 
-- [src/spor/spor.odin](src/spor/spor.odin)
+- [src/vev/vev.odin](src/vev/vev.odin)
 - [src/main.odin](src/main.odin)
 
 ## Packages
@@ -14,14 +14,14 @@ The two files to read alongside this note are:
 Odin code is organized into packages.
 
 ```odin
-package spor
+package vev
 ```
 
 This is similar to a module/namespace declaration. Everything in the same
 folder with the same `package` name belongs to that package.
 
 Why used here:
-- `package spor` holds the library code
+- `package vev` holds the library code
 - `package main` holds the tiny executable proof
 
 ## Imports
@@ -31,16 +31,16 @@ Imports bring other packages into scope.
 ```odin
 import "core:fmt"
 import "core:os"
-import "spor"
+import "vev"
 ```
 
 `core:fmt` and `core:os` come from Odin's standard/core library.
-`spor` is the local package we wrote.
+`vev` is the local package we wrote.
 
 Why used here:
 - `fmt` prints proof output
 - `os.exit` exits with failure if the proof does not match expectations
-- `spor` is the package under test
+- `vev` is the package under test
 
 ## Declarations With `::`
 
@@ -266,7 +266,7 @@ Why used here:
 `:=` declares a new local variable and infers its type.
 
 ```odin
-conn := spor.create_conn()
+conn := vev.create_conn()
 ```
 
 Why used here:

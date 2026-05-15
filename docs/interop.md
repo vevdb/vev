@@ -86,9 +86,9 @@ For foreign consumers, the safest boundary is:
 
 This keeps the ABI stable even if internal ASTs evolve.
 
-It also helps preserve a possible future transport boundary if Spor later runs
+It also helps preserve a possible future transport boundary if Vev later runs
 out of process.
 
-If Spor ever explores a transactor/peer split, these same explicit plain-data
+If Vev ever explores a transactor/peer split, these same explicit plain-data
 boundaries will still be valuable. They should make the model more plausible
 without forcing the project to commit to it today.

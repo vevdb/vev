@@ -2,7 +2,7 @@
 
 ## First identity
 
-Spor should start as an embedded-first Datalog database for native
+Vev should start as an embedded-first Datalog database for native
 applications, not as a general-purpose database server.
 
 The first useful end state is:
@@ -57,10 +57,10 @@ DataScript is the semantic reference for:
 - index expectations
 
 Datomic/DataScript should also be the primary syntax reference at the boundary.
-Spor should prefer tutorial and example compatibility over inventing a new
+Vev should prefer tutorial and example compatibility over inventing a new
 native-facing surface unless a divergence is clearly justified.
 
-But Spor should not assume:
+But Vev should not assume:
 
 - persistent Clojure collections
 - Clojure protocol/type machinery
@@ -69,7 +69,7 @@ But Spor should not assume:
 
 ## Semantic style
 
-Spor should prefer functional semantics at the public boundary:
+Vev should prefer functional semantics at the public boundary:
 
 - database snapshots are immutable read values
 - transactions conceptually take data and return data
@@ -91,7 +91,7 @@ The important distinction is:
 
 ## Transportable boundaries
 
-To keep future server mode viable, Spor should prefer semantic boundaries that
+To keep future server mode viable, Vev should prefer semantic boundaries that
 can be represented as plain data:
 
 - transaction input

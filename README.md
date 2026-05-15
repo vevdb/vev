@@ -1,6 +1,10 @@
-# spor
+# vev
 
 An embedded Datalog database written in Odin.
+
+Vev is aimed at data that is remembered as structure rather than just recorded
+as isolated values: facts woven together into durable relationships, snapshots,
+and queryable patterns over time.
 
 The intended identity is:
 
@@ -47,7 +51,7 @@ The first implementation should optimize for:
 
 ## Compatibility rule
 
-Spor should preserve Datomic/DataScript syntax and mental model wherever
+Vev should preserve Datomic/DataScript syntax and mental model wherever
 practical.
 
 That means:
