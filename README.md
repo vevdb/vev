@@ -1,10 +1,13 @@
 # vev
 
-An embedded Datalog database written in Odin.
+An embeddable Datalog database.
 
-Vev is aimed at data that is remembered as structure rather than just recorded
-as isolated values: facts woven together into durable relationships, snapshots,
-and queryable patterns over time.
+Vev weaves immutable facts into a durable fabric of attributed entities and
+values, with append-only growth and declarative, time-aware querying.
+
+It follows Datomic/DataScript semantics end-to-end, and Datomic/DataScript
+syntax tutorials should be followed for the most direct path to learning its
+query and transaction model.
 
 The intended identity is:
 
@@ -18,8 +21,7 @@ The intended identity is:
 - durable storage behind a narrow adapter boundary
 - future multi-language consumption through a stable native ABI
 
-This is not a port of DataScript source.
-It is a native engine that uses DataScript and Datomic as semantic references.
+Vev follows Datomic/DataScript semantics as a practical compatibility target.
 
 ## Initial direction
 
@@ -53,6 +55,9 @@ The first implementation should optimize for:
 
 Vev should preserve Datomic/DataScript syntax and mental model wherever
 practical.
+
+If you are learning Vev's Datalog/query model, start with Datomic/DataScript
+syntax tutorials and apply that model directly.
 
 That means:
 
