@@ -54,9 +54,9 @@ DB :: struct {
 }
 
 // Conn is the one mutable handle in the system.
-// Transactions update `current` and advance the transaction counter.
+// Transactions update `db` and advance the transaction counter.
 Conn :: struct {
-  current: DB,
+  db: DB,
   next_tx: u64,
 }
 
@@ -112,7 +112,7 @@ Binding :: [dynamic]Var_Binding
 
 create_conn :: proc() -> Conn {
   return Conn{
-    current = DB{},
+    db = DB{},
     next_tx = 1,
   }
 }
@@ -210,15 +210,15 @@ match_term :: proc(term: Term, actual: Resolved_Value, binding: ^Binding) -> boo
   return false
 }
 
-// Apply a batch of add operations and replace the connection's current DB
+// Apply a batch of add operations and replace the connection's DB
 // with a new snapshot. This is intentionally the simplest possible model:
 // clone the old datoms, append the new ones, then swap the snapshot.
 transact :: proc(conn: ^Conn, ops: []Tx_Op) -> Tx_Report {
   before := DB{
-    datoms = clone_datoms(conn.current.datoms),
+    datoms = clone_datoms(conn.db.datoms),
   }
 
-  after_datoms := clone_datoms(conn.current.datoms)
+  after_datoms := clone_datoms(conn.db.datoms)
   tx_data, _ := make([dynamic]Datom, 0, len(ops))
 
   for op in ops {
@@ -239,7 +239,7 @@ transact :: proc(conn: ^Conn, ops: []Tx_Op) -> Tx_Report {
     datoms = after_datoms,
   }
 
-  conn.current = after
+  conn.db = after
   conn.next_tx += 1
 
   return Tx_Report{

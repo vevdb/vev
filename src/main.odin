@@ -53,7 +53,7 @@ main :: proc() {
   }
 
   // Evaluate against the connection's current immutable snapshot.
-  results := spor.q(conn.current, query)
+  results := spor.q(conn.db, query)
 
   // The proof succeeds only if:
   // - the old snapshot was empty
