@@ -187,6 +187,57 @@
       (arr.push! ops (tx-data-op data)))
     ops))
 
+(defmacro- emit-literal-value [form]
+  (if (string? form)
+    (quasiquote (value-string (unquote form)))
+    (if (int? form)
+      (quasiquote (value-int (unquote form)))
+      (if (bool? form)
+        (quasiquote (value-bool (unquote form)))
+        (if (keyword? form)
+          (quasiquote (value-keyword (unquote (source form))))
+          (quasiquote (unquote form)))))))
+
+(defmacro- emit-attr [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (error "tx-data attributes must be keywords or strings"))))
+
+(defmacro- emit-tx-data-item [form]
+  (if (vector? form)
+    (if (= (count form) 4)
+      (let [op (nth form 0)
+            e (nth form 1)
+            a (nth form 2)
+            v (nth form 3)]
+        (if (keyword? op)
+          (if (= (source op) ":db/retract")
+            (quasiquote
+              (retract (unquote e)
+                       (unquote (emit-attr a))
+                       (unquote (emit-literal-value v))))
+            (if (= (source op) ":db/add")
+              (quasiquote
+                (add (unquote e)
+                     (unquote (emit-attr a))
+                     (unquote (emit-literal-value v))))
+              (error "tx-data operation must be :db/add or :db/retract")))
+          (error "tx-data operation must be :db/add or :db/retract")))
+      (error "tx-data vectors must have shape [:db/add e :attr value]"))
+    (error "tx-data expects vector forms like [:db/add e :attr value]")))
+
+(defmacro- emit-tx-data-items [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-tx-data-item (first forms))
+      (emit-tx-data-items (rest forms)))))
+
+(defmacro tx-data [& forms]
+  (quasiquote ([]Tx-Data [(splice (emit-tx-data-items forms))])))
+
 (defn query [find: []string, clauses: []Clause] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-clauses (arr.into [dynamic]Clause clauses)]
