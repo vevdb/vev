@@ -28,7 +28,7 @@ Examples:
 
 This is not a requirement for purely functional implementation style.
 
-Vev is being built in Odin, and the implementation should freely use local
+Vev is being built in Kvist, and the implementation should freely use local
 mutation where it improves:
 
 - clarity
@@ -49,9 +49,9 @@ Examples of acceptable internal mutation:
 This style matches both the project domain and the language:
 
 - database semantics benefit from immutable snapshots and explicit transitions
-- Odin is good at direct, explicit, data-oriented implementation
+- Kvist should be tested as a direct, data-oriented systems language here
 - forcing purely functional implementation style would likely make the code
-  harder to read and reason about in this language
+  harder to read and reason about
 
 ## Rule of thumb
 
@@ -67,6 +67,6 @@ This principle works well with the Datomic/DataScript direction:
 
 - boundary syntax stays familiar
 - boundary semantics stay value-oriented
-- internal implementation remains Odin-native
+- internal implementation remains native and typed
 
 That is the intended balance for Vev.

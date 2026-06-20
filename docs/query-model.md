@@ -36,7 +36,7 @@ Recommended split:
 - convenience API: parse-and-run helper
 
 This split preserves Datomic syntax at the boundary while still letting the
-engine use direct Odin data structures internally.
+engine use direct typed data structures internally.
 
 ## Why not only strings?
 
@@ -50,7 +50,7 @@ Because the engine benefits from:
 
 ## Proposed native API shape
 
-At the Odin level:
+At the native API level:
 
 ```text
 parse_query(text) -> Query
@@ -76,10 +76,10 @@ Start with a tight slice:
 Phase 1 should bias toward the subset most commonly shown in Datomic/DataScript
 examples so learning material transfers early.
 
-## Current Odin proof
+## Current Kvist proof
 
 The current in-memory implementation does not parse query text yet. It builds
-queries as typed Odin data and evaluates them directly.
+queries as typed Kvist data and evaluates them directly.
 
 Supported now:
 
@@ -93,14 +93,12 @@ Supported now:
 
 Example:
 
-```odin
-result := q(db, query(
-  []string{"e", "name"},
-  []Clause{
-    clause(term_var("e"), ":user/email", term_string("ada@example.com")),
-    clause(term_var("e"), ":user/name", term_var("name")),
-  },
-))
+```clojure
+(v.q db
+  (v.query ([]string ["e" "name"])
+    ([]v.Clause
+      [(v.clause (v.term-var "e") ":user/email" (v.term-string "ada@example.com"))
+       (v.clause (v.term-var "e") ":user/name" (v.term-var "name"))])))
 ```
 
 This is intentionally still a naive scan over current datoms. Indexes, text
@@ -120,12 +118,11 @@ The pull syntax itself should stay close to Datomic/DataScript pull syntax.
 The preferred project stance is:
 
 - pull patterns at the boundary should look like familiar Datomic/DataScript patterns
-- internal representation can be a typed Odin pull AST
+- internal representation can be a typed pull AST
 - any unsupported pull feature should be documented as "not implemented yet",
   not replaced with a different surface syntax
 
-## OdinL role
+## Literal Syntax Role
 
-OdinL may later provide a nicer surface for query literals, but that should be
-treated as optional syntax sugar over the same parser and AST, not as the
-engine's primary representation.
+Kvist may later provide a nicer surface for query literals, but that should be
+treated as optional syntax sugar over the same parser and AST.
