@@ -35,6 +35,9 @@ real embedding constraints.
 `[:db/retractEntity e]` expands to retract operations for the entity's current
 facts in the DB snapshot before the transaction.
 
+`[:db/retract e a]` expands to retract operations for current values of that
+entity+attribute in the DB snapshot before the transaction.
+
 ## Reified transactions
 
 Every successful transaction should have a transaction identity.
