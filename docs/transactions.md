@@ -127,6 +127,8 @@ That is the default stance Vev should take first:
 
 The transaction result should expose a shape close to:
 
+- `ok`
+- `error`
 - `db_before`
 - `db_after`
 - `tx_data`
@@ -135,6 +137,7 @@ The transaction result should expose a shape close to:
 
 This gives callers:
 
+- commit success/failure without exceptions
 - immutable before/after snapshots
 - the exact fact delta
 - tempid resolution
@@ -143,6 +146,11 @@ This gives callers:
 
 String tempids in list-form tx data are resolved during transact and returned
 through `tempids`.
+
+Lookup refs in list-form entity positions resolve through `:db/unique` attrs.
+Missing lookup refs fail the report with `ok=false`.
+
+The reserved tempid `"datomic.tx"` writes transaction metadata into `tx_meta`.
 
 In the embedded single-process case, this is usually enough:
 

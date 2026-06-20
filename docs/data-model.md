@@ -120,6 +120,16 @@ First schema features worth supporting:
 - uniqueness
 - maybe component refs later
 
+Current Vev supports schema as ordinary datoms on schema entities identified by
+`:db/ident`. The first enforced subset is:
+
+- `:db/valueType`
+- `:db/cardinality`
+- `:db/unique`
+
+Supported value types are `:db.type/string`, `:db.type/long`,
+`:db.type/boolean`, `:db.type/ref`, and `:db.type/keyword`.
+
 ## Tempids
 
 Transactions should support temporary ids.

@@ -71,10 +71,11 @@ Examples:
 [:db/add :some/ident :flag/enabled true]
 ```
 
-Current Vev supports numeric entity ids and string tempids in list forms.
-Repeated use of the same tempid in one transaction resolves to the same entity
-and the transaction report exposes the resolved `tempids` mapping. Lookup refs
-and idents remain later work.
+Current Vev supports numeric entity ids, string tempids, lookup refs, and
+idents in list-form entity positions. Repeated use of the same tempid in one
+transaction resolves to the same entity and the transaction report exposes the
+resolved `tempids` mapping. Lookup refs require a current `:db/unique` schema
+attr. Idents resolve through current `:db/ident` facts.
 
 ### Map forms
 
@@ -93,6 +94,9 @@ Examples:
 {:db/id "u1"
  :user/name "Anna"}
 ```
+
+Current Vev supports map forms in tx data when `:db/id` is first, with one to
+three attrs after it. Nested component maps remain later work.
 
 ### Transaction metadata
 
@@ -118,6 +122,9 @@ Example:
 
 This should be the default transaction-context model for Vev instead of
 inventing a different metadata syntax.
+
+Current Vev supports this shape: facts targeting `"datomic.tx"` are returned
+as `tx_meta` entries instead of ordinary datoms.
 
 ## Query data
 
@@ -232,11 +239,8 @@ Examples:
 These are part of Datomic pull and should remain syntax goals, but can be
 deferred:
 
-- wildcard `*`
-- reverse refs via underscore notation such as `:release/_artists`
 - recursion limits such as `{:person/friends 6}` or `{:person/friends ...}`
-- attr options such as `:as`, `:limit`, `:default`, `:xform`
-- pull-many helpers
+- richer attr options such as `:as`, `:default`, `:xform`
 
 Again, the rule is to defer support, not invent different syntax.
 

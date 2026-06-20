@@ -69,6 +69,11 @@
   e: u64
   tempid: string
   has_tempid: bool
+  lookup_attr: string
+  lookup_value: Value
+  has_lookup_ref: bool
+  ident: string
+  has_ident: bool
   a: string
   v: Value
 })
@@ -78,12 +83,22 @@
   e: u64
 })
 
+(defstruct Resolved-Tx {
+  ok: bool
+  error: string
+  ops: [dynamic]Tx-Op
+  tx_meta: [dynamic]Tx-Meta
+  tempids: [dynamic]Tempid
+})
+
 (defstruct Tx-Meta {
   a: string
   v: Value
 })
 
 (defstruct Tx-Report {
+  ok: bool
+  error: string
   db_before: DB
   db_after: DB
   tx_data: [dynamic]Datom
@@ -107,6 +122,7 @@
 (defstruct Pull-Find {
   var: string
   attrs: []string
+  pattern: []Pull-Spec
 })
 
 (defstruct Query {
@@ -139,11 +155,18 @@
 (defstruct Pull-Attr {
   a: string
   v: Value
+  attrs: [dynamic]Pull-Attr
 })
 
 (defstruct Pull-Result {
   e: u64
   attrs: [dynamic]Pull-Attr
+})
+
+(defstruct Pull-Spec {
+  a: string
+  pattern: []Pull-Spec
+  limit: int
 })
 
 (defenum Query-Input-Kind [
@@ -240,6 +263,18 @@
 (defn retract-tempid [tempid: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" tempid: tempid has_tempid: true a: a v: v}))
 
+(defn add-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
+
+(defn retract-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
+
+(defn add-ident [ident: string, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" ident: ident has_ident: true a: a v: v}))
+
+(defn retract-ident [ident: string, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" ident: ident has_ident: true a: a v: v}))
+
 (defn tempid-lookup [tempids: []Tempid, tempid: string] -> [e: u64, ok: bool]
   (for [item tempids]
     (when (= item.tempid tempid)
@@ -252,29 +287,6 @@
       (when (>= datom.e next)
         (set! next (+ datom.e 1))))
     next))
-
-(defn resolve-tx-data-ops [datoms: []Datom, tx-data: []Tx-Data] -> [ops: [dynamic]Tx-Op, tempids: [dynamic]Tempid]
-  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
-        resolved-tempids (make [dynamic]Tempid)
-        next-e (next-entity-id datoms)]
-    (for [data tx-data]
-      (when (and (not data.has_tempid)
-                 (>= data.e next-e))
-        (set! next-e (+ data.e 1))))
-    (for [data tx-data]
-      (let [e data.e]
-        (when data.has_tempid
-          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
-            (if ok
-              (set! e existing)
-              (do
-                (set! e next-e)
-                (set! next-e (+ next-e 1))
-                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
-        (if (= data.op ":db/retract")
-          (arr.push! resolved-ops (tx-retract e data.a data.v))
-          (arr.push! resolved-ops (tx-add e data.a data.v)))))
-    (return resolved-ops resolved-tempids)))
 
 (defn value-equal? [left: Value, right: Value] -> bool
   (if (not (= left.kind right.kind))
@@ -480,6 +492,55 @@
       (text form)
       (error "tx-data attributes must be keywords or strings"))))
 
+(defmacro- lookup-ref? [form]
+  (if (vector? form)
+    (= (count form) 2)
+    false))
+
+(defmacro- emit-tx-data-call [op e a v]
+  (let [is-retract (= (source op) ":db/retract")]
+    (if (lookup-ref? e)
+      (quasiquote
+        ((unquote (if is-retract (quasiquote retract-lookup-ref) (quasiquote add-lookup-ref)))
+          (unquote (emit-attr (nth e 0)))
+          (unquote (emit-literal-value (nth e 1)))
+          (unquote (emit-attr a))
+          (unquote (emit-literal-value v))))
+      (if (string? e)
+        (quasiquote
+          ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value v))))
+        (if (keyword? e)
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
+              (unquote (source e))
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v))))
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v)))))))))
+
+(defmacro- emit-tx-map-items [form]
+  ;; ponytail: require :db/id first until map-form support needs arbitrary key order.
+  (let [e (nth form 1)]
+    (if (= (count form) 4)
+      (forms
+        (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3)))
+      (if (= (count form) 6)
+        (forms
+          (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))
+          (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5)))
+        (if (= (count form) 8)
+          (forms
+            (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))
+            (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5))
+            (emit-tx-data-call (keyword "db/add") e (nth form 6) (nth form 7)))
+          (error "tx map forms currently support :db/id plus one to three attrs"))))))
+
 (defmacro- emit-tx-data-item [form]
   (if (vector? form)
     (if (= (count form) 4)
@@ -489,26 +550,20 @@
             v (nth form 3)]
         (if (keyword? op)
           (if (= (source op) ":db/retract")
-            (quasiquote
-              ((unquote (if (string? e) (quasiquote retract-tempid) (quasiquote retract)))
-                (unquote e)
-                (unquote (emit-attr a))
-                (unquote (emit-literal-value v))))
+            (forms (emit-tx-data-call op e a v))
             (if (= (source op) ":db/add")
-              (quasiquote
-                ((unquote (if (string? e) (quasiquote add-tempid) (quasiquote add)))
-                  (unquote e)
-                  (unquote (emit-attr a))
-                  (unquote (emit-literal-value v))))
+              (forms (emit-tx-data-call op e a v))
               (error "tx-data operation must be :db/add or :db/retract")))
           (error "tx-data operation must be :db/add or :db/retract")))
       (error "tx-data vectors must have shape [:db/add e :attr value]"))
-    (error "tx-data expects vector forms like [:db/add e :attr value]")))
+    (if (brace? form)
+      (emit-tx-map-items form)
+      (error "tx-data expects vector forms like [:db/add e :attr value] or map forms"))))
 
 (defmacro- emit-tx-data-items [forms]
   (if (= (count forms) 0)
     (forms)
-    (forms
+    (concat
       (emit-tx-data-item (first forms))
       (emit-tx-data-items (rest forms)))))
 
@@ -696,13 +751,70 @@
 (defmacro- emit-pull-attrs [forms]
   (if (= (count forms) 0)
     (forms)
+    (if (brace? (first forms))
+      (emit-pull-attrs (rest forms))
+      (forms
+        (if (keyword? (first forms))
+          (source (first forms))
+          (if (string? (first forms))
+            (text (first forms))
+            (if (and (symbol? (first forms))
+                     (= (source (first forms)) "*"))
+              "*"
+              (error "pull patterns currently accept keyword, string, *, or nested attrs"))))
+        (emit-pull-attrs (rest forms))))))
+
+(defmacro- pull-attr-source [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (if (and (symbol? form)
+               (= (source form) "*"))
+        "*"
+        (error "pull pattern attrs must be keywords, strings, or *")))))
+
+(defmacro- emit-pull-spec [form]
+  (if (brace? form)
+    (if (= (count form) 2)
+      (let [attr (nth form 0)
+            pattern (nth form 1)]
+        (if (vector? pattern)
+          (if (= (count pattern) 3)
+            (if (keyword? (nth pattern 1))
+              (if (= (source (nth pattern 1)) ":limit")
+                (let [child-pattern (slice pattern 0 1)
+                      limit-form (nth pattern 2)]
+                  (quasiquote
+                    (pull-spec-limit
+                      (unquote (pull-attr-source attr))
+                      ([]Pull-Spec [(splice (emit-pull-specs child-pattern))])
+                      (unquote limit-form))))
+                (quasiquote
+                  (pull-spec
+                    (unquote (pull-attr-source attr))
+                    ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+              (quasiquote
+                (pull-spec
+                  (unquote (pull-attr-source attr))
+                  ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+            (quasiquote
+              (pull-spec
+                (unquote (pull-attr-source attr))
+                ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+          (error "nested pull attrs expect vector patterns")))
+      (error "nested pull maps currently support one attr"))
+    (quasiquote
+      (pull-spec
+        (unquote (pull-attr-source form))
+        ([]Pull-Spec [])))))
+
+(defmacro- emit-pull-specs [forms]
+  (if (= (count forms) 0)
+    (forms)
     (forms
-      (if (keyword? (first forms))
-        (source (first forms))
-        (if (string? (first forms))
-          (text (first forms))
-          (error "pull patterns currently accept keyword or string attrs")))
-      (emit-pull-attrs (rest forms)))))
+      (emit-pull-spec (first forms))
+      (emit-pull-specs (rest forms)))))
 
 (defmacro- emit-pull-find [form]
   (if (pull-find? form)
@@ -711,7 +823,8 @@
       (if (vector? pattern)
         (quasiquote
           (Pull-Find {var: (unquote (emit-find-var var))
-                      attrs: ([]string [(splice (emit-pull-attrs pattern))])}))
+                      attrs: ([]string [(splice (emit-pull-attrs pattern))])
+                      pattern: ([]Pull-Spec [(splice (emit-pull-specs pattern))])}))
         (error "find pull expects a literal vector pattern")))
     (error ":find pull expressions must be (pull ?e [...])")))
 
@@ -801,11 +914,20 @@
 (defmacro pull [db pattern entity]
   (if (vector? pattern)
     (quasiquote
-      (pull-pattern
+      (pull-pattern-spec
         (unquote db)
         (unquote entity)
-        ([]string [(splice (emit-pull-attrs pattern))])))
+        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
     (quasiquote (pull-pattern (unquote db) (unquote entity) (unquote pattern)))))
+
+(defmacro pull-many [db pattern entities]
+  (if (vector? pattern)
+    (quasiquote
+      (pull-many-pattern-spec
+        (unquote db)
+        (unquote entities)
+        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+    (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
 (defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, pulls: []Pull-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
@@ -914,11 +1036,195 @@
     (and (< found (count current))
          (= current[found] index))))
 
+(defn schema-entity-for-attr [db: DB, attr: string] -> [e: u64, ok: bool]
+  (let [value (value-keyword attr)
+        indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 ":db/ident" value)
+        high (upper-bound-index db indexes "avet" 0 ":db/ident" value)]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return db.datoms[datom-index].e true))))
+  (return 0 false))
+
+(defn db-has-schema? [db: DB] -> bool
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn schema-keyword [db: DB, attr: string, schema-attr: string] -> [value: string, ok: bool]
+  (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
+    (when (not schema-ok)
+      (return "" false))
+    (let [indexes (slice db.eavt 0)
+          low (lower-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom db.datoms[datom-index]]
+          (when (and (datom-current-at? db datom-index)
+                     (= datom.v.kind .Keyword))
+            (return datom.v.text true))))))
+  (return "" false))
+
+(defn value-matches-schema-type? [value: Value, schema-type: string] -> bool
+  (if (= schema-type ":db.type/string")
+    (= value.kind .String)
+    (if (= schema-type ":db.type/long")
+      (= value.kind .Int)
+      (if (= schema-type ":db.type/boolean")
+        (= value.kind .Bool)
+        (if (= schema-type ":db.type/ref")
+          (= value.kind .Entity)
+          (if (= schema-type ":db.type/keyword")
+            (= value.kind .Keyword)
+            true))))))
+
+(defn cardinality-one-conflict? [db: DB, op: Tx-Op] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" op.e op.a (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" op.e op.a (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (value-equal? datom.v op.v)))
+          (return true)))))
+  false)
+
+(defn unique-conflict? [db: DB, op: Tx-Op] -> bool
+  (let [indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 op.a op.v)
+        high (upper-bound-index db indexes "avet" 0 op.a op.v)]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (= datom.e op.e)))
+          (return true)))))
+  false)
+
+(defn schema-unique? [db: DB, attr: string] -> bool
+  (let [[unique has-unique] (schema-keyword db attr ":db/unique")]
+    (and has-unique
+         (or (= unique ":db.unique/identity")
+             (= unique ":db.unique/value")))))
+
+(defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
+  (when (not (schema-unique? db attr))
+    (return 0 false))
+  (let [indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 attr value)
+        high (upper-bound-index db indexes "avet" 0 attr value)]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return db.datoms[datom-index].e true))))
+  (return 0 false))
+
+(defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
+  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
+        resolved-meta (make [dynamic]Tx-Meta)
+        resolved-tempids (make [dynamic]Tempid)
+        next-e (next-entity-id (slice db.datoms 0))]
+    (for [data tx-data]
+      (when (and (not data.has_tempid)
+                 (not data.has_lookup_ref)
+                 (not data.has_ident)
+                 (>= data.e next-e))
+        (set! next-e (+ data.e 1))))
+    (for [data tx-data]
+      (let [e data.e]
+        (when (and data.has_tempid
+                   (= data.tempid "datomic.tx"))
+          (when (= data.op ":db/add")
+            (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v})))
+          (continue))
+        (when data.has_tempid
+          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
+            (if ok
+              (set! e existing)
+              (do
+                (set! e next-e)
+                (set! next-e (+ next-e 1))
+                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
+        (when data.has_lookup_ref
+          (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.lookup_attr data.lookup_value)]
+            (if lookup-ok
+              (set! e lookup-e)
+              (return (Resolved-Tx {ok: false
+                                    error: "lookup ref not found"
+                                    ops: resolved-ops
+                                    tx_meta: resolved-meta
+                                    tempids: resolved-tempids})))))
+        (when data.has_ident
+          (let [[ident-e ident-ok] (schema-entity-for-attr db data.ident)]
+            (if ident-ok
+              (set! e ident-e)
+              (return (Resolved-Tx {ok: false
+                                    error: "ident not found"
+                                    ops: resolved-ops
+                                    tx_meta: resolved-meta
+                                    tempids: resolved-tempids})))))
+        (if (= data.op ":db/retract")
+          (arr.push! resolved-ops (tx-retract e data.a data.v))
+          (arr.push! resolved-ops (tx-add e data.a data.v)))))
+    (Resolved-Tx {ok: true error: "" ops: resolved-ops tx_meta: resolved-meta tempids: resolved-tempids})))
+
+(defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
+  (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
+    (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
+      (return false "schema value type mismatch")))
+  (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
+    (when (and has-cardinality
+               (= cardinality ":db.cardinality/one")
+               (cardinality-one-conflict? db op))
+      (return false "schema cardinality one conflict")))
+  (let [[unique has-unique] (schema-keyword db op.a ":db/unique")]
+    (when (and has-unique
+               (or (= unique ":db.unique/identity")
+                   (= unique ":db.unique/value"))
+               (unique-conflict? db op))
+      (return false "schema unique conflict")))
+  (return true ""))
+
+(defn validate-ops [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
+  (when (not (db-has-schema? before))
+    (return true ""))
+  (let [scratch-datoms (clone-datoms before.datoms)]
+    (defer (delete scratch-datoms))
+    (for [op ops]
+      (when (= op.kind .Add)
+        (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+              scratch (build-db scratch-owned)
+              [ok error] (validate-add-op scratch op)]
+          (when (not ok)
+            (return false error))))
+      (arr.push! scratch-datoms
+        (Datom {e: op.e
+                a: op.a
+                v: op.v
+                tx: 0
+                added: (= op.kind .Add)})))
+    (return true "")))
+
+(defn failed-tx-report [db: DB, error: string] -> Tx-Report
+  (Tx-Report {ok: false
+              error: error
+              db_before: db
+              db_after: db
+              tx_data: (make [dynamic]Datom)
+              tx: 0
+              tx_meta: (make [dynamic]Tx-Meta)
+              tempids: (make [dynamic]Tempid)}))
+
 (defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count ops))
         tx conn^.next_tx]
+    (let [[valid error] (validate-ops before ops)]
+      (when (not valid)
+        (return (failed-tx-report before error))))
     (for [op ops]
       (let [datom (Datom {e: op.e
                           a: op.a
@@ -932,6 +1238,8 @@
       (set! conn^.next_tx (+ conn^.next_tx 1))
       (Tx-Report {db_before: before
                   db_after: after
+                  ok: true
+                  error: ""
                   tx_data: tx-data
                   tx: tx
                   tx_meta: (clone-tx-meta tx-meta)
@@ -944,10 +1252,17 @@
   (transact-with-meta conn ops ([]Tx-Meta [])))
 
 (defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
-  (let [[ops tempids] (resolve-tx-data-ops (slice conn^.db.datoms 0) tx-data)
-        report (transact-ops-with-tempids conn (slice ops 0) ([]Tx-Meta []) tempids)]
-    (delete ops)
-    report))
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        resolved (resolve-tx-data before tx-data)]
+    (when (not resolved.ok)
+      (delete resolved.ops)
+      (delete resolved.tx_meta)
+      (delete resolved.tempids)
+      (return (failed-tx-report before resolved.error)))
+    (let [report (transact-ops-with-tempids conn (slice resolved.ops 0) (slice resolved.tx_meta 0) resolved.tempids)]
+      (delete resolved.ops)
+      (delete resolved.tx_meta)
+      report)))
 
 (defn datom-clause-matches? [datom: Datom, clause: Clause, binding: ^Binding] -> bool
   (and (match-term? clause.e (value-entity datom.e) binding)
@@ -1088,7 +1403,7 @@
           (for [pull-find query.pulls]
             (let [[entity ok] (binding-lookup binding pull-find.var)]
               (if (and ok (= entity.kind .Entity))
-                (arr.push! pulls (pull-pattern db entity.entity (slice pull-find.attrs 0)))
+                (arr.push! pulls (pull-pattern-spec db entity.entity pull-find.pattern))
                 (set! complete false))))
           (when complete
             (arr.push! rows (Result-Row {values: values pulls: pulls})))))
@@ -1107,6 +1422,12 @@
         (arr.push! out row.values[0].text)))
     out))
 
+(defn reverse-attr? [attr: string] -> bool
+  (strings.has_prefix attr ":_"))
+
+(defn forward-attr-for-reverse [attr: string] -> string
+  (strings.concatenate ([]string [":" (slice attr 2)])))
+
 (defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
@@ -1117,15 +1438,98 @@
           (return datom.v true)))))
   (return (Value {}) false))
 
-(defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
+(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
+  (let [forward-attr (forward-attr-for-reverse spec.a) :defer
+        ref-value (value-entity entity)
+        indexes (slice db.vaet 0)
+        low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index db indexes "vaet" 0 "" ref-value)
+        limit spec.limit
+        seen 0]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (= datom.a forward-attr)
+                   (datom-current-at? db datom-index))
+          (let [children (make [dynamic]Pull-Attr)]
+            (when (> (count spec.pattern) 0)
+              (let [pulled (pull-pattern-spec db datom.e spec.pattern)]
+                (set! children pulled.attrs)))
+            (arr.push! out^ (Pull-Attr {a: spec.a
+                                        v: (value-entity datom.e)
+                                        attrs: children}))
+            (set! seen (+ seen 1))
+            (when (and (> limit 0)
+                       (>= seen limit))
+              (return))))))))
+
+(defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" entity "" (Value {}))
+        high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (arr.push! out^ (Pull-Attr {a: datom.a
+                                      v: datom.v
+                                      attrs: (make [dynamic]Pull-Attr)})))))))
+
+(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
+  (when (= spec.a "*")
+    (pull-wildcard! out db entity)
+    (return))
+  (when (= spec.a ":db/id")
+    (arr.push! out^ (Pull-Attr {a: spec.a
+                                v: (value-entity entity)
+                                attrs: (make [dynamic]Pull-Attr)}))
+    (return))
+  (when (reverse-attr? spec.a)
+    (pull-reverse-attr! out db entity spec)
+    (return))
+  (let [[value ok] (pull-attr-value db entity spec.a)]
+    (when ok
+      (let [children (make [dynamic]Pull-Attr)]
+        (when (and (= value.kind .Entity)
+                   (> (count spec.pattern) 0))
+          (let [pulled (pull-pattern-spec db value.entity spec.pattern)]
+            (set! children pulled.attrs)))
+        (arr.push! out^ (Pull-Attr {a: spec.a v: value attrs: children}))))))
+
+(defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
-    (for [attr attrs]
-      (if (= attr ":db/id")
-        (arr.push! out (Pull-Attr {a: attr v: (value-entity entity)}))
-        (let [[value ok] (pull-attr-value db entity attr)]
-          (when ok
-            (arr.push! out (Pull-Attr {a: attr v: value}))))))
+    (for [spec pattern]
+      (pull-spec-attr! (addr out) db entity spec))
     (Pull-Result {e: entity attrs: out})))
+
+(defn flat-pull-spec [attr: string] -> Pull-Spec
+  (Pull-Spec {a: attr limit: 0 pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
+  (Pull-Spec {a: attr limit: 0 pattern: pattern}))
+
+(defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
+  (Pull-Spec {a: attr limit: limit pattern: pattern}))
+
+(defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
+  (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]
+    (for [attr attrs]
+      (arr.push! pattern (flat-pull-spec attr)))
+    (let [pulled (pull-pattern-spec db entity (slice pattern 0))]
+      (delete pattern)
+      pulled)))
+
+(defn pull-many-pattern-spec [db: DB, entities: []u64, pattern: []Pull-Spec] -> [dynamic]Pull-Result
+  (let [out (make [dynamic]Pull-Result 0 (count entities))]
+    (for [entity entities]
+      (arr.push! out (pull-pattern-spec db entity pattern)))
+    out))
+
+(defn pull-many-pattern [db: DB, entities: []u64, attrs: []string] -> [dynamic]Pull-Result
+  (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]
+    (for [attr attrs]
+      (arr.push! pattern (flat-pull-spec attr)))
+    (let [pulled (pull-many-pattern-spec db entities (slice pattern 0))]
+      (delete pattern)
+      pulled)))
 
 (defn query-name-by-email [email: string] -> Query
   (query ([]string ["name"])

@@ -89,14 +89,41 @@ Current Kvist proof:
 (v.pull db [:db/id :user/name :user/email] 1)
 ```
 
+It also supports reverse ref attrs in the Datomic style:
+
+```clojure
+(v.pull db [:_user/friend] 2)
+```
+
+And one-level nested ref maps:
+
+```clojure
+(v.pull db [{:user/friend [:user/name]}] 1)
+```
+
+Nested reverse refs can use `:limit` to cap fan-out:
+
+```clojure
+(v.pull db [{:_user/friend [:user/name :limit 2]}] 2)
+```
+
+And wildcard attrs for current forward attrs:
+
+```clojure
+(v.pull db [*] 1)
+```
+
+Use `pull-many` for the same pattern over multiple entity ids:
+
+```clojure
+(v.pull-many db [:db/id :user/name] ([]u64 [1 2]))
+```
+
 Delay these until later unless they become immediately necessary:
 
-- nested map form for refs
-- wildcard `*`
 - recursion limits
-- reverse refs
-- attribute options and aliases
-- multi-entity pull-many helpers
+- richer attribute options such as `:as`, `:default`, and `:xform`
+- option parsing for multiple child attrs, e.g. `[:db/id :user/name :limit 2]`
 
 This keeps the early implementation small while preserving syntax direction.
 
