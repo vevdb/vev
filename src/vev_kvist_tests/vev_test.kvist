@@ -35,7 +35,7 @@
                   [(vev.clause (vev.term-var "e") ":user/name" (vev.term-var "name"))
                    (vev.clause (vev.term-var "e") ":user/age" (vev.term-var "age"))
                    (vev.clause (vev.term-var "e") ":user/active" (vev.term-bool true))])]
-    (let [query (vev.query ([]string ["e" "name" "age"]) clauses)
+    (let [query (vev.query ([]string ["e" "name" "age"]) ([]string []) clauses ([]vev.Predicate []))
           result (vev.q report.db_after query)]
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].kind .Entity))
@@ -70,6 +70,35 @@
     (t.is (= (count result.rows) 1))
     (t.is (= result.rows[0].values[0].kind .String))
     (t.is (= result.rows[0].values[0].text "Grace"))))
+
+(t.deftest datalog-macro-supports-inputs
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find ?e ?name
+                  :in ?email
+                  :where
+                  [?e :user/email ?email]
+                  [?e :user/name ?name]]
+                 "ada@example.com")]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].entity 1))
+    (t.is (= result.rows[0].values[1].text "Ada"))))
+
+(t.deftest datalog-macro-supports-predicate-clauses
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find ?name ?age
+                  :where
+                  [?e :user/name ?name]
+                  [?e :user/age ?age]
+                  [(> ?age 40)]])]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].text "Grace"))
+    (t.is (= result.rows[0].values[1].int_value 41))))
 
 (t.deftest transact-data-uses-datomic-shaped-ops
   (defer (free_all context.allocator))
@@ -114,7 +143,7 @@
                   [(vev.clause (vev.term-var "e") ":user/name" (vev.term-string "Ada"))
                    (vev.clause (vev.term-var "e") ":user/friend" (vev.term-var "friend"))
                    (vev.clause (vev.term-var "friend") ":user/name" (vev.term-var "friend-name"))])]
-    (let [query (vev.query ([]string ["friend" "friend-name"]) clauses)
+    (let [query (vev.query ([]string ["friend" "friend-name"]) ([]string []) clauses ([]vev.Predicate []))
           result (vev.q report.db_after query)]
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].kind .Entity))
@@ -129,7 +158,7 @@
                   [(vev.Clause {e: (vev.term-entity 1)
                                 a: (vev.term-var "attr")
                                 v: (vev.term-string "Ada")})])]
-    (let [query (vev.query ([]string ["attr"]) clauses)
+    (let [query (vev.query ([]string ["attr"]) ([]string []) clauses ([]vev.Predicate []))
           result (vev.q report.db_after query)]
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].kind .Keyword))
@@ -143,7 +172,7 @@
                    (addr conn)
                    ([]vev.Tx-Op
                      [(vev.tx-retract 1 ":user/name" (vev.value-string "Ada"))]))
-        pulled (vev.pull report.db_after 1 ([]string [":db/id" ":user/name" ":user/age"]))]
+        pulled (vev.pull report.db_after [:db/id :user/name :user/age] 1)]
       (t.is (= pulled.e 1))
       (t.is (= (count pulled.attrs) 2))
       (t.is (= pulled.attrs[0].a ":db/id"))
@@ -151,6 +180,15 @@
       (t.is (= pulled.attrs[0].v.entity 1))
       (t.is (= pulled.attrs[1].a ":user/age"))
       (t.is (= pulled.attrs[1].v.int_value 37)))))
+
+(t.deftest pull-accepts-literal-pattern
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)]
+    (discard (vev.seed-people (addr conn)))
+    (let [pulled (vev.pull conn.db [:db/id :user/name] 2)]
+      (t.is (= (count pulled.attrs) 2))
+      (t.is (= pulled.attrs[0].v.entity 2))
+      (t.is (= pulled.attrs[1].v.text "Grace")))))
 
 (t.deftest db-snapshot-survives-later-transacts
   (defer (free_all context.allocator))

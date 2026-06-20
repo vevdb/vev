@@ -81,11 +81,17 @@ Start with the smallest useful subset that matches common tutorials:
 
 - plain attribute names
 - `:db/id`
-- nested map form for refs
 - one entity id at a time
+
+Current Kvist proof:
+
+```clojure
+(v.pull db [:db/id :user/name :user/email] 1)
+```
 
 Delay these until later unless they become immediately necessary:
 
+- nested map form for refs
 - wildcard `*`
 - recursion limits
 - reverse refs

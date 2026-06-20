@@ -84,9 +84,17 @@
   v: Term
 })
 
+(defstruct Predicate {
+  op: string
+  left: Term
+  right: Term
+})
+
 (defstruct Query {
   find: [dynamic]string
+  inputs: [dynamic]string
   clauses: [dynamic]Clause
+  predicates: [dynamic]Predicate
 })
 
 (defstruct Var-Binding {
@@ -250,27 +258,53 @@
       (emit-find-var (first forms))
       (emit-find-vars (rest forms)))))
 
-(defmacro- datalog-find-items [forms]
+(defmacro- datalog-items-before [forms marker]
   (if (= (count forms) 0)
-    (error "datalog query expects :where")
+    (error (str "datalog query expects " marker))
     (let [head (first forms)]
       (if (keyword? head)
-        (if (= (source head) ":where")
+        (if (= (source head) marker)
           (forms)
-          (error "datalog query expects :where after :find variables"))
+          (error (str "datalog query expects " marker)))
         (forms
           head
-          (datalog-find-items (rest forms)))))))
+          (datalog-items-before (rest forms) marker))))))
 
-(defmacro- datalog-where-items [forms]
+(defmacro- datalog-items-after [forms marker]
   (if (= (count forms) 0)
-    (error "datalog query expects :where")
+    (error (str "datalog query expects " marker))
     (let [head (first forms)]
       (if (keyword? head)
-        (if (= (source head) ":where")
+        (if (= (source head) marker)
           (rest forms)
-          (datalog-where-items (rest forms)))
-        (datalog-where-items (rest forms))))))
+        (datalog-items-after (rest forms) marker))
+        (datalog-items-after (rest forms) marker)))))
+
+(defmacro- datalog-has-marker-before? [forms marker stop]
+  (if (= (count forms) 0)
+    false
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) marker)
+          true
+          (if (= (source head) stop)
+            false
+            (datalog-has-marker-before? (rest forms) marker stop)))
+        (datalog-has-marker-before? (rest forms) marker stop)))))
+
+(defmacro- datalog-find-items [forms]
+  (if (datalog-has-marker-before? forms ":in" ":where")
+    (datalog-items-before forms ":in")
+    (datalog-items-before forms ":where")))
+
+(defmacro- datalog-input-items [forms]
+  (if (datalog-has-marker-before? forms ":in" ":where")
+    (let [after-in (datalog-items-after forms ":in")]
+      (datalog-items-before after-in ":where"))
+    (forms)))
+
+(defmacro- datalog-where-items [forms]
+  (datalog-items-after forms ":where"))
 
 (defmacro- emit-entity-term [form]
   (if (symbol? form)
@@ -311,12 +345,41 @@
       (error "datalog clauses must have shape [e a v]"))
     (error "datalog :where entries must be clauses")))
 
+(defmacro- predicate-clause? [form]
+  (if (vector? form)
+    (if (= (count form) 1)
+      (list? (first form))
+      false)
+    false))
+
+(defmacro- emit-datalog-predicate [form]
+  (if (predicate-clause? form)
+    (let [expr (first form)]
+      (if (= (count expr) 3)
+        (quasiquote
+          (Predicate {op: (unquote (source (nth expr 0)))
+                      left: (unquote (emit-value-term (nth expr 1)))
+                      right: (unquote (emit-value-term (nth expr 2)))}))
+        (error "predicate clauses must have shape [(op left right)]")))
+    (error "predicate clauses must have shape [(op left right)]")))
+
 (defmacro- emit-datalog-clauses [forms]
   (if (= (count forms) 0)
     (forms)
-    (forms
-      (emit-datalog-clause (first forms))
-      (emit-datalog-clauses (rest forms)))))
+    (if (predicate-clause? (first forms))
+      (emit-datalog-clauses (rest forms))
+      (forms
+        (emit-datalog-clause (first forms))
+        (emit-datalog-clauses (rest forms))))))
+
+(defmacro- emit-datalog-predicates [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (predicate-clause? (first forms))
+      (forms
+        (emit-datalog-predicate (first forms))
+        (emit-datalog-predicates (rest forms)))
+      (emit-datalog-predicates (rest forms)))))
 
 (defmacro datalog [form]
   (if (vector? form)
@@ -325,19 +388,37 @@
         (if (= (source head) ":find")
           (let [tail (rest form)
                 find-items (datalog-find-items tail)
+                input-items (datalog-input-items tail)
                 where-items (datalog-where-items tail)]
             (quasiquote
               (query
                 ([]string [(splice (emit-find-vars find-items))])
-                ([]Clause [(splice (emit-datalog-clauses where-items))]))))
+                ([]string [(splice (emit-find-vars input-items))])
+                ([]Clause [(splice (emit-datalog-clauses where-items))])
+                ([]Predicate [(splice (emit-datalog-predicates where-items))]))))
           (error "datalog query must start with :find"))
         (error "datalog query must start with :find")))
     (error "datalog expects a vector query")))
 
-(defmacro q [db query-form]
+(defmacro- emit-query-inputs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-literal-value (first forms))
+      (emit-query-inputs (rest forms)))))
+
+(defmacro q [db query-form & inputs]
   (if (vector? query-form)
-    (quasiquote (q-query (unquote db) (unquote (datalog query-form))))
-    (quasiquote (q-query (unquote db) (unquote query-form)))))
+    (quasiquote
+      (q-query-with-inputs
+        (unquote db)
+        (unquote (datalog query-form))
+        ([]Value [(splice (emit-query-inputs inputs))])))
+    (quasiquote
+      (q-query-with-inputs
+        (unquote db)
+        (unquote query-form)
+        ([]Value [(splice (emit-query-inputs inputs))])))))
 
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)
@@ -347,10 +428,35 @@
         ([]Tx-Data [(splice (emit-tx-data-items tx-form))])))
     (quasiquote (transact-tx-data (unquote conn) (unquote tx-form)))))
 
-(defn query [find: []string, clauses: []Clause] -> Query
+(defmacro- emit-pull-attrs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (if (keyword? (first forms))
+        (source (first forms))
+        (if (string? (first forms))
+          (text (first forms))
+          (error "pull patterns currently accept keyword or string attrs")))
+      (emit-pull-attrs (rest forms)))))
+
+(defmacro pull [db pattern entity]
+  (if (vector? pattern)
+    (quasiquote
+      (pull-pattern
+        (unquote db)
+        (unquote entity)
+        ([]string [(splice (emit-pull-attrs pattern))])))
+    (quasiquote (pull-pattern (unquote db) (unquote entity) (unquote pattern)))))
+
+(defn query [find: []string, inputs: []string, clauses: []Clause, predicates: []Predicate] -> Query
   (let [owned-find (arr.into [dynamic]string find)
-        owned-clauses (arr.into [dynamic]Clause clauses)]
-    (Query {find: owned-find clauses: owned-clauses})))
+        owned-inputs (arr.into [dynamic]string inputs)
+        owned-clauses (arr.into [dynamic]Clause clauses)
+        owned-predicates (arr.into [dynamic]Predicate predicates)]
+    (Query {find: owned-find
+            inputs: owned-inputs
+            clauses: owned-clauses
+            predicates: owned-predicates})))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom (slice datoms 0)))
@@ -385,6 +491,13 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn binding-from-inputs [names: []string, values: []Value] -> Binding
+  (let [binding (Binding {})]
+    (for [name index names]
+      (when (< index (count values))
+        (binding-store! (addr binding) name values[index])))
+    binding))
+
 (defn match-term? [term: Term, actual: Value, binding: ^Binding] -> bool
   (case term.kind
     .Value (value-equal? term.value actual)
@@ -395,6 +508,36 @@
                (binding-store! binding term.name actual)
                true)))
     :else false))
+
+(defn resolve-term [term: Term, binding: Binding] -> [value: Value, ok: bool]
+  (case term.kind
+    .Value (return term.value true)
+    .Var (return (binding-lookup binding term.name))
+    :else (return (Value {}) false)))
+
+(defn value-less? [left: Value, right: Value] -> bool
+  (if (and (= left.kind .Int) (= right.kind .Int))
+    (< left.int_value right.int_value)
+    false))
+
+(defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
+  (let [[left left-ok] (resolve-term predicate.left binding)
+        [right right-ok] (resolve-term predicate.right binding)]
+    (when (not (and left-ok right-ok))
+      (return false))
+    (if (= predicate.op "=")
+      (value-equal? left right)
+      (if (= predicate.op "!=")
+        (not (value-equal? left right))
+        (if (= predicate.op ">")
+          (value-less? right left)
+          (if (= predicate.op "<")
+            (value-less? left right)
+            (if (= predicate.op ">=")
+              (not (value-less? left right))
+              (if (= predicate.op "<=")
+                (not (value-less? right left))
+                false))))))))
 
 (defn same-fact? [left: Datom, right: Datom] -> bool
   (and (= left.e right.e)
@@ -446,9 +589,9 @@
        (match-term? clause.a (value-keyword datom.a) binding)
        (match-term? clause.v datom.v binding)))
 
-(defn q-query [db: DB, query: Query] -> Result-Set
+(defn q-query-with-inputs [db: DB, query: Query, inputs: []Value] -> Result-Set
   (let [datoms (slice db.datoms 0)
-        bindings ([dynamic]Binding [(Binding {})])]
+        bindings ([dynamic]Binding [(binding-from-inputs (slice query.inputs 0) inputs)])]
     (for [clause query.clauses]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
@@ -457,6 +600,13 @@
               (let [candidate (clone-binding binding)]
                 (when (datom-clause-matches? datom clause (addr candidate))
                   (arr.push! next-bindings candidate))))))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [predicate query.predicates]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (when (predicate-matches? predicate binding)
+            (arr.push! next-bindings binding)))
         (delete bindings)
         (set! bindings next-bindings)))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
@@ -472,6 +622,9 @@
             (arr.push! rows (Result-Row {values: values})))))
       (delete bindings)
       (Result-Set {rows: rows}))))
+
+(defn q-query [db: DB, query: Query] -> Result-Set
+  (q-query-with-inputs db query ([]Value [])))
 
 (defn q-strings [db: DB, query: Query] -> [dynamic]string
   (let [result (q-query db query)
@@ -490,7 +643,7 @@
       (return datom.v true)))
   (return (Value {}) false))
 
-(defn pull [db: DB, entity: u64, attrs: []string] -> Pull-Result
+(defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
   (let [datoms (slice db.datoms 0)
         out (make [dynamic]Pull-Attr)]
     (for [attr attrs]
@@ -503,9 +656,11 @@
 
 (defn query-name-by-email [email: string] -> Query
   (query ([]string ["name"])
+    ([]string [])
     ([]Clause
       [(clause (term-var "e") ":user/email" (term-string email))
-       (clause (term-var "e") ":user/name" (term-var "name"))])))
+       (clause (term-var "e") ":user/name" (term-var "name"))])
+    ([]Predicate [])))
 
 (defn seed-people [conn: ^Conn] -> Tx-Report
   (transact conn
