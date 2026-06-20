@@ -101,9 +101,14 @@ And one-level nested ref maps:
 (v.pull db [{:user/friend [:user/name]}] 1)
 ```
 
+And wildcard attrs for current forward attrs:
+
+```clojure
+(v.pull db [*] 1)
+```
+
 Delay these until later unless they become immediately necessary:
 
-- wildcard `*`
 - recursion limits
 - attribute options and aliases
 - multi-entity pull-many helpers

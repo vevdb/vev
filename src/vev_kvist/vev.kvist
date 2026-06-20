@@ -757,7 +757,10 @@
           (source (first forms))
           (if (string? (first forms))
             (text (first forms))
-            (error "pull patterns currently accept keyword, string, or nested attrs")))
+            (if (and (symbol? (first forms))
+                     (= (source (first forms)) "*"))
+              "*"
+              (error "pull patterns currently accept keyword, string, *, or nested attrs"))))
         (emit-pull-attrs (rest forms))))))
 
 (defmacro- pull-attr-source [form]
@@ -765,7 +768,10 @@
     (source form)
     (if (string? form)
       (text form)
-      (error "pull pattern attrs must be keywords or strings"))))
+      (if (and (symbol? form)
+               (= (source form) "*"))
+        "*"
+        (error "pull pattern attrs must be keywords, strings, or *")))))
 
 (defmacro- emit-pull-spec [form]
   (if (brace? form)
@@ -1414,7 +1420,21 @@
                    (datom-current-at? db datom-index))
           (arr.push! out^ (Pull-Attr {a: attr v: (value-entity datom.e)})))))))
 
+(defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" entity "" (Value {}))
+        high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (arr.push! out^ (Pull-Attr {a: datom.a
+                                      v: datom.v
+                                      attrs: (make [dynamic]Pull-Attr)})))))))
+
 (defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
+  (when (= spec.a "*")
+    (pull-wildcard! out db entity)
+    (return))
   (when (= spec.a ":db/id")
     (arr.push! out^ (Pull-Attr {a: spec.a
                                 v: (value-entity entity)
