@@ -892,6 +892,30 @@
       (return false)))
   true)
 
+(defn clause-selectivity-score [clause: Clause, binding: Binding] -> int
+  (let [[_ e-ok] (resolve-term clause.e binding)
+        [a-value a-ok] (resolve-term clause.a binding)
+        [_ v-ok] (resolve-term clause.v binding)]
+    (when (and a-ok (not (= a-value.kind .Keyword)))
+      (return 0))
+    (if (and a-ok v-ok)
+      1
+      (if e-ok
+        2
+        (if a-ok
+          3
+          (if v-ok 4 5))))))
+
+(defn best-clause-index [clauses: []Clause, binding: Binding] -> int
+  (let [best 0
+        best-score (clause-selectivity-score clauses[0] binding)]
+    (for [i (arr.range 1 (count clauses))]
+      (let [score (clause-selectivity-score clauses[i] binding)]
+        (when (< score best-score)
+          (set! best i)
+          (set! best-score score))))
+    best))
+
 (defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
   (let [[e-value e-ok] (resolve-term clause.e binding)
         [a-value a-ok] (resolve-term clause.a binding)
@@ -935,9 +959,13 @@
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
-        bindings (bindings-from-inputs query inputs)]
-    (for [clause query.clauses]
-      (let [next-bindings (make [dynamic]Binding)]
+        bindings (bindings-from-inputs query inputs)
+        remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
+    (defer (delete remaining))
+    (while (and (> (count bindings) 0) (> (count remaining) 0))
+      (let [clause-index (best-clause-index (slice remaining 0) bindings[0])
+            clause remaining[clause-index]
+            next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
           (let [candidates (clause-candidate-indexes db clause binding)]
             (for [datom-index candidates]
@@ -948,7 +976,8 @@
                       (arr.push! next-bindings candidate))))))
             (delete candidates)))
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (arr.remove-ordered-at! remaining clause-index)))
     (for [predicate query.predicates]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]

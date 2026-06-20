@@ -150,6 +150,15 @@ The query planner should be built with these assumptions in mind:
 - broad attribute scans like AEVT
 - reverse ref work may want VAET
 
+The current planner uses the binding shape already available at each step and
+runs the most constrained remaining clause first:
+
+- bound attribute + value
+- bound entity
+- bound attribute
+- bound value
+- unbound scan
+
 This is one reason the index model should be specified before the planner is
 implemented.
 
