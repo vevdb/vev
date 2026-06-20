@@ -265,11 +265,17 @@
 (defn retract [e: u64, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" e: e a: a v: v}))
 
+(defn retract-entity [e: u64] -> Tx-Data
+  (Tx-Data {op: ":db/retractEntity" e: e}))
+
 (defn add-tempid [tempid: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a v: v}))
 
 (defn retract-tempid [tempid: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" tempid: tempid has_tempid: true a: a v: v}))
+
+(defn retract-entity-tempid [tempid: string] -> Tx-Data
+  (Tx-Data {op: ":db/retractEntity" tempid: tempid has_tempid: true}))
 
 (defn add-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
@@ -277,11 +283,17 @@
 (defn retract-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
 
+(defn retract-entity-lookup-ref [lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retractEntity" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true}))
+
 (defn add-ident [ident: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" ident: ident has_ident: true a: a v: v}))
 
 (defn retract-ident [ident: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" ident: ident has_ident: true a: a v: v}))
+
+(defn retract-entity-ident [ident: string] -> Tx-Data
+  (Tx-Data {op: ":db/retractEntity" ident: ident has_ident: true}))
 
 (defn tempid-lookup [tempids: []Tempid, tempid: string] -> [e: u64, ok: bool]
   (for [item tempids]
@@ -532,6 +544,18 @@
               (unquote (emit-attr a))
               (unquote (emit-literal-value v)))))))))
 
+(defmacro- emit-retract-entity-call [e]
+  (if (lookup-ref? e)
+    (quasiquote
+      (retract-entity-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))))
+    (if (string? e)
+      (quasiquote (retract-entity-tempid (unquote e)))
+      (if (keyword? e)
+        (quasiquote (retract-entity-ident (unquote (source e))))
+        (quasiquote (retract-entity (unquote e)))))))
+
 (defmacro- emit-tx-map-items [form]
   ;; ponytail: require :db/id first until map-form support needs arbitrary key order.
   (let [e (nth form 1)]
@@ -563,7 +587,15 @@
               (forms (emit-tx-data-call op e a v))
               (error "tx-data operation must be :db/add or :db/retract")))
           (error "tx-data operation must be :db/add or :db/retract")))
-      (error "tx-data vectors must have shape [:db/add e :attr value]"))
+      (if (= (count form) 2)
+        (let [op (nth form 0)
+              e (nth form 1)]
+          (if (keyword? op)
+            (if (= (source op) ":db/retractEntity")
+              (forms (emit-retract-entity-call e))
+              (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity"))
+            (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity")))
+        (error "tx-data vectors must have shape [:db/add e :attr value] or [:db/retractEntity e]")))
     (if (brace? form)
       (emit-tx-map-items form)
       (error "tx-data expects vector forms like [:db/add e :attr value] or map forms"))))
@@ -1083,6 +1115,15 @@
     (and (< found (count current))
          (= current[found] index))))
 
+(defn append-retract-entity-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" entity "" (Value {}))
+        high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (arr.push! ops^ (tx-retract entity datom.a datom.v)))))))
+
 (defn schema-entity-for-attr [db: DB, attr: string] -> [e: u64, ok: bool]
   (let [value (value-keyword attr)
         indexes (slice db.avet 0)
@@ -1212,6 +1253,9 @@
                                     ops: resolved-ops
                                     tx_meta: resolved-meta
                                     tempids: resolved-tempids})))))
+        (when (= data.op ":db/retractEntity")
+          (append-retract-entity-ops! (addr resolved-ops) db e)
+          (continue))
         (if (= data.op ":db/retract")
           (arr.push! resolved-ops (tx-retract e data.a data.v))
           (arr.push! resolved-ops (tx-add e data.a data.v)))))

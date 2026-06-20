@@ -44,11 +44,13 @@ These are the core transaction forms Vev should match first:
 [:db/add e a v]
 [:db/retract e a v]
 [:db/retract e a]
+[:db/retractEntity e]
 ```
 
 Important compatibility notes from Datomic:
 
 - `:db/retract` may omit the value
+- `:db/retractEntity` retracts the entity's current facts
 - transaction data is authored as an ordered collection for convenience
 - semantically it is still one atomic information set
 
