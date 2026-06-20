@@ -89,12 +89,17 @@ Current Kvist proof:
 (v.pull db [:db/id :user/name :user/email] 1)
 ```
 
+It also supports reverse ref attrs in the Datomic style:
+
+```clojure
+(v.pull db [:_user/friend] 2)
+```
+
 Delay these until later unless they become immediately necessary:
 
 - nested map form for refs
 - wildcard `*`
 - recursion limits
-- reverse refs
 - attribute options and aliases
 - multi-entity pull-many helpers
 

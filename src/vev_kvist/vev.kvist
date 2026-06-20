@@ -1294,6 +1294,12 @@
         (arr.push! out row.values[0].text)))
     out))
 
+(defn reverse-attr? [attr: string] -> bool
+  (strings.has_prefix attr ":_"))
+
+(defn forward-attr-for-reverse [attr: string] -> string
+  (strings.concatenate ([]string [":" (slice attr 2)])))
+
 (defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
@@ -1304,14 +1310,28 @@
           (return datom.v true)))))
   (return (Value {}) false))
 
+(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, attr: string]
+  (let [forward-attr (forward-attr-for-reverse attr) :defer
+        ref-value (value-entity entity)
+        indexes (slice db.vaet 0)
+        low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index db indexes "vaet" 0 "" ref-value)]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (= datom.a forward-attr)
+                   (datom-current-at? db datom-index))
+          (arr.push! out^ (Pull-Attr {a: attr v: (value-entity datom.e)})))))))
+
 (defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
     (for [attr attrs]
       (if (= attr ":db/id")
         (arr.push! out (Pull-Attr {a: attr v: (value-entity entity)}))
-        (let [[value ok] (pull-attr-value db entity attr)]
-          (when ok
-            (arr.push! out (Pull-Attr {a: attr v: value}))))))
+        (if (reverse-attr? attr)
+          (pull-reverse-attr! (addr out) db entity attr)
+          (let [[value ok] (pull-attr-value db entity attr)]
+            (when ok
+              (arr.push! out (Pull-Attr {a: attr v: value})))))))
     (Pull-Result {e: entity attrs: out})))
 
 (defn query-name-by-email [email: string] -> Query
