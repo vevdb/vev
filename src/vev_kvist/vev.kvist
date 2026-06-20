@@ -72,6 +72,8 @@
   lookup_attr: string
   lookup_value: Value
   has_lookup_ref: bool
+  ident: string
+  has_ident: bool
   a: string
   v: Value
 })
@@ -264,6 +266,12 @@
 
 (defn retract-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
+
+(defn add-ident [ident: string, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" ident: ident has_ident: true a: a v: v}))
+
+(defn retract-ident [ident: string, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" ident: ident has_ident: true a: a v: v}))
 
 (defn tempid-lookup [tempids: []Tempid, tempid: string] -> [e: u64, ok: bool]
   (for [item tempids]
@@ -502,11 +510,17 @@
             (unquote e)
             (unquote (emit-attr a))
             (unquote (emit-literal-value v))))
-        (quasiquote
-          ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
-            (unquote e)
-            (unquote (emit-attr a))
-            (unquote (emit-literal-value v))))))))
+        (if (keyword? e)
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
+              (unquote (source e))
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v))))
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v)))))))))
 
 (defmacro- emit-tx-data-item [form]
   (if (vector? form)
@@ -1058,6 +1072,7 @@
     (for [data tx-data]
       (when (and (not data.has_tempid)
                  (not data.has_lookup_ref)
+                 (not data.has_ident)
                  (>= data.e next-e))
         (set! next-e (+ data.e 1))))
     (for [data tx-data]
@@ -1076,6 +1091,14 @@
               (set! e lookup-e)
               (return (Resolved-Tx {ok: false
                                     error: "lookup ref not found"
+                                    ops: resolved-ops
+                                    tempids: resolved-tempids})))))
+        (when data.has_ident
+          (let [[ident-e ident-ok] (schema-entity-for-attr db data.ident)]
+            (if ident-ok
+              (set! e ident-e)
+              (return (Resolved-Tx {ok: false
+                                    error: "ident not found"
                                     ops: resolved-ops
                                     tempids: resolved-tempids})))))
         (if (= data.op ":db/retract")
