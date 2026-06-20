@@ -91,6 +91,8 @@ Supported now:
 - entity refs as values
 - joins through repeated variables
 - positional `:in` variables
+- collection `:in` variables shaped like `[?x ...]`
+- pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
 - append-only transaction history with retractions hidden from current reads
 
@@ -114,6 +116,23 @@ Example:
    [?e :user/age ?age]
    [(> ?age 30)]]
   "ada@example.com")
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :in [?email ...]
+   :where
+   [?e :user/email ?email]
+   [?e :user/name ?name]]
+  ["ada@example.com" "grace@example.com"])
+```
+
+```clojure
+(v.q db
+  [:find (pull ?e [:db/id :user/name])
+   :where
+   [?e :user/email "ada@example.com"]])
 ```
 
 This is intentionally still a naive scan over current datoms. Indexes, text
