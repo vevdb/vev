@@ -166,6 +166,7 @@
 (defstruct Pull-Spec {
   a: string
   pattern: []Pull-Spec
+  limit: int
 })
 
 (defenum Query-Input-Kind [
@@ -779,14 +780,34 @@
       (let [attr (nth form 0)
             pattern (nth form 1)]
         (if (vector? pattern)
-          (quasiquote
-            (Pull-Spec {a: (unquote (pull-attr-source attr))
-                        pattern: ([]Pull-Spec [(splice (emit-pull-specs pattern))])}))
+          (if (= (count pattern) 3)
+            (if (keyword? (nth pattern 1))
+              (if (= (source (nth pattern 1)) ":limit")
+                (let [child-pattern (slice pattern 0 1)
+                      limit-form (nth pattern 2)]
+                  (quasiquote
+                    (pull-spec-limit
+                      (unquote (pull-attr-source attr))
+                      ([]Pull-Spec [(splice (emit-pull-specs child-pattern))])
+                      (unquote limit-form))))
+                (quasiquote
+                  (pull-spec
+                    (unquote (pull-attr-source attr))
+                    ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+              (quasiquote
+                (pull-spec
+                  (unquote (pull-attr-source attr))
+                  ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+            (quasiquote
+              (pull-spec
+                (unquote (pull-attr-source attr))
+                ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
           (error "nested pull attrs expect vector patterns")))
       (error "nested pull maps currently support one attr"))
     (quasiquote
-      (Pull-Spec {a: (unquote (pull-attr-source form))
-                  pattern: ([]Pull-Spec [])}))))
+      (pull-spec
+        (unquote (pull-attr-source form))
+        ([]Pull-Spec [])))))
 
 (defmacro- emit-pull-specs [forms]
   (if (= (count forms) 0)
@@ -1417,17 +1438,29 @@
           (return datom.v true)))))
   (return (Value {}) false))
 
-(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, attr: string]
-  (let [forward-attr (forward-attr-for-reverse attr) :defer
+(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
+  (let [forward-attr (forward-attr-for-reverse spec.a) :defer
         ref-value (value-entity entity)
         indexes (slice db.vaet 0)
         low (lower-bound-index db indexes "vaet" 0 "" ref-value)
-        high (upper-bound-index db indexes "vaet" 0 "" ref-value)]
+        high (upper-bound-index db indexes "vaet" 0 "" ref-value)
+        limit spec.limit
+        seen 0]
     (for [datom-index (slice indexes low high)]
       (let [datom db.datoms[datom-index]]
         (when (and (= datom.a forward-attr)
                    (datom-current-at? db datom-index))
-          (arr.push! out^ (Pull-Attr {a: attr v: (value-entity datom.e)})))))))
+          (let [children (make [dynamic]Pull-Attr)]
+            (when (> (count spec.pattern) 0)
+              (let [pulled (pull-pattern-spec db datom.e spec.pattern)]
+                (set! children pulled.attrs)))
+            (arr.push! out^ (Pull-Attr {a: spec.a
+                                        v: (value-entity datom.e)
+                                        attrs: children}))
+            (set! seen (+ seen 1))
+            (when (and (> limit 0)
+                       (>= seen limit))
+              (return))))))))
 
 (defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
   (let [indexes (slice db.eavt 0)
@@ -1450,7 +1483,7 @@
                                 attrs: (make [dynamic]Pull-Attr)}))
     (return))
   (when (reverse-attr? spec.a)
-    (pull-reverse-attr! out db entity spec.a)
+    (pull-reverse-attr! out db entity spec)
     (return))
   (let [[value ok] (pull-attr-value db entity spec.a)]
     (when ok
@@ -1468,7 +1501,13 @@
     (Pull-Result {e: entity attrs: out})))
 
 (defn flat-pull-spec [attr: string] -> Pull-Spec
-  (Pull-Spec {a: attr pattern: ([]Pull-Spec [])}))
+  (Pull-Spec {a: attr limit: 0 pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
+  (Pull-Spec {a: attr limit: 0 pattern: pattern}))
+
+(defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
+  (Pull-Spec {a: attr limit: limit pattern: pattern}))
 
 (defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
   (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]

@@ -240,7 +240,7 @@ These are part of Datomic pull and should remain syntax goals, but can be
 deferred:
 
 - recursion limits such as `{:person/friends 6}` or `{:person/friends ...}`
-- attr options such as `:as`, `:limit`, `:default`, `:xform`
+- richer attr options such as `:as`, `:default`, `:xform`
 
 Again, the rule is to defer support, not invent different syntax.
 

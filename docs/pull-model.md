@@ -101,6 +101,12 @@ And one-level nested ref maps:
 (v.pull db [{:user/friend [:user/name]}] 1)
 ```
 
+Nested reverse refs can use `:limit` to cap fan-out:
+
+```clojure
+(v.pull db [{:_user/friend [:user/name :limit 2]}] 2)
+```
+
 And wildcard attrs for current forward attrs:
 
 ```clojure
@@ -116,7 +122,8 @@ Use `pull-many` for the same pattern over multiple entity ids:
 Delay these until later unless they become immediately necessary:
 
 - recursion limits
-- attribute options and aliases
+- richer attribute options such as `:as`, `:default`, and `:xform`
+- option parsing for multiple child attrs, e.g. `[:db/id :user/name :limit 2]`
 
 This keeps the early implementation small while preserving syntax direction.
 
