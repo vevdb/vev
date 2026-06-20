@@ -87,6 +87,7 @@ Supported now:
 - `:find` with one or more variables
 - datom clauses shaped like `[e a v]`
 - variables in entity, attribute, and value positions
+- wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
 - entity refs as values
 - joins through repeated variables
@@ -103,6 +104,7 @@ Example:
   [:find ?e ?name
    :where
    [?e :user/email "ada@example.com"]
+   [?e :user/active _]
    [?e :user/name ?name]])
 ```
 
