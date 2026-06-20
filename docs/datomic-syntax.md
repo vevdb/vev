@@ -95,6 +95,9 @@ Examples:
  :user/name "Anna"}
 ```
 
+Current Vev supports map forms in tx data when `:db/id` is first, with one to
+three attrs after it. Nested component maps remain later work.
+
 ### Transaction metadata
 
 Vev should follow Datomic's reified transaction model as closely as
