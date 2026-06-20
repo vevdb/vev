@@ -8,6 +8,11 @@ Storage and foreign-language integration should sit at the edges.
 The semantic boundary should be functional in character even if the internal
 implementation uses local mutation.
 
+Vev is Kvist-first at the implementation level. Kvist is used as the primary
+source language because Vev's transaction, query, pull, and tooling surfaces are
+data-shaped and application-like. Generated Odin should remain readable, and
+plain Odin sidecars remain acceptable where they are the simpler low-level tool.
+
 The execution model should remain embedded-first without making a future server
 packaging mode unnecessarily difficult.
 
@@ -81,13 +86,18 @@ The semantic core should not become SQLite-shaped.
 
 This layer owns:
 
-- native public API
-- optional C ABI
+- native Kvist/Odin public API
+- C ABI for non-Kvist/Odin consumers
+- native library packaging
+- CLI binary for tooling and inspection
 - later JVM/Clojure wrapper
 - possible later server wrapper or daemon mode
 - possible later transactor/peer packaging model
 
 The C ABI should be a packaging boundary, not the internal architecture.
+
+The CLI binary should be a thin application over the same engine and native
+library path, not a separate database architecture.
 
 ## Embedded-first, server-possible
 

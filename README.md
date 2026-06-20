@@ -15,9 +15,13 @@ The intended identity is:
 - embedded
 - embedded-first, not embedded-only
 - local-first
+- Kvist-first implementation, with readable Odin output
 - immutable snapshot reads
 - Datomic-flavored Datalog query syntax
 - Datomic/DataScript transaction and pull syntax where practical
+- usable as an Odin/Kvist source package where that fits
+- distributed as a native library for other host languages
+- CLI binary for inspection, import/export, and operational tooling
 - durable storage behind a narrow adapter boundary
 - future multi-language consumption through a stable native ABI
 
@@ -42,13 +46,16 @@ The first implementation should optimize for:
 
 ## Design stance
 
-- engine core in plain Odin
+- engine core in Kvist, lowering to readable Odin
+- plain Odin remains acceptable for low-level sidecars where it is the clearer tool
 - Datomic/DataScript-compatible syntax at the API boundary wherever practical
 - parsed query AST inside the engine
 - functional semantics at the boundary, local mutation allowed in implementation
 - semantic boundaries should stay transportable as plain data
 - SQLite first for durable storage
-- C ABI later as a packaging boundary
+- native library as the primary non-Kvist/Odin integration artifact
+- C ABI later as the stable packaging boundary for other languages
+- CLI binary as a thin tool over the same engine/library
 - Clojure/JVM wrapper later on top of the native boundary
 
 ## Compatibility rule
