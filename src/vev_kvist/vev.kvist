@@ -1,6 +1,7 @@
 (package vev)
 
 (import arr "kvist:arr")
+(import strings "core:strings")
 
 (defenum Value-Kind [
   Entity
@@ -39,6 +40,11 @@
 
 (defstruct DB {
   datoms: [dynamic]Datom
+  current: [dynamic]int
+  eavt: [dynamic]int
+  aevt: [dynamic]int
+  avet: [dynamic]int
+  vaet: [dynamic]int
 })
 
 (defstruct Conn {
@@ -61,8 +67,15 @@
 (defstruct Tx-Data {
   op: string
   e: u64
+  tempid: string
+  has_tempid: bool
   a: string
   v: Value
+})
+
+(defstruct Tempid {
+  tempid: string
+  e: u64
 })
 
 (defstruct Tx-Meta {
@@ -76,6 +89,7 @@
   tx_data: [dynamic]Datom
   tx: u64
   tx_meta: [dynamic]Tx-Meta
+  tempids: [dynamic]Tempid
 })
 
 (defstruct Clause {
@@ -84,9 +98,24 @@
   v: Term
 })
 
+(defstruct Predicate {
+  op: string
+  left: Term
+  right: Term
+})
+
+(defstruct Pull-Find {
+  var: string
+  attrs: []string
+})
+
 (defstruct Query {
   find: [dynamic]string
+  inputs: [dynamic]string
+  collection_inputs: [dynamic]string
   clauses: [dynamic]Clause
+  predicates: [dynamic]Predicate
+  pulls: [dynamic]Pull-Find
 })
 
 (defstruct Var-Binding {
@@ -100,6 +129,7 @@
 
 (defstruct Result-Row {
   values: [dynamic]Value
+  pulls: [dynamic]Pull-Result
 })
 
 (defstruct Result-Set {
@@ -116,9 +146,16 @@
   attrs: [dynamic]Pull-Attr
 })
 
-(defn create-conn [] -> Conn
-  (Conn {db: (DB {})
-         next_tx: 1}))
+(defenum Query-Input-Kind [
+  Scalar
+  Collection
+])
+
+(defstruct Query-Input {
+  kind: Query-Input-Kind
+  value: Value
+  values: []Value
+})
 
 (defn value-entity [id: u64] -> Value
   (Value {kind: .Entity entity: id}))
@@ -134,6 +171,27 @@
 
 (defn value-keyword [text: string] -> Value
   (Value {kind: .Keyword text: text}))
+
+(defn string-less? [left: string, right: string] -> bool
+  (< (strings.compare left right) 0))
+
+(defn value-less? [left: Value, right: Value] -> bool
+  (if (not (= left.kind right.kind))
+    (< (int left.kind) (int right.kind))
+    (case left.kind
+      .Entity (< left.entity right.entity)
+      .String (string-less? left.text right.text)
+      .Int (< left.int_value right.int_value)
+      .Bool (and (not left.bool_value) right.bool_value)
+      .Keyword (string-less? left.text right.text)
+      :else false)))
+
+(defn value-compare [left: Value, right: Value] -> int
+  (if (value-less? left right)
+    -1
+    (if (value-less? right left)
+      1
+      0)))
 
 (defn term-value [value: Value] -> Term
   (Term {kind: .Value value: value}))
@@ -176,16 +234,233 @@
 (defn retract [e: u64, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" e: e a: a v: v}))
 
-(defn tx-data-op [data: Tx-Data] -> Tx-Op
-  (if (= data.op ":db/retract")
-    (tx-retract data.e data.a data.v)
-    (tx-add data.e data.a data.v)))
+(defn add-tempid [tempid: string, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a v: v}))
 
-(defn tx-data-ops [tx-data: []Tx-Data] -> [dynamic]Tx-Op
-  (let [ops (make [dynamic]Tx-Op 0 (count tx-data))]
+(defn retract-tempid [tempid: string, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" tempid: tempid has_tempid: true a: a v: v}))
+
+(defn tempid-lookup [tempids: []Tempid, tempid: string] -> [e: u64, ok: bool]
+  (for [item tempids]
+    (when (= item.tempid tempid)
+      (return item.e true)))
+  (return 0 false))
+
+(defn next-entity-id [datoms: []Datom] -> u64
+  (let [next: u64 1]
+    (for [datom datoms]
+      (when (>= datom.e next)
+        (set! next (+ datom.e 1))))
+    next))
+
+(defn resolve-tx-data-ops [datoms: []Datom, tx-data: []Tx-Data] -> [ops: [dynamic]Tx-Op, tempids: [dynamic]Tempid]
+  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
+        resolved-tempids (make [dynamic]Tempid)
+        next-e (next-entity-id datoms)]
     (for [data tx-data]
-      (arr.push! ops (tx-data-op data)))
-    ops))
+      (when (and (not data.has_tempid)
+                 (>= data.e next-e))
+        (set! next-e (+ data.e 1))))
+    (for [data tx-data]
+      (let [e data.e]
+        (when data.has_tempid
+          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
+            (if ok
+              (set! e existing)
+              (do
+                (set! e next-e)
+                (set! next-e (+ next-e 1))
+                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
+        (if (= data.op ":db/retract")
+          (arr.push! resolved-ops (tx-retract e data.a data.v))
+          (arr.push! resolved-ops (tx-add e data.a data.v)))))
+    (return resolved-ops resolved-tempids)))
+
+(defn value-equal? [left: Value, right: Value] -> bool
+  (if (not (= left.kind right.kind))
+    false
+    (case left.kind
+      .Entity (= left.entity right.entity)
+      .String (= left.text right.text)
+      .Int (= left.int_value right.int_value)
+      .Bool (= left.bool_value right.bool_value)
+      .Keyword (= left.text right.text)
+      :else false)))
+
+(defn datom-less-eavt? [datoms: []Datom, left-index: int, right-index: int] -> bool
+  (let [left datoms[left-index]
+        right datoms[right-index]]
+    (if (not (= left.e right.e))
+      (< left.e right.e)
+      (if (not (= left.a right.a))
+        (string-less? left.a right.a)
+        (if (not (value-equal? left.v right.v))
+          (value-less? left.v right.v)
+          (< left.tx right.tx))))))
+
+(defn datom-less-aevt? [datoms: []Datom, left-index: int, right-index: int] -> bool
+  (let [left datoms[left-index]
+        right datoms[right-index]]
+    (if (not (= left.a right.a))
+      (string-less? left.a right.a)
+      (if (not (= left.e right.e))
+        (< left.e right.e)
+        (if (not (value-equal? left.v right.v))
+          (value-less? left.v right.v)
+          (< left.tx right.tx))))))
+
+(defn datom-less-avet? [datoms: []Datom, left-index: int, right-index: int] -> bool
+  (let [left datoms[left-index]
+        right datoms[right-index]]
+    (if (not (= left.a right.a))
+      (string-less? left.a right.a)
+      (if (not (value-equal? left.v right.v))
+        (value-less? left.v right.v)
+        (if (not (= left.e right.e))
+          (< left.e right.e)
+          (< left.tx right.tx))))))
+
+(defn datom-less-vaet? [datoms: []Datom, left-index: int, right-index: int] -> bool
+  (let [left datoms[left-index]
+        right datoms[right-index]]
+    (if (not (value-equal? left.v right.v))
+      (value-less? left.v right.v)
+      (if (not (= left.a right.a))
+        (string-less? left.a right.a)
+        (if (not (= left.e right.e))
+          (< left.e right.e)
+          (< left.tx right.tx))))))
+
+(defn sort-datom-indexes! [indexes: ^[dynamic]int, datoms: []Datom, order: string]
+  // ponytail: insertion sort is fine for the in-memory proof; replace when benchmarks say index build dominates.
+  (for [i (arr.range 1 (count indexes^))]
+    (let [current indexes^[i]
+          j i]
+      (while (> j 0)
+        (let [previous indexes^[(- j 1)]
+              less false]
+          (if (= order "eavt")
+            (set! less (datom-less-eavt? datoms current previous))
+            (if (= order "aevt")
+              (set! less (datom-less-aevt? datoms current previous))
+              (if (= order "avet")
+                (set! less (datom-less-avet? datoms current previous))
+                (set! less (datom-less-vaet? datoms current previous)))))
+          (if less
+            (do
+              (set! indexes^[j] previous)
+              (set! j (- j 1)))
+            (break))))
+      (set! indexes^[j] current))))
+
+(defn build-index [datoms: []Datom, order: string] -> [dynamic]int
+  (let [indexes (make [dynamic]int 0 (count datoms))]
+    (for [_ index datoms]
+      (arr.push! indexes index))
+    (sort-datom-indexes! (addr indexes) datoms order)
+    indexes))
+
+(defn same-fact? [left: Datom, right: Datom] -> bool
+  (and (= left.e right.e)
+       (= left.a right.a)
+       (value-equal? left.v right.v)))
+
+(defn datom-current-in-log? [datoms: []Datom, index: int] -> bool
+  (let [datom datoms[index]]
+    (when (not datom.added)
+      (return false))
+    (for [later (slice datoms (+ index 1))]
+      (when (same-fact? datom later)
+        (return false)))
+    true))
+
+(defn build-current-index [datoms: []Datom] -> [dynamic]int
+  // ponytail: O(n^2) snapshot build is fine until transact benchmarks say otherwise.
+  (let [indexes (make [dynamic]int)]
+    (for [_ index datoms]
+      (when (datom-current-in-log? datoms index)
+        (arr.push! indexes index)))
+    indexes))
+
+(defn int-lower-bound [xs: []int, value: int] -> int
+  (let [low 0
+        high (count xs)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)]
+        (if (< xs[mid] value)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
+(defn build-db [datoms: [dynamic]Datom] -> DB
+  (let [slice-datoms (slice datoms 0)]
+    (DB {datoms: datoms
+         current: (build-current-index slice-datoms)
+         eavt: (build-index slice-datoms "eavt")
+         aevt: (build-index slice-datoms "aevt")
+         avet: (build-index slice-datoms "avet")
+         vaet: (build-index slice-datoms "vaet")})))
+
+(defn compare-eavt-prefix [datom: Datom, e: u64] -> int
+  (if (< datom.e e)
+    -1
+    (if (> datom.e e) 1 0)))
+
+(defn compare-eavt-entity-attr-prefix [datom: Datom, e: u64, a: string] -> int
+  (let [e-compare (compare-eavt-prefix datom e)]
+    (if (not (= e-compare 0))
+      e-compare
+      (strings.compare datom.a a))))
+
+(defn compare-aevt-prefix [datom: Datom, a: string] -> int
+  (strings.compare datom.a a))
+
+(defn compare-avet-prefix [datom: Datom, a: string, v: Value] -> int
+  (let [a-compare (strings.compare datom.a a)]
+    (if (not (= a-compare 0))
+      a-compare
+      (value-compare datom.v v))))
+
+(defn compare-vaet-prefix [datom: Datom, v: Value] -> int
+  (value-compare datom.v v))
+
+(defn datom-prefix-compare [db: DB, order: string, datom-index: int, e: u64, a: string, v: Value] -> int
+  (let [datom db.datoms[datom-index]]
+    (if (= order "eavt")
+      (compare-eavt-prefix datom e)
+      (if (= order "eavt-ea")
+        (compare-eavt-entity-attr-prefix datom e a)
+        (if (= order "aevt")
+          (compare-aevt-prefix datom a)
+          (if (= order "avet")
+            (compare-avet-prefix datom a v)
+            (compare-vaet-prefix datom v)))))))
+
+(defn lower-bound-index [db: DB, indexes: []int, order: string, e: u64, a: string, v: Value] -> int
+  (let [low 0
+        high (count indexes)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            compare (datom-prefix-compare db order indexes[mid] e a v)]
+        (if (< compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
+(defn upper-bound-index [db: DB, indexes: []int, order: string, e: u64, a: string, v: Value] -> int
+  (let [low 0
+        high (count indexes)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            compare (datom-prefix-compare db order indexes[mid] e a v)]
+        (if (<= compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
+(defn create-conn [] -> Conn
+  (Conn {db: (build-db (make [dynamic]Datom))
+         next_tx: 1}))
 
 (defmacro- emit-literal-value [form]
   (if (string? form)
@@ -215,14 +490,16 @@
         (if (keyword? op)
           (if (= (source op) ":db/retract")
             (quasiquote
-              (retract (unquote e)
-                       (unquote (emit-attr a))
-                       (unquote (emit-literal-value v))))
+              ((unquote (if (string? e) (quasiquote retract-tempid) (quasiquote retract)))
+                (unquote e)
+                (unquote (emit-attr a))
+                (unquote (emit-literal-value v))))
             (if (= (source op) ":db/add")
               (quasiquote
-                (add (unquote e)
-                     (unquote (emit-attr a))
-                     (unquote (emit-literal-value v))))
+                ((unquote (if (string? e) (quasiquote add-tempid) (quasiquote add)))
+                  (unquote e)
+                  (unquote (emit-attr a))
+                  (unquote (emit-literal-value v))))
               (error "tx-data operation must be :db/add or :db/retract")))
           (error "tx-data operation must be :db/add or :db/retract")))
       (error "tx-data vectors must have shape [:db/add e :attr value]"))
@@ -243,34 +520,103 @@
     (quasiquote (unquote (source form)))
     (error ":find entries must be variables")))
 
+(defmacro- pull-find? [form]
+  (if (list? form)
+    (if (= (count form) 3)
+      (if (symbol? (first form))
+        (= (source (first form)) "pull")
+        false)
+      false)
+    false))
+
 (defmacro- emit-find-vars [forms]
   (if (= (count forms) 0)
     (forms)
-    (forms
-      (emit-find-var (first forms))
-      (emit-find-vars (rest forms)))))
+    (if (pull-find? (first forms))
+      (emit-find-vars (rest forms))
+      (forms
+        (emit-find-var (first forms))
+        (emit-find-vars (rest forms))))))
 
-(defmacro- datalog-find-items [forms]
+(defmacro- input-collection? [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (if (symbol? (nth form 1))
+        (= (source (nth form 1)) "...")
+        false)
+      false)
+    false))
+
+(defmacro- emit-input-var [form]
+  (if (input-collection? form)
+    (emit-find-var (nth form 0))
+    (emit-find-var form)))
+
+(defmacro- emit-input-vars [forms]
   (if (= (count forms) 0)
-    (error "datalog query expects :where")
+    (forms)
+    (if (input-collection? (first forms))
+      (emit-input-vars (rest forms))
+      (forms
+        (emit-input-var (first forms))
+        (emit-input-vars (rest forms))))))
+
+(defmacro- emit-collection-input-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (input-collection? (first forms))
+      (forms
+        (emit-input-var (first forms))
+        (emit-collection-input-vars (rest forms)))
+      (emit-collection-input-vars (rest forms)))))
+
+(defmacro- datalog-items-before [forms marker]
+  (if (= (count forms) 0)
+    (error (str "datalog query expects " marker))
     (let [head (first forms)]
       (if (keyword? head)
-        (if (= (source head) ":where")
+        (if (= (source head) marker)
           (forms)
-          (error "datalog query expects :where after :find variables"))
+          (error (str "datalog query expects " marker)))
         (forms
           head
-          (datalog-find-items (rest forms)))))))
+          (datalog-items-before (rest forms) marker))))))
 
-(defmacro- datalog-where-items [forms]
+(defmacro- datalog-items-after [forms marker]
   (if (= (count forms) 0)
-    (error "datalog query expects :where")
+    (error (str "datalog query expects " marker))
     (let [head (first forms)]
       (if (keyword? head)
-        (if (= (source head) ":where")
+        (if (= (source head) marker)
           (rest forms)
-          (datalog-where-items (rest forms)))
-        (datalog-where-items (rest forms))))))
+        (datalog-items-after (rest forms) marker))
+        (datalog-items-after (rest forms) marker)))))
+
+(defmacro- datalog-has-marker-before? [forms marker stop]
+  (if (= (count forms) 0)
+    false
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) marker)
+          true
+          (if (= (source head) stop)
+            false
+            (datalog-has-marker-before? (rest forms) marker stop)))
+        (datalog-has-marker-before? (rest forms) marker stop)))))
+
+(defmacro- datalog-find-items [forms]
+  (if (datalog-has-marker-before? forms ":in" ":where")
+    (datalog-items-before forms ":in")
+    (datalog-items-before forms ":where")))
+
+(defmacro- datalog-input-items [forms]
+  (if (datalog-has-marker-before? forms ":in" ":where")
+    (let [after-in (datalog-items-after forms ":in")]
+      (datalog-items-before after-in ":where"))
+    (forms)))
+
+(defmacro- datalog-where-items [forms]
+  (datalog-items-after forms ":where"))
 
 (defmacro- emit-entity-term [form]
   (if (symbol? form)
@@ -311,12 +657,72 @@
       (error "datalog clauses must have shape [e a v]"))
     (error "datalog :where entries must be clauses")))
 
+(defmacro- predicate-clause? [form]
+  (if (vector? form)
+    (if (= (count form) 1)
+      (list? (first form))
+      false)
+    false))
+
+(defmacro- emit-datalog-predicate [form]
+  (if (predicate-clause? form)
+    (let [expr (first form)]
+      (if (= (count expr) 3)
+        (quasiquote
+          (Predicate {op: (unquote (source (nth expr 0)))
+                      left: (unquote (emit-value-term (nth expr 1)))
+                      right: (unquote (emit-value-term (nth expr 2)))}))
+        (error "predicate clauses must have shape [(op left right)]")))
+    (error "predicate clauses must have shape [(op left right)]")))
+
 (defmacro- emit-datalog-clauses [forms]
   (if (= (count forms) 0)
     (forms)
+    (if (predicate-clause? (first forms))
+      (emit-datalog-clauses (rest forms))
+      (forms
+        (emit-datalog-clause (first forms))
+        (emit-datalog-clauses (rest forms))))))
+
+(defmacro- emit-datalog-predicates [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (predicate-clause? (first forms))
+      (forms
+        (emit-datalog-predicate (first forms))
+        (emit-datalog-predicates (rest forms)))
+      (emit-datalog-predicates (rest forms)))))
+
+(defmacro- emit-pull-attrs [forms]
+  (if (= (count forms) 0)
+    (forms)
     (forms
-      (emit-datalog-clause (first forms))
-      (emit-datalog-clauses (rest forms)))))
+      (if (keyword? (first forms))
+        (source (first forms))
+        (if (string? (first forms))
+          (text (first forms))
+          (error "pull patterns currently accept keyword or string attrs")))
+      (emit-pull-attrs (rest forms)))))
+
+(defmacro- emit-pull-find [form]
+  (if (pull-find? form)
+    (let [var (nth form 1)
+          pattern (nth form 2)]
+      (if (vector? pattern)
+        (quasiquote
+          (Pull-Find {var: (unquote (emit-find-var var))
+                      attrs: ([]string [(splice (emit-pull-attrs pattern))])}))
+        (error "find pull expects a literal vector pattern")))
+    (error ":find pull expressions must be (pull ?e [...])")))
+
+(defmacro- emit-pull-finds [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (pull-find? (first forms))
+      (forms
+        (emit-pull-find (first forms))
+        (emit-pull-finds (rest forms)))
+      (emit-pull-finds (rest forms)))))
 
 (defmacro datalog [form]
   (if (vector? form)
@@ -325,19 +731,64 @@
         (if (= (source head) ":find")
           (let [tail (rest form)
                 find-items (datalog-find-items tail)
+                input-items (datalog-input-items tail)
                 where-items (datalog-where-items tail)]
             (quasiquote
               (query
                 ([]string [(splice (emit-find-vars find-items))])
-                ([]Clause [(splice (emit-datalog-clauses where-items))]))))
+                ([]string [(splice (emit-input-vars input-items))])
+                ([]string [(splice (emit-collection-input-vars input-items))])
+                ([]Clause [(splice (emit-datalog-clauses where-items))])
+                ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                ([]Pull-Find [(splice (emit-pull-finds find-items))]))))
           (error "datalog query must start with :find"))
         (error "datalog query must start with :find")))
     (error "datalog expects a vector query")))
 
-(defmacro q [db query-form]
+(defmacro- emit-query-inputs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (quasiquote
+        (Query-Input {kind: .Scalar
+                      value: (unquote (emit-literal-value (first forms)))}))
+      (emit-query-inputs (rest forms)))))
+
+(defmacro- emit-query-input-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-literal-value (first forms))
+      (emit-query-input-values (rest forms)))))
+
+(defmacro- emit-query-input [form]
+  (if (vector? form)
+    (quasiquote
+      (Query-Input {kind: .Collection
+                    values: ([]Value [(splice (emit-query-input-values form))])}))
+    (quasiquote
+      (Query-Input {kind: .Scalar
+                    value: (unquote (emit-literal-value form))}))))
+
+(defmacro- emit-query-input-list [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-query-input (first forms))
+      (emit-query-input-list (rest forms)))))
+
+(defmacro q [db query-form & inputs]
   (if (vector? query-form)
-    (quasiquote (q-query (unquote db) (unquote (datalog query-form))))
-    (quasiquote (q-query (unquote db) (unquote query-form)))))
+    (quasiquote
+      (q-query-with-inputs
+        (unquote db)
+        (unquote (datalog query-form))
+        ([]Query-Input [(splice (emit-query-input-list inputs))])))
+    (quasiquote
+      (q-query-with-inputs
+        (unquote db)
+        (unquote query-form)
+        ([]Query-Input [(splice (emit-query-input-list inputs))])))))
 
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)
@@ -347,16 +798,34 @@
         ([]Tx-Data [(splice (emit-tx-data-items tx-form))])))
     (quasiquote (transact-tx-data (unquote conn) (unquote tx-form)))))
 
-(defn query [find: []string, clauses: []Clause] -> Query
+(defmacro pull [db pattern entity]
+  (if (vector? pattern)
+    (quasiquote
+      (pull-pattern
+        (unquote db)
+        (unquote entity)
+        ([]string [(splice (emit-pull-attrs pattern))])))
+    (quasiquote (pull-pattern (unquote db) (unquote entity) (unquote pattern)))))
+
+(defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, pulls: []Pull-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
-        owned-clauses (arr.into [dynamic]Clause clauses)]
-    (Query {find: owned-find clauses: owned-clauses})))
+        owned-inputs (arr.into [dynamic]string inputs)
+        owned-collection-inputs (arr.into [dynamic]string collection-inputs)
+        owned-clauses (arr.into [dynamic]Clause clauses)
+        owned-predicates (arr.into [dynamic]Predicate predicates)
+        owned-pulls (arr.into [dynamic]Pull-Find pulls)]
+    (Query {find: owned-find
+            inputs: owned-inputs
+            collection_inputs: owned-collection-inputs
+            clauses: owned-clauses
+            predicates: owned-predicates
+            pulls: owned-pulls})))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom (slice datoms 0)))
 
 (defn db [conn: ^Conn] -> DB
-  (DB {datoms: (clone-datoms conn^.db.datoms)}))
+  (build-db (clone-datoms conn^.db.datoms)))
 
 (defn clone-tx-meta [meta: []Tx-Meta] -> [dynamic]Tx-Meta
   (arr.into [dynamic]Tx-Meta meta))
@@ -364,17 +833,6 @@
 (defn clone-binding [binding: Binding] -> Binding
   (let [items (arr.into [dynamic]Var-Binding (slice binding.items 0))]
     (Binding {items: items})))
-
-(defn value-equal? [left: Value, right: Value] -> bool
-  (if (not (= left.kind right.kind))
-    false
-    (case left.kind
-      .Entity (= left.entity right.entity)
-      .String (= left.text right.text)
-      .Int (= left.int_value right.int_value)
-      .Bool (= left.bool_value right.bool_value)
-      .Keyword (= left.text right.text)
-      :else false)))
 
 (defn binding-lookup [binding: Binding, name: string] -> [value: Value, ok: bool]
   (for [item binding.items]
@@ -384,6 +842,35 @@
 
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
+
+(defn binding-from-inputs [names: []string, values: []Query-Input] -> Binding
+  (let [binding (Binding {})]
+    (for [name index names]
+      (when (and (< index (count values))
+                 (= values[index].kind .Scalar))
+        (binding-store! (addr binding) name values[index].value)))
+    binding))
+
+(defn expand-collection-input [bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (= input.kind .Collection)
+      (for [binding bindings]
+        (for [value input.values]
+          (let [next (clone-binding binding)]
+            (binding-store! (addr next) name value)
+            (arr.push! out next)))))
+    out))
+
+(defn bindings-from-inputs [query: Query, inputs: []Query-Input] -> [dynamic]Binding
+  (let [bindings ([dynamic]Binding [(binding-from-inputs (slice query.inputs 0) inputs)])
+        collection-offset (count query.inputs)]
+    (for [name index query.collection_inputs]
+      (let [input-index (+ collection-offset index)]
+        (when (< input-index (count inputs))
+          (let [next-bindings (expand-collection-input (slice bindings 0) name inputs[input-index])]
+            (delete bindings)
+            (set! bindings next-bindings)))))
+    bindings))
 
 (defn match-term? [term: Term, actual: Value, binding: ^Binding] -> bool
   (case term.kind
@@ -396,22 +883,39 @@
                true)))
     :else false))
 
-(defn same-fact? [left: Datom, right: Datom] -> bool
-  (and (= left.e right.e)
-       (= left.a right.a)
-       (value-equal? left.v right.v)))
+(defn resolve-term [term: Term, binding: Binding] -> [value: Value, ok: bool]
+  (case term.kind
+    .Value (return term.value true)
+    .Var (return (binding-lookup binding term.name))
+    :else (return (Value {}) false)))
 
-(defn datom-current-at? [datoms: []Datom, index: int] -> bool
-  (let [datom datoms[index]]
-    (when (not datom.added)
+(defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
+  (let [[left left-ok] (resolve-term predicate.left binding)
+        [right right-ok] (resolve-term predicate.right binding)]
+    (when (not (and left-ok right-ok))
       (return false))
-    (for [later (slice datoms (+ index 1))]
-      (when (same-fact? datom later)
-        (return false)))
-    true))
+    (if (= predicate.op "=")
+      (value-equal? left right)
+      (if (= predicate.op "!=")
+        (not (value-equal? left right))
+        (if (= predicate.op ">")
+          (value-less? right left)
+          (if (= predicate.op "<")
+            (value-less? left right)
+            (if (= predicate.op ">=")
+              (not (value-less? left right))
+              (if (= predicate.op "<=")
+                (not (value-less? right left))
+                false))))))))
 
-(defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
-  (let [before (DB {datoms: (clone-datoms conn^.db.datoms)})
+(defn datom-current-at? [db: DB, index: int] -> bool
+  (let [current (slice db.current 0)
+        found (int-lower-bound current index)]
+    (and (< found (count current))
+         (= current[found] index))))
+
+(defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count ops))
         tx conn^.next_tx]
@@ -423,21 +927,25 @@
                           added: (= op.kind .Add)})]
         (arr.push! after-datoms datom)
         (arr.push! tx-data datom)))
-    (let [after (DB {datoms: after-datoms})]
+    (let [after (build-db after-datoms)]
       (set! conn^.db after)
       (set! conn^.next_tx (+ conn^.next_tx 1))
       (Tx-Report {db_before: before
                   db_after: after
                   tx_data: tx-data
                   tx: tx
-                  tx_meta: (clone-tx-meta tx-meta)}))))
+                  tx_meta: (clone-tx-meta tx-meta)
+                  tempids: tempids}))))
+
+(defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
+  (transact-ops-with-tempids conn ops tx-meta (make [dynamic]Tempid)))
 
 (defn transact-ops [conn: ^Conn, ops: []Tx-Op] -> Tx-Report
   (transact-with-meta conn ops ([]Tx-Meta [])))
 
 (defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
-  (let [ops (tx-data-ops tx-data)
-        report (transact-ops conn ops)]
+  (let [[ops tempids] (resolve-tx-data-ops (slice conn^.db.datoms 0) tx-data)
+        report (transact-ops-with-tempids conn (slice ops 0) ([]Tx-Meta []) tempids)]
     (delete ops)
     report))
 
@@ -446,32 +954,149 @@
        (match-term? clause.a (value-keyword datom.a) binding)
        (match-term? clause.v datom.v binding)))
 
-(defn q-query [db: DB, query: Query] -> Result-Set
+(defn candidate-index-matches? [datom: Datom,
+                                e-value: Value, e-ok: bool,
+                                a-value: Value, a-ok: bool,
+                                v-value: Value, v-ok: bool] -> bool
+  (when e-ok
+    (when (not (and (= e-value.kind .Entity)
+                    (= datom.e e-value.entity)))
+      (return false)))
+  (when a-ok
+    (when (not (and (= a-value.kind .Keyword)
+                    (= datom.a a-value.text)))
+      (return false)))
+  (when v-ok
+    (when (not (value-equal? datom.v v-value))
+      (return false)))
+  true)
+
+(defn clause-selectivity-score [clause: Clause, binding: Binding] -> int
+  (let [[_ e-ok] (resolve-term clause.e binding)
+        [a-value a-ok] (resolve-term clause.a binding)
+        [_ v-ok] (resolve-term clause.v binding)]
+    (when (and a-ok (not (= a-value.kind .Keyword)))
+      (return 0))
+    (if (and e-ok a-ok)
+      1
+      (if (and a-ok v-ok)
+        2
+        (if e-ok
+          3
+          (if a-ok
+            4
+            (if v-ok 5 6)))))))
+
+(defn best-clause-index [clauses: []Clause, binding: Binding] -> int
+  (let [best 0
+        best-score (clause-selectivity-score clauses[0] binding)]
+    (for [i (arr.range 1 (count clauses))]
+      (let [score (clause-selectivity-score clauses[i] binding)]
+        (when (< score best-score)
+          (set! best i)
+          (set! best-score score))))
+    best))
+
+(defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
+  (let [[e-value e-ok] (resolve-term clause.e binding)
+        [a-value a-ok] (resolve-term clause.a binding)
+        [v-value v-ok] (resolve-term clause.v binding)
+        source: []int (slice db.eavt 0)
+        out (make [dynamic]int)]
+    (if (and e-ok a-ok)
+      (do
+        (when (not (and (= e-value.kind .Entity)
+                        (= a-value.kind .Keyword)))
+          (return out))
+        (let [indexes (slice db.eavt 0)
+              low (lower-bound-index db indexes "eavt-ea" e-value.entity a-value.text (Value {}))
+              high (upper-bound-index db indexes "eavt-ea" e-value.entity a-value.text (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (and a-ok v-ok))
+      (do
+        (when (not (= a-value.kind .Keyword))
+          (return out))
+        (let [indexes (slice db.avet 0)
+              low (lower-bound-index db indexes "avet" 0 a-value.text v-value)
+              high (upper-bound-index db indexes "avet" 0 a-value.text v-value)]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) e-ok)
+      (do
+        (when (not (= e-value.kind .Entity))
+          (return out))
+        (let [indexes (slice db.eavt 0)
+              low (lower-bound-index db indexes "eavt" e-value.entity "" (Value {}))
+              high (upper-bound-index db indexes "eavt" e-value.entity "" (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) a-ok)
+      (do
+        (when (not (= a-value.kind .Keyword))
+          (return out))
+        (let [indexes (slice db.aevt 0)
+              low (lower-bound-index db indexes "aevt" 0 a-value.text (Value {}))
+              high (upper-bound-index db indexes "aevt" 0 a-value.text (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) (not a-ok) v-ok)
+      (let [indexes (slice db.vaet 0)
+            low (lower-bound-index db indexes "vaet" 0 "" v-value)
+            high (upper-bound-index db indexes "vaet" 0 "" v-value)]
+        (set! source (slice indexes low high))))
+    (for [datom-index source]
+      (let [datom db.datoms[datom-index]]
+        (when (candidate-index-matches? datom e-value e-ok a-value a-ok v-value v-ok)
+          (arr.push! out datom-index))))
+    out))
+
+(defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
-        bindings ([dynamic]Binding [(Binding {})])]
-    (for [clause query.clauses]
+        bindings (bindings-from-inputs query inputs)
+        remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
+    (defer (delete remaining))
+    (while (and (> (count bindings) 0) (> (count remaining) 0))
+      (let [clause-index (best-clause-index (slice remaining 0) bindings[0])
+            clause remaining[clause-index]
+            next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [candidates (clause-candidate-indexes db clause binding)]
+            (for [datom-index candidates]
+              (let [datom datoms[datom-index]]
+                (when (datom-current-at? db datom-index)
+                  (let [candidate (clone-binding binding)]
+                    (when (datom-clause-matches? datom clause (addr candidate))
+                      (arr.push! next-bindings candidate))))))
+            (delete candidates)))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (arr.remove-ordered-at! remaining clause-index)))
+    (for [predicate query.predicates]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
-          (for [datom datom-index datoms]
-            (when (datom-current-at? datoms datom-index)
-              (let [candidate (clone-binding binding)]
-                (when (datom-clause-matches? datom clause (addr candidate))
-                  (arr.push! next-bindings candidate))))))
+          (when (predicate-matches? predicate binding)
+            (arr.push! next-bindings binding)))
         (delete bindings)
         (set! bindings next-bindings)))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
       (for [binding bindings]
         (let [values (make [dynamic]Value 0 (count query.find))
+              pulls (make [dynamic]Pull-Result 0 (count query.pulls))
               complete true]
           (for [name query.find]
             (let [[value ok] (binding-lookup binding name)]
               (if ok
                 (arr.push! values value)
                 (set! complete false))))
+          (for [pull-find query.pulls]
+            (let [[entity ok] (binding-lookup binding pull-find.var)]
+              (if (and ok (= entity.kind .Entity))
+                (arr.push! pulls (pull-pattern db entity.entity (slice pull-find.attrs 0)))
+                (set! complete false))))
           (when complete
-            (arr.push! rows (Result-Row {values: values})))))
+            (arr.push! rows (Result-Row {values: values pulls: pulls})))))
       (delete bindings)
       (Result-Set {rows: rows}))))
+
+(defn q-query [db: DB, query: Query] -> Result-Set
+  (q-query-with-inputs db query ([]Query-Input [])))
 
 (defn q-strings [db: DB, query: Query] -> [dynamic]string
   (let [result (q-query db query)
@@ -482,30 +1107,35 @@
         (arr.push! out row.values[0].text)))
     out))
 
-(defn pull-attr-value [datoms: []Datom, entity: u64, attr: string] -> [value: Value, ok: bool]
-  (for [datom datom-index datoms]
-    (when (and (= datom.e entity)
-               (= datom.a attr)
-               (datom-current-at? datoms datom-index))
-      (return datom.v true)))
+(defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (return datom.v true)))))
   (return (Value {}) false))
 
-(defn pull [db: DB, entity: u64, attrs: []string] -> Pull-Result
-  (let [datoms (slice db.datoms 0)
-        out (make [dynamic]Pull-Attr)]
+(defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
+  (let [out (make [dynamic]Pull-Attr)]
     (for [attr attrs]
       (if (= attr ":db/id")
         (arr.push! out (Pull-Attr {a: attr v: (value-entity entity)}))
-        (let [[value ok] (pull-attr-value datoms entity attr)]
+        (let [[value ok] (pull-attr-value db entity attr)]
           (when ok
             (arr.push! out (Pull-Attr {a: attr v: value}))))))
     (Pull-Result {e: entity attrs: out})))
 
 (defn query-name-by-email [email: string] -> Query
   (query ([]string ["name"])
+    ([]string [])
+    ([]string [])
     ([]Clause
       [(clause (term-var "e") ":user/email" (term-string email))
-       (clause (term-var "e") ":user/name" (term-var "name"))])))
+       (clause (term-var "e") ":user/name" (term-var "name"))])
+    ([]Predicate [])
+    ([]Pull-Find [])))
 
 (defn seed-people [conn: ^Conn] -> Tx-Report
   (transact conn

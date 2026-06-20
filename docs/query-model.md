@@ -90,6 +90,10 @@ Supported now:
 - literal entity, keyword, string, int, and bool values
 - entity refs as values
 - joins through repeated variables
+- positional `:in` variables
+- collection `:in` variables shaped like `[?x ...]`
+- pull expressions in `:find`
+- simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -102,8 +106,37 @@ Example:
    [?e :user/name ?name]])
 ```
 
-This is intentionally still a naive scan over current datoms. Indexes, text
-parsing, `:in`, predicates, rules, and pull remain later work.
+```clojure
+(v.q db
+  [:find ?e ?name
+   :in ?email
+   :where
+   [?e :user/email ?email]
+   [?e :user/name ?name]
+   [?e :user/age ?age]
+   [(> ?age 30)]]
+  "ada@example.com")
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :in [?email ...]
+   :where
+   [?e :user/email ?email]
+   [?e :user/name ?name]]
+  ["ada@example.com" "grace@example.com"])
+```
+
+```clojure
+(v.q db
+  [:find (pull ?e [:db/id :user/name])
+   :where
+   [?e :user/email "ada@example.com"]])
+```
+
+Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
+predicates remain later work.
 
 ## Pull model
 

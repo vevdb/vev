@@ -71,6 +71,11 @@ Examples:
 [:db/add :some/ident :flag/enabled true]
 ```
 
+Current Vev supports numeric entity ids and string tempids in list forms.
+Repeated use of the same tempid in one transaction resolves to the same entity
+and the transaction report exposes the resolved `tempids` mapping. Lookup refs
+and idents remain later work.
+
 ### Map forms
 
 Map forms are part of the Datomic transaction surface and should be supported

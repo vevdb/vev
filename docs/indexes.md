@@ -15,7 +15,7 @@ The initial in-memory model should be Datomic/DataScript-like:
 - EAVT
 - AEVT
 - AVET
-- optional VAET
+- VAET
 
 ## Why these indexes
 
@@ -92,12 +92,38 @@ semantics.
 
 ## In-memory phase
 
-The in-memory proof should choose the simplest structure that preserves:
+The current in-memory proof uses sorted arrays of datom indexes on each `DB`:
+
+- `db.current`
+- `db.eavt`
+- `db.aevt`
+- `db.avet`
+- `db.vaet`
+
+The append-only datom log remains the source of truth. Indexes are rebuilt when
+a new snapshot is produced.
+
+This chooses the simplest structure that preserves:
 
 - sorted iteration
 - exact lookup
 - range/prefix scans
 - immutable snapshot reasoning
+
+Lookup uses binary search and range slicing for the first supported prefixes:
+
+- `AVET(a, v)`
+- `EAVT(e, a)`
+- `EAVT(e)`
+- `AEVT(a)`
+- `VAET(v)`
+
+The matcher still verifies each candidate after slicing, so correctness stays
+central while the index layer grows.
+
+Current-fact checks use `db.current`, a snapshot-local sorted list of current
+datom indexes. It is rebuilt with each snapshot for now, then queried with
+binary search.
 
 The likely question is not "what is most clever?" but:
 
@@ -130,19 +156,25 @@ The query planner should be built with these assumptions in mind:
 - broad attribute scans like AEVT
 - reverse ref work may want VAET
 
+The current planner uses the binding shape already available at each step and
+runs the most constrained remaining clause first:
+
+- bound attribute + value
+- bound entity
+- bound attribute
+- bound value
+- unbound scan
+
 This is one reason the index model should be specified before the planner is
 implemented.
 
 ## First implementation rule
 
-Phase 1 should probably start with:
+Phase 1 starts with all four indexes so query and pull code can be written
+against the final logical index names.
 
-- EAVT
-- AEVT
-- AVET
+Run the current baseline with:
 
-and only add VAET when:
-
-- refs are solid
-- pull/backref needs are clearer
-- planner needs justify it
+```sh
+kvist run bench/indexes.kvist
+```
