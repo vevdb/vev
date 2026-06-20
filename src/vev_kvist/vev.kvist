@@ -87,6 +87,7 @@
   ok: bool
   error: string
   ops: [dynamic]Tx-Op
+  tx_meta: [dynamic]Tx-Meta
   tempids: [dynamic]Tempid
 })
 
@@ -1086,6 +1087,7 @@
 
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
+        resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
         next-e (next-entity-id (slice db.datoms 0))]
     (for [data tx-data]
@@ -1096,6 +1098,11 @@
         (set! next-e (+ data.e 1))))
     (for [data tx-data]
       (let [e data.e]
+        (when (and data.has_tempid
+                   (= data.tempid "datomic.tx"))
+          (when (= data.op ":db/add")
+            (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v})))
+          (continue))
         (when data.has_tempid
           (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
             (if ok
@@ -1111,6 +1118,7 @@
               (return (Resolved-Tx {ok: false
                                     error: "lookup ref not found"
                                     ops: resolved-ops
+                                    tx_meta: resolved-meta
                                     tempids: resolved-tempids})))))
         (when data.has_ident
           (let [[ident-e ident-ok] (schema-entity-for-attr db data.ident)]
@@ -1119,11 +1127,12 @@
               (return (Resolved-Tx {ok: false
                                     error: "ident not found"
                                     ops: resolved-ops
+                                    tx_meta: resolved-meta
                                     tempids: resolved-tempids})))))
         (if (= data.op ":db/retract")
           (arr.push! resolved-ops (tx-retract e data.a data.v))
           (arr.push! resolved-ops (tx-add e data.a data.v)))))
-    (Resolved-Tx {ok: true error: "" ops: resolved-ops tempids: resolved-tempids})))
+    (Resolved-Tx {ok: true error: "" ops: resolved-ops tx_meta: resolved-meta tempids: resolved-tempids})))
 
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
   (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
@@ -1211,10 +1220,12 @@
         resolved (resolve-tx-data before tx-data)]
     (when (not resolved.ok)
       (delete resolved.ops)
+      (delete resolved.tx_meta)
       (delete resolved.tempids)
       (return (failed-tx-report before resolved.error)))
-    (let [report (transact-ops-with-tempids conn (slice resolved.ops 0) ([]Tx-Meta []) resolved.tempids)]
+    (let [report (transact-ops-with-tempids conn (slice resolved.ops 0) (slice resolved.tx_meta 0) resolved.tempids)]
       (delete resolved.ops)
+      (delete resolved.tx_meta)
       report)))
 
 (defn datom-clause-matches? [datom: Datom, clause: Clause, binding: ^Binding] -> bool

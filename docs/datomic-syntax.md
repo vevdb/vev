@@ -123,6 +123,9 @@ Example:
 This should be the default transaction-context model for Vev instead of
 inventing a different metadata syntax.
 
+Current Vev supports this shape: facts targeting `"datomic.tx"` are returned
+as `tx_meta` entries instead of ordinary datoms.
+
 ## Query data
 
 The official Datomic query reference defines queries as Datalog data.
