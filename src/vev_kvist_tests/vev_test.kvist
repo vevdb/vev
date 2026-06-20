@@ -228,6 +228,34 @@
     (t.is (not second-email.ok))
     (t.is (= second-email.error "schema cardinality one conflict"))))
 
+(t.deftest transact-data-resolves-lookup-refs
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 100 :db/ident :user/email]
+                [:db/add 100 :db/valueType :db.type/string]
+                [:db/add 100 :db/unique :db.unique/identity]]))
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 1 :user/email "ada@example.com"]]))
+    (let [report (vev.transact
+                   (addr conn)
+                   [[:db/add [:user/email "ada@example.com"] :user/name "Ada"]])
+          missing (vev.transact
+                    (addr conn)
+                    [[:db/add [:user/email "missing@example.com"] :user/name "Missing"]])
+          result (vev.q report.db_after
+                   [:find ?name
+                    :where
+                    [1 :user/name ?name]])]
+      (t.is report.ok)
+      (t.is (= report.tx_data[0].e 1))
+      (t.is (= (count result.rows) 1))
+      (t.is (= result.rows[0].values[0].text "Ada"))
+      (t.is (not missing.ok))
+      (t.is (= missing.error "lookup ref not found")))))
+
 (t.deftest tx-data-macro-coerces-literal-values
   (defer (free_all context.allocator))
   (let [items (vev.tx-data

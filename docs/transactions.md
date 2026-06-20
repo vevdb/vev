@@ -147,6 +147,9 @@ This gives callers:
 String tempids in list-form tx data are resolved during transact and returned
 through `tempids`.
 
+Lookup refs in list-form entity positions resolve through `:db/unique` attrs.
+Missing lookup refs fail the report with `ok=false`.
+
 In the embedded single-process case, this is usually enough:
 
 1. transact

@@ -69,6 +69,9 @@
   e: u64
   tempid: string
   has_tempid: bool
+  lookup_attr: string
+  lookup_value: Value
+  has_lookup_ref: bool
   a: string
   v: Value
 })
@@ -76,6 +79,13 @@
 (defstruct Tempid {
   tempid: string
   e: u64
+})
+
+(defstruct Resolved-Tx {
+  ok: bool
+  error: string
+  ops: [dynamic]Tx-Op
+  tempids: [dynamic]Tempid
 })
 
 (defstruct Tx-Meta {
@@ -242,6 +252,12 @@
 (defn retract-tempid [tempid: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" tempid: tempid has_tempid: true a: a v: v}))
 
+(defn add-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
+
+(defn retract-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
+
 (defn tempid-lookup [tempids: []Tempid, tempid: string] -> [e: u64, ok: bool]
   (for [item tempids]
     (when (= item.tempid tempid)
@@ -254,29 +270,6 @@
       (when (>= datom.e next)
         (set! next (+ datom.e 1))))
     next))
-
-(defn resolve-tx-data-ops [datoms: []Datom, tx-data: []Tx-Data] -> [ops: [dynamic]Tx-Op, tempids: [dynamic]Tempid]
-  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
-        resolved-tempids (make [dynamic]Tempid)
-        next-e (next-entity-id datoms)]
-    (for [data tx-data]
-      (when (and (not data.has_tempid)
-                 (>= data.e next-e))
-        (set! next-e (+ data.e 1))))
-    (for [data tx-data]
-      (let [e data.e]
-        (when data.has_tempid
-          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
-            (if ok
-              (set! e existing)
-              (do
-                (set! e next-e)
-                (set! next-e (+ next-e 1))
-                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
-        (if (= data.op ":db/retract")
-          (arr.push! resolved-ops (tx-retract e data.a data.v))
-          (arr.push! resolved-ops (tx-add e data.a data.v)))))
-    (return resolved-ops resolved-tempids)))
 
 (defn value-equal? [left: Value, right: Value] -> bool
   (if (not (= left.kind right.kind))
@@ -482,6 +475,32 @@
       (text form)
       (error "tx-data attributes must be keywords or strings"))))
 
+(defmacro- lookup-ref? [form]
+  (if (vector? form)
+    (= (count form) 2)
+    false))
+
+(defmacro- emit-tx-data-call [op e a v]
+  (let [is-retract (= (source op) ":db/retract")]
+    (if (lookup-ref? e)
+      (quasiquote
+        ((unquote (if is-retract (quasiquote retract-lookup-ref) (quasiquote add-lookup-ref)))
+          (unquote (emit-attr (nth e 0)))
+          (unquote (emit-literal-value (nth e 1)))
+          (unquote (emit-attr a))
+          (unquote (emit-literal-value v))))
+      (if (string? e)
+        (quasiquote
+          ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value v))))
+        (quasiquote
+          ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value v))))))))
+
 (defmacro- emit-tx-data-item [form]
   (if (vector? form)
     (if (= (count form) 4)
@@ -491,17 +510,9 @@
             v (nth form 3)]
         (if (keyword? op)
           (if (= (source op) ":db/retract")
-            (quasiquote
-              ((unquote (if (string? e) (quasiquote retract-tempid) (quasiquote retract)))
-                (unquote e)
-                (unquote (emit-attr a))
-                (unquote (emit-literal-value v))))
+            (emit-tx-data-call op e a v)
             (if (= (source op) ":db/add")
-              (quasiquote
-                ((unquote (if (string? e) (quasiquote add-tempid) (quasiquote add)))
-                  (unquote e)
-                  (unquote (emit-attr a))
-                  (unquote (emit-literal-value v))))
+              (emit-tx-data-call op e a v)
               (error "tx-data operation must be :db/add or :db/retract")))
           (error "tx-data operation must be :db/add or :db/retract")))
       (error "tx-data vectors must have shape [:db/add e :attr value]"))
@@ -984,6 +995,55 @@
           (return true)))))
   false)
 
+(defn schema-unique? [db: DB, attr: string] -> bool
+  (let [[unique has-unique] (schema-keyword db attr ":db/unique")]
+    (and has-unique
+         (or (= unique ":db.unique/identity")
+             (= unique ":db.unique/value")))))
+
+(defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
+  (when (not (schema-unique? db attr))
+    (return 0 false))
+  (let [indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 attr value)
+        high (upper-bound-index db indexes "avet" 0 attr value)]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return db.datoms[datom-index].e true))))
+  (return 0 false))
+
+(defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
+  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
+        resolved-tempids (make [dynamic]Tempid)
+        next-e (next-entity-id (slice db.datoms 0))]
+    (for [data tx-data]
+      (when (and (not data.has_tempid)
+                 (not data.has_lookup_ref)
+                 (>= data.e next-e))
+        (set! next-e (+ data.e 1))))
+    (for [data tx-data]
+      (let [e data.e]
+        (when data.has_tempid
+          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
+            (if ok
+              (set! e existing)
+              (do
+                (set! e next-e)
+                (set! next-e (+ next-e 1))
+                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
+        (when data.has_lookup_ref
+          (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.lookup_attr data.lookup_value)]
+            (if lookup-ok
+              (set! e lookup-e)
+              (return (Resolved-Tx {ok: false
+                                    error: "lookup ref not found"
+                                    ops: resolved-ops
+                                    tempids: resolved-tempids})))))
+        (if (= data.op ":db/retract")
+          (arr.push! resolved-ops (tx-retract e data.a data.v))
+          (arr.push! resolved-ops (tx-add e data.a data.v)))))
+    (Resolved-Tx {ok: true error: "" ops: resolved-ops tempids: resolved-tempids})))
+
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
   (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
     (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
@@ -1066,10 +1126,15 @@
   (transact-with-meta conn ops ([]Tx-Meta [])))
 
 (defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
-  (let [[ops tempids] (resolve-tx-data-ops (slice conn^.db.datoms 0) tx-data)
-        report (transact-ops-with-tempids conn (slice ops 0) ([]Tx-Meta []) tempids)]
-    (delete ops)
-    report))
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        resolved (resolve-tx-data before tx-data)]
+    (when (not resolved.ok)
+      (delete resolved.ops)
+      (delete resolved.tempids)
+      (return (failed-tx-report before resolved.error)))
+    (let [report (transact-ops-with-tempids conn (slice resolved.ops 0) ([]Tx-Meta []) resolved.tempids)]
+      (delete resolved.ops)
+      report)))
 
 (defn datom-clause-matches? [datom: Datom, clause: Clause, binding: ^Binding] -> bool
   (and (match-term? clause.e (value-entity datom.e) binding)
