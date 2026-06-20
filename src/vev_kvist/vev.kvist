@@ -84,6 +84,8 @@
 })
 
 (defstruct Tx-Report {
+  ok: bool
+  error: string
   db_before: DB
   db_after: DB
   tx_data: [dynamic]Datom
@@ -914,11 +916,129 @@
     (and (< found (count current))
          (= current[found] index))))
 
+(defn schema-entity-for-attr [db: DB, attr: string] -> [e: u64, ok: bool]
+  (let [value (value-keyword attr)
+        indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 ":db/ident" value)
+        high (upper-bound-index db indexes "avet" 0 ":db/ident" value)]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return db.datoms[datom-index].e true))))
+  (return 0 false))
+
+(defn db-has-schema? [db: DB] -> bool
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn schema-keyword [db: DB, attr: string, schema-attr: string] -> [value: string, ok: bool]
+  (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
+    (when (not schema-ok)
+      (return "" false))
+    (let [indexes (slice db.eavt 0)
+          low (lower-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom db.datoms[datom-index]]
+          (when (and (datom-current-at? db datom-index)
+                     (= datom.v.kind .Keyword))
+            (return datom.v.text true))))))
+  (return "" false))
+
+(defn value-matches-schema-type? [value: Value, schema-type: string] -> bool
+  (if (= schema-type ":db.type/string")
+    (= value.kind .String)
+    (if (= schema-type ":db.type/long")
+      (= value.kind .Int)
+      (if (= schema-type ":db.type/boolean")
+        (= value.kind .Bool)
+        (if (= schema-type ":db.type/ref")
+          (= value.kind .Entity)
+          (if (= schema-type ":db.type/keyword")
+            (= value.kind .Keyword)
+            true))))))
+
+(defn cardinality-one-conflict? [db: DB, op: Tx-Op] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" op.e op.a (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" op.e op.a (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (value-equal? datom.v op.v)))
+          (return true)))))
+  false)
+
+(defn unique-conflict? [db: DB, op: Tx-Op] -> bool
+  (let [indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 op.a op.v)
+        high (upper-bound-index db indexes "avet" 0 op.a op.v)]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (= datom.e op.e)))
+          (return true)))))
+  false)
+
+(defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
+  (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
+    (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
+      (return false "schema value type mismatch")))
+  (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
+    (when (and has-cardinality
+               (= cardinality ":db.cardinality/one")
+               (cardinality-one-conflict? db op))
+      (return false "schema cardinality one conflict")))
+  (let [[unique has-unique] (schema-keyword db op.a ":db/unique")]
+    (when (and has-unique
+               (or (= unique ":db.unique/identity")
+                   (= unique ":db.unique/value"))
+               (unique-conflict? db op))
+      (return false "schema unique conflict")))
+  (return true ""))
+
+(defn validate-ops [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
+  (when (not (db-has-schema? before))
+    (return true ""))
+  (let [scratch-datoms (clone-datoms before.datoms)]
+    (defer (delete scratch-datoms))
+    (for [op ops]
+      (when (= op.kind .Add)
+        (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+              scratch (build-db scratch-owned)
+              [ok error] (validate-add-op scratch op)]
+          (when (not ok)
+            (return false error))))
+      (arr.push! scratch-datoms
+        (Datom {e: op.e
+                a: op.a
+                v: op.v
+                tx: 0
+                added: (= op.kind .Add)})))
+    (return true "")))
+
+(defn failed-tx-report [db: DB, error: string] -> Tx-Report
+  (Tx-Report {ok: false
+              error: error
+              db_before: db
+              db_after: db
+              tx_data: (make [dynamic]Datom)
+              tx: 0
+              tx_meta: (make [dynamic]Tx-Meta)
+              tempids: (make [dynamic]Tempid)}))
+
 (defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count ops))
         tx conn^.next_tx]
+    (let [[valid error] (validate-ops before ops)]
+      (when (not valid)
+        (return (failed-tx-report before error))))
     (for [op ops]
       (let [datom (Datom {e: op.e
                           a: op.a
@@ -932,6 +1052,8 @@
       (set! conn^.next_tx (+ conn^.next_tx 1))
       (Tx-Report {db_before: before
                   db_after: after
+                  ok: true
+                  error: ""
                   tx_data: tx-data
                   tx: tx
                   tx_meta: (clone-tx-meta tx-meta)

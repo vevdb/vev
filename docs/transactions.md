@@ -127,6 +127,8 @@ That is the default stance Vev should take first:
 
 The transaction result should expose a shape close to:
 
+- `ok`
+- `error`
 - `db_before`
 - `db_after`
 - `tx_data`
@@ -135,6 +137,7 @@ The transaction result should expose a shape close to:
 
 This gives callers:
 
+- commit success/failure without exceptions
 - immutable before/after snapshots
 - the exact fact delta
 - tempid resolution
