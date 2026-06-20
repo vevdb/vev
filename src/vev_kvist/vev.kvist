@@ -238,6 +238,102 @@
 (defmacro tx-data [& forms]
   (quasiquote ([]Tx-Data [(splice (emit-tx-data-items forms))])))
 
+(defmacro- emit-find-var [form]
+  (if (symbol? form)
+    (quasiquote (unquote (source form)))
+    (error ":find entries must be variables")))
+
+(defmacro- emit-find-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-find-vars (rest forms)))))
+
+(defmacro- datalog-find-items [forms]
+  (if (= (count forms) 0)
+    (error "datalog query expects :where")
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) ":where")
+          (forms)
+          (error "datalog query expects :where after :find variables"))
+        (forms
+          head
+          (datalog-find-items (rest forms)))))))
+
+(defmacro- datalog-where-items [forms]
+  (if (= (count forms) 0)
+    (error "datalog query expects :where")
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) ":where")
+          (rest forms)
+          (datalog-where-items (rest forms)))
+        (datalog-where-items (rest forms))))))
+
+(defmacro- emit-entity-term [form]
+  (if (symbol? form)
+    (quasiquote (term-var (unquote (source form))))
+    (if (int? form)
+      (quasiquote (term-entity (unquote form)))
+      (quasiquote (unquote form)))))
+
+(defmacro- emit-attr-term [form]
+  (if (symbol? form)
+    (quasiquote (term-var (unquote (source form))))
+    (if (keyword? form)
+      (quasiquote (term-keyword (unquote (source form))))
+      (if (string? form)
+        (quasiquote (term-keyword (unquote form)))
+        (quasiquote (unquote form))))))
+
+(defmacro- emit-value-term [form]
+  (if (symbol? form)
+    (quasiquote (term-var (unquote (source form))))
+    (if (string? form)
+      (quasiquote (term-string (unquote form)))
+      (if (int? form)
+        (quasiquote (term-int (unquote form)))
+        (if (bool? form)
+          (quasiquote (term-bool (unquote form)))
+          (if (keyword? form)
+            (quasiquote (term-keyword (unquote (source form))))
+            (quasiquote (unquote form))))))))
+
+(defmacro- emit-datalog-clause [form]
+  (if (vector? form)
+    (if (= (count form) 3)
+      (quasiquote
+        (Clause {e: (unquote (emit-entity-term (nth form 0)))
+                 a: (unquote (emit-attr-term (nth form 1)))
+                 v: (unquote (emit-value-term (nth form 2)))}))
+      (error "datalog clauses must have shape [e a v]"))
+    (error "datalog :where entries must be clauses")))
+
+(defmacro- emit-datalog-clauses [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-datalog-clause (first forms))
+      (emit-datalog-clauses (rest forms)))))
+
+(defmacro datalog [form]
+  (if (vector? form)
+    (let [head (first form)]
+      (if (keyword? head)
+        (if (= (source head) ":find")
+          (let [tail (rest form)
+                find-items (datalog-find-items tail)
+                where-items (datalog-where-items tail)]
+            (quasiquote
+              (query
+                ([]string [(splice (emit-find-vars find-items))])
+                ([]Clause [(splice (emit-datalog-clauses where-items))]))))
+          (error "datalog query must start with :find"))
+        (error "datalog query must start with :find")))
+    (error "datalog expects a vector query")))
+
 (defn query [find: []string, clauses: []Clause] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-clauses (arr.into [dynamic]Clause clauses)]

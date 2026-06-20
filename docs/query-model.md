@@ -78,8 +78,9 @@ examples so learning material transfers early.
 
 ## Current Kvist proof
 
-The current in-memory implementation does not parse query text yet. It builds
-queries as typed Kvist data and evaluates them directly.
+The current in-memory implementation does not parse query text yet. It has a
+Kvist query literal macro that lowers Datomic-shaped data to the typed `Query`
+representation and evaluates that directly.
 
 Supported now:
 
@@ -95,10 +96,11 @@ Example:
 
 ```clojure
 (v.q db
-  (v.query ([]string ["e" "name"])
-    ([]v.Clause
-      [(v.clause (v.term-var "e") ":user/email" (v.term-string "ada@example.com"))
-       (v.clause (v.term-var "e") ":user/name" (v.term-var "name"))])))
+  (v.datalog
+    [:find ?e ?name
+     :where
+     [?e :user/email "ada@example.com"]
+     [?e :user/name ?name]]))
 ```
 
 This is intentionally still a naive scan over current datoms. Indexes, text
@@ -124,5 +126,6 @@ The preferred project stance is:
 
 ## Literal Syntax Role
 
-Kvist may later provide a nicer surface for query literals, but that should be
-treated as optional syntax sugar over the same parser and AST.
+The Kvist literal macro is useful for native Kvist callers and for exercising
+Kvist's macro system, but it should remain syntax sugar over the same typed
+query representation that text/EDN parsing will eventually produce.
