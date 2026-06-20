@@ -98,7 +98,8 @@ Examples:
 ```
 
 Current Vev supports map forms in tx data when `:db/id` is first, with one to
-three attrs after it. Nested component maps remain later work.
+three attrs after it, and the common two-attr shape with `:db/id` last. Nested
+component maps and arbitrary key order remain later work.
 
 ### Transaction metadata
 
