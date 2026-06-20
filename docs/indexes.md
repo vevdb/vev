@@ -112,6 +112,7 @@ This chooses the simplest structure that preserves:
 Lookup uses binary search and range slicing for the first supported prefixes:
 
 - `AVET(a, v)`
+- `EAVT(e, a)`
 - `EAVT(e)`
 - `AEVT(a)`
 - `VAET(v)`

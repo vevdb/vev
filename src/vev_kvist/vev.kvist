@@ -333,6 +333,12 @@
     -1
     (if (> datom.e e) 1 0)))
 
+(defn compare-eavt-entity-attr-prefix [datom: Datom, e: u64, a: string] -> int
+  (let [e-compare (compare-eavt-prefix datom e)]
+    (if (not (= e-compare 0))
+      e-compare
+      (strings.compare datom.a a))))
+
 (defn compare-aevt-prefix [datom: Datom, a: string] -> int
   (strings.compare datom.a a))
 
@@ -349,11 +355,13 @@
   (let [datom db.datoms[datom-index]]
     (if (= order "eavt")
       (compare-eavt-prefix datom e)
-      (if (= order "aevt")
-        (compare-aevt-prefix datom a)
-        (if (= order "avet")
-          (compare-avet-prefix datom a v)
-          (compare-vaet-prefix datom v))))))
+      (if (= order "eavt-ea")
+        (compare-eavt-entity-attr-prefix datom e a)
+        (if (= order "aevt")
+          (compare-aevt-prefix datom a)
+          (if (= order "avet")
+            (compare-avet-prefix datom a v)
+            (compare-vaet-prefix datom v)))))))
 
 (defn lower-bound-index [db: DB, indexes: []int, order: string, e: u64, a: string, v: Value] -> int
   (let [low 0
@@ -903,13 +911,15 @@
         [_ v-ok] (resolve-term clause.v binding)]
     (when (and a-ok (not (= a-value.kind .Keyword)))
       (return 0))
-    (if (and a-ok v-ok)
+    (if (and e-ok a-ok)
       1
-      (if e-ok
+      (if (and a-ok v-ok)
         2
-        (if a-ok
+        (if e-ok
           3
-          (if v-ok 4 5))))))
+          (if a-ok
+            4
+            (if v-ok 5 6)))))))
 
 (defn best-clause-index [clauses: []Clause, binding: Binding] -> int
   (let [best 0
@@ -927,35 +937,44 @@
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
-    (if (and a-ok v-ok)
+    (if (and e-ok a-ok)
+      (do
+        (when (not (and (= e-value.kind .Entity)
+                        (= a-value.kind .Keyword)))
+          (return out))
+        (let [indexes (slice db.eavt 0)
+              low (lower-bound-index db indexes "eavt-ea" e-value.entity a-value.text (Value {}))
+              high (upper-bound-index db indexes "eavt-ea" e-value.entity a-value.text (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (and a-ok v-ok))
       (do
         (when (not (= a-value.kind .Keyword))
           (return out))
         (let [indexes (slice db.avet 0)
               low (lower-bound-index db indexes "avet" 0 a-value.text v-value)
               high (upper-bound-index db indexes "avet" 0 a-value.text v-value)]
-          (set! source (slice indexes low high))))
-      (if e-ok
-        (do
-          (when (not (= e-value.kind .Entity))
-            (return out))
-          (let [indexes (slice db.eavt 0)
-                low (lower-bound-index db indexes "eavt" e-value.entity "" (Value {}))
-                high (upper-bound-index db indexes "eavt" e-value.entity "" (Value {}))]
-            (set! source (slice indexes low high))))
-        (if a-ok
-          (do
-            (when (not (= a-value.kind .Keyword))
-              (return out))
-            (let [indexes (slice db.aevt 0)
-                  low (lower-bound-index db indexes "aevt" 0 a-value.text (Value {}))
-                  high (upper-bound-index db indexes "aevt" 0 a-value.text (Value {}))]
-              (set! source (slice indexes low high))))
-          (when v-ok
-            (let [indexes (slice db.vaet 0)
-                  low (lower-bound-index db indexes "vaet" 0 "" v-value)
-                  high (upper-bound-index db indexes "vaet" 0 "" v-value)]
-              (set! source (slice indexes low high)))))))
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) e-ok)
+      (do
+        (when (not (= e-value.kind .Entity))
+          (return out))
+        (let [indexes (slice db.eavt 0)
+              low (lower-bound-index db indexes "eavt" e-value.entity "" (Value {}))
+              high (upper-bound-index db indexes "eavt" e-value.entity "" (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) a-ok)
+      (do
+        (when (not (= a-value.kind .Keyword))
+          (return out))
+        (let [indexes (slice db.aevt 0)
+              low (lower-bound-index db indexes "aevt" 0 a-value.text (Value {}))
+              high (upper-bound-index db indexes "aevt" 0 a-value.text (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) (not a-ok) v-ok)
+      (let [indexes (slice db.vaet 0)
+            low (lower-bound-index db indexes "vaet" 0 "" v-value)
+            high (upper-bound-index db indexes "vaet" 0 "" v-value)]
+        (set! source (slice indexes low high))))
     (for [datom-index source]
       (let [datom db.datoms[datom-index]]
         (when (candidate-index-matches? datom e-value e-ok a-value a-ok v-value v-ok)
@@ -1023,13 +1042,13 @@
     out))
 
 (defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
-  (let [datoms (slice db.datoms 0)]
-  (for [datom-index db.eavt]
-    (let [datom datoms[datom-index]]
-    (when (and (= datom.e entity)
-               (= datom.a attr)
-               (datom-current-at? db datom-index))
-        (return datom.v true)))))
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (return datom.v true)))))
   (return (Value {}) false))
 
 (defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
