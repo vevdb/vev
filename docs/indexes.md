@@ -119,6 +119,9 @@ Lookup uses binary search and range slicing for the first supported prefixes:
 The matcher still verifies each candidate after slicing, so correctness stays
 central while the index layer grows.
 
+Current-fact checks also use the entity's `EAVT` range instead of scanning the
+whole datom log.
+
 The likely question is not "what is most clever?" but:
 
 "What is the simplest structure that lets query evaluation be honest?"
