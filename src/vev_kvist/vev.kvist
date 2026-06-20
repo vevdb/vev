@@ -170,6 +170,8 @@
   limit: int
   has_default: bool
   default_value: Value
+  has_alias: bool
+  alias: string
 })
 
 (defenum Query-Input-Kind [
@@ -793,6 +795,15 @@
         "*"
         (error "pull pattern attrs must be keywords, strings, or *")))))
 
+(defmacro- pull-alias-source [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (if (symbol? form)
+        (source form)
+        (error "pull :as expects keyword, string, or symbol alias")))))
+
 (defmacro- emit-pull-spec [form]
   (if (vector? form)
     (if (= (count form) 3)
@@ -802,9 +813,14 @@
             (pull-spec-default
               (unquote (pull-attr-source (nth form 0)))
               (unquote (emit-literal-value (nth form 2)))))
-          (error "pull option vectors currently support :default"))
+          (if (= (source (nth form 1)) ":as")
+            (quasiquote
+              (pull-spec-as
+                (unquote (pull-attr-source (nth form 0)))
+                (unquote (pull-alias-source (nth form 2)))))
+            (error "pull option vectors currently support :default and :as")))
         (error "pull option vectors expect a keyword option"))
-      (error "pull option vectors currently have shape [:attr :default value]"))
+      (error "pull option vectors currently have shape [:attr :default value] or [:attr :as alias]"))
   (if (brace? form)
     (if (= (count form) 2)
       (let [attr (nth form 0)
@@ -1485,7 +1501,7 @@
             (when (> (count spec.pattern) 0)
               (let [pulled (pull-pattern-spec db datom.e spec.pattern)]
                 (set! children pulled.attrs)))
-            (arr.push! out^ (Pull-Attr {a: spec.a
+            (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                         v: (value-entity datom.e)
                                         attrs: children}))
             (set! seen (+ seen 1))
@@ -1504,12 +1520,15 @@
                                       v: datom.v
                                       attrs: (make [dynamic]Pull-Attr)})))))))
 
+(defn pull-output-attr [spec: Pull-Spec] -> string
+  (if spec.has_alias spec.alias spec.a))
+
 (defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
   (when (= spec.a "*")
     (pull-wildcard! out db entity)
     (return))
   (when (= spec.a ":db/id")
-    (arr.push! out^ (Pull-Attr {a: spec.a
+    (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                 v: (value-entity entity)
                                 attrs: (make [dynamic]Pull-Attr)}))
     (return))
@@ -1523,9 +1542,9 @@
                    (> (count spec.pattern) 0))
           (let [pulled (pull-pattern-spec db value.entity spec.pattern)]
             (set! children pulled.attrs)))
-        (arr.push! out^ (Pull-Attr {a: spec.a v: value attrs: children})))
+        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec) v: value attrs: children})))
       (when spec.has_default
-        (arr.push! out^ (Pull-Attr {a: spec.a
+        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                     v: spec.default_value
                                     attrs: (make [dynamic]Pull-Attr)}))))))
 
@@ -1540,6 +1559,8 @@
               limit: 0
               has_default: false
               default_value: (Value {})
+              has_alias: false
+              alias: ""
               pattern: ([]Pull-Spec [])}))
 
 (defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
@@ -1547,6 +1568,8 @@
               limit: 0
               has_default: false
               default_value: (Value {})
+              has_alias: false
+              alias: ""
               pattern: pattern}))
 
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
@@ -1554,6 +1577,8 @@
               limit: limit
               has_default: false
               default_value: (Value {})
+              has_alias: false
+              alias: ""
               pattern: pattern}))
 
 (defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
@@ -1561,6 +1586,17 @@
               limit: 0
               has_default: true
               default_value: default-value
+              has_alias: false
+              alias: ""
+              pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec-as [attr: string, alias: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: true
+              alias: alias
               pattern: ([]Pull-Spec [])}))
 
 (defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
