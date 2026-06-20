@@ -238,7 +238,7 @@ Again, the rule is to defer support, not invent different syntax.
 ## Internal representation
 
 The compatibility rule applies at the boundary.
-Inside Vev, parsed forms should become typed Odin data structures:
+Inside Vev, parsed forms should become typed data structures:
 
 - tx data -> typed transaction input
 - query data -> typed query AST
@@ -247,7 +247,7 @@ Inside Vev, parsed forms should become typed Odin data structures:
 This is the intended split:
 
 - Datomic-compatible syntax outside
-- Odin-native structures inside
+- native typed structures inside
 
 ## First implementation priority
 

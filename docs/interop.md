@@ -5,8 +5,8 @@
 Interop should come after the semantic engine is coherent.
 
 Vev's primary source language is Kvist, with readable Odin output as a quality
-gate. Odin and Kvist users may consume Vev as a source package when that is the
-most direct integration path.
+gate. Kvist users may consume Vev as a source package when that is the most
+direct integration path.
 
 For other native platforms and host languages, the primary integration artifact
 should be a native library with a narrow C ABI. The CLI binary is for tooling,
@@ -18,7 +18,7 @@ rather than force a different internal model.
 
 The right order is:
 
-1. native Kvist/Odin API
+1. native Kvist API
 2. stable internal semantic model
 3. native library packaging
 4. narrow C ABI
@@ -29,7 +29,7 @@ The right order is:
 
 ## Native API
 
-The native Kvist/Odin API should be the first-class source-level surface.
+The native Kvist API should be the first-class source-level surface.
 
 It should expose:
 
@@ -42,7 +42,7 @@ It should expose:
 
 ## Native library and CLI
 
-The native library should be the primary binary artifact for non-Kvist/Odin
+The native library should be the primary binary artifact for non-Kvist
 consumers. It can link SQLite internally or depend on a platform SQLite library,
 but SQLite should remain an implementation detail behind Vev's storage adapter.
 

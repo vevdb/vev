@@ -10,7 +10,7 @@ The first useful end state is:
 - in-process
 - one local database file
 - Kvist-first engine source with readable Odin output
-- Odin/Kvist source-package use where appropriate
+- Kvist source-package use where appropriate
 - native library artifact for other host languages
 - CLI binary for tooling and inspection
 - immutable DB snapshots for reads
@@ -36,7 +36,7 @@ Neither should be treated as the current commitment.
 - a serious Kvist workload for building a real data-intensive application
 - a local-first database
 - a graph/query-oriented alternative to writing ad hoc SQL by hand
-- something that should be consumable from Kvist, Odin, Clojure, and other hosts
+- something that should be consumable from Kvist, Clojure, and other hosts
 - a native library first, with a thin CLI binary for operations and inspection
 - a system that should preserve functional-style semantics at its boundaries
 

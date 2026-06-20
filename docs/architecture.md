@@ -10,8 +10,8 @@ implementation uses local mutation.
 
 Vev is Kvist-first at the implementation level. Kvist is used as the primary
 source language because Vev's transaction, query, pull, and tooling surfaces are
-data-shaped and application-like. Generated Odin should remain readable, and
-plain Odin sidecars remain acceptable where they are the simpler low-level tool.
+data-shaped and application-like. Generated Odin should remain readable, but it
+is output, not a second engine prototype.
 
 The execution model should remain embedded-first without making a future server
 packaging mode unnecessarily difficult.
@@ -68,7 +68,7 @@ This layer owns:
 - validation and normalized query forms
 
 The canonical external query syntax should stay close to Datomic/DataScript.
-Inside the engine, queries should be compiled to typed Odin data structures.
+Inside the engine, queries should be compiled to typed data structures.
 
 ### 3. Storage adapter
 
@@ -86,8 +86,8 @@ The semantic core should not become SQLite-shaped.
 
 This layer owns:
 
-- native Kvist/Odin public API
-- C ABI for non-Kvist/Odin consumers
+- native Kvist public API
+- C ABI for non-Kvist consumers
 - native library packaging
 - CLI binary for tooling and inspection
 - later JVM/Clojure wrapper

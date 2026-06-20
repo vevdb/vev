@@ -12,7 +12,7 @@ The main rule is:
 
 - pull syntax at the boundary should stay as close as practical to
   Datomic/DataScript pull patterns
-- internal representation can be plain typed Odin data structures
+- internal representation can be plain typed data structures
 
 ## Why pull matters
 
@@ -60,7 +60,7 @@ be the engine's only internal representation.
 Recommended split:
 
 - external pull syntax: text
-- parsed pull pattern: typed Odin structure
+- parsed pull pattern: typed structure
 - execution API: parsed pull pattern
 - convenience API: parse-and-run helper
 
@@ -131,5 +131,5 @@ Preferred approach:
 - only introduce syntax differences when there is a concrete embedding or
   implementation reason
 
-The project should not create a Vev-specific pull language just because
-the engine is written in Odin.
+The project should not create a Vev-specific pull language just because Kvist
+makes a different surface easy to invent.

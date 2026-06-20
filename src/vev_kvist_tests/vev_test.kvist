@@ -1,0 +1,212 @@
+(package vev-tests)
+
+(import t "kvist:test")
+(import vev "../vev_kvist")
+
+(t.deftest transact-reports-snapshots-and-metadata
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.transact-with-meta
+                 (addr conn)
+                 ([]vev.Tx-Op
+                   [(vev.tx-add 1 ":user/email" (vev.value-string "a@example.com"))
+                    (vev.tx-add 1 ":user/name" (vev.value-string "Andreas"))])
+                 ([]vev.Tx-Meta
+                   [(vev.Tx-Meta {a: ":request/id" v: (vev.value-string "req-1")})
+                    (vev.Tx-Meta {a: ":tx/reason" v: (vev.value-keyword ":profile-edit")})]))]
+    (t.is (= report.tx 1))
+    (t.is (= conn.next_tx 2))
+    (t.is (= (count report.db_before.datoms) 0))
+    (t.is (= (count report.db_after.datoms) 2))
+    (t.is (= (count report.tx_data) 2))
+    (t.is (= (count report.tx_meta) 2))
+    (t.is (= report.tx_meta[0].a ":request/id"))
+    (let [meta-value report.tx_meta[0].v]
+      (t.is (= meta-value.text "req-1")))
+    (let [results (vev.q-strings report.db_after (vev.query-name-by-email "a@example.com"))]
+      (t.is (= (count results) 1))
+      (t.is (= results[0] "Andreas")))))
+
+(t.deftest query-joins-and-returns-multiple-columns
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        clauses ([]vev.Clause
+                  [(vev.clause (vev.term-var "e") ":user/name" (vev.term-var "name"))
+                   (vev.clause (vev.term-var "e") ":user/age" (vev.term-var "age"))
+                   (vev.clause (vev.term-var "e") ":user/active" (vev.term-bool true))])]
+    (let [query (vev.query ([]string ["e" "name" "age"]) clauses)
+          result (vev.q report.db_after query)]
+      (t.is (= (count result.rows) 1))
+      (t.is (= result.rows[0].values[0].kind .Entity))
+      (t.is (= result.rows[0].values[0].entity 1))
+      (t.is (= result.rows[0].values[1].text "Ada"))
+      (t.is (= result.rows[0].values[2].kind .Int))
+      (t.is (= result.rows[0].values[2].int_value 37)))))
+
+(t.deftest datalog-macro-builds-query-from-data-literal
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find ?e ?name
+                  :where
+                  [?e :user/name ?name]
+                  [?e :user/active true]])]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .Entity))
+    (t.is (= result.rows[0].values[0].entity 1))
+    (t.is (= result.rows[0].values[1].kind .String))
+    (t.is (= result.rows[0].values[1].text "Ada"))))
+
+(t.deftest datalog-macro-accepts-literal-entity-id
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find ?name
+                  :where
+                  [2 :user/name ?name]])]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .String))
+    (t.is (= result.rows[0].values[0].text "Grace"))))
+
+(t.deftest transact-data-uses-datomic-shaped-ops
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 1 :user/email "ada@example.com"]
+                  [:db/add 1 :user/name "Ada"]
+                  [:db/retract 1 :user/name "Ada"]])
+        results (vev.q-strings report.db_after (vev.query-name-by-email "ada@example.com"))]
+    (t.is (= (count report.tx_data) 3))
+    (t.is (= report.tx_data[0].added true))
+    (t.is (= report.tx_data[2].added false))
+    (t.is (= (count results) 0))))
+
+(t.deftest tx-data-macro-coerces-literal-values
+  (defer (free_all context.allocator))
+  (let [items (vev.tx-data
+                [:db/add 1 :user/name "Ada"]
+                [:db/add 1 :user/age 37]
+                [:db/add 1 :user/active true]
+                [:db/add 1 :user/status :user.status/active]
+                [:db/add 1 :user/friend (vev.value-entity 2)])]
+    (t.is (= (count items) 5))
+    (t.is (= items[0].op ":db/add"))
+    (t.is (= items[0].a ":user/name"))
+    (t.is (= items[0].v.kind .String))
+    (t.is (= items[1].v.kind .Int))
+    (t.is (= items[1].v.int_value 37))
+    (t.is (= items[2].v.kind .Bool))
+    (t.is (= items[2].v.bool_value true))
+    (t.is (= items[3].v.kind .Keyword))
+    (t.is (= items[3].v.text ":user.status/active"))
+    (t.is (= items[4].v.kind .Entity))
+    (t.is (= items[4].v.entity 2))))
+
+(t.deftest query-follows-ref-values
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        clauses ([]vev.Clause
+                  [(vev.clause (vev.term-var "e") ":user/name" (vev.term-string "Ada"))
+                   (vev.clause (vev.term-var "e") ":user/friend" (vev.term-var "friend"))
+                   (vev.clause (vev.term-var "friend") ":user/name" (vev.term-var "friend-name"))])]
+    (let [query (vev.query ([]string ["friend" "friend-name"]) clauses)
+          result (vev.q report.db_after query)]
+      (t.is (= (count result.rows) 1))
+      (t.is (= result.rows[0].values[0].kind .Entity))
+      (t.is (= result.rows[0].values[0].entity 2))
+      (t.is (= result.rows[0].values[1].text "Grace")))))
+
+(t.deftest query-can-bind-attributes
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        clauses ([]vev.Clause
+                  [(vev.Clause {e: (vev.term-entity 1)
+                                a: (vev.term-var "attr")
+                                v: (vev.term-string "Ada")})])]
+    (let [query (vev.query ([]string ["attr"]) clauses)
+          result (vev.q report.db_after query)]
+      (t.is (= (count result.rows) 1))
+      (t.is (= result.rows[0].values[0].kind .Keyword))
+      (t.is (= result.rows[0].values[0].text ":user/name")))))
+
+(t.deftest pull-returns-current-entity-attrs
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)]
+    (discard (vev.seed-people (addr conn)))
+    (let [report (vev.transact-ops
+                   (addr conn)
+                   ([]vev.Tx-Op
+                     [(vev.tx-retract 1 ":user/name" (vev.value-string "Ada"))]))
+        pulled (vev.pull report.db_after 1 ([]string [":db/id" ":user/name" ":user/age"]))]
+      (t.is (= pulled.e 1))
+      (t.is (= (count pulled.attrs) 2))
+      (t.is (= pulled.attrs[0].a ":db/id"))
+      (t.is (= pulled.attrs[0].v.kind .Entity))
+      (t.is (= pulled.attrs[0].v.entity 1))
+      (t.is (= pulled.attrs[1].a ":user/age"))
+      (t.is (= pulled.attrs[1].v.int_value 37)))))
+
+(t.deftest db-snapshot-survives-later-transacts
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)]
+    (discard (vev.transact-ops
+                   (addr conn)
+                   ([]vev.Tx-Op
+                 [(vev.tx-add 1 ":user/email" (vev.value-string "a@example.com"))])))
+    (let [snapshot (vev.db (addr conn))]
+      (discard (vev.transact-ops
+                   (addr conn)
+                   ([]vev.Tx-Op
+                   [(vev.tx-add 1 ":user/name" (vev.value-string "Andreas"))])))
+      (let [old-results (vev.q-strings snapshot (vev.query-name-by-email "a@example.com"))
+            current-results (vev.q-strings conn.db (vev.query-name-by-email "a@example.com"))]
+        (t.is (= (count old-results) 0))
+        (t.is (= (count current-results) 1))
+        (t.is (= current-results[0] "Andreas"))))))
+
+(t.deftest retract-hides-fact-from-current-queries
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)
+        add-report (vev.transact-ops
+                   (addr conn)
+                   ([]vev.Tx-Op
+                       [(vev.tx-add 1 ":user/email" (vev.value-string "a@example.com"))
+                        (vev.tx-add 1 ":user/name" (vev.value-string "Andreas"))]))
+        retract-report (vev.transact-ops
+                   (addr conn)
+                   ([]vev.Tx-Op
+                           [(vev.tx-retract 1 ":user/name" (vev.value-string "Andreas"))]))
+        old-results (vev.q-strings add-report.db_after (vev.query-name-by-email "a@example.com"))
+        current-results (vev.q-strings retract-report.db_after (vev.query-name-by-email "a@example.com"))]
+    (t.is (= (count old-results) 1))
+    (t.is (= old-results[0] "Andreas"))
+    (t.is (= (count current-results) 0))
+    (t.is (= (count retract-report.db_after.datoms) 3))
+    (t.is (= retract-report.tx_data[0].added false))))
+
+(t.deftest readd-after-retract-makes-fact-current-once
+  (defer (free_all context.allocator))
+  (let [conn: vev.Conn (vev.create-conn)]
+    (discard (vev.transact-ops
+                   (addr conn)
+                   ([]vev.Tx-Op
+                 [(vev.tx-add 1 ":user/email" (vev.value-string "a@example.com"))
+                  (vev.tx-add 1 ":user/name" (vev.value-string "Andreas"))])))
+    (discard (vev.transact-ops
+                   (addr conn)
+                   ([]vev.Tx-Op
+                 [(vev.tx-retract 1 ":user/name" (vev.value-string "Andreas"))])))
+    (let [report (vev.transact-ops
+                   (addr conn)
+                   ([]vev.Tx-Op
+                     [(vev.tx-add 1 ":user/name" (vev.value-string "Andreas"))]))
+          results (vev.q-strings report.db_after (vev.query-name-by-email "a@example.com"))]
+      (t.is (= (count results) 1))
+      (t.is (= results[0] "Andreas"))
+      (t.is (= (count report.db_after.datoms) 4)))))

@@ -19,7 +19,6 @@ Outcomes:
 
 Goal:
 
-- port the current semantic sketch to Kvist
 - create connection
 - transact small dataset
 - run simple query

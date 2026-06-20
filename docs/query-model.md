@@ -36,7 +36,7 @@ Recommended split:
 - convenience API: parse-and-run helper
 
 This split preserves Datomic syntax at the boundary while still letting the
-engine use direct Odin data structures internally.
+engine use direct typed data structures internally.
 
 ## Why not only strings?
 
@@ -50,7 +50,7 @@ Because the engine benefits from:
 
 ## Proposed native API shape
 
-At the Odin level:
+At the native API level:
 
 ```text
 parse_query(text) -> Query
@@ -76,6 +76,35 @@ Start with a tight slice:
 Phase 1 should bias toward the subset most commonly shown in Datomic/DataScript
 examples so learning material transfers early.
 
+## Current Kvist proof
+
+The current in-memory implementation does not parse query text yet. It has a
+Kvist query literal macro that lowers Datomic-shaped data to the typed `Query`
+representation and evaluates that directly.
+
+Supported now:
+
+- `:find` with one or more variables
+- datom clauses shaped like `[e a v]`
+- variables in entity, attribute, and value positions
+- literal entity, keyword, string, int, and bool values
+- entity refs as values
+- joins through repeated variables
+- append-only transaction history with retractions hidden from current reads
+
+Example:
+
+```clojure
+(v.q db
+  [:find ?e ?name
+   :where
+   [?e :user/email "ada@example.com"]
+   [?e :user/name ?name]])
+```
+
+This is intentionally still a naive scan over current datoms. Indexes, text
+parsing, `:in`, predicates, rules, and pull remain later work.
+
 ## Pull model
 
 Pull should be supported, but query and transact come first.
@@ -90,12 +119,12 @@ The pull syntax itself should stay close to Datomic/DataScript pull syntax.
 The preferred project stance is:
 
 - pull patterns at the boundary should look like familiar Datomic/DataScript patterns
-- internal representation can be a typed Odin pull AST
+- internal representation can be a typed pull AST
 - any unsupported pull feature should be documented as "not implemented yet",
   not replaced with a different surface syntax
 
-## OdinL role
+## Literal Syntax Role
 
-OdinL may later provide a nicer surface for query literals, but that should be
-treated as optional syntax sugar over the same parser and AST, not as the
-engine's primary representation.
+The Kvist literal macro is useful for native Kvist callers and for exercising
+Kvist's macro system, but it should remain syntax sugar over the same typed
+query representation that text/EDN parsing will eventually produce.

@@ -19,7 +19,7 @@ The intended identity is:
 - immutable snapshot reads
 - Datomic-flavored Datalog query syntax
 - Datomic/DataScript transaction and pull syntax where practical
-- usable as an Odin/Kvist source package where that fits
+- usable as a Kvist source package where that fits
 - distributed as a native library for other host languages
 - CLI binary for inspection, import/export, and operational tooling
 - durable storage behind a narrow adapter boundary
@@ -47,13 +47,13 @@ The first implementation should optimize for:
 ## Design stance
 
 - engine core in Kvist, lowering to readable Odin
-- plain Odin remains acceptable for low-level sidecars where it is the clearer tool
+- no separate Odin prototype; Kvist is the source of truth
 - Datomic/DataScript-compatible syntax at the API boundary wherever practical
 - parsed query AST inside the engine
 - functional semantics at the boundary, local mutation allowed in implementation
 - semantic boundaries should stay transportable as plain data
 - SQLite first for durable storage
-- native library as the primary non-Kvist/Odin integration artifact
+- native library as the primary non-Kvist integration artifact
 - C ABI later as the stable packaging boundary for other languages
 - CLI binary as a thin tool over the same engine/library
 - Clojure/JVM wrapper later on top of the native boundary
@@ -74,11 +74,10 @@ That means:
 - transaction metadata should follow the Datomic transaction-context model
 
 Divergence should only happen when native embedding constraints or implementation
-clarity require it, not because a new syntax looks nicer in Odin.
+clarity require it, not because a new syntax looks nicer in Kvist.
 
 ## Documents
 
-- [ODIN_NOTES.md](ODIN_NOTES.md)
 - [docs/scope.md](docs/scope.md)
 - [docs/architecture.md](docs/architecture.md)
 - [docs/data-model.md](docs/data-model.md)

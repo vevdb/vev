@@ -1,0 +1,520 @@
+(package vev)
+
+(import arr "kvist:arr")
+
+(defenum Value-Kind [
+  Entity
+  String
+  Int
+  Bool
+  Keyword
+])
+
+(defstruct Value {
+  kind: Value-Kind
+  entity: u64
+  text: string
+  int_value: i64
+  bool_value: bool
+})
+
+(defenum Term-Kind [
+  Value
+  Var
+])
+
+(defstruct Term {
+  kind: Term-Kind
+  value: Value
+  name: string
+})
+
+(defstruct Datom {
+  e: u64
+  a: string
+  v: Value
+  tx: u64
+  added: bool
+})
+
+(defstruct DB {
+  datoms: [dynamic]Datom
+})
+
+(defstruct Conn {
+  db: DB
+  next_tx: u64
+})
+
+(defenum Tx-Op-Kind [
+  Add
+  Retract
+])
+
+(defstruct Tx-Op {
+  kind: Tx-Op-Kind
+  e: u64
+  a: string
+  v: Value
+})
+
+(defstruct Tx-Data {
+  op: string
+  e: u64
+  a: string
+  v: Value
+})
+
+(defstruct Tx-Meta {
+  a: string
+  v: Value
+})
+
+(defstruct Tx-Report {
+  db_before: DB
+  db_after: DB
+  tx_data: [dynamic]Datom
+  tx: u64
+  tx_meta: [dynamic]Tx-Meta
+})
+
+(defstruct Clause {
+  e: Term
+  a: Term
+  v: Term
+})
+
+(defstruct Query {
+  find: [dynamic]string
+  clauses: [dynamic]Clause
+})
+
+(defstruct Var-Binding {
+  name: string
+  value: Value
+})
+
+(defstruct Binding {
+  items: [dynamic]Var-Binding
+})
+
+(defstruct Result-Row {
+  values: [dynamic]Value
+})
+
+(defstruct Result-Set {
+  rows: [dynamic]Result-Row
+})
+
+(defstruct Pull-Attr {
+  a: string
+  v: Value
+})
+
+(defstruct Pull-Result {
+  e: u64
+  attrs: [dynamic]Pull-Attr
+})
+
+(defn create-conn [] -> Conn
+  (Conn {db: (DB {})
+         next_tx: 1}))
+
+(defn value-entity [id: u64] -> Value
+  (Value {kind: .Entity entity: id}))
+
+(defn value-string [text: string] -> Value
+  (Value {kind: .String text: text}))
+
+(defn value-int [value: i64] -> Value
+  (Value {kind: .Int int_value: value}))
+
+(defn value-bool [value: bool] -> Value
+  (Value {kind: .Bool bool_value: value}))
+
+(defn value-keyword [text: string] -> Value
+  (Value {kind: .Keyword text: text}))
+
+(defn term-value [value: Value] -> Term
+  (Term {kind: .Value value: value}))
+
+(defn term-entity [id: u64] -> Term
+  (term-value (value-entity id)))
+
+(defn term-string [text: string] -> Term
+  (term-value (value-string text)))
+
+(defn term-int [value: i64] -> Term
+  (term-value (value-int value)))
+
+(defn term-bool [value: bool] -> Term
+  (term-value (value-bool value)))
+
+(defn term-keyword [text: string] -> Term
+  (term-value (value-keyword text)))
+
+(defn term-var [name: string] -> Term
+  (Term {kind: .Var name: name}))
+
+(defn attr [name: string] -> Term
+  (term-keyword name))
+
+(defn clause [e: Term, a: string, v: Term] -> Clause
+  (Clause {e: e
+           a: (attr a)
+           v: v}))
+
+(defn tx-add [e: u64, a: string, v: Value] -> Tx-Op
+  (Tx-Op {kind: .Add e: e a: a v: v}))
+
+(defn tx-retract [e: u64, a: string, v: Value] -> Tx-Op
+  (Tx-Op {kind: .Retract e: e a: a v: v}))
+
+(defn add [e: u64, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" e: e a: a v: v}))
+
+(defn retract [e: u64, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" e: e a: a v: v}))
+
+(defn tx-data-op [data: Tx-Data] -> Tx-Op
+  (if (= data.op ":db/retract")
+    (tx-retract data.e data.a data.v)
+    (tx-add data.e data.a data.v)))
+
+(defn tx-data-ops [tx-data: []Tx-Data] -> [dynamic]Tx-Op
+  (let [ops (make [dynamic]Tx-Op 0 (count tx-data))]
+    (for [data tx-data]
+      (arr.push! ops (tx-data-op data)))
+    ops))
+
+(defmacro- emit-literal-value [form]
+  (if (string? form)
+    (quasiquote (value-string (unquote form)))
+    (if (int? form)
+      (quasiquote (value-int (unquote form)))
+      (if (bool? form)
+        (quasiquote (value-bool (unquote form)))
+        (if (keyword? form)
+          (quasiquote (value-keyword (unquote (source form))))
+          (quasiquote (unquote form)))))))
+
+(defmacro- emit-attr [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (error "tx-data attributes must be keywords or strings"))))
+
+(defmacro- emit-tx-data-item [form]
+  (if (vector? form)
+    (if (= (count form) 4)
+      (let [op (nth form 0)
+            e (nth form 1)
+            a (nth form 2)
+            v (nth form 3)]
+        (if (keyword? op)
+          (if (= (source op) ":db/retract")
+            (quasiquote
+              (retract (unquote e)
+                       (unquote (emit-attr a))
+                       (unquote (emit-literal-value v))))
+            (if (= (source op) ":db/add")
+              (quasiquote
+                (add (unquote e)
+                     (unquote (emit-attr a))
+                     (unquote (emit-literal-value v))))
+              (error "tx-data operation must be :db/add or :db/retract")))
+          (error "tx-data operation must be :db/add or :db/retract")))
+      (error "tx-data vectors must have shape [:db/add e :attr value]"))
+    (error "tx-data expects vector forms like [:db/add e :attr value]")))
+
+(defmacro- emit-tx-data-items [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-tx-data-item (first forms))
+      (emit-tx-data-items (rest forms)))))
+
+(defmacro tx-data [& forms]
+  (quasiquote ([]Tx-Data [(splice (emit-tx-data-items forms))])))
+
+(defmacro- emit-find-var [form]
+  (if (symbol? form)
+    (quasiquote (unquote (source form)))
+    (error ":find entries must be variables")))
+
+(defmacro- emit-find-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-find-vars (rest forms)))))
+
+(defmacro- datalog-find-items [forms]
+  (if (= (count forms) 0)
+    (error "datalog query expects :where")
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) ":where")
+          (forms)
+          (error "datalog query expects :where after :find variables"))
+        (forms
+          head
+          (datalog-find-items (rest forms)))))))
+
+(defmacro- datalog-where-items [forms]
+  (if (= (count forms) 0)
+    (error "datalog query expects :where")
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) ":where")
+          (rest forms)
+          (datalog-where-items (rest forms)))
+        (datalog-where-items (rest forms))))))
+
+(defmacro- emit-entity-term [form]
+  (if (symbol? form)
+    (quasiquote (term-var (unquote (source form))))
+    (if (int? form)
+      (quasiquote (term-entity (unquote form)))
+      (quasiquote (unquote form)))))
+
+(defmacro- emit-attr-term [form]
+  (if (symbol? form)
+    (quasiquote (term-var (unquote (source form))))
+    (if (keyword? form)
+      (quasiquote (term-keyword (unquote (source form))))
+      (if (string? form)
+        (quasiquote (term-keyword (unquote form)))
+        (quasiquote (unquote form))))))
+
+(defmacro- emit-value-term [form]
+  (if (symbol? form)
+    (quasiquote (term-var (unquote (source form))))
+    (if (string? form)
+      (quasiquote (term-string (unquote form)))
+      (if (int? form)
+        (quasiquote (term-int (unquote form)))
+        (if (bool? form)
+          (quasiquote (term-bool (unquote form)))
+          (if (keyword? form)
+            (quasiquote (term-keyword (unquote (source form))))
+            (quasiquote (unquote form))))))))
+
+(defmacro- emit-datalog-clause [form]
+  (if (vector? form)
+    (if (= (count form) 3)
+      (quasiquote
+        (Clause {e: (unquote (emit-entity-term (nth form 0)))
+                 a: (unquote (emit-attr-term (nth form 1)))
+                 v: (unquote (emit-value-term (nth form 2)))}))
+      (error "datalog clauses must have shape [e a v]"))
+    (error "datalog :where entries must be clauses")))
+
+(defmacro- emit-datalog-clauses [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-datalog-clause (first forms))
+      (emit-datalog-clauses (rest forms)))))
+
+(defmacro datalog [form]
+  (if (vector? form)
+    (let [head (first form)]
+      (if (keyword? head)
+        (if (= (source head) ":find")
+          (let [tail (rest form)
+                find-items (datalog-find-items tail)
+                where-items (datalog-where-items tail)]
+            (quasiquote
+              (query
+                ([]string [(splice (emit-find-vars find-items))])
+                ([]Clause [(splice (emit-datalog-clauses where-items))]))))
+          (error "datalog query must start with :find"))
+        (error "datalog query must start with :find")))
+    (error "datalog expects a vector query")))
+
+(defmacro q [db query-form]
+  (if (vector? query-form)
+    (quasiquote (q-query (unquote db) (unquote (datalog query-form))))
+    (quasiquote (q-query (unquote db) (unquote query-form)))))
+
+(defmacro transact [conn tx-form]
+  (if (vector? tx-form)
+    (quasiquote
+      (transact-tx-data
+        (unquote conn)
+        ([]Tx-Data [(splice (emit-tx-data-items tx-form))])))
+    (quasiquote (transact-tx-data (unquote conn) (unquote tx-form)))))
+
+(defn query [find: []string, clauses: []Clause] -> Query
+  (let [owned-find (arr.into [dynamic]string find)
+        owned-clauses (arr.into [dynamic]Clause clauses)]
+    (Query {find: owned-find clauses: owned-clauses})))
+
+(defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
+  (arr.into [dynamic]Datom (slice datoms 0)))
+
+(defn db [conn: ^Conn] -> DB
+  (DB {datoms: (clone-datoms conn^.db.datoms)}))
+
+(defn clone-tx-meta [meta: []Tx-Meta] -> [dynamic]Tx-Meta
+  (arr.into [dynamic]Tx-Meta meta))
+
+(defn clone-binding [binding: Binding] -> Binding
+  (let [items (arr.into [dynamic]Var-Binding (slice binding.items 0))]
+    (Binding {items: items})))
+
+(defn value-equal? [left: Value, right: Value] -> bool
+  (if (not (= left.kind right.kind))
+    false
+    (case left.kind
+      .Entity (= left.entity right.entity)
+      .String (= left.text right.text)
+      .Int (= left.int_value right.int_value)
+      .Bool (= left.bool_value right.bool_value)
+      .Keyword (= left.text right.text)
+      :else false)))
+
+(defn binding-lookup [binding: Binding, name: string] -> [value: Value, ok: bool]
+  (for [item binding.items]
+    (when (= item.name name)
+      (return item.value true)))
+  (return (Value {}) false))
+
+(defn binding-store! [binding: ^Binding, name: string, value: Value]
+  (arr.push! binding^.items (Var-Binding {name: name value: value})))
+
+(defn match-term? [term: Term, actual: Value, binding: ^Binding] -> bool
+  (case term.kind
+    .Value (value-equal? term.value actual)
+    .Var (let [[existing ok] (binding-lookup binding^ term.name)]
+           (if ok
+             (value-equal? existing actual)
+             (do
+               (binding-store! binding term.name actual)
+               true)))
+    :else false))
+
+(defn same-fact? [left: Datom, right: Datom] -> bool
+  (and (= left.e right.e)
+       (= left.a right.a)
+       (value-equal? left.v right.v)))
+
+(defn datom-current-at? [datoms: []Datom, index: int] -> bool
+  (let [datom datoms[index]]
+    (when (not datom.added)
+      (return false))
+    (for [later (slice datoms (+ index 1))]
+      (when (same-fact? datom later)
+        (return false)))
+    true))
+
+(defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
+  (let [before (DB {datoms: (clone-datoms conn^.db.datoms)})
+        after-datoms (clone-datoms conn^.db.datoms)
+        tx-data (make [dynamic]Datom 0 (count ops))
+        tx conn^.next_tx]
+    (for [op ops]
+      (let [datom (Datom {e: op.e
+                          a: op.a
+                          v: op.v
+                          tx: tx
+                          added: (= op.kind .Add)})]
+        (arr.push! after-datoms datom)
+        (arr.push! tx-data datom)))
+    (let [after (DB {datoms: after-datoms})]
+      (set! conn^.db after)
+      (set! conn^.next_tx (+ conn^.next_tx 1))
+      (Tx-Report {db_before: before
+                  db_after: after
+                  tx_data: tx-data
+                  tx: tx
+                  tx_meta: (clone-tx-meta tx-meta)}))))
+
+(defn transact-ops [conn: ^Conn, ops: []Tx-Op] -> Tx-Report
+  (transact-with-meta conn ops ([]Tx-Meta [])))
+
+(defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
+  (let [ops (tx-data-ops tx-data)
+        report (transact-ops conn ops)]
+    (delete ops)
+    report))
+
+(defn datom-clause-matches? [datom: Datom, clause: Clause, binding: ^Binding] -> bool
+  (and (match-term? clause.e (value-entity datom.e) binding)
+       (match-term? clause.a (value-keyword datom.a) binding)
+       (match-term? clause.v datom.v binding)))
+
+(defn q-query [db: DB, query: Query] -> Result-Set
+  (let [datoms (slice db.datoms 0)
+        bindings ([dynamic]Binding [(Binding {})])]
+    (for [clause query.clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (for [datom datom-index datoms]
+            (when (datom-current-at? datoms datom-index)
+              (let [candidate (clone-binding binding)]
+                (when (datom-clause-matches? datom clause (addr candidate))
+                  (arr.push! next-bindings candidate))))))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (let [rows (make [dynamic]Result-Row 0 (count bindings))]
+      (for [binding bindings]
+        (let [values (make [dynamic]Value 0 (count query.find))
+              complete true]
+          (for [name query.find]
+            (let [[value ok] (binding-lookup binding name)]
+              (if ok
+                (arr.push! values value)
+                (set! complete false))))
+          (when complete
+            (arr.push! rows (Result-Row {values: values})))))
+      (delete bindings)
+      (Result-Set {rows: rows}))))
+
+(defn q-strings [db: DB, query: Query] -> [dynamic]string
+  (let [result (q-query db query)
+        out (make [dynamic]string 0 (count result.rows))]
+    (for [row result.rows]
+      (when (and (= (count row.values) 1)
+                 (= row.values[0].kind .String))
+        (arr.push! out row.values[0].text)))
+    out))
+
+(defn pull-attr-value [datoms: []Datom, entity: u64, attr: string] -> [value: Value, ok: bool]
+  (for [datom datom-index datoms]
+    (when (and (= datom.e entity)
+               (= datom.a attr)
+               (datom-current-at? datoms datom-index))
+      (return datom.v true)))
+  (return (Value {}) false))
+
+(defn pull [db: DB, entity: u64, attrs: []string] -> Pull-Result
+  (let [datoms (slice db.datoms 0)
+        out (make [dynamic]Pull-Attr)]
+    (for [attr attrs]
+      (if (= attr ":db/id")
+        (arr.push! out (Pull-Attr {a: attr v: (value-entity entity)}))
+        (let [[value ok] (pull-attr-value datoms entity attr)]
+          (when ok
+            (arr.push! out (Pull-Attr {a: attr v: value}))))))
+    (Pull-Result {e: entity attrs: out})))
+
+(defn query-name-by-email [email: string] -> Query
+  (query ([]string ["name"])
+    ([]Clause
+      [(clause (term-var "e") ":user/email" (term-string email))
+       (clause (term-var "e") ":user/name" (term-var "name"))])))
+
+(defn seed-people [conn: ^Conn] -> Tx-Report
+  (transact conn
+    [[:db/add 1 :user/email "ada@example.com"]
+     [:db/add 1 :user/name "Ada"]
+     [:db/add 1 :user/age 37]
+     [:db/add 1 :user/active true]
+     [:db/add 1 :user/friend (value-entity 2)]
+     [:db/add 2 :user/email "grace@example.com"]
+     [:db/add 2 :user/name "Grace"]
+     [:db/add 2 :user/age 41]
+     [:db/add 2 :user/active false]]))
