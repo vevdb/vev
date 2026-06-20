@@ -334,6 +334,19 @@
         (error "datalog query must start with :find")))
     (error "datalog expects a vector query")))
 
+(defmacro q [db query-form]
+  (if (vector? query-form)
+    (quasiquote (q-query (unquote db) (unquote (datalog query-form))))
+    (quasiquote (q-query (unquote db) (unquote query-form)))))
+
+(defmacro transact [conn tx-form]
+  (if (vector? tx-form)
+    (quasiquote
+      (transact-tx-data
+        (unquote conn)
+        ([]Tx-Data [(splice (emit-tx-data-items tx-form))])))
+    (quasiquote (transact-tx-data (unquote conn) (unquote tx-form)))))
+
 (defn query [find: []string, clauses: []Clause] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-clauses (arr.into [dynamic]Clause clauses)]
@@ -419,12 +432,12 @@
                   tx: tx
                   tx_meta: (clone-tx-meta tx-meta)}))))
 
-(defn transact [conn: ^Conn, ops: []Tx-Op] -> Tx-Report
+(defn transact-ops [conn: ^Conn, ops: []Tx-Op] -> Tx-Report
   (transact-with-meta conn ops ([]Tx-Meta [])))
 
-(defn transact-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
+(defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
   (let [ops (tx-data-ops tx-data)
-        report (transact conn ops)]
+        report (transact-ops conn ops)]
     (delete ops)
     report))
 
@@ -433,7 +446,7 @@
        (match-term? clause.a (value-keyword datom.a) binding)
        (match-term? clause.v datom.v binding)))
 
-(defn q [db: DB, query: Query] -> Result-Set
+(defn q-query [db: DB, query: Query] -> Result-Set
   (let [datoms (slice db.datoms 0)
         bindings ([dynamic]Binding [(Binding {})])]
     (for [clause query.clauses]
@@ -461,7 +474,7 @@
       (Result-Set {rows: rows}))))
 
 (defn q-strings [db: DB, query: Query] -> [dynamic]string
-  (let [result (q db query)
+  (let [result (q-query db query)
         out (make [dynamic]string 0 (count result.rows))]
     (for [row result.rows]
       (when (and (= (count row.values) 1)
@@ -495,14 +508,13 @@
        (clause (term-var "e") ":user/name" (term-var "name"))])))
 
 (defn seed-people [conn: ^Conn] -> Tx-Report
-  (transact-data conn
-    ([]Tx-Data
-      [(add 1 ":user/email" (value-string "ada@example.com"))
-       (add 1 ":user/name" (value-string "Ada"))
-       (add 1 ":user/age" (value-int 37))
-       (add 1 ":user/active" (value-bool true))
-       (add 1 ":user/friend" (value-entity 2))
-       (add 2 ":user/email" (value-string "grace@example.com"))
-       (add 2 ":user/name" (value-string "Grace"))
-       (add 2 ":user/age" (value-int 41))
-       (add 2 ":user/active" (value-bool false))])))
+  (transact conn
+    [[:db/add 1 :user/email "ada@example.com"]
+     [:db/add 1 :user/name "Ada"]
+     [:db/add 1 :user/age 37]
+     [:db/add 1 :user/active true]
+     [:db/add 1 :user/friend (value-entity 2)]
+     [:db/add 2 :user/email "grace@example.com"]
+     [:db/add 2 :user/name "Grace"]
+     [:db/add 2 :user/age 41]
+     [:db/add 2 :user/active false]]))

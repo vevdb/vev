@@ -96,11 +96,10 @@ Example:
 
 ```clojure
 (v.q db
-  (v.datalog
-    [:find ?e ?name
-     :where
-     [?e :user/email "ada@example.com"]
-     [?e :user/name ?name]]))
+  [:find ?e ?name
+   :where
+   [?e :user/email "ada@example.com"]
+   [?e :user/name ?name]])
 ```
 
 This is intentionally still a naive scan over current datoms. Indexes, text
