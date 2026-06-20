@@ -34,12 +34,13 @@ Resolved_Value :: struct {
 }
 
 // Datom is the fundamental fact unit:
-// entity, attribute, value, the transaction id that asserted it, added for whether fact addition or retraction
+// entity, attribute, value, the transaction id that asserted it, and whether
+// this datom is an assertion or retraction.
 Datom :: struct {
-  e:  u64,
-  a:  string,
-  v:  string,
-  tx: u64,
+  e:     u64,
+  a:     string,
+  v:     string,
+  tx:    u64,
   added: bool,
 }
 
@@ -75,12 +76,21 @@ Tx_Op :: struct {
   v:    string,
 }
 
+// Tx_Meta carries transaction-level context such as request ids, actors, or
+// reasons. It is deliberately small until the value model grows beyond strings.
+Tx_Meta :: struct {
+  a: string,
+  v: string,
+}
+
 // Tx_Report mirrors the shape we will want long term:
 // callers can inspect both snapshots and the datoms produced by the tx.
 Tx_Report :: struct {
   db_before: DB,
   db_after:  DB,
   tx_data:   [dynamic]Datom,
+  tx:        u64,
+  tx_meta:   [dynamic]Tx_Meta,
 }
 
 // A clause is the smallest Datalog-shaped piece we need:
@@ -149,6 +159,14 @@ clone_datoms :: proc(datoms: [dynamic]Datom) -> [dynamic]Datom {
   return out
 }
 
+clone_tx_meta :: proc(meta: []Tx_Meta) -> [dynamic]Tx_Meta {
+  out, _ := make([dynamic]Tx_Meta, 0, len(meta))
+  if len(meta) > 0 {
+    append(&out, ..meta)
+  }
+  return out
+}
+
 // Query evaluation forks bindings frequently, so we need a small helper
 // to copy the current variable assignments before trying another match.
 clone_binding :: proc(binding: Binding) -> Binding {
@@ -211,26 +229,49 @@ match_term :: proc(term: Term, actual: Resolved_Value, binding: ^Binding) -> boo
   return false
 }
 
-// Apply a batch of add operations and replace the connection's DB
+same_fact :: proc(left, right: Datom) -> bool {
+  return left.e == right.e && left.a == right.a && left.v == right.v
+}
+
+// The DB stores transaction history as append-only datoms. Ordinary reads should
+// see only the latest state for each EAV fact, so a fact is current when its
+// newest matching datom is an assertion.
+datom_is_current_at :: proc(datoms: []Datom, index: int) -> bool {
+  datom := datoms[index]
+  if !datom.added {
+    return false
+  }
+
+  for later_index := index + 1; later_index < len(datoms); later_index += 1 {
+    if same_fact(datom, datoms[later_index]) {
+      return false
+    }
+  }
+
+  return true
+}
+
+// Apply a batch of transaction operations and replace the connection's DB
 // with a new snapshot. This is intentionally the simplest possible model:
 // clone the old datoms, append the new ones, then swap the snapshot.
-transact :: proc(conn: ^Conn, ops: []Tx_Op) -> Tx_Report {
+transact_with_meta :: proc(conn: ^Conn, ops: []Tx_Op, tx_meta: []Tx_Meta) -> Tx_Report {
   before := DB{
     datoms = clone_datoms(conn.db.datoms),
   }
 
   after_datoms := clone_datoms(conn.db.datoms)
   tx_data, _ := make([dynamic]Datom, 0, len(ops))
+  tx := conn.next_tx
 
   for op in ops {
     switch op.kind {
     case .Add:
       datom := Datom{
-	e     = op.e,
-	a     = op.a,
-	v     = op.v,
-	tx    = conn.next_tx,
-        added = true
+        e     = op.e,
+        a     = op.a,
+        v     = op.v,
+        tx    = tx,
+        added = true,
       }
       append(&after_datoms, datom)
       append(&tx_data, datom)
@@ -238,10 +279,10 @@ transact :: proc(conn: ^Conn, ops: []Tx_Op) -> Tx_Report {
     case .Retract:
       datom := Datom{
         e     = op.e,
-	a     = op.a,
-	v     = op.v,
-	tx    = conn.next_tx,
-        added = false
+        a     = op.a,
+        v     = op.v,
+        tx    = tx,
+        added = false,
       }
       append(&after_datoms, datom)
       append(&tx_data, datom)
@@ -259,7 +300,13 @@ transact :: proc(conn: ^Conn, ops: []Tx_Op) -> Tx_Report {
     db_before = before,
     db_after  = after,
     tx_data   = tx_data,
+    tx        = tx,
+    tx_meta   = clone_tx_meta(tx_meta),
   }
+}
+
+transact :: proc(conn: ^Conn, ops: []Tx_Op) -> Tx_Report {
+  return transact_with_meta(conn, ops, []Tx_Meta{})
 }
 
 // q is a tiny naive query engine:
@@ -279,24 +326,29 @@ q :: proc(db: DB, query: Query) -> []string {
     next_bindings, _ := make([dynamic]Binding)
 
     for binding in bindings {
-      for datom in db.datoms {
-	// Attributes are stored as plain strings in this first pass,
-	// so the cheap pre-filter is just string equality.
-	if datom.a != clause.a {
-	  continue
-	}
+      for datom_index := 0; datom_index < len(db.datoms); datom_index += 1 {
+        datom := db.datoms[datom_index]
+        if !datom_is_current_at(db.datoms[:], datom_index) {
+          continue
+        }
 
-	// Clone before matching so each possible datom match gets its
-	// own independent variable assignment path.
-	candidate := clone_binding(binding)
-	if !match_term(clause.e, Resolved_Value{kind = .Entity, entity = datom.e}, &candidate) {
-	  continue
-	}
-	if !match_term(clause.v, Resolved_Value{kind = .String, text = datom.v}, &candidate) {
-	  continue
-	}
+        // Attributes are stored as plain strings in this first pass,
+        // so the cheap pre-filter is just string equality.
+        if datom.a != clause.a {
+          continue
+        }
 
-	append(&next_bindings, candidate)
+        // Clone before matching so each possible datom match gets its
+        // own independent variable assignment path.
+        candidate := clone_binding(binding)
+        if !match_term(clause.e, Resolved_Value{kind = .Entity, entity = datom.e}, &candidate) {
+          continue
+        }
+        if !match_term(clause.v, Resolved_Value{kind = .String, text = datom.v}, &candidate) {
+          continue
+        }
+
+        append(&next_bindings, candidate)
       }
     }
 
