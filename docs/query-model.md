@@ -135,8 +135,8 @@ Example:
    [?e :user/email "ada@example.com"]])
 ```
 
-This is intentionally still a naive scan over current datoms. Indexes, text
-parsing, rules, and advanced predicates remain later work.
+Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
+predicates remain later work.
 
 ## Pull model
 

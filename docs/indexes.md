@@ -94,6 +94,7 @@ semantics.
 
 The current in-memory proof uses sorted arrays of datom indexes on each `DB`:
 
+- `db.current`
 - `db.eavt`
 - `db.aevt`
 - `db.avet`
@@ -120,8 +121,9 @@ Lookup uses binary search and range slicing for the first supported prefixes:
 The matcher still verifies each candidate after slicing, so correctness stays
 central while the index layer grows.
 
-Current-fact checks also use the entity's `EAVT` range instead of scanning the
-whole datom log.
+Current-fact checks use `db.current`, a snapshot-local sorted list of current
+datom indexes. It is rebuilt with each snapshot for now, then queried with
+binary search.
 
 The likely question is not "what is most clever?" but:
 

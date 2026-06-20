@@ -40,6 +40,7 @@
 
 (defstruct DB {
   datoms: [dynamic]Datom
+  current: [dynamic]int
   eavt: [dynamic]int
   aevt: [dynamic]int
   avet: [dynamic]int
@@ -320,9 +321,42 @@
     (sort-datom-indexes! (addr indexes) datoms order)
     indexes))
 
+(defn same-fact? [left: Datom, right: Datom] -> bool
+  (and (= left.e right.e)
+       (= left.a right.a)
+       (value-equal? left.v right.v)))
+
+(defn datom-current-in-log? [datoms: []Datom, index: int] -> bool
+  (let [datom datoms[index]]
+    (when (not datom.added)
+      (return false))
+    (for [later (slice datoms (+ index 1))]
+      (when (same-fact? datom later)
+        (return false)))
+    true))
+
+(defn build-current-index [datoms: []Datom] -> [dynamic]int
+  // ponytail: O(n^2) snapshot build is fine until transact benchmarks say otherwise.
+  (let [indexes (make [dynamic]int)]
+    (for [_ index datoms]
+      (when (datom-current-in-log? datoms index)
+        (arr.push! indexes index)))
+    indexes))
+
+(defn int-lower-bound [xs: []int, value: int] -> int
+  (let [low 0
+        high (count xs)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)]
+        (if (< xs[mid] value)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
 (defn build-db [datoms: [dynamic]Datom] -> DB
   (let [slice-datoms (slice datoms 0)]
     (DB {datoms: datoms
+         current: (build-current-index slice-datoms)
          eavt: (build-index slice-datoms "eavt")
          aevt: (build-index slice-datoms "aevt")
          avet: (build-index slice-datoms "avet")
@@ -833,24 +867,11 @@
                 (not (value-less? right left))
                 false))))))))
 
-(defn same-fact? [left: Datom, right: Datom] -> bool
-  (and (= left.e right.e)
-       (= left.a right.a)
-       (value-equal? left.v right.v)))
-
 (defn datom-current-at? [db: DB, index: int] -> bool
-  (let [datom db.datoms[index]]
-    (when (not datom.added)
-      (return false))
-    (let [indexes (slice db.eavt 0)
-          low (lower-bound-index db indexes "eavt" datom.e "" (Value {}))
-          high (upper-bound-index db indexes "eavt" datom.e "" (Value {}))]
-      (for [later-index (slice indexes low high)]
-        (let [later db.datoms[later-index]]
-          (when (and (> later-index index)
-                     (same-fact? datom later))
-            (return false)))))
-    true))
+  (let [current (slice db.current 0)
+        found (int-lower-bound current index)]
+    (and (< found (count current))
+         (= current[found] index))))
 
 (defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
