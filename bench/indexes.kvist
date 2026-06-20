@@ -1,0 +1,40 @@
+(package main)
+
+(import fmt "core:fmt")
+(import time "core:time")
+(import arr "kvist:arr")
+(import vev "../src/vev_kvist")
+
+(defn elapsed-us [start: time.Time] -> f64
+  (time.duration_microseconds (time.since start)))
+
+(defn seed [conn: ^vev.Conn, n: int]
+  (let [tx (make [dynamic]vev.Tx-Data 0 (* n 2))]
+    (defer (delete tx))
+    (for [i (arr.range 0 n)]
+      (arr.push! tx (vev.add (u64 i) ":user/email" (vev.value-string (fmt.tprintf "user-%d@example.com" i))))
+      (arr.push! tx (vev.add (u64 i) ":user/age" (vev.value-int (i64 i)))))
+    (discard (vev.transact conn tx))))
+
+(defn run-lookups [db: vev.DB, n: int] -> int
+  (let [hits 0]
+    (for [i (arr.range 0 n)]
+      (let [email (fmt.tprintf "user-%d@example.com" i)
+            result (vev.q db
+                     [:find ?e
+                      :in ?email
+                      :where
+                      [?e :user/email ?email]]
+                     (vev.value-string email))]
+        (set! hits (+ hits (count result.rows)))))
+    hits))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        n 1000]
+    (seed (addr conn) n)
+    (let [start (time.now)
+          hits (run-lookups conn.db n)
+          elapsed (elapsed-us start)]
+      (fmt.printf "indexed-lookups n=%d hits=%d elapsed_us=%.0f\n" n hits elapsed))))

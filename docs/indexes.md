@@ -15,7 +15,7 @@ The initial in-memory model should be Datomic/DataScript-like:
 - EAVT
 - AEVT
 - AVET
-- optional VAET
+- VAET
 
 ## Why these indexes
 
@@ -92,12 +92,25 @@ semantics.
 
 ## In-memory phase
 
-The in-memory proof should choose the simplest structure that preserves:
+The current in-memory proof uses sorted arrays of datom indexes on each `DB`:
+
+- `db.eavt`
+- `db.aevt`
+- `db.avet`
+- `db.vaet`
+
+The append-only datom log remains the source of truth. Indexes are rebuilt when
+a new snapshot is produced.
+
+This chooses the simplest structure that preserves:
 
 - sorted iteration
 - exact lookup
 - range/prefix scans
 - immutable snapshot reasoning
+
+Current lookup still linearly filters the selected index. Binary search and
+range slicing should be added when measurements show this matters.
 
 The likely question is not "what is most clever?" but:
 
@@ -135,14 +148,11 @@ implemented.
 
 ## First implementation rule
 
-Phase 1 should probably start with:
+Phase 1 starts with all four indexes so query and pull code can be written
+against the final logical index names.
 
-- EAVT
-- AEVT
-- AVET
+Run the current baseline with:
 
-and only add VAET when:
-
-- refs are solid
-- pull/backref needs are clearer
-- planner needs justify it
+```sh
+kvist run bench/indexes.kvist
+```
