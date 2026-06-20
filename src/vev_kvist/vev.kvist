@@ -167,6 +167,8 @@
   a: string
   pattern: []Pull-Spec
   limit: int
+  has_default: bool
+  default_value: Value
 })
 
 (defenum Query-Input-Kind [
@@ -758,10 +760,12 @@
           (source (first forms))
           (if (string? (first forms))
             (text (first forms))
-            (if (and (symbol? (first forms))
-                     (= (source (first forms)) "*"))
-              "*"
-              (error "pull patterns currently accept keyword, string, *, or nested attrs"))))
+            (if (vector? (first forms))
+              (pull-attr-source (nth (first forms) 0))
+              (if (and (symbol? (first forms))
+                       (= (source (first forms)) "*"))
+                "*"
+                (error "pull patterns currently accept keyword, string, *, option vectors, or nested attrs")))))
         (emit-pull-attrs (rest forms))))))
 
 (defmacro- pull-attr-source [form]
@@ -775,6 +779,17 @@
         (error "pull pattern attrs must be keywords, strings, or *")))))
 
 (defmacro- emit-pull-spec [form]
+  (if (vector? form)
+    (if (= (count form) 3)
+      (if (keyword? (nth form 1))
+        (if (= (source (nth form 1)) ":default")
+          (quasiquote
+            (pull-spec-default
+              (unquote (pull-attr-source (nth form 0)))
+              (unquote (emit-literal-value (nth form 2)))))
+          (error "pull option vectors currently support :default"))
+        (error "pull option vectors expect a keyword option"))
+      (error "pull option vectors currently have shape [:attr :default value]"))
   (if (brace? form)
     (if (= (count form) 2)
       (let [attr (nth form 0)
@@ -807,7 +822,7 @@
     (quasiquote
       (pull-spec
         (unquote (pull-attr-source form))
-        ([]Pull-Spec [])))))
+        ([]Pull-Spec []))))))
 
 (defmacro- emit-pull-specs [forms]
   (if (= (count forms) 0)
@@ -1486,13 +1501,17 @@
     (pull-reverse-attr! out db entity spec)
     (return))
   (let [[value ok] (pull-attr-value db entity spec.a)]
-    (when ok
+    (if ok
       (let [children (make [dynamic]Pull-Attr)]
         (when (and (= value.kind .Entity)
                    (> (count spec.pattern) 0))
           (let [pulled (pull-pattern-spec db value.entity spec.pattern)]
             (set! children pulled.attrs)))
-        (arr.push! out^ (Pull-Attr {a: spec.a v: value attrs: children}))))))
+        (arr.push! out^ (Pull-Attr {a: spec.a v: value attrs: children})))
+      (when spec.has_default
+        (arr.push! out^ (Pull-Attr {a: spec.a
+                                    v: spec.default_value
+                                    attrs: (make [dynamic]Pull-Attr)}))))))
 
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
@@ -1501,13 +1520,32 @@
     (Pull-Result {e: entity attrs: out})))
 
 (defn flat-pull-spec [attr: string] -> Pull-Spec
-  (Pull-Spec {a: attr limit: 0 pattern: ([]Pull-Spec [])}))
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              pattern: ([]Pull-Spec [])}))
 
 (defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
-  (Pull-Spec {a: attr limit: 0 pattern: pattern}))
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              pattern: pattern}))
 
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
-  (Pull-Spec {a: attr limit: limit pattern: pattern}))
+  (Pull-Spec {a: attr
+              limit: limit
+              has_default: false
+              default_value: (Value {})
+              pattern: pattern}))
+
+(defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: true
+              default_value: default-value
+              pattern: ([]Pull-Spec [])}))
 
 (defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
   (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]

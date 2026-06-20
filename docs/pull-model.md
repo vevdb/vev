@@ -89,6 +89,12 @@ Current Kvist proof:
 (v.pull db [:db/id :user/name :user/email] 1)
 ```
 
+Attribute option vectors support `:default`:
+
+```clojure
+(v.pull db [[:user/nickname :default "Unknown"]] 1)
+```
+
 It also supports reverse ref attrs in the Datomic style:
 
 ```clojure
@@ -122,7 +128,7 @@ Use `pull-many` for the same pattern over multiple entity ids:
 Delay these until later unless they become immediately necessary:
 
 - recursion limits
-- richer attribute options such as `:as`, `:default`, and `:xform`
+- richer attribute options such as `:as` and `:xform`
 - option parsing for multiple child attrs, e.g. `[:db/id :user/name :limit 2]`
 
 This keeps the early implementation small while preserving syntax direction.
