@@ -239,11 +239,8 @@ Examples:
 These are part of Datomic pull and should remain syntax goals, but can be
 deferred:
 
-- wildcard `*`
-- reverse refs via underscore notation such as `:release/_artists`
 - recursion limits such as `{:person/friends 6}` or `{:person/friends ...}`
 - attr options such as `:as`, `:limit`, `:default`, `:xform`
-- pull-many helpers
 
 Again, the rule is to defer support, not invent different syntax.
 

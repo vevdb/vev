@@ -107,11 +107,16 @@ And wildcard attrs for current forward attrs:
 (v.pull db [*] 1)
 ```
 
+Use `pull-many` for the same pattern over multiple entity ids:
+
+```clojure
+(v.pull-many db [:db/id :user/name] ([]u64 [1 2]))
+```
+
 Delay these until later unless they become immediately necessary:
 
 - recursion limits
 - attribute options and aliases
-- multi-entity pull-many helpers
 
 This keeps the early implementation small while preserving syntax direction.
 
