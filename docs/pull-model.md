@@ -95,9 +95,14 @@ It also supports reverse ref attrs in the Datomic style:
 (v.pull db [:_user/friend] 2)
 ```
 
+And one-level nested ref maps:
+
+```clojure
+(v.pull db [{:user/friend [:user/name]}] 1)
+```
+
 Delay these until later unless they become immediately necessary:
 
-- nested map form for refs
 - wildcard `*`
 - recursion limits
 - attribute options and aliases

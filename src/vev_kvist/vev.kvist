@@ -119,6 +119,7 @@
 (defstruct Pull-Find {
   var: string
   attrs: []string
+  pattern: []Pull-Spec
 })
 
 (defstruct Query {
@@ -151,11 +152,17 @@
 (defstruct Pull-Attr {
   a: string
   v: Value
+  attrs: [dynamic]Pull-Attr
 })
 
 (defstruct Pull-Result {
   e: u64
   attrs: [dynamic]Pull-Attr
+})
+
+(defstruct Pull-Spec {
+  a: string
+  pattern: []Pull-Spec
 })
 
 (defenum Query-Input-Kind [
@@ -709,13 +716,44 @@
 (defmacro- emit-pull-attrs [forms]
   (if (= (count forms) 0)
     (forms)
+    (if (brace? (first forms))
+      (emit-pull-attrs (rest forms))
+      (forms
+        (if (keyword? (first forms))
+          (source (first forms))
+          (if (string? (first forms))
+            (text (first forms))
+            (error "pull patterns currently accept keyword, string, or nested attrs")))
+        (emit-pull-attrs (rest forms))))))
+
+(defmacro- pull-attr-source [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (error "pull pattern attrs must be keywords or strings"))))
+
+(defmacro- emit-pull-spec [form]
+  (if (brace? form)
+    (if (= (count form) 2)
+      (let [attr (nth form 0)
+            pattern (nth form 1)]
+        (if (vector? pattern)
+          (quasiquote
+            (Pull-Spec {a: (unquote (pull-attr-source attr))
+                        pattern: ([]Pull-Spec [(splice (emit-pull-specs pattern))])}))
+          (error "nested pull attrs expect vector patterns")))
+      (error "nested pull maps currently support one attr"))
+    (quasiquote
+      (Pull-Spec {a: (unquote (pull-attr-source form))
+                  pattern: ([]Pull-Spec [])}))))
+
+(defmacro- emit-pull-specs [forms]
+  (if (= (count forms) 0)
+    (forms)
     (forms
-      (if (keyword? (first forms))
-        (source (first forms))
-        (if (string? (first forms))
-          (text (first forms))
-          (error "pull patterns currently accept keyword or string attrs")))
-      (emit-pull-attrs (rest forms)))))
+      (emit-pull-spec (first forms))
+      (emit-pull-specs (rest forms)))))
 
 (defmacro- emit-pull-find [form]
   (if (pull-find? form)
@@ -724,7 +762,8 @@
       (if (vector? pattern)
         (quasiquote
           (Pull-Find {var: (unquote (emit-find-var var))
-                      attrs: ([]string [(splice (emit-pull-attrs pattern))])}))
+                      attrs: ([]string [(splice (emit-pull-attrs pattern))])
+                      pattern: ([]Pull-Spec [(splice (emit-pull-specs pattern))])}))
         (error "find pull expects a literal vector pattern")))
     (error ":find pull expressions must be (pull ?e [...])")))
 
@@ -814,10 +853,10 @@
 (defmacro pull [db pattern entity]
   (if (vector? pattern)
     (quasiquote
-      (pull-pattern
+      (pull-pattern-spec
         (unquote db)
         (unquote entity)
-        ([]string [(splice (emit-pull-attrs pattern))])))
+        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
     (quasiquote (pull-pattern (unquote db) (unquote entity) (unquote pattern)))))
 
 (defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, pulls: []Pull-Find] -> Query
@@ -1275,7 +1314,7 @@
           (for [pull-find query.pulls]
             (let [[entity ok] (binding-lookup binding pull-find.var)]
               (if (and ok (= entity.kind .Entity))
-                (arr.push! pulls (pull-pattern db entity.entity (slice pull-find.attrs 0)))
+                (arr.push! pulls (pull-pattern-spec db entity.entity pull-find.pattern))
                 (set! complete false))))
           (when complete
             (arr.push! rows (Result-Row {values: values pulls: pulls})))))
@@ -1322,17 +1361,40 @@
                    (datom-current-at? db datom-index))
           (arr.push! out^ (Pull-Attr {a: attr v: (value-entity datom.e)})))))))
 
-(defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
+(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
+  (when (= spec.a ":db/id")
+    (arr.push! out^ (Pull-Attr {a: spec.a
+                                v: (value-entity entity)
+                                attrs: (make [dynamic]Pull-Attr)}))
+    (return))
+  (when (reverse-attr? spec.a)
+    (pull-reverse-attr! out db entity spec.a)
+    (return))
+  (let [[value ok] (pull-attr-value db entity spec.a)]
+    (when ok
+      (let [children (make [dynamic]Pull-Attr)]
+        (when (and (= value.kind .Entity)
+                   (> (count spec.pattern) 0))
+          (let [pulled (pull-pattern-spec db value.entity spec.pattern)]
+            (set! children pulled.attrs)))
+        (arr.push! out^ (Pull-Attr {a: spec.a v: value attrs: children}))))))
+
+(defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
-    (for [attr attrs]
-      (if (= attr ":db/id")
-        (arr.push! out (Pull-Attr {a: attr v: (value-entity entity)}))
-        (if (reverse-attr? attr)
-          (pull-reverse-attr! (addr out) db entity attr)
-          (let [[value ok] (pull-attr-value db entity attr)]
-            (when ok
-              (arr.push! out (Pull-Attr {a: attr v: value})))))))
+    (for [spec pattern]
+      (pull-spec-attr! (addr out) db entity spec))
     (Pull-Result {e: entity attrs: out})))
+
+(defn flat-pull-spec [attr: string] -> Pull-Spec
+  (Pull-Spec {a: attr pattern: ([]Pull-Spec [])}))
+
+(defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
+  (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]
+    (for [attr attrs]
+      (arr.push! pattern (flat-pull-spec attr)))
+    (let [pulled (pull-pattern-spec db entity (slice pattern 0))]
+      (delete pattern)
+      pulled)))
 
 (defn query-name-by-email [email: string] -> Query
   (query ([]string ["name"])
