@@ -76,6 +76,36 @@ Start with a tight slice:
 Phase 1 should bias toward the subset most commonly shown in Datomic/DataScript
 examples so learning material transfers early.
 
+## Current Odin proof
+
+The current in-memory implementation does not parse query text yet. It builds
+queries as typed Odin data and evaluates them directly.
+
+Supported now:
+
+- `:find` with one or more variables
+- datom clauses shaped like `[e a v]`
+- variables in entity, attribute, and value positions
+- literal entity, keyword, string, int, and bool values
+- entity refs as values
+- joins through repeated variables
+- append-only transaction history with retractions hidden from current reads
+
+Example:
+
+```odin
+result := q(db, query(
+  []string{"e", "name"},
+  []Clause{
+    clause(term_var("e"), ":user/email", term_string("ada@example.com")),
+    clause(term_var("e"), ":user/name", term_var("name")),
+  },
+))
+```
+
+This is intentionally still a naive scan over current datoms. Indexes, text
+parsing, `:in`, predicates, rules, and pull remain later work.
+
 ## Pull model
 
 Pull should be supported, but query and transact come first.

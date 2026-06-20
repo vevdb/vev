@@ -15,18 +15,8 @@ main :: proc() {
   // Insert two facts about the same entity.
   // This is the direct in-memory equivalent of a very small `:db/add` batch.
   report := vev.transact(&conn, []vev.Tx_Op{
-    {
-      kind = .Add,
-      e    = 1,
-      a    = ":user/email",
-      v    = "a@example.com",
-    },
-    {
-      kind = .Add,
-      e    = 1,
-      a    = ":user/name",
-      v    = "Andreas",
-    },
+    vev.tx_add(1, ":user/email", vev.value_string("a@example.com")),
+    vev.tx_add(1, ":user/name", vev.value_string("Andreas")),
   })
 
   // Build the query as data rather than text for the first proof.
@@ -36,24 +26,16 @@ main :: proc() {
   // where
   //   [?e :user/email "a@example.com"]
   //   [?e :user/name ?name]
-  query := vev.Query{
-    find = "name",
-    clauses = []vev.Clause{
-      {
-	e = vev.term_var("e"),
-	a = ":user/email",
-	v = vev.term_string("a@example.com"),
-      },
-      {
-	e = vev.term_var("e"),
-	a = ":user/name",
-	v = vev.term_var("name"),
-      },
+  query := vev.query(
+    []string{"name"},
+    []vev.Clause{
+      vev.clause(vev.term_var("e"), ":user/email", vev.term_string("a@example.com")),
+      vev.clause(vev.term_var("e"), ":user/name", vev.term_var("name")),
     },
-  }
+  )
 
   // Evaluate against the connection's current immutable snapshot.
-  results := vev.q(conn.db, query)
+  results := vev.q_strings(conn.db, query)
 
   // The proof succeeds only if:
   // - the old snapshot was empty
