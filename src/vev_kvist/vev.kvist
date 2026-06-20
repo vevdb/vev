@@ -177,6 +177,13 @@
       .Keyword (string-less? left.text right.text)
       :else false)))
 
+(defn value-compare [left: Value, right: Value] -> int
+  (if (value-less? left right)
+    -1
+    (if (value-less? right left)
+      1
+      0)))
+
 (defn term-value [value: Value] -> Term
   (Term {kind: .Value value: value}))
 
@@ -320,6 +327,55 @@
          aevt: (build-index slice-datoms "aevt")
          avet: (build-index slice-datoms "avet")
          vaet: (build-index slice-datoms "vaet")})))
+
+(defn compare-eavt-prefix [datom: Datom, e: u64] -> int
+  (if (< datom.e e)
+    -1
+    (if (> datom.e e) 1 0)))
+
+(defn compare-aevt-prefix [datom: Datom, a: string] -> int
+  (strings.compare datom.a a))
+
+(defn compare-avet-prefix [datom: Datom, a: string, v: Value] -> int
+  (let [a-compare (strings.compare datom.a a)]
+    (if (not (= a-compare 0))
+      a-compare
+      (value-compare datom.v v))))
+
+(defn compare-vaet-prefix [datom: Datom, v: Value] -> int
+  (value-compare datom.v v))
+
+(defn datom-prefix-compare [db: DB, order: string, datom-index: int, e: u64, a: string, v: Value] -> int
+  (let [datom db.datoms[datom-index]]
+    (if (= order "eavt")
+      (compare-eavt-prefix datom e)
+      (if (= order "aevt")
+        (compare-aevt-prefix datom a)
+        (if (= order "avet")
+          (compare-avet-prefix datom a v)
+          (compare-vaet-prefix datom v))))))
+
+(defn lower-bound-index [db: DB, indexes: []int, order: string, e: u64, a: string, v: Value] -> int
+  (let [low 0
+        high (count indexes)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            compare (datom-prefix-compare db order indexes[mid] e a v)]
+        (if (< compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
+(defn upper-bound-index [db: DB, indexes: []int, order: string, e: u64, a: string, v: Value] -> int
+  (let [low 0
+        high (count indexes)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            compare (datom-prefix-compare db order indexes[mid] e a v)]
+        (if (<= compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
 
 (defn create-conn [] -> Conn
   (Conn {db: (build-db (make [dynamic]Datom))
@@ -843,13 +899,34 @@
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
     (if (and a-ok v-ok)
-      (set! source (slice db.avet 0))
+      (do
+        (when (not (= a-value.kind .Keyword))
+          (return out))
+        (let [indexes (slice db.avet 0)
+              low (lower-bound-index db indexes "avet" 0 a-value.text v-value)
+              high (upper-bound-index db indexes "avet" 0 a-value.text v-value)]
+          (set! source (slice indexes low high))))
       (if e-ok
-        (set! source (slice db.eavt 0))
+        (do
+          (when (not (= e-value.kind .Entity))
+            (return out))
+          (let [indexes (slice db.eavt 0)
+                low (lower-bound-index db indexes "eavt" e-value.entity "" (Value {}))
+                high (upper-bound-index db indexes "eavt" e-value.entity "" (Value {}))]
+            (set! source (slice indexes low high))))
         (if a-ok
-          (set! source (slice db.aevt 0))
+          (do
+            (when (not (= a-value.kind .Keyword))
+              (return out))
+            (let [indexes (slice db.aevt 0)
+                  low (lower-bound-index db indexes "aevt" 0 a-value.text (Value {}))
+                  high (upper-bound-index db indexes "aevt" 0 a-value.text (Value {}))]
+              (set! source (slice indexes low high))))
           (when v-ok
-            (set! source (slice db.vaet 0))))))
+            (let [indexes (slice db.vaet 0)
+                  low (lower-bound-index db indexes "vaet" 0 "" v-value)
+                  high (upper-bound-index db indexes "vaet" 0 "" v-value)]
+              (set! source (slice indexes low high)))))))
     (for [datom-index source]
       (let [datom db.datoms[datom-index]]
         (when (candidate-index-matches? datom e-value e-ok a-value a-ok v-value v-ok)

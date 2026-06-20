@@ -109,8 +109,15 @@ This chooses the simplest structure that preserves:
 - range/prefix scans
 - immutable snapshot reasoning
 
-Current lookup still linearly filters the selected index. Binary search and
-range slicing should be added when measurements show this matters.
+Lookup uses binary search and range slicing for the first supported prefixes:
+
+- `AVET(a, v)`
+- `EAVT(e)`
+- `AEVT(a)`
+- `VAET(v)`
+
+The matcher still verifies each candidate after slicing, so correctness stays
+central while the index layer grows.
 
 The likely question is not "what is most clever?" but:
 
