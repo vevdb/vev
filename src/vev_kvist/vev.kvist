@@ -67,8 +67,15 @@
 (defstruct Tx-Data {
   op: string
   e: u64
+  tempid: string
+  has_tempid: bool
   a: string
   v: Value
+})
+
+(defstruct Tempid {
+  tempid: string
+  e: u64
 })
 
 (defstruct Tx-Meta {
@@ -82,6 +89,7 @@
   tx_data: [dynamic]Datom
   tx: u64
   tx_meta: [dynamic]Tx-Meta
+  tempids: [dynamic]Tempid
 })
 
 (defstruct Clause {
@@ -226,16 +234,47 @@
 (defn retract [e: u64, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" e: e a: a v: v}))
 
-(defn tx-data-op [data: Tx-Data] -> Tx-Op
-  (if (= data.op ":db/retract")
-    (tx-retract data.e data.a data.v)
-    (tx-add data.e data.a data.v)))
+(defn add-tempid [tempid: string, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a v: v}))
 
-(defn tx-data-ops [tx-data: []Tx-Data] -> [dynamic]Tx-Op
-  (let [ops (make [dynamic]Tx-Op 0 (count tx-data))]
+(defn retract-tempid [tempid: string, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" tempid: tempid has_tempid: true a: a v: v}))
+
+(defn tempid-lookup [tempids: []Tempid, tempid: string] -> [e: u64, ok: bool]
+  (for [item tempids]
+    (when (= item.tempid tempid)
+      (return item.e true)))
+  (return 0 false))
+
+(defn next-entity-id [datoms: []Datom] -> u64
+  (let [next: u64 1]
+    (for [datom datoms]
+      (when (>= datom.e next)
+        (set! next (+ datom.e 1))))
+    next))
+
+(defn resolve-tx-data-ops [datoms: []Datom, tx-data: []Tx-Data] -> [ops: [dynamic]Tx-Op, tempids: [dynamic]Tempid]
+  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
+        resolved-tempids (make [dynamic]Tempid)
+        next-e (next-entity-id datoms)]
     (for [data tx-data]
-      (arr.push! ops (tx-data-op data)))
-    ops))
+      (when (and (not data.has_tempid)
+                 (>= data.e next-e))
+        (set! next-e (+ data.e 1))))
+    (for [data tx-data]
+      (let [e data.e]
+        (when data.has_tempid
+          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
+            (if ok
+              (set! e existing)
+              (do
+                (set! e next-e)
+                (set! next-e (+ next-e 1))
+                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
+        (if (= data.op ":db/retract")
+          (arr.push! resolved-ops (tx-retract e data.a data.v))
+          (arr.push! resolved-ops (tx-add e data.a data.v)))))
+    (return resolved-ops resolved-tempids)))
 
 (defn value-equal? [left: Value, right: Value] -> bool
   (if (not (= left.kind right.kind))
@@ -451,14 +490,16 @@
         (if (keyword? op)
           (if (= (source op) ":db/retract")
             (quasiquote
-              (retract (unquote e)
-                       (unquote (emit-attr a))
-                       (unquote (emit-literal-value v))))
+              ((unquote (if (string? e) (quasiquote retract-tempid) (quasiquote retract)))
+                (unquote e)
+                (unquote (emit-attr a))
+                (unquote (emit-literal-value v))))
             (if (= (source op) ":db/add")
               (quasiquote
-                (add (unquote e)
-                     (unquote (emit-attr a))
-                     (unquote (emit-literal-value v))))
+                ((unquote (if (string? e) (quasiquote add-tempid) (quasiquote add)))
+                  (unquote e)
+                  (unquote (emit-attr a))
+                  (unquote (emit-literal-value v))))
               (error "tx-data operation must be :db/add or :db/retract")))
           (error "tx-data operation must be :db/add or :db/retract")))
       (error "tx-data vectors must have shape [:db/add e :attr value]"))
@@ -873,7 +914,7 @@
     (and (< found (count current))
          (= current[found] index))))
 
-(defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
+(defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count ops))
@@ -893,14 +934,18 @@
                   db_after: after
                   tx_data: tx-data
                   tx: tx
-                  tx_meta: (clone-tx-meta tx-meta)}))))
+                  tx_meta: (clone-tx-meta tx-meta)
+                  tempids: tempids}))))
+
+(defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
+  (transact-ops-with-tempids conn ops tx-meta (make [dynamic]Tempid)))
 
 (defn transact-ops [conn: ^Conn, ops: []Tx-Op] -> Tx-Report
   (transact-with-meta conn ops ([]Tx-Meta [])))
 
 (defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
-  (let [ops (tx-data-ops tx-data)
-        report (transact-ops conn ops)]
+  (let [[ops tempids] (resolve-tx-data-ops (slice conn^.db.datoms 0) tx-data)
+        report (transact-ops-with-tempids conn (slice ops 0) ([]Tx-Meta []) tempids)]
     (delete ops)
     report))
 

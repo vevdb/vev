@@ -141,6 +141,9 @@ This gives callers:
 - transaction context in one place
 - the boundary where embedded applications react after commit
 
+String tempids in list-form tx data are resolved during transact and returned
+through `tempids`.
+
 In the embedded single-process case, this is usually enough:
 
 1. transact
