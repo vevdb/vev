@@ -4,21 +4,32 @@
 
 Interop should come after the semantic engine is coherent.
 
+Vev's primary source language is Kvist, with readable Odin output as a quality
+gate. Odin and Kvist users may consume Vev as a source package when that is the
+most direct integration path.
+
+For other native platforms and host languages, the primary integration artifact
+should be a native library with a narrow C ABI. The CLI binary is for tooling,
+inspection, import/export, smoke tests, and operational workflows; it is not the
+main application integration model.
+
 Future server packaging, if it exists, should wrap the same semantic core
 rather than force a different internal model.
 
 The right order is:
 
-1. native Odin API
+1. native Kvist/Odin API
 2. stable internal semantic model
-3. narrow C ABI
-4. host-specific wrappers
-5. only later, if justified, server/daemon packaging
-6. only later, if justified, transactor/peer-style packaging
+3. native library packaging
+4. narrow C ABI
+5. CLI binary over the same engine
+6. host-specific wrappers
+7. only later, if justified, server/daemon packaging
+8. only later, if justified, transactor/peer-style packaging
 
 ## Native API
 
-The native Odin API should be the first-class surface.
+The native Kvist/Odin API should be the first-class source-level surface.
 
 It should expose:
 
@@ -28,6 +39,22 @@ It should expose:
 - get current DB snapshot
 - query
 - pull
+
+## Native library and CLI
+
+The native library should be the primary binary artifact for non-Kvist/Odin
+consumers. It can link SQLite internally or depend on a platform SQLite library,
+but SQLite should remain an implementation detail behind Vev's storage adapter.
+
+The CLI binary should stay thin:
+
+- inspect local databases
+- run smoke tests
+- import/export data
+- support debugging and operational workflows
+- exercise the same engine path as embedded users
+
+The CLI should not become the only supported way to use Vev from applications.
 
 ## C ABI
 
@@ -41,6 +68,7 @@ Good candidates:
 - query from text
 - pull from text pattern
 - results in a simple encoded representation
+- release/free functions for every owned handle/result
 
 Avoid exposing:
 

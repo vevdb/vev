@@ -12,15 +12,19 @@ Outcomes:
 - interop direction pinned down
 - semantic style pinned down
 - embedded-first/server-possible stance pinned down
+- Kvist-first implementation stance pinned down
+- native library plus CLI packaging direction pinned down
 
 ## Phase 1: In-memory proof
 
 Goal:
 
+- port the current semantic sketch to Kvist
 - create connection
 - transact small dataset
 - run simple query
 - return immutable DB snapshots for reads
+- keep generated Odin readable
 
 Success shape:
 
@@ -55,11 +59,17 @@ Backend:
 
 - SQLite first
 
+Packaging:
+
+- embedded native library path remains primary
+- CLI binary exercises the same engine path
+
 ## Phase 4: Dogfood
 
 Goal:
 
 - use Vev in one or two real local tools
+- use Vev as a serious Kvist workload
 - verify whether tx metadata plus `Tx_Report` is enough for app-level reactions
 
 Questions:
@@ -73,8 +83,13 @@ Questions:
 
 Goal:
 
+- package the engine as a native library
 - define and expose a narrow stable C ABI
 - build a small wrapper for JVM/Clojure use if still justified
+
+Non-goal:
+
+- making the CLI binary the only application integration path
 
 ## Phase 6: Optional packaging expansion
 
