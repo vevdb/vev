@@ -94,6 +94,7 @@ Supported now:
 - entity refs as values
 - joins through repeated variables
 - positional `:in` variables
+- `$` in `:in` as the current DB source
 - collection `:in` variables shaped like `[?x ...]`
 - tuple `:in` variables shaped like `[?a ?b]`
 - pull expressions in `:find`
@@ -136,7 +137,7 @@ Example:
 ```clojure
 (v.q db
   [:find ?e ?name
-   :in ?email
+   :in $ ?email
    :where
    [?e :user/email ?email]
    [?e :user/name ?name]
