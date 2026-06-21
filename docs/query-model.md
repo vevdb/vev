@@ -99,6 +99,7 @@ Supported now:
 - `not` groups
 - `not-join`
 - simple `or` groups with data-clause or `(and ...)` data-clause branches
+- top-level `and` groups over data clauses
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -194,6 +195,15 @@ Example:
    (or (and [?e :user/active true]
             [?e :user/age 37])
        [?e :user/email "grace@example.com"])
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   (and [?e :user/active true]
+        [?e :user/age 37])
    [?e :user/name ?name]])
 ```
 
