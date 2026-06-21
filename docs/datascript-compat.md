@@ -22,7 +22,7 @@ Status key:
 | `query_not` | partial | Single-source DataScript subset ported; nested `not`, default-source forms, and insufficient-binding errors incomplete |
 | `query_or` | partial | Single-source DataScript subset ported, including scalar-input `or`; default-source forms and relation-source `or-join` incomplete |
 | `query_pull` | partial | Basic literal-pattern DataScript subset ported; var patterns, multi-source pull, and exact tuple return shape incomplete |
-| `query_return_map` | partial | `:keys`, `:strs`, `:syms` covered; tuple return-map subset ported |
+| `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
 | `query_rules` | missing | Biggest remaining query feature |
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, limits covered; recursion/components missing |
