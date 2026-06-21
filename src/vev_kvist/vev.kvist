@@ -357,6 +357,9 @@
 (defn cas [e: u64, a: string, expected: Value, v: Value] -> Tx-Data
   (Tx-Data {op: ":db.fn/cas" e: e a: a expected: expected v: v}))
 
+(defn cas-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, expected: Value, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db.fn/cas" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a expected: expected v: v}))
+
 (defn retract-attr [e: u64, a: string] -> Tx-Data
   (Tx-Data {op: ":db/retractAttr" e: e a: a}))
 
@@ -707,12 +710,20 @@
 	                (unquote (emit-literal-value v))))))))))
 
 (defmacro- emit-cas-call [e a expected v]
-  (quasiquote
-    (cas
-      (unquote e)
-      (unquote (emit-attr a))
-      (unquote (emit-literal-value expected))
-      (unquote (emit-literal-value v)))))
+  (if (lookup-ref? e)
+    (quasiquote
+      (cas-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (unquote (emit-attr a))
+        (unquote (emit-literal-value expected))
+        (unquote (emit-literal-value v))))
+    (quasiquote
+      (cas
+        (unquote e)
+        (unquote (emit-attr a))
+        (unquote (emit-literal-value expected))
+        (unquote (emit-literal-value v))))))
 
 (defmacro- tx-map-id [items]
   (if (= (count items) 0)
@@ -2449,8 +2460,9 @@
 
 (defn schema-cardinality-one? [db: DB, attr: string] -> bool
   (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
-    (and has-cardinality
-         (= cardinality ":db.cardinality/one"))))
+    (or (schema-unique? db attr)
+        (and has-cardinality
+             (= cardinality ":db.cardinality/one")))))
 
 (defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
   (when (not (schema-unique? db attr))
