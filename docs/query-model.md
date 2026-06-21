@@ -99,6 +99,7 @@ Supported now:
 - tuple `:in` variables shaped like `[?a ?b]`
 - pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
+- `missing?`
 - `not` groups
 - `not-join`
 - simple `or` groups with data-clause or `(and ...)` data-clause branches
@@ -179,6 +180,14 @@ Example:
    :where
    [?e :user/name ?name]
    (not [?e :user/active true])])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [?e :user/name ?name]
+   [(missing? $ ?e :user/email)]])
 ```
 
 ```clojure

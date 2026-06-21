@@ -878,12 +878,29 @@
         (error "datalog clauses must have shape [e a v] or [src e a v]")))
     (error "datalog :where entries must be clauses")))
 
-(defmacro- predicate-clause? [form]
+(defmacro- missing-clause? [form]
   (if (vector? form)
     (if (= (count form) 1)
-      (list? (first form))
+      (let [expr (first form)]
+        (if (list? expr)
+          (if (= (count expr) 4)
+            (let [head (first expr)]
+              (if (symbol? head)
+                (= (source head) "missing?")
+                false))
+            false)
+          false))
       false)
     false))
+
+(defmacro- predicate-clause? [form]
+  (if (missing-clause? form)
+    false
+    (if (vector? form)
+      (if (= (count form) 1)
+        (list? (first form))
+        false)
+      false)))
 
 (defmacro- not-clause? [form]
   (if (list? form)
@@ -956,6 +973,17 @@
         (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
       (error "not clauses must have shape (not [e a v] ...) or (not-join [?x] [e a v] ...)"))))
 
+(defmacro- emit-datalog-missing-group [form]
+  (if (missing-clause? form)
+    (let [expr (first form)]
+      (quasiquote
+        (not-group
+          ([]Clause
+            [(Clause {e: (unquote (emit-entity-term (nth expr 2)))
+                      a: (unquote (emit-attr-term (nth expr 3)))
+                      v: (term-wildcard)})]))))
+    (error "missing? clauses must have shape [(missing? $ ?e :attr)]")))
+
 (defmacro- emit-datalog-or-branch [form]
   (if (vector? form)
     (quasiquote
@@ -1002,21 +1030,23 @@
     (forms)
     (if (predicate-clause? (first forms))
       (emit-datalog-clauses (rest forms))
-      (if (not-clause? (first forms))
+      (if (missing-clause? (first forms))
         (emit-datalog-clauses (rest forms))
-        (if (not-join-clause? (first forms))
+        (if (not-clause? (first forms))
           (emit-datalog-clauses (rest forms))
-          (if (or-clause? (first forms))
+          (if (not-join-clause? (first forms))
             (emit-datalog-clauses (rest forms))
-            (if (or-join-clause? (first forms))
+            (if (or-clause? (first forms))
               (emit-datalog-clauses (rest forms))
-              (if (and-clause? (first forms))
-                (forms
-                  (emit-datalog-clauses (rest (first forms)))
-                  (emit-datalog-clauses (rest forms)))
-                (forms
-                  (emit-datalog-clause (first forms))
-                  (emit-datalog-clauses (rest forms)))))))))))
+              (if (or-join-clause? (first forms))
+                (emit-datalog-clauses (rest forms))
+                (if (and-clause? (first forms))
+                  (forms
+                    (emit-datalog-clauses (rest (first forms)))
+                    (emit-datalog-clauses (rest forms)))
+                  (forms
+                    (emit-datalog-clause (first forms))
+                    (emit-datalog-clauses (rest forms))))))))))))
 
 (defmacro- emit-datalog-predicates [forms]
   (if (= (count forms) 0)
@@ -1038,7 +1068,11 @@
         (forms
           (emit-datalog-not-group (first forms))
           (emit-datalog-not-groups (rest forms)))
-        (emit-datalog-not-groups (rest forms))))))
+        (if (missing-clause? (first forms))
+          (forms
+            (emit-datalog-missing-group (first forms))
+            (emit-datalog-not-groups (rest forms)))
+          (emit-datalog-not-groups (rest forms)))))))
 
 (defmacro- emit-datalog-or-groups [forms]
   (if (= (count forms) 0)
