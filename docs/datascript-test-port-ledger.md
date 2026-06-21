@@ -11,7 +11,7 @@ DataScript assertion or exact Clojure API shape.
 | --- | ---: | --- | --- |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
 | `query_aggregates.cljc` | 1 | subset | custom aggregates |
-| `query_not.cljc` | 5 | subset | source-prefixed forms and nested inherited source covered; nested source override and error behavior remain |
+| `query_not.cljc` | 5 | subset | source-prefixed forms plus nested inherited/override source covered; error behavior remains |
 | `query_or.cljc` | 5 | subset | source-prefixed forms plus nested inherited/override source covered; exact validation errors remain |
 | `query_pull.cljc` | 7 | subset | multi-source pull |
 | `query_rules.cljc` | 3 | subset | source-qualified relation rule calls covered; host predicate inputs, validation, and unbounded fixpoint remain |
