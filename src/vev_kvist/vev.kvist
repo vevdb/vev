@@ -5358,21 +5358,6 @@
       (return (stddev-float (slice aggregate-ints 0))))
     current))
 
-(defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, bindings: []Binding, query: Query]
-  (for [binding bindings]
-    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
-      (when ok
-        (when (not (row-value-prefix-exists? (slice rows^ 0) (slice group-values 0)))
-            (let [values (arr.into [dynamic]Value (slice group-values 0))
-                  pulls (make [dynamic]Pull-Result)]
-            (for [aggregate query.aggregates]
-              (arr.push! values (aggregate-initial-value aggregate)))
-            (arr.push! rows^ (Result-Row {values: values pulls: pulls})))))))
-  (for [row rows^]
-    (for [aggregate index query.aggregates]
-      (set! row.values[(+ (count query.find) index)]
-        (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
-
 (defn pull-pattern-input [query: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]
   (for [input-name index query.inputs]
     (when (= input-name name)
@@ -5386,6 +5371,36 @@
   (if pull-find.has_pattern_var
     (pull-pattern-input query inputs pull-find.pattern_var)
     (return pull-find.pattern true)))
+
+(defn pulls-for-binding [db: DB, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
+  (let [out (make [dynamic]Pull-Result 0 (count query.pulls))]
+    (for [pull-find query.pulls]
+      (let [[entity ok] (binding-lookup binding pull-find.var)]
+        (if (and ok (= entity.kind .Entity))
+          (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)]
+            (if pattern-ok
+              (arr.push! out (pull-pattern-spec db entity.entity pattern))
+              (return out false)))
+          (return out false))))
+    (return out true)))
+
+(defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, db: DB, query: Query, inputs: []Query-Input, bindings: []Binding]
+  (for [binding bindings]
+    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
+      (when ok
+        (when (not (row-value-prefix-exists? (slice rows^ 0) (slice group-values 0)))
+            (let [values (arr.into [dynamic]Value (slice group-values 0))
+                  [pulls pulls-ok] (pulls-for-binding db query inputs binding)]
+            (when (not pulls-ok)
+              (delete pulls)
+              (return))
+            (for [aggregate query.aggregates]
+              (arr.push! values (aggregate-initial-value aggregate)))
+            (arr.push! rows^ (Result-Row {values: values pulls: pulls})))))))
+  (for [row rows^]
+    (for [aggregate index query.aggregates]
+      (set! row.values[(+ (count query.find) index)]
+        (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [bindings (bindings-from-inputs db query inputs)
@@ -5469,15 +5484,17 @@
             (for [aggregate query.aggregates]
               (arr.push! values (aggregate-value-for-group (slice bindings 0) query aggregate ([]Value []))))
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
-          (append-aggregate-rows! (addr rows) (slice bindings 0) query))
+          (append-aggregate-rows! (addr rows) db query inputs (slice bindings 0)))
         (delete bindings)
         (return (Result-Set {rows: rows}))))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
       (for [binding bindings]
         (let [values (make [dynamic]Value 0 (count query.find))
               dedupe-values (make [dynamic]Value)
-              pulls (make [dynamic]Pull-Result 0 (count query.pulls))
+              [pulls pulls-ok] (pulls-for-binding db query inputs binding)
               complete true]
+          (when (not pulls-ok)
+            (set! complete false))
           (for [name query.find]
             (let [[value ok] (binding-lookup binding name)]
               (if ok
@@ -5489,14 +5506,6 @@
             (let [[value ok] (binding-lookup binding name)]
               (if ok
                 (arr.push! dedupe-values value)
-                (set! complete false))))
-          (for [pull-find query.pulls]
-            (let [[entity ok] (binding-lookup binding pull-find.var)]
-              (if (and ok (= entity.kind .Entity))
-                (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)]
-                  (if pattern-ok
-                    (arr.push! pulls (pull-pattern-spec db entity.entity pattern))
-                    (set! complete false)))
                 (set! complete false))))
           (when complete
             (when (or (> (count pulls) 0)

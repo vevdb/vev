@@ -14,7 +14,7 @@ DataScript assertion or exact Clojure API shape.
 | `query_aggregates.cljc` | 1 | subset | custom aggregates |
 | `query_not.cljc` | 5 | subset | source-prefixed forms plus nested inherited/override source covered; error behavior remains |
 | `query_or.cljc` | 5 | subset | source-prefixed forms plus nested inherited/override source covered; exact validation errors remain |
-| `query_pull.cljc` | 7 | subset | multi-source pull |
+| `query_pull.cljc` | 7 | subset | basic, variable-pattern, aggregate, and lookup-ref pull covered; multi-source pull and exact find-spec return shapes remain |
 | `query_rules.cljc` | 4 | subset | source-qualified relation rule calls and fixpoint recursion covered; host predicate inputs, validation, and semi-naive performance remain |
 | `query_fns.cljc` | 6 | subset | more built-in predicates covered; arbitrary host functions |
 | `query_return_map.cljc` | 1 | covered | Vev uses keyed rows with keyword/string/symbol key kinds instead of Clojure maps |

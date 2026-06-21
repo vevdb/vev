@@ -22,7 +22,7 @@ These are the main in-memory parity target before durable storage.
 | `query_fns.cljc` | 7 | partial | decide host function surface; port all built-in function cases |
 | `query_not.cljc` | 5 | partial | insufficient-binding/error cases and default-source variants |
 | `query_or.cljc` | 5 | partial | validation/error cases and default-source variants |
-| `query_pull.cljc` | 8 | partial | multi-source pull after query source semantics are settled |
+| `query_pull.cljc` | 8 | partial | aggregate pull covered; multi-source pull after query source semantics are settled |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | rule source args, validation, and broader recursion/fixpoint behavior |
 | `query_aggregates.cljc` | 1 | partial | remaining built-ins and exact edge cases; custom aggregates later |
