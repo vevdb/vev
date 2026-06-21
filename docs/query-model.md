@@ -96,7 +96,7 @@ Supported now:
 - collection `:in` variables shaped like `[?x ...]`
 - pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
-- `not` with one or two clauses
+- `not` groups
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -166,8 +166,8 @@ Example:
         [?friend :user/active false])])
 ```
 
-Basic clauses now use in-memory indexes. Text parsing, rules, larger `not`
-groups, `not-join`, and advanced predicates remain later work.
+Basic clauses now use in-memory indexes. Text parsing, rules, `not-join`, and
+advanced predicates remain later work.
 
 ## Pull model
 
