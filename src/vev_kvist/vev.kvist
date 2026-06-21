@@ -82,6 +82,9 @@
   v: Value
   value_tempid: string
   has_value_tempid: bool
+  value_lookup_attr: string
+  value_lookup_value: Value
+  has_value_lookup_ref: bool
 })
 
 (defstruct Tempid {
@@ -349,6 +352,12 @@
 
 (defn add-value-tempid [e: u64, a: string, value-tempid: string] -> Tx-Data
   (Tx-Data {op: ":db/add" e: e a: a value_tempid: value-tempid has_value_tempid: true}))
+
+(defn add-value-lookup-ref [e: u64, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" e: e a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
+
+(defn retract-value-lookup-ref [e: u64, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" e: e a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
 
 (defn add-tempid-value-tempid [tempid: string, a: string, value-tempid: string] -> Tx-Data
   (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a value_tempid: value-tempid has_value_tempid: true}))
@@ -655,17 +664,24 @@
             (unquote e)
             (unquote (emit-attr a))
             (unquote (emit-literal-value v))))
-        (if (keyword? e)
-          (quasiquote
-            ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
-              (unquote (source e))
-              (unquote (emit-attr a))
-              (unquote (emit-literal-value v))))
-          (quasiquote
-            ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
-              (unquote e)
-              (unquote (emit-attr a))
-              (unquote (emit-literal-value v)))))))))
+	    (if (keyword? e)
+	      (quasiquote
+	        ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
+	          (unquote (source e))
+	          (unquote (emit-attr a))
+	          (unquote (emit-literal-value v))))
+	          (if (lookup-ref? v)
+	            (quasiquote
+	              ((unquote (if is-retract (quasiquote retract-value-lookup-ref) (quasiquote add-value-lookup-ref)))
+	                (unquote e)
+	                (unquote (emit-attr a))
+	                (unquote (emit-attr (nth v 0)))
+	                (unquote (emit-literal-value (nth v 1)))))
+	            (quasiquote
+	              ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
+	                (unquote e)
+	                (unquote (emit-attr a))
+	                (unquote (emit-literal-value v))))))))))
 
 (defmacro- tx-map-id [items]
   (if (= (count items) 0)
@@ -2442,9 +2458,18 @@
         (when (= data.op ":db/retractAttr")
           (append-retract-attr-ops! (addr resolved-ops) db e data.a)
           (continue))
-        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
-          (when data.has_value_tempid
-            (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.value_tempid)]
+	        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
+	          (when data.has_value_lookup_ref
+	            (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
+	              (if lookup-ok
+	                (set! v (value-entity lookup-e))
+	                (return (Resolved-Tx {ok: false
+	                                      error: "lookup ref not found"
+	                                      ops: resolved-ops
+	                                      tx_meta: resolved-meta
+	                                      tempids: resolved-tempids})))))
+	          (when data.has_value_tempid
+	            (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.value_tempid)]
               (if ok
                 (set! v (value-entity existing))
                 (do
