@@ -79,6 +79,13 @@ transaction resolves to the same entity and the transaction report exposes the
 resolved `tempids` mapping. Lookup refs require a current `:db/unique` schema
 attr. Idents resolve through current `:db/ident` facts.
 
+For attrs declared with `:db/valueType :db.type/ref`, keyword ident values in
+tx data resolve to entity refs:
+
+```clojure
+[:db/add 1 :user/friend :user/grace]
+```
+
 ### Map forms
 
 Map forms are part of the Datomic transaction surface and should be supported

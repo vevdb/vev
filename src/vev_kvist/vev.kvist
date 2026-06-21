@@ -1453,6 +1453,16 @@
         (return db.datoms[datom-index].e true))))
   (return 0 false))
 
+(defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
+  (when (= value.kind .Keyword)
+    (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+      (when (and has-type (= schema-type ":db.type/ref"))
+        (let [[entity ident-ok] (schema-entity-for-attr db value.text)]
+          (if ident-ok
+            (return (value-entity entity) true "")
+            (return value false "ident not found"))))))
+  (return value true ""))
+
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
@@ -1503,9 +1513,16 @@
         (when (= data.op ":db/retractAttr")
           (append-retract-attr-ops! (addr resolved-ops) db e data.a)
           (continue))
+        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
+          (when (not value-ok)
+            (return (Resolved-Tx {ok: false
+                                  error: value-error
+                                  ops: resolved-ops
+                                  tx_meta: resolved-meta
+                                  tempids: resolved-tempids})))
         (if (= data.op ":db/retract")
-          (arr.push! resolved-ops (tx-retract e data.a data.v))
-          (arr.push! resolved-ops (tx-add e data.a data.v)))))
+          (arr.push! resolved-ops (tx-retract e data.a v))
+          (arr.push! resolved-ops (tx-add e data.a v))))))
     (Resolved-Tx {ok: true error: "" ops: resolved-ops tx_meta: resolved-meta tempids: resolved-tempids})))
 
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
