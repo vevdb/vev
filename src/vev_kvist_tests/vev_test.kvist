@@ -1501,6 +1501,38 @@
       (t.is (= result.rows[0].values[0].int_value 37))
       (t.is (= (count names.rows) 0))))
 
+(t.deftest datascript-retract-missing-value-is-noop
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :name "Ivan"]])
+        report (vev.transact (addr conn) [[:db/retract 1 :name "Petr"]])
+        names (vev.q-collection report.db_after
+                [:find [?name ...]
+                 :where
+                 [1 :name ?name]])]
+    (t.is report.ok)
+    (t.is (= (count names) 1))
+    (t.is (= names[0].text "Ivan"))))
+
+(t.deftest datascript-duplicate-retract-is-idempotent
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :name "Ivan"]])
+        report (vev.transact
+                 (addr conn)
+                 [[:db/retract 1 :name "Ivan"]
+                  [:db/retract 1 :name "Ivan"]])
+        names (vev.q-collection report.db_after
+                [:find [?name ...]
+                 :where
+                 [1 :name ?name]])]
+    (t.is report.ok)
+    (t.is (= (count names) 0))))
+
 (t.deftest transact-data-supports-db-fn-retract-attribute
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1902,6 +1934,29 @@
     (t.is retract-report.ok)
     (t.is (= (count retract-result.rows) 0))))
 
+(t.deftest datascript-lookup-refs-resolve-against-intermediate-tx-db
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friend]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 1 :name "Ivan"]])
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 3 :name "Oleg"]
+                  [:db/add 1 :friend [:name "Oleg"]]])
+        [friend friend-ok] (vev.q-scalar report.db_after
+                              [:find ?friend .
+                               :where
+                               [1 :friend ?friend]])]
+    (t.is report.ok)
+    (t.is friend-ok)
+    (t.is (= friend.entity 3))))
+
 (t.deftest datascript-retract-missing-lookup-ref-is-noop
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1952,6 +2007,140 @@
     (t.is (= (count names) 1))
     (t.is (= names[0].text "Ivan"))))
 
+(t.deftest datascript-cas-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :weight]
+             [:db/add 100 :db/valueType :db.type/long]
+             [:db/add 100 :db/cardinality :db.cardinality/one]
+             [:db/add 1 :weight 200]])
+        first (vev.transact (addr conn) [[:db.fn/cas 1 :weight 200 300]])
+        second (vev.transact (addr conn) [[:db/cas 1 :weight 300 400]])
+        failed (vev.transact (addr conn) [[:db.fn/cas 1 :weight 200 210]])
+        [current current-ok] (vev.q-scalar second.db_after
+                  [:find ?weight .
+                   :where
+                   [1 :weight ?weight]])]
+    (t.is first.ok)
+    (t.is second.ok)
+    (t.is (not failed.ok))
+    (t.is (= failed.error "cas failed"))
+    (t.is current-ok)
+    (t.is (= current.int_value 400))))
+
+(t.deftest datascript-cas-lookup-ref-entity-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 1 :name "Ivan"]])
+        report (vev.transact (addr conn) [[:db.fn/cas [:name "Ivan"] :name "Ivan" "Oleg"]])
+        names (vev.q-collection report.db_after
+                [:find [?name ...]
+                 :where
+                 [?e :name ?name]])]
+    (t.is report.ok)
+    (t.is (= (count names) 1))
+    (t.is (= names[0].text "Oleg"))))
+
+(t.deftest datascript-cas-lookup-ref-value-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friend]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/one]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Petr"]])
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :friend 1]])
+        expected-lookup (vev.transact
+                          (addr conn)
+                          [[:db.fn/cas 1 :friend [:name "Ivan"] 2]])
+        replacement-lookup (vev.transact
+                             (addr conn)
+                             [[:db.fn/cas 1 :friend 2 [:name "Petr"]]])
+        [friend friend-ok] (vev.q-scalar replacement-lookup.db_after
+                              [:find ?friend .
+                               :where
+                               [1 :friend ?friend]])]
+    (t.is expected-lookup.ok)
+    (t.is replacement-lookup.ok)
+    (t.is friend-ok)
+    (t.is (= friend.entity 2))))
+
+(t.deftest datascript-cas-uses-intermediate-tx-db-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friend]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/one]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Petr"]])
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 1 :friend 1]
+                  [:db.fn/cas 1 :friend [:name "Ivan"] 2]])
+        [friend friend-ok] (vev.q-scalar report.db_after
+                              [:find ?friend .
+                               :where
+                               [1 :friend ?friend]])]
+    (t.is report.ok)
+    (t.is friend-ok)
+    (t.is (= friend.entity 2))))
+
+(t.deftest datascript-cas-cardinality-many-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :label]
+             [:db/add 100 :db/cardinality :db.cardinality/many]
+             [:db/add 1 :label :x]
+             [:db/add 1 :label :y]])
+        report (vev.transact (addr conn) [[:db.fn/cas 1 :label :y :z]])
+        labels (vev.q-collection report.db_after
+                 [:find [?label ...]
+                  :where
+                  [1 :label ?label]])]
+    (t.is report.ok)
+    (t.is (= (count labels) 3))
+    (t.is (= labels[0].text ":x"))
+    (t.is (= labels[1].text ":y"))
+    (t.is (= labels[2].text ":z"))))
+
+(t.deftest datascript-cas-nil-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :name "Ivan"]])
+        first (vev.transact (addr conn) [[:db.fn/cas 1 :age nil 42]])
+        failed (vev.transact (addr conn) [[:db.fn/cas 1 :age nil 4711]])
+        [age age-ok] (vev.q-scalar first.db_after
+                      [:find ?age .
+                       :where
+                       [1 :age ?age]])]
+    (t.is first.ok)
+    (t.is (not failed.ok))
+    (t.is age-ok)
+    (t.is (= age.int_value 42))))
+
 (t.deftest transact-data-resolves-ident-entities
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1974,6 +2163,26 @@
       (t.is (= result.rows[0].values[0].text "Ada"))
       (t.is (not missing.ok))
       (t.is (= missing.error "ident not found"))))
+
+(t.deftest datascript-retract-missing-ident-is-noop
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+             (addr conn)
+             [[:db/add 10 :db/ident :user/ada]
+              [:db/add 10 :user/name "Ada"]])
+        retract (vev.transact (addr conn) [[:db/retract :user/missing :user/name "Missing"]])
+        retract-attr (vev.transact (addr conn) [[:db.fn/retractAttribute :user/missing :user/name]])
+        retract-entity (vev.transact (addr conn) [[:db.fn/retractEntity :user/missing]])
+        names (vev.q-collection retract-entity.db_after
+                [:find [?name ...]
+                 :where
+                 [?e :user/name ?name]])]
+    (t.is retract.ok)
+    (t.is retract-attr.ok)
+    (t.is retract-entity.ok)
+    (t.is (= (count names) 1))
+    (t.is (= names[0].text "Ada"))))
 
 (t.deftest query-resolves-ident-entity-terms
   (defer (free_all context.allocator))
@@ -2107,6 +2316,52 @@
       (t.is report.ok)
       (t.is (= (count report.tx_data) 1))
       (t.is (= names[0].text "Ada"))))
+
+(t.deftest datascript-map-values-support-lookup-refs
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friend]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Petr"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 1 :friend [:name "Petr"]}])
+        [friend friend-ok] (vev.q-scalar report.db_after
+                              [:find ?friend .
+                               :where
+                               [1 :friend ?friend]])]
+    (t.is report.ok)
+    (t.is friend-ok)
+    (t.is (= friend.entity 2))))
+
+(t.deftest datascript-map-lookup-refs-use-intermediate-tx-db
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friend]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 1 :name "Ivan"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 2 :name "Petr"}
+                  {:db/id 1 :friend [:name "Petr"]}])
+        [friend friend-ok] (vev.q-scalar report.db_after
+                              [:find ?friend .
+                               :where
+                               [1 :friend ?friend]])]
+    (t.is report.ok)
+    (t.is friend-ok)
+    (t.is (= friend.entity 2))))
 
 (t.deftest transact-data-supports-map-db-id-ident
   (defer (free_all context.allocator))
