@@ -196,6 +196,8 @@
 (defstruct Aggregate-Find {
   op: string
   var: string
+  limit: int
+  has_limit: bool
 })
 
 (defstruct Tuple-Input {
@@ -1247,7 +1249,34 @@
 (defmacro- emit-find-var [form]
   (if (symbol? form)
     (quasiquote (unquote (source form)))
-    (error ":find entries must be variables")))
+    (error (str ":find entries must be variables, got " (source form)))))
+
+(defmacro- find-var? [form]
+  (symbol? form))
+
+(defmacro- aggregate-op? [op]
+  (if (= op "count")
+    true
+    (if (= op "count-distinct")
+      true
+      (if (= op "min")
+        true
+        (if (= op "max")
+          true
+          (if (= op "sum")
+            true
+            (if (= op "avg")
+              true
+              (if (= op "median")
+                true
+                (if (= op "variance")
+                  true
+                  (= op "stddev"))))))))))
+
+(defmacro- top-n-aggregate-op? [op]
+  (if (= op "min")
+    true
+    (= op "max")))
 
 (defmacro- find-scalar-marker? [form]
   (if (symbol? form)
@@ -1308,19 +1337,19 @@
 
 (defmacro- aggregate-find? [form]
   (if (list? form)
-    (if (= (count form) 2)
+    (if (if (= (count form) 2) true (= (count form) 3))
       (let [head (first form)]
         (if (symbol? head)
           (let [op (source head)]
-            (or (= op "count")
-                (= op "count-distinct")
-                (= op "min")
-                (= op "max")
-                (= op "sum")
-                (= op "avg")
-                (= op "median")
-                (= op "variance")
-                (= op "stddev")))
+            (if (= (count form) 3)
+              (if (top-n-aggregate-op? op)
+                (if (int? (nth form 1))
+                  (find-var? (nth form 2))
+                  false)
+                false)
+              (if (find-var? (nth form 1))
+                (aggregate-op? op)
+                false)))
           false))
       false)
     false))
@@ -2356,9 +2385,15 @@
 
 (defmacro- emit-aggregate-find [form]
   (if (aggregate-find? form)
-    (quasiquote
-      (Aggregate-Find {op: (unquote (source (first form)))
-                       var: (unquote (emit-find-var (nth form 1)))}))
+    (if (= (count form) 3)
+      (quasiquote
+        (Aggregate-Find {op: (unquote (source (first form)))
+                         var: (unquote (emit-find-var (nth form 2)))
+                         limit: (unquote (nth form 1))
+                         has_limit: true}))
+      (quasiquote
+        (Aggregate-Find {op: (unquote (source (first form)))
+                         var: (unquote (emit-find-var (nth form 1)))})))
     (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, variance, and stddev")))
 
 (defmacro- emit-aggregate-finds [forms]
@@ -4518,6 +4553,27 @@
         (set! j (- j 1)))
       (set! values^[j] current))))
 
+(defn sort-values! [values: ^[dynamic]Value]
+  (for [i (arr.range 1 (count values^))]
+    (let [current values^[i]
+          j i]
+      (while (and (> j 0)
+                  (value-less? current values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] current))))
+
+(defn top-n-values [values: []Value, limit: int, max?: bool] -> Value
+  (let [sorted (arr.into [dynamic]Value values)
+        out (make [dynamic]Value)]
+    (defer (delete sorted))
+    (sort-values! (addr sorted))
+    (let [take-count (if (< limit (count sorted)) limit (count sorted))
+          start (if max? (- (count sorted) take-count) 0)]
+      (for [index (arr.range start (+ start take-count))]
+        (arr.push! out sorted[index]))
+      (Value {kind: .Vector items: out}))))
+
 (defn median-int [values: []i64] -> Value
   (when (= (count values) 0)
     (return (value-int 0)))
@@ -4599,9 +4655,11 @@
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
         aggregate-ints (make [dynamic]i64)
+        aggregate-values (make [dynamic]Value)
         distinct-values (make [dynamic]Value)
         seen-keys (make [dynamic]Result-Row)]
     (defer (delete aggregate-ints))
+    (defer (delete aggregate-values))
     (defer (delete distinct-values))
     (defer (delete seen-keys))
     (for [binding bindings]
@@ -4623,12 +4681,20 @@
                                        (= aggregate.op "stddev"))
                                    (= value.kind .Int))
                           (arr.push! aggregate-ints value.int_value))
+                        (when (and aggregate.has_limit
+                                   (or (= aggregate.op "min")
+                                       (= aggregate.op "max")))
+                          (arr.push! aggregate-values value))
                         (when (and (= aggregate.op "avg")
                                    (= value.kind .Int))
                           (set! avg-count (+ avg-count 1)))
                         (set! current (apply-aggregate-value current aggregate value))))))))))))
     (when (= aggregate.op "count-distinct")
       (return (value-int (i64 (count distinct-values)))))
+    (when (and aggregate.has_limit
+               (or (= aggregate.op "min")
+                   (= aggregate.op "max")))
+      (return (top-n-values (slice aggregate-values 0) aggregate.limit (= aggregate.op "max"))))
     (when (and (= aggregate.op "avg") (> avg-count 0))
       (set! current.int_value (/ current.int_value avg-count)))
     (when (= aggregate.op "median")
