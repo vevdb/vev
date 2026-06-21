@@ -85,6 +85,7 @@ representation and evaluates that directly.
 Supported now:
 
 - `:find` with one or more variables
+- `:with` parsing
 - scalar and collection find syntax: `:find ?x .`, `:find [?x ...]`
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
@@ -269,7 +270,8 @@ the same row-oriented `Result-Set` representation:
 ```
 
 Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
-predicates remain later work.
+predicates remain later work. `:with` is accepted and stored on the query, but
+distinct/dedupe semantics still need to be tightened.
 
 ## Pull model
 

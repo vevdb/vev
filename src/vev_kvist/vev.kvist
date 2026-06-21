@@ -144,6 +144,7 @@
 
 (defstruct Query {
   find: [dynamic]string
+  with: [dynamic]string
   inputs: [dynamic]string
   collection_inputs: [dynamic]string
   tuple_inputs: [dynamic]Tuple-Input
@@ -833,9 +834,19 @@
         (datalog-has-marker-before? (rest forms) marker stop)))))
 
 (defmacro- datalog-find-items [forms]
-  (if (datalog-has-marker-before? forms ":in" ":where")
-    (datalog-items-before forms ":in")
-    (datalog-items-before forms ":where")))
+  (if (datalog-has-marker-before? forms ":with" ":where")
+    (datalog-items-before forms ":with")
+    (if (datalog-has-marker-before? forms ":in" ":where")
+      (datalog-items-before forms ":in")
+      (datalog-items-before forms ":where"))))
+
+(defmacro- datalog-with-items [forms]
+  (if (datalog-has-marker-before? forms ":with" ":where")
+    (let [after-with (datalog-items-after forms ":with")]
+      (if (datalog-has-marker-before? after-with ":in" ":where")
+        (datalog-items-before after-with ":in")
+        (datalog-items-before after-with ":where")))
+    (forms)))
 
 (defmacro- datalog-input-items [forms]
   (if (datalog-has-marker-before? forms ":in" ":where")
@@ -1230,11 +1241,13 @@
         (if (= (source head) ":find")
           (let [tail (rest form)
                 find-items (datalog-find-items tail)
+                with-items (datalog-with-items tail)
                 input-items (datalog-input-items tail)
                 where-items (datalog-where-items tail)]
             (quasiquote
               (query
                 ([]string [(splice (emit-find-vars find-items))])
+                ([]string [(splice (emit-find-vars with-items))])
                 ([]string [(splice (emit-input-vars input-items))])
                 ([]string [(splice (emit-collection-input-vars input-items))])
                 ([]Tuple-Input [(splice (emit-tuple-inputs input-items))])
@@ -1338,8 +1351,9 @@
              has_join: true
              join_vars: join-vars}))
 
-(defn query [find: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find] -> Query
+(defn query [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
+        owned-with (arr.into [dynamic]string with)
         owned-inputs (arr.into [dynamic]string inputs)
         owned-collection-inputs (arr.into [dynamic]string collection-inputs)
         owned-tuple-inputs (arr.into [dynamic]Tuple-Input tuple-inputs)
@@ -1349,6 +1363,7 @@
         owned-or-groups (arr.into [dynamic]Or-Group or-groups)
         owned-pulls (arr.into [dynamic]Pull-Find pulls)]
     (Query {find: owned-find
+            with: owned-with
             inputs: owned-inputs
             collection_inputs: owned-collection-inputs
             tuple_inputs: owned-tuple-inputs
@@ -2160,6 +2175,7 @@
 
 (defn query-name-by-email [email: string] -> Query
   (query ([]string ["name"])
+    ([]string [])
     ([]string [])
     ([]string [])
     ([]Tuple-Input [])
