@@ -1191,7 +1191,9 @@
                 (= op "min")
                 (= op "max")
                 (= op "sum")
-                (= op "avg")))
+                (= op "avg")
+                (= op "median")
+                (= op "variance")))
           false))
       false)
     false))
@@ -2176,7 +2178,7 @@
     (quasiquote
       (Aggregate-Find {op: (unquote (source (first form)))
                        var: (unquote (emit-find-var (nth form 1)))}))
-    (error "aggregate find expressions currently support count, count-distinct, min, max, sum, and avg")))
+    (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, and variance")))
 
 (defmacro- emit-aggregate-finds [forms]
   (if (= (count forms) 0)
@@ -3753,9 +3755,46 @@
   (if (or (= aggregate.op "count")
           (= aggregate.op "count-distinct")
           (= aggregate.op "sum")
-          (= aggregate.op "avg"))
+          (= aggregate.op "avg")
+          (= aggregate.op "median")
+          (= aggregate.op "variance"))
     (value-int 0)
     (Value {})))
+
+(defn sort-i64! [values: ^[dynamic]i64]
+  // ponytail: insertion sort is enough for current aggregate tests; replace if aggregate benches care.
+  (for [i (arr.range 1 (count values^))]
+    (let [current values^[i]
+          j i]
+      (while (and (> j 0)
+                  (< current values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] current))))
+
+(defn median-int [values: []i64] -> Value
+  (when (= (count values) 0)
+    (return (value-int 0)))
+  (let [sorted (arr.into [dynamic]i64 values)]
+    (defer (delete sorted))
+    (sort-i64! (addr sorted))
+    (let [mid (/ (count sorted) 2)]
+      (if (= (% (count sorted) 2) 1)
+        (value-int sorted[mid])
+        (value-int (/ (+ sorted[(- mid 1)] sorted[mid]) 2))))))
+
+(defn variance-int [values: []i64] -> Value
+  (when (= (count values) 0)
+    (return (value-int 0)))
+  (let [sum: i64 0]
+    (for [value values]
+      (set! sum (+ sum value)))
+    (let [mean (/ sum (i64 (count values)))
+          squared: i64 0]
+      (for [value values]
+        (let [diff (- value mean)]
+          (set! squared (+ squared (* diff diff)))))
+      (value-int (/ squared (i64 (count values)))))))
 
 (defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
   (when (or (= aggregate.op "count")
@@ -3809,8 +3848,10 @@
 (defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
+        aggregate-ints (make [dynamic]i64)
         distinct-values (make [dynamic]Value)
         seen-keys (make [dynamic]Result-Row)]
+    (defer (delete aggregate-ints))
     (defer (delete distinct-values))
     (defer (delete seen-keys))
     (for [binding bindings]
@@ -3827,6 +3868,10 @@
                       (when (not (value-exists? (slice distinct-values 0) value))
                         (arr.push! distinct-values value))
                       (do
+                        (when (and (or (= aggregate.op "median")
+                                       (= aggregate.op "variance"))
+                                   (= value.kind .Int))
+                          (arr.push! aggregate-ints value.int_value))
                         (when (and (= aggregate.op "avg")
                                    (= value.kind .Int))
                           (set! avg-count (+ avg-count 1)))
@@ -3835,6 +3880,10 @@
       (return (value-int (i64 (count distinct-values)))))
     (when (and (= aggregate.op "avg") (> avg-count 0))
       (set! current.int_value (/ current.int_value avg-count)))
+    (when (= aggregate.op "median")
+      (return (median-int (slice aggregate-ints 0))))
+    (when (= aggregate.op "variance")
+      (return (variance-int (slice aggregate-ints 0))))
     current))
 
 (defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, bindings: []Binding, query: Query]
