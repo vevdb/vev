@@ -106,6 +106,7 @@ Supported now:
 - `missing?`
 - `get-else`
 - `get-some`
+- `ground` scalar and collection bindings
 - `not` groups
 - `not-join`
 - simple `or` groups with data-clause or `(and ...)` data-clause branches
@@ -274,6 +275,14 @@ the same row-oriented `Result-Set` representation:
    :where
    [?e :user/name "Ada"]
    [(get-some $ ?e :user/email :user/age) [?attr ?value]]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [(ground ["Ada" "Grace"]) [?name ...]]
+   [?e :user/name ?name]])
 ```
 
 ```clojure
