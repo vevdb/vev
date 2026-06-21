@@ -3036,6 +3036,12 @@
 (defn forward-attr-for-reverse [attr: string] -> string
   (strings.concatenate ([]string [":" (slice attr 2)])))
 
+(defn pull-output-has-attr? [out: [dynamic]Pull-Attr, attr: string] -> bool
+  (for [pulled out]
+    (when (= pulled.a attr)
+      (return true)))
+  false)
+
 (defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
@@ -3071,18 +3077,20 @@
               (return))))))))
 
 (defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
-  (arr.push! out^ (Pull-Attr {a: ":db/id"
-                              v: (value-entity entity)
-                              attrs: (make [dynamic]Pull-Attr)}))
+  (when (not (pull-output-has-attr? out^ ":db/id"))
+    (arr.push! out^ (Pull-Attr {a: ":db/id"
+                                v: (value-entity entity)
+                                attrs: (make [dynamic]Pull-Attr)})))
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt" entity "" (Value {}))
         high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
     (for [datom-index (slice indexes low high)]
       (let [datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
-          (arr.push! out^ (Pull-Attr {a: datom.a
-                                      v: datom.v
-                                      attrs: (make [dynamic]Pull-Attr)})))))))
+          (when (not (pull-output-has-attr? out^ datom.a))
+            (arr.push! out^ (Pull-Attr {a: datom.a
+                                        v: datom.v
+                                        attrs: (make [dynamic]Pull-Attr)}))))))))
 
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has_alias spec.alias spec.a))
@@ -3115,9 +3123,10 @@
     (pull-wildcard! out db entity)
     (return))
   (when (= spec.a ":db/id")
-    (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                v: (value-entity entity)
-                                attrs: (make [dynamic]Pull-Attr)}))
+    (when (not (pull-output-has-attr? out^ (pull-output-attr spec)))
+      (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                  v: (value-entity entity)
+                                  attrs: (make [dynamic]Pull-Attr)})))
     (return))
   (when (reverse-attr? spec.a)
     (pull-reverse-attr! out db entity spec)
