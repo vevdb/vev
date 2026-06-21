@@ -147,6 +147,8 @@
   op: string
   terms: []Term
   out: string
+  out_vars: []string
+  is_tuple: bool
 })
 
 (defstruct Rule {
@@ -842,7 +844,16 @@
         (quasiquote (value-bool (unquote form)))
         (if (keyword? form)
           (quasiquote (value-keyword (unquote (source form))))
-          (quasiquote (unquote form))))))))
+          (if (vector? form)
+            (quasiquote (value-vector ([]Value [(splice (emit-literal-values form))])))
+            (quasiquote (unquote form)))))))))
+
+(defmacro- emit-literal-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-literal-value (first forms))
+      (emit-literal-values (rest forms)))))
 
 (defmacro- emit-attr [form]
   (if (keyword? form)
@@ -1574,7 +1585,9 @@
             (quasiquote (term-bool (unquote form)))
             (if (keyword? form)
               (quasiquote (term-keyword (unquote (source form))))
-              (quasiquote (unquote form)))))))))
+              (if (vector? form)
+                (quasiquote (term-value (unquote (emit-literal-value form))))
+                (quasiquote (unquote form))))))))))
 
 (defmacro- emit-datalog-clause [form]
   (if (vector? form)
@@ -1632,7 +1645,7 @@
             out (nth form 1)]
         (if (list? expr)
           (if (>= (count expr) 2)
-            (if (symbol? out)
+            (if (or (symbol? out) (vector? out))
               (let [head (first expr)]
                 (if (symbol? head)
                   (let [op (source head)]
@@ -1862,12 +1875,26 @@
 
 (defmacro- emit-datalog-function-clause [form]
   (if (function-clause? form)
-    (let [expr (first form)]
-      (quasiquote
-        (Function-Clause {op: (unquote (source (nth expr 0)))
-                          terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])
-                          out: (unquote (emit-find-var (nth form 1)))})))
+    (let [expr (first form)
+          out (nth form 1)]
+      (if (vector? out)
+        (quasiquote
+          (Function-Clause {op: (unquote (source (nth expr 0)))
+                            terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])
+                            out_vars: ([]string [(splice (emit-datalog-function-out-vars out))])
+                            is_tuple: true}))
+        (quasiquote
+          (Function-Clause {op: (unquote (source (nth expr 0)))
+                            terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])
+                            out: (unquote (emit-find-var out))}))))
     (error "function clauses must have shape [(op arg ...) ?out]")))
+
+(defmacro- emit-datalog-function-out-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-datalog-function-out-vars (rest forms)))))
 
 (defmacro- emit-datalog-get-else [form]
   (if (get-else-clause? form)
@@ -3079,6 +3106,19 @@
   (let [[value value-ok] (apply-function-op function binding)]
     (when (not value-ok)
       (return binding false))
+    (when function.is_tuple
+      (when (not (= value.kind .Vector))
+        (return binding false))
+      (when (not (= (count value.items) (count function.out_vars)))
+        (return binding false))
+      (let [next (clone-binding binding)]
+        (for [name index function.out_vars]
+          (when (not (= name "_"))
+            (let [[bound bound-ok] (binding-with-value next name value.items[index])]
+              (when (not bound-ok)
+                (return binding false))
+              (set! next bound))))
+        (return next true)))
     (let [next (clone-binding binding)
           [existing exists] (binding-lookup next function.out)]
       (if exists
