@@ -137,6 +137,56 @@
     (t.is (= (count result.rows) 1))
     (t.is (= result.rows[0].values[0].text "Ada"))))
 
+(t.deftest datascript-entity-api-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 10 :db/ident :aka :db/cardinality :db.cardinality/many}
+                  {:db/id 11 :db/ident :children :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+                  {:db/id 12 :db/ident :father :db/valueType :db.type/ref}
+                  {:db/id 13 :db/ident :email :db/unique :db.unique/identity}
+                  {:db/id 1 :name "Ivan" :age 19 :email "ivan@example.com" :aka ["X" "Y"] :children [10]}
+                  {:db/id 10 :father 1 :children [100 101]}
+                  {:db/id 100 :father 10}
+                  {:db/id 101 :father 10}])
+        ivan (vev.db-entity report.db_after 1)
+        by-email (vev.entity-lookup-ref report.db_after ":email" (vev.value-string "ivan@example.com"))
+        aka (vev.entity-values ivan ":aka")
+        children (vev.entity-refs ivan ":children")
+        child children[0]
+        grandkids (vev.entity-refs child ":children")
+        reverse-father (vev.entity-refs ivan ":_father")
+        schema-attr (vev.entity-ident report.db_after ":children")
+        missing (vev.db-entity report.db_after 777)
+        touched (vev.touch ivan)]
+    (t.is ivan.found)
+    (t.is (= (vev.entity-id ivan) 1))
+    (t.is (= (vev.entity-get ivan ":db/id").entity 1))
+    (t.is (= (vev.entity-get ivan ":name").text "Ivan"))
+    (t.is (= (vev.entity-get ivan ":age").int_value 19))
+    (t.is (vev.entity-contains? ivan ":age"))
+    (t.is (not (vev.entity-contains? ivan ":missing")))
+    (t.is by-email.found)
+    (t.is (= by-email.e 1))
+    (t.is (= (count aka) 2))
+    (t.is (= aka[0].text "X"))
+    (t.is (= aka[1].text "Y"))
+    (t.is (= (count children) 1))
+    (t.is (= child.e 10))
+    (t.is (= (vev.entity-ref child ":father").e 1))
+    (t.is (= (count grandkids) 2))
+    (t.is (= grandkids[0].e 100))
+    (t.is (= grandkids[1].e 101))
+    (t.is (= (count reverse-father) 1))
+    (t.is (= reverse-father[0].e 10))
+    (t.is schema-attr.found)
+    (t.is (= schema-attr.e 11))
+    (t.is (not missing.found))
+    (t.is (= (vev.entity-get missing ":name").kind .Nil))
+    (t.is (= touched.e 1))
+    (t.is (> (count touched.attrs) 0))))
+
 (t.deftest datalog-macro-accepts-source-var-existence-clauses
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

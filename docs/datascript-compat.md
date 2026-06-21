@@ -30,16 +30,17 @@ Status key:
 | `transact` | partial | Add/retract/map forms, nil item skipping, value-specific retract no-ops, incoming-ref cleanup on retractEntity, ref-typed numeric value resolution, intermediate-DB lookup/CAS resolution subset, cardinality-one/unique replacement, and CAS one/many/nil/lookup-ref value subset covered; tx fn call and unschematized default cardinality-one incomplete |
 | `upsert` | partial | Unique-identity map/list tempid upsert, intermediate-db retry subset, string tempid refs, unique-ref numeric/lookup-ref upsert, and conflicting unique-field subsets covered; exact conflict messages incomplete |
 | `lookup_refs` | partial | Lookup refs covered in query entity/value positions, scalar non-keyword query inputs, pull, tx entity/value/map-value/CAS entity/expected/value positions, and missing-ref retract no-ops for entity and value refs; collection/keyword-valued input lookup refs incomplete |
-| `ident` | partial | DataScript query/transact/pull subset and missing-ident retract no-ops covered; entity API still missing |
-| `components` | partial | Component `retractEntity`, `retractAttribute`, incoming-ref cleanup, forward pull expansion, and explicit reverse pull subsets covered; entity/touch and exact reverse scalar shape missing |
-| `entity` | missing | Entity view API missing |
+| `ident` | partial | DataScript query/transact/pull subset, entity ident lookup, and missing-ident retract no-ops covered |
+| `components` | partial | Component `retractEntity`, `retractAttribute`, incoming-ref cleanup, forward pull expansion, explicit reverse pull subsets, and entity `touch` covered; exact reverse scalar shape missing |
+| `entity` | partial | Basic entity view API covered: id/db access, lookup-ref and ident construction, scalar/many attr reads, forward and reverse ref navigation, contains, missing entities, and touch; Clojure map protocol/cache/print/equality semantics do not apply directly in Kvist |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `index`, `tuples`, `validation`, `issues` | partial | Need namespace-by-namespace porting |
 
 ## Next Porting Order
 
-1. Port the small examples from `query.cljc`, `query_find_specs.cljc`, and
-   `query_aggregates.cljc` that match Vev's current literal API.
-2. Finish cheap transaction syntax aliases from `transact.cljc`.
-3. Decide the minimum viable rules implementation before porting
-   `query_rules.cljc`.
+1. Close high-surface query gaps: variable pull patterns, more rule source
+   forms, and broader host function/predicate clauses.
+2. Port the remaining DataScript transaction cases that do not require a text
+   parser or Clojure runtime behavior.
+3. Add a DataScript test-port ledger so each upstream namespace has pass/fail
+   counts instead of a prose-only status.

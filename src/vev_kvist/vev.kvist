@@ -267,6 +267,12 @@
   attrs: [dynamic]Pull-Attr
 })
 
+(defstruct Entity {
+  db: DB
+  e: u64
+  found: bool
+})
+
 (defstruct Pull-Spec {
   a: string
   pattern: []Pull-Spec
@@ -4083,6 +4089,111 @@
     (if ok
       (pull-pattern-spec db entity pattern)
       (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}))))
+
+(defn entity-exists? [db: DB, e: u64] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" e "" (Value {}))
+        high (upper-bound-index db indexes "eavt" e "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn db-entity [db: DB, e: u64] -> Entity
+  (Entity {db: db e: e found: (entity-exists? db e)}))
+
+(defn entity-lookup-ref [db: DB, attr: string, value: Value] -> Entity
+  (let [[e ok] (resolve-lookup-ref db attr value)]
+    (if ok
+      (db-entity db e)
+      (Entity {db: db e: 0 found: false}))))
+
+(defn entity-ident [db: DB, ident: string] -> Entity
+  (let [[e ok] (schema-entity-for-attr db ident)]
+    (if ok
+      (db-entity db e)
+      (Entity {db: db e: 0 found: false}))))
+
+(defn entity-id [entity: Entity] -> u64
+  entity.e)
+
+(defn entity-db [entity: Entity] -> DB
+  entity.db)
+
+(defn entity-forward-values [entity: Entity, attr: string] -> [dynamic]Value
+  (let [out (make [dynamic]Value)]
+    (when (not entity.found)
+      (return out))
+    (let [indexes (slice entity.db.eavt 0)
+          low (lower-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))
+          high (upper-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom entity.db.datoms[datom-index]]
+          (when (datom-current-at? entity.db datom-index)
+            (arr.push! out datom.v)))))
+    out))
+
+(defn entity-reverse-values [entity: Entity, attr: string] -> [dynamic]Value
+  (let [out (make [dynamic]Value)]
+    (when (not entity.found)
+      (return out))
+    (let [forward-attr (forward-attr-for-reverse attr)
+          ref-value (value-entity entity.e)
+          indexes (slice entity.db.vaet 0)
+          low (lower-bound-index entity.db indexes "vaet" 0 "" ref-value)
+          high (upper-bound-index entity.db indexes "vaet" 0 "" ref-value)]
+      (for [datom-index (slice indexes low high)]
+        (let [datom entity.db.datoms[datom-index]]
+          (when (and (= datom.a forward-attr)
+                     (datom-current-at? entity.db datom-index))
+            (arr.push! out (value-entity datom.e))))))
+    out))
+
+(defn entity-values [entity: Entity, attr: string] -> [dynamic]Value
+  (if (reverse-attr? attr)
+    (entity-reverse-values entity attr)
+    (entity-forward-values entity attr)))
+
+(defn entity-get [entity: Entity, attr: string] -> Value
+  (when (= attr ":db/id")
+    (when entity.found
+      (return (value-entity entity.e)))
+    (return (value-nil)))
+  (let [values (entity-values entity attr)]
+    (defer (delete values))
+    (if (> (count values) 0)
+      values[0]
+      (value-nil))))
+
+(defn entity-contains? [entity: Entity, attr: string] -> bool
+  (when (= attr ":db/id")
+    (return entity.found))
+  (let [values (entity-values entity attr)]
+    (defer (delete values))
+    (> (count values) 0)))
+
+(defn entity-refs [entity: Entity, attr: string] -> [dynamic]Entity
+  (let [out (make [dynamic]Entity)
+        values (entity-values entity attr)]
+    (defer (delete values))
+    (for [value values]
+      (when (= value.kind .Entity)
+        (let [ref (db-entity entity.db value.entity)]
+          (when ref.found
+            (arr.push! out ref)))))
+    out))
+
+(defn entity-ref [entity: Entity, attr: string] -> Entity
+  (let [refs (entity-refs entity attr)]
+    (defer (delete refs))
+    (if (> (count refs) 0)
+      refs[0]
+      (Entity {db: entity.db e: 0 found: false}))))
+
+(defn touch [entity: Entity] -> Pull-Result
+  (if entity.found
+    (pull-pattern-spec entity.db entity.e ([]Pull-Spec [(flat-pull-spec "*")]))
+    (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)})))
 
 (defn flat-pull-spec [attr: string] -> Pull-Spec
   (Pull-Spec {a: attr
