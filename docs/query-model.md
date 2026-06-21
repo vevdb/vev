@@ -403,7 +403,7 @@ Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
 predicates remain later work. Results are deduped by returned values, with
 `:with` vars included in the dedupe key but not returned.
 Aggregates currently support `count`, `count-distinct`, `min`, `max`, `sum`, and `avg`.
-Numeric aggregates are currently integer-only; `avg` uses integer division.
+`sum` and `avg` are currently integer-only; `avg` uses integer division.
 
 ## Pull model
 
