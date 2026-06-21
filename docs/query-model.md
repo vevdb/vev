@@ -68,6 +68,7 @@ Start with a tight slice:
 - `:find`
 - `:in`
 - `:where`
+- queries with no `:where`, for input-only find/aggregate cases
 - simple clauses `[?e :attr ?v]`
 - scalar equality/predicate clauses as needed
 - rules only after base query flow works
