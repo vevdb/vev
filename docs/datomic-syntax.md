@@ -79,6 +79,13 @@ transaction resolves to the same entity and the transaction report exposes the
 resolved `tempids` mapping. Lookup refs require a current `:db/unique` schema
 attr. Idents resolve through current `:db/ident` facts.
 
+For attrs declared with `:db/valueType :db.type/ref`, keyword ident values in
+tx data resolve to entity refs:
+
+```clojure
+[:db/add 1 :user/friend :user/grace]
+```
+
 ### Map forms
 
 Map forms are part of the Datomic transaction surface and should be supported
@@ -154,6 +161,11 @@ The first supported subset should be:
 - `:where`
 - data patterns
 - simple predicate expressions only if clearly needed
+- scalar, collection, and tuple inputs
+- simple `or` clauses
+- `and` branches inside `or`
+- top-level `and` over data clauses
+- `or-join`
 
 ### Query data patterns
 
@@ -183,9 +195,6 @@ the core path is stable:
 
 - `:with`
 - rules
-- `or` / `or-join`
-- `not-join`
-- `and`
 - function expressions
 - aggregates beyond a very small starter subset
 - multiple result-shape conveniences beyond what is needed first

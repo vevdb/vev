@@ -122,6 +122,14 @@
 
 (defstruct Not-Group {
   clauses: []Clause
+  has_join: bool
+  join_vars: []string
+})
+
+(defstruct Or-Group {
+  branches: []Not-Group
+  has_join: bool
+  join_vars: []string
 })
 
 (defstruct Pull-Find {
@@ -130,13 +138,19 @@
   pattern: []Pull-Spec
 })
 
+(defstruct Tuple-Input {
+  vars: []string
+})
+
 (defstruct Query {
   find: [dynamic]string
   inputs: [dynamic]string
   collection_inputs: [dynamic]string
+  tuple_inputs: [dynamic]Tuple-Input
   clauses: [dynamic]Clause
   predicates: [dynamic]Predicate
   not_groups: [dynamic]Not-Group
+  or_groups: [dynamic]Or-Group
   pulls: [dynamic]Pull-Find
 })
 
@@ -701,6 +715,16 @@
       false)
     false))
 
+(defmacro- input-tuple? [form]
+  (if (vector? form)
+    (not (input-collection? form))
+    false))
+
+(defmacro- input-source? [form]
+  (if (symbol? form)
+    (= (source form) "$")
+    false))
+
 (defmacro- emit-input-var [form]
   (if (input-collection? form)
     (emit-find-var (nth form 0))
@@ -709,20 +733,50 @@
 (defmacro- emit-input-vars [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (input-collection? (first forms))
+    (if (input-source? (first forms))
       (emit-input-vars (rest forms))
-      (forms
-        (emit-input-var (first forms))
-        (emit-input-vars (rest forms))))))
+      (if (input-collection? (first forms))
+        (emit-input-vars (rest forms))
+        (if (input-tuple? (first forms))
+          (emit-input-vars (rest forms))
+          (forms
+            (emit-input-var (first forms))
+            (emit-input-vars (rest forms))))))))
 
 (defmacro- emit-collection-input-vars [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (input-collection? (first forms))
-      (forms
-        (emit-input-var (first forms))
-        (emit-collection-input-vars (rest forms)))
-      (emit-collection-input-vars (rest forms)))))
+    (if (input-source? (first forms))
+      (emit-collection-input-vars (rest forms))
+      (if (input-collection? (first forms))
+        (forms
+          (emit-input-var (first forms))
+          (emit-collection-input-vars (rest forms)))
+        (emit-collection-input-vars (rest forms))))))
+
+(defmacro- emit-tuple-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-tuple-vars (rest forms)))))
+
+(defmacro- emit-tuple-input [form]
+  (if (input-tuple? form)
+    (quasiquote
+      (Tuple-Input {vars: ([]string [(splice (emit-tuple-vars form))])}))
+    (error "tuple inputs must have shape [?a ?b]")))
+
+(defmacro- emit-tuple-inputs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (input-source? (first forms))
+      (emit-tuple-inputs (rest forms))
+      (if (input-tuple? (first forms))
+        (forms
+          (emit-tuple-input (first forms))
+          (emit-tuple-inputs (rest forms)))
+        (emit-tuple-inputs (rest forms))))))
 
 (defmacro- datalog-items-before [forms marker]
   (if (= (count forms) 0)
@@ -779,7 +833,9 @@
       (quasiquote (term-var (unquote (source form)))))
     (if (int? form)
       (quasiquote (term-entity (unquote form)))
-      (quasiquote (unquote form)))))
+      (if (keyword? form)
+        (quasiquote (term-keyword (unquote (source form))))
+        (quasiquote (unquote form))))))
 
 (defmacro- emit-attr-term [form]
   (if (symbol? form)
@@ -822,27 +878,141 @@
         (error "datalog clauses must have shape [e a v] or [src e a v]")))
     (error "datalog :where entries must be clauses")))
 
-(defmacro- predicate-clause? [form]
+(defmacro- missing-clause? [form]
   (if (vector? form)
     (if (= (count form) 1)
-      (list? (first form))
+      (let [expr (first form)]
+        (if (list? expr)
+          (if (= (count expr) 4)
+            (let [head (first expr)]
+              (if (symbol? head)
+                (= (source head) "missing?")
+                false))
+            false)
+          false))
       false)
     false))
+
+(defmacro- predicate-clause? [form]
+  (if (missing-clause? form)
+    false
+    (if (vector? form)
+      (if (= (count form) 1)
+        (list? (first form))
+        false)
+      false)))
 
 (defmacro- not-clause? [form]
   (if (list? form)
     (if (> (count form) 1)
       (let [head (first form)]
-        (and (symbol? head)
-             (= (source head) "not")))
+        (if (symbol? head)
+          (= (source head) "not")
+          false))
       false)
     false))
 
+(defmacro- not-join-clause? [form]
+  (if (list? form)
+    (if (> (count form) 2)
+      (let [head (first form)]
+        (if (symbol? head)
+          (= (source head) "not-join")
+          false))
+      false)
+    false))
+
+(defmacro- or-clause? [form]
+  (if (list? form)
+    (if (> (count form) 1)
+      (let [head (first form)]
+        (if (symbol? head)
+          (= (source head) "or")
+          false))
+      false)
+    false))
+
+(defmacro- or-join-clause? [form]
+  (if (list? form)
+    (if (> (count form) 2)
+      (let [head (first form)]
+        (if (symbol? head)
+          (= (source head) "or-join")
+          false))
+      false)
+    false))
+
+(defmacro- and-clause? [form]
+  (if (list? form)
+    (if (> (count form) 1)
+      (let [head (first form)]
+        (if (symbol? head)
+          (= (source head) "and")
+          false))
+      false)
+    false))
+
+(defmacro- emit-not-join-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-not-join-vars (rest forms)))))
+
 (defmacro- emit-datalog-not-group [form]
-  (if (not-clause? form)
+  (if (not-join-clause? form)
+    (let [join-vars (nth form 1)]
+      (if (vector? join-vars)
+        (quasiquote
+          (not-join-group
+            ([]string [(splice (emit-not-join-vars join-vars))])
+            ([]Clause [(splice (emit-datalog-clauses (slice form 2)))])))
+        (error "not-join expects a vector of join vars")))
+    (if (not-clause? form)
+      (quasiquote
+        (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
+      (error "not clauses must have shape (not [e a v] ...) or (not-join [?x] [e a v] ...)"))))
+
+(defmacro- emit-datalog-missing-group [form]
+  (if (missing-clause? form)
+    (let [expr (first form)]
+      (quasiquote
+        (not-group
+          ([]Clause
+            [(Clause {e: (unquote (emit-entity-term (nth expr 2)))
+                      a: (unquote (emit-attr-term (nth expr 3)))
+                      v: (term-wildcard)})]))))
+    (error "missing? clauses must have shape [(missing? $ ?e :attr)]")))
+
+(defmacro- emit-datalog-or-branch [form]
+  (if (vector? form)
     (quasiquote
-      (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
-    (error "not clauses must have shape (not [e a v] ...)")))
+      (not-group ([]Clause [(unquote (emit-datalog-clause form))])))
+    (if (and-clause? form)
+      (quasiquote
+        (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
+      (error "or branches currently support data clauses or (and [e a v] ...)"))))
+
+(defmacro- emit-datalog-or-branches [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-datalog-or-branch (first forms))
+      (emit-datalog-or-branches (rest forms)))))
+
+(defmacro- emit-datalog-or-group [form]
+  (if (or-join-clause? form)
+    (let [join-vars (nth form 1)]
+      (if (vector? join-vars)
+        (quasiquote
+          (or-join-group
+            ([]string [(splice (emit-not-join-vars join-vars))])
+            ([]Not-Group [(splice (emit-datalog-or-branches (slice form 2)))])))
+        (error "or-join expects a vector of join vars")))
+    (if (or-clause? form)
+      (quasiquote
+        (or-group ([]Not-Group [(splice (emit-datalog-or-branches (rest form)))])))
+      (error "or clauses must have shape (or [e a v] [e a v] ...) or (or-join [?x] ...)"))))
 
 (defmacro- emit-datalog-predicate [form]
   (if (predicate-clause? form)
@@ -860,11 +1030,23 @@
     (forms)
     (if (predicate-clause? (first forms))
       (emit-datalog-clauses (rest forms))
-      (if (not-clause? (first forms))
+      (if (missing-clause? (first forms))
         (emit-datalog-clauses (rest forms))
-        (forms
-          (emit-datalog-clause (first forms))
-          (emit-datalog-clauses (rest forms)))))))
+        (if (not-clause? (first forms))
+          (emit-datalog-clauses (rest forms))
+          (if (not-join-clause? (first forms))
+            (emit-datalog-clauses (rest forms))
+            (if (or-clause? (first forms))
+              (emit-datalog-clauses (rest forms))
+              (if (or-join-clause? (first forms))
+                (emit-datalog-clauses (rest forms))
+                (if (and-clause? (first forms))
+                  (forms
+                    (emit-datalog-clauses (rest (first forms)))
+                    (emit-datalog-clauses (rest forms)))
+                  (forms
+                    (emit-datalog-clause (first forms))
+                    (emit-datalog-clauses (rest forms))))))))))))
 
 (defmacro- emit-datalog-predicates [forms]
   (if (= (count forms) 0)
@@ -882,7 +1064,28 @@
       (forms
         (emit-datalog-not-group (first forms))
         (emit-datalog-not-groups (rest forms)))
-      (emit-datalog-not-groups (rest forms)))))
+      (if (not-join-clause? (first forms))
+        (forms
+          (emit-datalog-not-group (first forms))
+          (emit-datalog-not-groups (rest forms)))
+        (if (missing-clause? (first forms))
+          (forms
+            (emit-datalog-missing-group (first forms))
+            (emit-datalog-not-groups (rest forms)))
+          (emit-datalog-not-groups (rest forms)))))))
+
+(defmacro- emit-datalog-or-groups [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (or-clause? (first forms))
+      (forms
+        (emit-datalog-or-group (first forms))
+        (emit-datalog-or-groups (rest forms)))
+      (if (or-join-clause? (first forms))
+        (forms
+          (emit-datalog-or-group (first forms))
+          (emit-datalog-or-groups (rest forms)))
+        (emit-datalog-or-groups (rest forms))))))
 
 (defmacro- emit-pull-attrs [forms]
   (if (= (count forms) 0)
@@ -1014,9 +1217,11 @@
                 ([]string [(splice (emit-find-vars find-items))])
                 ([]string [(splice (emit-input-vars input-items))])
                 ([]string [(splice (emit-collection-input-vars input-items))])
+                ([]Tuple-Input [(splice (emit-tuple-inputs input-items))])
                 ([]Clause [(splice (emit-datalog-clauses where-items))])
                 ([]Predicate [(splice (emit-datalog-predicates where-items))])
                 ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
+                ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
                 ([]Pull-Find [(splice (emit-pull-finds find-items))]))))
           (error "datalog query must start with :find"))
         (error "datalog query must start with :find")))
@@ -1094,22 +1299,43 @@
     (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
 (defn not-group [clauses: []Clause] -> Not-Group
-  (Not-Group {clauses: clauses}))
+  (Not-Group {clauses: clauses
+              has_join: false
+              join_vars: ([]string [])}))
 
-(defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, pulls: []Pull-Find] -> Query
+(defn not-join-group [join-vars: []string, clauses: []Clause] -> Not-Group
+  (Not-Group {clauses: clauses
+              has_join: true
+              join_vars: join-vars}))
+
+(defn or-group [branches: []Not-Group] -> Or-Group
+  (Or-Group {branches: branches
+             has_join: false
+             join_vars: ([]string [])}))
+
+(defn or-join-group [join-vars: []string, branches: []Not-Group] -> Or-Group
+  (Or-Group {branches: branches
+             has_join: true
+             join_vars: join-vars}))
+
+(defn query [find: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-inputs (arr.into [dynamic]string inputs)
         owned-collection-inputs (arr.into [dynamic]string collection-inputs)
+        owned-tuple-inputs (arr.into [dynamic]Tuple-Input tuple-inputs)
         owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
         owned-not-groups (arr.into [dynamic]Not-Group not-groups)
+        owned-or-groups (arr.into [dynamic]Or-Group or-groups)
         owned-pulls (arr.into [dynamic]Pull-Find pulls)]
     (Query {find: owned-find
             inputs: owned-inputs
             collection_inputs: owned-collection-inputs
+            tuple_inputs: owned-tuple-inputs
             clauses: owned-clauses
             predicates: owned-predicates
             not_groups: owned-not-groups
+            or_groups: owned-or-groups
             pulls: owned-pulls})))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
@@ -1152,13 +1378,30 @@
             (arr.push! out next)))))
     out))
 
+(defn expand-tuple-input [bindings: []Binding, tuple: Tuple-Input, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (= (count tuple.vars) (count input.values))
+      (for [binding bindings]
+        (let [next (clone-binding binding)]
+          (for [name index tuple.vars]
+            (binding-store! (addr next) name input.values[index]))
+          (arr.push! out next))))
+    out))
+
 (defn bindings-from-inputs [query: Query, inputs: []Query-Input] -> [dynamic]Binding
   (let [bindings ([dynamic]Binding [(binding-from-inputs (slice query.inputs 0) inputs)])
-        collection-offset (count query.inputs)]
+        collection-offset (count query.inputs)
+        tuple-offset (+ collection-offset (count query.collection_inputs))]
     (for [name index query.collection_inputs]
       (let [input-index (+ collection-offset index)]
         (when (< input-index (count inputs))
           (let [next-bindings (expand-collection-input (slice bindings 0) name inputs[input-index])]
+            (delete bindings)
+            (set! bindings next-bindings)))))
+    (for [tuple index query.tuple_inputs]
+      (let [input-index (+ tuple-offset index)]
+        (when (< input-index (count inputs))
+          (let [next-bindings (expand-tuple-input (slice bindings 0) tuple inputs[input-index])]
             (delete bindings)
             (set! bindings next-bindings)))))
     bindings))
@@ -1309,6 +1552,16 @@
         (return db.datoms[datom-index].e true))))
   (return 0 false))
 
+(defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
+  (when (= value.kind .Keyword)
+    (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+      (when (and has-type (= schema-type ":db.type/ref"))
+        (let [[entity ident-ok] (schema-entity-for-attr db value.text)]
+          (if ident-ok
+            (return (value-entity entity) true "")
+            (return value false "ident not found"))))))
+  (return value true ""))
+
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
@@ -1359,9 +1612,16 @@
         (when (= data.op ":db/retractAttr")
           (append-retract-attr-ops! (addr resolved-ops) db e data.a)
           (continue))
+        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
+          (when (not value-ok)
+            (return (Resolved-Tx {ok: false
+                                  error: value-error
+                                  ops: resolved-ops
+                                  tx_meta: resolved-meta
+                                  tempids: resolved-tempids})))
         (if (= data.op ":db/retract")
-          (arr.push! resolved-ops (tx-retract e data.a data.v))
-          (arr.push! resolved-ops (tx-add e data.a data.v)))))
+          (arr.push! resolved-ops (tx-retract e data.a v))
+          (arr.push! resolved-ops (tx-add e data.a v))))))
     (Resolved-Tx {ok: true error: "" ops: resolved-ops tx_meta: resolved-meta tempids: resolved-tempids})))
 
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
@@ -1458,8 +1718,17 @@
       (delete resolved.tx_meta)
       report)))
 
-(defn datom-clause-matches? [datom: Datom, clause: Clause, binding: ^Binding] -> bool
-  (and (match-term? clause.e (value-entity datom.e) binding)
+(defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (and (= term.kind .Value)
+             (= term.value.kind .Keyword))
+    (let [[entity ok] (schema-entity-for-attr db term.value.text)]
+      (return (and ok
+                   (= actual.kind .Entity)
+                   (= actual.entity entity)))))
+  (match-term? term actual binding))
+
+(defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
+  (and (match-entity-term? db clause.e (value-entity datom.e) binding)
        (match-term? clause.a (value-keyword datom.a) binding)
        (match-term? clause.v datom.v binding)))
 
@@ -1512,6 +1781,11 @@
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
+    (when (and e-ok (= e-value.kind .Keyword))
+      (let [[entity ident-ok] (schema-entity-for-attr db e-value.text)]
+        (if ident-ok
+          (set! e-value (value-entity entity))
+          (return out))))
     (if (and e-ok a-ok)
       (do
         (when (not (and (= e-value.kind .Entity)
@@ -1562,12 +1836,12 @@
       (let [datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
           (let [candidate (clone-binding binding)]
-            (when (datom-clause-matches? datom clause (addr candidate))
+            (when (datom-clause-matches? db datom clause (addr candidate))
               (return true)))))))
   false)
 
-(defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
-  (let [bindings ([dynamic]Binding [(clone-binding binding)]) :defer]
+(defn bindings-after-clause-group [db: DB, group: Not-Group, binding: Binding] -> [dynamic]Binding
+  (let [bindings ([dynamic]Binding [binding])]
     (for [clause group.clauses]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
@@ -1576,13 +1850,64 @@
               (let [datom db.datoms[datom-index]]
                 (when (datom-current-at? db datom-index)
                   (let [next (clone-binding candidate-binding)]
-                    (when (datom-clause-matches? datom clause (addr next))
+                    (when (datom-clause-matches? db datom clause (addr next))
+                      (arr.push! next-bindings next))))))))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (return bindings))))
+    bindings))
+
+(defn project-binding [binding: Binding, names: []string] -> Binding
+  (let [out (Binding {})]
+    (for [name names]
+      (let [[value ok] (binding-lookup binding name)]
+        (when ok
+          (binding-store! (addr out) name value))))
+    out))
+
+(defn merge-binding [base: Binding, extra: Binding] -> [binding: Binding, ok: bool]
+  (let [out (clone-binding base)]
+    (for [item extra.items]
+      (let [[existing exists] (binding-lookup out item.name)]
+        (if exists
+          (when (not (value-equal? existing item.value))
+            (return out false))
+          (binding-store! (addr out) item.name item.value))))
+    (return out true)))
+
+(defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
+  (let [initial (clone-binding binding)]
+    (when group.has_join
+      (set! initial (project-binding binding group.join_vars)))
+  (let [branch-bindings (bindings-after-clause-group db branch initial) :defer
+        out (make [dynamic]Binding)]
+    (for [branch-binding branch-bindings]
+      (let [[merged ok] (merge-binding binding branch-binding)]
+        (when ok
+          (arr.push! out merged))))
+    out)))
+
+(defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
+  (let [initial (clone-binding binding)]
+    (when group.has_join
+      (set! initial (project-binding binding group.join_vars)))
+  (let [bindings ([dynamic]Binding [initial]) :defer]
+    (for [clause group.clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (let [candidates (clause-candidate-indexes db clause candidate-binding) :defer]
+            (for [datom-index candidates]
+              (let [datom db.datoms[datom-index]]
+                (when (datom-current-at? db datom-index)
+                  (let [next (clone-binding candidate-binding)]
+                    (when (datom-clause-matches? db datom clause (addr next))
                       (arr.push! next-bindings next))))))))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
           (return false))))
-    (return (> (count bindings) 0))))
+    (return (> (count bindings) 0)))))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
@@ -1599,7 +1924,7 @@
               (let [datom datoms[datom-index]]
                 (when (datom-current-at? db datom-index)
                   (let [candidate (clone-binding binding)]
-                    (when (datom-clause-matches? datom clause (addr candidate))
+                    (when (datom-clause-matches? db datom clause (addr candidate))
                       (arr.push! next-bindings candidate))))))
             (delete candidates)))
         (delete bindings)
@@ -1610,6 +1935,16 @@
         (for [binding bindings]
           (when (predicate-matches? predicate binding)
             (arr.push! next-bindings binding)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [group query.or_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (for [branch group.branches]
+            (let [branch-bindings (bindings-after-or-branch db group branch binding)]
+              (for [branch-binding branch-bindings]
+                (arr.push! next-bindings branch-binding))
+              (delete branch-bindings))))
         (delete bindings)
         (set! bindings next-bindings)))
     (for [not-group query.not_groups]
@@ -1807,11 +2142,13 @@
   (query ([]string ["name"])
     ([]string [])
     ([]string [])
+    ([]Tuple-Input [])
     ([]Clause
       [(clause (term-var "e") ":user/email" (term-string email))
        (clause (term-var "e") ":user/name" (term-var "name"))])
     ([]Predicate [])
     ([]Not-Group [])
+    ([]Or-Group [])
     ([]Pull-Find [])))
 
 (defn seed-people [conn: ^Conn] -> Tx-Report

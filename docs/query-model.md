@@ -90,13 +90,21 @@ Supported now:
 - variables in entity, attribute, and value positions
 - wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
+- ident keywords in entity position
 - entity refs as values
 - joins through repeated variables
 - positional `:in` variables
+- `$` in `:in` as the current DB source
 - collection `:in` variables shaped like `[?x ...]`
+- tuple `:in` variables shaped like `[?a ?b]`
 - pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
+- `missing?`
 - `not` groups
+- `not-join`
+- simple `or` groups with data-clause or `(and ...)` data-clause branches
+- `or-join`
+- top-level `and` groups over data clauses
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -108,6 +116,13 @@ Example:
    [?e :user/email "ada@example.com"]
    [?e :user/active _]
    [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [:user/ada :user/name ?name]])
 ```
 
 `$` source-var clauses parse the same way against the current DB:
@@ -123,7 +138,7 @@ Example:
 ```clojure
 (v.q db
   [:find ?e ?name
-   :in ?email
+   :in $ ?email
    :where
    [?e :user/email ?email]
    [?e :user/name ?name]
@@ -140,6 +155,16 @@ Example:
    [?e :user/email ?email]
    [?e :user/name ?name]]
   ["ada@example.com" "grace@example.com"])
+```
+
+```clojure
+(v.q db
+  [:find ?e
+   :in [?name ?age]
+   :where
+   [?e :user/name ?name]
+   [?e :user/age ?age]]
+  ["Ada" 37])
 ```
 
 ```clojure
@@ -162,12 +187,70 @@ Example:
   [:find ?name
    :where
    [?e :user/name ?name]
+   [(missing? $ ?e :user/email)]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [?e :user/name ?name]
    (not [?e :user/friend ?friend]
         [?friend :user/active false])])
 ```
 
-Basic clauses now use in-memory indexes. Text parsing, rules, `not-join`, and
-advanced predicates remain later work.
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [?e :user/name ?name]
+   (not-join [?e]
+     [?e :user/friend ?friend]
+     [?friend :user/name ?name])])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   (or [?e :user/email "ada@example.com"]
+       [?e :user/email "grace@example.com"])
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   (or (and [?e :user/active true]
+            [?e :user/age 37])
+       [?e :user/email "grace@example.com"])
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   (and [?e :user/active true]
+        [?e :user/age 37])
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?label
+   :where
+   [?e :user/name ?name]
+   (or-join [?e ?label]
+     (and [?e :user/active true]
+          [?e :user/name ?label])
+     (and [?e :user/active false]
+          [?e :user/email ?label]))])
+```
+
+Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
+predicates remain later work.
 
 ## Pull model
 
