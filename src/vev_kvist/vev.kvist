@@ -316,6 +316,13 @@
   lookup_values: []Value
 })
 
+(defstruct Index-Arg {
+  value: Value
+  has_lookup_ref: bool
+  lookup_attr: string
+  lookup_value: Value
+})
+
 (defn value-entity [id: u64] -> Value
   (Value {kind: .Entity entity: id}))
 
@@ -798,6 +805,22 @@
       false
       true)
     false))
+
+(defmacro- emit-index-arg [form]
+  (if (lookup-ref? form)
+    (quasiquote
+      (Index-Arg {has_lookup_ref: true
+                  lookup_attr: (unquote (emit-attr (nth form 0)))
+                  lookup_value: (unquote (emit-literal-value (nth form 1)))}))
+    (quasiquote
+      (Index-Arg {value: (unquote (emit-literal-value form))}))))
+
+(defmacro- emit-index-args [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-index-arg (first forms))
+      (emit-index-args (rest forms)))))
 
 (defmacro- emit-tx-data-call [op e a v]
   (let [is-retract (= (source op) ":db/retract")]
@@ -2564,6 +2587,15 @@
         ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":syms")))])))
     (error "q-syms expects a literal datalog query")))
 
+(defmacro datoms [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (datoms-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "datoms index order must be a keyword")))
+
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)
     (quasiquote
@@ -2912,6 +2944,87 @@
         found (int-lower-bound current index)]
     (and (< found (count current))
          (= current[found] index))))
+
+(defn index-arg-value [db: DB, arg: Index-Arg] -> [value: Value, ok: bool]
+  (when arg.has_lookup_ref
+    (let [[entity found] (resolve-lookup-ref db arg.lookup_attr arg.lookup_value)]
+      (when found
+        (return (value-entity entity) true))
+      (return (Value {}) false)))
+  (return arg.value true))
+
+(defn resolve-index-args [db: DB, args: []Index-Arg] -> [values: [dynamic]Value, ok: bool]
+  (let [resolved (make [dynamic]Value)]
+    (for [arg args]
+      (let [[value ok] (index-arg-value db arg)]
+        (when (not ok)
+          (return resolved false))
+        (arr.push! resolved value)))
+    (return resolved true)))
+
+(defn datom-index-position-value [datom: Datom, order: string, position: int] -> Value
+  (if (= order ":eavt")
+    (if (= position 0)
+      (value-entity datom.e)
+      (if (= position 1)
+        (value-keyword datom.a)
+        (if (= position 2)
+          datom.v
+          (Value {}))))
+    (if (= order ":aevt")
+      (if (= position 0)
+        (value-keyword datom.a)
+        (if (= position 1)
+          (value-entity datom.e)
+          (if (= position 2)
+            datom.v
+            (Value {}))))
+      (if (= order ":avet")
+        (if (= position 0)
+          (value-keyword datom.a)
+          (if (= position 1)
+            datom.v
+            (if (= position 2)
+              (value-entity datom.e)
+              (Value {}))))
+        (if (= position 0)
+          datom.v
+          (if (= position 1)
+            (value-keyword datom.a)
+            (if (= position 2)
+              (value-entity datom.e)
+              (Value {}))))))))
+
+(defn index-position-equal? [actual: Value, expected: Value] -> bool
+  (predicate-value-equal? actual expected))
+
+(defn datom-matches-index-values? [datom: Datom, order: string, values: []Value] -> bool
+  (for [value position values]
+    (when (not (index-position-equal? (datom-index-position-value datom order position) value))
+      (return false)))
+  true)
+
+(defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (for [datom-index indexes]
+    (when (datom-current-at? db datom-index)
+      (let [datom db.datoms[datom-index]]
+        (when (datom-matches-index-values? datom order values)
+          (arr.push! out^ datom))))))
+
+(defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        [values ok] (resolve-index-args db args)]
+    (defer (delete values))
+    (when (not ok)
+      (return out))
+    (if (= order ":eavt")
+      (append-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
+      (if (= order ":aevt")
+        (append-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
+        (if (= order ":avet")
+          (append-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
+          (append-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
 
 (defn u64-contains? [items: []u64, value: u64] -> bool
   (for [item items]
