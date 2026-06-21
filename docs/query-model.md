@@ -104,6 +104,7 @@ Supported now:
 - pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
 - `missing?`
+- `get-else`
 - `not` groups
 - `not-join`
 - simple `or` groups with data-clause or `(and ...)` data-clause branches
@@ -256,6 +257,14 @@ the same row-oriented `Result-Set` representation:
    :where
    [?e :user/name ?name]
    [(missing? $ ?e :user/email)]])
+```
+
+```clojure
+(v.q db
+  [:find ?email
+   :where
+   [?e :user/name "Ada"]
+   [(get-else $ ?e :user/email "none") ?email]])
 ```
 
 ```clojure
