@@ -184,6 +184,7 @@ the core path is stable:
 - `:with`
 - rules
 - `or` / `or-join`
+- `not-join`
 - `and`
 - function expressions
 - aggregates beyond a very small starter subset

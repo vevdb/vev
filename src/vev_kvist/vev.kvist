@@ -132,6 +132,7 @@
   collection_inputs: [dynamic]string
   clauses: [dynamic]Clause
   predicates: [dynamic]Predicate
+  not_clauses: [dynamic]Clause
   pulls: [dynamic]Pull-Find
 })
 
@@ -824,6 +825,20 @@
       false)
     false))
 
+(defmacro- not-clause? [form]
+  (if (list? form)
+    (if (= (count form) 2)
+      (let [head (first form)]
+        (and (symbol? head)
+             (= (source head) "not")))
+      false)
+    false))
+
+(defmacro- emit-datalog-not-clause [form]
+  (if (not-clause? form)
+    (emit-datalog-clause (nth form 1))
+    (error "not clauses must have shape (not [e a v])")))
+
 (defmacro- emit-datalog-predicate [form]
   (if (predicate-clause? form)
     (let [expr (first form)]
@@ -840,9 +855,11 @@
     (forms)
     (if (predicate-clause? (first forms))
       (emit-datalog-clauses (rest forms))
-      (forms
-        (emit-datalog-clause (first forms))
-        (emit-datalog-clauses (rest forms))))))
+      (if (not-clause? (first forms))
+        (emit-datalog-clauses (rest forms))
+        (forms
+          (emit-datalog-clause (first forms))
+          (emit-datalog-clauses (rest forms)))))))
 
 (defmacro- emit-datalog-predicates [forms]
   (if (= (count forms) 0)
@@ -852,6 +869,15 @@
         (emit-datalog-predicate (first forms))
         (emit-datalog-predicates (rest forms)))
       (emit-datalog-predicates (rest forms)))))
+
+(defmacro- emit-datalog-not-clauses [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (not-clause? (first forms))
+      (forms
+        (emit-datalog-not-clause (first forms))
+        (emit-datalog-not-clauses (rest forms)))
+      (emit-datalog-not-clauses (rest forms)))))
 
 (defmacro- emit-pull-attrs [forms]
   (if (= (count forms) 0)
@@ -985,6 +1011,7 @@
                 ([]string [(splice (emit-collection-input-vars input-items))])
                 ([]Clause [(splice (emit-datalog-clauses where-items))])
                 ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                ([]Clause [(splice (emit-datalog-not-clauses where-items))])
                 ([]Pull-Find [(splice (emit-pull-finds find-items))]))))
           (error "datalog query must start with :find"))
         (error "datalog query must start with :find")))
@@ -1061,18 +1088,20 @@
         ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
     (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
-(defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, pulls: []Pull-Find] -> Query
+(defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, not-clauses: []Clause, pulls: []Pull-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-inputs (arr.into [dynamic]string inputs)
         owned-collection-inputs (arr.into [dynamic]string collection-inputs)
         owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
+        owned-not-clauses (arr.into [dynamic]Clause not-clauses)
         owned-pulls (arr.into [dynamic]Pull-Find pulls)]
     (Query {find: owned-find
             inputs: owned-inputs
             collection_inputs: owned-collection-inputs
             clauses: owned-clauses
             predicates: owned-predicates
+            not_clauses: owned-not-clauses
             pulls: owned-pulls})))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
@@ -1519,6 +1548,16 @@
           (arr.push! out datom-index))))
     out))
 
+(defn binding-matches-clause? [db: DB, clause: Clause, binding: Binding] -> bool
+  (let [candidates (clause-candidate-indexes db clause binding) :defer]
+    (for [datom-index candidates]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [candidate (clone-binding binding)]
+            (when (datom-clause-matches? datom clause (addr candidate))
+              (return true)))))))
+  false)
+
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
         bindings (bindings-from-inputs query inputs)
@@ -1544,6 +1583,13 @@
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
           (when (predicate-matches? predicate binding)
+            (arr.push! next-bindings binding)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [not-clause query.not_clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (when (not (binding-matches-clause? db not-clause binding))
             (arr.push! next-bindings binding)))
         (delete bindings)
         (set! bindings next-bindings)))
@@ -1739,6 +1785,7 @@
       [(clause (term-var "e") ":user/email" (term-string email))
        (clause (term-var "e") ":user/name" (term-var "name"))])
     ([]Predicate [])
+    ([]Clause [])
     ([]Pull-Find [])))
 
 (defn seed-people [conn: ^Conn] -> Tx-Report
