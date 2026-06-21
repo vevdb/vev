@@ -1,6 +1,7 @@
 (package vev)
 
 (import arr "kvist:arr")
+(import math "core:math")
 (import strings "core:strings")
 
 (defenum Value-Kind [
@@ -8,6 +9,7 @@
   Entity
   String
   Int
+  Float
   Bool
   Keyword
 ])
@@ -17,6 +19,7 @@
   entity: u64
   text: string
   int_value: i64
+  float_value: f64
   bool_value: bool
 })
 
@@ -321,6 +324,9 @@
 (defn value-int [value: i64] -> Value
   (Value {kind: .Int int_value: value}))
 
+(defn value-float [value: f64] -> Value
+  (Value {kind: .Float float_value: value}))
+
 (defn value-bool [value: bool] -> Value
   (Value {kind: .Bool bool_value: value}))
 
@@ -338,9 +344,10 @@
     .Nil 0
     .Entity 1
     .Int 2
-    .String 3
-    .Bool 4
-    .Keyword 5
+    .Float 3
+    .String 4
+    .Bool 5
+    .Keyword 6
     :else 99))
 
 (defn slash-index [text: string] -> int
@@ -376,6 +383,7 @@
       .Entity (< left.entity right.entity)
       .String (string-less? left.text right.text)
       .Int (< left.int_value right.int_value)
+      .Float (< left.float_value right.float_value)
       .Bool (and (not left.bool_value) right.bool_value)
       .Keyword (keyword-less? left.text right.text)
       .Nil false
@@ -542,6 +550,7 @@
       .Entity (= left.entity right.entity)
       .String (= left.text right.text)
       .Int (= left.int_value right.int_value)
+      .Float (= left.float_value right.float_value)
       .Bool (= left.bool_value right.bool_value)
       .Keyword (= left.text right.text)
       .Nil true
@@ -1195,7 +1204,8 @@
                 (= op "sum")
                 (= op "avg")
                 (= op "median")
-                (= op "variance")))
+                (= op "variance")
+                (= op "stddev")))
           false))
       false)
     false))
@@ -2180,7 +2190,7 @@
     (quasiquote
       (Aggregate-Find {op: (unquote (source (first form)))
                        var: (unquote (emit-find-var (nth form 1)))}))
-    (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, and variance")))
+    (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, variance, and stddev")))
 
 (defmacro- emit-aggregate-finds [forms]
   (if (= (count forms) 0)
@@ -3802,7 +3812,8 @@
           (= aggregate.op "sum")
           (= aggregate.op "avg")
           (= aggregate.op "median")
-          (= aggregate.op "variance"))
+          (= aggregate.op "variance")
+          (= aggregate.op "stddev"))
     (value-int 0)
     (Value {})))
 
@@ -3840,6 +3851,10 @@
         (let [diff (- value mean)]
           (set! squared (+ squared (* diff diff)))))
       (value-int (/ squared (i64 (count values)))))))
+
+(defn stddev-float [values: []i64] -> Value
+  (let [variance (variance-int values)]
+    (value-float (math.sqrt (f64 variance.int_value)))))
 
 (defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
   (when (or (= aggregate.op "count")
@@ -3914,7 +3929,8 @@
                         (arr.push! distinct-values value))
                       (do
                         (when (and (or (= aggregate.op "median")
-                                       (= aggregate.op "variance"))
+                                       (= aggregate.op "variance")
+                                       (= aggregate.op "stddev"))
                                    (= value.kind .Int))
                           (arr.push! aggregate-ints value.int_value))
                         (when (and (= aggregate.op "avg")
@@ -3929,6 +3945,8 @@
       (return (median-int (slice aggregate-ints 0))))
     (when (= aggregate.op "variance")
       (return (variance-int (slice aggregate-ints 0))))
+    (when (= aggregate.op "stddev")
+      (return (stddev-float (slice aggregate-ints 0))))
     current))
 
 (defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, bindings: []Binding, query: Query]
