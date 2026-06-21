@@ -31,7 +31,7 @@ Status key:
 | `upsert` | partial | Unique-identity map/list tempid upsert subset covered; conflict reporting, intermediate-db retries, and full ref upsert incomplete |
 | `lookup_refs` | partial | Lookup refs covered in query entity/value positions, pull, tx entity positions, and numeric tx value positions; input lookup refs incomplete |
 | `ident` | partial | DataScript query/transact/pull subset covered; entity API still missing |
-| `components` | partial | Component `retractEntity` and forward pull expansion subsets covered; entity/touch and reverse component behavior missing |
+| `components` | partial | Component `retractEntity`, `retractAttribute`, and forward pull expansion subsets covered; entity/touch and reverse component behavior missing |
 | `entity` | missing | Entity view API missing |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `index`, `tuples`, `validation`, `issues` | partial | Need namespace-by-namespace porting |
