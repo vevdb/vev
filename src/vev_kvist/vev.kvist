@@ -54,6 +54,12 @@
   datom: Datom
 })
 
+(defstruct Datoms-Result {
+  ok: bool
+  error: string
+  datoms: [dynamic]Datom
+})
+
 (defstruct DB {
   datoms: [dynamic]Datom
   current: [dynamic]int
@@ -1102,20 +1108,12 @@
           (error "nested tx map parent currently supports numeric, string, lookup ref, or ident :db/id"))))))
 
 (defmacro- reverse-attr-form? [form]
-  (if (keyword? form)
-    ;; ponytail: replace with macro-time string prefix/slice when Kvist exposes it.
-    (contains? [":_friends" ":_friend" ":_child" ":_ref" ":_user/friend"] (source form))
-    false))
+  (and (keyword? form)
+       (starts-with? (source form) ":_")))
 
 (defmacro- forward-attr-source [form]
   (let [attr (source form)]
-    (cond
-      (= attr ":_friends") ":friends"
-      (= attr ":_friend") ":friend"
-      (= attr ":_child") ":child"
-      (= attr ":_ref") ":ref"
-      (= attr ":_user/friend") ":user/friend"
-      :else (error "unknown reverse tx map attr"))))
+    (str ":" (slice attr 2))))
 
 (defmacro- emit-tx-map-reverse-attr [e a v]
   (if (int? e)
@@ -1460,10 +1458,9 @@
     false))
 
 (defmacro- relation-source? [form]
-  // ponytail: macro-time prefix checks would make this generic for all $source names.
-  (if (symbol? form)
-    (contains? ["$xs" "$ys"] (source form))
-    false))
+  (and (symbol? form)
+       (starts-with? (source form) "$")
+       (not (input-source? form))))
 
 (defmacro- input-wildcard? [form]
   (and (symbol? form)
@@ -2810,6 +2807,15 @@
         ([]Index-Arg [(splice (emit-index-args args))])))
     (error "datoms index order must be a keyword")))
 
+(defmacro datoms-checked [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (datoms-checked-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "datoms-checked index order must be a keyword")))
+
 (defmacro seek-datoms [db order & args]
   (if (keyword? order)
     (quasiquote
@@ -2819,6 +2825,15 @@
         ([]Index-Arg [(splice (emit-index-args args))])))
     (error "seek-datoms index order must be a keyword")))
 
+(defmacro seek-datoms-checked [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (seek-datoms-checked-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "seek-datoms-checked index order must be a keyword")))
+
 (defmacro rseek-datoms [db order & args]
   (if (keyword? order)
     (quasiquote
@@ -2827,6 +2842,15 @@
         (unquote (source order))
         ([]Index-Arg [(splice (emit-index-args args))])))
     (error "rseek-datoms index order must be a keyword")))
+
+(defmacro rseek-datoms-checked [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (rseek-datoms-checked-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "rseek-datoms-checked index order must be a keyword")))
 
 (defmacro find-datom [db order & args]
   (if (keyword? order)
@@ -2840,6 +2864,16 @@
 (defmacro index-range [db attr start end]
   (quasiquote
     (index-range-with-args
+      (unquote db)
+      (unquote (emit-attr attr))
+      (unquote (emit-index-arg start))
+      (unquote (if (nil? start) (quasiquote false) (quasiquote true)))
+      (unquote (emit-index-arg end))
+      (unquote (if (nil? end) (quasiquote false) (quasiquote true))))))
+
+(defmacro index-range-checked [db attr start end]
+  (quasiquote
+    (index-range-checked-with-args
       (unquote db)
       (unquote (emit-attr attr))
       (unquote (emit-index-arg start))
@@ -3131,15 +3165,29 @@
     :else false))
 
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
-  (when (and (= predicate.op "even?")
+  (when (and (or (= predicate.op "even?")
+                 (= predicate.op "odd?")
+                 (= predicate.op "zero?")
+                 (= predicate.op "pos?")
+                 (= predicate.op "neg?"))
              (= (count predicate.terms) 1))
     (let [[value value-ok] (resolve-term predicate.terms[0] binding)]
       (when (not value-ok)
         (return false))
       (when (= value.kind .Int)
-        (return (= (% value.int_value 2) 0)))
+        (cond
+          (= predicate.op "even?") (return (= (% value.int_value 2) 0))
+          (= predicate.op "odd?") (return (not (= (% value.int_value 2) 0)))
+          (= predicate.op "zero?") (return (= value.int_value 0))
+          (= predicate.op "pos?") (return (> value.int_value 0))
+          (= predicate.op "neg?") (return (< value.int_value 0))))
       (when (= value.kind .Entity)
-        (return (= (% value.entity 2) 0)))
+        (cond
+          (= predicate.op "even?") (return (= (% value.entity 2) 0))
+          (= predicate.op "odd?") (return (not (= (% value.entity 2) 0)))
+          (= predicate.op "zero?") (return (= value.entity 0))
+          (= predicate.op "pos?") (return (> value.entity 0))
+          (= predicate.op "neg?") (return false)))
       (return false)))
   (when (< (count predicate.terms) 2)
     (return false))
@@ -3325,14 +3373,40 @@
         (return compare))))
   0)
 
+(defn public-avet-attr? [db: DB, attr: string] -> bool
+  (when (not (db-has-schema? db))
+    (return true))
+  (let [tuple-attrs (schema-tuple-attrs db attr) :defer]
+    (or (schema-indexed? db attr)
+        (schema-unique? db attr)
+        (schema-ref? db attr)
+        (> (count tuple-attrs) 0))))
+
 (defn public-index-datom-visible? [db: DB, order: string, datom: Datom] -> bool
   (if (= order ":avet")
-    (if (db-has-schema? db)
-      (or (schema-indexed? db datom.a)
-          (schema-unique? db datom.a)
-          (schema-ref? db datom.a))
-      true)
+    (public-avet-attr? db datom.a)
     true))
+
+(defn index-arg-attr [db: DB, arg: Index-Arg] -> [attr: string, ok: bool]
+  (let [[value value-ok] (index-arg-value db arg)]
+    (when (not value-ok)
+      (return "" false))
+    (when (or (= value.kind .Keyword)
+              (= value.kind .String))
+      (return value.text true))
+    (return "" false)))
+
+(defn validate-public-index-args [db: DB, order: string, args: []Index-Arg] -> [ok: bool, error: string]
+  (when (not (= order ":avet"))
+    (return true ""))
+  (when (= (count args) 0)
+    (return true ""))
+  (let [[attr attr-ok] (index-arg-attr db args[0])]
+    (when (not attr-ok)
+      (return false "invalid index attr"))
+    (when (not (public-avet-attr? db attr))
+      (return false "attribute should be marked as :db/index true")))
+  (return true ""))
 
 (defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
   (for [datom-index indexes]
@@ -3357,6 +3431,12 @@
           (append-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
     out))
 
+(defn datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
+  (let [[valid error] (validate-public-index-args db order args)]
+    (when (not valid)
+      (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
+    (Datoms-Result {ok: true error: "" datoms: (datoms-with-args db order args)})))
+
 (defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
   (for [datom-index indexes]
     (when (datom-current-at? db datom-index)
@@ -3379,6 +3459,12 @@
           (append-seek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
           (append-seek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
     out))
+
+(defn seek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
+  (let [[valid error] (validate-public-index-args db order args)]
+    (when (not valid)
+      (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
+    (Datoms-Result {ok: true error: "" datoms: (seek-datoms-with-args db order args)})))
 
 (defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
   (let [i (count indexes)]
@@ -3405,6 +3491,12 @@
           (append-rseek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
           (append-rseek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
     out))
+
+(defn rseek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
+  (let [[valid error] (validate-public-index-args db order args)]
+    (when (not valid)
+      (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
+    (Datoms-Result {ok: true error: "" datoms: (rseek-datoms-with-args db order args)})))
 
 (defn find-datom-with-args [db: DB, order: string, args: []Index-Arg] -> Datom-Result
   (let [found (datoms-with-args db order args)]
@@ -3436,6 +3528,11 @@
               (when (or (not has-end) (<= (index-position-compare datom.v end-value) 0))
                 (arr.push! out datom)))))))
     out))
+
+(defn index-range-checked-with-args [db: DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> Datoms-Result
+  (when (not (public-avet-attr? db attr))
+    (return (Datoms-Result {ok: false error: "attribute should be marked as :db/index true" datoms: (make [dynamic]Datom)})))
+  (Datoms-Result {ok: true error: "" datoms: (index-range-with-args db attr start has-start end has-end)}))
 
 (defn u64-contains? [items: []u64, value: u64] -> bool
   (for [item items]
@@ -3966,6 +4063,15 @@
                 (set! skip-data true)))))
         (when skip-data
           (continue))
+        (when (or (= data.op ":db/retract")
+                  (= data.op ":db/retractAttr"))
+          (let [tuple-attrs (schema-tuple-attrs current-db data.a) :defer]
+            (when (> (count tuple-attrs) 0)
+              (return (Resolved-Tx {ok: false
+                                    error: "cannot modify tuple attrs directly"
+                                    ops: resolved-ops
+                                    tx_meta: resolved-meta
+                                    tempids: resolved-tempids})))))
         (when (= data.op ":db/retractEntity")
           (append-retract-entity-ops! (addr resolved-ops) current-db e)
           (continue))

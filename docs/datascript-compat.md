@@ -27,7 +27,7 @@ Status key:
 | `query_pull` | partial | Basic literal-pattern and `:in` variable-pattern DataScript subsets ported; multi-source pull, returning pattern values, and exact tuple return shape incomplete |
 | `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
 | `query_rules` | partial | Literal rule input subset started: rule branches plus bounded recursive/mutual rules with data clauses, predicates including `even?`, `ground`, and built-in function clauses; rule sources and validation incomplete |
-| `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
+| `parser_*` | missing | Required for EDN string APIs and broad interop; not required for the in-memory semantic engine because Kvist literals lower to the same internal representation |
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, string/false/ref defaults, reverse-ref defaults, default/numeric/nil limits, bounded recursion, capped `...` recursion, and component expansion examples covered; cycle handling and exact rendered collection/scalar shapes missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
 | `transact` | partial | Add/retract/map forms, nil item skipping, value-specific retract no-ops, incoming-ref cleanup on retractEntity, ref-typed numeric value resolution, intermediate-DB lookup/CAS resolution subset, cardinality-one/unique/default replacement, and CAS one/many/nil/lookup-ref value subset covered; tx fn call and exact errors incomplete |
@@ -40,7 +40,7 @@ Status key:
 | `validation` | partial | Nil value rejection plus value type, uniqueness, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `issues` | partial | Need namespace-by-namespace porting |
-| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, component-based tuple upsert, unique conflict, AVET/index-range, tuple query functions, tuple type/attrs validation, and cardinality-many tuple/component rejection subsets started; remaining schema validation and conflict matrix missing |
+| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, component-based tuple upsert, unique conflict, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation, and cardinality-many tuple/component rejection subsets started; remaining schema validation and conflict matrix missing |
 
 ## Next Porting Order
 

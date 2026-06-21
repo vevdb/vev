@@ -40,6 +40,42 @@ It should expose:
 - query
 - pull
 
+Kvist callers should get the best syntax Vev can offer: literal query,
+transaction, and pull forms that lower directly to the same typed internal
+structures used by every other frontend.
+
+## Query Frontends
+
+Vev should have one engine with multiple front doors:
+
+- Kvist literal macros for Kvist applications
+- EDN string APIs for C/Odin/other host languages
+- prepared queries for repeated execution
+
+These frontends must converge early into the same internal `Query`, tx data,
+and pull representations. Strings should not have separate semantics from
+Kvist literals.
+
+The EDN string API is required for broad consumption. It is the portable
+baseline: every host can pass text through a narrow ABI, queries can be logged
+and stored, and Datomic/DataScript examples stay recognizable.
+
+Prepared queries are the production form of the same idea:
+
+```text
+vev_prepare_query(conn, "[:find ?e :where [?e :name ?name]]") -> query_handle
+vev_query_prepared(db, query_handle, inputs) -> result
+```
+
+A parse-and-run helper is still useful:
+
+```text
+vev_query_text(db, "[:find ?e :where [?e :name \"Ivan\"]]", inputs) -> result
+```
+
+Direct host-side AST builders should wait until a real caller proves they are
+needed. A large struct-building ABI is more surface area than Vev needs now.
+
 ## Native library and CLI
 
 The native library should be the primary binary artifact for non-Kvist
@@ -66,6 +102,7 @@ Good candidates:
 - opaque DB snapshot handle or snapshot token
 - transact from text or binary payload
 - query from text
+- prepared query handles
 - pull from text pattern
 - results in a simple encoded representation
 - release/free functions for every owned handle/result
@@ -107,9 +144,9 @@ The important point is:
 
 For foreign consumers, the safest boundary is:
 
-- queries as text
-- pull patterns as text
-- tx data as text or encoded values
+- queries as EDN text, plus prepared query handles
+- pull patterns as EDN text, plus prepared pattern handles if needed
+- tx data as EDN text or encoded values
 - results as a portable encoded format
 
 This keeps the ABI stable even if internal ASTs evolve.
