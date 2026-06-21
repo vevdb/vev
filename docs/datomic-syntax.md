@@ -105,8 +105,8 @@ Examples:
 ```
 
 Current Vev supports map forms in tx data with an explicit `:db/id` in any
-position. Nested map values are supported when the nested map has an explicit
-string `:db/id`:
+position. Nested map values are supported with either an explicit string
+`:db/id` or an auto-generated nested tempid:
 
 ```clojure
 {:db/id 1
@@ -114,7 +114,12 @@ string `:db/id`:
                 :address/city "London"}}
 ```
 
-Auto-generated component ids remain later work.
+```clojure
+{:db/id 1
+ :user/address {:address/city "London"}}
+```
+
+Top-level map forms without `:db/id` remain later work.
 
 ### Transaction metadata
 
