@@ -15,7 +15,7 @@ Status key:
 
 | DataScript area | Status | Notes |
 | --- | --- | --- |
-| `query` | partial | DataScript join subset ported; inputs, collection/tuple/relation bindings partly covered |
+| `query` | partial | DataScript join subset ported; inputs, collection/tuple/relation bindings, and `_` input placeholders partly covered |
 | `query_aggregates` | partial | Relation-input subset ported; grouped aggregates, `:with` duplicate preservation, and keyword min/max comparator subset covered; exact edge behavior and advanced aggregates incomplete |
 | `query_find_specs` | partial | Subset ported; scalar, collection, tuple, aggregate find specs, and multiple-result cuts covered |
 | `query_fns` | partial | DataScript subset ported for predicates, `ground`, `get-else`, `get-some`, and `missing?`; arbitrary host/function clauses missing |
