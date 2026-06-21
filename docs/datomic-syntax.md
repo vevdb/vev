@@ -112,6 +112,13 @@ any position or an auto-generated tempid:
  :user/email "anna@example.com"}
 ```
 
+Vector values in map forms expand to repeated facts for the same attr:
+
+```clojure
+{:db/id 42
+ :user/tag ["engineer" "lisp"]}
+```
+
 Nested map values are supported with either an explicit string `:db/id` or an
 auto-generated nested tempid:
 
