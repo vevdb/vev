@@ -12,6 +12,13 @@
       (return true)))
   false)
 
+(defn values-has-entity? [values: []vev.Value, entity: u64] -> bool
+  (for [value values]
+    (when (and (= value.kind .Entity)
+               (= value.entity entity))
+      (return true)))
+  false)
+
 (t.deftest transact-reports-snapshots-and-metadata
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1533,6 +1540,14 @@
                         [?e :name "Ivan"]
                         (or [?e :name "Oleg"]
                             [?e :age 10])])
+        join-two-vars (vev.q-collection report.db_after
+                        [:find [?e ...]
+                         :where
+                         [?e :age ?a]
+                         (or (and [?e :name "Ivan"]
+                                  [1 :age ?a])
+                             (and [?e :name "Oleg"]
+                                  [2 :age ?a]))])
         introduces-vars (vev.q-collection report.db_after
                           [:find [?e ...]
                            :where
@@ -1541,6 +1556,22 @@
                                (and [?e :name "Oleg"]
                                     [2 :age ?a]))
                            [?e :age ?a]])
+        introduces-vars-different-order (vev.q-collection report.db_after
+                                          [:find [?e ...]
+                                           :where
+                                           (or (and [?e :name "Ivan"]
+                                                    [1 :age ?a])
+                                               (and [2 :age ?a]
+                                                    [?e :name "Oleg"]))
+                                           [?e :age ?a]])
+        short-circuit-resolution (vev.q-collection report.db_after
+                                   [:find [?e ...]
+                                    :where
+                                    (or (and [?e :age 30]
+                                             [?e :name ?n])
+                                        (and [?e :age 20]
+                                             [?e :name ?n]))
+                                    [(ground "Ivan") ?n]])
         or-join (vev.q-collection report.db_after
                   [:find [?e ...]
                    :where
@@ -1575,10 +1606,21 @@
     (t.is (= (count join-one-var) 2))
     (t.is (= join-one-var[0].entity 1))
     (t.is (= join-one-var[1].entity 5))
+    (t.is (= (count join-two-vars) 3))
+    (t.is (values-has-entity? (slice join-two-vars 0) 1))
+    (t.is (values-has-entity? (slice join-two-vars 0) 4))
+    (t.is (values-has-entity? (slice join-two-vars 0) 5))
     (t.is (= (count introduces-vars) 3))
     (t.is (= introduces-vars[0].entity 1))
     (t.is (= introduces-vars[1].entity 4))
     (t.is (= introduces-vars[2].entity 5))
+    (t.is (= (count introduces-vars-different-order) 3))
+    (t.is (= introduces-vars-different-order[0].entity 1))
+    (t.is (= introduces-vars-different-order[1].entity 4))
+    (t.is (= introduces-vars-different-order[2].entity 5))
+    (t.is (= (count short-circuit-resolution) 2))
+    (t.is (= short-circuit-resolution[0].entity 2))
+    (t.is (= short-circuit-resolution[1].entity 6))
     (t.is (= (count or-join) 6))
     (t.is (= or-join[0].entity 1))
     (t.is (= or-join[5].entity 6))
