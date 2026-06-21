@@ -95,6 +95,7 @@ Supported now:
 - variables in entity, attribute, and value positions
 - wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
+- int values reused in entity position resolve as entity ids
 - ident keywords in entity position
 - lookup refs in entity position, such as `[:user/email "ada@example.com"]`
 - entity refs as values
