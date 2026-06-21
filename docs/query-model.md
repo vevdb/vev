@@ -87,7 +87,7 @@ Supported now:
 
 - `:find` with one or more variables
 - `:with`
-- scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [[?x ?y]]`
+- scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [?x ?y]`
 - return-map find markers: `:keys`, `:strs`, and `:syms`
 - standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, and `avg` aggregates
 - datom clauses shaped like `[e a v]`
@@ -174,7 +174,7 @@ returns the row-oriented `Result-Set`; use `q-scalar`, `q-collection`, or
 
 ```clojure
 (v.q-tuple db
-  [:find [[?name ?age]]
+  [:find [?name ?age]
    :where
    [?e :user/name ?name]
    [?e :user/age ?age]])

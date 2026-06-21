@@ -17,7 +17,7 @@ Status key:
 | --- | --- | --- |
 | `query` | partial | DataScript join subset ported; inputs, collection/tuple/relation bindings partly covered |
 | `query_aggregates` | partial | Relation-input subset ported; exact edge behavior and advanced aggregates incomplete |
-| `query_find_specs` | partial | Subset ported; scalar/collection/aggregate find specs covered; direct `[?x ?y]` tuple syntax missing |
+| `query_find_specs` | partial | Subset ported; scalar, collection, tuple, and aggregate find specs covered |
 | `query_fns` | partial | Built-ins covered; arbitrary host/function clauses missing |
 | `query_not` | partial | `not` and `not-join` covered |
 | `query_or` | partial | `or` and `or-join` covered for data-clause branches |
