@@ -149,6 +149,32 @@
     (t.is (= ivans.rows[1].values[1].int_value 37))
     (t.is (= (count same-names.rows) 5))))
 
+(t.deftest datascript-query-cardinality-many-join-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :aka]
+             [:db/add 100 :db/cardinality :db.cardinality/many]
+             {:db/id 1 :name "Ivan" :aka ["ivolga" "pi"]}
+             {:db/id 2 :name "Petr" :aka ["porosenok" "pi"]}])
+        result (vev.q conn.db
+                 [:find ?n1 ?n2
+                  :where
+                  [?e1 :aka ?x]
+                  [?e2 :aka ?x]
+                  [?e1 :name ?n1]
+                  [?e2 :name ?n2]])]
+    (t.is (= (count result.rows) 4))
+    (t.is (= result.rows[0].values[0].text "Ivan"))
+    (t.is (= result.rows[0].values[1].text "Ivan"))
+    (t.is (= result.rows[1].values[0].text "Ivan"))
+    (t.is (= result.rows[1].values[1].text "Petr"))
+    (t.is (= result.rows[2].values[0].text "Petr"))
+    (t.is (= result.rows[2].values[1].text "Ivan"))
+    (t.is (= result.rows[3].values[0].text "Petr"))
+    (t.is (= result.rows[3].values[1].text "Petr"))))
+
 (t.deftest datalog-macro-builds-query-from-data-literal
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -450,6 +476,40 @@
     (t.is (= result.rows[1].values[1].text "petr@gmail.com"))
     (t.is (= result.rows[2].values[0].entity 3))
     (t.is (= result.rows[2].values[1].text "ivan@mail.ru"))))
+
+(t.deftest datascript-query-without-where-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        result (vev.q conn.db
+                 [:find ?a ?b
+                  :in ?a ?b]
+                 10
+                 20)]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].int_value 10))
+    (t.is (= result.rows[0].values[1].int_value 20))))
+
+(t.deftest datascript-query-empty-inputs-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ivan"}
+             {:db/id 2 :name "Petr"}])
+        empty-coll (vev.q-collection conn.db
+                     [:find [?id ...]
+                      :in [?id ...]
+                      :where
+                      [?id :age _]]
+                     [])
+        empty-rel (vev.q-collection conn.db
+                    [:find [?id ...]
+                     :in [[?id]]
+                     :where
+                     [?id :age _]]
+                    [])]
+    (t.is (= (count empty-coll) 0))
+    (t.is (= (count empty-rel) 0))))
 
 (t.deftest datalog-macro-supports-predicate-clauses
   (defer (free_all context.allocator))
@@ -1024,6 +1084,7 @@
         seek (vev.seek-datoms conn.db :avet :name "Petr")
         rseek-name (vev.rseek-datoms conn.db :avet :name "Petr")
         rseek-age (vev.rseek-datoms conn.db :avet :age 26)
+        rseek-age-exact (vev.rseek-datoms conn.db :avet :age 25)
         range-name (vev.index-range conn.db :name "I" "Sergey")
         range-before (vev.index-range conn.db :name nil "P")
         range-after (vev.index-range conn.db :name "R" nil)
@@ -1047,6 +1108,9 @@
     (t.is (= (count rseek-age) 2))
     (t.is (= rseek-age[0].e 2))
     (t.is (= rseek-age[1].e 3))
+    (t.is (= (count rseek-age-exact) 2))
+    (t.is (= rseek-age-exact[0].e 2))
+    (t.is (= rseek-age-exact[1].e 3))
     (t.is (= (count range-name) 3))
     (t.is (= range-name[0].v.text "Ivan"))
     (t.is (= range-name[1].v.text "Petr"))
@@ -1490,6 +1554,11 @@
                      :where
                      [(hash-map :a 1 :b 2) ?m]
                      [(hash-map :b 2 :a 1) ?m]])
+        map-get (vev.q conn.db
+                  [:find ?m ?v
+                   :where
+                   [(hash-map :b 1 :d 2) ?m]
+                   [(get ?m :d) ?v]])
         summed (vev.q conn.db
                  [:find ?e1 ?e2 ?e3
                   :where
@@ -1576,6 +1645,9 @@
     (t.is (= map-tx[0].items[5].text "Aaron"))
     (t.is (= (count map-order) 1))
     (t.is (= map-order[0].kind .Map))
+    (t.is (= (count map-get.rows) 1))
+    (t.is (= map-get.rows[0].values[0].kind .Map))
+    (t.is (= map-get.rows[0].values[1].int_value 2))
     (t.is (= (count summed.rows) 2))
     (t.is (= summed.rows[0].values[0].entity 1))
     (t.is (= summed.rows[0].values[1].entity 2))
@@ -3050,6 +3122,74 @@
       (t.is (= (count report.tx_data) 2))
       (t.is (= (count names) 0))))
 
+(t.deftest datascript-component-schema-requires-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 100 :db/ident :profile]
+                  [:db/add 100 :db/isComponent true]])]
+    (t.is (not report.ok))
+    (t.is (= report.error "invalid component schema"))))
+
+(t.deftest datascript-schema-booleans-require-bool-subset
+  (defer (free_all context.allocator))
+  (let [component-conn (vev.create-conn)
+        component-report (vev.transact
+                           (addr component-conn)
+                           [[:db/add 100 :db/ident :profile]
+                            [:db/add 100 :db/valueType :db.type/ref]
+                            [:db/add 100 :db/isComponent "true"]])
+        index-conn (vev.create-conn)
+        index-report (vev.transact
+                       (addr index-conn)
+                       [[:db/add 100 :db/ident :name]
+                        [:db/add 100 :db/index "true"]])]
+    (t.is (not component-report.ok))
+    (t.is (= component-report.error "schema boolean value must be boolean"))
+    (t.is (not index-report.ok))
+    (t.is (= index-report.error "schema boolean value must be boolean"))))
+
+(t.deftest datascript-schema-keywords-require-known-values-subset
+  (defer (free_all context.allocator))
+  (let [value-type-string-conn (vev.create-conn)
+        value-type-string (vev.transact
+                            (addr value-type-string-conn)
+                            [[:db/add 100 :db/ident :age]
+                             [:db/add 100 :db/valueType "long"]])
+        value-type-unknown-conn (vev.create-conn)
+        value-type-unknown (vev.transact
+                             (addr value-type-unknown-conn)
+                             [[:db/add 100 :db/ident :age]
+                              [:db/add 100 :db/valueType :db.type/instant]])
+        cardinality-unknown-conn (vev.create-conn)
+        cardinality-unknown (vev.transact
+                              (addr cardinality-unknown-conn)
+                              [[:db/add 100 :db/ident :name]
+                               [:db/add 100 :db/cardinality :db.cardinality/sometimes]])
+        unique-unknown-conn (vev.create-conn)
+        unique-unknown (vev.transact
+                         (addr unique-unknown-conn)
+                         [[:db/add 100 :db/ident :email]
+                          [:db/add 100 :db/unique :db.unique/maybe]])]
+    (t.is (not value-type-string.ok))
+    (t.is (= value-type-string.error "invalid schema keyword value"))
+    (t.is (not value-type-unknown.ok))
+    (t.is (= value-type-unknown.error "invalid schema keyword value"))
+    (t.is (not cardinality-unknown.ok))
+    (t.is (= cardinality-unknown.error "invalid schema keyword value"))
+    (t.is (not unique-unknown.ok))
+    (t.is (= unique-unknown.error "invalid schema keyword value"))))
+
+(t.deftest datascript-ident-values-require-keywords-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 100 :db/ident "name"]])]
+    (t.is (not report.ok))
+    (t.is (= report.error ":db/ident value must be keyword"))))
+
 (t.deftest datascript-component-retract-entity-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -3699,6 +3839,16 @@
     (t.is (not bad.ok))
     (t.is (= bad.error "invalid tuple schema"))
     (t.is ok.ok)))
+
+(t.deftest datascript-tuple-attrs-rejects-nested-tuple-dependency-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        first-schema (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice first-schema 0))
+        second-schema (vev.tuple-attrs-schema-tx 101 ":c-and-tuple" ":c" ":a-and-b")
+        report (vev.transact-tx-data (addr conn) (slice second-schema 0))]
+    (t.is (not report.ok))
+    (t.is (= report.error "invalid tuple schema"))))
 
 (t.deftest datascript-upsert-unique-identity-subset
   (defer (free_all context.allocator))

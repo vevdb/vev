@@ -18,10 +18,10 @@ Status key:
 
 | DataScript area | Status | Notes |
 | --- | --- | --- |
-| `query` | partial | DataScript join subset ported; inputs, plain int entity inputs, collection/tuple/relation bindings, named relation source joins, `_` input placeholders, and constant-substitution subset covered |
+| `query` | partial | DataScript join subset ported; inputs, no-where input-only queries, empty collection/relation inputs, plain int entity inputs, collection/tuple/relation bindings, cardinality-many joins, named relation source joins, `_` input placeholders, and constant-substitution subset covered |
 | `query_aggregates` | partial | Relation-input subset ported; grouped aggregates, `:with` duplicate preservation, keyword min/max comparator subset, literal top-n min/max, and parameterized top-n min/max covered; custom aggregates and exact edge behavior incomplete |
 | `query_find_specs` | partial | Subset ported; scalar, collection, tuple, aggregate find specs, and multiple-result cuts covered |
-| `query_fns` | partial | DataScript subset ported for predicates including `even?`, mixed-type predicate comparison, scalar/collection/tuple `ground`, `get-else`, `get-some`, lookup-ref inputs to query functions, `missing?`, literal vector function args, tuple construction/destructuring, function-result unification with vector `first`/`second`, and built-in result clauses for `identity`, `inc`, `vector`, `tuple`, `untuple`, `hash-map`, string `count`, and integer arithmetic; arbitrary host/function clauses missing |
+| `query_fns` | partial | DataScript subset ported for predicates including `even?`, mixed-type predicate comparison, scalar/collection/tuple `ground`, `get-else`, `get-some`, lookup-ref inputs to query functions, `missing?`, literal vector/function args, tuple construction/destructuring, function-result unification with vector `first`/`second`, and built-in result clauses for `identity`, `inc`, `vector`, `tuple`, `untuple`, `hash-map`, `get`, string `count`, and integer arithmetic; arbitrary host/function clauses missing |
 | `query_not` | partial | Single-source DataScript subset ported, including nested `not` and explicit named relation sources inside `not`; default-source shorthand and insufficient-binding errors incomplete |
 | `query_or` | partial | Single-source DataScript subset ported, including scalar-input `or`; default-source forms and relation-source `or-join` incomplete |
 | `query_pull` | partial | Basic literal-pattern and `:in` variable-pattern DataScript subsets ported; multi-source pull, returning pattern values, and exact tuple return shape incomplete |
@@ -34,13 +34,13 @@ Status key:
 | `upsert` | partial | Unique-identity map/list tempid upsert, unique-value no-upsert enforcement, intermediate-db retry subset, string tempid refs, unique-ref numeric/lookup-ref upsert, and conflicting unique-field subsets covered; exact conflict messages incomplete |
 | `lookup_refs` | partial | Lookup refs covered in query entity/value positions, scalar and collection query inputs, pull, tx entity/value/map-value/CAS entity/expected/value positions, nested tuple values, missing-ref retract no-ops, and `datoms`/`seek-datoms`/`index-range` index access; exact Clojure invalid lookup-ref errors not modeled |
 | `ident` | partial | DataScript query/transact/pull subset, entity ident lookup, and missing-ident retract no-ops covered |
-| `components` | partial | Component `retractEntity`, `retractAttribute`, incoming-ref cleanup, forward pull expansion, explicit reverse pull subsets, and entity `touch` covered; exact reverse scalar shape missing |
+| `components` | partial | Component schema requires ref attrs, component `retractEntity`, `retractAttribute`, incoming-ref cleanup, forward pull expansion, explicit reverse pull subsets, and entity `touch` covered; exact reverse scalar shape missing |
 | `entity` | partial | Basic entity view API covered: id/db access, lookup-ref and ident construction, scalar/many attr reads, forward and reverse ref navigation, contains, missing entities, and touch; Clojure map protocol/cache/print/equality semantics do not apply directly in Kvist |
 | `index` | partial | `datoms`, `find-datom` including empty DB, `seek-datoms`, `rseek-datoms`, upstream `index-range` bounds/order examples, and public AVET filtering covered; exact indexed-attribute error behavior incomplete |
-| `validation` | partial | Nil value rejection plus value type, uniqueness, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
+| `validation` | partial | Nil value rejection plus value type, uniqueness, component schema, ident values, schema boolean attrs, schema keyword enum attrs, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `issues` | partial | Need namespace-by-namespace porting |
-| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, component-based tuple upsert, unique conflict, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation, and cardinality-many tuple/component rejection subsets started; remaining schema validation and conflict matrix missing |
+| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, component-based tuple upsert, unique conflict, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation, nested tuple dependency rejection, and cardinality-many tuple/component rejection subsets started; remaining schema validation and conflict matrix missing |
 
 ## Next Porting Order
 

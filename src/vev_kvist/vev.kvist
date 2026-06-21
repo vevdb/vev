@@ -1761,7 +1761,7 @@
     (not (or (symbol? (nth form 1)) (vector? (nth form 1)))) false
     (not (symbol? (first (first form)))) false
     :else (let [op (source (first (first form)))]
-            (contains? ["count" "+" "-" "*" "inc" "identity" "vector" "tuple" "untuple" "hash-map" "first" "second"] op))))
+            (contains? ["count" "+" "-" "*" "inc" "identity" "vector" "tuple" "untuple" "hash-map" "get" "first" "second"] op))))
 
 (defmacro- get-else-clause? [form]
   (if (vector? form)
@@ -3238,6 +3238,16 @@
         (return false))))
   true)
 
+(defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
+  (when (not (= map-value.kind .Map))
+    (return (Value {}) false))
+  (let [index 0]
+    (while (< (+ index 1) (count map-value.items))
+      (when (value-equal? map-value.items[index] key)
+        (return map-value.items[(+ index 1)] true))
+      (set! index (+ index 2))))
+  (return (Value {}) false))
+
 (defn apply-function-op [function: Function-Clause, binding: Binding] -> [value: Value, ok: bool]
   (when (and (= function.op "count")
              (= (count function.terms) 1))
@@ -3289,6 +3299,13 @@
             (return (Value {}) false))
           (arr.push! items value)))
       (return (value-map (slice items 0)) true)))
+  (when (and (= function.op "get")
+             (= (count function.terms) 2))
+    (let [[map-value map-ok] (resolve-term function.terms[0] binding)
+          [key key-ok] (resolve-term function.terms[1] binding)]
+      (when (and map-ok key-ok)
+        (return (map-get-value map-value key)))
+      (return (Value {}) false)))
   (when (or (= function.op "+")
             (= function.op "-")
             (= function.op "*"))
@@ -4264,6 +4281,71 @@
                   (return false "invalid tuple schema")))))))))
   (return true ""))
 
+(defn validate-schema-bool-values [db: DB, schema-attr: string] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 schema-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 schema-attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (= datom.v.kind .Bool)))
+          (return false "schema boolean value must be boolean")))))
+  (return true ""))
+
+(defn validate-ident-values [db: DB] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (= datom.v.kind .Keyword)))
+          (return false ":db/ident value must be keyword")))))
+  (return true ""))
+
+(defn valid-schema-keyword-value? [schema-attr: string, value: string] -> bool
+  (cond
+    (= schema-attr ":db/valueType")
+      (or (= value ":db.type/string")
+          (= value ":db.type/long")
+          (= value ":db.type/boolean")
+          (= value ":db.type/ref")
+          (= value ":db.type/keyword")
+          (= value ":db.type/tuple"))
+    (= schema-attr ":db/cardinality")
+      (or (= value ":db.cardinality/one")
+          (= value ":db.cardinality/many"))
+    (= schema-attr ":db/unique")
+      (or (= value ":db.unique/identity")
+          (= value ":db.unique/value"))
+    :else true))
+
+(defn validate-schema-keyword-values [db: DB, schema-attr: string] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 schema-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 schema-attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (or (not (= datom.v.kind .Keyword))
+                       (not (valid-schema-keyword-value? schema-attr datom.v.text))))
+          (return false "invalid schema keyword value")))))
+  (return true ""))
+
+(defn validate-component-schema [db: DB] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/isComponent" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/isComponent" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Bool)
+                   datom.v.bool_value)
+          (let [[attr attr-ok] (schema-ident-for-entity db datom.e)]
+            (when (and attr-ok (not (schema-ref? db attr)))
+              (return false "invalid component schema")))))))
+  (return true ""))
+
 (defn validate-ops [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
   (let [scratch-datoms (clone-datoms before.datoms)]
     (defer (delete scratch-datoms))
@@ -4283,6 +4365,41 @@
     (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
           scratch (build-db scratch-owned)
           [ok error] (validate-tuple-type-schema scratch)]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-ident-values scratch)]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-keyword-values scratch ":db/valueType")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-keyword-values scratch ":db/cardinality")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-keyword-values scratch ":db/unique")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-bool-values scratch ":db/index")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-bool-values scratch ":db/isComponent")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-component-schema scratch)]
       (when (not ok)
         (return false error)))
     (return true "")))
