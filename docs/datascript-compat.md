@@ -27,7 +27,7 @@ Status key:
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, explicit/default limits, and component expansion examples covered; recursion and exact rendered collection/scalar shapes missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
-| `transact` | partial | Add/retract/map forms, incoming-ref cleanup on retractEntity, ref-typed numeric value resolution, intermediate-DB lookup/CAS resolution subset, cardinality-one/unique replacement, and CAS one/many/nil/lookup-ref value subset covered; tx fn call and unschematized default cardinality-one incomplete |
+| `transact` | partial | Add/retract/map forms, nil item skipping, incoming-ref cleanup on retractEntity, ref-typed numeric value resolution, intermediate-DB lookup/CAS resolution subset, cardinality-one/unique replacement, and CAS one/many/nil/lookup-ref value subset covered; tx fn call and unschematized default cardinality-one incomplete |
 | `upsert` | partial | Unique-identity map/list tempid upsert, intermediate-db retry subset, string tempid refs, unique-ref numeric/lookup-ref upsert, and conflicting unique-field subsets covered; exact conflict messages incomplete |
 | `lookup_refs` | partial | Lookup refs covered in query entity/value positions, scalar non-keyword query inputs, pull, tx entity/value/map-value/CAS entity/expected/value positions, and missing-ref retract no-ops for entity and value refs; collection/keyword-valued input lookup refs incomplete |
 | `ident` | partial | DataScript query/transact/pull subset and missing-ident retract no-ops covered; entity API still missing |
