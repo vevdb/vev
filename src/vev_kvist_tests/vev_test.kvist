@@ -3256,6 +3256,36 @@
     (t.is (= (count child.rows) 0))
     (t.is (= parent.rows[0].values[0].text "Ivan"))))
 
+(t.deftest datascript-retract-entity-reports-adjacent-retractions-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :a1 1 :a2 2 :a3 3}
+             {:db/id 2 :a1 1 :a2 2 :a3 3}
+             {:db/id 3 :a1 1 :a2 2 :a3 3}])
+        report (vev.transact (addr conn) [[:db.fn/retractEntity 1]
+                                          [:db.fn/retractEntity 2]])
+        first (vev.q report.db_after
+                [:find ?a ?v
+                 :where
+                 [1 ?a ?v]])
+        second (vev.q report.db_after
+                 [:find ?a ?v
+                  :where
+                  [2 ?a ?v]])
+        third (vev.q report.db_after
+                [:find ?a ?v
+                 :where
+                 [3 ?a ?v]])]
+    (t.is report.ok)
+    (t.is (= (count report.tx_data) 6))
+    (for [datom report.tx_data]
+      (t.is (not datom.added)))
+    (t.is (= (count first.rows) 0))
+    (t.is (= (count second.rows) 0))
+    (t.is (= (count third.rows) 3))))
+
 (t.deftest transact-data-supports-retract-entity-lookup-ref
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -4432,6 +4462,22 @@
     (t.is (not report.ok))
     (t.is (= report.error "tempid used only as value"))
     (t.is (= (count conn.db.datoms) 2))))
+
+(t.deftest datascript-rejects-tempids-defined-only-by-empty-cardinality-many-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 101 :db/ident :multi]
+             [:db/add 101 :db/cardinality :db.cardinality/many]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id "empty" :multi []}
+                  {:db/id "parent" :friend "empty"}])]
+    (t.is (not report.ok))
+    (t.is (= report.error "tempid used only as value"))))
 
 (t.deftest datascript-upsert-over-intermediate-db-subset
   (defer (free_all context.allocator))
