@@ -389,6 +389,9 @@
 (defn add-value-lookup-ref [e: u64, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" e: e a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
 
+(defn add-tempid-value-lookup-ref [tempid: string, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
+
 (defn retract-value-lookup-ref [e: u64, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" e: e a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
 
@@ -704,11 +707,18 @@
           (unquote (emit-attr a))
           (unquote (emit-literal-value v))))
       (if (string? e)
-        (quasiquote
-          ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
-            (unquote e)
-            (unquote (emit-attr a))
-            (unquote (emit-literal-value v))))
+        (if (lookup-ref? v)
+          (quasiquote
+            (add-tempid-value-lookup-ref
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-attr (nth v 0)))
+              (unquote (emit-literal-value (nth v 1)))))
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v)))))
 	    (if (keyword? e)
 	      (quasiquote
 	        ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
@@ -2557,6 +2567,14 @@
         (return data.expected false "lookup ref not found"))))
   (resolve-tx-value db data.a data.expected))
 
+(defn resolve-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
+  (when data.has_value_lookup_ref
+    (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
+      (if lookup-ok
+        (return (value-entity lookup-e) true "")
+        (return data.v false "lookup ref not found"))))
+  (resolve-tx-value db data.a data.v))
+
 (defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
   (let [found: u64 0
         has-found false]
@@ -2565,7 +2583,7 @@
                  (= data.tempid tempid)
                  (= data.op ":db/add")
                  (schema-unique? db data.a))
-        (let [[value value-ok _] (resolve-tx-value db data.a data.v)]
+        (let [[value value-ok _] (resolve-tx-data-value db data)]
           (when value-ok
             (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
               (when entity-ok
