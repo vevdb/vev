@@ -335,6 +335,18 @@
 (defn tx-retract [e: u64, a: string, v: Value] -> Tx-Op
   (Tx-Op {kind: .Retract e: e a: a v: v}))
 
+(defn tx-op-equal? [left: Tx-Op, right: Tx-Op] -> bool
+  (and (= left.kind right.kind)
+       (= left.e right.e)
+       (= left.a right.a)
+       (value-equal? left.v right.v)))
+
+(defn push-tx-op-once! [ops: ^[dynamic]Tx-Op, op: Tx-Op]
+  (for [existing ops^]
+    (when (tx-op-equal? existing op)
+      (return)))
+  (arr.push! ops^ op))
+
 (defn add [e: u64, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" e: e a: a v: v}))
 
@@ -2301,7 +2313,15 @@
           (when (and (= datom.v.kind .Entity)
                      (schema-component? db datom.a))
             (append-retract-entity-ops-seen! ops db datom.v.entity seen))
-          (arr.push! ops^ (tx-retract entity datom.a datom.v)))))))
+          (push-tx-op-once! ops (tx-retract entity datom.a datom.v))))))
+  (let [ref-value (value-entity entity)
+        indexes (slice db.vaet 0)
+        low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index db indexes "vaet" 0 "" ref-value)]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (push-tx-op-once! ops (tx-retract datom.e datom.a datom.v)))))))
 
 (defn append-retract-entity-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64]
   (let [seen (make [dynamic]u64)]
@@ -2318,7 +2338,7 @@
           (when (and (= datom.v.kind .Entity)
                      (schema-component? db attr))
             (append-retract-entity-ops-seen! ops db datom.v.entity seen))
-          (arr.push! ops^ (tx-retract entity attr datom.v)))))))
+          (push-tx-op-once! ops (tx-retract entity attr datom.v)))))))
 
 (defn append-retract-attr-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string]
   (let [seen (make [dynamic]u64)]
