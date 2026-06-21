@@ -3063,11 +3063,21 @@
         (return compare))))
   0)
 
+(defn public-index-datom-visible? [db: DB, order: string, datom: Datom] -> bool
+  (if (= order ":avet")
+    (if (db-has-schema? db)
+      (or (schema-indexed? db datom.a)
+          (schema-unique? db datom.a)
+          (schema-ref? db datom.a))
+      true)
+    true))
+
 (defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
   (for [datom-index indexes]
     (when (datom-current-at? db datom-index)
       (let [datom db.datoms[datom-index]]
-        (when (datom-matches-index-values? datom order values)
+        (when (and (public-index-datom-visible? db order datom)
+                   (datom-matches-index-values? datom order values))
           (arr.push! out^ datom))))))
 
 (defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
@@ -3089,7 +3099,8 @@
   (for [datom-index indexes]
     (when (datom-current-at? db datom-index)
       (let [datom db.datoms[datom-index]]
-        (when (>= (datom-index-compare-values datom order values) 0)
+        (when (and (public-index-datom-visible? db order datom)
+                   (>= (datom-index-compare-values datom order values) 0))
           (arr.push! out^ datom))))))
 
 (defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
@@ -3114,7 +3125,8 @@
       (let [datom-index indexes[i]]
         (when (datom-current-at? db datom-index)
           (let [datom db.datoms[datom-index]]
-            (when (<= (datom-index-compare-values datom order values) 0)
+            (when (and (public-index-datom-visible? db order datom)
+                       (<= (datom-index-compare-values datom order values) 0))
               (arr.push! out^ datom))))))))
 
 (defn rseek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
@@ -3156,7 +3168,8 @@
     (for [datom-index db.avet]
       (when (datom-current-at? db datom-index)
         (let [datom db.datoms[datom-index]]
-          (when (= datom.a attr)
+          (when (and (= datom.a attr)
+                     (public-index-datom-visible? db ":avet" datom))
             (when (or (not has-start) (>= (index-position-compare datom.v start-value) 0))
               (when (or (not has-end) (<= (index-position-compare datom.v end-value) 0))
                 (arr.push! out datom)))))))
@@ -3247,20 +3260,29 @@
             (return datom.v.text true))))))
   (return "" false))
 
-(defn schema-component? [db: DB, attr: string] -> bool
+(defn schema-bool? [db: DB, attr: string, schema-attr: string] -> bool
   (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
     (when (not schema-ok)
       (return false))
     (let [indexes (slice db.eavt 0)
-          low (lower-bound-index db indexes "eavt-ea" schema-e ":db/isComponent" (Value {}))
-          high (upper-bound-index db indexes "eavt-ea" schema-e ":db/isComponent" (Value {}))]
+          low (lower-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))]
       (for [datom-index (slice indexes low high)]
         (let [datom db.datoms[datom-index]]
           (when (and (datom-current-at? db datom-index)
-                     (= datom.v.kind .Bool)
-                     datom.v.bool_value)
-            (return true))))))
+                     (= datom.v.kind .Bool))
+            (return datom.v.bool_value))))))
   false)
+
+(defn schema-indexed? [db: DB, attr: string] -> bool
+  (schema-bool? db attr ":db/index"))
+
+(defn schema-ref? [db: DB, attr: string] -> bool
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (and has-type (= schema-type ":db.type/ref"))))
+
+(defn schema-component? [db: DB, attr: string] -> bool
+  (schema-bool? db attr ":db/isComponent"))
 
 (defn value-matches-schema-type? [value: Value, schema-type: string] -> bool
   (if (= schema-type ":db.type/string")

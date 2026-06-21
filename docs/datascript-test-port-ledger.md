@@ -23,7 +23,7 @@ DataScript assertion or exact Clojure API shape.
 | `transact.cljc` | 19 | subset | tx functions and exact errors |
 | `upsert.cljc` | 6 | subset | full conflict matrix and messages |
 | `db.cljc` | 4 | partial | datom/index API compatibility |
-| `index.cljc` | 5 | partial | indexed-only AVET semantics and exact errors |
+| `index.cljc` | 5 | partial | exact indexed-attribute error behavior |
 | `tuples.cljc` | 11 | missing | tuple attrs |
 | `validation.cljc` | 2 | partial | full schema validation behavior |
 | `parser*.cljc` | 19 | missing | EDN/text parser |
