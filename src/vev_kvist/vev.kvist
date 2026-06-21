@@ -78,6 +78,7 @@
   e: u64
   a: string
   v: Value
+  derived: bool
 })
 
 (defstruct Tx-Data {
@@ -369,8 +370,11 @@
   (let [owned (arr.into [dynamic]Value items)]
     (Value {kind: .Map items: owned})))
 
+(defn value-vector2 [a: Value, b: Value] -> Value
+  (value-vector ([]Value [a b])))
+
 (defn- value-keyword-vector2 [a: string, b: string] -> Value
-  (value-vector ([]Value [(value-keyword a) (value-keyword b)])))
+  (value-vector2 (value-keyword a) (value-keyword b)))
 
 (defn tuple-attrs-schema-tx [schema-e: u64, tuple-attr: string, a: string, b: string] -> [dynamic]Tx-Data
   (let [out (make [dynamic]Tx-Data)]
@@ -497,6 +501,9 @@
 
 (defn tx-add [e: u64, a: string, v: Value] -> Tx-Op
   (Tx-Op {kind: .Add e: e a: a v: v}))
+
+(defn tx-add-derived [e: u64, a: string, v: Value] -> Tx-Op
+  (Tx-Op {kind: .Add e: e a: a v: v derived: true}))
 
 (defn tx-retract [e: u64, a: string, v: Value] -> Tx-Op
   (Tx-Op {kind: .Retract e: e a: a v: v}))
@@ -3688,7 +3695,7 @@
     (for [schema schemas]
       (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice schema.attrs 0))]
         (if has-value
-          (arr.push! out^ (tx-add op.e schema.attr tuple-value))
+          (arr.push! out^ (tx-add-derived op.e schema.attr tuple-value))
           (append-retract-attr-ops! out db op.e schema.attr)))
       (delete schema.attrs))))
 
@@ -3835,6 +3842,11 @@
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
   (when (= op.v.kind .Nil)
     (return false "cannot store nil"))
+  (when (not op.derived)
+    (let [tuple-attrs (schema-tuple-attrs db op.a)]
+      (defer (delete tuple-attrs))
+      (when (> (count tuple-attrs) 0)
+        (return false "cannot modify tuple attrs directly"))))
   (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
     (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
       (return false "schema value type mismatch")))
