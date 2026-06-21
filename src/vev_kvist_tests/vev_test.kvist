@@ -1131,6 +1131,37 @@
     (t.is (= mixed-less-equal[0].int_value 0))
     (t.is (= mixed-less-equal[1].int_value 1))))
 
+(t.deftest datascript-query-fns-lookup-ref-input-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :name :db/valueType :db.type/string :db/unique :db.unique/identity}
+             {:db/id 101 :db/ident :age}
+             {:db/id 102 :db/ident :height}])
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ivan" :age 15}
+             {:db/id 2 :name "Petr" :age 22 :height 240}])
+        [height height-ok] (vev.q-scalar conn.db
+                             [:find ?height .
+                              :in ?e
+                              :where
+                              [(get-else $ ?e :height "Unknown") ?height]]
+                             [:name "Ivan"])
+        some (vev.q conn.db
+               [:find ?e ?a ?v
+                :in ?e
+                :where
+                [(get-some $ ?e :weight :age :height) [?a ?v]]]
+               [:name "Petr"])]
+    (t.is height-ok)
+    (t.is (= height.text "Unknown"))
+    (t.is (= (count some.rows) 1))
+    (t.is (= some.rows[0].values[0].entity 2))
+    (t.is (= some.rows[0].values[1].text ":age"))
+    (t.is (= some.rows[0].values[2].int_value 22))))
+
 (t.deftest datascript-query-function-result-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1145,6 +1176,20 @@
                    :where
                    [(count ?x) ?c]]
                   ["a" "abc"])
+        vector-tx (vev.q-collection conn.db
+                    [:find [?tx-data ...]
+                     :where
+                     [(ground :db/add) ?op]
+                     [(vector ?op -1 :attr 12) ?tx-data]])
+        map-tx (vev.q-collection conn.db
+                 [:find [?tx-data ...]
+                  :where
+                  [(hash-map :db/id -1 :age 92 :name "Aaron") ?tx-data]])
+        map-order (vev.q-collection conn.db
+                    [:find [?m ...]
+                     :where
+                     [(hash-map :a 1 :b 2) ?m]
+                     [(hash-map :b 2 :a 1) ?m]])
         summed (vev.q conn.db
                  [:find ?e1 ?e2 ?e3
                   :where
@@ -1164,6 +1209,23 @@
                              :where
                              [(identity 1) ?n]
                              [(identity 2) ?n]])
+        destructured (vev.q conn.db
+                       [:find ?n ?x
+                        :where
+                        [(identity [3 4]) [?n ?x]]])
+        destructured-conflict (vev.q conn.db
+                                [:find ?n ?x
+                                 :where
+                                 [(identity [3 4]) [?n ?x]]
+                                 [(identity [1 2]) [?n ?x]]])
+        pair-unification (vev.q conn.db
+                           [:find ?pair ?x
+                            :in [[?e ?attr ?pair]]
+                            :where
+                            [(first ?pair) ?x]
+                            [(second ?pair) ?x]]
+                           [[1 :pair [:a :a]]
+                            [2 :pair [:b :c]]])
         rel-function-conflict (vev.q conn.db
                                 [:find ?age
                                  :where
@@ -1174,6 +1236,24 @@
     (t.is (= counted.rows[0].values[1].int_value 1))
     (t.is (= counted.rows[1].values[0].text "abc"))
     (t.is (= counted.rows[1].values[1].int_value 3))
+    (t.is (= (count vector-tx) 1))
+    (t.is (= vector-tx[0].kind .Vector))
+    (t.is (= (count vector-tx[0].items) 4))
+    (t.is (= vector-tx[0].items[0].text ":db/add"))
+    (t.is (= vector-tx[0].items[1].int_value -1))
+    (t.is (= vector-tx[0].items[2].text ":attr"))
+    (t.is (= vector-tx[0].items[3].int_value 12))
+    (t.is (= (count map-tx) 1))
+    (t.is (= map-tx[0].kind .Map))
+    (t.is (= (count map-tx[0].items) 6))
+    (t.is (= map-tx[0].items[0].text ":db/id"))
+    (t.is (= map-tx[0].items[1].int_value -1))
+    (t.is (= map-tx[0].items[2].text ":age"))
+    (t.is (= map-tx[0].items[3].int_value 92))
+    (t.is (= map-tx[0].items[4].text ":name"))
+    (t.is (= map-tx[0].items[5].text "Aaron"))
+    (t.is (= (count map-order) 1))
+    (t.is (= map-order[0].kind .Map))
     (t.is (= (count summed.rows) 2))
     (t.is (= summed.rows[0].values[0].entity 1))
     (t.is (= summed.rows[0].values[1].entity 2))
@@ -1183,6 +1263,15 @@
     (t.is (= summed.rows[1].values[2].entity 3))
     (t.is (= (count conflicting.rows) 0))
     (t.is (= (count identity-conflict.rows) 0))
+    (t.is (= (count destructured.rows) 1))
+    (t.is (= destructured.rows[0].values[0].int_value 3))
+    (t.is (= destructured.rows[0].values[1].int_value 4))
+    (t.is (= (count destructured-conflict.rows) 0))
+    (t.is (= (count pair-unification.rows) 1))
+    (t.is (= pair-unification.rows[0].values[0].kind .Vector))
+    (t.is (= pair-unification.rows[0].values[0].items[0].text ":a"))
+    (t.is (= pair-unification.rows[0].values[0].items[1].text ":a"))
+    (t.is (= pair-unification.rows[0].values[1].text ":a"))
     (t.is (= (count rel-function-conflict.rows) 0))))
 
 (t.deftest datalog-macro-supports-or-clauses
@@ -2560,6 +2649,54 @@
     (t.is (= (count current-email.rows) 1))
     (t.is (= current-email.rows[0].values[0].text "ada2@example.com"))))
 
+(t.deftest datascript-validation-rejects-nil-values-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact (addr conn) [[:db/add 1 :name nil]])]
+    (t.is (not report.ok))
+    (t.is (= report.error "cannot store nil"))
+    (t.is (= (count conn.db.datoms) 0))))
+
+(t.deftest datascript-tuple-attrs-derived-tx-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        schema (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact (addr conn) [[:db/add 1 :a "A"]])
+        [after-a after-a-ok] (vev.q-scalar conn.db
+                               [:find ?tuple .
+                                :where
+                                [1 :a-and-b ?tuple]])
+        _ (vev.transact (addr conn) [[:db/add 1 :b "B"]])
+        [after-b after-b-ok] (vev.q-scalar conn.db
+                               [:find ?tuple .
+                                :where
+                                [1 :a-and-b ?tuple]])
+        direct (vev.transact
+                 (addr conn)
+                 ([]vev.Tx-Data
+                   [(vev.add 2 ":a-and-b"
+                      (vev.value-vector2
+                        (vev.value-string "A")
+                        (vev.value-string "B")))]))
+        _ (vev.transact (addr conn) [[:db/retract 1 :a "A"]
+                                     [:db/retract 1 :b "B"]])
+        gone (vev.q conn.db
+               [:find ?tuple
+                :where
+                [1 :a-and-b ?tuple]])]
+    (t.is schema.ok)
+    (t.is after-a-ok)
+    (t.is (= after-a.kind .Vector))
+    (t.is (= after-a.items[0].text "A"))
+    (t.is (= after-a.items[1].kind .Nil))
+    (t.is after-b-ok)
+    (t.is (= after-b.items[0].text "A"))
+    (t.is (= after-b.items[1].text "B"))
+    (t.is (not direct.ok))
+    (t.is (= direct.error "cannot modify tuple attrs directly"))
+    (t.is (= (count gone.rows) 0))))
+
 (t.deftest datascript-upsert-unique-identity-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -3743,9 +3880,11 @@
       (set! idx (+ idx 1)))
     (vev.transact-ops (addr conn) (slice ops 0))
     (let [default-limit (vev.pull conn.db [:aka] 1)
-          explicit-limit (vev.pull conn.db [[:aka :limit 1001]] 1)]
+          explicit-limit (vev.pull conn.db [[:aka :limit 1001]] 1)
+          nil-limit (vev.pull conn.db [[:aka :limit nil]] 1)]
       (t.is (= (count default-limit.attrs) 1000))
-      (t.is (= (count explicit-limit.attrs) 1001)))))
+      (t.is (= (count explicit-limit.attrs) 1001))
+      (t.is (= (count nil-limit.attrs) 1001)))))
 
 (t.deftest pull-supports-combined-limit-and-as-options
   (defer (free_all context.allocator))
@@ -3796,10 +3935,13 @@
   (let [conn (vev.create-conn)
         _ (vev.transact
             (addr conn)
-            [{:db/id 100 :db/ident :friend :db/valueType :db.type/ref}
-             {:db/id 1 :name "Ada" :friend 2}
-             {:db/id 2 :name "Grace" :friend 3}
-             {:db/id 3 :name "Katherine"}])
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 1 :name "Ada"]
+             [:db/add 1 :friend (vev.value-entity 2)]
+             [:db/add 2 :name "Grace"]
+             [:db/add 2 :friend (vev.value-entity 3)]
+             [:db/add 3 :name "Katherine"]])
         pulled (vev.pull conn.db [:db/id {:_friend 2}] 3)
         parent pulled.attrs[1]
         grandparent parent.attrs[1]]
@@ -3809,6 +3951,59 @@
     (t.is (= grandparent.v.entity 1))
     (t.is (= grandparent.attrs[0].v.entity 1))
     (t.is (= (count grandparent.attrs) 1))))
+
+(t.deftest datascript-pull-ellipsis-recursion-acyclic-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 1 :name "Ada"]
+             [:db/add 1 :friend (vev.value-entity 2)]
+             [:db/add 2 :name "Grace"]
+             [:db/add 2 :friend (vev.value-entity 3)]
+             [:db/add 3 :name "Katherine"]])
+        forward (vev.pull conn.db [:db/id {:friend ...}] 1)
+        reverse (vev.pull conn.db [:db/id {:_friend ...}] 3)
+        f1 forward.attrs[1]
+        r1 reverse.attrs[1]
+        f2 f1.attrs[1]
+        r2 r1.attrs[1]]
+    (t.is (= (count forward.attrs) 2))
+    (t.is (= (count reverse.attrs) 2))
+    (t.is (= (count f1.attrs) 2))
+    (t.is (= (count r1.attrs) 2))
+    (t.is (= f1.v.entity 2))
+    (t.is (= f2.v.entity 3))
+    (t.is (= f2.attrs[0].v.entity 3))
+    (t.is (= (count f2.attrs) 1))
+    (t.is (= r1.v.entity 2))
+    (t.is (= r2.v.entity 1))
+    (t.is (= r2.attrs[0].v.entity 1))
+    (t.is (= (count r2.attrs) 1))))
+
+(t.deftest datascript-pull-multiple-recursion-specs-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 101 :db/ident :enemy]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 1 :friend (vev.value-entity 2)]
+             [:db/add 1 :enemy (vev.value-entity 3)]
+             [:db/add 2 :friend (vev.value-entity 4)]
+             [:db/add 3 :enemy (vev.value-entity 5)]])
+        pulled (vev.pull conn.db [:db/id {:friend 2 :enemy 2}] 1)
+        friend pulled.attrs[1]
+        enemy pulled.attrs[2]]
+    (t.is (= (count pulled.attrs) 3))
+    (t.is (= friend.v.entity 2))
+    (t.is (= friend.attrs[1].v.entity 4))
+    (t.is (= enemy.v.entity 3))
+    (t.is (= enemy.attrs[1].v.entity 5))))
 
 (t.deftest pull-many-returns-multiple-entities
   (defer (free_all context.allocator))

@@ -21,14 +21,14 @@ Status key:
 | `query` | partial | DataScript join subset ported; inputs, plain int entity inputs, collection/tuple/relation bindings, `_` input placeholders, and constant-substitution subset covered |
 | `query_aggregates` | partial | Relation-input subset ported; grouped aggregates, `:with` duplicate preservation, and keyword min/max comparator subset covered; exact edge behavior and advanced aggregates incomplete |
 | `query_find_specs` | partial | Subset ported; scalar, collection, tuple, aggregate find specs, and multiple-result cuts covered |
-| `query_fns` | partial | DataScript subset ported for predicates including `even?`, mixed-type predicate comparison, scalar/collection/tuple `ground`, `get-else`, `get-some`, `missing?`, and built-in result clauses for `identity`, string `count`, and integer arithmetic; arbitrary host/function clauses missing |
+| `query_fns` | partial | DataScript subset ported for predicates including `even?`, mixed-type predicate comparison, scalar/collection/tuple `ground`, `get-else`, `get-some`, lookup-ref inputs to query functions, `missing?`, literal vector function args, tuple-destructured function results, function-result unification with vector `first`/`second`, and built-in result clauses for `identity`, `vector`, `hash-map`, string `count`, and integer arithmetic; arbitrary host/function clauses missing |
 | `query_not` | partial | Single-source DataScript subset ported, including nested `not`; default-source forms and insufficient-binding errors incomplete |
 | `query_or` | partial | Single-source DataScript subset ported, including scalar-input `or`; default-source forms and relation-source `or-join` incomplete |
 | `query_pull` | partial | Basic literal-pattern and `:in` variable-pattern DataScript subsets ported; multi-source pull, returning pattern values, and exact tuple return shape incomplete |
 | `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
 | `query_rules` | partial | Literal rule input subset started: rule branches plus bounded recursive/mutual rules with data clauses, predicates including `even?`, `ground`, and built-in function clauses; rule sources and validation incomplete |
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
-| `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, string/false/ref defaults, reverse-ref defaults, explicit/default limits, bounded recursion, and component expansion examples covered; infinite recursion, cycle handling, and exact rendered collection/scalar shapes missing |
+| `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, string/false/ref defaults, reverse-ref defaults, default/numeric/nil limits, bounded recursion, capped `...` recursion, and component expansion examples covered; cycle handling and exact rendered collection/scalar shapes missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
 | `transact` | partial | Add/retract/map forms, nil item skipping, value-specific retract no-ops, incoming-ref cleanup on retractEntity, ref-typed numeric value resolution, intermediate-DB lookup/CAS resolution subset, cardinality-one/unique/default replacement, and CAS one/many/nil/lookup-ref value subset covered; tx fn call and exact errors incomplete |
 | `upsert` | partial | Unique-identity map/list tempid upsert, intermediate-db retry subset, string tempid refs, unique-ref numeric/lookup-ref upsert, and conflicting unique-field subsets covered; exact conflict messages incomplete |
@@ -37,8 +37,10 @@ Status key:
 | `components` | partial | Component `retractEntity`, `retractAttribute`, incoming-ref cleanup, forward pull expansion, explicit reverse pull subsets, and entity `touch` covered; exact reverse scalar shape missing |
 | `entity` | partial | Basic entity view API covered: id/db access, lookup-ref and ident construction, scalar/many attr reads, forward and reverse ref navigation, contains, missing entities, and touch; Clojure map protocol/cache/print/equality semantics do not apply directly in Kvist |
 | `index` | partial | `datoms`, `find-datom`, `seek-datoms`, `rseek-datoms`, `index-range`, range bounds, and public AVET filtering covered; exact indexed-attribute error behavior incomplete |
+| `validation` | partial | Nil value rejection plus value type, uniqueness, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
-| `db`, `tuples`, `validation`, `issues` | partial | Need namespace-by-namespace porting |
+| `db`, `issues` | partial | Need namespace-by-namespace porting |
+| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, and direct tuple attr rejection subsets started; tuple upsert, lookup refs, and full schema validation missing |
 
 ## Next Porting Order
 
