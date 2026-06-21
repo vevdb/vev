@@ -12,6 +12,8 @@
   Float
   Bool
   Keyword
+  Vector
+  Map
 ])
 
 (defstruct Value {
@@ -21,6 +23,7 @@
   int_value: i64
   float_value: f64
   bool_value: bool
+  items: [dynamic]Value
 })
 
 (defenum Term-Kind [
@@ -351,6 +354,14 @@
 (defn value-nil [] -> Value
   (Value {kind: .Nil}))
 
+(defn value-vector [items: []Value] -> Value
+  (let [owned (arr.into [dynamic]Value items)]
+    (Value {kind: .Vector items: owned})))
+
+(defn value-map [items: []Value] -> Value
+  (let [owned (arr.into [dynamic]Value items)]
+    (Value {kind: .Map items: owned})))
+
 (defn string-less? [left: string, right: string] -> bool
   (< (strings.compare left right) 0))
 
@@ -363,6 +374,8 @@
     .String 4
     .Bool 5
     .Keyword 6
+    .Vector 7
+    .Map 8
     :else 99))
 
 (defn slash-index [text: string] -> int
@@ -401,6 +414,26 @@
       .Float (< left.float_value right.float_value)
       .Bool (and (not left.bool_value) right.bool_value)
       .Keyword (keyword-less? left.text right.text)
+      .Vector (do
+        (let [limit (count left.items)]
+          (when (< (count right.items) limit)
+            (set! limit (count right.items)))
+          (for [index 0..<limit]
+            (when (value-less? left.items[index] right.items[index])
+              (return true))
+            (when (value-less? right.items[index] left.items[index])
+              (return false)))
+          (< (count left.items) (count right.items))))
+      .Map (do
+        (let [limit (count left.items)]
+          (when (< (count right.items) limit)
+            (set! limit (count right.items)))
+          (for [index 0..<limit]
+            (when (value-less? left.items[index] right.items[index])
+              (return true))
+            (when (value-less? right.items[index] left.items[index])
+              (return false)))
+          (< (count left.items) (count right.items))))
       .Nil false
       :else false)))
 
@@ -568,6 +601,25 @@
       .Float (= left.float_value right.float_value)
       .Bool (= left.bool_value right.bool_value)
       .Keyword (= left.text right.text)
+      .Vector (values-equal? (slice left.items 0) (slice right.items 0))
+      .Map (do
+        (when (not (= (count left.items) (count right.items)))
+          (return false))
+        (when (not (= (% (count left.items) 2) 0))
+          (return false))
+        (let [left-index 0]
+          (while (< left-index (count left.items))
+            (let [found false
+                  right-index 0]
+              (while (< right-index (count right.items))
+                (when (and (value-equal? left.items[left-index] right.items[right-index])
+                           (value-equal? left.items[(+ left-index 1)] right.items[(+ right-index 1)]))
+                  (set! found true))
+                (set! right-index (+ right-index 2)))
+              (when (not found)
+                (return false)))
+            (set! left-index (+ left-index 2))))
+        true)
       .Nil true
       :else false)))
 
@@ -1592,7 +1644,11 @@
                           true
                           (if (= op "*")
                             true
-                            (= op "identity"))))))
+                            (if (= op "identity")
+                              true
+                              (if (= op "vector")
+                                true
+                                (= op "hash-map"))))))))
                   false))
               false)
             false)
@@ -2980,6 +3036,24 @@
   (when (and (= function.op "identity")
              (= (count function.terms) 1))
     (return (resolve-term function.terms[0] binding)))
+  (when (= function.op "vector")
+    (let [items (make [dynamic]Value 0 (count function.terms))]
+      (for [term function.terms]
+        (let [[value ok] (resolve-term term binding)]
+          (when (not ok)
+            (return (Value {}) false))
+          (arr.push! items value)))
+      (return (value-vector (slice items 0)) true)))
+  (when (= function.op "hash-map")
+    (when (not (= (% (count function.terms) 2) 0))
+      (return (Value {}) false))
+    (let [items (make [dynamic]Value 0 (count function.terms))]
+      (for [term function.terms]
+        (let [[value ok] (resolve-term term binding)]
+          (when (not ok)
+            (return (Value {}) false))
+          (arr.push! items value)))
+      (return (value-map (slice items 0)) true)))
   (when (or (= function.op "+")
             (= function.op "-")
             (= function.op "*"))
