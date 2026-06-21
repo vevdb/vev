@@ -3718,6 +3718,34 @@
     (t.is (not report.ok))
     (t.is (= report.error "conflicting upsert"))))
 
+(t.deftest datascript-upsert-unique-cardinality-many-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :slugs]
+             [:db/add 101 :db/unique :db.unique/identity]
+             [:db/add 101 :db/cardinality :db.cardinality/many]])
+        _ (vev.transact (addr conn) [{:db/id 1 :name "Ivan"}
+                                     {:db/id 2 :name "Petr"}])
+        first (vev.transact (addr conn) [{:name "Ivan" :slugs "ivan1"}
+                                         {:name "Petr" :slugs "petr1"}])
+        second (vev.transact (addr conn) [{:name "Ivan" :slugs ["ivan1" "ivan2"]}])
+        conflict (vev.transact (addr conn) [{:slugs ["ivan1" "petr1"]}])
+        ivan-slugs (vev.q-collection conn.db
+                     [:find [?slug ...]
+                      :where
+                      [1 :slugs ?slug]])]
+    (t.is first.ok)
+    (t.is second.ok)
+    (t.is (= (count ivan-slugs) 2))
+    (t.is (= ivan-slugs[0].text "ivan1"))
+    (t.is (= ivan-slugs[1].text "ivan2"))
+    (t.is (not conflict.ok))
+    (t.is (= conflict.error "conflicting upsert"))))
+
 (t.deftest datascript-upsert-conflicts-with-explicit-id-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
