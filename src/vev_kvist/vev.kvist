@@ -132,6 +132,11 @@
   tempids: [dynamic]Tempid
 })
 
+(defstruct Tuple-Schema {
+  attr: string
+  attrs: [dynamic]string
+})
+
 (defstruct Clause {
   e: Term
   a: Term
@@ -363,6 +368,15 @@
 (defn value-map [items: []Value] -> Value
   (let [owned (arr.into [dynamic]Value items)]
     (Value {kind: .Map items: owned})))
+
+(defn- value-keyword-vector2 [a: string, b: string] -> Value
+  (value-vector ([]Value [(value-keyword a) (value-keyword b)])))
+
+(defn tuple-attrs-schema-tx [schema-e: u64, tuple-attr: string, a: string, b: string] -> [dynamic]Tx-Data
+  (let [out (make [dynamic]Tx-Data)]
+    (arr.push! out (add schema-e ":db/ident" (value-keyword tuple-attr)))
+    (arr.push! out (add schema-e ":db/tupleAttrs" (value-keyword-vector2 a b)))
+    out))
 
 (defn string-less? [left: string, right: string] -> bool
   (< (strings.compare left right) 0))
@@ -3436,6 +3450,57 @@
             (return datom.v.bool_value))))))
   false)
 
+(defn schema-ident-for-entity [db: DB, entity: u64] -> [attr: string, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword))
+          (return datom.v.text true)))))
+  (return "" false))
+
+(defn schema-tuple-attrs [db: DB, attr: string] -> [dynamic]string
+  (let [out (make [dynamic]string)
+        [schema-e schema-ok] (schema-entity-for-attr db attr)]
+    (when (not schema-ok)
+      (return out))
+    (let [indexes (slice db.eavt 0)
+          low (lower-bound-index db indexes "eavt-ea" schema-e ":db/tupleAttrs" (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e ":db/tupleAttrs" (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom db.datoms[datom-index]]
+          (when (and (datom-current-at? db datom-index)
+                     (= datom.v.kind .Vector))
+            (for [item datom.v.items]
+              (when (= item.kind .Keyword)
+                (arr.push! out item.text)))))))
+    out))
+
+(defn tuple-schema-contains? [schema: Tuple-Schema, attr: string] -> bool
+  (for [component schema.attrs]
+    (when (= component attr)
+      (return true)))
+  false)
+
+(defn tuple-schemas-containing [db: DB, attr: string] -> [dynamic]Tuple-Schema
+  (let [out (make [dynamic]Tuple-Schema)
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [[tuple-attr ident-ok] (schema-ident-for-entity db datom.e)]
+            (when ident-ok
+              (let [attrs (schema-tuple-attrs db tuple-attr)
+                    schema (Tuple-Schema {attr: tuple-attr attrs: attrs})]
+                (if (tuple-schema-contains? schema attr)
+                  (arr.push! out schema)
+                  (delete attrs))))))))
+    out))
+
 (defn schema-indexed? [db: DB, attr: string] -> bool
   (schema-bool? db attr ":db/index"))
 
@@ -3597,6 +3662,43 @@
                 tx: 0
                 added: (= op.kind .Add)})))
     (build-db datoms)))
+
+(defn tuple-value-for-entity [db: DB, entity: u64, attrs: []string] -> [value: Value, ok: bool]
+  (let [items (make [dynamic]Value 0 (count attrs))
+        any false]
+    (for [attr attrs]
+      (let [[value found] (pull-attr-value db entity attr)]
+        (if found
+          (do
+            (set! any true)
+            (arr.push! items value))
+          (arr.push! items (value-nil)))))
+    (when (not any)
+      (delete items)
+      (return (Value {}) false))
+    (let [out (value-vector (slice items 0))]
+      (delete items)
+      (return out true))))
+
+(defn append-tuple-maintenance-ops! [out: ^[dynamic]Tx-Op, db: DB, op: Tx-Op]
+  (when (= op.a ":db/tupleAttrs")
+    (return))
+  (let [schemas (tuple-schemas-containing db op.a)]
+    (defer (delete schemas))
+    (for [schema schemas]
+      (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice schema.attrs 0))]
+        (if has-value
+          (arr.push! out^ (tx-add op.e schema.attr tuple-value))
+          (append-retract-attr-ops! out db op.e schema.attr)))
+      (delete schema.attrs))))
+
+(defn expand-tuple-ops [db: DB, ops: []Tx-Op] -> [dynamic]Tx-Op
+  (let [out (make [dynamic]Tx-Op 0 (count ops))]
+    (for [op ops]
+      (arr.push! out op)
+      (let [scratch (db-with-resolved-ops db (slice out 0))]
+        (append-tuple-maintenance-ops! (addr out) scratch op)))
+    out))
 
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
@@ -3795,13 +3897,15 @@
 
 (defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
+        expanded-ops (expand-tuple-ops before ops)
         after-datoms (clone-datoms conn^.db.datoms)
-        tx-data (make [dynamic]Datom 0 (count ops))
+        tx-data (make [dynamic]Datom 0 (count expanded-ops))
         tx conn^.next_tx]
-    (let [[valid error] (validate-ops before ops)]
+    (let [[valid error] (validate-ops before (slice expanded-ops 0))]
       (when (not valid)
+        (delete expanded-ops)
         (return (failed-tx-report before error))))
-    (for [op ops]
+    (for [op expanded-ops]
       (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx)
       (let [datom (Datom {e: op.e
                           a: op.a
@@ -3810,6 +3914,7 @@
                           added: (= op.kind .Add)})]
         (arr.push! after-datoms datom)
         (arr.push! tx-data datom)))
+    (delete expanded-ops)
     (let [after (build-db after-datoms)]
       (set! conn^.db after)
       (set! conn^.next_tx (+ conn^.next_tx 1))

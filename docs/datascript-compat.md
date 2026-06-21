@@ -39,7 +39,8 @@ Status key:
 | `index` | partial | `datoms`, `find-datom`, `seek-datoms`, `rseek-datoms`, `index-range`, range bounds, and public AVET filtering covered; exact indexed-attribute error behavior incomplete |
 | `validation` | partial | Nil value rejection plus value type, uniqueness, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
-| `db`, `tuples`, `issues` | partial | Need namespace-by-namespace porting |
+| `db`, `issues` | partial | Need namespace-by-namespace porting |
+| `tuples` | partial | Tuple attr schema and derived tuple transaction maintenance subset started; tuple upsert, lookup refs, direct tuple attr rejection, and full schema validation missing |
 
 ## Next Porting Order
 
