@@ -2575,6 +2575,21 @@
         (return data.v false "lookup ref not found"))))
   (resolve-tx-value db data.a data.v))
 
+(defn tx-data-has-tempid? [tx-data: []Tx-Data, tempid: string] -> bool
+  (for [data tx-data]
+    (when (and data.has_tempid
+               (= data.tempid tempid))
+      (return true)))
+  false)
+
+(defn ref-string-tempid? [db: DB, tx-data: []Tx-Data, attr: string, value: Value] -> bool
+  (when (not (= value.kind .String))
+    (return false))
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (and has-type
+         (= schema-type ":db.type/ref")
+         (tx-data-has-tempid? tx-data value.text))))
+
 (defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
   (let [found: u64 0
         has-found false]
@@ -2702,14 +2717,29 @@
 	                                        tempids: resolved-tempids}))))))
 	          (when skip-data
 	            (continue))
-	          (when data.has_value_tempid
-	            (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.value_tempid)]
+	          (when (or data.has_value_tempid
+                       (ref-string-tempid? current-db tx-data data.a v))
+	            (let [value-tempid data.value_tempid]
+              (when (not data.has_value_tempid)
+                (set! value-tempid v.text))
+              (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
               (if ok
                 (set! v (value-entity existing))
-                (do
-                  (set! v (value-entity next-e))
-                  (arr.push! resolved-tempids (Tempid {tempid: data.value_tempid e: next-e}))
-                  (set! next-e (+ next-e 1))))))
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data value-tempid)]
+                  (when upsert-conflict
+                    (return (Resolved-Tx {ok: false
+                                          error: "conflicting upsert"
+                                          ops: resolved-ops
+                                          tx_meta: resolved-meta
+                                          tempids: resolved-tempids})))
+                  (if upsert-ok
+                    (do
+                      (set! v (value-entity upsert-e))
+                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: upsert-e})))
+                    (do
+                      (set! v (value-entity next-e))
+                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: next-e}))
+                      (set! next-e (+ next-e 1)))))))))
           (when (not value-ok)
             (return (Resolved-Tx {ok: false
                                   error: value-error
