@@ -23,6 +23,7 @@ The first transaction input should stay close to Datomic/DataScript:
 ```text
 [:db/add e a v]
 [:db/retract e a v]
+[:db/retractEntity e]
 ```
 
 This keeps the semantic core direct and easy to inspect.
@@ -30,6 +31,12 @@ This keeps the semantic core direct and easy to inspect.
 It also preserves the value of existing Datomic/DataScript tutorials and tx-data
 examples. Divergence here should be treated as costly and only justified by
 real embedding constraints.
+
+`[:db/retractEntity e]` expands to retract operations for the entity's current
+facts in the DB snapshot before the transaction.
+
+`[:db/retract e a]` expands to retract operations for current values of that
+entity+attribute in the DB snapshot before the transaction.
 
 ## Reified transactions
 

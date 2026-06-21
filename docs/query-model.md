@@ -86,7 +86,9 @@ Supported now:
 
 - `:find` with one or more variables
 - datom clauses shaped like `[e a v]`
+- source-var datom clauses shaped like `[$ e a v]` with single-source semantics
 - variables in entity, attribute, and value positions
+- wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
 - entity refs as values
 - joins through repeated variables
@@ -94,6 +96,7 @@ Supported now:
 - collection `:in` variables shaped like `[?x ...]`
 - pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
+- `not` groups
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -103,7 +106,18 @@ Example:
   [:find ?e ?name
    :where
    [?e :user/email "ada@example.com"]
+   [?e :user/active _]
    [?e :user/name ?name]])
+```
+
+`$` source-var clauses parse the same way against the current DB:
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [$ ?e :user/email "ada@example.com"]
+   [$ ?e :user/name ?name]])
 ```
 
 ```clojure
@@ -135,8 +149,25 @@ Example:
    [?e :user/email "ada@example.com"]])
 ```
 
-Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
-predicates remain later work.
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [?e :user/name ?name]
+   (not [?e :user/active true])])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [?e :user/name ?name]
+   (not [?e :user/friend ?friend]
+        [?friend :user/active false])])
+```
+
+Basic clauses now use in-memory indexes. Text parsing, rules, `not-join`, and
+advanced predicates remain later work.
 
 ## Pull model
 

@@ -44,11 +44,13 @@ These are the core transaction forms Vev should match first:
 [:db/add e a v]
 [:db/retract e a v]
 [:db/retract e a]
+[:db/retractEntity e]
 ```
 
 Important compatibility notes from Datomic:
 
 - `:db/retract` may omit the value
+- `:db/retractEntity` retracts the entity's current facts
 - transaction data is authored as an ordered collection for convenience
 - semantically it is still one atomic information set
 
@@ -96,7 +98,8 @@ Examples:
 ```
 
 Current Vev supports map forms in tx data when `:db/id` is first, with one to
-three attrs after it. Nested component maps remain later work.
+three attrs after it, and the common two-attr shape with `:db/id` last. Nested
+component maps and arbitrary key order remain later work.
 
 ### Transaction metadata
 
@@ -181,6 +184,7 @@ the core path is stable:
 - `:with`
 - rules
 - `or` / `or-join`
+- `not-join`
 - `and`
 - function expressions
 - aggregates beyond a very small starter subset
@@ -240,7 +244,7 @@ These are part of Datomic pull and should remain syntax goals, but can be
 deferred:
 
 - recursion limits such as `{:person/friends 6}` or `{:person/friends ...}`
-- richer attr options such as `:as`, `:default`, `:xform`
+- richer attr options such as `:xform`
 
 Again, the rule is to defer support, not invent different syntax.
 

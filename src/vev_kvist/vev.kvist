@@ -22,6 +22,7 @@
 (defenum Term-Kind [
   Value
   Var
+  Wildcard
 ])
 
 (defstruct Term {
@@ -119,6 +120,10 @@
   right: Term
 })
 
+(defstruct Not-Group {
+  clauses: []Clause
+})
+
 (defstruct Pull-Find {
   var: string
   attrs: []string
@@ -131,6 +136,7 @@
   collection_inputs: [dynamic]string
   clauses: [dynamic]Clause
   predicates: [dynamic]Predicate
+  not_groups: [dynamic]Not-Group
   pulls: [dynamic]Pull-Find
 })
 
@@ -167,6 +173,10 @@
   a: string
   pattern: []Pull-Spec
   limit: int
+  has_default: bool
+  default_value: Value
+  has_alias: bool
+  alias: string
 })
 
 (defenum Query-Input-Kind [
@@ -237,6 +247,9 @@
 (defn term-var [name: string] -> Term
   (Term {kind: .Var name: name}))
 
+(defn term-wildcard [] -> Term
+  (Term {kind: .Wildcard}))
+
 (defn attr [name: string] -> Term
   (term-keyword name))
 
@@ -257,11 +270,23 @@
 (defn retract [e: u64, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" e: e a: a v: v}))
 
+(defn retract-attr [e: u64, a: string] -> Tx-Data
+  (Tx-Data {op: ":db/retractAttr" e: e a: a}))
+
+(defn retract-entity [e: u64] -> Tx-Data
+  (Tx-Data {op: ":db/retractEntity" e: e}))
+
 (defn add-tempid [tempid: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a v: v}))
 
 (defn retract-tempid [tempid: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" tempid: tempid has_tempid: true a: a v: v}))
+
+(defn retract-attr-tempid [tempid: string, a: string] -> Tx-Data
+  (Tx-Data {op: ":db/retractAttr" tempid: tempid has_tempid: true a: a}))
+
+(defn retract-entity-tempid [tempid: string] -> Tx-Data
+  (Tx-Data {op: ":db/retractEntity" tempid: tempid has_tempid: true}))
 
 (defn add-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
@@ -269,11 +294,23 @@
 (defn retract-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a v: v}))
 
+(defn retract-attr-lookup-ref [lookup-attr: string, lookup-value: Value, a: string] -> Tx-Data
+  (Tx-Data {op: ":db/retractAttr" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a}))
+
+(defn retract-entity-lookup-ref [lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retractEntity" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true}))
+
 (defn add-ident [ident: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" ident: ident has_ident: true a: a v: v}))
 
 (defn retract-ident [ident: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" ident: ident has_ident: true a: a v: v}))
+
+(defn retract-attr-ident [ident: string, a: string] -> Tx-Data
+  (Tx-Data {op: ":db/retractAttr" ident: ident has_ident: true a: a}))
+
+(defn retract-entity-ident [ident: string] -> Tx-Data
+  (Tx-Data {op: ":db/retractEntity" ident: ident has_ident: true}))
 
 (defn tempid-lookup [tempids: []Tempid, tempid: string] -> [e: u64, ok: bool]
   (for [item tempids]
@@ -524,22 +561,67 @@
               (unquote (emit-attr a))
               (unquote (emit-literal-value v)))))))))
 
+(defmacro- emit-retract-entity-call [e]
+  (if (lookup-ref? e)
+    (quasiquote
+      (retract-entity-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))))
+    (if (string? e)
+      (quasiquote (retract-entity-tempid (unquote e)))
+      (if (keyword? e)
+        (quasiquote (retract-entity-ident (unquote (source e))))
+        (quasiquote (retract-entity (unquote e)))))))
+
+(defmacro- emit-retract-attr-call [e a]
+  (if (lookup-ref? e)
+    (quasiquote
+      (retract-attr-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (unquote (emit-attr a))))
+    (if (string? e)
+      (quasiquote
+        (retract-attr-tempid
+          (unquote e)
+          (unquote (emit-attr a))))
+      (if (keyword? e)
+        (quasiquote
+          (retract-attr-ident
+            (unquote (source e))
+            (unquote (emit-attr a))))
+        (quasiquote
+          (retract-attr
+            (unquote e)
+            (unquote (emit-attr a))))))))
+
 (defmacro- emit-tx-map-items [form]
-  ;; ponytail: require :db/id first until map-form support needs arbitrary key order.
-  (let [e (nth form 1)]
-    (if (= (count form) 4)
-      (forms
-        (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3)))
-      (if (= (count form) 6)
+  ;; ponytail: fixed small map shapes are enough until arbitrary tx maps matter.
+  (if (= (count form) 6)
+    (if (keyword? (nth form 4))
+      (if (= (source (nth form 4)) ":db/id")
+        (let [e (nth form 5)]
+          (forms
+            (emit-tx-data-call (keyword "db/add") e (nth form 0) (nth form 1))
+            (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))))
+        (let [e (nth form 1)]
+          (forms
+            (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))
+            (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5)))))
+      (let [e (nth form 1)]
         (forms
           (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))
-          (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5)))
+          (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5)))))
+    (let [e (nth form 1)]
+      (if (= (count form) 4)
+        (forms
+          (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3)))
         (if (= (count form) 8)
           (forms
             (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))
             (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5))
             (emit-tx-data-call (keyword "db/add") e (nth form 6) (nth form 7)))
-          (error "tx map forms currently support :db/id plus one to three attrs"))))))
+          (error "tx map forms currently support :db/id first with one to three attrs, or :db/id last with two attrs"))))))
 
 (defmacro- emit-tx-data-item [form]
   (if (vector? form)
@@ -555,7 +637,24 @@
               (forms (emit-tx-data-call op e a v))
               (error "tx-data operation must be :db/add or :db/retract")))
           (error "tx-data operation must be :db/add or :db/retract")))
-      (error "tx-data vectors must have shape [:db/add e :attr value]"))
+      (if (= (count form) 2)
+        (let [op (nth form 0)
+              e (nth form 1)]
+          (if (keyword? op)
+            (if (= (source op) ":db/retractEntity")
+              (forms (emit-retract-entity-call e))
+              (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity"))
+            (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity")))
+        (if (= (count form) 3)
+          (let [op (nth form 0)
+                e (nth form 1)
+                a (nth form 2)]
+            (if (keyword? op)
+              (if (= (source op) ":db/retract")
+                (forms (emit-retract-attr-call e a))
+                (error "three-item tx-data vectors currently support :db/retract"))
+              (error "three-item tx-data vectors currently support :db/retract")))
+          (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], or [:db/retractEntity e]"))))
     (if (brace? form)
       (emit-tx-map-items form)
       (error "tx-data expects vector forms like [:db/add e :attr value] or map forms"))))
@@ -675,14 +774,18 @@
 
 (defmacro- emit-entity-term [form]
   (if (symbol? form)
-    (quasiquote (term-var (unquote (source form))))
+    (if (= (source form) "_")
+      (quasiquote (term-wildcard))
+      (quasiquote (term-var (unquote (source form)))))
     (if (int? form)
       (quasiquote (term-entity (unquote form)))
       (quasiquote (unquote form)))))
 
 (defmacro- emit-attr-term [form]
   (if (symbol? form)
-    (quasiquote (term-var (unquote (source form))))
+    (if (= (source form) "_")
+      (quasiquote (term-wildcard))
+      (quasiquote (term-var (unquote (source form)))))
     (if (keyword? form)
       (quasiquote (term-keyword (unquote (source form))))
       (if (string? form)
@@ -691,7 +794,9 @@
 
 (defmacro- emit-value-term [form]
   (if (symbol? form)
-    (quasiquote (term-var (unquote (source form))))
+    (if (= (source form) "_")
+      (quasiquote (term-wildcard))
+      (quasiquote (term-var (unquote (source form)))))
     (if (string? form)
       (quasiquote (term-string (unquote form)))
       (if (int? form)
@@ -709,7 +814,12 @@
         (Clause {e: (unquote (emit-entity-term (nth form 0)))
                  a: (unquote (emit-attr-term (nth form 1)))
                  v: (unquote (emit-value-term (nth form 2)))}))
-      (error "datalog clauses must have shape [e a v]"))
+      (if (= (count form) 4)
+        (quasiquote
+          (Clause {e: (unquote (emit-entity-term (nth form 1)))
+                   a: (unquote (emit-attr-term (nth form 2)))
+                   v: (unquote (emit-value-term (nth form 3)))}))
+        (error "datalog clauses must have shape [e a v] or [src e a v]")))
     (error "datalog :where entries must be clauses")))
 
 (defmacro- predicate-clause? [form]
@@ -718,6 +828,21 @@
       (list? (first form))
       false)
     false))
+
+(defmacro- not-clause? [form]
+  (if (list? form)
+    (if (> (count form) 1)
+      (let [head (first form)]
+        (and (symbol? head)
+             (= (source head) "not")))
+      false)
+    false))
+
+(defmacro- emit-datalog-not-group [form]
+  (if (not-clause? form)
+    (quasiquote
+      (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
+    (error "not clauses must have shape (not [e a v] ...)")))
 
 (defmacro- emit-datalog-predicate [form]
   (if (predicate-clause? form)
@@ -735,9 +860,11 @@
     (forms)
     (if (predicate-clause? (first forms))
       (emit-datalog-clauses (rest forms))
-      (forms
-        (emit-datalog-clause (first forms))
-        (emit-datalog-clauses (rest forms))))))
+      (if (not-clause? (first forms))
+        (emit-datalog-clauses (rest forms))
+        (forms
+          (emit-datalog-clause (first forms))
+          (emit-datalog-clauses (rest forms)))))))
 
 (defmacro- emit-datalog-predicates [forms]
   (if (= (count forms) 0)
@@ -747,6 +874,15 @@
         (emit-datalog-predicate (first forms))
         (emit-datalog-predicates (rest forms)))
       (emit-datalog-predicates (rest forms)))))
+
+(defmacro- emit-datalog-not-groups [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (not-clause? (first forms))
+      (forms
+        (emit-datalog-not-group (first forms))
+        (emit-datalog-not-groups (rest forms)))
+      (emit-datalog-not-groups (rest forms)))))
 
 (defmacro- emit-pull-attrs [forms]
   (if (= (count forms) 0)
@@ -758,10 +894,12 @@
           (source (first forms))
           (if (string? (first forms))
             (text (first forms))
-            (if (and (symbol? (first forms))
-                     (= (source (first forms)) "*"))
-              "*"
-              (error "pull patterns currently accept keyword, string, *, or nested attrs"))))
+            (if (vector? (first forms))
+              (pull-attr-source (nth (first forms) 0))
+              (if (and (symbol? (first forms))
+                       (= (source (first forms)) "*"))
+                "*"
+                (error "pull patterns currently accept keyword, string, *, option vectors, or nested attrs")))))
         (emit-pull-attrs (rest forms))))))
 
 (defmacro- pull-attr-source [form]
@@ -774,7 +912,32 @@
         "*"
         (error "pull pattern attrs must be keywords, strings, or *")))))
 
+(defmacro- pull-alias-source [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (if (symbol? form)
+        (source form)
+        (error "pull :as expects keyword, string, or symbol alias")))))
+
 (defmacro- emit-pull-spec [form]
+  (if (vector? form)
+    (if (= (count form) 3)
+      (if (keyword? (nth form 1))
+        (if (= (source (nth form 1)) ":default")
+          (quasiquote
+            (pull-spec-default
+              (unquote (pull-attr-source (nth form 0)))
+              (unquote (emit-literal-value (nth form 2)))))
+          (if (= (source (nth form 1)) ":as")
+            (quasiquote
+              (pull-spec-as
+                (unquote (pull-attr-source (nth form 0)))
+                (unquote (pull-alias-source (nth form 2)))))
+            (error "pull option vectors currently support :default and :as")))
+        (error "pull option vectors expect a keyword option"))
+      (error "pull option vectors currently have shape [:attr :default value] or [:attr :as alias]"))
   (if (brace? form)
     (if (= (count form) 2)
       (let [attr (nth form 0)
@@ -807,7 +970,7 @@
     (quasiquote
       (pull-spec
         (unquote (pull-attr-source form))
-        ([]Pull-Spec [])))))
+        ([]Pull-Spec []))))))
 
 (defmacro- emit-pull-specs [forms]
   (if (= (count forms) 0)
@@ -853,6 +1016,7 @@
                 ([]string [(splice (emit-collection-input-vars input-items))])
                 ([]Clause [(splice (emit-datalog-clauses where-items))])
                 ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
                 ([]Pull-Find [(splice (emit-pull-finds find-items))]))))
           (error "datalog query must start with :find"))
         (error "datalog query must start with :find")))
@@ -929,18 +1093,23 @@
         ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
     (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
-(defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, pulls: []Pull-Find] -> Query
+(defn not-group [clauses: []Clause] -> Not-Group
+  (Not-Group {clauses: clauses}))
+
+(defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, pulls: []Pull-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-inputs (arr.into [dynamic]string inputs)
         owned-collection-inputs (arr.into [dynamic]string collection-inputs)
         owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
+        owned-not-groups (arr.into [dynamic]Not-Group not-groups)
         owned-pulls (arr.into [dynamic]Pull-Find pulls)]
     (Query {find: owned-find
             inputs: owned-inputs
             collection_inputs: owned-collection-inputs
             clauses: owned-clauses
             predicates: owned-predicates
+            not_groups: owned-not-groups
             pulls: owned-pulls})))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
@@ -997,6 +1166,7 @@
 (defn match-term? [term: Term, actual: Value, binding: ^Binding] -> bool
   (case term.kind
     .Value (value-equal? term.value actual)
+    .Wildcard true
     .Var (let [[existing ok] (binding-lookup binding^ term.name)]
            (if ok
              (value-equal? existing actual)
@@ -1035,6 +1205,24 @@
         found (int-lower-bound current index)]
     (and (< found (count current))
          (= current[found] index))))
+
+(defn append-retract-entity-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" entity "" (Value {}))
+        high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (arr.push! ops^ (tx-retract entity datom.a datom.v)))))))
+
+(defn append-retract-attr-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (arr.push! ops^ (tx-retract entity attr datom.v)))))))
 
 (defn schema-entity-for-attr [db: DB, attr: string] -> [e: u64, ok: bool]
   (let [value (value-keyword attr)
@@ -1165,6 +1353,12 @@
                                     ops: resolved-ops
                                     tx_meta: resolved-meta
                                     tempids: resolved-tempids})))))
+        (when (= data.op ":db/retractEntity")
+          (append-retract-entity-ops! (addr resolved-ops) db e)
+          (continue))
+        (when (= data.op ":db/retractAttr")
+          (append-retract-attr-ops! (addr resolved-ops) db e data.a)
+          (continue))
         (if (= data.op ":db/retract")
           (arr.push! resolved-ops (tx-retract e data.a data.v))
           (arr.push! resolved-ops (tx-add e data.a data.v)))))
@@ -1362,6 +1556,34 @@
           (arr.push! out datom-index))))
     out))
 
+(defn binding-matches-clause? [db: DB, clause: Clause, binding: Binding] -> bool
+  (let [candidates (clause-candidate-indexes db clause binding) :defer]
+    (for [datom-index candidates]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [candidate (clone-binding binding)]
+            (when (datom-clause-matches? datom clause (addr candidate))
+              (return true)))))))
+  false)
+
+(defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
+  (let [bindings ([dynamic]Binding [(clone-binding binding)]) :defer]
+    (for [clause group.clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (let [candidates (clause-candidate-indexes db clause candidate-binding) :defer]
+            (for [datom-index candidates]
+              (let [datom db.datoms[datom-index]]
+                (when (datom-current-at? db datom-index)
+                  (let [next (clone-binding candidate-binding)]
+                    (when (datom-clause-matches? datom clause (addr next))
+                      (arr.push! next-bindings next))))))))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (return false))))
+    (return (> (count bindings) 0))))
+
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
         bindings (bindings-from-inputs query inputs)
@@ -1387,6 +1609,13 @@
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
           (when (predicate-matches? predicate binding)
+            (arr.push! next-bindings binding)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [not-group query.not_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (when (not (binding-matches-not-group? db not-group binding))
             (arr.push! next-bindings binding)))
         (delete bindings)
         (set! bindings next-bindings)))
@@ -1454,7 +1683,7 @@
             (when (> (count spec.pattern) 0)
               (let [pulled (pull-pattern-spec db datom.e spec.pattern)]
                 (set! children pulled.attrs)))
-            (arr.push! out^ (Pull-Attr {a: spec.a
+            (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                         v: (value-entity datom.e)
                                         attrs: children}))
             (set! seen (+ seen 1))
@@ -1473,12 +1702,15 @@
                                       v: datom.v
                                       attrs: (make [dynamic]Pull-Attr)})))))))
 
+(defn pull-output-attr [spec: Pull-Spec] -> string
+  (if spec.has_alias spec.alias spec.a))
+
 (defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
   (when (= spec.a "*")
     (pull-wildcard! out db entity)
     (return))
   (when (= spec.a ":db/id")
-    (arr.push! out^ (Pull-Attr {a: spec.a
+    (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                 v: (value-entity entity)
                                 attrs: (make [dynamic]Pull-Attr)}))
     (return))
@@ -1486,13 +1718,17 @@
     (pull-reverse-attr! out db entity spec)
     (return))
   (let [[value ok] (pull-attr-value db entity spec.a)]
-    (when ok
+    (if ok
       (let [children (make [dynamic]Pull-Attr)]
         (when (and (= value.kind .Entity)
                    (> (count spec.pattern) 0))
           (let [pulled (pull-pattern-spec db value.entity spec.pattern)]
             (set! children pulled.attrs)))
-        (arr.push! out^ (Pull-Attr {a: spec.a v: value attrs: children}))))))
+        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec) v: value attrs: children})))
+      (when spec.has_default
+        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                    v: spec.default_value
+                                    attrs: (make [dynamic]Pull-Attr)}))))))
 
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
@@ -1501,13 +1737,49 @@
     (Pull-Result {e: entity attrs: out})))
 
 (defn flat-pull-spec [attr: string] -> Pull-Spec
-  (Pull-Spec {a: attr limit: 0 pattern: ([]Pull-Spec [])}))
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: ([]Pull-Spec [])}))
 
 (defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
-  (Pull-Spec {a: attr limit: 0 pattern: pattern}))
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: pattern}))
 
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
-  (Pull-Spec {a: attr limit: limit pattern: pattern}))
+  (Pull-Spec {a: attr
+              limit: limit
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: pattern}))
+
+(defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: true
+              default_value: default-value
+              has_alias: false
+              alias: ""
+              pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec-as [attr: string, alias: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: true
+              alias: alias
+              pattern: ([]Pull-Spec [])}))
 
 (defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
   (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]
@@ -1539,6 +1811,7 @@
       [(clause (term-var "e") ":user/email" (term-string email))
        (clause (term-var "e") ":user/name" (term-var "name"))])
     ([]Predicate [])
+    ([]Not-Group [])
     ([]Pull-Find [])))
 
 (defn seed-people [conn: ^Conn] -> Tx-Report
