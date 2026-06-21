@@ -25,13 +25,13 @@ Status key:
 | `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
 | `query_rules` | missing | Biggest remaining query feature |
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
-| `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, limits covered; recursion/components missing |
+| `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, explicit/default limits, and component expansion examples covered; recursion and exact rendered collection/scalar shapes missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
-| `transact` | partial | Add/retract/map forms and explicit cardinality-one replacement covered; tx fns/CAS/call and unschematized default cardinality-one incomplete |
+| `transact` | partial | Add/retract/map forms, incoming-ref cleanup on retractEntity, and explicit cardinality-one replacement covered; tx fns/CAS/call and unschematized default cardinality-one incomplete |
 | `upsert` | partial | Unique-identity map/list tempid upsert subset covered; conflict reporting, intermediate-db retries, and full ref upsert incomplete |
-| `lookup_refs` | partial | Lookup refs covered in query entity/value positions, pull, tx entity positions, and numeric tx value positions; input lookup refs incomplete |
+| `lookup_refs` | partial | Lookup refs covered in query entity/value positions, pull, tx entity/value positions, and missing-ref retract no-ops for entity and value refs; input lookup refs incomplete |
 | `ident` | partial | DataScript query/transact/pull subset covered; entity API still missing |
-| `components` | missing | Component recursion/retract behavior missing |
+| `components` | partial | Component `retractEntity`, `retractAttribute`, incoming-ref cleanup, forward pull expansion, and explicit reverse pull subsets covered; entity/touch and exact reverse scalar shape missing |
 | `entity` | missing | Entity view API missing |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `index`, `tuples`, `validation`, `issues` | partial | Need namespace-by-namespace porting |
