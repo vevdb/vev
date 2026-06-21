@@ -1820,6 +1820,14 @@
     (not (symbol? (first form))) false
     :else (= (source (first form)) "not")))
 
+(defmacro- sourced-not-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 2) false
+    (not (relation-source? (first form))) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "not")))
+
 (defmacro- not-join-clause? [form]
   (cond
     (not (list? form)) false
@@ -1833,6 +1841,14 @@
     (<= (count form) 1) false
     (not (symbol? (first form))) false
     :else (= (source (first form)) "or")))
+
+(defmacro- sourced-or-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 2) false
+    (not (relation-source? (first form))) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "or")))
 
 (defmacro- or-join-clause? [form]
   (cond
@@ -1854,7 +1870,8 @@
     (= (count form) 0) false
     (not (symbol? (first form))) false
     (relation-source? (first form)) (and (> (count form) 1)
-                                         (symbol? (nth form 1)))
+                                         (symbol? (nth form 1))
+                                         (not (contains? ["not" "or"] (source (nth form 1)))))
     :else (let [name (source (first form))]
             (not (contains? ["not" "not-join" "or" "or-join" "and"] name)))))
 
@@ -1864,6 +1881,36 @@
     (forms
       (emit-find-var (first forms))
       (emit-not-join-vars (rest forms)))))
+
+(defmacro- emit-datalog-source-clause [source-name form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (quasiquote
+        (Clause {e: (unquote (emit-value-term (nth form 0)))
+                 a: (unquote (emit-value-term (nth form 1)))
+                 v: (term-wildcard)
+                 source: (unquote source-name)
+                 has_source: true
+                 source_width: 2}))
+      (if (= (count form) 3)
+        (if (relation-source? (nth form 0))
+          (emit-datalog-clause form)
+          (quasiquote
+            (Clause {e: (unquote (emit-value-term (nth form 0)))
+                     a: (unquote (emit-value-term (nth form 1)))
+                     v: (unquote (emit-value-term (nth form 2)))
+                     source: (unquote source-name)
+                     has_source: true
+                     source_width: 3})))
+        (emit-datalog-clause form)))
+    (error "source-prefixed clauses currently support data clauses")))
+
+(defmacro- emit-datalog-source-clauses [source-name forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-datalog-source-clause source-name (first forms))
+      (emit-datalog-source-clauses source-name (rest forms)))))
 
 (defmacro- emit-datalog-not-group [form]
   (if (not-join-clause? form)
@@ -1880,7 +1927,12 @@
         (not-group
           ([]Clause [(splice (emit-datalog-clauses (rest form)))])
           ([]Not-Group [(splice (emit-datalog-not-groups (rest form)))])))
-      (error "not clauses must have shape (not [e a v] ...) or (not-join [?x] [e a v] ...)"))))
+      (if (sourced-not-clause? form)
+        (quasiquote
+          (not-group
+            ([]Clause [(splice (emit-datalog-source-clauses (source (first form)) (slice form 2)))])
+            ([]Not-Group [])))
+        (error "not clauses must have shape (not [e a v] ...), ($src not [e a v] ...), or (not-join [?x] [e a v] ...)")))))
 
 (defmacro- emit-datalog-missing-group [form]
   (if (missing-clause? form)
@@ -1903,12 +1955,25 @@
         (not-group-simple ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
       (error "or branches currently support data clauses or (and [e a v] ...)"))))
 
+(defmacro- emit-datalog-source-or-branch [source-name form]
+  (if (vector? form)
+    (quasiquote
+      (not-group-simple ([]Clause [(unquote (emit-datalog-source-clause source-name form))])))
+    (error "source-prefixed or branches currently support data clauses")))
+
 (defmacro- emit-datalog-or-branches [forms]
   (if (= (count forms) 0)
     (forms)
     (forms
       (emit-datalog-or-branch (first forms))
       (emit-datalog-or-branches (rest forms)))))
+
+(defmacro- emit-datalog-source-or-branches [source-name forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-datalog-source-or-branch source-name (first forms))
+      (emit-datalog-source-or-branches source-name (rest forms)))))
 
 (defmacro- emit-datalog-or-group [form]
   (if (or-join-clause? form)
@@ -1922,7 +1987,10 @@
     (if (or-clause? form)
       (quasiquote
         (or-group ([]Not-Group [(splice (emit-datalog-or-branches (rest form)))])))
-      (error "or clauses must have shape (or [e a v] [e a v] ...) or (or-join [?x] ...)"))))
+      (if (sourced-or-clause? form)
+        (quasiquote
+          (or-group ([]Not-Group [(splice (emit-datalog-source-or-branches (source (first form)) (slice form 2)))])))
+        (error "or clauses must have shape (or [e a v] [e a v] ...), ($src or [e a v] ...), or (or-join [?x] ...)")))))
 
 (defmacro- emit-predicate-terms [forms]
   (if (= (count forms) 0)
@@ -2047,27 +2115,20 @@
     (error "ground clauses must have shape [(ground value) ?out], [(ground [...]) [?out ...]], or [(ground [[...]]) [[?out ...]...]]")))
 
 (defmacro- datalog-non-data-clause? [form]
-  (if (predicate-clause? form)
-    true
-    (if (function-clause? form)
-      true
-      (if (get-else-clause? form)
-        true
-        (if (get-some-clause? form)
-          true
-          (if (ground-clause? form)
-            true
-            (if (missing-clause? form)
-              true
-              (if (not-clause? form)
-                true
-                (if (not-join-clause? form)
-                  true
-                  (if (or-clause? form)
-                    true
-                    (if (or-join-clause? form)
-                      true
-                      (rule-call? form))))))))))))
+  (cond
+    (predicate-clause? form) true
+    (function-clause? form) true
+    (get-else-clause? form) true
+    (get-some-clause? form) true
+    (ground-clause? form) true
+    (missing-clause? form) true
+    (not-clause? form) true
+    (sourced-not-clause? form) true
+    (not-join-clause? form) true
+    (or-clause? form) true
+    (sourced-or-clause? form) true
+    (or-join-clause? form) true
+    :else (rule-call? form)))
 
 (defmacro- emit-datalog-clauses [forms]
   (if (= (count forms) 0)
@@ -2164,15 +2225,19 @@
       (forms
         (emit-datalog-not-group (first forms))
         (emit-datalog-not-groups (rest forms)))
-      (if (not-join-clause? (first forms))
+      (if (sourced-not-clause? (first forms))
         (forms
           (emit-datalog-not-group (first forms))
           (emit-datalog-not-groups (rest forms)))
-        (if (missing-clause? (first forms))
+        (if (not-join-clause? (first forms))
           (forms
-            (emit-datalog-missing-group (first forms))
+            (emit-datalog-not-group (first forms))
             (emit-datalog-not-groups (rest forms)))
-          (emit-datalog-not-groups (rest forms)))))))
+          (if (missing-clause? (first forms))
+            (forms
+              (emit-datalog-missing-group (first forms))
+              (emit-datalog-not-groups (rest forms)))
+            (emit-datalog-not-groups (rest forms))))))))
 
 (defmacro- emit-datalog-or-groups [forms]
   (if (= (count forms) 0)
@@ -2181,11 +2246,15 @@
       (forms
         (emit-datalog-or-group (first forms))
         (emit-datalog-or-groups (rest forms)))
-      (if (or-join-clause? (first forms))
+      (if (sourced-or-clause? (first forms))
         (forms
           (emit-datalog-or-group (first forms))
           (emit-datalog-or-groups (rest forms)))
-        (emit-datalog-or-groups (rest forms))))))
+        (if (or-join-clause? (first forms))
+          (forms
+            (emit-datalog-or-group (first forms))
+            (emit-datalog-or-groups (rest forms)))
+          (emit-datalog-or-groups (rest forms)))))))
 
 (defmacro- emit-pull-attrs [forms]
   (if (= (count forms) 0)
