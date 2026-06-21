@@ -757,7 +757,10 @@
     (if (= (count form) 2)
       (let [head (first form)]
         (if (symbol? head)
-          (= (source head) "count")
+          (let [op (source head)]
+            (or (= op "count")
+                (= op "min")
+                (= op "max")))
           false))
       false)
     false))
@@ -1295,7 +1298,7 @@
     (quasiquote
       (Aggregate-Find {op: (unquote (source (first form)))
                        var: (unquote (emit-find-var (nth form 1)))}))
-    (error "aggregate find expressions currently support (count ?x)")))
+    (error "aggregate find expressions currently support (count ?x), (min ?x), and (max ?x)")))
 
 (defmacro- emit-aggregate-finds [forms]
   (if (= (count forms) 0)
@@ -2027,6 +2030,41 @@
           (set! n (+ n 1)))))
     n))
 
+(defn aggregate-value [bindings: []Binding, aggregate: Aggregate-Find] -> Value
+  (when (= aggregate.op "count")
+    (return (value-int (aggregate-count bindings aggregate.var))))
+  (let [out (Value {})]
+    (for [binding bindings]
+      (let [[value ok] (binding-lookup binding aggregate.var)]
+        (when (and ok (= value.kind .Int))
+          (if (not (= out.kind .Int))
+            (set! out value)
+            (if (= aggregate.op "min")
+              (when (< value.int_value out.int_value)
+                (set! out value))
+              (when (and (= aggregate.op "max")
+                         (> value.int_value out.int_value))
+                (set! out value)))))))
+    out))
+
+(defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
+  (if (= aggregate.op "count")
+    (value-int 0)
+    (Value {})))
+
+(defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
+  (when (= aggregate.op "count")
+    (return (value-int (+ current.int_value 1))))
+  (when (not (= value.kind .Int))
+    (return current))
+  (when (not (= current.kind .Int))
+    (return value))
+  (if (= aggregate.op "min")
+    (if (< value.int_value current.int_value) value current)
+    (if (= aggregate.op "max")
+      (if (> value.int_value current.int_value) value current)
+      current)))
+
 (defn binding-values-for-vars [binding: Binding, names: []string] -> [values: [dynamic]Value, ok: bool]
   (let [out (make [dynamic]Value 0 (count names))]
     (for [name names]
@@ -2041,10 +2079,10 @@
     (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
       (when ok
         (when (not (row-value-prefix-exists? (slice rows^ 0) (slice group-values 0)))
-          (let [values (arr.into [dynamic]Value (slice group-values 0))
-                pulls (make [dynamic]Pull-Result)]
+            (let [values (arr.into [dynamic]Value (slice group-values 0))
+                  pulls (make [dynamic]Pull-Result)]
             (for [aggregate query.aggregates]
-              (arr.push! values (value-int 0)))
+              (arr.push! values (aggregate-initial-value aggregate)))
             (arr.push! rows^ (Result-Row {values: values pulls: pulls})))))))
   (for [binding bindings]
     (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
@@ -2052,10 +2090,10 @@
         (for [row rows^]
           (when (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0))
             (for [aggregate index query.aggregates]
-              (let [[_ has-value] (binding-lookup binding aggregate.var)]
-                (when (and has-value (= aggregate.op "count"))
-                  (set! row.values[(+ (count query.find) index)].int_value
-                    (+ row.values[(+ (count query.find) index)].int_value 1)))))))))))
+              (let [[value has-value] (binding-lookup binding aggregate.var)]
+                (when has-value
+                  (set! row.values[(+ (count query.find) index)]
+                    (apply-aggregate-value row.values[(+ (count query.find) index)] aggregate value)))))))))))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
@@ -2108,9 +2146,7 @@
           (let [values (make [dynamic]Value 0 (count query.aggregates))
                 pulls (make [dynamic]Pull-Result)]
             (for [aggregate query.aggregates]
-              (if (= aggregate.op "count")
-                (arr.push! values (value-int (aggregate-count (slice bindings 0) aggregate.var)))
-                (arr.push! values (value-int 0))))
+              (arr.push! values (aggregate-value (slice bindings 0) aggregate)))
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
           (append-aggregate-rows! (addr rows) (slice bindings 0) query))
         (delete bindings)
