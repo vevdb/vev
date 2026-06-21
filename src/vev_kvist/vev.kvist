@@ -2282,14 +2282,31 @@
     (and (< found (count current))
          (= current[found] index))))
 
-(defn append-retract-entity-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64]
+(defn u64-contains? [items: []u64, value: u64] -> bool
+  (for [item items]
+    (when (= item value)
+      (return true)))
+  false)
+
+(defn append-retract-entity-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, seen: ^[dynamic]u64]
+  (when (u64-contains? (slice seen^ 0) entity)
+    (return))
+  (arr.push! seen^ entity)
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt" entity "" (Value {}))
         high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
     (for [datom-index (slice indexes low high)]
       (let [datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
+          (when (and (= datom.v.kind .Entity)
+                     (schema-component? db datom.a))
+            (append-retract-entity-ops-seen! ops db datom.v.entity seen))
           (arr.push! ops^ (tx-retract entity datom.a datom.v)))))))
+
+(defn append-retract-entity-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64]
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (append-retract-entity-ops-seen! ops db entity (addr seen))))
 
 (defn append-retract-attr-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string]
   (let [indexes (slice db.eavt 0)
@@ -2332,6 +2349,21 @@
                      (= datom.v.kind .Keyword))
             (return datom.v.text true))))))
   (return "" false))
+
+(defn schema-component? [db: DB, attr: string] -> bool
+  (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
+    (when (not schema-ok)
+      (return false))
+    (let [indexes (slice db.eavt 0)
+          low (lower-bound-index db indexes "eavt-ea" schema-e ":db/isComponent" (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e ":db/isComponent" (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom db.datoms[datom-index]]
+          (when (and (datom-current-at? db datom-index)
+                     (= datom.v.kind .Bool)
+                     datom.v.bool_value)
+            (return true))))))
+  false)
 
 (defn value-matches-schema-type? [value: Value, schema-type: string] -> bool
   (if (= schema-type ":db.type/string")
