@@ -2321,6 +2321,29 @@
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has_alias spec.alias spec.a))
 
+(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        limit spec.limit
+        seen 0
+        found false]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [children (make [dynamic]Pull-Attr)]
+            (when (and (= datom.v.kind .Entity)
+                       (> (count spec.pattern) 0))
+              (let [pulled (pull-pattern-spec db datom.v.entity spec.pattern)]
+                (set! children pulled.attrs)))
+            (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec) v: datom.v attrs: children}))
+            (set! found true)
+            (set! seen (+ seen 1))
+            (when (and (> limit 0)
+                       (>= seen limit))
+              (return found))))))
+    found))
+
 (defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
   (when (= spec.a "*")
     (pull-wildcard! out db entity)
@@ -2333,18 +2356,11 @@
   (when (reverse-attr? spec.a)
     (pull-reverse-attr! out db entity spec)
     (return))
-  (let [[value ok] (pull-attr-value db entity spec.a)]
-    (if ok
-      (let [children (make [dynamic]Pull-Attr)]
-        (when (and (= value.kind .Entity)
-                   (> (count spec.pattern) 0))
-          (let [pulled (pull-pattern-spec db value.entity spec.pattern)]
-            (set! children pulled.attrs)))
-        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec) v: value attrs: children})))
-      (when spec.has_default
-        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                    v: spec.default_value
-                                    attrs: (make [dynamic]Pull-Attr)}))))))
+  (let [found (pull-forward-attr! out db entity spec)]
+    (when (and (not found) spec.has_default)
+      (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                  v: spec.default_value
+                                  attrs: (make [dynamic]Pull-Attr)})))))
 
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]

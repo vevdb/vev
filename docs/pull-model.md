@@ -120,6 +120,12 @@ Maps can contain multiple nested ref entries:
              :user/manager [:user/name]}] 1)
 ```
 
+Forward nested refs can use `:limit` to cap cardinality-many attrs:
+
+```clojure
+(v.pull db [{:user/friend [:user/name :limit 2]}] 1)
+```
+
 Nested reverse refs can use `:limit` to cap fan-out:
 
 ```clojure
