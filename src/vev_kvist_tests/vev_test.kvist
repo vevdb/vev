@@ -1230,7 +1230,20 @@
                                 [:find ?age
                                  :where
                                  [_ :age ?age]
-                                 [(identity 100) ?age]])]
+                                 [(identity 100) ?age]])
+        ground-scalar-output (vev.q conn.db
+                               [:find ?in
+                                :in ?in
+                                :where
+                                [(ground ?in) _]]
+                               :a)
+        ground-relation-output (vev.q conn.db
+                                 [:find ?x ?z
+                                  :in ?in
+                                  :where
+                                  [(ground ?in) [[?x _ ?z] ...]]]
+                                 [[:a :b :c]
+                                  [:d :e :f]])]
     (t.is (= (count counted.rows) 2))
     (t.is (= counted.rows[0].values[0].text "a"))
     (t.is (= counted.rows[0].values[1].int_value 1))
@@ -1272,7 +1285,14 @@
     (t.is (= pair-unification.rows[0].values[0].items[0].text ":a"))
     (t.is (= pair-unification.rows[0].values[0].items[1].text ":a"))
     (t.is (= pair-unification.rows[0].values[1].text ":a"))
-    (t.is (= (count rel-function-conflict.rows) 0))))
+    (t.is (= (count rel-function-conflict.rows) 0))
+    (t.is (= (count ground-scalar-output.rows) 1))
+    (t.is (= ground-scalar-output.rows[0].values[0].text ":a"))
+    (t.is (= (count ground-relation-output.rows) 2))
+    (t.is (= ground-relation-output.rows[0].values[0].text ":a"))
+    (t.is (= ground-relation-output.rows[0].values[1].text ":c"))
+    (t.is (= ground-relation-output.rows[1].values[0].text ":d"))
+    (t.is (= ground-relation-output.rows[1].values[1].text ":f"))))
 
 (t.deftest datalog-macro-supports-or-clauses
   (defer (free_all context.allocator))
@@ -2256,6 +2276,29 @@
     (t.is (= result.rows[0].values[0].items[1].text ":a/c"))
     (t.is (= result.rows[0].values[1].items[0].text ":a/c"))
     (t.is (= result.rows[0].values[1].items[1].text ":a-/b"))))
+
+(t.deftest datascript-query-parameterized-top-n-aggregate-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        result (vev.q conn.db
+                 [:find ?color (max ?amount ?x) (min ?amount ?x)
+                  :in [[?color ?x]] ?amount]
+                 [[:red 1] [:red 2] [:red 3] [:red 4] [:red 5]
+                  [:blue 7] [:blue 8]]
+                 3)]
+    (t.is (= (count result.rows) 2))
+    (t.is (= result.rows[0].values[0].text ":red"))
+    (t.is (= result.rows[0].values[1].items[0].int_value 3))
+    (t.is (= result.rows[0].values[1].items[1].int_value 4))
+    (t.is (= result.rows[0].values[1].items[2].int_value 5))
+    (t.is (= result.rows[0].values[2].items[0].int_value 1))
+    (t.is (= result.rows[0].values[2].items[1].int_value 2))
+    (t.is (= result.rows[0].values[2].items[2].int_value 3))
+    (t.is (= result.rows[1].values[0].text ":blue"))
+    (t.is (= result.rows[1].values[1].items[0].int_value 7))
+    (t.is (= result.rows[1].values[1].items[1].int_value 8))
+    (t.is (= result.rows[1].values[2].items[0].int_value 7))
+    (t.is (= result.rows[1].values[2].items[1].int_value 8))))
 
 (t.deftest datalog-supports-grouped-sum-avg-aggregates
   (defer (free_all context.allocator))
@@ -4121,6 +4164,49 @@
     (t.is (= r2.attrs[0].v.entity 1))
     (t.is (= (count r2.attrs) 1))))
 
+(t.deftest datascript-pull-ellipsis-recursion-cycle-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 1 :name "Ada"]
+             [:db/add 1 :friend (vev.value-entity 2)]
+             [:db/add 2 :name "Grace"]
+             [:db/add 2 :friend (vev.value-entity 3)]
+             [:db/add 3 :name "Katherine"]
+             [:db/add 3 :friend (vev.value-entity 1)]])
+        pulled (vev.pull conn.db [:db/id :name {:friend ...}] 1)
+        first-friend pulled.attrs[2]
+        second-friend first-friend.attrs[2]
+        repeated second-friend.attrs[2]]
+    (t.is (= repeated.v.entity 1))
+    (t.is (= (count repeated.attrs) 1))
+    (t.is (= repeated.attrs[0].a ":db/id"))
+    (t.is (= repeated.attrs[0].v.entity 1))))
+
+(t.deftest datascript-pull-ellipsis-reverse-recursion-cycle-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 1 :friend (vev.value-entity 2)]
+             [:db/add 2 :friend (vev.value-entity 3)]
+             [:db/add 3 :friend (vev.value-entity 1)]])
+        pulled (vev.pull conn.db [:db/id {:_friend ...}] 1)
+        parent pulled.attrs[1]
+        grandparent parent.attrs[1]
+        repeated grandparent.attrs[1]]
+    (t.is (= parent.v.entity 3))
+    (t.is (= grandparent.v.entity 2))
+    (t.is (= repeated.v.entity 1))
+    (t.is (= (count repeated.attrs) 1))
+    (t.is (= repeated.attrs[0].a ":db/id"))
+    (t.is (= repeated.attrs[0].v.entity 1))))
+
 (t.deftest datascript-pull-multiple-recursion-specs-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -4142,6 +4228,28 @@
     (t.is (= friend.attrs[1].v.entity 4))
     (t.is (= enemy.v.entity 3))
     (t.is (= enemy.attrs[1].v.entity 5))))
+
+(t.deftest datascript-pull-seen-ids-are-branch-local-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 101 :db/ident :enemy]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 1 :name "1"]
+             [:db/add 1 :friend (vev.value-entity 2)]
+             [:db/add 1 :enemy (vev.value-entity 2)]
+             [:db/add 2 :name "2"]])
+        pulled (vev.pull conn.db [:name {:friend [:name] :enemy [:name]}] 1)
+        friend pulled.attrs[1]
+        enemy pulled.attrs[2]]
+    (t.is (= pulled.attrs[0].v.text "1"))
+    (t.is (= friend.v.entity 2))
+    (t.is (= friend.attrs[0].v.text "2"))
+    (t.is (= enemy.v.entity 2))
+    (t.is (= enemy.attrs[0].v.text "2"))))
 
 (t.deftest pull-many-returns-multiple-entities
   (defer (free_all context.allocator))

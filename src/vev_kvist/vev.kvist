@@ -198,6 +198,8 @@
   var: string
   limit: int
   has_limit: bool
+  limit_var: string
+  has_limit_var: bool
 })
 
 (defstruct Tuple-Input {
@@ -223,12 +225,13 @@
 })
 
 (defstruct Ground {
+  source: Term
   out: string
   tuple_vars: []string
   is_collection: bool
   is_tuple: bool
-  value: Value
-  values: []Value
+  is_relation: bool
+  width: int
 })
 
 (defstruct Query {
@@ -882,18 +885,14 @@
       (error "tx-data attributes must be keywords or strings"))))
 
 (defmacro- lookup-ref? [form]
-  (if (vector? form)
-    (if (= (count form) 2)
-      (keyword? (first form))
-      false)
-    false))
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    :else (keyword? (first form))))
 
 (defmacro- query-input-lookup-ref? [form]
-  (if (lookup-ref? form)
-    (if (keyword? (nth form 1))
-      false
-      true)
-    false))
+  (and (lookup-ref? form)
+       (not (keyword? (nth form 1)))))
 
 (defmacro- emit-index-arg [form]
   (if (lookup-ref? form)
@@ -1251,28 +1250,10 @@
   (symbol? form))
 
 (defmacro- aggregate-op? [op]
-  (if (= op "count")
-    true
-    (if (= op "count-distinct")
-      true
-      (if (= op "min")
-        true
-        (if (= op "max")
-          true
-          (if (= op "sum")
-            true
-            (if (= op "avg")
-              true
-              (if (= op "median")
-                true
-                (if (= op "variance")
-                  true
-                  (= op "stddev"))))))))))
+  (contains? ["count" "count-distinct" "min" "max" "sum" "avg" "median" "variance" "stddev"] op))
 
 (defmacro- top-n-aggregate-op? [op]
-  (if (= op "min")
-    true
-    (= op "max")))
+  (contains? ["min" "max"] op))
 
 (defmacro- find-scalar-marker? [form]
   (if (symbol? form)
@@ -1306,10 +1287,7 @@
 
 (defmacro- find-return-map-marker? [form]
   (if (keyword? form)
-    (let [marker (source form)]
-      (or (= marker ":keys")
-          (= marker ":strs")
-          (= marker ":syms")))
+    (contains? [":keys" ":strs" ":syms"] (source form))
     false))
 
 (defmacro- emit-find-tuple-vars [forms]
@@ -1322,33 +1300,25 @@
         (emit-find-tuple-vars (rest forms))))))
 
 (defmacro- pull-find? [form]
-  (if (list? form)
-    (if (or (= (count form) 3)
-            (= (count form) 4))
-      (if (symbol? (first form))
-        (= (source (first form)) "pull")
-        false)
-      false)
-    false))
+  (cond
+    (not (list? form)) false
+    (not (or (= (count form) 3) (= (count form) 4))) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "pull")))
 
 (defmacro- aggregate-find? [form]
-  (if (list? form)
-    (if (if (= (count form) 2) true (= (count form) 3))
-      (let [head (first form)]
-        (if (symbol? head)
-          (let [op (source head)]
+  (cond
+    (not (list? form)) false
+    (not (or (= (count form) 2) (= (count form) 3))) false
+    (not (symbol? (first form))) false
+    :else (let [op (source (first form))]
             (if (= (count form) 3)
-              (if (top-n-aggregate-op? op)
-                (if (int? (nth form 1))
-                  (find-var? (nth form 2))
-                  false)
-                false)
-              (if (find-var? (nth form 1))
-                (aggregate-op? op)
-                false)))
-          false))
-      false)
-    false))
+              (and (top-n-aggregate-op? op)
+                   (or (int? (nth form 1))
+                       (find-var? (nth form 1)))
+                   (find-var? (nth form 2)))
+              (and (find-var? (nth form 1))
+                   (aggregate-op? op))))))
 
 (defmacro- emit-find-vars [forms]
   (if (= (count forms) 0)
@@ -1407,42 +1377,33 @@
     (error (str "query expects " marker))))
 
 (defmacro- input-collection? [form]
-  (if (vector? form)
-    (if (= (count form) 2)
-      (if (symbol? (nth form 1))
-        (= (source (nth form 1)) "...")
-        false)
-      false)
-    false))
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "...")))
 
 (defmacro- input-relation? [form]
-  (if (vector? form)
-    (if (= (count form) 1)
-      (vector? (first form))
-      false)
-    false))
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 1)) false
+    :else (vector? (first form))))
 
 (defmacro- input-tuple? [form]
-  (if (vector? form)
-    (if (input-collection? form)
-      false
-      (if (input-relation? form)
-        false
-        true))
-    false))
+  (cond
+    (not (vector? form)) false
+    (input-collection? form) false
+    (input-relation? form) false
+    :else true))
 
 (defmacro- input-source? [form]
   (if (symbol? form)
-    (let [name (source form)]
-      (if (= name "$")
-        true
-        (= name "%")))
+    (contains? ["$" "%"] (source form))
     false))
 
 (defmacro- input-wildcard? [form]
-  (if (symbol? form)
-    (= (source form) "_")
-    false))
+  (and (symbol? form)
+       (= (source form) "_")))
 
 (defmacro- emit-input-var [form]
   (if (input-collection? form)
@@ -1685,39 +1646,15 @@
       false)))
 
 (defmacro- function-clause? [form]
-  (if (vector? form)
-    (if (= (count form) 2)
-      (let [expr (first form)
-            out (nth form 1)]
-        (if (list? expr)
-          (if (>= (count expr) 2)
-            (if (or (symbol? out) (vector? out))
-              (let [head (first expr)]
-                (if (symbol? head)
-                  (let [op (source head)]
-                    (if (= op "count")
-                      true
-                      (if (= op "+")
-                        true
-                        (if (= op "-")
-                          true
-                          (if (= op "*")
-                            true
-                            (if (= op "identity")
-                              true
-                              (if (= op "vector")
-                                true
-                                (if (= op "hash-map")
-                                  true
-                                  (if (= op "first")
-                                    true
-                                    (= op "second"))))))))))
-                  false))
-              false)
-            false)
-          false))
-      false)
-    false))
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    (not (list? (first form))) false
+    (not (>= (count (first form)) 2)) false
+    (not (or (symbol? (nth form 1)) (vector? (nth form 1)))) false
+    (not (symbol? (first (first form)))) false
+    :else (let [op (source (first (first form)))]
+            (contains? ["count" "+" "-" "*" "identity" "vector" "hash-map" "first" "second"] op))))
 
 (defmacro- get-else-clause? [form]
   (if (vector? form)
@@ -1770,75 +1707,47 @@
     false))
 
 (defmacro- not-clause? [form]
-  (if (list? form)
-    (if (> (count form) 1)
-      (let [head (first form)]
-        (if (symbol? head)
-          (= (source head) "not")
-          false))
-      false)
-    false))
+  (cond
+    (not (list? form)) false
+    (<= (count form) 1) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "not")))
 
 (defmacro- not-join-clause? [form]
-  (if (list? form)
-    (if (> (count form) 2)
-      (let [head (first form)]
-        (if (symbol? head)
-          (= (source head) "not-join")
-          false))
-      false)
-    false))
+  (cond
+    (not (list? form)) false
+    (<= (count form) 2) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "not-join")))
 
 (defmacro- or-clause? [form]
-  (if (list? form)
-    (if (> (count form) 1)
-      (let [head (first form)]
-        (if (symbol? head)
-          (= (source head) "or")
-          false))
-      false)
-    false))
+  (cond
+    (not (list? form)) false
+    (<= (count form) 1) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "or")))
 
 (defmacro- or-join-clause? [form]
-  (if (list? form)
-    (if (> (count form) 2)
-      (let [head (first form)]
-        (if (symbol? head)
-          (= (source head) "or-join")
-          false))
-      false)
-    false))
+  (cond
+    (not (list? form)) false
+    (<= (count form) 2) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "or-join")))
 
 (defmacro- and-clause? [form]
-  (if (list? form)
-    (if (> (count form) 1)
-      (let [head (first form)]
-        (if (symbol? head)
-          (= (source head) "and")
-          false))
-      false)
-    false))
+  (cond
+    (not (list? form)) false
+    (<= (count form) 1) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "and")))
 
 (defmacro- rule-call? [form]
-  (if (list? form)
-    (if (> (count form) 0)
-      (let [head (first form)]
-        (if (symbol? head)
-          (let [name (source head)]
-            (if (= name "not")
-              false
-              (if (= name "not-join")
-                false
-                (if (= name "or")
-                  false
-                  (if (= name "or-join")
-                    false
-                    (if (= name "and")
-                      false
-                      true))))))
-          false))
-      false)
-    false))
+  (cond
+    (not (list? form)) false
+    (= (count form) 0) false
+    (not (symbol? (first form))) false
+    :else (let [name (source (first form))]
+            (not (contains? ["not" "not-join" "or" "or-join" "and"] name)))))
 
 (defmacro- emit-not-join-vars [forms]
   (if (= (count forms) 0)
@@ -1974,13 +1883,6 @@
                    out_value: (unquote (emit-find-var (nth out 1)))})))
     (error "get-some clauses must have shape [(get-some $ ?e :attr ...) [?a ?v]]")))
 
-(defmacro- emit-ground-values [forms]
-  (if (= (count forms) 0)
-    (forms)
-    (forms
-      (emit-literal-value (first forms))
-      (emit-ground-values (rest forms)))))
-
 (defmacro- emit-ground-tuple-vars [forms]
   (if (= (count forms) 0)
     (forms)
@@ -1988,36 +1890,52 @@
       (emit-input-var (first forms))
       (emit-ground-tuple-vars (rest forms)))))
 
+(defmacro- ground-relation-output? [form]
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    (not (vector? (nth form 0))) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "...")))
+
 (defmacro- emit-datalog-ground [form]
   (if (ground-clause? form)
     (let [expr (first form)
           value (nth expr 1)
           out (nth form 1)]
-      (if (input-collection? out)
-        (if (vector? value)
+      (if (ground-relation-output? out)
+        (quasiquote
+          (Ground {source: (unquote (emit-value-term value))
+                   out: ""
+                   tuple_vars: ([]string [(splice (emit-ground-tuple-vars (nth out 0)))])
+                   is_collection: false
+                   is_tuple: false
+                   is_relation: true
+                   width: (unquote (count (nth out 0)))}))
+        (if (input-collection? out)
           (quasiquote
-            (Ground {out: (unquote (emit-input-var out))
+            (Ground {source: (unquote (emit-value-term value))
+                     out: (unquote (emit-input-var out))
                      tuple_vars: ([]string [])
                      is_collection: true
                      is_tuple: false
-                     values: ([]Value [(splice (emit-ground-values value))])}))
-          (error "collection ground clauses require vector literal values"))
+                     is_relation: false}))
         (if (vector? out)
-          (if (vector? value)
-            (quasiquote
-              (Ground {out: ""
-                       tuple_vars: ([]string [(splice (emit-ground-tuple-vars out))])
-                       is_collection: false
-                       is_tuple: true
-                       values: ([]Value [(splice (emit-ground-values value))])}))
-            (error "tuple ground clauses require vector literal values"))
           (quasiquote
-            (Ground {out: (unquote (emit-find-var out))
+            (Ground {source: (unquote (emit-value-term value))
+                     out: ""
+                     tuple_vars: ([]string [(splice (emit-ground-tuple-vars out))])
+                     is_collection: false
+                     is_tuple: true
+                     is_relation: false}))
+          (quasiquote
+            (Ground {source: (unquote (emit-value-term value))
+                     out: (unquote (if (input-wildcard? out) (quasiquote "") (emit-find-var out)))
                      tuple_vars: ([]string [])
                      is_collection: false
                      is_tuple: false
-                     value: (unquote (emit-literal-value value))})))))
-    (error "ground clauses must have shape [(ground value) ?out] or [(ground [...]) [?out ...]]")))
+                     is_relation: false}))))))
+    (error "ground clauses must have shape [(ground value) ?out], [(ground [...]) [?out ...]], or [(ground [[...]]) [[?out ...]...]]")))
 
 (defmacro- datalog-non-data-clause? [form]
   (if (predicate-clause? form)
@@ -2382,11 +2300,17 @@
 (defmacro- emit-aggregate-find [form]
   (if (aggregate-find? form)
     (if (= (count form) 3)
-      (quasiquote
-        (Aggregate-Find {op: (unquote (source (first form)))
-                         var: (unquote (emit-find-var (nth form 2)))
-                         limit: (unquote (nth form 1))
-                         has_limit: true}))
+      (if (int? (nth form 1))
+        (quasiquote
+          (Aggregate-Find {op: (unquote (source (first form)))
+                           var: (unquote (emit-find-var (nth form 2)))
+                           limit: (unquote (nth form 1))
+                           has_limit: true}))
+        (quasiquote
+          (Aggregate-Find {op: (unquote (source (first form)))
+                           var: (unquote (emit-find-var (nth form 2)))
+                           limit_var: (unquote (emit-find-var (nth form 1)))
+                           has_limit_var: true})))
       (quasiquote
         (Aggregate-Find {op: (unquote (source (first form)))
                          var: (unquote (emit-find-var (nth form 1)))})))
@@ -2609,6 +2533,17 @@
                     lookup_value: (unquote (emit-literal-value (nth value 1)))}))
     (error "lookup-ref scalar inputs require keyword attrs")))
 
+(defmacro- emit-query-scalar-input [value]
+  (quasiquote
+    (Query-Input {kind: .Scalar
+                  value: (unquote (emit-literal-value value))})))
+
+(defmacro- scalar-input-spec? [spec]
+  (not (or (input-source? spec)
+           (input-collection? spec)
+           (input-relation? spec)
+           (input-tuple? spec))))
+
 (defmacro- emit-query-input-for-spec [find-items spec value]
   (if (pull-pattern-input? find-items spec)
     (if (vector? value)
@@ -2620,25 +2555,47 @@
       (emit-query-scalar-lookup-ref-input value)
       (if (collection-lookup-ref-input? spec value)
         (emit-query-collection-lookup-ref-input value)
-        (emit-query-input value)))))
+        (if (scalar-input-spec? spec)
+          (emit-query-scalar-input value)
+          (emit-query-input value))))))
+
+(defmacro- input-kind? [spec kind]
+  (cond
+    (= kind "scalar") (scalar-input-spec? spec)
+    (= kind "collection") (input-collection? spec)
+    (= kind "tuple") (input-tuple? spec)
+    :else (input-relation? spec)))
+
+(defmacro- emit-query-input-list-for-kind [find-items specs values kind]
+  (if (= (count values) 0)
+    (forms)
+    (if (= (count specs) 0)
+      (forms)
+      (let [spec (first specs)]
+        (if (input-source? spec)
+          (if (= (source spec) "%")
+            (if (rule-list? (first values))
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)
+              (emit-query-input-list-for-kind find-items (rest specs) values kind))
+            (emit-query-input-list-for-kind find-items (rest specs) values kind))
+          (if (rule-list? (first values))
+            (emit-query-input-list-for-kind find-items specs (rest values) kind)
+            (if (input-kind? spec kind)
+              (forms
+                (emit-query-input-for-spec find-items spec (first values))
+                (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind))
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind))))))))
 
 (defmacro- emit-query-input-list-for-query [find-items specs values]
   (if (= (count values) 0)
     (forms)
     (if (= (count specs) 0)
       (emit-query-input-list-without-rules values)
-      (let [spec (first specs)]
-        (if (input-source? spec)
-          (if (= (source spec) "%")
-            (if (rule-list? (first values))
-              (emit-query-input-list-for-query find-items (rest specs) (rest values))
-              (emit-query-input-list-for-query find-items (rest specs) values))
-            (emit-query-input-list-for-query find-items (rest specs) values))
-          (if (rule-list? (first values))
-            (emit-query-input-list-for-query find-items specs (rest values))
-            (forms
-              (emit-query-input-for-spec find-items spec (first values))
-              (emit-query-input-list-for-query find-items (rest specs) (rest values)))))))))
+      (forms
+        (emit-query-input-list-for-kind find-items specs values "scalar")
+        (emit-query-input-list-for-kind find-items specs values "collection")
+        (emit-query-input-list-for-kind find-items specs values "tuple")
+        (emit-query-input-list-for-kind find-items specs values "relation")))))
 
 (defmacro- emit-query-input-list [forms]
   (if (= (count forms) 0)
@@ -3073,19 +3030,14 @@
     (return resolved true)))
 
 (defn predicate-pair-matches? [op: string, left: Value, right: Value] -> bool
-  (if (= op "=")
-    (predicate-value-equal? left right)
-    (if (or (= op "!=") (= op "not="))
-      (not (predicate-value-equal? left right))
-      (if (= op ">")
-        (value-less? right left)
-        (if (= op "<")
-          (value-less? left right)
-          (if (= op ">=")
-            (not (value-less? left right))
-            (if (= op "<=")
-              (not (value-less? right left))
-              false)))))))
+  (cond
+    (= op "=") (predicate-value-equal? left right)
+    (or (= op "!=") (= op "not=")) (not (predicate-value-equal? left right))
+    (= op ">") (value-less? right left)
+    (= op "<") (value-less? left right)
+    (= op ">=") (not (value-less? left right))
+    (= op "<=") (not (value-less? right left))
+    :else false))
 
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
   (when (and (= predicate.op "even?")
@@ -3548,17 +3500,13 @@
   (schema-bool? db attr ":db/isComponent"))
 
 (defn value-matches-schema-type? [value: Value, schema-type: string] -> bool
-  (if (= schema-type ":db.type/string")
-    (= value.kind .String)
-    (if (= schema-type ":db.type/long")
-      (= value.kind .Int)
-      (if (= schema-type ":db.type/boolean")
-        (= value.kind .Bool)
-        (if (= schema-type ":db.type/ref")
-          (= value.kind .Entity)
-          (if (= schema-type ":db.type/keyword")
-            (= value.kind .Keyword)
-            true))))))
+  (cond
+    (= schema-type ":db.type/string") (= value.kind .String)
+    (= schema-type ":db.type/long") (= value.kind .Int)
+    (= schema-type ":db.type/boolean") (= value.kind .Bool)
+    (= schema-type ":db.type/ref") (= value.kind .Entity)
+    (= schema-type ":db.type/keyword") (= value.kind .Keyword)
+    :else true))
 
 (defn valid-tuple-attrs-value? [db: DB, value: Value] -> bool
   (when (not (= value.kind .Vector))
@@ -4361,31 +4309,47 @@
             (return (binding-with-value with-attr clause.out_value value))))))
     (return binding false)))
 
+(defn ground-bind-values [binding: Binding, vars: []string, values: []Value] -> [next: Binding, ok: bool]
+  (when (not (= (count vars) (count values)))
+    (return binding false))
+  (let [bound-binding (clone-binding binding)]
+    (for [name index vars]
+      (when (not (= name ""))
+        (let [[bound bound-ok] (binding-with-value bound-binding name values[index])]
+          (when (not bound-ok)
+            (return binding false))
+          (set! bound-binding bound))))
+    (return bound-binding true)))
+
 (defn apply-ground [bindings: []Binding, ground: Ground] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
-    (if ground.is_tuple
-      (for [binding bindings]
-        (when (= (count ground.tuple_vars) (count ground.values))
-          (let [next (clone-binding binding)
-                ok true]
-            (for [name index ground.tuple_vars]
-              (when (not (= name ""))
-                (let [[bound bound-ok] (binding-with-value next name ground.values[index])]
-                  (if bound-ok
-                    (set! next bound)
-                    (set! ok false)))))
-            (when ok
-              (arr.push! out next)))))
-      (if ground.is_collection
-        (for [binding bindings]
-          (for [value ground.values]
-            (let [[next ok] (binding-with-value binding ground.out value)]
-              (when ok
-                (arr.push! out next)))))
-        (for [binding bindings]
-          (let [[next ok] (binding-with-value binding ground.out ground.value)]
-            (when ok
-              (arr.push! out next))))))
+    (for [binding bindings]
+      (let [[source source-ok] (resolve-term ground.source binding)]
+        (when source-ok
+          (if ground.is_tuple
+            (when (= source.kind .Vector)
+              (let [[next ok] (ground-bind-values binding ground.tuple_vars (slice source.items 0))]
+                (when ok
+                  (arr.push! out next))))
+            (if ground.is_relation
+              (when (= source.kind .Vector)
+                (for [row source.items]
+                  (when (and (= row.kind .Vector)
+                             (= (count row.items) ground.width))
+                    (let [[next ok] (ground-bind-values binding ground.tuple_vars (slice row.items 0))]
+                      (when ok
+                        (arr.push! out next))))))
+              (if ground.is_collection
+                (when (= source.kind .Vector)
+                  (for [value source.items]
+                    (let [[next ok] (binding-with-value binding ground.out value)]
+                      (when ok
+                        (arr.push! out next)))))
+                (if (= ground.out "")
+                  (arr.push! out binding)
+                  (let [[next ok] (binding-with-value binding ground.out source)]
+                    (when ok
+                      (arr.push! out next))))))))))
     out))
 
 (defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
@@ -4650,6 +4614,7 @@
 (defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
+        resolved-limit aggregate.limit
         aggregate-ints (make [dynamic]i64)
         aggregate-values (make [dynamic]Value)
         distinct-values (make [dynamic]Value)
@@ -4661,6 +4626,10 @@
     (for [binding bindings]
       (let [[binding-group ok] (binding-values-for-vars binding (slice query.find 0))]
         (when (and ok (values-equal? (slice binding-group 0) group-values))
+          (when aggregate.has_limit_var
+            (let [[limit-value limit-ok] (binding-lookup binding aggregate.limit_var)]
+              (when (and limit-ok (= limit-value.kind .Int))
+                (set! resolved-limit (int limit-value.int_value)))))
           (let [[key key-ok] (aggregate-key-values binding query aggregate)]
             (when (and key-ok (not (row-values-exist? (slice seen-keys 0) (slice key 0))))
               (arr.push! seen-keys (aggregate-key-row (slice key 0)))
@@ -4677,7 +4646,7 @@
                                        (= aggregate.op "stddev"))
                                    (= value.kind .Int))
                           (arr.push! aggregate-ints value.int_value))
-                        (when (and aggregate.has_limit
+                        (when (and (or aggregate.has_limit aggregate.has_limit_var)
                                    (or (= aggregate.op "min")
                                        (= aggregate.op "max")))
                           (arr.push! aggregate-values value))
@@ -4687,10 +4656,10 @@
                         (set! current (apply-aggregate-value current aggregate value))))))))))))
     (when (= aggregate.op "count-distinct")
       (return (value-int (i64 (count distinct-values)))))
-    (when (and aggregate.has_limit
+    (when (and (or aggregate.has_limit aggregate.has_limit_var)
                (or (= aggregate.op "min")
                    (= aggregate.op "max")))
-      (return (top-n-values (slice aggregate-values 0) aggregate.limit (= aggregate.op "max"))))
+      (return (top-n-values (slice aggregate-values 0) resolved-limit (= aggregate.op "max"))))
     (when (and (= aggregate.op "avg") (> avg-count 0))
       (set! current.int_value (/ current.int_value avg-count)))
     (when (= aggregate.op "median")
@@ -4924,7 +4893,26 @@
     2147483647
     (if (> spec.limit 0) spec.limit 1000)))
 
-(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec] -> bool
+(defn pull-id-attrs [entity: u64] -> [dynamic]Pull-Attr
+  (let [out (make [dynamic]Pull-Attr)]
+    (arr.push! out (Pull-Attr {a: ":db/id"
+                               v: (value-entity entity)
+                               attrs: (make [dynamic]Pull-Attr)}))
+    out))
+
+(defn pull-child-pattern [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen: []u64] -> [dynamic]Pull-Attr
+  (let [child-seen (arr.into [dynamic]u64 seen)]
+    (defer (delete child-seen))
+    (arr.push! child-seen entity)
+    (let [pulled (pull-pattern-spec-seen db entity pattern root (slice child-seen 0))]
+      pulled.attrs)))
+
+(defn pull-child-recursion [db: DB, entity: u64, pattern: []Pull-Spec, seen: []u64] -> [dynamic]Pull-Attr
+  (if (u64-contains? seen entity)
+    (pull-id-attrs entity)
+    (pull-child-pattern db entity pattern pattern seen)))
+
+(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> bool
   (let [forward-attr (forward-attr-for-reverse spec.a) :defer
         ref-value (value-entity entity)
         indexes (slice db.vaet 0)
@@ -4939,15 +4927,13 @@
                    (datom-current-at? db datom-index))
           (let [children (make [dynamic]Pull-Attr)]
             (when (> (count spec.pattern) 0)
-              (let [pulled (pull-pattern-spec db datom.e spec.pattern)]
-                (set! children pulled.attrs)))
+              (set! children (pull-child-pattern db datom.e spec.pattern spec.pattern seen-entities)))
             (when (and (= (count spec.pattern) 0)
                        spec.has_recursion
                        (not (= spec.recursion_depth 0)))
               (let [pattern (pull-recursion-pattern root spec.a)]
                 (defer (delete pattern))
-                (let [pulled (pull-pattern-spec db datom.e (slice pattern 0))]
-                  (set! children pulled.attrs))))
+                (set! children (pull-child-recursion db datom.e (slice pattern 0) seen-entities))))
             (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                         v: (value-entity datom.e)
                                         attrs: children}))
@@ -5027,7 +5013,7 @@
       (arr.push! out (pull-spec-decrement-recursion spec attr)))
     out))
 
-(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec] -> bool
+(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> bool
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
         high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
@@ -5040,13 +5026,11 @@
           (let [children (make [dynamic]Pull-Attr)]
             (when (= datom.v.kind .Entity)
               (if (> (count spec.pattern) 0)
-                (let [pulled (pull-pattern-spec db datom.v.entity spec.pattern)]
-                  (set! children pulled.attrs))
+                (set! children (pull-child-pattern db datom.v.entity spec.pattern spec.pattern seen-entities))
                 (if (and spec.has_recursion (not (= spec.recursion_depth 0)))
                   (let [pattern (pull-recursion-pattern root spec.a)]
                     (defer (delete pattern))
-                    (let [pulled (pull-pattern-spec db datom.v.entity (slice pattern 0))]
-                      (set! children pulled.attrs)))
+                    (set! children (pull-child-recursion db datom.v.entity (slice pattern 0) seen-entities)))
                   (when (schema-component? db datom.a)
                     (set! children (pull-component-children db entity datom.v.entity))))))
             (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
@@ -5058,7 +5042,7 @@
               (return found))))))
     found))
 
-(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec]
+(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
   (when (and spec.has_recursion (<= spec.recursion_depth 0))
     (return))
   (when (= spec.a "*")
@@ -5071,23 +5055,29 @@
                                   attrs: (make [dynamic]Pull-Attr)})))
     (return))
   (when (reverse-attr? spec.a)
-    (let [found (pull-reverse-attr! out db entity spec root)]
+    (let [found (pull-reverse-attr! out db entity spec root seen-entities)]
       (when (and (not found) spec.has_default)
         (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                     v: spec.default_value
                                     attrs: (make [dynamic]Pull-Attr)}))))
     (return))
-  (let [found (pull-forward-attr! out db entity spec root)]
+  (let [found (pull-forward-attr! out db entity spec root seen-entities)]
     (when (and (not found) spec.has_default)
       (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                   v: spec.default_value
                                   attrs: (make [dynamic]Pull-Attr)})))))
 
-(defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
+(defn pull-pattern-spec-seen [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
     (for [spec pattern]
-      (pull-spec-attr! (addr out) db entity spec pattern))
+      (pull-spec-attr! (addr out) db entity spec root seen-entities))
     (Pull-Result {e: entity attrs: out})))
+
+(defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (arr.push! seen entity)
+    (pull-pattern-spec-seen db entity pattern pattern (slice seen 0))))
 
 (defn pull-pattern-lookup-ref [db: DB, attr: string, value: Value, pattern: []Pull-Spec] -> Pull-Result
   (let [[entity ok] (resolve-lookup-ref db attr value)]

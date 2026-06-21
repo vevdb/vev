@@ -8,7 +8,7 @@ DataScript assertion or exact Clojure API shape.
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
-| `query_aggregates.cljc` | 1 | subset | grouped parameter aggregates, custom aggregates |
+| `query_aggregates.cljc` | 1 | subset | custom aggregates |
 | `query_not.cljc` | 5 | subset | error behavior and default-source forms |
 | `query_or.cljc` | 5 | subset | relation-source `or-join` |
 | `query_pull.cljc` | 7 | subset | returning pattern values, multi-source pull |
@@ -18,7 +18,7 @@ DataScript assertion or exact Clojure API shape.
 | `lookup_refs.cljc` | 5 | subset | exact invalid lookup-ref error messages |
 | `ident.cljc` | 4 | covered | Vev returns ref values as `Value.Entity`; behavior is otherwise covered |
 | `entity.cljc` | 6 | subset | Clojure equality/hash/print/cache protocol semantics |
-| `pull_api.cljc` | 17 | subset | cycle handling and exact collection/scalar render shape |
+| `pull_api.cljc` | 17 | subset | exact collection/scalar render shape |
 | `components.cljc` | 2 | subset | exact entity/touch reverse shapes |
 | `transact.cljc` | 19 | subset | tx functions and exact errors |
 | `upsert.cljc` | 6 | subset | full conflict matrix and messages |
