@@ -2850,11 +2850,20 @@
 
 (defmacro pull-many [db pattern entities]
   (if (vector? pattern)
-    (quasiquote
-      (pull-many-pattern-spec
-        (unquote db)
-        (unquote entities)
-        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+    (if (and (vector? entities)
+             (> (count entities) 0)
+             (lookup-ref? (first entities)))
+      (quasiquote
+        (pull-many-pattern-lookup-refs
+          (unquote db)
+          ([]string [(splice (emit-query-input-lookup-ref-attrs entities))])
+          ([]Value [(splice (emit-query-input-lookup-ref-values entities))])
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+      (quasiquote
+        (pull-many-pattern-spec
+          (unquote db)
+          (unquote entities)
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
     (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
 (defn not-group-simple [clauses: []Clause] -> Not-Group
@@ -5334,6 +5343,15 @@
   (let [out (make [dynamic]Pull-Result 0 (count entities))]
     (for [entity entities]
       (arr.push! out (pull-pattern-spec db entity pattern)))
+    out))
+
+(defn pull-many-pattern-lookup-refs [db: DB, attrs: []string, values: []Value, pattern: []Pull-Spec] -> [dynamic]Pull-Result
+  (let [out (make [dynamic]Pull-Result 0 (count values))]
+    (for [value index values]
+      (let [[entity ok] (resolve-lookup-ref db attrs[index] value)]
+        (if ok
+          (arr.push! out (pull-pattern-spec db entity pattern))
+          (arr.push! out (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)})))))
     out))
 
 (defn pull-many-pattern [db: DB, entities: []u64, attrs: []string] -> [dynamic]Pull-Result
