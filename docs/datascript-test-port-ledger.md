@@ -26,7 +26,7 @@ DataScript assertion or exact Clojure API shape.
 | `upsert.cljc` | 6 | subset | unique cardinality-many, unique-value no-upsert, and redefining tempids covered; remaining conflict matrix and messages |
 | `db.cljc` | 4 | partial | datom/index API compatibility |
 | `index.cljc` | 5 | partial | main order, checked indexed-attribute errors, and sequence compare covered; finish exact public index surface |
-| `tuples.cljc` | 11 | partial | tuple value/component upsert and direct tuple attr add/retract validation covered; remaining tuple conflict matrix and schema validation |
+| `tuples.cljc` | 12 | partial | tuple value/component upsert, direct tuple attr add/retract validation, and invalid tuple schema shapes covered; remaining tuple conflict matrix and exact errors |
 | `validation.cljc` | 2 | partial | bad transaction forms and exact validation errors |
 | `parser*.cljc` | 19 | missing | EDN/text parser |
 | `conn.cljc`, `listen.cljc`, `filter.cljc`, `serialize.cljc`, `datafy.cljc` | 15 | later | app/runtime APIs after core parity |
