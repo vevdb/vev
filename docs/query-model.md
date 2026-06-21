@@ -102,7 +102,7 @@ Supported now:
 - collection `:in` variables shaped like `[?x ...]`
 - tuple `:in` variables shaped like `[?a ?b]`
 - relation `:in` variables shaped like `[[?a ?b]]`
-- pull expressions in `:find`
+- pull expressions in `:find`, with optional `$` source var
 - predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`, including chained comparisons
 - `missing?`
 - `get-else`
@@ -258,6 +258,13 @@ the same row-oriented `Result-Set` representation:
 ```clojure
 (v.q db
   [:find (pull ?e [:db/id :user/name])
+   :where
+   [?e :user/email "ada@example.com"]])
+```
+
+```clojure
+(v.q db
+  [:find (pull $ ?e [:db/id :user/name])
    :where
    [?e :user/email "ada@example.com"]])
 ```
