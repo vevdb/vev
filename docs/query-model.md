@@ -95,6 +95,7 @@ Supported now:
 - joins through repeated variables
 - positional `:in` variables
 - collection `:in` variables shaped like `[?x ...]`
+- tuple `:in` variables shaped like `[?a ?b]`
 - pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
 - `not` groups
@@ -152,6 +153,16 @@ Example:
    [?e :user/email ?email]
    [?e :user/name ?name]]
   ["ada@example.com" "grace@example.com"])
+```
+
+```clojure
+(v.q db
+  [:find ?e
+   :in [?name ?age]
+   :where
+   [?e :user/name ?name]
+   [?e :user/age ?age]]
+  ["Ada" 37])
 ```
 
 ```clojure

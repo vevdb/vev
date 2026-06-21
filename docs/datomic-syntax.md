@@ -161,6 +161,7 @@ The first supported subset should be:
 - `:where`
 - data patterns
 - simple predicate expressions only if clearly needed
+- scalar, collection, and tuple inputs
 - simple `or` clauses
 - `and` branches inside `or`
 - top-level `and` over data clauses
