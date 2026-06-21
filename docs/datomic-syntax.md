@@ -127,7 +127,8 @@ Vector values in map forms expand to repeated facts for the same attr:
 ```
 
 Nested map values are supported with either an explicit string `:db/id` or an
-auto-generated nested tempid:
+auto-generated nested tempid. The parent map id can use the same entity id,
+tempid, lookup-ref, or ident forms as other map ids:
 
 ```clojure
 {:db/id 1
