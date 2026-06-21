@@ -138,12 +138,18 @@
   pattern: []Pull-Spec
 })
 
+(defstruct Aggregate-Find {
+  op: string
+  var: string
+})
+
 (defstruct Tuple-Input {
   vars: []string
 })
 
 (defstruct Query {
   find: [dynamic]string
+  with: [dynamic]string
   inputs: [dynamic]string
   collection_inputs: [dynamic]string
   tuple_inputs: [dynamic]Tuple-Input
@@ -152,6 +158,7 @@
   not_groups: [dynamic]Not-Group
   or_groups: [dynamic]Or-Group
   pulls: [dynamic]Pull-Find
+  aggregates: [dynamic]Aggregate-Find
 })
 
 (defstruct Var-Binding {
@@ -349,6 +356,26 @@
       .Bool (= left.bool_value right.bool_value)
       .Keyword (= left.text right.text)
       :else false)))
+
+(defn values-equal? [left: []Value, right: []Value] -> bool
+  (when (not (= (count left) (count right)))
+    (return false))
+  (for [value index left]
+    (when (not (value-equal? value right[index]))
+      (return false)))
+  true)
+
+(defn row-values-exist? [rows: []Result-Row, values: []Value] -> bool
+  (for [row rows]
+    (when (values-equal? (slice row.values 0) values)
+      (return true)))
+  false)
+
+(defn row-value-prefix-exists? [rows: []Result-Row, values: []Value] -> bool
+  (for [row rows]
+    (when (values-equal? (slice row.values 0 (count values)) values)
+      (return true)))
+  false)
 
 (defn datom-less-eavt? [datoms: []Datom, left-index: int, right-index: int] -> bool
   (let [left datoms[left-index]
@@ -688,6 +715,34 @@
     (quasiquote (unquote (source form)))
     (error ":find entries must be variables")))
 
+(defmacro- find-scalar-marker? [form]
+  (if (symbol? form)
+    (= (source form) ".")
+    false))
+
+(defmacro- find-collection? [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (if (symbol? (nth form 1))
+        (= (source (nth form 1)) "...")
+        false)
+      false)
+    false))
+
+(defmacro- find-tuple? [form]
+  (if (vector? form)
+    (if (= (count form) 1)
+      (vector? (first form))
+      false)
+    false))
+
+(defmacro- emit-find-tuple-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-find-tuple-vars (rest forms)))))
+
 (defmacro- pull-find? [form]
   (if (list? form)
     (if (= (count form) 3)
@@ -697,14 +752,41 @@
       false)
     false))
 
+(defmacro- aggregate-find? [form]
+  (if (list? form)
+    (if (= (count form) 2)
+      (let [head (first form)]
+        (if (symbol? head)
+          (let [op (source head)]
+            (or (= op "count")
+                (= op "min")
+                (= op "max")
+                (= op "sum")
+                (= op "avg")))
+          false))
+      false)
+    false))
+
 (defmacro- emit-find-vars [forms]
   (if (= (count forms) 0)
     (forms)
     (if (pull-find? (first forms))
       (emit-find-vars (rest forms))
-      (forms
-        (emit-find-var (first forms))
-        (emit-find-vars (rest forms))))))
+      (if (aggregate-find? (first forms))
+        (emit-find-vars (rest forms))
+        (if (find-scalar-marker? (first forms))
+          (emit-find-vars (rest forms))
+          (if (find-collection? (first forms))
+            (forms
+              (emit-find-var (nth (first forms) 0))
+              (emit-find-vars (rest forms)))
+            (if (find-tuple? (first forms))
+              (forms
+                (emit-find-tuple-vars (first (first forms)))
+                (emit-find-vars (rest forms)))
+              (forms
+                (emit-find-var (first forms))
+                (emit-find-vars (rest forms))))))))))
 
 (defmacro- input-collection? [form]
   (if (vector? form)
@@ -813,9 +895,19 @@
         (datalog-has-marker-before? (rest forms) marker stop)))))
 
 (defmacro- datalog-find-items [forms]
-  (if (datalog-has-marker-before? forms ":in" ":where")
-    (datalog-items-before forms ":in")
-    (datalog-items-before forms ":where")))
+  (if (datalog-has-marker-before? forms ":with" ":where")
+    (datalog-items-before forms ":with")
+    (if (datalog-has-marker-before? forms ":in" ":where")
+      (datalog-items-before forms ":in")
+      (datalog-items-before forms ":where"))))
+
+(defmacro- datalog-with-items [forms]
+  (if (datalog-has-marker-before? forms ":with" ":where")
+    (let [after-with (datalog-items-after forms ":with")]
+      (if (datalog-has-marker-before? after-with ":in" ":where")
+        (datalog-items-before after-with ":in")
+        (datalog-items-before after-with ":where")))
+    (forms)))
 
 (defmacro- datalog-input-items [forms]
   (if (datalog-has-marker-before? forms ":in" ":where")
@@ -1175,12 +1267,51 @@
         (unquote (pull-attr-source form))
         ([]Pull-Spec []))))))
 
+(defmacro- emit-pull-map-spec [attr pattern]
+  (if (vector? pattern)
+    (if (= (count pattern) 3)
+      (if (keyword? (nth pattern 1))
+        (if (= (source (nth pattern 1)) ":limit")
+          (let [child-pattern (slice pattern 0 1)
+                limit-form (nth pattern 2)]
+            (quasiquote
+              (pull-spec-limit
+                (unquote (pull-attr-source attr))
+                ([]Pull-Spec [(splice (emit-pull-specs child-pattern))])
+                (unquote limit-form))))
+          (quasiquote
+            (pull-spec
+              (unquote (pull-attr-source attr))
+              ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+        (quasiquote
+          (pull-spec
+            (unquote (pull-attr-source attr))
+            ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+      (quasiquote
+        (pull-spec
+          (unquote (pull-attr-source attr))
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+    (error "nested pull attrs expect vector patterns")))
+
+(defmacro- emit-pull-map-specs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (> (count forms) 1)
+      (forms
+        (emit-pull-map-spec (nth forms 0) (nth forms 1))
+        (emit-pull-map-specs (slice forms 2)))
+      (error "nested pull maps expect attr/pattern pairs"))))
+
 (defmacro- emit-pull-specs [forms]
   (if (= (count forms) 0)
     (forms)
-    (forms
-      (emit-pull-spec (first forms))
-      (emit-pull-specs (rest forms)))))
+    (if (brace? (first forms))
+      (concat
+        (emit-pull-map-specs (first forms))
+        (emit-pull-specs (rest forms)))
+      (forms
+        (emit-pull-spec (first forms))
+        (emit-pull-specs (rest forms))))))
 
 (defmacro- emit-pull-find [form]
   (if (pull-find? form)
@@ -1203,6 +1334,22 @@
         (emit-pull-finds (rest forms)))
       (emit-pull-finds (rest forms)))))
 
+(defmacro- emit-aggregate-find [form]
+  (if (aggregate-find? form)
+    (quasiquote
+      (Aggregate-Find {op: (unquote (source (first form)))
+                       var: (unquote (emit-find-var (nth form 1)))}))
+    (error "aggregate find expressions currently support count, min, max, sum, and avg")))
+
+(defmacro- emit-aggregate-finds [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (aggregate-find? (first forms))
+      (forms
+        (emit-aggregate-find (first forms))
+        (emit-aggregate-finds (rest forms)))
+      (emit-aggregate-finds (rest forms)))))
+
 (defmacro datalog [form]
   (if (vector? form)
     (let [head (first form)]
@@ -1210,11 +1357,13 @@
         (if (= (source head) ":find")
           (let [tail (rest form)
                 find-items (datalog-find-items tail)
+                with-items (datalog-with-items tail)
                 input-items (datalog-input-items tail)
                 where-items (datalog-where-items tail)]
             (quasiquote
               (query
                 ([]string [(splice (emit-find-vars find-items))])
+                ([]string [(splice (emit-find-vars with-items))])
                 ([]string [(splice (emit-input-vars input-items))])
                 ([]string [(splice (emit-collection-input-vars input-items))])
                 ([]Tuple-Input [(splice (emit-tuple-inputs input-items))])
@@ -1222,7 +1371,8 @@
                 ([]Predicate [(splice (emit-datalog-predicates where-items))])
                 ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
                 ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
-                ([]Pull-Find [(splice (emit-pull-finds find-items))]))))
+                ([]Pull-Find [(splice (emit-pull-finds find-items))])
+                ([]Aggregate-Find [(splice (emit-aggregate-finds find-items))]))))
           (error "datalog query must start with :find"))
         (error "datalog query must start with :find")))
     (error "datalog expects a vector query")))
@@ -1318,8 +1468,9 @@
              has_join: true
              join_vars: join-vars}))
 
-(defn query [find: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find] -> Query
+(defn query [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
+        owned-with (arr.into [dynamic]string with)
         owned-inputs (arr.into [dynamic]string inputs)
         owned-collection-inputs (arr.into [dynamic]string collection-inputs)
         owned-tuple-inputs (arr.into [dynamic]Tuple-Input tuple-inputs)
@@ -1327,8 +1478,10 @@
         owned-predicates (arr.into [dynamic]Predicate predicates)
         owned-not-groups (arr.into [dynamic]Not-Group not-groups)
         owned-or-groups (arr.into [dynamic]Or-Group or-groups)
-        owned-pulls (arr.into [dynamic]Pull-Find pulls)]
+        owned-pulls (arr.into [dynamic]Pull-Find pulls)
+        owned-aggregates (arr.into [dynamic]Aggregate-Find aggregates)]
     (Query {find: owned-find
+            with: owned-with
             inputs: owned-inputs
             collection_inputs: owned-collection-inputs
             tuple_inputs: owned-tuple-inputs
@@ -1336,7 +1489,8 @@
             predicates: owned-predicates
             not_groups: owned-not-groups
             or_groups: owned-or-groups
-            pulls: owned-pulls})))
+            pulls: owned-pulls
+            aggregates: owned-aggregates})))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom (slice datoms 0)))
@@ -1909,6 +2063,112 @@
           (return false))))
     (return (> (count bindings) 0)))))
 
+(defn aggregate-count [bindings: []Binding, var: string] -> i64
+  (let [n: i64 0]
+    (for [binding bindings]
+      (let [[_ ok] (binding-lookup binding var)]
+        (when ok
+          (set! n (+ n 1)))))
+    n))
+
+(defn aggregate-value [bindings: []Binding, aggregate: Aggregate-Find] -> Value
+  (when (= aggregate.op "count")
+    (return (value-int (aggregate-count bindings aggregate.var))))
+  (when (or (= aggregate.op "sum")
+            (= aggregate.op "avg"))
+    (let [sum: i64 0
+          n: i64 0]
+      (for [binding bindings]
+        (let [[value ok] (binding-lookup binding aggregate.var)]
+          (when (and ok (= value.kind .Int))
+            (set! sum (+ sum value.int_value))
+            (set! n (+ n 1)))))
+      (if (= aggregate.op "sum")
+        (return (value-int sum))
+        (if (> n 0)
+          (return (value-int (/ sum n)))
+          (return (Value {}))))))
+  (let [out (Value {})]
+    (for [binding bindings]
+      (let [[value ok] (binding-lookup binding aggregate.var)]
+        (when (and ok (= value.kind .Int))
+          (if (not (= out.kind .Int))
+            (set! out value)
+            (if (= aggregate.op "min")
+              (when (< value.int_value out.int_value)
+                (set! out value))
+              (when (and (= aggregate.op "max")
+                         (> value.int_value out.int_value))
+                (set! out value)))))))
+    out))
+
+(defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
+  (if (or (= aggregate.op "count")
+          (= aggregate.op "sum")
+          (= aggregate.op "avg"))
+    (value-int 0)
+    (Value {})))
+
+(defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
+  (when (= aggregate.op "count")
+    (return (value-int (+ current.int_value 1))))
+  (when (not (= value.kind .Int))
+    (return current))
+  (when (or (= aggregate.op "sum")
+            (= aggregate.op "avg"))
+    (return (value-int (+ current.int_value value.int_value))))
+  (when (not (= current.kind .Int))
+    (return value))
+  (if (= aggregate.op "min")
+    (if (< value.int_value current.int_value) value current)
+    (if (= aggregate.op "max")
+      (if (> value.int_value current.int_value) value current)
+      current)))
+
+(defn binding-values-for-vars [binding: Binding, names: []string] -> [values: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value 0 (count names))]
+    (for [name names]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (return out true)))
+
+(defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, bindings: []Binding, query: Query]
+  (for [binding bindings]
+    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
+      (when ok
+        (when (not (row-value-prefix-exists? (slice rows^ 0) (slice group-values 0)))
+            (let [values (arr.into [dynamic]Value (slice group-values 0))
+                  pulls (make [dynamic]Pull-Result)]
+            (for [aggregate query.aggregates]
+              (arr.push! values (aggregate-initial-value aggregate)))
+            (arr.push! rows^ (Result-Row {values: values pulls: pulls})))))))
+  (for [binding bindings]
+    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
+      (when ok
+        (for [row rows^]
+          (when (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0))
+            (for [aggregate index query.aggregates]
+              (let [[value has-value] (binding-lookup binding aggregate.var)]
+                (when has-value
+                  (set! row.values[(+ (count query.find) index)]
+                    (apply-aggregate-value row.values[(+ (count query.find) index)] aggregate value))))))))))
+  (for [row rows^]
+    (for [aggregate index query.aggregates]
+      (when (= aggregate.op "avg")
+        (let [sum-index (+ (count query.find) index)
+              count: i64 0]
+          (for [binding bindings]
+            (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
+              (when (and ok
+                         (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0)))
+                (let [[_ has-value] (binding-lookup binding aggregate.var)]
+                  (when has-value
+                    (set! count (+ count 1)))))))
+          (when (> count 0)
+            (set! row.values[sum-index].int_value (/ row.values[sum-index].int_value count))))))))
+
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
         bindings (bindings-from-inputs query inputs)
@@ -1954,15 +2214,34 @@
             (arr.push! next-bindings binding)))
         (delete bindings)
         (set! bindings next-bindings)))
+    (when (> (count query.aggregates) 0)
+      (let [rows (make [dynamic]Result-Row)]
+        (if (= (count query.find) 0)
+          (let [values (make [dynamic]Value 0 (count query.aggregates))
+                pulls (make [dynamic]Pull-Result)]
+            (for [aggregate query.aggregates]
+              (arr.push! values (aggregate-value (slice bindings 0) aggregate)))
+            (arr.push! rows (Result-Row {values: values pulls: pulls})))
+          (append-aggregate-rows! (addr rows) (slice bindings 0) query))
+        (delete bindings)
+        (return (Result-Set {rows: rows}))))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
       (for [binding bindings]
         (let [values (make [dynamic]Value 0 (count query.find))
+              dedupe-values (make [dynamic]Value)
               pulls (make [dynamic]Pull-Result 0 (count query.pulls))
               complete true]
           (for [name query.find]
             (let [[value ok] (binding-lookup binding name)]
               (if ok
-                (arr.push! values value)
+                (do
+                  (arr.push! values value)
+                  (arr.push! dedupe-values value))
+                (set! complete false))))
+          (for [name query.with]
+            (let [[value ok] (binding-lookup binding name)]
+              (if ok
+                (arr.push! dedupe-values value)
                 (set! complete false))))
           (for [pull-find query.pulls]
             (let [[entity ok] (binding-lookup binding pull-find.var)]
@@ -1970,7 +2249,9 @@
                 (arr.push! pulls (pull-pattern-spec db entity.entity pull-find.pattern))
                 (set! complete false))))
           (when complete
-            (arr.push! rows (Result-Row {values: values pulls: pulls})))))
+            (when (or (> (count pulls) 0)
+                      (not (row-values-exist? (slice rows 0) (slice dedupe-values 0))))
+              (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
       (delete bindings)
       (Result-Set {rows: rows}))))
 
@@ -2040,6 +2321,29 @@
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has_alias spec.alias spec.a))
 
+(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        limit spec.limit
+        seen 0
+        found false]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [children (make [dynamic]Pull-Attr)]
+            (when (and (= datom.v.kind .Entity)
+                       (> (count spec.pattern) 0))
+              (let [pulled (pull-pattern-spec db datom.v.entity spec.pattern)]
+                (set! children pulled.attrs)))
+            (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec) v: datom.v attrs: children}))
+            (set! found true)
+            (set! seen (+ seen 1))
+            (when (and (> limit 0)
+                       (>= seen limit))
+              (return found))))))
+    found))
+
 (defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
   (when (= spec.a "*")
     (pull-wildcard! out db entity)
@@ -2052,18 +2356,11 @@
   (when (reverse-attr? spec.a)
     (pull-reverse-attr! out db entity spec)
     (return))
-  (let [[value ok] (pull-attr-value db entity spec.a)]
-    (if ok
-      (let [children (make [dynamic]Pull-Attr)]
-        (when (and (= value.kind .Entity)
-                   (> (count spec.pattern) 0))
-          (let [pulled (pull-pattern-spec db value.entity spec.pattern)]
-            (set! children pulled.attrs)))
-        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec) v: value attrs: children})))
-      (when spec.has_default
-        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                    v: spec.default_value
-                                    attrs: (make [dynamic]Pull-Attr)}))))))
+  (let [found (pull-forward-attr! out db entity spec)]
+    (when (and (not found) spec.has_default)
+      (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                  v: spec.default_value
+                                  attrs: (make [dynamic]Pull-Attr)})))))
 
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
@@ -2142,6 +2439,7 @@
   (query ([]string ["name"])
     ([]string [])
     ([]string [])
+    ([]string [])
     ([]Tuple-Input [])
     ([]Clause
       [(clause (term-var "e") ":user/email" (term-string email))
@@ -2149,7 +2447,8 @@
     ([]Predicate [])
     ([]Not-Group [])
     ([]Or-Group [])
-    ([]Pull-Find [])))
+    ([]Pull-Find [])
+    ([]Aggregate-Find [])))
 
 (defn seed-people [conn: ^Conn] -> Tx-Report
   (transact conn

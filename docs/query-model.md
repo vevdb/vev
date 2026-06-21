@@ -85,6 +85,9 @@ representation and evaluates that directly.
 Supported now:
 
 - `:find` with one or more variables
+- `:with`
+- scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [[?x ?y]]`
+- standalone and grouped `count`, `min`, `max`, `sum`, and `avg` aggregates
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
 - variables in entity, attribute, and value positions
@@ -123,6 +126,60 @@ Example:
   [:find ?name
    :where
    [:user/ada :user/name ?name]])
+```
+
+Vev accepts DataScript scalar and collection find syntax, currently lowered to
+the same row-oriented `Result-Set` representation:
+
+```clojure
+(v.q db
+  [:find ?name .
+   :where
+   [?e :user/email "ada@example.com"]
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find [?name ...]
+   :where
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find [[?name ?age]]
+   :where
+   [?e :user/name ?name]
+   [?e :user/age ?age]])
+```
+
+```clojure
+(v.q db
+  [:find (count ?e)
+   :where
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?age (count ?e)
+   :where
+   [?e :user/age ?age]])
+```
+
+```clojure
+(v.q db
+  [:find (min ?age) (max ?age)
+   :where
+   [?e :user/age ?age]])
+```
+
+```clojure
+(v.q db
+  [:find (sum ?age) (avg ?age)
+   :where
+   [?e :user/age ?age]])
 ```
 
 `$` source-var clauses parse the same way against the current DB:
@@ -250,7 +307,10 @@ Example:
 ```
 
 Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
-predicates remain later work.
+predicates remain later work. Results are deduped by returned values, with
+`:with` vars included in the dedupe key but not returned.
+Aggregates currently support `count`, `min`, `max`, `sum`, and `avg`.
+Numeric aggregates are currently integer-only; `avg` uses integer division.
 
 ## Pull model
 
