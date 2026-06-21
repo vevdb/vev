@@ -104,9 +104,9 @@ Examples:
  :user/name "Anna"}
 ```
 
-Current Vev supports map forms in tx data when `:db/id` is first, with one to
-three attrs after it, and the common two-attr shape with `:db/id` last. Nested
-map values are supported when the nested map has an explicit string `:db/id`:
+Current Vev supports map forms in tx data with an explicit `:db/id` in any
+position. Nested map values are supported when the nested map has an explicit
+string `:db/id`:
 
 ```clojure
 {:db/id 1
@@ -114,7 +114,7 @@ map values are supported when the nested map has an explicit string `:db/id`:
                 :address/city "London"}}
 ```
 
-Auto-generated component ids and arbitrary key order remain later work.
+Auto-generated component ids remain later work.
 
 ### Transaction metadata
 
