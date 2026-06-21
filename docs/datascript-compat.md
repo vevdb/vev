@@ -18,12 +18,12 @@ Status key:
 | `query` | partial | DataScript join subset ported; inputs, plain int entity inputs, collection/tuple/relation bindings, `_` input placeholders, and constant-substitution subset covered |
 | `query_aggregates` | partial | Relation-input subset ported; grouped aggregates, `:with` duplicate preservation, and keyword min/max comparator subset covered; exact edge behavior and advanced aggregates incomplete |
 | `query_find_specs` | partial | Subset ported; scalar, collection, tuple, aggregate find specs, and multiple-result cuts covered |
-| `query_fns` | partial | DataScript subset ported for predicates, mixed-type predicate comparison, scalar/collection/tuple `ground`, `get-else`, `get-some`, `missing?`, and built-in result clauses for `identity`, string `count`, and integer arithmetic; arbitrary host/function clauses missing |
+| `query_fns` | partial | DataScript subset ported for predicates including `even?`, mixed-type predicate comparison, scalar/collection/tuple `ground`, `get-else`, `get-some`, `missing?`, and built-in result clauses for `identity`, string `count`, and integer arithmetic; arbitrary host/function clauses missing |
 | `query_not` | partial | Single-source DataScript subset ported, including nested `not`; default-source forms and insufficient-binding errors incomplete |
 | `query_or` | partial | Single-source DataScript subset ported, including scalar-input `or`; default-source forms and relation-source `or-join` incomplete |
 | `query_pull` | partial | Basic literal-pattern DataScript subset ported; var patterns, multi-source pull, and exact tuple return shape incomplete |
 | `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
-| `query_rules` | partial | Literal rule input subset started: rule branches and bounded recursive rules with data clauses, predicates, `ground`, and built-in function clauses; mutual rules, rule sources, and validation incomplete |
+| `query_rules` | partial | Literal rule input subset started: rule branches and bounded recursive rules with data clauses, predicates including `even?`, `ground`, and built-in function clauses; mutual rules, rule sources, and validation incomplete |
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, string/false/ref defaults, reverse-ref defaults, explicit/default limits, and component expansion examples covered; recursion and exact rendered collection/scalar shapes missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
