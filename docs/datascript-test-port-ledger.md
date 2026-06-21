@@ -1,6 +1,8 @@
 # DataScript Test Port Ledger
 
 This tracks direct ports from `../datascript/test/datascript/test/*.cljc`.
+See [datascript-test-matrix.md](datascript-test-matrix.md) for the broader
+namespace classification and batch order.
 
 `subset` means Vev has local tests for the main behavior, but not every
 DataScript assertion or exact Clojure API shape.
@@ -23,7 +25,7 @@ DataScript assertion or exact Clojure API shape.
 | `transact.cljc` | 19 | subset | tx functions and exact errors |
 | `upsert.cljc` | 6 | subset | full conflict matrix and messages |
 | `db.cljc` | 4 | partial | datom/index API compatibility |
-| `index.cljc` | 5 | partial | exact indexed-attribute error behavior |
+| `index.cljc` | 5 | partial | checked indexed-attribute errors and sequence compare covered; finish exact public index surface |
 | `tuples.cljc` | 11 | partial | remaining tuple upsert conflict matrix and schema validation |
 | `validation.cljc` | 2 | partial | bad transaction forms and exact validation errors |
 | `parser*.cljc` | 19 | missing | EDN/text parser |
