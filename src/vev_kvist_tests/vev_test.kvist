@@ -3252,6 +3252,66 @@
     (t.is (= result.rows[0].values[0].entity before-e.entity))
     (t.is (= result.rows[0].values[1].text "Oleg"))))
 
+(t.deftest datascript-tuple-attrs-upsert-by-tuple-value-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact (addr conn) [[:db/add 100 :db/unique :db.unique/identity]
+                                     [:db/add 101 :db/ident :c]
+                                     [:db/add 101 :db/unique :db.unique/identity]])
+        _ (vev.transact (addr conn) [{:db/id 1 :a "A" :b "B"}
+                                     {:db/id 2 :a "a" :b "b"}])
+        first (vev.transact
+                (addr conn)
+                ([]vev.Tx-Data
+                  [(vev.add-tempid "x" ":a-and-b"
+                     (vev.value-vector2
+                       (vev.value-string "A")
+                       (vev.value-string "B")))
+                   (vev.add-tempid "x" ":c" (vev.value-string "C"))
+                   (vev.add-tempid "y" ":a-and-b"
+                     (vev.value-vector2
+                       (vev.value-string "a")
+                       (vev.value-string "b")))
+                   (vev.add-tempid "y" ":c" (vev.value-string "c"))]))
+        conflict (vev.transact
+                   (addr conn)
+                   ([]vev.Tx-Data
+                     [(vev.add-tempid "z" ":a-and-b"
+                        (vev.value-vector2
+                          (vev.value-string "A")
+                          (vev.value-string "B")))
+                      (vev.add-tempid "z" ":c" (vev.value-string "c"))]))
+        changed (vev.transact
+                  (addr conn)
+                  ([]vev.Tx-Data
+                    [(vev.add-tempid "w" ":a-and-b"
+                       (vev.value-vector2
+                         (vev.value-string "A")
+                         (vev.value-string "B")))
+                     (vev.add-tempid "w" ":b" (vev.value-string "b"))
+                     (vev.add-tempid "w" ":d" (vev.value-string "D"))]))
+        result (vev.q conn.db
+                 [:find ?e ?b ?c ?d
+                  :where
+                  [?e :a "A"]
+                  [?e :b ?b]
+                  [?e :c ?c]
+                  [?e :d ?d]])]
+    (t.is first.ok)
+    (t.is (= first.tempids[0].e 1))
+    (t.is (= first.tempids[1].e 2))
+    (t.is (not conflict.ok))
+    (t.is (= conflict.error "conflicting upsert"))
+    (t.is changed.ok)
+    (t.is (= changed.tempids[0].e 1))
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].entity 1))
+    (t.is (= result.rows[0].values[1].text "b"))
+    (t.is (= result.rows[0].values[2].text "C"))
+    (t.is (= result.rows[0].values[3].text "D"))))
+
 (t.deftest datascript-tuple-attrs-unique-conflict-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
