@@ -4552,6 +4552,45 @@
     (t.is (not conflict.ok))
     (t.is (= conflict.error "conflicting upsert"))))
 
+(t.deftest datascript-upsert-vector-ordering-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Oleg"]])
+        unique-first (vev.transact-tx-data
+                       (addr conn)
+                       ([]vev.Tx-Data
+                         [(vev.add-tempid "x" ":name" (vev.value-string "Ivan"))
+                          (vev.add-tempid "x" ":age" (vev.value-int 12))]))
+        unique-last (vev.transact-tx-data
+                      (addr conn)
+                      ([]vev.Tx-Data
+                        [(vev.add-tempid "y" ":age" (vev.value-int 13))
+                         (vev.add-tempid "y" ":name" (vev.value-string "Ivan"))]))
+        conflict (vev.transact-tx-data
+                   (addr conn)
+                   ([]vev.Tx-Data
+                     [(vev.add-tempid "z" ":name" (vev.value-string "Ivan"))
+                      (vev.add-tempid "z" ":age" (vev.value-int 35))
+                      (vev.add-tempid "z" ":name" (vev.value-string "Oleg"))
+                      (vev.add-tempid "z" ":age" (vev.value-int 36))]))
+        [age age-ok] (vev.q-scalar conn.db
+                         [:find ?age .
+                          :where
+                          [1 :age ?age]])]
+    (t.is unique-first.ok)
+    (t.is (= unique-first.tempids[0].e 1))
+    (t.is unique-last.ok)
+    (t.is (= unique-last.tempids[0].e 1))
+    (t.is age-ok)
+    (t.is (= age.int_value 13))
+    (t.is (not conflict.ok))
+    (t.is (= conflict.error "conflicting upsert"))))
+
 (t.deftest datascript-upsert-conflicts-with-explicit-id-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
