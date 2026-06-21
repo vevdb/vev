@@ -36,7 +36,7 @@ Status key:
 | `ident` | partial | DataScript query/transact/pull subset, entity ident lookup, and missing-ident retract no-ops covered |
 | `components` | partial | Component `retractEntity`, `retractAttribute`, incoming-ref cleanup, forward pull expansion, explicit reverse pull subsets, and entity `touch` covered; exact reverse scalar shape missing |
 | `entity` | partial | Basic entity view API covered: id/db access, lookup-ref and ident construction, scalar/many attr reads, forward and reverse ref navigation, contains, missing entities, and touch; Clojure map protocol/cache/print/equality semantics do not apply directly in Kvist |
-| `index` | partial | `datoms`, `find-datom`, `seek-datoms`, `rseek-datoms`, `index-range`, range bounds, and public AVET filtering covered; exact indexed-attribute error behavior incomplete |
+| `index` | partial | `datoms`, `find-datom` including empty DB, `seek-datoms`, `rseek-datoms`, upstream `index-range` bounds/order examples, and public AVET filtering covered; exact indexed-attribute error behavior incomplete |
 | `validation` | partial | Nil value rejection plus value type, uniqueness, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `issues` | partial | Need namespace-by-namespace porting |
