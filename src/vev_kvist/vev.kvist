@@ -760,7 +760,9 @@
           (let [op (source head)]
             (or (= op "count")
                 (= op "min")
-                (= op "max")))
+                (= op "max")
+                (= op "sum")
+                (= op "avg")))
           false))
       false)
     false))
@@ -1298,7 +1300,7 @@
     (quasiquote
       (Aggregate-Find {op: (unquote (source (first form)))
                        var: (unquote (emit-find-var (nth form 1)))}))
-    (error "aggregate find expressions currently support (count ?x), (min ?x), and (max ?x)")))
+    (error "aggregate find expressions currently support count, min, max, sum, and avg")))
 
 (defmacro- emit-aggregate-finds [forms]
   (if (= (count forms) 0)
@@ -2033,6 +2035,20 @@
 (defn aggregate-value [bindings: []Binding, aggregate: Aggregate-Find] -> Value
   (when (= aggregate.op "count")
     (return (value-int (aggregate-count bindings aggregate.var))))
+  (when (or (= aggregate.op "sum")
+            (= aggregate.op "avg"))
+    (let [sum: i64 0
+          n: i64 0]
+      (for [binding bindings]
+        (let [[value ok] (binding-lookup binding aggregate.var)]
+          (when (and ok (= value.kind .Int))
+            (set! sum (+ sum value.int_value))
+            (set! n (+ n 1)))))
+      (if (= aggregate.op "sum")
+        (return (value-int sum))
+        (if (> n 0)
+          (return (value-int (/ sum n)))
+          (return (Value {}))))))
   (let [out (Value {})]
     (for [binding bindings]
       (let [[value ok] (binding-lookup binding aggregate.var)]
@@ -2048,7 +2064,9 @@
     out))
 
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
-  (if (= aggregate.op "count")
+  (if (or (= aggregate.op "count")
+          (= aggregate.op "sum")
+          (= aggregate.op "avg"))
     (value-int 0)
     (Value {})))
 
@@ -2057,6 +2075,9 @@
     (return (value-int (+ current.int_value 1))))
   (when (not (= value.kind .Int))
     (return current))
+  (when (or (= aggregate.op "sum")
+            (= aggregate.op "avg"))
+    (return (value-int (+ current.int_value value.int_value))))
   (when (not (= current.kind .Int))
     (return value))
   (if (= aggregate.op "min")
@@ -2093,7 +2114,21 @@
               (let [[value has-value] (binding-lookup binding aggregate.var)]
                 (when has-value
                   (set! row.values[(+ (count query.find) index)]
-                    (apply-aggregate-value row.values[(+ (count query.find) index)] aggregate value)))))))))))
+                    (apply-aggregate-value row.values[(+ (count query.find) index)] aggregate value))))))))))
+  (for [row rows^]
+    (for [aggregate index query.aggregates]
+      (when (= aggregate.op "avg")
+        (let [sum-index (+ (count query.find) index)
+              count: i64 0]
+          (for [binding bindings]
+            (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
+              (when (and ok
+                         (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0)))
+                (let [[_ has-value] (binding-lookup binding aggregate.var)]
+                  (when has-value
+                    (set! count (+ count 1)))))))
+          (when (> count 0)
+            (set! row.values[sum-index].int_value (/ row.values[sum-index].int_value count))))))))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
