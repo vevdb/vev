@@ -87,6 +87,7 @@ Supported now:
 - `:find` with one or more variables
 - `:with`
 - scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [[?x ?y]]`
+- return-map find markers: `:keys`, `:strs`, and `:syms`
 - standalone and grouped `count`, `min`, `max`, `sum`, and `avg` aggregates
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
@@ -170,6 +171,17 @@ the same row-oriented `Result-Set` representation:
 ```clojure
 (v.q db
   [:find [[?name ?age]]
+   :where
+   [?e :user/name ?name]
+   [?e :user/age ?age]])
+```
+
+Return-map markers are accepted with the same current row-oriented result
+shape:
+
+```clojure
+(v.q db
+  [:find ?name ?age :keys name age
    :where
    [?e :user/name ?name]
    [?e :user/age ?age]])
