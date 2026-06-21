@@ -145,6 +145,7 @@
   predicates: []Predicate
   function_clauses: []Function-Clause
   grounds: []Ground
+  rule_calls: []Rule-Call
 })
 
 (defstruct Rule-Call {
@@ -1643,9 +1644,17 @@
       (let [head (first form)]
         (if (symbol? head)
           (let [name (source head)]
-            (if (= name "follow")
-              true
-              (= name "rule")))
+            (if (= name "not")
+              false
+              (if (= name "not-join")
+                false
+                (if (= name "or")
+                  false
+                  (if (= name "or-join")
+                    false
+                    (if (= name "and")
+                      false
+                      true))))))
           false))
       false)
     false))
@@ -2309,7 +2318,8 @@
                  clauses: ([]Clause [(splice (emit-datalog-clauses (rest form)))])
                  predicates: ([]Predicate [(splice (emit-datalog-predicates (rest form)))])
                  function_clauses: ([]Function-Clause [(splice (emit-datalog-function-clauses (rest form)))])
-                 grounds: ([]Ground [(splice (emit-datalog-grounds (rest form)))])}))
+                 grounds: ([]Ground [(splice (emit-datalog-grounds (rest form)))])
+                 rule_calls: ([]Rule-Call [(splice (emit-datalog-rule-calls (rest form)))])}))
         (error "rule definitions must start with a rule head")))
     (error "rule definitions must be vectors")))
 
@@ -3509,12 +3519,21 @@
         (arr.push! out binding)))
     out))
 
-(defn bindings-after-rule-body [db: DB, rule: Rule, initial: Binding] -> [dynamic]Binding
+(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int] -> [dynamic]Binding
   (let [group (Not-Group {clauses: rule.clauses
                           not_groups: ([]Not-Group [])
                           has_join: false
                           join_vars: ([]string [])})
         bindings (bindings-after-clause-group db group initial)]
+    (for [call rule.rule_calls]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [rule-bindings (bindings-after-rule-call-depth db rules call binding (- depth 1))]
+            (for [rule-binding rule-bindings]
+              (arr.push! next-bindings rule-binding))
+            (delete rule-bindings)))
+        (delete bindings)
+        (set! bindings next-bindings)))
     (for [ground rule.grounds]
       (let [next (apply-ground (slice bindings 0) ground)]
         (delete bindings)
@@ -3562,19 +3581,25 @@
                 (set! out next)))))))
     (return out true)))
 
-(defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+(defn bindings-after-rule-call-depth [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
+    (when (<= depth 0)
+      (return out))
     (for [rule rules]
       (when (= rule.name call.name)
         (let [[initial ok] (bind-rule-args binding call rule)]
           (when ok
-            (let [results (bindings-after-rule-body db rule initial)]
+            (let [results (bindings-after-rule-body-depth db rules rule initial depth)]
               (for [result results]
                 (let [[merged merged-ok] (merge-rule-output binding call rule result)]
                   (when merged-ok
                     (arr.push! out merged))))
               (delete results))))))
     out))
+
+(defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+  // ponytail: bounded recursion; replace with semi-naive fixpoint when rules benchmarks require it.
+  (bindings-after-rule-call-depth db rules call binding 16))
 
 (defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
   (let [initial (clone-binding binding)]
