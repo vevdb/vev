@@ -25,15 +25,16 @@ The project goal here is compatibility first:
 
 ## Native API stance
 
-Plain strings are acceptable at the boundary, but they should not be the only
-native shape.
+Plain EDN strings are required at the portable boundary, but they should not be
+the only native shape.
 
 Recommended split:
 
-- external query syntax: text
+- external query syntax: EDN text
 - parsed query representation: typed AST
 - execution API: parsed query object
 - convenience API: parse-and-run helper
+- Kvist convenience API: literal macro lowering to the same typed AST
 
 This split preserves Datomic syntax at the boundary while still letting the
 engine use direct typed data structures internally.
@@ -60,6 +61,17 @@ q_text(db, text, inputs...) -> Result_Set
 
 `q_text` can be convenience.
 `q` with a parsed query should be the core path.
+
+The portable C/Odin-facing API should use the same split:
+
+```text
+vev_query_text(db, "[:find ?e :where [?e :name \"Ivan\"]]", inputs) -> result
+vev_prepare_query(conn, "[:find ?e :where [?e :name ?name]]") -> query_handle
+vev_query_prepared(db, query_handle, inputs) -> result
+```
+
+This is analogous to SQL strings plus prepared statements, but the parsed value
+is Datomic/DataScript Datalog data instead of SQL text.
 
 ## Query scope for phase 1
 
@@ -433,3 +445,6 @@ The preferred project stance is:
 The Kvist literal macro is useful for native Kvist callers and for exercising
 Kvist's macro system, but it should remain syntax sugar over the same typed
 query representation that text/EDN parsing will eventually produce.
+
+The project should treat the EDN parser as required for broad interop, not as a
+replacement for the Kvist literal API.

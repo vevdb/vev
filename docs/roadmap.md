@@ -44,7 +44,33 @@ Preferred boundary:
 - Datomic/DataScript-compatible pull syntax first
 - typed internal pull representation second
 
-## Phase 3: Durable proof
+## Phase 3: DataScript parity
+
+Goal:
+
+- continue porting the DataScript test suite namespace by namespace
+- close in-memory query, transaction, pull, schema, and index gaps
+- keep Kvist literal APIs and internal typed forms aligned
+
+Non-goal:
+
+- durable storage
+- SQLite integration
+- server/transactor packaging
+
+## Phase 4: Portable query frontend
+
+Goal:
+
+- parse EDN text for queries, pull patterns, and transaction data
+- expose parse-and-run helpers for non-Kvist callers
+- expose prepared query handles for repeated execution
+- lower parsed EDN into the same internal structures as Kvist literals
+
+This phase is required for broad C/Odin/host-language consumption. It should
+not create a second query engine.
+
+## Phase 5: Durable proof
 
 Goal:
 
@@ -63,7 +89,7 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-## Phase 4: Dogfood
+## Phase 6: Dogfood
 
 Goal:
 
@@ -78,19 +104,20 @@ Questions:
 - what debugging/inspection tools are immediately missing?
 - is a separate event layer still necessary once tx metadata is in use?
 
-## Phase 5: Interop boundary
+## Phase 7: Interop boundary
 
 Goal:
 
 - package the engine as a native library
 - define and expose a narrow stable C ABI
+- expose EDN text and prepared query entrypoints
 - build a small wrapper for JVM/Clojure use if still justified
 
 Non-goal:
 
 - making the CLI binary the only application integration path
 
-## Phase 6: Optional packaging expansion
+## Phase 8: Optional packaging expansion
 
 Goal:
 
