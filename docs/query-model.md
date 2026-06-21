@@ -102,7 +102,7 @@ Supported now:
 - tuple `:in` variables shaped like `[?a ?b]`
 - relation `:in` variables shaped like `[[?a ?b]]`
 - pull expressions in `:find`
-- simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
+- predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`, including chained comparisons
 - `missing?`
 - `get-else`
 - `get-some`
@@ -206,6 +206,15 @@ the same row-oriented `Result-Set` representation:
    [?e :user/age ?age]
    [(> ?age 30)]]
   "ada@example.com")
+```
+
+```clojure
+(v.q db
+  [:find ?younger ?older
+   :where
+   [?a :user/age ?younger]
+   [?b :user/age ?older]
+   [(< ?younger 40 ?older)]])
 ```
 
 ```clojure

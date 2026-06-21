@@ -118,8 +118,7 @@
 
 (defstruct Predicate {
   op: string
-  left: Term
-  right: Term
+  terms: []Term
 })
 
 (defstruct Not-Group {
@@ -1282,16 +1281,22 @@
         (or-group ([]Not-Group [(splice (emit-datalog-or-branches (rest form)))])))
       (error "or clauses must have shape (or [e a v] [e a v] ...) or (or-join [?x] ...)"))))
 
+(defmacro- emit-predicate-terms [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-value-term (first forms))
+      (emit-predicate-terms (rest forms)))))
+
 (defmacro- emit-datalog-predicate [form]
   (if (predicate-clause? form)
     (let [expr (first form)]
-      (if (= (count expr) 3)
+      (if (>= (count expr) 3)
         (quasiquote
           (Predicate {op: (unquote (source (nth expr 0)))
-                      left: (unquote (emit-value-term (nth expr 1)))
-                      right: (unquote (emit-value-term (nth expr 2)))}))
-        (error "predicate clauses must have shape [(op left right)]")))
-    (error "predicate clauses must have shape [(op left right)]")))
+                      terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])}))
+        (error "predicate clauses must have shape [(op arg arg ...)]")))
+    (error "predicate clauses must have shape [(op arg arg ...)]")))
 
 (defmacro- emit-datalog-get-else [form]
   (if (get-else-clause? form)
@@ -1897,24 +1902,32 @@
     .Var (return (binding-lookup binding term.name))
     :else (return (Value {}) false)))
 
+(defn predicate-pair-matches? [op: string, left: Value, right: Value] -> bool
+  (if (= op "=")
+    (value-equal? left right)
+    (if (= op "!=")
+      (not (value-equal? left right))
+      (if (= op ">")
+        (value-less? right left)
+        (if (= op "<")
+          (value-less? left right)
+          (if (= op ">=")
+            (not (value-less? left right))
+            (if (= op "<=")
+              (not (value-less? right left))
+              false)))))))
+
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
-  (let [[left left-ok] (resolve-term predicate.left binding)
-        [right right-ok] (resolve-term predicate.right binding)]
-    (when (not (and left-ok right-ok))
-      (return false))
-    (if (= predicate.op "=")
-      (value-equal? left right)
-      (if (= predicate.op "!=")
-        (not (value-equal? left right))
-        (if (= predicate.op ">")
-          (value-less? right left)
-          (if (= predicate.op "<")
-            (value-less? left right)
-            (if (= predicate.op ">=")
-              (not (value-less? left right))
-              (if (= predicate.op "<=")
-                (not (value-less? right left))
-                false))))))))
+  (when (< (count predicate.terms) 2)
+    (return false))
+  (for [index (arr.range 0 (- (count predicate.terms) 1))]
+    (let [[left left-ok] (resolve-term predicate.terms[index] binding)
+          [right right-ok] (resolve-term predicate.terms[(+ index 1)] binding)]
+      (when (not (and left-ok right-ok))
+        (return false))
+      (when (not (predicate-pair-matches? predicate.op left right))
+        (return false))))
+  true)
 
 (defn datom-current-at? [db: DB, index: int] -> bool
   (let [current (slice db.current 0)
