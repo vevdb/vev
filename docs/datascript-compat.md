@@ -22,7 +22,7 @@ Status key:
 | `query_not` | partial | `not` and `not-join` covered |
 | `query_or` | partial | `or` and `or-join` covered for data-clause branches |
 | `query_pull` | partial | Pull in `:find` covered for literal patterns |
-| `query_return_map` | partial | `:keys`, `:strs`, `:syms` covered |
+| `query_return_map` | partial | `:keys`, `:strs`, `:syms` covered; tuple return-map subset ported |
 | `query_rules` | missing | Biggest remaining query feature |
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, limits covered; recursion/components missing |
