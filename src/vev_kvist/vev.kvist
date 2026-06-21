@@ -122,6 +122,8 @@
 
 (defstruct Not-Group {
   clauses: []Clause
+  has_join: bool
+  join_vars: []string
 })
 
 (defstruct Pull-Find {
@@ -833,16 +835,42 @@
   (if (list? form)
     (if (> (count form) 1)
       (let [head (first form)]
-        (and (symbol? head)
-             (= (source head) "not")))
+        (if (symbol? head)
+          (= (source head) "not")
+          false))
       false)
     false))
 
+(defmacro- not-join-clause? [form]
+  (if (list? form)
+    (if (> (count form) 2)
+      (let [head (first form)]
+        (if (symbol? head)
+          (= (source head) "not-join")
+          false))
+      false)
+    false))
+
+(defmacro- emit-not-join-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-not-join-vars (rest forms)))))
+
 (defmacro- emit-datalog-not-group [form]
-  (if (not-clause? form)
-    (quasiquote
-      (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
-    (error "not clauses must have shape (not [e a v] ...)")))
+  (if (not-join-clause? form)
+    (let [join-vars (nth form 1)]
+      (if (vector? join-vars)
+        (quasiquote
+          (not-join-group
+            ([]string [(splice (emit-not-join-vars join-vars))])
+            ([]Clause [(splice (emit-datalog-clauses (slice form 2)))])))
+        (error "not-join expects a vector of join vars")))
+    (if (not-clause? form)
+      (quasiquote
+        (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
+      (error "not clauses must have shape (not [e a v] ...) or (not-join [?x] [e a v] ...)"))))
 
 (defmacro- emit-datalog-predicate [form]
   (if (predicate-clause? form)
@@ -862,9 +890,11 @@
       (emit-datalog-clauses (rest forms))
       (if (not-clause? (first forms))
         (emit-datalog-clauses (rest forms))
-        (forms
-          (emit-datalog-clause (first forms))
-          (emit-datalog-clauses (rest forms)))))))
+        (if (not-join-clause? (first forms))
+          (emit-datalog-clauses (rest forms))
+          (forms
+            (emit-datalog-clause (first forms))
+            (emit-datalog-clauses (rest forms))))))))
 
 (defmacro- emit-datalog-predicates [forms]
   (if (= (count forms) 0)
@@ -882,7 +912,11 @@
       (forms
         (emit-datalog-not-group (first forms))
         (emit-datalog-not-groups (rest forms)))
-      (emit-datalog-not-groups (rest forms)))))
+      (if (not-join-clause? (first forms))
+        (forms
+          (emit-datalog-not-group (first forms))
+          (emit-datalog-not-groups (rest forms)))
+        (emit-datalog-not-groups (rest forms))))))
 
 (defmacro- emit-pull-attrs [forms]
   (if (= (count forms) 0)
@@ -1094,7 +1128,14 @@
     (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
 (defn not-group [clauses: []Clause] -> Not-Group
-  (Not-Group {clauses: clauses}))
+  (Not-Group {clauses: clauses
+              has_join: false
+              join_vars: ([]string [])}))
+
+(defn not-join-group [join-vars: []string, clauses: []Clause] -> Not-Group
+  (Not-Group {clauses: clauses
+              has_join: true
+              join_vars: join-vars}))
 
 (defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, pulls: []Pull-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
@@ -1566,8 +1607,19 @@
               (return true)))))))
   false)
 
+(defn project-binding [binding: Binding, names: []string] -> Binding
+  (let [out (Binding {})]
+    (for [name names]
+      (let [[value ok] (binding-lookup binding name)]
+        (when ok
+          (binding-store! (addr out) name value))))
+    out))
+
 (defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
-  (let [bindings ([dynamic]Binding [(clone-binding binding)]) :defer]
+  (let [initial (clone-binding binding)]
+    (when group.has_join
+      (set! initial (project-binding binding group.join_vars)))
+  (let [bindings ([dynamic]Binding [initial]) :defer]
     (for [clause group.clauses]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
@@ -1582,7 +1634,7 @@
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
           (return false))))
-    (return (> (count bindings) 0))))
+    (return (> (count bindings) 0)))))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)

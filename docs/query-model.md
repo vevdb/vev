@@ -97,6 +97,7 @@ Supported now:
 - pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
 - `not` groups
+- `not-join`
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -166,8 +167,18 @@ Example:
         [?friend :user/active false])])
 ```
 
-Basic clauses now use in-memory indexes. Text parsing, rules, `not-join`, and
-advanced predicates remain later work.
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [?e :user/name ?name]
+   (not-join [?e]
+     [?e :user/friend ?friend]
+     [?friend :user/name ?name])])
+```
+
+Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
+predicates remain later work.
 
 ## Pull model
 
