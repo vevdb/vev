@@ -30,7 +30,7 @@ These are the main in-memory parity target before durable storage.
 | `upsert.cljc` | 6 | partial | unique-value no-upsert covered; remaining conflict matrix |
 | `validation.cljc` | 2 | partial | bad transaction forms and schema validation errors |
 | `index.cljc` | 5 | partial | checked indexed-attribute errors now started; finish exact index surface |
-| `tuples.cljc` | 11 | partial | remaining schema validation and tuple upsert/conflict matrix |
+| `tuples.cljc` | 13 | partial | remaining schema validation and tuple upsert/conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | exact invalid lookup-ref behavior |
 | `ident.cljc` | 4 | passing | keep covered |
 | `components.cljc` | 2 | partial | exact schema validation and render/touch shapes |

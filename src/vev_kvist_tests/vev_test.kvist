@@ -3923,6 +3923,43 @@
     (t.is a-ok)
     (t.is (= a.text "C"))))
 
+(t.deftest datascript-tuple-attrs-unique-multiple-component-update-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact (addr conn) [[:db/add 100 :db/unique :db.unique/identity]])
+        _ (vev.transact (addr conn) [[:db/add 1 :a "a"]])
+        _ (vev.transact (addr conn) [[:db/add 2 :a "A"]])
+        partial-conflict (vev.transact (addr conn) [[:db/add 1 :a "A"]])
+        seed (vev.transact (addr conn) [[:db/add 1 :b "b"]
+                                        [:db/add 2 :b "b"]
+                                        {:db/id 3 :a "a" :b "B"}])
+        change-both (vev.transact (addr conn) [{:db/id 1 :a "A" :b "B"}])
+        add-final-free (vev.transact (addr conn) [{:db/id 4 :a "a" :b "b"}])
+        result (vev.q conn.db
+                 [:find ?e ?tuple
+                  :where
+                  [?e :a-and-b ?tuple]])]
+    (t.is (not partial-conflict.ok))
+    (t.is (= partial-conflict.error "schema unique conflict"))
+    (t.is seed.ok)
+    (t.is change-both.ok)
+    (t.is add-final-free.ok)
+    (t.is (= (count result.rows) 4))
+    (t.is (= result.rows[0].values[0].entity 1))
+    (t.is (= result.rows[0].values[1].items[0].text "A"))
+    (t.is (= result.rows[0].values[1].items[1].text "B"))
+    (t.is (= result.rows[1].values[0].entity 2))
+    (t.is (= result.rows[1].values[1].items[0].text "A"))
+    (t.is (= result.rows[1].values[1].items[1].text "b"))
+    (t.is (= result.rows[2].values[0].entity 3))
+    (t.is (= result.rows[2].values[1].items[0].text "a"))
+    (t.is (= result.rows[2].values[1].items[1].text "B"))
+    (t.is (= result.rows[3].values[0].entity 4))
+    (t.is (= result.rows[3].values[1].items[0].text "a"))
+    (t.is (= result.rows[3].values[1].items[1].text "b"))))
+
 (t.deftest datascript-tuple-attrs-index-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -4030,6 +4067,35 @@
     (t.is (= split.rows[1].values[1].text "C"))
     (t.is (= split.rows[2].values[0].text "B"))
     (t.is (= split.rows[2].values[1].text "A"))))
+
+(t.deftest datascript-tuple-attrs-query-lookup-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact (addr conn) [[:db/add 100 :db/unique :db.unique/identity]])
+        seed (vev.transact (addr conn) [{:db/id 1 :a "A" :b "B"}
+                                        {:db/id 2 :a "A" :b "b"}
+                                        {:db/id 3 :a "a" :b "B"}
+                                        {:db/id 4 :a "a" :b "b"}])
+        exact (vev.datoms conn.db :avet :a-and-b ["a" "B"])
+        by-value (vev.q conn.db
+                   [:find ?e
+                    :where
+                    [?e :a-and-b ["a" "B"]]])
+        by-lookup-ref (vev.q conn.db
+                        [:find ?tuple
+                         :where
+                         [[:a-and-b ["a" "B"]] :a-and-b ?tuple]])]
+    (t.is seed.ok)
+    (t.is (= (count exact) 1))
+    (t.is (= exact[0].e 3))
+    (t.is (= (count by-value.rows) 1))
+    (t.is (= by-value.rows[0].values[0].entity 3))
+    (t.is (= (count by-lookup-ref.rows) 1))
+    (t.is (= by-lookup-ref.rows[0].values[0].kind .Vector))
+    (t.is (= by-lookup-ref.rows[0].values[0].items[0].text "a"))
+    (t.is (= by-lookup-ref.rows[0].values[0].items[1].text "B"))))
 
 (t.deftest datascript-tuple-attrs-rejects-invalid-values-subset
   (defer (free_all context.allocator))
