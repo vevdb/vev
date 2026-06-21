@@ -2605,6 +2605,16 @@
         ([]Index-Arg [(splice (emit-index-args args))])))
     (error "seek-datoms index order must be a keyword")))
 
+(defmacro index-range [db attr start end]
+  (quasiquote
+    (index-range-with-args
+      (unquote db)
+      (unquote (emit-attr attr))
+      (unquote (emit-index-arg start))
+      (unquote (if (nil? start) (quasiquote false) (quasiquote true)))
+      (unquote (emit-index-arg end))
+      (unquote (if (nil? end) (quasiquote false) (quasiquote true))))))
+
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)
     (quasiquote
@@ -3072,6 +3082,29 @@
         (if (= order ":avet")
           (append-seek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
           (append-seek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
+
+(defn index-range-with-args [db: DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        start-value (Value {})
+        end-value (Value {})]
+    (when has-start
+      (let [[value ok] (index-arg-value db start)]
+        (when (not ok)
+          (return out))
+        (set! start-value value)))
+    (when has-end
+      (let [[value ok] (index-arg-value db end)]
+        (when (not ok)
+          (return out))
+        (set! end-value value)))
+    (for [datom-index db.avet]
+      (when (datom-current-at? db datom-index)
+        (let [datom db.datoms[datom-index]]
+          (when (= datom.a attr)
+            (when (or (not has-start) (>= (index-position-compare datom.v start-value) 0))
+              (when (or (not has-end) (<= (index-position-compare datom.v end-value) 0))
+                (arr.push! out datom)))))))
     out))
 
 (defn u64-contains? [items: []u64, value: u64] -> bool
