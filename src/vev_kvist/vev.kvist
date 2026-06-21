@@ -23,12 +23,15 @@
   Value
   Var
   Wildcard
+  LookupRef
 ])
 
 (defstruct Term {
   kind: Term-Kind
   value: Value
   name: string
+  lookup_attr: string
+  lookup_value: Value
 })
 
 (defstruct Datom {
@@ -302,6 +305,9 @@
 
 (defn term-wildcard [] -> Term
   (Term {kind: .Wildcard}))
+
+(defn term-lookup-ref [attr: string, value: Value] -> Term
+  (Term {kind: .LookupRef lookup_attr: attr lookup_value: value}))
 
 (defn attr [name: string] -> Term
   (term-keyword name))
@@ -1056,11 +1062,16 @@
     (if (= (source form) "_")
       (quasiquote (term-wildcard))
       (quasiquote (term-var (unquote (source form)))))
-    (if (int? form)
-      (quasiquote (term-entity (unquote form)))
-      (if (keyword? form)
-        (quasiquote (term-keyword (unquote (source form))))
-        (quasiquote (unquote form))))))
+    (if (lookup-ref? form)
+      (quasiquote
+        (term-lookup-ref
+          (unquote (emit-attr (nth form 0)))
+          (unquote (emit-literal-value (nth form 1)))))
+      (if (int? form)
+        (quasiquote (term-entity (unquote form)))
+        (if (keyword? form)
+          (quasiquote (term-keyword (unquote (source form))))
+          (quasiquote (unquote form)))))))
 
 (defmacro- emit-attr-term [form]
   (if (symbol? form)
@@ -1912,6 +1923,18 @@
     .Var (return (binding-lookup binding term.name))
     :else (return (Value {}) false)))
 
+(defn resolve-entity-term [db: DB, term: Term, binding: Binding] -> [value: Value, ok: bool]
+  (when (= term.kind .LookupRef)
+    (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup_attr term.lookup_value)]
+      (return (value-entity entity) lookup-ok)))
+  (let [[resolved resolved-ok] (resolve-term term binding)]
+    (when (not resolved-ok)
+      (return resolved false))
+    (when (= resolved.kind .Keyword)
+      (let [[entity ident-ok] (schema-entity-for-attr db resolved.text)]
+        (return (value-entity entity) ident-ok)))
+    (return resolved true)))
+
 (defn predicate-pair-matches? [op: string, left: Value, right: Value] -> bool
   (if (= op "=")
     (value-equal? left right)
@@ -2223,12 +2246,9 @@
       report)))
 
 (defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
-  (when (and (= term.kind .Value)
-             (= term.value.kind .Keyword))
-    (let [[entity ok] (schema-entity-for-attr db term.value.text)]
-      (return (and ok
-                   (= actual.kind .Entity)
-                   (= actual.entity entity)))))
+  (let [[resolved resolved-ok] (resolve-entity-term db term binding^)]
+    (when resolved-ok
+      (return (value-equal? resolved actual))))
   (match-term? term actual binding))
 
 (defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
@@ -2264,7 +2284,8 @@
   true)
 
 (defn clause-selectivity-score [clause: Clause, binding: Binding] -> int
-  (let [[_ e-ok] (resolve-term clause.e binding)
+  (let [[ignored-e e-bound] (resolve-term clause.e binding)
+        e-ok (or (= clause.e.kind .LookupRef) e-bound)
         [a-value a-ok] (resolve-term clause.a binding)
         [_ v-ok] (resolve-term clause.v binding)]
     (when (and a-ok (not (= a-value.kind .Keyword)))
@@ -2290,16 +2311,11 @@
     best))
 
 (defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
-  (let [[e-value e-ok] (resolve-term clause.e binding)
+  (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
         [a-value a-ok] (resolve-term clause.a binding)
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
-    (when (and e-ok (= e-value.kind .Keyword))
-      (let [[entity ident-ok] (schema-entity-for-attr db e-value.text)]
-        (if ident-ok
-          (set! e-value (value-entity entity))
-          (return out))))
     (when (and a-ok
                (= a-value.kind .Keyword)
                (reverse-attr? a-value.text))
@@ -2429,7 +2445,7 @@
         (return out true)))))
 
 (defn apply-get-else [db: DB, binding: Binding, clause: Get-Else] -> [next: Binding, ok: bool]
-  (let [[entity entity-ok] (resolve-term clause.e binding)]
+  (let [[entity entity-ok] (resolve-entity-term db clause.e binding)]
     (when (not (and entity-ok (= entity.kind .Entity)))
       (return binding false))
     (let [[value value-ok] (pull-attr-value db entity.entity clause.a)]
@@ -2438,7 +2454,7 @@
         (binding-with-value binding clause.out clause.default_value)))))
 
 (defn apply-get-some [db: DB, binding: Binding, clause: Get-Some] -> [next: Binding, ok: bool]
-  (let [[entity entity-ok] (resolve-term clause.e binding)]
+  (let [[entity entity-ok] (resolve-entity-term db clause.e binding)]
     (when (not (and entity-ok (= entity.kind .Entity)))
       (return binding false))
     (for [attr clause.attrs]

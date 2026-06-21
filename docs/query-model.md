@@ -95,6 +95,7 @@ Supported now:
 - wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
 - ident keywords in entity position
+- lookup refs in entity position, such as `[:user/email "ada@example.com"]`
 - entity refs as values
 - joins through repeated variables
 - positional `:in` variables
@@ -125,6 +126,13 @@ Example:
    [?e :user/email "ada@example.com"]
    [?e :user/active _]
    [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [[:user/email "ada@example.com"] :user/name ?name]])
 ```
 
 ```clojure
