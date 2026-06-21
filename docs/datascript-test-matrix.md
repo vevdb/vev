@@ -27,7 +27,7 @@ These are the main in-memory parity target before durable storage.
 | `query_rules.cljc` | 3 | partial | rule source args, validation, and broader recursion/fixpoint behavior |
 | `query_aggregates.cljc` | 1 | partial | remaining built-ins and exact edge cases; custom aggregates later |
 | `transact.cljc` | 19 | partial | current tx tempids and unused value-tempid rejection covered; tx functions, bad forms, exact no-op/retract behavior remain |
-| `upsert.cljc` | 6 | partial | full conflict matrix |
+| `upsert.cljc` | 6 | partial | unique-value no-upsert covered; remaining conflict matrix |
 | `validation.cljc` | 2 | partial | bad transaction forms and schema validation errors |
 | `index.cljc` | 5 | partial | checked indexed-attribute errors now started; finish exact index surface |
 | `tuples.cljc` | 11 | partial | remaining schema validation and tuple upsert/conflict matrix |
