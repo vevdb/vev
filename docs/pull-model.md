@@ -121,6 +121,8 @@ Attribute option vectors also support `:limit` for capping multivalued attrs:
 (v.pull db [[:user/friend :limit 2]] 1)
 ```
 
+`:limit` can be combined with `:as` in either order.
+
 It also supports reverse ref attrs in the Datomic style:
 
 ```clojure
