@@ -261,6 +261,9 @@
   value: Value
   values: []Value
   width: int
+  has_lookup_ref: bool
+  lookup_attr: string
+  lookup_value: Value
 })
 
 (defn value-entity [id: u64] -> Value
@@ -721,6 +724,13 @@
     (if (= (count form) 2)
       (keyword? (first form))
       false)
+    false))
+
+(defmacro- query-input-lookup-ref? [form]
+  (if (lookup-ref? form)
+    (if (keyword? (nth form 1))
+      false
+      true)
     false))
 
 (defmacro- emit-tx-data-call [op e a v]
@@ -2080,22 +2090,28 @@
       (emit-query-relation-input-values (rest forms)))))
 
 (defmacro- emit-query-input [form]
-  (if (vector? form)
-    (if (> (count form) 0)
-      (if (vector? (first form))
-        (quasiquote
-          (Query-Input {kind: .Relation
-                        values: ([]Value [(splice (emit-query-relation-input-values form))])
-                        width: (unquote (count (first form)))}))
-        (quasiquote
-          (Query-Input {kind: .Collection
-                        values: ([]Value [(splice (emit-query-input-values form))])})))
-      (quasiquote
-        (Query-Input {kind: .Collection
-                      values: ([]Value [])})))
+  (if (query-input-lookup-ref? form)
     (quasiquote
       (Query-Input {kind: .Scalar
-                    value: (unquote (emit-literal-value form))}))))
+                    has_lookup_ref: true
+                    lookup_attr: (unquote (emit-attr (nth form 0)))
+                    lookup_value: (unquote (emit-literal-value (nth form 1)))}))
+    (if (vector? form)
+      (if (> (count form) 0)
+        (if (vector? (first form))
+          (quasiquote
+            (Query-Input {kind: .Relation
+                          values: ([]Value [(splice (emit-query-relation-input-values form))])
+                          width: (unquote (count (first form)))}))
+          (quasiquote
+            (Query-Input {kind: .Collection
+                          values: ([]Value [(splice (emit-query-input-values form))])})))
+        (quasiquote
+          (Query-Input {kind: .Collection
+                        values: ([]Value [])})))
+      (quasiquote
+        (Query-Input {kind: .Scalar
+                      value: (unquote (emit-literal-value form))})))))
 
 (defmacro- emit-query-input-list [forms]
   (if (= (count forms) 0)
@@ -2266,13 +2282,26 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
-(defn binding-from-inputs [names: []string, values: []Query-Input] -> Binding
-  (let [binding (Binding {})]
+(defn query-input-scalar-value [db: DB, input: Query-Input] -> [value: Value, ok: bool]
+  (when input.has_lookup_ref
+    (let [[entity lookup-ok] (resolve-lookup-ref db input.lookup_attr input.lookup_value)]
+      (when lookup-ok
+        (return (value-entity entity) true))
+      (return (Value {}) false)))
+  (return input.value true))
+
+(defn binding-from-inputs [db: DB, names: []string, values: []Query-Input] -> [bindings: [dynamic]Binding]
+  (let [binding (Binding {})
+        out (make [dynamic]Binding)]
     (for [name index names]
       (when (and (< index (count values))
                  (= values[index].kind .Scalar))
-        (binding-store! (addr binding) name values[index].value)))
-    binding))
+        (let [[value ok] (query-input-scalar-value db values[index])]
+          (if ok
+            (binding-store! (addr binding) name value)
+            (return out)))))
+    (arr.push! out binding)
+    out))
 
 (defn expand-collection-input [bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
@@ -2311,8 +2340,8 @@
               (arr.push! out next))))))
     out))
 
-(defn bindings-from-inputs [query: Query, inputs: []Query-Input] -> [dynamic]Binding
-  (let [bindings ([dynamic]Binding [(binding-from-inputs (slice query.inputs 0) inputs)])
+(defn bindings-from-inputs [db: DB, query: Query, inputs: []Query-Input] -> [dynamic]Binding
+  (let [bindings (binding-from-inputs db (slice query.inputs 0) inputs)
         collection-offset (count query.inputs)
         tuple-offset (+ collection-offset (count query.collection_inputs))
         relation-offset (+ tuple-offset (count query.tuple_inputs))]
@@ -3298,7 +3327,7 @@
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
-        bindings (bindings-from-inputs query inputs)
+        bindings (bindings-from-inputs db query inputs)
         remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
     (defer (delete remaining))
     (while (and (> (count bindings) 0) (> (count remaining) 0))
