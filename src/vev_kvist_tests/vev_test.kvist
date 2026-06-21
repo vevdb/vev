@@ -4225,6 +4225,35 @@
     (t.is age-ok)
     (t.is (= age.int_value 36))))
 
+(t.deftest datascript-upsert-does-not-upsert-by-new-ref-tempid-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :ref]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/unique :db.unique/identity]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id "igor" :name "Igor"}
+                  {:db/id "anna" :name "Anna" :ref "igor"}])
+        [igor igor-ok] (vev.q-scalar report.db_after
+                         [:find ?e .
+                          :where
+                          [?e :name "Igor"]])
+        [anna-ref anna-ref-ok] (vev.q-scalar report.db_after
+                                  [:find ?ref .
+                                   :where
+                                   [?e :name "Anna"]
+                                   [?e :ref ?ref]])]
+    (t.is report.ok)
+    (t.is igor-ok)
+    (t.is anna-ref-ok)
+    (t.is (= anna-ref.entity igor.entity))))
+
 (t.deftest datascript-upsert-string-tempid-ref-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -5106,6 +5135,51 @@
     (t.is (= boris-friends[0].text "Oleg"))
     (t.is (= (count oleg-friends) 1))
     (t.is (= oleg-friends[0].text "Boris"))))
+
+(t.deftest datascript-map-values-remain-comparable-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        map-1 (vev.value-map ([]vev.Value [(vev.value-keyword ":map") (vev.value-int 1)]))
+        map-2 (vev.value-map ([]vev.Value [(vev.value-keyword ":map") (vev.value-int 2)]))
+        map-3 (vev.value-map ([]vev.Value [(vev.value-keyword ":map") (vev.value-int 3)]))
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :multi]
+             [:db/add 100 :db/cardinality :db.cardinality/many]
+             [:db/add 101 :db/ident :index]
+             [:db/add 101 :db/index true]])
+        _ (vev.transact-tx-data
+            (addr conn)
+            ([]vev.Tx-Data [(vev.add 1 ":single" map-1)]))
+        _ (vev.transact-tx-data
+            (addr conn)
+            ([]vev.Tx-Data [(vev.retract 1 ":single" map-1)]))
+        _ (vev.transact-tx-data
+            (addr conn)
+            ([]vev.Tx-Data [(vev.add 1 ":single" map-2)]))
+        _ (vev.transact-tx-data
+            (addr conn)
+            ([]vev.Tx-Data [(vev.add 1 ":single" map-3)]))
+        _ (vev.transact-tx-data
+            (addr conn)
+            ([]vev.Tx-Data [(vev.add 1 ":multi" map-1)
+                            (vev.add 1 ":multi" map-1)
+                            (vev.add 1 ":multi" map-2)]))
+        _ (vev.transact-tx-data
+            (addr conn)
+            ([]vev.Tx-Data [(vev.add 1 ":index" map-1)
+                            (vev.add 1 ":index" map-2)
+                            (vev.add 1 ":index" map-3)]))
+        single (vev.datoms conn.db :eavt 1 :single)
+        multi (vev.datoms conn.db :eavt 1 :multi)
+        exact-index (vev.datoms conn.db :avet :index map-3 1)]
+    (t.is (= (count single) 1))
+    (t.is (vev.value-equal? single[0].v map-3))
+    (t.is (= (count multi) 2))
+    (t.is (vev.value-equal? multi[0].v map-1))
+    (t.is (vev.value-equal? multi[1].v map-2))
+    (t.is (= (count exact-index) 1))
+    (t.is (vev.value-equal? exact-index[0].v map-3))))
 
 (t.deftest datascript-map-reverse-ref-value-supports-lookup-ref
   (defer (free_all context.allocator))
