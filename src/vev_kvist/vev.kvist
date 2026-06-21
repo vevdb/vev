@@ -144,6 +144,7 @@
   v: Term
   source: string
   has_source: bool
+  source_width: int
 })
 
 (defstruct Predicate {
@@ -502,7 +503,8 @@
            a: (attr a)
            v: v
            source: ""
-           has_source: false}))
+           has_source: false
+           source_width: 0}))
 
 (defn tx-add [e: u64, a: string, v: Value] -> Tx-Op
   (Tx-Op {kind: .Add e: e a: a v: v}))
@@ -1457,6 +1459,12 @@
     (contains? ["$" "%"] (source form))
     false))
 
+(defmacro- relation-source? [form]
+  // ponytail: macro-time prefix checks would make this generic for all $source names.
+  (if (symbol? form)
+    (contains? ["$xs" "$ys"] (source form))
+    false))
+
 (defmacro- input-wildcard? [form]
   (and (symbol? form)
        (= (source form) "_")))
@@ -1660,7 +1668,15 @@
                  a: (unquote (emit-attr-term (nth form 1)))
                  v: (term-wildcard)}))
       (if (= (count form) 3)
-        (if (input-source? (nth form 0))
+        (if (relation-source? (nth form 0))
+          (quasiquote
+            (Clause {e: (unquote (emit-value-term (nth form 1)))
+                     a: (unquote (emit-value-term (nth form 2)))
+                     v: (term-wildcard)
+                     source: (unquote (source (nth form 0)))
+                     has_source: true
+                     source_width: 2}))
+          (if (input-source? (nth form 0))
           (quasiquote
             (Clause {e: (unquote (emit-entity-term (nth form 1)))
                      a: (unquote (emit-attr-term (nth form 2)))
@@ -1668,7 +1684,7 @@
           (quasiquote
             (Clause {e: (unquote (emit-entity-term (nth form 0)))
                      a: (unquote (emit-attr-term (nth form 1)))
-                     v: (unquote (emit-value-term (nth form 2)))})))
+                     v: (unquote (emit-value-term (nth form 2)))}))))
         (if (= (count form) 4)
           (if (input-source? (nth form 0))
             (quasiquote
@@ -1680,7 +1696,8 @@
                        a: (unquote (emit-value-term (nth form 2)))
                        v: (unquote (emit-value-term (nth form 3)))
                        source: (unquote (source (nth form 0)))
-                       has_source: true})))
+                       has_source: true
+                       source_width: 3})))
           (error "datalog clauses must have shape [e a], [e a v], [src e a], or [src e a v]"))))
     (error "datalog :where entries must be clauses")))
 
@@ -4204,11 +4221,14 @@
     best))
 
 (defn relation-source-row-matches? [clause: Clause, row: Value, binding: ^Binding] -> bool
-  // ponytail: source clauses are currently 3-column rows; generalize Clause terms for 2-column relation sources.
   (when (not (= row.kind .Vector))
     (return false))
-  (when (not (= (count row.items) 3))
+  (when (not (= (count row.items) clause.source_width))
     (return false))
+  (when (= clause.source_width 2)
+    (return
+      (and (match-term? clause.e row.items[0] binding)
+           (match-term? clause.a row.items[1] binding))))
   (and (match-term? clause.e row.items[0] binding)
        (match-term? clause.a row.items[1] binding)
        (match-term? clause.v row.items[2] binding)))
