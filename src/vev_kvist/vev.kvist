@@ -3269,7 +3269,7 @@
             (when (>= seen limit)
               (return))))))))
 
-(defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
+(defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen: ^[dynamic]u64]
   (when (not (pull-output-has-attr? out^ ":db/id"))
     (arr.push! out^ (Pull-Attr {a: ":db/id"
                                 v: (value-entity entity)
@@ -3281,9 +3281,36 @@
       (let [datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
           (when (not (pull-output-has-attr? out^ datom.a))
-            (arr.push! out^ (Pull-Attr {a: datom.a
-                                        v: datom.v
-                                        attrs: (make [dynamic]Pull-Attr)}))))))))
+            (let [children (make [dynamic]Pull-Attr)]
+              (when (and (= datom.v.kind .Entity)
+                         (schema-component? db datom.a))
+                (set! children (pull-component-attrs db datom.v.entity seen)))
+              (arr.push! out^ (Pull-Attr {a: datom.a
+                                          v: datom.v
+                                          attrs: children})))))))))
+
+(defn pull-component-attrs [db: DB, entity: u64, seen: ^[dynamic]u64] -> [dynamic]Pull-Attr
+  (let [out (make [dynamic]Pull-Attr)]
+    (if (u64-contains? (slice seen^ 0) entity)
+      (arr.push! out (Pull-Attr {a: ":db/id"
+                                 v: (value-entity entity)
+                                 attrs: (make [dynamic]Pull-Attr)}))
+      (do
+        (arr.push! seen^ entity)
+        (pull-wildcard-seen! (addr out) db entity seen)))
+    out))
+
+(defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (arr.push! seen entity)
+    (pull-wildcard-seen! out db entity (addr seen))))
+
+(defn pull-component-children [db: DB, parent: u64, child: u64] -> [dynamic]Pull-Attr
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (arr.push! seen parent)
+    (pull-component-attrs db child (addr seen))))
 
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has_alias spec.alias spec.a))
@@ -3299,11 +3326,15 @@
       (let [datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
           (let [children (make [dynamic]Pull-Attr)]
-            (when (and (= datom.v.kind .Entity)
-                       (> (count spec.pattern) 0))
-              (let [pulled (pull-pattern-spec db datom.v.entity spec.pattern)]
-                (set! children pulled.attrs)))
-            (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec) v: datom.v attrs: children}))
+            (when (= datom.v.kind .Entity)
+              (if (> (count spec.pattern) 0)
+                (let [pulled (pull-pattern-spec db datom.v.entity spec.pattern)]
+                  (set! children pulled.attrs))
+                (when (schema-component? db datom.a)
+                  (set! children (pull-component-children db entity datom.v.entity)))))
+            (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                        v: datom.v
+                                        attrs: children}))
             (set! found true)
             (set! seen (+ seen 1))
             (when (>= seen limit)
