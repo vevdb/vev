@@ -99,6 +99,7 @@ Supported now:
 - `not` groups
 - `not-join`
 - simple `or` groups with data-clause or `(and ...)` data-clause branches
+- `or-join`
 - top-level `and` groups over data clauses
 - append-only transaction history with retractions hidden from current reads
 
@@ -205,6 +206,18 @@ Example:
    (and [?e :user/active true]
         [?e :user/age 37])
    [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?label
+   :where
+   [?e :user/name ?name]
+   (or-join [?e ?label]
+     (and [?e :user/active true]
+          [?e :user/name ?label])
+     (and [?e :user/active false]
+          [?e :user/email ?label]))])
 ```
 
 Basic clauses now use in-memory indexes. Text parsing, rules, and advanced

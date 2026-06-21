@@ -157,6 +157,7 @@ The first supported subset should be:
 - simple `or` clauses
 - `and` branches inside `or`
 - top-level `and` over data clauses
+- `or-join`
 
 ### Query data patterns
 
@@ -186,7 +187,6 @@ the core path is stable:
 
 - `:with`
 - rules
-- `or-join`
 - function expressions
 - aggregates beyond a very small starter subset
 - multiple result-shape conveniences beyond what is needed first
