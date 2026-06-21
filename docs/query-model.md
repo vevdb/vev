@@ -177,11 +177,11 @@ returns the row-oriented `Result-Set`; use `q-scalar`, `q-collection`, or
    [?e :user/age ?age]])
 ```
 
-Return-map markers are accepted with the same current row-oriented result
-shape:
+Return-map markers are accepted. `q-keys` returns keyed rows for `:keys`;
+`:strs` and `:syms` are syntax-only for now:
 
 ```clojure
-(v.q db
+(v.q-keys db
   [:find ?name ?age :keys name age
    :where
    [?e :user/name ?name]

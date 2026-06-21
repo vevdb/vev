@@ -212,6 +212,15 @@
   rows: [dynamic]Result-Row
 })
 
+(defstruct Keyed-Value {
+  key: string
+  value: Value
+})
+
+(defstruct Keyed-Row {
+  items: [dynamic]Keyed-Value
+})
+
 (defstruct Pull-Attr {
   a: string
   v: Value
@@ -908,6 +917,37 @@
                 (forms
                   (emit-find-var (first forms))
                   (emit-find-vars (rest forms)))))))))))
+
+(defmacro- datalog-items-until-keyword [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (let [head (first forms)]
+      (if (keyword? head)
+        (forms)
+        (forms
+          head
+          (datalog-items-until-keyword (rest forms)))))))
+
+(defmacro- emit-result-key [form]
+  (if (symbol? form)
+    (quasiquote (unquote (source form)))
+    (if (keyword? form)
+      (quasiquote (unquote (source form)))
+      (if (string? form)
+        (quasiquote (unquote form))
+        (error ":keys entries must be symbols, keywords, or strings")))))
+
+(defmacro- emit-result-keys [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-result-key (first forms))
+      (emit-result-keys (rest forms)))))
+
+(defmacro- datalog-keys-items [forms]
+  (if (datalog-has-marker-before? forms ":keys" ":where")
+    (datalog-items-until-keyword (datalog-items-after forms ":keys"))
+    (error "q-keys expects :find ... :keys key ... :where ...")))
 
 (defmacro- input-collection? [form]
   (if (vector? form)
@@ -1775,6 +1815,14 @@
 (defmacro q-tuple [db query-form & inputs]
   (quasiquote
     (result-tuple (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-keys [db query-form & inputs]
+  (if (vector? query-form)
+    (quasiquote
+      (result-keys
+        (q (unquote db) (unquote query-form) (splice inputs))
+        ([]string [(splice (emit-result-keys (datalog-keys-items (rest query-form))))])))
+    (error "q-keys expects a literal datalog query")))
 
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)
@@ -2800,6 +2848,16 @@
   (if (= (count result.rows) 1)
     (arr.into [dynamic]Value (slice result.rows[0].values 0))
     (make [dynamic]Value)))
+
+(defn result-keys [result: Result-Set, keys: []string] -> [dynamic]Keyed-Row
+  (let [out (make [dynamic]Keyed-Row 0 (count result.rows))]
+    (for [row result.rows]
+      (when (= (count row.values) (count keys))
+        (let [items (make [dynamic]Keyed-Value 0 (count keys))]
+          (for [key index keys]
+            (arr.push! items (Keyed-Value {key: key value: row.values[index]})))
+          (arr.push! out (Keyed-Row {items: items})))))
+    out))
 
 (defn q-strings [db: DB, query: Query] -> [dynamic]string
   (let [result (q-query db query)
