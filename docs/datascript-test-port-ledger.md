@@ -7,7 +7,7 @@ DataScript assertion or exact Clojure API shape.
 
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
-| `query_find_specs.cljc` | 1 | subset | exact result container shape |
+| `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
 | `query_aggregates.cljc` | 1 | subset | `median`, `variance`, `stddev`, custom aggregates |
 | `query_not.cljc` | 5 | subset | error behavior and default-source forms |
 | `query_or.cljc` | 5 | subset | relation-source `or-join` |
