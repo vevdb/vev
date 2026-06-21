@@ -81,7 +81,7 @@ Start with the smallest useful subset that matches common tutorials:
 
 - plain attribute names
 - `:db/id`
-- one entity id or lookup ref at a time
+- one entity id, lookup ref, or ident at a time
 
 Current Kvist proof:
 
@@ -91,6 +91,10 @@ Current Kvist proof:
 
 ```clojure
 (v.pull db [:db/id :user/name] [:user/email "ada@example.com"])
+```
+
+```clojure
+(v.pull db [:db/id :user/name] :user/ada)
 ```
 
 Attribute option vectors support `:default`:
