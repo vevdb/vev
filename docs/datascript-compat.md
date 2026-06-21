@@ -23,7 +23,7 @@ Status key:
 | `query_or` | partial | Single-source DataScript subset ported, including scalar-input `or`; default-source forms and relation-source `or-join` incomplete |
 | `query_pull` | partial | Basic literal-pattern DataScript subset ported; var patterns, multi-source pull, and exact tuple return shape incomplete |
 | `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
-| `query_rules` | partial | Literal rule input subset started: rule branches and bounded recursive rules with data clauses, predicates including `even?`, `ground`, and built-in function clauses; mutual rules, rule sources, and validation incomplete |
+| `query_rules` | partial | Literal rule input subset started: rule branches plus bounded recursive/mutual rules with data clauses, predicates including `even?`, `ground`, and built-in function clauses; rule sources and validation incomplete |
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, string/false/ref defaults, reverse-ref defaults, explicit/default limits, and component expansion examples covered; recursion and exact rendered collection/scalar shapes missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
