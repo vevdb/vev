@@ -104,9 +104,16 @@ Examples:
  :user/name "Anna"}
 ```
 
-Current Vev supports map forms in tx data with an explicit `:db/id` in any
-position. Nested map values are supported with either an explicit string
-`:db/id` or an auto-generated nested tempid:
+Current Vev supports map forms in tx data with either an explicit `:db/id` in
+any position or an auto-generated tempid:
+
+```clojure
+{:user/name "Anna"
+ :user/email "anna@example.com"}
+```
+
+Nested map values are supported with either an explicit string `:db/id` or an
+auto-generated nested tempid:
 
 ```clojure
 {:db/id 1
@@ -119,7 +126,7 @@ position. Nested map values are supported with either an explicit string
  :user/address {:address/city "London"}}
 ```
 
-Top-level map forms without `:db/id` remain later work.
+Generated map tempids are returned in the transaction report tempid mapping.
 
 ### Transaction metadata
 
