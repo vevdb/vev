@@ -4987,6 +4987,21 @@
       (binding-store! (addr next) source source-value)
       (return next true))))
 
+(defn binding-equal? [left: Binding, right: Binding] -> bool
+  (when (not (= (count left.items) (count right.items)))
+    (return false))
+  (for [item left.items]
+    (let [[right-value right-ok] (binding-lookup right item.name)]
+      (when (not (and right-ok (value-equal? item.value right-value)))
+        (return false))))
+  true)
+
+(defn binding-exists? [bindings: []Binding, binding: Binding] -> bool
+  (for [existing bindings]
+    (when (binding-equal? existing binding)
+      (return true)))
+  false)
+
 (defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
   (let [clauses (rule-clauses-with-source rule.clauses source has-source)
         group (Not-Group {clauses: clauses
@@ -5072,8 +5087,19 @@
     out))
 
 (defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
-  // ponytail: bounded recursion; replace with semi-naive fixpoint when rules benchmarks require it.
-  (bindings-after-rule-call-depth db rules call binding 16 call.source call.has_source))
+  (let [out (make [dynamic]Binding)
+        depth 1
+        changed true]
+    (while changed
+      (set! changed false)
+      (let [candidates (bindings-after-rule-call-depth db rules call binding depth call.source call.has_source)]
+        (defer (delete candidates))
+        (for [candidate candidates]
+          (when (not (binding-exists? (slice out 0) candidate))
+            (arr.push! out candidate)
+            (set! changed true))))
+      (set! depth (+ depth 1)))
+    out))
 
 (defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
   (let [initial (clone-binding binding)]
