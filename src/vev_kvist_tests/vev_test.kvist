@@ -244,6 +244,23 @@
     (t.is (= result.rows[0].values[0].text "Ada"))
     (t.is (= result.rows[1].values[0].text "Grace"))))
 
+(t.deftest datalog-macro-keeps-keyword-collection-inputs
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find ?attr ?value
+                  :in ?e [?attr ...]
+                  :where
+                  [?e ?attr ?value]]
+                 1
+                 [:user/name :user/age])]
+    (t.is (= (count result.rows) 2))
+    (t.is (= result.rows[0].values[0].text ":user/name"))
+    (t.is (= result.rows[0].values[1].text "Ada"))
+    (t.is (= result.rows[1].values[0].text ":user/age"))
+    (t.is (= result.rows[1].values[1].int_value 37))))
+
 (t.deftest datalog-macro-supports-tuple-inputs
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -645,6 +662,34 @@
     (t.is (= (count entity) 1))
     (t.is (= entity[0].entity 1))))
 
+(t.deftest datascript-lookup-ref-query-input-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]])
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :name "Ivan"]
+             [:db/add 1 :age 15]])
+        age (vev.q-collection conn.db
+              [:find [?age ...]
+               :in ?e
+               :where
+               [?e :age ?age]]
+              [:name "Ivan"])
+        missing (vev.q-collection conn.db
+                  [:find [?age ...]
+                   :in ?e
+                   :where
+                   [?e :age ?age]]
+                  [:name "Petr"])]
+    (t.is (= (count age) 1))
+    (t.is (= age[0].int_value 15))
+    (t.is (= (count missing) 0))))
+
 (t.deftest datalog-macro-supports-ground
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -670,7 +715,10 @@
             (addr conn)
             [{:db/id 1 :name "Ivan" :age 15}
              {:db/id 2 :name "Petr" :age 22 :height 240}
-             {:db/id 3 :name "Slava" :age 37}])
+             {:db/id 3 :name "Slava" :age 37}
+             {:db/id 10 :mixed 0}
+             {:db/id 11 :mixed 1}
+             {:db/id 12 :mixed ""}])
         pred-no-free-vars (vev.q-collection conn.db
                             [:find [?x ...]
                              :in [?x ...]
@@ -729,7 +777,17 @@
                        :where
                        [?e :name "Petr"]
                        [?e :age 22]
-                       [(= ?e 1)]])]
+                       [(= ?e 1)]])
+        mixed-greater (vev.q-collection conn.db
+                        [:find [?value ...]
+                         :where
+                         [_ :mixed ?value]
+                         [(> ?value 1)]])
+        mixed-less-equal (vev.q-collection conn.db
+                           [:find [?value ...]
+                            :where
+                            [_ :mixed ?value]
+                            [(<= ?value 1)]])]
     (t.is (= (count pred-no-free-vars) 3))
     (t.is (= pred-no-free-vars[0].text ":a"))
     (t.is (= pred-no-free-vars[2].text ":c"))
@@ -765,7 +823,12 @@
     (t.is (= predicate-join.rows[2].values[1].entity 3))
     (t.is (= (count const-true) 1))
     (t.is (= const-true[0].entity 2))
-    (t.is (= (count const-false) 0))))
+    (t.is (= (count const-false) 0))
+    (t.is (= (count mixed-greater) 1))
+    (t.is (= mixed-greater[0].text ""))
+    (t.is (= (count mixed-less-equal) 2))
+    (t.is (= mixed-less-equal[0].int_value 0))
+    (t.is (= mixed-less-equal[1].int_value 1))))
 
 (t.deftest datalog-macro-supports-or-clauses
   (defer (free_all context.allocator))
@@ -1119,6 +1182,77 @@
     (t.is cut-scalar-ok)
     (t.is (= cut-scalar.text "Petr"))))
 
+(t.deftest datascript-query-input-placeholder-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        tuple (vev.q conn.db
+                [:find ?x ?z
+                 :in [?x _ ?z]]
+                [:x :y :z])
+        relation (vev.q conn.db
+                   [:find ?x ?z
+                    :in [[?x _ ?z]]]
+                   [[:x :y :z]
+                    [:a :b :c]])]
+    (t.is (= (count tuple.rows) 1))
+    (t.is (= tuple.rows[0].values[0].text ":x"))
+    (t.is (= tuple.rows[0].values[1].text ":z"))
+    (t.is (= (count relation.rows) 2))
+    (t.is (= relation.rows[0].values[0].text ":x"))
+    (t.is (= relation.rows[0].values[1].text ":z"))
+    (t.is (= relation.rows[1].values[0].text ":a"))
+    (t.is (= relation.rows[1].values[1].text ":c"))))
+
+(t.deftest datascript-query-constant-substitution-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 5 :a "5a"]
+             [:db/add 5 :b "5b"]
+             [:db/add 5 :c "5c"]
+             [:db/add 6 :b "6b"]])
+        value (vev.q conn.db
+                [:find ?v
+                 :where
+                 [5 :b ?v]])
+        attr (vev.q conn.db
+               [:find ?a
+                :where
+                [5 ?a "5b"]])
+        entity (vev.q conn.db
+                 [:find ?e
+                  :where
+                  [?e :b "5b"]])
+        input-entity (vev.q conn.db
+                       [:find ?a ?v
+                        :in ?e
+                        :where
+                        [?e ?a ?v]]
+                       5)
+        input-value (vev.q conn.db
+                      [:find ?e ?a
+                       :in ?v
+                       :where
+                       [?e ?a ?v]]
+                      "5b")]
+    (t.is (= (count value.rows) 1))
+    (t.is (= value.rows[0].values[0].text "5b"))
+    (t.is (= (count attr.rows) 1))
+    (t.is (= attr.rows[0].values[0].text ":b"))
+    (t.is (= (count entity.rows) 1))
+    (t.is (= entity.rows[0].values[0].entity 5))
+    (t.is (= (count input-entity.rows) 3))
+    (t.is (= input-entity.rows[0].values[0].text ":a"))
+    (t.is (= input-entity.rows[0].values[1].text "5a"))
+    (t.is (= input-entity.rows[1].values[0].text ":b"))
+    (t.is (= input-entity.rows[1].values[1].text "5b"))
+    (t.is (= input-entity.rows[2].values[0].text ":c"))
+    (t.is (= input-entity.rows[2].values[1].text "5c"))
+    (t.is (= (count input-value.rows) 1))
+    (t.is (= input-value.rows[0].values[0].entity 5))
+    (t.is (= input-value.rows[0].values[1].text ":b"))))
+
 (t.deftest datalog-macro-accepts-return-map-find-markers
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1430,7 +1564,14 @@
                            [["Cerberus" 3]
                             ["Medusa" 1]
                             ["Cyclops" 1]
-                            ["Chimera" 1]])]
+                            ["Chimera" 1]])
+        deduped-aggregate-result (vev.q conn.db
+                                   [:find (sum ?heads)
+                                    :in [[?monster ?heads]]]
+                                   [["Cerberus" 3]
+                                    ["Medusa" 1]
+                                    ["Cyclops" 1]
+                                    ["Chimera" 1]])]
     (t.is (= (count with-result.rows) 4))
     (t.is (= with-result.rows[0].values[0].int_value 3))
     (t.is (= with-result.rows[1].values[0].int_value 1))
@@ -1442,7 +1583,9 @@
     (t.is (= aggregate-result.rows[0].values[2].int_value 3))
     (t.is (= aggregate-result.rows[0].values[3].int_value 4))
     (t.is (= aggregate-result.rows[0].values[4].int_value 2))
-    (t.is (= aggregate-result.rows[0].values[5].int_value 1))))
+    (t.is (= aggregate-result.rows[0].values[5].int_value 1))
+    (t.is (= (count deduped-aggregate-result.rows) 1))
+    (t.is (= deduped-aggregate-result.rows[0].values[0].int_value 4))))
 
 (t.deftest datascript-query-keyword-min-max-aggregate-subset
   (defer (free_all context.allocator))
@@ -1498,6 +1641,26 @@
     (t.is (= report.tx_data[2].added false))
     (t.is (= (count results) 0))))
 
+(t.deftest datascript-transact-skips-nil-items
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 1 :attr 2]
+                  nil
+                  [:db/add 3 :attr 4]])
+        result (vev.q report.db_after
+                 [:find ?e ?v
+                  :where
+                  [?e :attr ?v]])]
+    (t.is report.ok)
+    (t.is (= (count report.tx_data) 2))
+    (t.is (= (count result.rows) 2))
+    (t.is (= result.rows[0].values[0].entity 1))
+    (t.is (= result.rows[0].values[1].int_value 2))
+    (t.is (= result.rows[1].values[0].entity 3))
+    (t.is (= result.rows[1].values[1].int_value 4))))
+
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1533,6 +1696,21 @@
     (t.is report.ok)
     (t.is (= (count names) 1))
     (t.is (= names[0].text "Ivan"))))
+
+(t.deftest datascript-retract-different-boolean-value-is-noop
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 2 :employed? true]])
+        report (vev.transact (addr conn) [[:db/retract 2 :employed? false]])
+        employed (vev.q-collection report.db_after
+                   [:find [?value ...]
+                    :where
+                    [2 :employed? ?value]])]
+    (t.is report.ok)
+    (t.is (= (count employed) 1))
+    (t.is employed[0].bool_value)))
 
 (t.deftest datascript-duplicate-retract-is-idempotent
   (defer (free_all context.allocator))
@@ -2921,13 +3099,35 @@
   (let [conn (vev.create-conn)
         _ (vev.seed-people (addr conn))
         pulled (vev.pull conn.db [[:user/nickname :default "Unknown"]
+                                    [:user/verified :default false]
                                     [:user/name :default "Unknown"]]
-                   1)]
-      (t.is (= (count pulled.attrs) 2))
+                      1)]
+      (t.is (= (count pulled.attrs) 3))
       (t.is (= pulled.attrs[0].a ":user/nickname"))
       (t.is (= pulled.attrs[0].v.text "Unknown"))
-      (t.is (= pulled.attrs[1].a ":user/name"))
-      (t.is (= pulled.attrs[1].v.text "Ada"))))
+      (t.is (= pulled.attrs[1].a ":user/verified"))
+      (t.is (not pulled.attrs[1].v.bool_value))
+      (t.is (= pulled.attrs[2].a ":user/name"))
+      (t.is (= pulled.attrs[2].v.text "Ada"))))
+
+(t.deftest datascript-pull-ref-default-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+               (addr conn)
+               [[:db/add 1 :name "Parent"]
+                [:db/add 2 :name "Child"]
+                [:db/add 1 :child (vev.value-entity 2)]])
+        forward (vev.pull conn.db [:db/id [:child :default 1]] 2)
+        reverse (vev.pull conn.db [:db/id [:_child :default 2]] 1)]
+      (t.is (= (count forward.attrs) 2))
+      (t.is (= forward.attrs[0].v.entity 2))
+      (t.is (= forward.attrs[1].a ":child"))
+      (t.is (= forward.attrs[1].v.int_value 1))
+      (t.is (= (count reverse.attrs) 2))
+      (t.is (= reverse.attrs[0].v.entity 1))
+      (t.is (= reverse.attrs[1].a ":_child"))
+      (t.is (= reverse.attrs[1].v.int_value 2))))
 
 (t.deftest pull-supports-as-attr-option
   (defer (free_all context.allocator))

@@ -261,6 +261,9 @@
   value: Value
   values: []Value
   width: int
+  has_lookup_ref: bool
+  lookup_attr: string
+  lookup_value: Value
 })
 
 (defn value-entity [id: u64] -> Value
@@ -283,6 +286,16 @@
 
 (defn string-less? [left: string, right: string] -> bool
   (< (strings.compare left right) 0))
+
+(defn value-kind-rank [kind: Value-Kind] -> int
+  (case kind
+    .Nil 0
+    .Entity 1
+    .Int 2
+    .String 3
+    .Bool 4
+    .Keyword 5
+    :else 99))
 
 (defn slash-index [text: string] -> int
   (for [_ index text]
@@ -312,7 +325,7 @@
 
 (defn value-less? [left: Value, right: Value] -> bool
   (if (not (= left.kind right.kind))
-    (< (int left.kind) (int right.kind))
+    (< (value-kind-rank left.kind) (value-kind-rank right.kind))
     (case left.kind
       .Entity (< left.entity right.entity)
       .String (string-less? left.text right.text)
@@ -723,6 +736,13 @@
       false)
     false))
 
+(defmacro- query-input-lookup-ref? [form]
+  (if (lookup-ref? form)
+    (if (keyword? (nth form 1))
+      false
+      true)
+    false))
+
 (defmacro- emit-tx-data-call [op e a v]
   (let [is-retract (= (source op) ":db/retract")]
     (if (lookup-ref? e)
@@ -992,7 +1012,9 @@
     (emit-tx-map-attrs e form)))
 
 (defmacro- emit-tx-data-item [form]
-  (if (vector? form)
+  (if (nil? form)
+    (forms)
+    (if (vector? form)
     (if (= (count form) 5)
       (let [op (nth form 0)
             e (nth form 1)
@@ -1040,7 +1062,7 @@
           (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], [:db.fn/retractAttribute e :attr], or [:db/retractEntity e]")))))
     (if (brace? form)
       (emit-tx-map-items form)
-      (error "tx-data expects vector forms like [:db/add e :attr value] or map forms"))))
+      (error "tx-data expects vector forms like [:db/add e :attr value] or map forms")))))
 
 (defmacro- emit-tx-data-items [forms]
   (if (= (count forms) 0)
@@ -2080,22 +2102,28 @@
       (emit-query-relation-input-values (rest forms)))))
 
 (defmacro- emit-query-input [form]
-  (if (vector? form)
-    (if (> (count form) 0)
-      (if (vector? (first form))
-        (quasiquote
-          (Query-Input {kind: .Relation
-                        values: ([]Value [(splice (emit-query-relation-input-values form))])
-                        width: (unquote (count (first form)))}))
-        (quasiquote
-          (Query-Input {kind: .Collection
-                        values: ([]Value [(splice (emit-query-input-values form))])})))
-      (quasiquote
-        (Query-Input {kind: .Collection
-                      values: ([]Value [])})))
+  (if (query-input-lookup-ref? form)
     (quasiquote
       (Query-Input {kind: .Scalar
-                    value: (unquote (emit-literal-value form))}))))
+                    has_lookup_ref: true
+                    lookup_attr: (unquote (emit-attr (nth form 0)))
+                    lookup_value: (unquote (emit-literal-value (nth form 1)))}))
+    (if (vector? form)
+      (if (> (count form) 0)
+        (if (vector? (first form))
+          (quasiquote
+            (Query-Input {kind: .Relation
+                          values: ([]Value [(splice (emit-query-relation-input-values form))])
+                          width: (unquote (count (first form)))}))
+          (quasiquote
+            (Query-Input {kind: .Collection
+                          values: ([]Value [(splice (emit-query-input-values form))])})))
+        (quasiquote
+          (Query-Input {kind: .Collection
+                        values: ([]Value [])})))
+      (quasiquote
+        (Query-Input {kind: .Scalar
+                      value: (unquote (emit-literal-value form))})))))
 
 (defmacro- emit-query-input-list [forms]
   (if (= (count forms) 0)
@@ -2266,13 +2294,26 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
-(defn binding-from-inputs [names: []string, values: []Query-Input] -> Binding
-  (let [binding (Binding {})]
+(defn query-input-scalar-value [db: DB, input: Query-Input] -> [value: Value, ok: bool]
+  (when input.has_lookup_ref
+    (let [[entity lookup-ok] (resolve-lookup-ref db input.lookup_attr input.lookup_value)]
+      (when lookup-ok
+        (return (value-entity entity) true))
+      (return (Value {}) false)))
+  (return input.value true))
+
+(defn binding-from-inputs [db: DB, names: []string, values: []Query-Input] -> [bindings: [dynamic]Binding]
+  (let [binding (Binding {})
+        out (make [dynamic]Binding)]
     (for [name index names]
       (when (and (< index (count values))
                  (= values[index].kind .Scalar))
-        (binding-store! (addr binding) name values[index].value)))
-    binding))
+        (let [[value ok] (query-input-scalar-value db values[index])]
+          (if ok
+            (binding-store! (addr binding) name value)
+            (return out)))))
+    (arr.push! out binding)
+    out))
 
 (defn expand-collection-input [bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
@@ -2311,8 +2352,8 @@
               (arr.push! out next))))))
     out))
 
-(defn bindings-from-inputs [query: Query, inputs: []Query-Input] -> [dynamic]Binding
-  (let [bindings ([dynamic]Binding [(binding-from-inputs (slice query.inputs 0) inputs)])
+(defn bindings-from-inputs [db: DB, query: Query, inputs: []Query-Input] -> [dynamic]Binding
+  (let [bindings (binding-from-inputs db (slice query.inputs 0) inputs)
         collection-offset (count query.inputs)
         tuple-offset (+ collection-offset (count query.collection_inputs))
         relation-offset (+ tuple-offset (count query.tuple_inputs))]
@@ -2342,7 +2383,7 @@
     .Wildcard true
     .Var (let [[existing ok] (binding-lookup binding^ term.name)]
            (if ok
-             (value-equal? existing actual)
+             (predicate-value-equal? existing actual)
              (do
                (binding-store! binding term.name actual)
                true)))
@@ -3193,59 +3234,6 @@
           (return false))))
     (return (> (count bindings) 0)))))
 
-(defn aggregate-count [bindings: []Binding, var: string] -> i64
-  (let [n: i64 0]
-    (for [binding bindings]
-      (let [[_ ok] (binding-lookup binding var)]
-        (when ok
-          (set! n (+ n 1)))))
-    n))
-
-(defn aggregate-count-distinct [bindings: []Binding, var: string] -> i64
-  (let [seen (make [dynamic]Value)]
-    (defer (delete seen))
-    (for [binding bindings]
-      (let [[value ok] (binding-lookup binding var)]
-        (when (and ok (not (value-exists? (slice seen 0) value)))
-          (arr.push! seen value))))
-    (i64 (count seen))))
-
-(defn aggregate-value [bindings: []Binding, aggregate: Aggregate-Find] -> Value
-  (when (= aggregate.op "count")
-    (return (value-int (aggregate-count bindings aggregate.var))))
-  (when (= aggregate.op "count-distinct")
-    (return (value-int (aggregate-count-distinct bindings aggregate.var))))
-  (when (or (= aggregate.op "sum")
-            (= aggregate.op "avg"))
-    (let [sum: i64 0
-          n: i64 0]
-      (for [binding bindings]
-        (let [[value ok] (binding-lookup binding aggregate.var)]
-          (when (and ok (= value.kind .Int))
-            (set! sum (+ sum value.int_value))
-            (set! n (+ n 1)))))
-      (if (= aggregate.op "sum")
-        (return (value-int sum))
-        (if (> n 0)
-          (return (value-int (/ sum n)))
-          (return (Value {}))))))
-  (let [out (Value {})
-        seen false]
-    (for [binding bindings]
-      (let [[value ok] (binding-lookup binding aggregate.var)]
-        (when ok
-          (if (not seen)
-            (do
-              (set! out value)
-              (set! seen true))
-            (if (= aggregate.op "min")
-              (when (value-less? value out)
-                (set! out value))
-              (when (and (= aggregate.op "max")
-                         (value-less? out value))
-                (set! out value)))))))
-    out))
-
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
   (if (or (= aggregate.op "count")
           (= aggregate.op "count-distinct")
@@ -3280,6 +3268,60 @@
           (return out false))))
     (return out true)))
 
+(defn aggregate-key-values [binding: Binding, query: Query, aggregate: Aggregate-Find] -> [values: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value)]
+    (for [name query.find]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (for [name query.with]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (let [[value ok] (binding-lookup binding aggregate.var)]
+      (if ok
+        (arr.push! out value)
+        (return out false)))
+    (return out true)))
+
+(defn aggregate-key-row [values: []Value] -> Result-Row
+  (let [stored (arr.into [dynamic]Value values)
+        pulls (make [dynamic]Pull-Result)]
+    (Result-Row {values: stored pulls: pulls})))
+
+(defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
+  (let [current (aggregate-initial-value aggregate)
+        avg-count: i64 0
+        distinct-values (make [dynamic]Value)
+        seen-keys (make [dynamic]Result-Row)]
+    (defer (delete distinct-values))
+    (defer (delete seen-keys))
+    (for [binding bindings]
+      (let [[binding-group ok] (binding-values-for-vars binding (slice query.find 0))]
+        (when (and ok (values-equal? (slice binding-group 0) group-values))
+          (let [[key key-ok] (aggregate-key-values binding query aggregate)]
+            (when (and key-ok (not (row-values-exist? (slice seen-keys 0) (slice key 0))))
+              (arr.push! seen-keys (aggregate-key-row (slice key 0)))
+              (let [[value has-value] (binding-lookup binding aggregate.var)]
+                (when has-value
+                  (if (= aggregate.op "count")
+                    (set! current.int_value (+ current.int_value 1))
+                    (if (= aggregate.op "count-distinct")
+                      (when (not (value-exists? (slice distinct-values 0) value))
+                        (arr.push! distinct-values value))
+                      (do
+                        (when (and (= aggregate.op "avg")
+                                   (= value.kind .Int))
+                          (set! avg-count (+ avg-count 1)))
+                        (set! current (apply-aggregate-value current aggregate value))))))))))))
+    (when (= aggregate.op "count-distinct")
+      (return (value-int (i64 (count distinct-values)))))
+    (when (and (= aggregate.op "avg") (> avg-count 0))
+      (set! current.int_value (/ current.int_value avg-count)))
+    current))
+
 (defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, bindings: []Binding, query: Query]
   (for [binding bindings]
     (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
@@ -3290,44 +3332,14 @@
             (for [aggregate query.aggregates]
               (arr.push! values (aggregate-initial-value aggregate)))
             (arr.push! rows^ (Result-Row {values: values pulls: pulls})))))))
-  (for [binding bindings]
-    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
-      (when ok
-        (for [row rows^]
-          (when (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0))
-            (for [aggregate index query.aggregates]
-              (let [[value has-value] (binding-lookup binding aggregate.var)]
-                (when has-value
-                  (set! row.values[(+ (count query.find) index)]
-                    (apply-aggregate-value row.values[(+ (count query.find) index)] aggregate value))))))))))
   (for [row rows^]
     (for [aggregate index query.aggregates]
-      (when (or (= aggregate.op "avg")
-                (= aggregate.op "count-distinct"))
-        (let [aggregate-index (+ (count query.find) index)
-              count: i64 0
-              seen (make [dynamic]Value)]
-          (defer (delete seen))
-          (for [binding bindings]
-            (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
-              (when (and ok
-                         (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0)))
-                (let [[_ has-value] (binding-lookup binding aggregate.var)]
-                  (when has-value
-                    (set! count (+ count 1))))
-                (when (= aggregate.op "count-distinct")
-                  (let [[value has-distinct-value] (binding-lookup binding aggregate.var)]
-                    (when (and has-distinct-value
-                               (not (value-exists? (slice seen 0) value)))
-                      (arr.push! seen value)))))))
-          (if (= aggregate.op "avg")
-            (when (> count 0)
-              (set! row.values[aggregate-index].int_value (/ row.values[aggregate-index].int_value count)))
-            (set! row.values[aggregate-index].int_value (i64 (count seen)))))))))
+      (set! row.values[(+ (count query.find) index)]
+        (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
-        bindings (bindings-from-inputs query inputs)
+        bindings (bindings-from-inputs db query inputs)
         remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
     (defer (delete remaining))
     (while (and (> (count bindings) 0) (> (count remaining) 0))
@@ -3396,7 +3408,7 @@
           (let [values (make [dynamic]Value 0 (count query.aggregates))
                 pulls (make [dynamic]Pull-Result)]
             (for [aggregate query.aggregates]
-              (arr.push! values (aggregate-value (slice bindings 0) aggregate)))
+              (arr.push! values (aggregate-value-for-group (slice bindings 0) query aggregate ([]Value []))))
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
           (append-aggregate-rows! (addr rows) (slice bindings 0) query))
         (delete bindings)
@@ -3497,14 +3509,15 @@
 (defn pull-limit [spec: Pull-Spec] -> int
   (if (> spec.limit 0) spec.limit 1000))
 
-(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
+(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec] -> bool
   (let [forward-attr (forward-attr-for-reverse spec.a) :defer
         ref-value (value-entity entity)
         indexes (slice db.vaet 0)
         low (lower-bound-index db indexes "vaet" 0 "" ref-value)
         high (upper-bound-index db indexes "vaet" 0 "" ref-value)
         limit (pull-limit spec)
-        seen 0]
+        seen 0
+        found false]
     (for [datom-index (slice indexes low high)]
       (let [datom db.datoms[datom-index]]
         (when (and (= datom.a forward-attr)
@@ -3516,9 +3529,11 @@
             (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                         v: (value-entity datom.e)
                                         attrs: children}))
+            (set! found true)
             (set! seen (+ seen 1))
             (when (>= seen limit)
-              (return))))))))
+              (return found))))))
+    found))
 
 (defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen: ^[dynamic]u64]
   (when (not (pull-output-has-attr? out^ ":db/id"))
@@ -3603,7 +3618,11 @@
                                   attrs: (make [dynamic]Pull-Attr)})))
     (return))
   (when (reverse-attr? spec.a)
-    (pull-reverse-attr! out db entity spec)
+    (let [found (pull-reverse-attr! out db entity spec)]
+      (when (and (not found) spec.has_default)
+        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                    v: spec.default_value
+                                    attrs: (make [dynamic]Pull-Attr)}))))
     (return))
   (let [found (pull-forward-attr! out db entity spec)]
     (when (and (not found) spec.has_default)
