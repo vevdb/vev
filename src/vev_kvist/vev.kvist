@@ -82,6 +82,9 @@
   v: Value
   value_tempid: string
   has_value_tempid: bool
+  value_lookup_attr: string
+  value_lookup_value: Value
+  has_value_lookup_ref: bool
 })
 
 (defstruct Tempid {
@@ -349,6 +352,12 @@
 
 (defn add-value-tempid [e: u64, a: string, value-tempid: string] -> Tx-Data
   (Tx-Data {op: ":db/add" e: e a: a value_tempid: value-tempid has_value_tempid: true}))
+
+(defn add-value-lookup-ref [e: u64, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" e: e a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
+
+(defn retract-value-lookup-ref [e: u64, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db/retract" e: e a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
 
 (defn add-tempid-value-tempid [tempid: string, a: string, value-tempid: string] -> Tx-Data
   (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a value_tempid: value-tempid has_value_tempid: true}))
@@ -655,17 +664,24 @@
             (unquote e)
             (unquote (emit-attr a))
             (unquote (emit-literal-value v))))
-        (if (keyword? e)
-          (quasiquote
-            ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
-              (unquote (source e))
-              (unquote (emit-attr a))
-              (unquote (emit-literal-value v))))
-          (quasiquote
-            ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
-              (unquote e)
-              (unquote (emit-attr a))
-              (unquote (emit-literal-value v)))))))))
+	    (if (keyword? e)
+	      (quasiquote
+	        ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
+	          (unquote (source e))
+	          (unquote (emit-attr a))
+	          (unquote (emit-literal-value v))))
+	          (if (lookup-ref? v)
+	            (quasiquote
+	              ((unquote (if is-retract (quasiquote retract-value-lookup-ref) (quasiquote add-value-lookup-ref)))
+	                (unquote e)
+	                (unquote (emit-attr a))
+	                (unquote (emit-attr (nth v 0)))
+	                (unquote (emit-literal-value (nth v 1)))))
+	            (quasiquote
+	              ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
+	                (unquote e)
+	                (unquote (emit-attr a))
+	                (unquote (emit-literal-value v))))))))))
 
 (defmacro- tx-map-id [items]
   (if (= (count items) 0)
@@ -1253,15 +1269,20 @@
     (if (= (source form) "_")
       (quasiquote (term-wildcard))
       (quasiquote (term-var (unquote (source form)))))
-    (if (string? form)
-      (quasiquote (term-string (unquote form)))
-      (if (int? form)
-        (quasiquote (term-int (unquote form)))
-        (if (bool? form)
-          (quasiquote (term-bool (unquote form)))
-          (if (keyword? form)
-            (quasiquote (term-keyword (unquote (source form))))
-            (quasiquote (unquote form))))))))
+    (if (lookup-ref? form)
+      (quasiquote
+        (term-lookup-ref
+          (unquote (emit-attr (nth form 0)))
+          (unquote (emit-literal-value (nth form 1)))))
+      (if (string? form)
+        (quasiquote (term-string (unquote form)))
+        (if (int? form)
+          (quasiquote (term-int (unquote form)))
+          (if (bool? form)
+            (quasiquote (term-bool (unquote form)))
+            (if (keyword? form)
+              (quasiquote (term-keyword (unquote (source form))))
+              (quasiquote (unquote form)))))))))
 
 (defmacro- emit-datalog-clause [form]
   (if (vector? form)
@@ -2318,17 +2339,6 @@
             (= value.kind .Keyword)
             true))))))
 
-(defn cardinality-one-conflict? [db: DB, op: Tx-Op] -> bool
-  (let [indexes (slice db.eavt 0)
-        low (lower-bound-index db indexes "eavt-ea" op.e op.a (Value {}))
-        high (upper-bound-index db indexes "eavt-ea" op.e op.a (Value {}))]
-    (for [datom-index (slice indexes low high)]
-      (let [datom db.datoms[datom-index]]
-        (when (and (datom-current-at? db datom-index)
-                   (not (value-equal? datom.v op.v)))
-          (return true)))))
-  false)
-
 (defn unique-conflict? [db: DB, op: Tx-Op] -> bool
   (let [indexes (slice db.avet 0)
         low (lower-bound-index db indexes "avet" 0 op.a op.v)
@@ -2345,6 +2355,11 @@
     (and has-unique
          (or (= unique ":db.unique/identity")
              (= unique ":db.unique/value")))))
+
+(defn schema-cardinality-one? [db: DB, attr: string] -> bool
+  (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
+    (and has-cardinality
+         (= cardinality ":db.cardinality/one"))))
 
 (defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
   (when (not (schema-unique? db attr))
@@ -2366,6 +2381,22 @@
             (return (value-entity entity) true "")
             (return value false "ident not found"))))))
   (return value true ""))
+
+(defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
+  (let [found: u64 0
+        has-found false]
+    (for [data tx-data]
+      (when (and data.has_tempid
+                 (= data.tempid tempid)
+                 (= data.op ":db/add")
+                 (schema-unique? db data.a))
+        (let [[entity entity-ok] (resolve-lookup-ref db data.a data.v)]
+          (when entity-ok
+            (when (and has-found (not (= found entity)))
+              (return found false true))
+            (set! found entity)
+            (set! has-found true)))))
+    (return found has-found false)))
 
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
@@ -2390,8 +2421,18 @@
             (if ok
               (set! e existing)
               (do
-                (set! e next-e)
-                (set! next-e (+ next-e 1))
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity db tx-data data.tempid)]
+                  (when upsert-conflict
+                    (return (Resolved-Tx {ok: false
+                                          error: "conflicting upsert"
+                                          ops: resolved-ops
+                                          tx_meta: resolved-meta
+                                          tempids: resolved-tempids})))
+                  (if upsert-ok
+                    (set! e upsert-e)
+                    (do
+                      (set! e next-e)
+                      (set! next-e (+ next-e 1)))))
                 (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
         (when data.has_lookup_ref
           (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.lookup_attr data.lookup_value)]
@@ -2417,9 +2458,18 @@
         (when (= data.op ":db/retractAttr")
           (append-retract-attr-ops! (addr resolved-ops) db e data.a)
           (continue))
-        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
-          (when data.has_value_tempid
-            (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.value_tempid)]
+	        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
+	          (when data.has_value_lookup_ref
+	            (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
+	              (if lookup-ok
+	                (set! v (value-entity lookup-e))
+	                (return (Resolved-Tx {ok: false
+	                                      error: "lookup ref not found"
+	                                      ops: resolved-ops
+	                                      tx_meta: resolved-meta
+	                                      tempids: resolved-tempids})))))
+	          (when data.has_value_tempid
+	            (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.value_tempid)]
               (if ok
                 (set! v (value-entity existing))
                 (do
@@ -2441,11 +2491,6 @@
   (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
     (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
       (return false "schema value type mismatch")))
-  (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
-    (when (and has-cardinality
-               (= cardinality ":db.cardinality/one")
-               (cardinality-one-conflict? db op))
-      (return false "schema cardinality one conflict")))
   (let [[unique has-unique] (schema-keyword db op.a ":db/unique")]
     (when (and has-unique
                (or (= unique ":db.unique/identity")
@@ -2484,15 +2529,40 @@
               tx_meta: (make [dynamic]Tx-Meta)
               tempids: (make [dynamic]Tempid)}))
 
+(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64, schema-active: bool]
+  (when (not schema-active)
+    (return))
+  (when (not (= op.kind .Add))
+    (return))
+  (let [current (build-db (clone-datoms after-datoms^))]
+    (when (not (schema-cardinality-one? current op.a))
+      (return))
+    (let [indexes (slice current.eavt 0)
+          low (lower-bound-index current indexes "eavt-ea" op.e op.a (Value {}))
+          high (upper-bound-index current indexes "eavt-ea" op.e op.a (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom current.datoms[datom-index]]
+          (when (and (datom-current-at? current datom-index)
+                     (not (value-equal? datom.v op.v)))
+            (let [retract (Datom {e: datom.e
+                                  a: datom.a
+                                  v: datom.v
+                                  tx: tx
+                                  added: false})]
+              (arr.push! after-datoms^ retract)
+              (arr.push! tx-data^ retract))))))))
+
 (defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count ops))
-        tx conn^.next_tx]
+        tx conn^.next_tx
+        schema-active (db-has-schema? before)]
     (let [[valid error] (validate-ops before ops)]
       (when (not valid)
         (return (failed-tx-report before error))))
     (for [op ops]
+      (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx schema-active)
       (let [datom (Datom {e: op.e
                           a: op.a
                           v: op.v
@@ -2538,14 +2608,20 @@
   (match-term? term actual binding))
 
 (defn ref-entity-literal [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool]
-  (when (not (= value.kind .Int))
-    (return value false))
   (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
     (when (and has-type (= schema-type ":db.type/ref"))
-      (return (value-entity (u64 value.int_value)) true)))
+      (if (= value.kind .Int)
+        (return (value-entity (u64 value.int_value)) true)
+        (when (= value.kind .Keyword)
+          (let [[entity ok] (schema-entity-for-attr db value.text)]
+            (when ok
+              (return (value-entity entity) true)))))))
   (return value false))
 
 (defn match-clause-value-term? [db: DB, attr: string, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (= term.kind .LookupRef)
+    (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup_attr term.lookup_value)]
+      (return (and lookup-ok (value-equal? (value-entity entity) actual)))))
   (when (= term.kind .Value)
     (let [[resolved ok] (ref-entity-literal db attr term.value)]
       (when ok
@@ -2617,6 +2693,11 @@
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
+    (when (= clause.v.kind .LookupRef)
+      (let [[lookup-entity lookup-ok] (resolve-lookup-ref db clause.v.lookup_attr clause.v.lookup_value)]
+        (when lookup-ok
+          (set! v-value (value-entity lookup-entity))
+          (set! v-ok true))))
     (when (and a-ok v-ok (= a-value.kind .Keyword))
       (let [[resolved resolved-ok] (ref-entity-literal db a-value.text v-value)]
         (when resolved-ok
@@ -3064,7 +3145,7 @@
   (q-query-with-inputs db query ([]Query-Input [])))
 
 (defn result-scalar [result: Result-Set] -> [value: Value, ok: bool]
-  (when (not (= (count result.rows) 1))
+  (when (= (count result.rows) 0)
     (return (Value {}) false))
   (when (not (= (count result.rows[0].values) 1))
     (return (Value {}) false))
@@ -3078,7 +3159,7 @@
     out))
 
 (defn result-tuple [result: Result-Set] -> [dynamic]Value
-  (if (= (count result.rows) 1)
+  (if (> (count result.rows) 0)
     (arr.into [dynamic]Value (slice result.rows[0].values 0))
     (make [dynamic]Value)))
 
