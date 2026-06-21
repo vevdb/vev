@@ -8,7 +8,7 @@ DataScript assertion or exact Clojure API shape.
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
-| `query_aggregates.cljc` | 1 | subset | top-n min/max, grouped parameter aggregates, custom aggregates |
+| `query_aggregates.cljc` | 1 | subset | grouped parameter aggregates, custom aggregates |
 | `query_not.cljc` | 5 | subset | error behavior and default-source forms |
 | `query_or.cljc` | 5 | subset | relation-source `or-join` |
 | `query_pull.cljc` | 7 | subset | returning pattern values, multi-source pull |
@@ -24,7 +24,7 @@ DataScript assertion or exact Clojure API shape.
 | `upsert.cljc` | 6 | subset | full conflict matrix and messages |
 | `db.cljc` | 4 | partial | datom/index API compatibility |
 | `index.cljc` | 5 | partial | exact indexed-attribute error behavior |
-| `tuples.cljc` | 11 | partial | tuple upsert, lookup refs, and full schema validation |
+| `tuples.cljc` | 11 | partial | remaining tuple conflict matrix and schema validation |
 | `validation.cljc` | 2 | partial | bad transaction forms and exact validation errors |
 | `parser*.cljc` | 19 | missing | EDN/text parser |
 | `conn.cljc`, `listen.cljc`, `filter.cljc`, `serialize.cljc`, `datafy.cljc` | 15 | later | app/runtime APIs after core parity |

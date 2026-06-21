@@ -2240,6 +2240,23 @@
     (t.is (= result.rows[1].values[1].text ":b/a"))
     (t.is (= result.rows[1].values[2].text ":b/c"))))
 
+(t.deftest datascript-query-top-n-min-max-aggregate-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        result (vev.q conn.db
+                 [:find (min 2 ?x) (max 2 ?x)
+                  :in [?x ...]]
+                 [:a/b :a-/b :a/c])]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .Vector))
+    (t.is (= result.rows[0].values[1].kind .Vector))
+    (t.is (= (count result.rows[0].values[0].items) 2))
+    (t.is (= (count result.rows[0].values[1].items) 2))
+    (t.is (= result.rows[0].values[0].items[0].text ":a/b"))
+    (t.is (= result.rows[0].values[0].items[1].text ":a/c"))
+    (t.is (= result.rows[0].values[1].items[0].text ":a/c"))
+    (t.is (= result.rows[0].values[1].items[1].text ":a-/b"))))
+
 (t.deftest datalog-supports-grouped-sum-avg-aggregates
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -2696,6 +2713,127 @@
     (t.is (not direct.ok))
     (t.is (= direct.error "cannot modify tuple attrs directly"))
     (t.is (= (count gone.rows) 0))))
+
+(t.deftest datascript-tuple-attrs-lookup-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact (addr conn) [[:db/add 100 :db/unique :db.unique/identity]])
+        _ (vev.transact (addr conn) [[:db/add 1 :a "A"]
+                                     [:db/add 1 :b "B"]])
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add [:a-and-b ["A" "B"]] :c "C"]])
+        [c c-ok] (vev.q-scalar report.db_after
+                   [:find ?c .
+                    :where
+                    [1 :c ?c]])]
+    (t.is report.ok)
+    (t.is c-ok)
+    (t.is (= c.text "C"))))
+
+(t.deftest datascript-tuple-attrs-upsert-by-components-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact (addr conn) [[:db/add 100 :db/unique :db.unique/identity]])
+        _ (vev.transact (addr conn) [{:a "A" :b "B" :name "Ivan"}])
+        [before-e before-ok] (vev.q-scalar conn.db
+                               [:find ?e .
+                                :where
+                                [?e :name "Ivan"]])
+        report (vev.transact (addr conn) [{:a "A" :b "B" :name "Oleg"}])
+        result (vev.q report.db_after
+                 [:find ?e ?name
+                  :where
+                  [?e :name ?name]])]
+    (t.is before-ok)
+    (t.is report.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].entity before-e.entity))
+    (t.is (= result.rows[0].values[1].text "Oleg"))))
+
+(t.deftest datascript-tuple-attrs-unique-conflict-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact (addr conn) [[:db/add 100 :db/unique :db.unique/identity]])
+        _ (vev.transact (addr conn) [{:db/id 1 :a "A" :b "B"}
+                                     {:db/id 2 :a "C" :b "B"}])
+        report (vev.transact (addr conn) [[:db/add 2 :a "A"]])
+        [a a-ok] (vev.q-scalar conn.db
+                   [:find ?a .
+                    :where
+                    [2 :a ?a]])]
+    (t.is (not report.ok))
+    (t.is (= report.error "schema unique conflict"))
+    (t.is a-ok)
+    (t.is (= a.text "C"))))
+
+(t.deftest datascript-tuple-attrs-index-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact (addr conn) [[:db/add 100 :db/index true]])
+        _ (vev.transact (addr conn) [{:db/id 1 :a "A" :b "B"}
+                                     {:db/id 2 :a "A" :b "C"}
+                                     {:db/id 3 :a "B" :b "A"}])
+        exact (vev.datoms conn.db :avet :a-and-b ["A" "B"])
+        range (vev.index-range conn.db :a-and-b ["A" "B"] ["B" "A"])]
+    (t.is (= (count exact) 1))
+    (t.is (= exact[0].e 1))
+    (t.is (= exact[0].v.kind .Vector))
+    (t.is (= exact[0].v.items[0].text "A"))
+    (t.is (= exact[0].v.items[1].text "B"))
+    (t.is (= (count range) 3))
+    (t.is (= range[0].e 1))
+    (t.is (= range[1].e 2))
+    (t.is (= range[2].e 3))))
+
+(t.deftest datascript-tuple-attrs-rejects-cardinality-many-components-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 101 :db/ident :many]
+             [:db/add 101 :db/cardinality :db.cardinality/many]])
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":many-and-name" ":many" ":name")
+        report (vev.transact-tx-data (addr conn) (slice schema-tx 0))]
+    (t.is (not report.ok))
+    (t.is (= report.error "invalid tuple schema"))))
+
+(t.deftest datascript-tuple-attrs-rejects-cardinality-many-target-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :a-and-b]
+             [:db/add 100 :db/cardinality :db.cardinality/many]])
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        report (vev.transact-tx-data (addr conn) (slice schema-tx 0))]
+    (t.is (not report.ok))
+    (t.is (= report.error "invalid tuple schema"))))
+
+(t.deftest datascript-tuple-attrs-requires-tuple-attrs-for-tuple-type-subset
+  (defer (free_all context.allocator))
+  (let [bad-conn (vev.create-conn)
+        bad (vev.transact
+              (addr bad-conn)
+              [[:db/add 100 :db/ident :a-and-b]
+               [:db/add 100 :db/valueType :db.type/tuple]])
+        ok-conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr ok-conn) (slice schema-tx 0))
+        ok (vev.transact
+             (addr ok-conn)
+             [[:db/add 100 :db/valueType :db.type/tuple]])]
+    (t.is (not bad.ok))
+    (t.is (= bad.error "invalid tuple schema"))
+    (t.is ok.ok)))
 
 (t.deftest datascript-upsert-unique-identity-subset
   (defer (free_all context.allocator))

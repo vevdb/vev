@@ -196,6 +196,8 @@
 (defstruct Aggregate-Find {
   op: string
   var: string
+  limit: int
+  has_limit: bool
 })
 
 (defstruct Tuple-Input {
@@ -435,9 +437,7 @@
       .Bool (and (not left.bool_value) right.bool_value)
       .Keyword (keyword-less? left.text right.text)
       .Vector (do
-        (let [limit (count left.items)]
-          (when (< (count right.items) limit)
-            (set! limit (count right.items)))
+        (let [limit (min (count left.items) (count right.items))]
           (for [index 0..<limit]
             (when (value-less? left.items[index] right.items[index])
               (return true))
@@ -445,9 +445,7 @@
               (return false)))
           (< (count left.items) (count right.items))))
       .Map (do
-        (let [limit (count left.items)]
-          (when (< (count right.items) limit)
-            (set! limit (count right.items)))
+        (let [limit (min (count left.items) (count right.items))]
           (for [index 0..<limit]
             (when (value-less? left.items[index] right.items[index])
               (return true))
@@ -1247,7 +1245,34 @@
 (defmacro- emit-find-var [form]
   (if (symbol? form)
     (quasiquote (unquote (source form)))
-    (error ":find entries must be variables")))
+    (error (str ":find entries must be variables, got " (source form)))))
+
+(defmacro- find-var? [form]
+  (symbol? form))
+
+(defmacro- aggregate-op? [op]
+  (if (= op "count")
+    true
+    (if (= op "count-distinct")
+      true
+      (if (= op "min")
+        true
+        (if (= op "max")
+          true
+          (if (= op "sum")
+            true
+            (if (= op "avg")
+              true
+              (if (= op "median")
+                true
+                (if (= op "variance")
+                  true
+                  (= op "stddev"))))))))))
+
+(defmacro- top-n-aggregate-op? [op]
+  (if (= op "min")
+    true
+    (= op "max")))
 
 (defmacro- find-scalar-marker? [form]
   (if (symbol? form)
@@ -1308,19 +1333,19 @@
 
 (defmacro- aggregate-find? [form]
   (if (list? form)
-    (if (= (count form) 2)
+    (if (if (= (count form) 2) true (= (count form) 3))
       (let [head (first form)]
         (if (symbol? head)
           (let [op (source head)]
-            (or (= op "count")
-                (= op "count-distinct")
-                (= op "min")
-                (= op "max")
-                (= op "sum")
-                (= op "avg")
-                (= op "median")
-                (= op "variance")
-                (= op "stddev")))
+            (if (= (count form) 3)
+              (if (top-n-aggregate-op? op)
+                (if (int? (nth form 1))
+                  (find-var? (nth form 2))
+                  false)
+                false)
+              (if (find-var? (nth form 1))
+                (aggregate-op? op)
+                false)))
           false))
       false)
     false))
@@ -2356,9 +2381,15 @@
 
 (defmacro- emit-aggregate-find [form]
   (if (aggregate-find? form)
-    (quasiquote
-      (Aggregate-Find {op: (unquote (source (first form)))
-                       var: (unquote (emit-find-var (nth form 1)))}))
+    (if (= (count form) 3)
+      (quasiquote
+        (Aggregate-Find {op: (unquote (source (first form)))
+                         var: (unquote (emit-find-var (nth form 2)))
+                         limit: (unquote (nth form 1))
+                         has_limit: true}))
+      (quasiquote
+        (Aggregate-Find {op: (unquote (source (first form)))
+                         var: (unquote (emit-find-var (nth form 1)))})))
     (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, variance, and stddev")))
 
 (defmacro- emit-aggregate-finds [forms]
@@ -3092,9 +3123,7 @@
                  (= function.op "second"))
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)
-          index 0]
-      (when (= function.op "second")
-        (set! index 1))
+          index (if (= function.op "first") 0 1)]
       (when (and input-ok
                  (= input.kind .Vector)
                  (< index (count input.items)))
@@ -3531,6 +3560,28 @@
             (= value.kind .Keyword)
             true))))))
 
+(defn valid-tuple-attrs-value? [db: DB, value: Value] -> bool
+  (when (not (= value.kind .Vector))
+    (return false))
+  (when (= (count value.items) 0)
+    (return false))
+  (for [item value.items]
+    (when (not (= item.kind .Keyword))
+      (return false))
+    (when (not (schema-cardinality-one? db item.text))
+      (return false))
+    (let [nested (schema-tuple-attrs db item.text)]
+      (defer (delete nested))
+      (when (> (count nested) 0)
+        (return false))))
+  true)
+
+(defn valid-tuple-attr-target? [db: DB, schema-e: u64] -> bool
+  (let [[attr attr-ok] (schema-ident-for-entity db schema-e)]
+    (when (not attr-ok)
+      (return true))
+    (schema-cardinality-one? db attr)))
+
 (defn unique-conflict? [db: DB, op: Tx-Op] -> bool
   (let [indexes (slice db.avet 0)
         low (lower-bound-index db indexes "avet" 0 op.a op.v)
@@ -3641,6 +3692,60 @@
          (= schema-type ":db.type/ref")
          (tx-data-has-tempid? tx-data value.text))))
 
+(defn tempid-tuple-component-value [db: DB, tx-data: []Tx-Data, tempid: string, attr: string] -> [value: Value, ok: bool]
+  (for [data tx-data]
+    (when (and data.has_tempid
+               (= data.tempid tempid)
+               (= data.op ":db/add")
+               (= data.a attr))
+      (let [[value value-ok _] (resolve-tx-data-value db data)]
+        (return value value-ok))))
+  (return (Value {}) false))
+
+(defn tuple-schema-already-seen? [schemas: []string, attr: string] -> bool
+  (for [schema-attr schemas]
+    (when (= schema-attr attr)
+      (return true)))
+  false)
+
+(defn tempid-tuple-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
+  (let [found: u64 0
+        has-found false
+        seen (make [dynamic]string)]
+    (defer (delete seen))
+    (for [data tx-data]
+      (when (not (and data.has_tempid
+                      (= data.tempid tempid)
+                      (= data.op ":db/add")))
+        (continue))
+      (let [schemas (tuple-schemas-containing db data.a)]
+        (defer (delete schemas))
+        (for [schema schemas]
+          (defer (delete schema.attrs))
+          (when (not (schema-unique? db schema.attr))
+            (continue))
+          (when (tuple-schema-already-seen? (slice seen 0) schema.attr)
+            (continue))
+          (arr.push! seen schema.attr)
+          (let [items (make [dynamic]Value 0 (count schema.attrs))
+                complete true]
+            (for [component schema.attrs]
+              (let [[value value-ok] (tempid-tuple-component-value db tx-data tempid component)]
+                (if value-ok
+                  (arr.push! items value)
+                  (set! complete false))))
+            (when complete
+              (let [tuple-value (value-vector (slice items 0))
+                    [entity entity-ok] (resolve-lookup-ref db schema.attr tuple-value)]
+                (when entity-ok
+                  (when (and has-found (not (= found entity)))
+                    (delete items)
+                    (return found false true))
+                  (set! found entity)
+                  (set! has-found true))))
+            (delete items)))))
+    (return found has-found false)))
+
 (defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
   (let [found: u64 0
         has-found false]
@@ -3657,6 +3762,14 @@
                   (return found false true))
                 (set! found entity)
                 (set! has-found true)))))))
+    (let [[tuple-e tuple-ok tuple-conflict] (tempid-tuple-upsert-entity db tx-data tempid)]
+      (when tuple-conflict
+        (return found false true))
+      (when tuple-ok
+        (when (and has-found (not (= found tuple-e)))
+          (return found false true))
+        (set! found tuple-e)
+        (set! has-found true)))
     (return found has-found false)))
 
 (defn db-with-resolved-ops [db: DB, ops: []Tx-Op] -> DB
@@ -3842,6 +3955,10 @@
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
   (when (= op.v.kind .Nil)
     (return false "cannot store nil"))
+  (when (and (= op.a ":db/tupleAttrs")
+             (not (and (valid-tuple-attr-target? db op.e)
+                       (valid-tuple-attrs-value? db op.v))))
+    (return false "invalid tuple schema"))
   (when (not op.derived)
     (let [tuple-attrs (schema-tuple-attrs db op.a)]
       (defer (delete tuple-attrs))
@@ -3856,6 +3973,23 @@
                    (= unique ":db.unique/value"))
                (unique-conflict? db op))
       (return false "schema unique conflict")))
+  (return true ""))
+
+(defn validate-tuple-type-schema [db: DB] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword)
+                   (= datom.v.text ":db.type/tuple"))
+          (let [[attr attr-ok] (schema-ident-for-entity db datom.e)]
+            (when attr-ok
+              (let [tuple-attrs (schema-tuple-attrs db attr)]
+                (defer (delete tuple-attrs))
+                (when (= (count tuple-attrs) 0)
+                  (return false "invalid tuple schema")))))))))
   (return true ""))
 
 (defn validate-ops [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
@@ -3874,6 +4008,11 @@
                 v: op.v
                 tx: 0
                 added: (= op.kind .Add)})))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-tuple-type-schema scratch)]
+      (when (not ok)
+        (return false error)))
     (return true "")))
 
 (defn failed-tx-report [db: DB, error: string] -> Tx-Report
@@ -4410,6 +4549,27 @@
         (set! j (- j 1)))
       (set! values^[j] current))))
 
+(defn sort-values! [values: ^[dynamic]Value]
+  (for [i (arr.range 1 (count values^))]
+    (let [current values^[i]
+          j i]
+      (while (and (> j 0)
+                  (value-less? current values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] current))))
+
+(defn top-n-values [values: []Value, limit: int, max?: bool] -> Value
+  (let [sorted (arr.into [dynamic]Value values)
+        out (make [dynamic]Value)]
+    (defer (delete sorted))
+    (sort-values! (addr sorted))
+    (let [take-count (min limit (count sorted))
+          start (if max? (- (count sorted) take-count) 0)]
+      (for [index (arr.range start (+ start take-count))]
+        (arr.push! out sorted[index]))
+      (Value {kind: .Vector items: out}))))
+
 (defn median-int [values: []i64] -> Value
   (when (= (count values) 0)
     (return (value-int 0)))
@@ -4491,9 +4651,11 @@
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
         aggregate-ints (make [dynamic]i64)
+        aggregate-values (make [dynamic]Value)
         distinct-values (make [dynamic]Value)
         seen-keys (make [dynamic]Result-Row)]
     (defer (delete aggregate-ints))
+    (defer (delete aggregate-values))
     (defer (delete distinct-values))
     (defer (delete seen-keys))
     (for [binding bindings]
@@ -4515,12 +4677,20 @@
                                        (= aggregate.op "stddev"))
                                    (= value.kind .Int))
                           (arr.push! aggregate-ints value.int_value))
+                        (when (and aggregate.has_limit
+                                   (or (= aggregate.op "min")
+                                       (= aggregate.op "max")))
+                          (arr.push! aggregate-values value))
                         (when (and (= aggregate.op "avg")
                                    (= value.kind .Int))
                           (set! avg-count (+ avg-count 1)))
                         (set! current (apply-aggregate-value current aggregate value))))))))))))
     (when (= aggregate.op "count-distinct")
       (return (value-int (i64 (count distinct-values)))))
+    (when (and aggregate.has_limit
+               (or (= aggregate.op "min")
+                   (= aggregate.op "max")))
+      (return (top-n-values (slice aggregate-values 0) aggregate.limit (= aggregate.op "max"))))
     (when (and (= aggregate.op "avg") (> avg-count 0))
       (set! current.int_value (/ current.int_value avg-count)))
     (when (= aggregate.op "median")

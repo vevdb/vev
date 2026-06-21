@@ -19,7 +19,7 @@ Status key:
 | DataScript area | Status | Notes |
 | --- | --- | --- |
 | `query` | partial | DataScript join subset ported; inputs, plain int entity inputs, collection/tuple/relation bindings, `_` input placeholders, and constant-substitution subset covered |
-| `query_aggregates` | partial | Relation-input subset ported; grouped aggregates, `:with` duplicate preservation, and keyword min/max comparator subset covered; exact edge behavior and advanced aggregates incomplete |
+| `query_aggregates` | partial | Relation-input subset ported; grouped aggregates, `:with` duplicate preservation, keyword min/max comparator subset, and literal top-n min/max covered; parameterized/custom aggregates and exact edge behavior incomplete |
 | `query_find_specs` | partial | Subset ported; scalar, collection, tuple, aggregate find specs, and multiple-result cuts covered |
 | `query_fns` | partial | DataScript subset ported for predicates including `even?`, mixed-type predicate comparison, scalar/collection/tuple `ground`, `get-else`, `get-some`, lookup-ref inputs to query functions, `missing?`, literal vector function args, tuple-destructured function results, function-result unification with vector `first`/`second`, and built-in result clauses for `identity`, `vector`, `hash-map`, string `count`, and integer arithmetic; arbitrary host/function clauses missing |
 | `query_not` | partial | Single-source DataScript subset ported, including nested `not`; default-source forms and insufficient-binding errors incomplete |
@@ -40,7 +40,7 @@ Status key:
 | `validation` | partial | Nil value rejection plus value type, uniqueness, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `issues` | partial | Need namespace-by-namespace porting |
-| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, and direct tuple attr rejection subsets started; tuple upsert, lookup refs, and full schema validation missing |
+| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs, component-based tuple upsert, unique conflict, AVET/index-range, tuple type/attrs validation, and cardinality-many tuple/component rejection subsets started; remaining schema validation and conflict matrix missing |
 
 ## Next Porting Order
 
