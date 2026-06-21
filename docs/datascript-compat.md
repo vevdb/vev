@@ -40,7 +40,7 @@ Status key:
 | `validation` | partial | Nil value rejection plus value type, uniqueness, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `issues` | partial | Need namespace-by-namespace porting |
-| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, direct tuple attr rejection, and unique tuple lookup-ref subsets started; tuple upsert and full schema validation missing |
+| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs, and component-based tuple upsert subsets started; full schema validation and conflict matrix missing |
 
 ## Next Porting Order
 

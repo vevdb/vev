@@ -3641,6 +3641,60 @@
          (= schema-type ":db.type/ref")
          (tx-data-has-tempid? tx-data value.text))))
 
+(defn tempid-tuple-component-value [db: DB, tx-data: []Tx-Data, tempid: string, attr: string] -> [value: Value, ok: bool]
+  (for [data tx-data]
+    (when (and data.has_tempid
+               (= data.tempid tempid)
+               (= data.op ":db/add")
+               (= data.a attr))
+      (let [[value value-ok _] (resolve-tx-data-value db data)]
+        (return value value-ok))))
+  (return (Value {}) false))
+
+(defn tuple-schema-already-seen? [schemas: []string, attr: string] -> bool
+  (for [schema-attr schemas]
+    (when (= schema-attr attr)
+      (return true)))
+  false)
+
+(defn tempid-tuple-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
+  (let [found: u64 0
+        has-found false
+        seen (make [dynamic]string)]
+    (defer (delete seen))
+    (for [data tx-data]
+      (when (not (and data.has_tempid
+                      (= data.tempid tempid)
+                      (= data.op ":db/add")))
+        (continue))
+      (let [schemas (tuple-schemas-containing db data.a)]
+        (defer (delete schemas))
+        (for [schema schemas]
+          (defer (delete schema.attrs))
+          (when (not (schema-unique? db schema.attr))
+            (continue))
+          (when (tuple-schema-already-seen? (slice seen 0) schema.attr)
+            (continue))
+          (arr.push! seen schema.attr)
+          (let [items (make [dynamic]Value 0 (count schema.attrs))
+                complete true]
+            (for [component schema.attrs]
+              (let [[value value-ok] (tempid-tuple-component-value db tx-data tempid component)]
+                (if value-ok
+                  (arr.push! items value)
+                  (set! complete false))))
+            (when complete
+              (let [tuple-value (value-vector (slice items 0))
+                    [entity entity-ok] (resolve-lookup-ref db schema.attr tuple-value)]
+                (when entity-ok
+                  (when (and has-found (not (= found entity)))
+                    (delete items)
+                    (return found false true))
+                  (set! found entity)
+                  (set! has-found true))))
+            (delete items)))))
+    (return found has-found false)))
+
 (defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
   (let [found: u64 0
         has-found false]
@@ -3657,6 +3711,14 @@
                   (return found false true))
                 (set! found entity)
                 (set! has-found true)))))))
+    (let [[tuple-e tuple-ok tuple-conflict] (tempid-tuple-upsert-entity db tx-data tempid)]
+      (when tuple-conflict
+        (return found false true))
+      (when tuple-ok
+        (when (and has-found (not (= found tuple-e)))
+          (return found false true))
+        (set! found tuple-e)
+        (set! has-found true)))
     (return found has-found false)))
 
 (defn db-with-resolved-ops [db: DB, ops: []Tx-Op] -> DB
