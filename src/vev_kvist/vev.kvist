@@ -132,8 +132,30 @@
   terms: []Term
 })
 
+(defstruct Function-Clause {
+  op: string
+  terms: []Term
+  out: string
+})
+
+(defstruct Rule {
+  name: string
+  params: []string
+  clauses: []Clause
+  predicates: []Predicate
+  function_clauses: []Function-Clause
+  grounds: []Ground
+  rule_calls: []Rule-Call
+})
+
+(defstruct Rule-Call {
+  name: string
+  args: []Term
+})
+
 (defstruct Not-Group {
   clauses: []Clause
+  not_groups: []Not-Group
   has_join: bool
   join_vars: []string
 })
@@ -146,6 +168,8 @@
 
 (defstruct Pull-Find {
   var: string
+  has_pattern_var: bool
+  pattern_var: string
   attrs: []string
   pattern: []Pull-Spec
 })
@@ -179,7 +203,9 @@
 
 (defstruct Ground {
   out: string
+  tuple_vars: []string
   is_collection: bool
+  is_tuple: bool
   value: Value
   values: []Value
 })
@@ -193,6 +219,9 @@
   relation_inputs: [dynamic]Relation-Input
   clauses: [dynamic]Clause
   predicates: [dynamic]Predicate
+  function_clauses: [dynamic]Function-Clause
+  rules: [dynamic]Rule
+  rule_calls: [dynamic]Rule-Call
   get_elses: [dynamic]Get-Else
   get_somes: [dynamic]Get-Some
   grounds: [dynamic]Ground
@@ -240,6 +269,12 @@
   attrs: [dynamic]Pull-Attr
 })
 
+(defstruct Entity {
+  db: DB
+  e: u64
+  found: bool
+})
+
 (defstruct Pull-Spec {
   a: string
   pattern: []Pull-Spec
@@ -254,12 +289,14 @@
   Scalar
   Collection
   Relation
+  PullPattern
 ])
 
 (defstruct Query-Input {
   kind: Query-Input-Kind
   value: Value
   values: []Value
+  pattern: []Pull-Spec
   width: int
   has_lookup_ref: bool
   lookup_attr: string
@@ -1235,7 +1272,10 @@
 
 (defmacro- input-source? [form]
   (if (symbol? form)
-    (= (source form) "$")
+    (let [name (source form)]
+      (if (= name "$")
+        true
+        (= name "%")))
     false))
 
 (defmacro- input-wildcard? [form]
@@ -1481,6 +1521,33 @@
         false)
       false)))
 
+(defmacro- function-clause? [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (let [expr (first form)
+            out (nth form 1)]
+        (if (list? expr)
+          (if (>= (count expr) 2)
+            (if (symbol? out)
+              (let [head (first expr)]
+                (if (symbol? head)
+                  (let [op (source head)]
+                    (if (= op "count")
+                      true
+                      (if (= op "+")
+                        true
+                        (if (= op "-")
+                          true
+                          (if (= op "*")
+                            true
+                            (= op "identity"))))))
+                  false))
+              false)
+            false)
+          false))
+      false)
+    false))
+
 (defmacro- get-else-clause? [form]
   (if (vector? form)
     (if (= (count form) 2)
@@ -1581,6 +1648,27 @@
       false)
     false))
 
+(defmacro- rule-call? [form]
+  (if (list? form)
+    (if (> (count form) 0)
+      (let [head (first form)]
+        (if (symbol? head)
+          (let [name (source head)]
+            (if (= name "not")
+              false
+              (if (= name "not-join")
+                false
+                (if (= name "or")
+                  false
+                  (if (= name "or-join")
+                    false
+                    (if (= name "and")
+                      false
+                      true))))))
+          false))
+      false)
+    false))
+
 (defmacro- emit-not-join-vars [forms]
   (if (= (count forms) 0)
     (forms)
@@ -1595,11 +1683,14 @@
         (quasiquote
           (not-join-group
             ([]string [(splice (emit-not-join-vars join-vars))])
-            ([]Clause [(splice (emit-datalog-clauses (slice form 2)))])))
+            ([]Clause [(splice (emit-datalog-clauses (slice form 2)))])
+            ([]Not-Group [(splice (emit-datalog-not-groups (slice form 2)))])))
         (error "not-join expects a vector of join vars")))
     (if (not-clause? form)
       (quasiquote
-        (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
+        (not-group
+          ([]Clause [(splice (emit-datalog-clauses (rest form)))])
+          ([]Not-Group [(splice (emit-datalog-not-groups (rest form)))])))
       (error "not clauses must have shape (not [e a v] ...) or (not-join [?x] [e a v] ...)"))))
 
 (defmacro- emit-datalog-missing-group [form]
@@ -1610,16 +1701,17 @@
           ([]Clause
             [(Clause {e: (unquote (emit-entity-term (nth expr 2)))
                       a: (unquote (emit-attr-term (nth expr 3)))
-                      v: (term-wildcard)})]))))
+                      v: (term-wildcard)})])
+          ([]Not-Group []))))
     (error "missing? clauses must have shape [(missing? $ ?e :attr)]")))
 
 (defmacro- emit-datalog-or-branch [form]
   (if (vector? form)
     (quasiquote
-      (not-group ([]Clause [(unquote (emit-datalog-clause form))])))
+      (not-group-simple ([]Clause [(unquote (emit-datalog-clause form))])))
     (if (and-clause? form)
       (quasiquote
-        (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
+        (not-group-simple ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
       (error "or branches currently support data clauses or (and [e a v] ...)"))))
 
 (defmacro- emit-datalog-or-branches [forms]
@@ -1653,12 +1745,21 @@
 (defmacro- emit-datalog-predicate [form]
   (if (predicate-clause? form)
     (let [expr (first form)]
-      (if (>= (count expr) 3)
+      (if (>= (count expr) 2)
         (quasiquote
           (Predicate {op: (unquote (source (nth expr 0)))
                       terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])}))
         (error "predicate clauses must have shape [(op arg arg ...)]")))
     (error "predicate clauses must have shape [(op arg arg ...)]")))
+
+(defmacro- emit-datalog-function-clause [form]
+  (if (function-clause? form)
+    (let [expr (first form)]
+      (quasiquote
+        (Function-Clause {op: (unquote (source (nth expr 0)))
+                          terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])
+                          out: (unquote (emit-find-var (nth form 1)))})))
+    (error "function clauses must have shape [(op arg ...) ?out]")))
 
 (defmacro- emit-datalog-get-else [form]
   (if (get-else-clause? form)
@@ -1695,6 +1796,13 @@
       (emit-literal-value (first forms))
       (emit-ground-values (rest forms)))))
 
+(defmacro- emit-ground-tuple-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-input-var (first forms))
+      (emit-ground-tuple-vars (rest forms)))))
+
 (defmacro- emit-datalog-ground [form]
   (if (ground-clause? form)
     (let [expr (first form)
@@ -1704,43 +1812,64 @@
         (if (vector? value)
           (quasiquote
             (Ground {out: (unquote (emit-input-var out))
+                     tuple_vars: ([]string [])
                      is_collection: true
+                     is_tuple: false
                      values: ([]Value [(splice (emit-ground-values value))])}))
           (error "collection ground clauses require vector literal values"))
-        (quasiquote
-          (Ground {out: (unquote (emit-find-var out))
-                   is_collection: false
-                   value: (unquote (emit-literal-value value))}))))
+        (if (vector? out)
+          (if (vector? value)
+            (quasiquote
+              (Ground {out: ""
+                       tuple_vars: ([]string [(splice (emit-ground-tuple-vars out))])
+                       is_collection: false
+                       is_tuple: true
+                       values: ([]Value [(splice (emit-ground-values value))])}))
+            (error "tuple ground clauses require vector literal values"))
+          (quasiquote
+            (Ground {out: (unquote (emit-find-var out))
+                     tuple_vars: ([]string [])
+                     is_collection: false
+                     is_tuple: false
+                     value: (unquote (emit-literal-value value))})))))
     (error "ground clauses must have shape [(ground value) ?out] or [(ground [...]) [?out ...]]")))
+
+(defmacro- datalog-non-data-clause? [form]
+  (if (predicate-clause? form)
+    true
+    (if (function-clause? form)
+      true
+      (if (get-else-clause? form)
+        true
+        (if (get-some-clause? form)
+          true
+          (if (ground-clause? form)
+            true
+            (if (missing-clause? form)
+              true
+              (if (not-clause? form)
+                true
+                (if (not-join-clause? form)
+                  true
+                  (if (or-clause? form)
+                    true
+                    (if (or-join-clause? form)
+                      true
+                      (rule-call? form))))))))))))
 
 (defmacro- emit-datalog-clauses [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (predicate-clause? (first forms))
-      (emit-datalog-clauses (rest forms))
-      (if (get-else-clause? (first forms))
+    (let [head (first forms)]
+      (if (datalog-non-data-clause? head)
         (emit-datalog-clauses (rest forms))
-        (if (get-some-clause? (first forms))
-          (emit-datalog-clauses (rest forms))
-          (if (ground-clause? (first forms))
-            (emit-datalog-clauses (rest forms))
-            (if (missing-clause? (first forms))
-              (emit-datalog-clauses (rest forms))
-              (if (not-clause? (first forms))
-                (emit-datalog-clauses (rest forms))
-                (if (not-join-clause? (first forms))
-                  (emit-datalog-clauses (rest forms))
-                  (if (or-clause? (first forms))
-                    (emit-datalog-clauses (rest forms))
-                    (if (or-join-clause? (first forms))
-                      (emit-datalog-clauses (rest forms))
-                      (if (and-clause? (first forms))
-                        (forms
-                          (emit-datalog-clauses (rest (first forms)))
-                          (emit-datalog-clauses (rest forms)))
-                        (forms
-                          (emit-datalog-clause (first forms))
-                          (emit-datalog-clauses (rest forms)))))))))))))))
+        (if (and-clause? head)
+          (forms
+            (emit-datalog-clauses (rest head))
+            (emit-datalog-clauses (rest forms)))
+          (forms
+            (emit-datalog-clause head)
+            (emit-datalog-clauses (rest forms))))))))
 
 (defmacro- emit-datalog-predicates [forms]
   (if (= (count forms) 0)
@@ -1750,6 +1879,38 @@
         (emit-datalog-predicate (first forms))
         (emit-datalog-predicates (rest forms)))
       (emit-datalog-predicates (rest forms)))))
+
+(defmacro- emit-rule-call-args [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-value-term (first forms))
+      (emit-rule-call-args (rest forms)))))
+
+(defmacro- emit-datalog-rule-call [form]
+  (if (rule-call? form)
+    (quasiquote
+      (Rule-Call {name: (unquote (source (first form)))
+                  args: ([]Term [(splice (emit-rule-call-args (rest form)))])}))
+    (error "rule calls must have shape (rule ?arg ...)")))
+
+(defmacro- emit-datalog-rule-calls [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (rule-call? (first forms))
+      (forms
+        (emit-datalog-rule-call (first forms))
+        (emit-datalog-rule-calls (rest forms)))
+      (emit-datalog-rule-calls (rest forms)))))
+
+(defmacro- emit-datalog-function-clauses [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (function-clause? (first forms))
+      (forms
+        (emit-datalog-function-clause (first forms))
+        (emit-datalog-function-clauses (rest forms)))
+      (emit-datalog-function-clauses (rest forms)))))
 
 (defmacro- emit-datalog-get-elses [forms]
   (if (= (count forms) 0)
@@ -1978,10 +2139,19 @@
       (if (vector? pattern)
         (quasiquote
           (Pull-Find {var: (unquote (emit-find-var var))
+                      has_pattern_var: false
+                      pattern_var: ""
                       attrs: ([]string [(splice (emit-pull-attrs pattern))])
                       pattern: ([]Pull-Spec [(splice (emit-pull-specs pattern))])}))
-        (error "find pull expects a literal vector pattern")))
-    (error ":find pull expressions must be (pull ?e [...]) or (pull $ ?e [...])")))
+        (if (symbol? pattern)
+          (quasiquote
+            (Pull-Find {var: (unquote (emit-find-var var))
+                        has_pattern_var: true
+                        pattern_var: (unquote (emit-find-var pattern))
+                        attrs: ([]string [])
+                        pattern: ([]Pull-Spec [])}))
+          (error "find pull expects a literal vector pattern or an input pattern var"))))
+    (error ":find pull expressions must be (pull ?e pattern) or (pull $ ?e pattern)")))
 
 (defmacro- emit-pull-finds [forms]
   (if (= (count forms) 0)
@@ -2043,6 +2213,9 @@
                   ([]Relation-Input [(splice (emit-relation-inputs input-items))])
                   ([]Clause [(splice (emit-datalog-clauses where-items))])
                   ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                  ([]Function-Clause [(splice (emit-datalog-function-clauses where-items))])
+                  ([]Rule [])
+                  ([]Rule-Call [(splice (emit-datalog-rule-calls where-items))])
                   ([]Get-Else [(splice (emit-datalog-get-elses where-items))])
                   ([]Get-Some [(splice (emit-datalog-get-somes where-items))])
                   ([]Ground [(splice (emit-datalog-grounds where-items))])
@@ -2060,6 +2233,9 @@
                   ([]Relation-Input [(splice (emit-relation-inputs input-items))])
                   ([]Clause [(splice (emit-datalog-clauses where-items))])
                   ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                  ([]Function-Clause [(splice (emit-datalog-function-clauses where-items))])
+                  ([]Rule [])
+                  ([]Rule-Call [(splice (emit-datalog-rule-calls where-items))])
                   ([]Get-Else [(splice (emit-datalog-get-elses where-items))])
                   ([]Get-Some [(splice (emit-datalog-get-somes where-items))])
                   ([]Ground [(splice (emit-datalog-grounds where-items))])
@@ -2125,6 +2301,65 @@
         (Query-Input {kind: .Scalar
                       value: (unquote (emit-literal-value form))})))))
 
+(defmacro- pull-find-pattern-var-name [form]
+  (if (pull-find? form)
+    (let [pattern (if (= (count form) 4) (nth form 3) (nth form 2))]
+      (if (symbol? pattern)
+        (emit-find-var pattern)
+        ""))
+    ""))
+
+(defmacro- pull-pattern-var-in-finds? [forms name]
+  (if (= (count forms) 0)
+    false
+    (if (= (pull-find-pattern-var-name (first forms)) name)
+      true
+      (pull-pattern-var-in-finds? (rest forms) name))))
+
+(defmacro- input-spec-var-name [form]
+  (if (input-source? form)
+    ""
+    (if (input-collection? form)
+      (emit-find-var (nth form 0))
+      (if (input-relation? form)
+        ""
+        (if (input-tuple? form)
+          ""
+          (emit-find-var form))))))
+
+(defmacro- pull-pattern-input? [find-items spec]
+  (let [name (input-spec-var-name spec)]
+    (if (= name "")
+      false
+      (pull-pattern-var-in-finds? find-items name))))
+
+(defmacro- emit-query-input-for-spec [find-items spec value]
+  (if (pull-pattern-input? find-items spec)
+    (if (vector? value)
+      (quasiquote
+        (Query-Input {kind: .PullPattern
+                      pattern: ([]Pull-Spec [(splice (emit-pull-specs value))])}))
+      (error "pull pattern inputs must be literal vectors"))
+    (emit-query-input value)))
+
+(defmacro- emit-query-input-list-for-query [find-items specs values]
+  (if (= (count values) 0)
+    (forms)
+    (if (= (count specs) 0)
+      (emit-query-input-list-without-rules values)
+      (let [spec (first specs)]
+        (if (input-source? spec)
+          (if (= (source spec) "%")
+            (if (rule-list? (first values))
+              (emit-query-input-list-for-query find-items (rest specs) (rest values))
+              (emit-query-input-list-for-query find-items (rest specs) values))
+            (emit-query-input-list-for-query find-items (rest specs) values))
+          (if (rule-list? (first values))
+            (emit-query-input-list-for-query find-items specs (rest values))
+            (forms
+              (emit-query-input-for-spec find-items spec (first values))
+              (emit-query-input-list-for-query find-items (rest specs) (rest values)))))))))
+
 (defmacro- emit-query-input-list [forms]
   (if (= (count forms) 0)
     (forms)
@@ -2132,18 +2367,82 @@
       (emit-query-input (first forms))
       (emit-query-input-list (rest forms)))))
 
+(defmacro- rule-list? [form]
+  (if (vector? form)
+    (if (> (count form) 0)
+      (let [first-rule (first form)]
+        (if (vector? first-rule)
+          (if (> (count first-rule) 0)
+            (list? (first first-rule))
+            false)
+          false))
+      false)
+    false))
+
+(defmacro- emit-rule-params [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-rule-params (rest forms)))))
+
+(defmacro- emit-rule [form]
+  (if (vector? form)
+    (let [head (first form)]
+      (if (list? head)
+        (quasiquote
+          (Rule {name: (unquote (source (first head)))
+                 params: ([]string [(splice (emit-rule-params (rest head)))])
+                 clauses: ([]Clause [(splice (emit-datalog-clauses (rest form)))])
+                 predicates: ([]Predicate [(splice (emit-datalog-predicates (rest form)))])
+                 function_clauses: ([]Function-Clause [(splice (emit-datalog-function-clauses (rest form)))])
+                 grounds: ([]Ground [(splice (emit-datalog-grounds (rest form)))])
+                 rule_calls: ([]Rule-Call [(splice (emit-datalog-rule-calls (rest form)))])}))
+        (error "rule definitions must start with a rule head")))
+    (error "rule definitions must be vectors")))
+
+(defmacro- emit-rules [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-rule (first forms))
+      (emit-rules (rest forms)))))
+
+(defmacro- emit-rule-input-rules [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (rule-list? (first forms))
+      (forms
+        (emit-rules (first forms))
+        (emit-rule-input-rules (rest forms)))
+      (emit-rule-input-rules (rest forms)))))
+
+(defmacro- emit-query-input-list-without-rules [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (rule-list? (first forms))
+      (emit-query-input-list-without-rules (rest forms))
+      (forms
+        (emit-query-input (first forms))
+        (emit-query-input-list-without-rules (rest forms))))))
+
 (defmacro q [db query-form & inputs]
   (if (vector? query-form)
-    (quasiquote
-      (q-query-with-inputs
-        (unquote db)
-        (unquote (datalog query-form))
-        ([]Query-Input [(splice (emit-query-input-list inputs))])))
+    (let [tail (rest query-form)
+          find-items (datalog-find-items tail)
+          input-items (datalog-input-items tail)]
+      (quasiquote
+        (q-query-with-inputs
+          (unquote db)
+          (query-with-rules
+            (unquote (datalog query-form))
+            ([]Rule [(splice (emit-rule-input-rules inputs))]))
+          ([]Query-Input [(splice (emit-query-input-list-for-query find-items input-items inputs))]))))
     (quasiquote
       (q-query-with-inputs
         (unquote db)
         (unquote query-form)
-        ([]Query-Input [(splice (emit-query-input-list inputs))])))))
+        ([]Query-Input [(splice (emit-query-input-list-without-rules inputs))])))))
 
 (defmacro q-scalar [db query-form & inputs]
   (quasiquote
@@ -2220,13 +2519,21 @@
         ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
     (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
-(defn not-group [clauses: []Clause] -> Not-Group
+(defn not-group-simple [clauses: []Clause] -> Not-Group
   (Not-Group {clauses: clauses
+              not_groups: ([]Not-Group [])
               has_join: false
               join_vars: ([]string [])}))
 
-(defn not-join-group [join-vars: []string, clauses: []Clause] -> Not-Group
+(defn not-group [clauses: []Clause, not-groups: []Not-Group] -> Not-Group
   (Not-Group {clauses: clauses
+              not_groups: not-groups
+              has_join: false
+              join_vars: ([]string [])}))
+
+(defn not-join-group [join-vars: []string, clauses: []Clause, not-groups: []Not-Group] -> Not-Group
+  (Not-Group {clauses: clauses
+              not_groups: not-groups
               has_join: true
               join_vars: join-vars}))
 
@@ -2240,7 +2547,7 @@
              has_join: true
              join_vars: join-vars}))
 
-(defn query [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
+(defn query [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rules: []Rule, rule-calls: []Rule-Call, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-with (arr.into [dynamic]string with)
         owned-inputs (arr.into [dynamic]string inputs)
@@ -2249,6 +2556,9 @@
         owned-relation-inputs (arr.into [dynamic]Relation-Input relation-inputs)
         owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
+        owned-function-clauses (arr.into [dynamic]Function-Clause function-clauses)
+        owned-rules (arr.into [dynamic]Rule rules)
+        owned-rule-calls (arr.into [dynamic]Rule-Call rule-calls)
         owned-get-elses (arr.into [dynamic]Get-Else get-elses)
         owned-get-somes (arr.into [dynamic]Get-Some get-somes)
         owned-grounds (arr.into [dynamic]Ground grounds)
@@ -2264,6 +2574,9 @@
             relation_inputs: owned-relation-inputs
             clauses: owned-clauses
             predicates: owned-predicates
+            function_clauses: owned-function-clauses
+            rules: owned-rules
+            rule_calls: owned-rule-calls
             get_elses: owned-get-elses
             get_somes: owned-get-somes
             grounds: owned-grounds
@@ -2271,6 +2584,12 @@
             or_groups: owned-or-groups
             pulls: owned-pulls
             aggregates: owned-aggregates})))
+
+(defn query-with-rules [query: Query, rules: []Rule] -> Query
+  (let [out query]
+    (delete out.rules)
+    (set! out.rules (arr.into [dynamic]Rule rules))
+    (return out)))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom (slice datoms 0)))
@@ -2425,6 +2744,16 @@
               false)))))))
 
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
+  (when (and (= predicate.op "even?")
+             (= (count predicate.terms) 1))
+    (let [[value value-ok] (resolve-term predicate.terms[0] binding)]
+      (when (not value-ok)
+        (return false))
+      (when (= value.kind .Int)
+        (return (= (% value.int_value 2) 0)))
+      (when (= value.kind .Entity)
+        (return (= (% value.entity 2) 0)))
+      (return false)))
   (when (< (count predicate.terms) 2)
     (return false))
   (for [index (arr.range 0 (- (count predicate.terms) 1))]
@@ -2435,6 +2764,49 @@
       (when (not (predicate-pair-matches? predicate.op left right))
         (return false))))
   true)
+
+(defn apply-function-op [function: Function-Clause, binding: Binding] -> [value: Value, ok: bool]
+  (when (and (= function.op "count")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (and input-ok (= input.kind .String))
+        (return (value-int (i64 (count input.text))) true))
+      (return (Value {}) false)))
+  (when (and (= function.op "identity")
+             (= (count function.terms) 1))
+    (return (resolve-term function.terms[0] binding)))
+  (when (or (= function.op "+")
+            (= function.op "-")
+            (= function.op "*"))
+    (when (= (count function.terms) 0)
+      (return (Value {}) false))
+    (let [[first-value first-ok] (resolve-term function.terms[0] binding)
+          result first-value.int_value]
+      (when (not (and first-ok (= first-value.kind .Int)))
+        (return (Value {}) false))
+      (for [term (slice function.terms 1)]
+        (let [[next next-ok] (resolve-term term binding)]
+          (when (not (and next-ok (= next.kind .Int)))
+            (return (Value {}) false))
+          (if (= function.op "+")
+            (set! result (+ result next.int_value))
+            (if (= function.op "-")
+              (set! result (- result next.int_value))
+              (set! result (* result next.int_value))))))
+      (return (value-int result) true)))
+  (return (Value {}) false))
+
+(defn apply-function-clause [binding: Binding, function: Function-Clause] -> [out: Binding, ok: bool]
+  (let [[value value-ok] (apply-function-op function binding)]
+    (when (not value-ok)
+      (return binding false))
+    (let [next (clone-binding binding)
+          [existing exists] (binding-lookup next function.out)]
+      (if exists
+        (return next (predicate-value-equal? existing value))
+        (do
+          (binding-store! (addr next) function.out value)
+          (return next true))))))
 
 (defn datom-current-at? [db: DB, index: int] -> bool
   (let [current (slice db.current 0)
@@ -3136,6 +3508,15 @@
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
           (return bindings))))
+    (for [not-group group.not_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (when (not (binding-matches-not-group? db not-group candidate-binding))
+            (arr.push! next-bindings candidate-binding)))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (return bindings))))
     bindings))
 
 (defn project-binding [binding: Binding, names: []string] -> Binding
@@ -3189,17 +3570,127 @@
 
 (defn apply-ground [bindings: []Binding, ground: Ground] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
-    (if ground.is_collection
+    (if ground.is_tuple
       (for [binding bindings]
-        (for [value ground.values]
-          (let [[next ok] (binding-with-value binding ground.out value)]
+        (when (= (count ground.tuple_vars) (count ground.values))
+          (let [next (clone-binding binding)
+                ok true]
+            (for [name index ground.tuple_vars]
+              (when (not (= name ""))
+                (let [[bound bound-ok] (binding-with-value next name ground.values[index])]
+                  (if bound-ok
+                    (set! next bound)
+                    (set! ok false)))))
             (when ok
               (arr.push! out next)))))
-      (for [binding bindings]
-        (let [[next ok] (binding-with-value binding ground.out ground.value)]
-          (when ok
-            (arr.push! out next)))))
+      (if ground.is_collection
+        (for [binding bindings]
+          (for [value ground.values]
+            (let [[next ok] (binding-with-value binding ground.out value)]
+              (when ok
+                (arr.push! out next)))))
+        (for [binding bindings]
+          (let [[next ok] (binding-with-value binding ground.out ground.value)]
+            (when ok
+              (arr.push! out next))))))
     out))
+
+(defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (let [[next ok] (apply-function-clause binding function)]
+        (when ok
+          (arr.push! out next))))
+    out))
+
+(defn bindings-after-predicate [bindings: []Binding, predicate: Predicate] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (when (predicate-matches? predicate binding)
+        (arr.push! out binding)))
+    out))
+
+(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int] -> [dynamic]Binding
+  (let [group (Not-Group {clauses: rule.clauses
+                          not_groups: ([]Not-Group [])
+                          has_join: false
+                          join_vars: ([]string [])})
+        bindings (bindings-after-clause-group db group initial)]
+    (for [call rule.rule_calls]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [rule-bindings (bindings-after-rule-call-depth db rules call binding (- depth 1))]
+            (for [rule-binding rule-bindings]
+              (arr.push! next-bindings rule-binding))
+            (delete rule-bindings)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [ground rule.grounds]
+      (let [next (apply-ground (slice bindings 0) ground)]
+        (delete bindings)
+        (set! bindings next)))
+    (for [function rule.function_clauses]
+      (let [next (bindings-after-function (slice bindings 0) function)]
+        (delete bindings)
+        (set! bindings next)))
+    (for [predicate rule.predicates]
+      (let [next (bindings-after-predicate (slice bindings 0) predicate)]
+        (delete bindings)
+        (set! bindings next)))
+    bindings))
+
+(defn bind-rule-args [outer: Binding, call: Rule-Call, rule: Rule] -> [binding: Binding, ok: bool]
+  (let [out (Binding {})]
+    (when (not (= (count call.args) (count rule.params)))
+      (return out false))
+    (for [param index rule.params]
+      (let [arg call.args[index]]
+        (case arg.kind
+          .Var (let [[value value-ok] (binding-lookup outer arg.name)]
+                 (when value-ok
+                   (let [[next bind-ok] (binding-with-value out param value)]
+                     (when (not bind-ok)
+                       (return next false))
+                     (set! out next))))
+          .Value (let [[next bind-ok] (binding-with-value out param arg.value)]
+                   (when (not bind-ok)
+                     (return next false))
+                   (set! out next))
+          :else (return out false))))
+    (return out true)))
+
+(defn merge-rule-output [outer: Binding, call: Rule-Call, rule: Rule, result: Binding] -> [binding: Binding, ok: bool]
+  (let [out (clone-binding outer)]
+    (for [param index rule.params]
+      (let [arg call.args[index]]
+        (when (= arg.kind .Var)
+          (let [[value value-ok] (binding-lookup result param)]
+            (when value-ok
+              (let [[next bind-ok] (binding-with-value out arg.name value)]
+                (when (not bind-ok)
+                  (return next false))
+                (set! out next)))))))
+    (return out true)))
+
+(defn bindings-after-rule-call-depth [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (<= depth 0)
+      (return out))
+    (for [rule rules]
+      (when (= rule.name call.name)
+        (let [[initial ok] (bind-rule-args binding call rule)]
+          (when ok
+            (let [results (bindings-after-rule-body-depth db rules rule initial depth)]
+              (for [result results]
+                (let [[merged merged-ok] (merge-rule-output binding call rule result)]
+                  (when merged-ok
+                    (arr.push! out merged))))
+              (delete results))))))
+    out))
+
+(defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+  // ponytail: bounded recursion; replace with semi-naive fixpoint when rules benchmarks require it.
+  (bindings-after-rule-call-depth db rules call binding 16))
 
 (defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
   (let [initial (clone-binding binding)]
@@ -3228,6 +3719,15 @@
                   (let [next (clone-binding candidate-binding)]
                     (when (datom-clause-matches? db datom clause (addr next))
                       (arr.push! next-bindings next))))))))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (return false))))
+    (for [not-group group.not_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (when (not (binding-matches-not-group? db not-group candidate-binding))
+            (arr.push! next-bindings candidate-binding)))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
@@ -3337,6 +3837,20 @@
       (set! row.values[(+ (count query.find) index)]
         (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
 
+(defn pull-pattern-input [query: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]
+  (for [input-name index query.inputs]
+    (when (= input-name name)
+      (when (and (< index (count inputs))
+                 (= inputs[index].kind .PullPattern))
+        (return inputs[index].pattern true))
+      (return ([]Pull-Spec []) false)))
+  (return ([]Pull-Spec []) false))
+
+(defn pull-find-pattern [query: Query, inputs: []Query-Input, pull-find: Pull-Find] -> [pattern: []Pull-Spec, ok: bool]
+  (if pull-find.has_pattern_var
+    (pull-pattern-input query inputs pull-find.pattern_var)
+    (return pull-find.pattern true)))
+
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
         bindings (bindings-from-inputs db query inputs)
@@ -3358,6 +3872,15 @@
         (delete bindings)
         (set! bindings next-bindings)
         (arr.remove-ordered-at! remaining clause-index)))
+    (for [call query.rule_calls]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [rule-bindings (bindings-after-rule-call db (slice query.rules 0) call binding)]
+            (for [rule-binding rule-bindings]
+              (arr.push! next-bindings rule-binding))
+            (delete rule-bindings)))
+        (delete bindings)
+        (set! bindings next-bindings)))
     (for [ground query.grounds]
       (let [next-bindings (apply-ground (slice bindings 0) ground)]
         (delete bindings)
@@ -3374,6 +3897,14 @@
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
           (let [[next ok] (apply-get-some db binding get-some)]
+            (when ok
+              (arr.push! next-bindings next))))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [function query.function_clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [[next ok] (apply-function-clause binding function)]
             (when ok
               (arr.push! next-bindings next))))
         (delete bindings)
@@ -3434,7 +3965,10 @@
           (for [pull-find query.pulls]
             (let [[entity ok] (binding-lookup binding pull-find.var)]
               (if (and ok (= entity.kind .Entity))
-                (arr.push! pulls (pull-pattern-spec db entity.entity pull-find.pattern))
+                (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)]
+                  (if pattern-ok
+                    (arr.push! pulls (pull-pattern-spec db entity.entity pattern))
+                    (set! complete false)))
                 (set! complete false))))
           (when complete
             (when (or (> (count pulls) 0)
@@ -3648,6 +4182,111 @@
       (pull-pattern-spec db entity pattern)
       (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}))))
 
+(defn entity-exists? [db: DB, e: u64] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" e "" (Value {}))
+        high (upper-bound-index db indexes "eavt" e "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn db-entity [db: DB, e: u64] -> Entity
+  (Entity {db: db e: e found: (entity-exists? db e)}))
+
+(defn entity-lookup-ref [db: DB, attr: string, value: Value] -> Entity
+  (let [[e ok] (resolve-lookup-ref db attr value)]
+    (if ok
+      (db-entity db e)
+      (Entity {db: db e: 0 found: false}))))
+
+(defn entity-ident [db: DB, ident: string] -> Entity
+  (let [[e ok] (schema-entity-for-attr db ident)]
+    (if ok
+      (db-entity db e)
+      (Entity {db: db e: 0 found: false}))))
+
+(defn entity-id [entity: Entity] -> u64
+  entity.e)
+
+(defn entity-db [entity: Entity] -> DB
+  entity.db)
+
+(defn entity-forward-values [entity: Entity, attr: string] -> [dynamic]Value
+  (let [out (make [dynamic]Value)]
+    (when (not entity.found)
+      (return out))
+    (let [indexes (slice entity.db.eavt 0)
+          low (lower-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))
+          high (upper-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom entity.db.datoms[datom-index]]
+          (when (datom-current-at? entity.db datom-index)
+            (arr.push! out datom.v)))))
+    out))
+
+(defn entity-reverse-values [entity: Entity, attr: string] -> [dynamic]Value
+  (let [out (make [dynamic]Value)]
+    (when (not entity.found)
+      (return out))
+    (let [forward-attr (forward-attr-for-reverse attr)
+          ref-value (value-entity entity.e)
+          indexes (slice entity.db.vaet 0)
+          low (lower-bound-index entity.db indexes "vaet" 0 "" ref-value)
+          high (upper-bound-index entity.db indexes "vaet" 0 "" ref-value)]
+      (for [datom-index (slice indexes low high)]
+        (let [datom entity.db.datoms[datom-index]]
+          (when (and (= datom.a forward-attr)
+                     (datom-current-at? entity.db datom-index))
+            (arr.push! out (value-entity datom.e))))))
+    out))
+
+(defn entity-values [entity: Entity, attr: string] -> [dynamic]Value
+  (if (reverse-attr? attr)
+    (entity-reverse-values entity attr)
+    (entity-forward-values entity attr)))
+
+(defn entity-get [entity: Entity, attr: string] -> Value
+  (when (= attr ":db/id")
+    (when entity.found
+      (return (value-entity entity.e)))
+    (return (value-nil)))
+  (let [values (entity-values entity attr)]
+    (defer (delete values))
+    (if (> (count values) 0)
+      values[0]
+      (value-nil))))
+
+(defn entity-contains? [entity: Entity, attr: string] -> bool
+  (when (= attr ":db/id")
+    (return entity.found))
+  (let [values (entity-values entity attr)]
+    (defer (delete values))
+    (> (count values) 0)))
+
+(defn entity-refs [entity: Entity, attr: string] -> [dynamic]Entity
+  (let [out (make [dynamic]Entity)
+        values (entity-values entity attr)]
+    (defer (delete values))
+    (for [value values]
+      (when (= value.kind .Entity)
+        (let [ref (db-entity entity.db value.entity)]
+          (when ref.found
+            (arr.push! out ref)))))
+    out))
+
+(defn entity-ref [entity: Entity, attr: string] -> Entity
+  (let [refs (entity-refs entity attr)]
+    (defer (delete refs))
+    (if (> (count refs) 0)
+      refs[0]
+      (Entity {db: entity.db e: 0 found: false}))))
+
+(defn touch [entity: Entity] -> Pull-Result
+  (if entity.found
+    (pull-pattern-spec entity.db entity.e ([]Pull-Spec [(flat-pull-spec "*")]))
+    (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)})))
+
 (defn flat-pull-spec [attr: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
@@ -3744,6 +4383,9 @@
       [(clause (term-var "e") ":user/email" (term-string email))
        (clause (term-var "e") ":user/name" (term-var "name"))])
     ([]Predicate [])
+    ([]Function-Clause [])
+    ([]Rule [])
+    ([]Rule-Call [])
     ([]Get-Else [])
     ([]Get-Some [])
     ([]Ground [])

@@ -4,6 +4,14 @@
 (import t "kvist:test")
 (import vev "../vev_kvist")
 
+(defn result-has-entity-pair? [result: vev.Result-Set, left: u64, right: u64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].entity left)
+               (= row.values[1].entity right))
+      (return true)))
+  false)
+
 (t.deftest transact-reports-snapshots-and-metadata
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -55,7 +63,7 @@
                   [(vev.clause (vev.term-var "e") ":user/name" (vev.term-var "name"))
                    (vev.clause (vev.term-var "e") ":user/age" (vev.term-var "age"))
                    (vev.clause (vev.term-var "e") ":user/active" (vev.term-bool true))])
-        query (vev.query ([]string ["e" "name" "age"]) ([]string []) ([]string []) ([]string []) ([]vev.Tuple-Input []) ([]vev.Relation-Input []) clauses ([]vev.Predicate []) ([]vev.Get-Else []) ([]vev.Get-Some []) ([]vev.Ground []) ([]vev.Not-Group []) ([]vev.Or-Group []) ([]vev.Pull-Find []) ([]vev.Aggregate-Find []))
+        query (vev.query ([]string ["e" "name" "age"]) ([]string []) ([]string []) ([]string []) ([]vev.Tuple-Input []) ([]vev.Relation-Input []) clauses ([]vev.Predicate []) ([]vev.Function-Clause []) ([]vev.Rule []) ([]vev.Rule-Call []) ([]vev.Get-Else []) ([]vev.Get-Some []) ([]vev.Ground []) ([]vev.Not-Group []) ([]vev.Or-Group []) ([]vev.Pull-Find []) ([]vev.Aggregate-Find []))
         result (vev.q report.db_after query)]
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].kind .Entity))
@@ -128,6 +136,56 @@
                   [$ ?e :user/name ?name]])]
     (t.is (= (count result.rows) 1))
     (t.is (= result.rows[0].values[0].text "Ada"))))
+
+(t.deftest datascript-entity-api-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 10 :db/ident :aka :db/cardinality :db.cardinality/many}
+                  {:db/id 11 :db/ident :children :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+                  {:db/id 12 :db/ident :father :db/valueType :db.type/ref}
+                  {:db/id 13 :db/ident :email :db/unique :db.unique/identity}
+                  {:db/id 1 :name "Ivan" :age 19 :email "ivan@example.com" :aka ["X" "Y"] :children [10]}
+                  {:db/id 10 :father 1 :children [100 101]}
+                  {:db/id 100 :father 10}
+                  {:db/id 101 :father 10}])
+        ivan (vev.db-entity report.db_after 1)
+        by-email (vev.entity-lookup-ref report.db_after ":email" (vev.value-string "ivan@example.com"))
+        aka (vev.entity-values ivan ":aka")
+        children (vev.entity-refs ivan ":children")
+        child children[0]
+        grandkids (vev.entity-refs child ":children")
+        reverse-father (vev.entity-refs ivan ":_father")
+        schema-attr (vev.entity-ident report.db_after ":children")
+        missing (vev.db-entity report.db_after 777)
+        touched (vev.touch ivan)]
+    (t.is ivan.found)
+    (t.is (= (vev.entity-id ivan) 1))
+    (t.is (= (vev.entity-get ivan ":db/id").entity 1))
+    (t.is (= (vev.entity-get ivan ":name").text "Ivan"))
+    (t.is (= (vev.entity-get ivan ":age").int_value 19))
+    (t.is (vev.entity-contains? ivan ":age"))
+    (t.is (not (vev.entity-contains? ivan ":missing")))
+    (t.is by-email.found)
+    (t.is (= by-email.e 1))
+    (t.is (= (count aka) 2))
+    (t.is (= aka[0].text "X"))
+    (t.is (= aka[1].text "Y"))
+    (t.is (= (count children) 1))
+    (t.is (= child.e 10))
+    (t.is (= (vev.entity-ref child ":father").e 1))
+    (t.is (= (count grandkids) 2))
+    (t.is (= grandkids[0].e 100))
+    (t.is (= grandkids[1].e 101))
+    (t.is (= (count reverse-father) 1))
+    (t.is (= reverse-father[0].e 10))
+    (t.is schema-attr.found)
+    (t.is (= schema-attr.e 11))
+    (t.is (not missing.found))
+    (t.is (= (vev.entity-get missing ":name").kind .Nil))
+    (t.is (= touched.e 1))
+    (t.is (> (count touched.attrs) 0))))
 
 (t.deftest datalog-macro-accepts-source-var-existence-clauses
   (defer (free_all context.allocator))
@@ -453,6 +511,12 @@
                          (not
                            [?e :name "Ivan"]
                            [?e :name "Oleg"])])
+        nested-excludes (vev.q-collection report.db_after
+                          [:find [?e ...]
+                           :where
+                           [?e :name]
+                           (not [?e :name "Ivan"]
+                                (not [?e :age 10]))])
         extra-binding (vev.q-collection report.db_after
                         [:find [?e ...]
                          :where
@@ -486,6 +550,11 @@
     (t.is (= (count exclude-empty) 6))
     (t.is (= exclude-empty[0].entity 1))
     (t.is (= exclude-empty[5].entity 6))
+    (t.is (= (count nested-excludes) 4))
+    (t.is (= nested-excludes[0].entity 1))
+    (t.is (= nested-excludes[1].entity 3))
+    (t.is (= nested-excludes[2].entity 4))
+    (t.is (= nested-excludes[3].entity 5))
     (t.is (= (count extra-binding) 3))
     (t.is (= extra-binding[0].entity 2))
     (t.is (= extra-binding[1].entity 4))
@@ -729,6 +798,10 @@
                         [:find [?vowel ...]
                          :where
                          [(ground [:a :e :i :o :u]) [?vowel ...]]])
+        ground-tuple (vev.q conn.db
+                       [:find ?a ?c
+                        :where
+                        [(ground [:a :b :c]) [?a _ ?c]]])
         get-else (vev.q conn.db
                    [:find ?e ?age ?height
                     :where
@@ -794,6 +867,9 @@
     (t.is (= (count ground-vowels) 5))
     (t.is (= ground-vowels[0].text ":a"))
     (t.is (= ground-vowels[4].text ":u"))
+    (t.is (= (count ground-tuple.rows) 1))
+    (t.is (= ground-tuple.rows[0].values[0].text ":a"))
+    (t.is (= ground-tuple.rows[0].values[1].text ":c"))
     (t.is (= (count get-else.rows) 3))
     (t.is (= get-else.rows[0].values[2].int_value 300))
     (t.is (= get-else.rows[1].values[2].int_value 240))
@@ -829,6 +905,60 @@
     (t.is (= (count mixed-less-equal) 2))
     (t.is (= mixed-less-equal[0].int_value 0))
     (t.is (= mixed-less-equal[1].int_value 1))))
+
+(t.deftest datascript-query-function-result-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :age 15}
+             {:db/id 2 :age 22}
+             {:db/id 3 :age 37}])
+        counted (vev.q conn.db
+                  [:find ?x ?c
+                   :in [?x ...]
+                   :where
+                   [(count ?x) ?c]]
+                  ["a" "abc"])
+        summed (vev.q conn.db
+                 [:find ?e1 ?e2 ?e3
+                  :where
+                  [?e1 :age ?a1]
+                  [?e2 :age ?a2]
+                  [?e3 :age ?a3]
+                  [(+ ?a1 ?a2) ?a12]
+                  [(= ?a12 ?a3)]])
+        conflicting (vev.q conn.db
+                      [:find ?n
+                       :in ?n
+                       :where
+                       [(+ 1 2) ?n]]
+                      4)
+        identity-conflict (vev.q conn.db
+                            [:find ?n
+                             :where
+                             [(identity 1) ?n]
+                             [(identity 2) ?n]])
+        rel-function-conflict (vev.q conn.db
+                                [:find ?age
+                                 :where
+                                 [_ :age ?age]
+                                 [(identity 100) ?age]])]
+    (t.is (= (count counted.rows) 2))
+    (t.is (= counted.rows[0].values[0].text "a"))
+    (t.is (= counted.rows[0].values[1].int_value 1))
+    (t.is (= counted.rows[1].values[0].text "abc"))
+    (t.is (= counted.rows[1].values[1].int_value 3))
+    (t.is (= (count summed.rows) 2))
+    (t.is (= summed.rows[0].values[0].entity 1))
+    (t.is (= summed.rows[0].values[1].entity 2))
+    (t.is (= summed.rows[0].values[2].entity 3))
+    (t.is (= summed.rows[1].values[0].entity 2))
+    (t.is (= summed.rows[1].values[1].entity 1))
+    (t.is (= summed.rows[1].values[2].entity 3))
+    (t.is (= (count conflicting.rows) 0))
+    (t.is (= (count identity-conflict.rows) 0))
+    (t.is (= (count rel-function-conflict.rows) 0))))
 
 (t.deftest datalog-macro-supports-or-clauses
   (defer (free_all context.allocator))
@@ -871,6 +1001,152 @@
                   [?e :user/name ?name]])]
     (t.is (= (count result.rows) 1))
     (t.is (= result.rows[0].values[0].text "Ada"))))
+
+(t.deftest datascript-query-rules-basic-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 5 :follow (vev.value-entity 3)]
+                  [:db/add 1 :follow (vev.value-entity 2)]
+                  [:db/add 2 :follow (vev.value-entity 3)]
+                  [:db/add 3 :follow (vev.value-entity 4)]
+                  [:db/add 4 :follow (vev.value-entity 6)]
+                  [:db/add 2 :follow (vev.value-entity 4)]])
+        follows (vev.q report.db_after
+                  [:find ?e1 ?e2
+                   :in $ %
+                   :where
+                   (follow ?e1 ?e2)]
+                  [[(follow ?x ?y)
+                    [?x :follow ?y]]])
+        joined (vev.q report.db_after
+                 [:find ?y ?x
+                  :in $ %
+                  :where
+                  [_ _ ?x]
+                  (rule ?x ?y)
+                  [(= ?x 2)]]
+                 [[(rule ?a ?b)
+                   [?a :follow ?b]]])
+        joined-even (vev.q report.db_after
+                      [:find ?y ?x
+                       :in $ %
+                       :where
+                       [_ _ ?x]
+                       (rule ?x ?y)
+                       [(even? ?x)]]
+                      [[(rule ?a ?b)
+                        [?a :follow ?b]]])
+        isolated (vev.q-collection report.db_after
+                   [:find [?x ...]
+                    :in $ %
+                    :where
+                    [?e _ _]
+                    (rule ?x)]
+                   [[(rule ?e)
+                     [_ ?e _]]])
+        branches (vev.q-collection report.db_after
+                   [:find [?e2 ...]
+                    :in $ ?e1 %
+                    :where
+                    (follow ?e1 ?e2)]
+                   1
+                   [[(follow ?e2 ?e1)
+                     [?e2 :follow ?e1]]
+                    [(follow ?e2 ?e1)
+                     [?e2 :follow ?t]
+                     [?t :follow ?e1]]])
+        recursive (vev.q-collection report.db_after
+                    [:find [?e2 ...]
+                     :in $ ?e1 %
+                     :where
+                     (follow ?e1 ?e2)]
+                    1
+                    [[(follow ?e1 ?e2)
+                      [?e1 :follow ?e2]]
+                     [(follow ?e1 ?e2)
+                      [?e1 :follow ?t]
+                      (follow ?t ?e2)]])
+        rule-builtins (vev.q report.db_after
+                        [:find ?x ?y
+                         :in $ %
+                         :where
+                         (match ?x ?y)]
+                        [[(match ?e ?e2)
+                          [?e :follow ?e2]
+                          [(even? ?e)]
+                          [(even? ?e2)]]])]
+    (t.is (= (count follows.rows) 6))
+    (t.is (= follows.rows[0].values[0].entity 1))
+    (t.is (= follows.rows[0].values[1].entity 2))
+    (t.is (= follows.rows[5].values[0].entity 5))
+    (t.is (= follows.rows[5].values[1].entity 3))
+    (t.is (= (count joined.rows) 2))
+    (t.is (= joined.rows[0].values[0].entity 3))
+    (t.is (= joined.rows[0].values[1].entity 2))
+    (t.is (= joined.rows[1].values[0].entity 4))
+    (t.is (= joined.rows[1].values[1].entity 2))
+    (t.is (= (count joined-even.rows) 3))
+    (t.is (= joined-even.rows[0].values[0].entity 3))
+    (t.is (= joined-even.rows[0].values[1].entity 2))
+    (t.is (= joined-even.rows[1].values[0].entity 4))
+    (t.is (= joined-even.rows[1].values[1].entity 2))
+    (t.is (= joined-even.rows[2].values[0].entity 6))
+    (t.is (= joined-even.rows[2].values[1].entity 4))
+    (t.is (= (count isolated) 1))
+    (t.is (= isolated[0].text ":follow"))
+    (t.is (= (count branches) 3))
+    (t.is (= branches[0].entity 2))
+    (t.is (= branches[1].entity 3))
+    (t.is (= branches[2].entity 4))
+    (t.is (= (count recursive) 4))
+    (t.is (= recursive[0].entity 2))
+    (t.is (= recursive[1].entity 3))
+    (t.is (= recursive[2].entity 4))
+    (t.is (= recursive[3].entity 6))
+    (t.is (= (count rule-builtins.rows) 2))
+    (t.is (= rule-builtins.rows[0].values[0].entity 2))
+    (t.is (= rule-builtins.rows[0].values[1].entity 4))
+    (t.is (= rule-builtins.rows[1].values[0].entity 4))
+    (t.is (= rule-builtins.rows[1].values[1].entity 6))))
+
+(t.deftest datascript-query-mutual-recursive-rules-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 0 :f1 (vev.value-entity 1)]
+                  [:db/add 1 :f2 (vev.value-entity 2)]
+                  [:db/add 2 :f1 (vev.value-entity 3)]
+                  [:db/add 3 :f2 (vev.value-entity 4)]
+                  [:db/add 4 :f1 (vev.value-entity 5)]
+                  [:db/add 5 :f2 (vev.value-entity 6)]])
+        result (vev.q report.db_after
+                 [:find ?e1 ?e2
+                  :in $ %
+                  :where
+                  (f1 ?e1 ?e2)]
+                 [[(f1 ?e1 ?e2)
+                   [?e1 :f1 ?e2]]
+                  [(f1 ?e1 ?e2)
+                   [?t :f1 ?e2]
+                   (f2 ?e1 ?t)]
+                  [(f2 ?e1 ?e2)
+                   [?e1 :f2 ?e2]]
+                  [(f2 ?e1 ?e2)
+                   [?t :f2 ?e2]
+                   (f1 ?e1 ?t)]])]
+    (t.is (= (count result.rows) 9))
+    (t.is (result-has-entity-pair? result 0 1))
+    (t.is (result-has-entity-pair? result 0 3))
+    (t.is (result-has-entity-pair? result 0 5))
+    (t.is (result-has-entity-pair? result 1 3))
+    (t.is (result-has-entity-pair? result 1 5))
+    (t.is (result-has-entity-pair? result 2 3))
+    (t.is (result-has-entity-pair? result 2 5))
+    (t.is (result-has-entity-pair? result 3 5))
+    (t.is (result-has-entity-pair? result 4 5))))
 
 (t.deftest datalog-macro-supports-or-join
   (defer (free_all context.allocator))
@@ -1034,7 +1310,21 @@
                               [:find ?e ?a (pull ?e [:name])
                                :where
                                [?e :age ?a]
-                               [(>= ?a 18)]])]
+                               [(>= ?a 18)]])
+        input-pattern (vev.q report.db_after
+                        [:find (pull ?e ?pattern)
+                         :in $ ?pattern
+                         :where
+                         [?e :age ?a]
+                         [(>= ?a 18)]]
+                        [:name])
+        values-and-input-pattern (vev.q report.db_after
+                                   [:find ?e ?a (pull ?e ?pattern)
+                                    :in $ ?pattern
+                                    :where
+                                    [?e :age ?a]
+                                    [(>= ?a 18)]]
+                                   [:name])]
     (t.is (= (count names.rows) 2))
     (t.is (= names.rows[0].pulls[0].attrs[0].v.text "Petr"))
     (t.is (= names.rows[1].pulls[0].attrs[0].v.text "Ivan"))
@@ -1050,7 +1340,14 @@
     (t.is (= (count entity-age-and-pull.rows) 2))
     (t.is (= entity-age-and-pull.rows[0].values[0].entity 1))
     (t.is (= entity-age-and-pull.rows[0].values[1].int_value 44))
-    (t.is (= entity-age-and-pull.rows[0].pulls[0].attrs[0].v.text "Petr"))))
+    (t.is (= entity-age-and-pull.rows[0].pulls[0].attrs[0].v.text "Petr"))
+    (t.is (= (count input-pattern.rows) 2))
+    (t.is (= input-pattern.rows[0].pulls[0].attrs[0].v.text "Petr"))
+    (t.is (= input-pattern.rows[1].pulls[0].attrs[0].v.text "Ivan"))
+    (t.is (= (count values-and-input-pattern.rows) 2))
+    (t.is (= values-and-input-pattern.rows[0].values[0].entity 1))
+    (t.is (= values-and-input-pattern.rows[0].values[1].int_value 44))
+    (t.is (= values-and-input-pattern.rows[0].pulls[0].attrs[0].v.text "Petr"))))
 
 (t.deftest datalog-macro-accepts-scalar-find
   (defer (free_all context.allocator))
@@ -3021,7 +3318,7 @@
                   [(vev.clause (vev.term-var "e") ":user/name" (vev.term-string "Ada"))
                    (vev.clause (vev.term-var "e") ":user/friend" (vev.term-var "friend"))
                    (vev.clause (vev.term-var "friend") ":user/name" (vev.term-var "friend-name"))])
-        query (vev.query ([]string ["friend" "friend-name"]) ([]string []) ([]string []) ([]string []) ([]vev.Tuple-Input []) ([]vev.Relation-Input []) clauses ([]vev.Predicate []) ([]vev.Get-Else []) ([]vev.Get-Some []) ([]vev.Ground []) ([]vev.Not-Group []) ([]vev.Or-Group []) ([]vev.Pull-Find []) ([]vev.Aggregate-Find []))
+        query (vev.query ([]string ["friend" "friend-name"]) ([]string []) ([]string []) ([]string []) ([]vev.Tuple-Input []) ([]vev.Relation-Input []) clauses ([]vev.Predicate []) ([]vev.Function-Clause []) ([]vev.Rule []) ([]vev.Rule-Call []) ([]vev.Get-Else []) ([]vev.Get-Some []) ([]vev.Ground []) ([]vev.Not-Group []) ([]vev.Or-Group []) ([]vev.Pull-Find []) ([]vev.Aggregate-Find []))
         result (vev.q report.db_after query)]
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].kind .Entity))
@@ -3036,7 +3333,7 @@
                   [(vev.Clause {e: (vev.term-entity 1)
                                 a: (vev.term-var "attr")
                                 v: (vev.term-string "Ada")})])
-        query (vev.query ([]string ["attr"]) ([]string []) ([]string []) ([]string []) ([]vev.Tuple-Input []) ([]vev.Relation-Input []) clauses ([]vev.Predicate []) ([]vev.Get-Else []) ([]vev.Get-Some []) ([]vev.Ground []) ([]vev.Not-Group []) ([]vev.Or-Group []) ([]vev.Pull-Find []) ([]vev.Aggregate-Find []))
+        query (vev.query ([]string ["attr"]) ([]string []) ([]string []) ([]string []) ([]vev.Tuple-Input []) ([]vev.Relation-Input []) clauses ([]vev.Predicate []) ([]vev.Function-Clause []) ([]vev.Rule []) ([]vev.Rule-Call []) ([]vev.Get-Else []) ([]vev.Get-Some []) ([]vev.Ground []) ([]vev.Not-Group []) ([]vev.Or-Group []) ([]vev.Pull-Find []) ([]vev.Aggregate-Find []))
         result (vev.q report.db_after query)]
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].kind .Keyword))
