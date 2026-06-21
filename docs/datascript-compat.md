@@ -40,7 +40,7 @@ Status key:
 | `validation` | partial | Nil value rejection plus value type, uniqueness, component schema, ident values, schema boolean attrs, schema keyword enum attrs, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
 | `db`, `issues` | partial | Need namespace-by-namespace porting |
-| `tuples` | partial | Tuple attr schema, derived tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, component-based tuple upsert, unique conflict, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation, nested tuple dependency rejection, and cardinality-many tuple/component rejection subsets started; remaining schema validation and conflict matrix missing |
+| `tuples` | partial | Tuple attr schema, derived multi-tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, component-based tuple upsert, unique conflict, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation, nested tuple dependency rejection, and cardinality-many tuple/component rejection subsets started; remaining conflict matrix missing |
 
 ## Next Porting Order
 
