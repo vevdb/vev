@@ -219,6 +219,12 @@ The most important practical pattern for Vev phase 1 is:
 [?e :attr ?v]
 ```
 
+Attribute-existence shorthand is also accepted:
+
+```clojure
+[?e :attr]
+```
+
 Phase 1 should also be prepared for these common variations:
 
 ```clojure
