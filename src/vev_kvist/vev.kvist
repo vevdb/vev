@@ -80,6 +80,7 @@
   has_ident: bool
   a: string
   v: Value
+  expected: Value
   value_tempid: string
   has_value_tempid: bool
   value_lookup_attr: string
@@ -352,6 +353,9 @@
 
 (defn retract [e: u64, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" e: e a: a v: v}))
+
+(defn cas [e: u64, a: string, expected: Value, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db.fn/cas" e: e a: a expected: expected v: v}))
 
 (defn retract-attr [e: u64, a: string] -> Tx-Data
   (Tx-Data {op: ":db/retractAttr" e: e a: a}))
@@ -702,6 +706,14 @@
 	                (unquote (emit-attr a))
 	                (unquote (emit-literal-value v))))))))))
 
+(defmacro- emit-cas-call [e a expected v]
+  (quasiquote
+    (cas
+      (unquote e)
+      (unquote (emit-attr a))
+      (unquote (emit-literal-value expected))
+      (unquote (emit-literal-value v)))))
+
 (defmacro- tx-map-id [items]
   (if (= (count items) 0)
     (error "tx map forms require :db/id")
@@ -897,7 +909,18 @@
 
 (defmacro- emit-tx-data-item [form]
   (if (vector? form)
-    (if (= (count form) 4)
+    (if (= (count form) 5)
+      (let [op (nth form 0)
+            e (nth form 1)
+            a (nth form 2)
+            expected (nth form 3)
+            v (nth form 4)]
+        (if (keyword? op)
+          (if (or (= (source op) ":db.fn/cas") (= (source op) ":db/cas"))
+            (forms (emit-cas-call e a expected v))
+            (error "five-item tx-data vectors currently support :db.fn/cas or :db/cas"))
+          (error "five-item tx-data vectors currently support :db.fn/cas or :db/cas")))
+      (if (= (count form) 4)
       (let [op (nth form 0)
             e (nth form 1)
             a (nth form 2)
@@ -930,7 +953,7 @@
                   (forms (emit-retract-attr-call e a))
                   (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
               (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
-          (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], [:db.fn/retractAttribute e :attr], or [:db/retractEntity e]"))))
+          (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], [:db.fn/retractAttribute e :attr], or [:db/retractEntity e]")))))
     (if (brace? form)
       (emit-tx-map-items form)
       (error "tx-data expects vector forms like [:db/add e :attr value] or map forms"))))
@@ -2440,6 +2463,17 @@
         (return db.datoms[datom-index].e true))))
   (return 0 false))
 
+(defn current-value-exists? [db: DB, entity: u64, attr: string, value: Value] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (value-equal? datom.v value))
+          (return true)))))
+  false)
+
 (defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
   (when (= value.kind .Keyword)
     (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
@@ -2531,6 +2565,13 @@
         (when (= data.op ":db/retractAttr")
           (append-retract-attr-ops! (addr resolved-ops) db e data.a)
           (continue))
+        (when (= data.op ":db.fn/cas")
+          (when (not (current-value-exists? db e data.a data.expected))
+            (return (Resolved-Tx {ok: false
+                                  error: "cas failed"
+                                  ops: resolved-ops
+                                  tx_meta: resolved-meta
+                                  tempids: resolved-tempids}))))
 	        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
 	          (when data.has_value_lookup_ref
 	            (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
