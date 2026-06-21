@@ -1653,6 +1653,48 @@
     (t.is (= (count current-email.rows) 1))
     (t.is (= current-email.rows[0].values[0].text "ada2@example.com"))))
 
+(t.deftest datascript-upsert-unique-identity-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :email]
+             [:db/add 101 :db/valueType :db.type/string]
+             [:db/add 101 :db/unique :db.unique/identity]
+             [:db/add 102 :db/ident :age]
+             [:db/add 102 :db/valueType :db.type/long]
+             [:db/add 102 :db/cardinality :db.cardinality/one]])
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ivan" :email "@1"}
+             {:db/id 2 :name "Petr" :email "@2"}])
+        no-id (vev.transact
+                (addr conn)
+                [{:name "Ivan" :age 35}])
+        with-tempid (vev.transact
+                      (addr conn)
+                      [{:db/id "1" :name "Ivan" :age 36}])
+        ivan (vev.q no-id.db_after
+               [:find ?age
+                :where
+                [1 :age ?age]])
+        ivan-updated (vev.q with-tempid.db_after
+                       [:find ?age
+                        :where
+                        [1 :age ?age]])]
+    (t.is no-id.ok)
+    (t.is (= (count no-id.tempids) 1))
+    (t.is (= no-id.tempids[0].e 1))
+    (t.is (= (count ivan.rows) 1))
+    (t.is (= ivan.rows[0].values[0].int_value 35))
+    (t.is with-tempid.ok)
+    (t.is (= with-tempid.tempids[0].tempid "1"))
+    (t.is (= with-tempid.tempids[0].e 1))
+    (t.is (= ivan-updated.rows[0].values[0].int_value 36))))
+
 (t.deftest transact-data-resolves-lookup-refs
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

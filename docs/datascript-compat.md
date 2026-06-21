@@ -28,7 +28,7 @@ Status key:
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, limits covered; recursion/components missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
 | `transact` | partial | Add/retract/map forms and explicit cardinality-one replacement covered; tx fns/CAS/call and unschematized default cardinality-one incomplete |
-| `upsert` | partial | Unique lookup exists; full DataScript upsert semantics missing |
+| `upsert` | partial | Unique-identity map/tempid upsert subset covered; conflict reporting, intermediate-db retries, and full ref upsert incomplete |
 | `lookup_refs` | partial | Lookup refs covered in query entity/value positions, pull, and tx entity positions; input lookup refs incomplete |
 | `ident` | partial | Idents covered in key paths |
 | `components` | missing | Component recursion/retract behavior missing |

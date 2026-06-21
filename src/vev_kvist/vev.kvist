@@ -2366,6 +2366,22 @@
             (return value false "ident not found"))))))
   (return value true ""))
 
+(defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
+  (let [found: u64 0
+        has-found false]
+    (for [data tx-data]
+      (when (and data.has_tempid
+                 (= data.tempid tempid)
+                 (= data.op ":db/add")
+                 (schema-unique? db data.a))
+        (let [[entity entity-ok] (resolve-lookup-ref db data.a data.v)]
+          (when entity-ok
+            (when (and has-found (not (= found entity)))
+              (return found false true))
+            (set! found entity)
+            (set! has-found true)))))
+    (return found has-found false)))
+
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
@@ -2389,8 +2405,18 @@
             (if ok
               (set! e existing)
               (do
-                (set! e next-e)
-                (set! next-e (+ next-e 1))
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity db tx-data data.tempid)]
+                  (when upsert-conflict
+                    (return (Resolved-Tx {ok: false
+                                          error: "conflicting upsert"
+                                          ops: resolved-ops
+                                          tx_meta: resolved-meta
+                                          tempids: resolved-tempids})))
+                  (if upsert-ok
+                    (set! e upsert-e)
+                    (do
+                      (set! e next-e)
+                      (set! next-e (+ next-e 1)))))
                 (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
         (when data.has_lookup_ref
           (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.lookup_attr data.lookup_value)]
