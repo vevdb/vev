@@ -2946,9 +2946,20 @@
 
 (defn schema-cardinality-one? [db: DB, attr: string] -> bool
   (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
-    (or (schema-unique? db attr)
-        (and has-cardinality
-             (= cardinality ":db.cardinality/one")))))
+    (if (and has-cardinality
+             (= cardinality ":db.cardinality/many"))
+      false
+      true)))
+
+(defn tx-op-cardinality-one? [db: DB, op: Tx-Op] -> bool
+  (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
+    (when (and has-cardinality
+               (= cardinality ":db.cardinality/many"))
+      (return false))
+    (when (and (not has-cardinality)
+               (= op.v.kind .Entity))
+      (return false))
+    true))
 
 (defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
   (when (not (schema-unique? db attr))
@@ -3232,13 +3243,11 @@
               tx_meta: (make [dynamic]Tx-Meta)
               tempids: (make [dynamic]Tempid)}))
 
-(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64, schema-active: bool]
-  (when (not schema-active)
-    (return))
+(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
   (let [current (build-db (clone-datoms after-datoms^))]
-    (when (not (schema-cardinality-one? current op.a))
+    (when (not (tx-op-cardinality-one? current op))
       (return))
     (let [indexes (slice current.eavt 0)
           low (lower-bound-index current indexes "eavt-ea" op.e op.a (Value {}))
@@ -3259,13 +3268,12 @@
   (let [before (build-db (clone-datoms conn^.db.datoms))
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count ops))
-        tx conn^.next_tx
-        schema-active (db-has-schema? before)]
+        tx conn^.next_tx]
     (let [[valid error] (validate-ops before ops)]
       (when (not valid)
         (return (failed-tx-report before error))))
     (for [op ops]
-      (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx schema-active)
+      (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx)
       (let [datom (Datom {e: op.e
                           a: op.a
                           v: op.v
