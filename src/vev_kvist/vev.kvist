@@ -23,12 +23,15 @@
   Value
   Var
   Wildcard
+  LookupRef
 ])
 
 (defstruct Term {
   kind: Term-Kind
   value: Value
   name: string
+  lookup_attr: string
+  lookup_value: Value
 })
 
 (defstruct Datom {
@@ -302,6 +305,9 @@
 
 (defn term-wildcard [] -> Term
   (Term {kind: .Wildcard}))
+
+(defn term-lookup-ref [attr: string, value: Value] -> Term
+  (Term {kind: .LookupRef lookup_attr: attr lookup_value: value}))
 
 (defn attr [name: string] -> Term
   (term-keyword name))
@@ -703,8 +709,17 @@
       (forms
         (emit-tx-map-ref-call e a value-tempid)
         (emit-tx-map-attrs value-tempid v)))
-    (forms
-      (emit-tx-data-call (keyword "db/add") e a v))))
+    (if (vector? v)
+      (emit-tx-map-vector-attr e a v)
+      (forms
+        (emit-tx-data-call (keyword "db/add") e a v)))))
+
+(defmacro- emit-tx-map-vector-attr [e a values]
+  (if (= (count values) 0)
+    (forms)
+    (concat
+      (forms (emit-tx-map-attr e a (first values)))
+      (emit-tx-map-vector-attr e a (rest values)))))
 
 (defmacro- emit-retract-entity-call [e]
   (if (lookup-ref? e)
@@ -831,6 +846,14 @@
       false)
     false))
 
+(defmacro- find-return-map-marker? [form]
+  (if (keyword? form)
+    (let [marker (source form)]
+      (or (= marker ":keys")
+          (= marker ":strs")
+          (= marker ":syms")))
+    false))
+
 (defmacro- emit-find-tuple-vars [forms]
   (if (= (count forms) 0)
     (forms)
@@ -840,7 +863,8 @@
 
 (defmacro- pull-find? [form]
   (if (list? form)
-    (if (= (count form) 3)
+    (if (or (= (count form) 3)
+            (= (count form) 4))
       (if (symbol? (first form))
         (= (source (first form)) "pull")
         false)
@@ -865,23 +889,25 @@
 (defmacro- emit-find-vars [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (pull-find? (first forms))
-      (emit-find-vars (rest forms))
-      (if (aggregate-find? (first forms))
+    (if (find-return-map-marker? (first forms))
+      (forms)
+      (if (pull-find? (first forms))
         (emit-find-vars (rest forms))
-        (if (find-scalar-marker? (first forms))
+        (if (aggregate-find? (first forms))
           (emit-find-vars (rest forms))
-          (if (find-collection? (first forms))
-            (forms
-              (emit-find-var (nth (first forms) 0))
-              (emit-find-vars (rest forms)))
-            (if (find-tuple? (first forms))
+          (if (find-scalar-marker? (first forms))
+            (emit-find-vars (rest forms))
+            (if (find-collection? (first forms))
               (forms
-                (emit-find-tuple-vars (first (first forms)))
+                (emit-find-var (nth (first forms) 0))
                 (emit-find-vars (rest forms)))
-              (forms
-                (emit-find-var (first forms))
-                (emit-find-vars (rest forms))))))))))
+              (if (find-tuple? (first forms))
+                (forms
+                  (emit-find-tuple-vars (first (first forms)))
+                  (emit-find-vars (rest forms)))
+                (forms
+                  (emit-find-var (first forms))
+                  (emit-find-vars (rest forms)))))))))))
 
 (defmacro- input-collection? [form]
   (if (vector? form)
@@ -911,6 +937,11 @@
 (defmacro- input-source? [form]
   (if (symbol? form)
     (= (source form) "$")
+    false))
+
+(defmacro- input-wildcard? [form]
+  (if (symbol? form)
+    (= (source form) "_")
     false))
 
 (defmacro- emit-input-var [form]
@@ -948,7 +979,9 @@
   (if (= (count forms) 0)
     (forms)
     (forms
-      (emit-find-var (first forms))
+      (if (input-wildcard? (first forms))
+        (quasiquote "")
+        (emit-find-var (first forms)))
       (emit-tuple-vars (rest forms)))))
 
 (defmacro- emit-tuple-input [form]
@@ -1020,11 +1053,17 @@
         (datalog-has-marker-before? (rest forms) marker stop)))))
 
 (defmacro- datalog-find-items [forms]
-  (if (datalog-has-marker-before? forms ":with" ":where")
-    (datalog-items-before forms ":with")
-    (if (datalog-has-marker-before? forms ":in" ":where")
-      (datalog-items-before forms ":in")
-      (datalog-items-before forms ":where"))))
+  (if (datalog-has-marker-before? forms ":keys" ":where")
+    (datalog-items-before forms ":keys")
+    (if (datalog-has-marker-before? forms ":strs" ":where")
+      (datalog-items-before forms ":strs")
+      (if (datalog-has-marker-before? forms ":syms" ":where")
+        (datalog-items-before forms ":syms")
+        (if (datalog-has-marker-before? forms ":with" ":where")
+          (datalog-items-before forms ":with")
+          (if (datalog-has-marker-before? forms ":in" ":where")
+            (datalog-items-before forms ":in")
+            (datalog-items-before forms ":where")))))))
 
 (defmacro- datalog-with-items [forms]
   (if (datalog-has-marker-before? forms ":with" ":where")
@@ -1048,11 +1087,16 @@
     (if (= (source form) "_")
       (quasiquote (term-wildcard))
       (quasiquote (term-var (unquote (source form)))))
-    (if (int? form)
-      (quasiquote (term-entity (unquote form)))
-      (if (keyword? form)
-        (quasiquote (term-keyword (unquote (source form))))
-        (quasiquote (unquote form))))))
+    (if (lookup-ref? form)
+      (quasiquote
+        (term-lookup-ref
+          (unquote (emit-attr (nth form 0)))
+          (unquote (emit-literal-value (nth form 1)))))
+      (if (int? form)
+        (quasiquote (term-entity (unquote form)))
+        (if (keyword? form)
+          (quasiquote (term-keyword (unquote (source form))))
+          (quasiquote (unquote form)))))))
 
 (defmacro- emit-attr-term [form]
   (if (symbol? form)
@@ -1582,24 +1626,26 @@
 
 (defmacro- emit-pull-find [form]
   (if (pull-find? form)
-    (let [var (nth form 1)
-          pattern (nth form 2)]
+    (let [var (if (= (count form) 4) (nth form 2) (nth form 1))
+          pattern (if (= (count form) 4) (nth form 3) (nth form 2))]
       (if (vector? pattern)
         (quasiquote
           (Pull-Find {var: (unquote (emit-find-var var))
                       attrs: ([]string [(splice (emit-pull-attrs pattern))])
                       pattern: ([]Pull-Spec [(splice (emit-pull-specs pattern))])}))
         (error "find pull expects a literal vector pattern")))
-    (error ":find pull expressions must be (pull ?e [...])")))
+    (error ":find pull expressions must be (pull ?e [...]) or (pull $ ?e [...])")))
 
 (defmacro- emit-pull-finds [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (pull-find? (first forms))
-      (forms
-        (emit-pull-find (first forms))
-        (emit-pull-finds (rest forms)))
-      (emit-pull-finds (rest forms)))))
+    (if (find-return-map-marker? (first forms))
+      (forms)
+      (if (pull-find? (first forms))
+        (forms
+          (emit-pull-find (first forms))
+          (emit-pull-finds (rest forms)))
+        (emit-pull-finds (rest forms))))))
 
 (defmacro- emit-aggregate-find [form]
   (if (aggregate-find? form)
@@ -1611,11 +1657,13 @@
 (defmacro- emit-aggregate-finds [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (aggregate-find? (first forms))
-      (forms
-        (emit-aggregate-find (first forms))
-        (emit-aggregate-finds (rest forms)))
-      (emit-aggregate-finds (rest forms)))))
+    (if (find-return-map-marker? (first forms))
+      (forms)
+      (if (aggregate-find? (first forms))
+        (forms
+          (emit-aggregate-find (first forms))
+          (emit-aggregate-finds (rest forms)))
+        (emit-aggregate-finds (rest forms))))))
 
 (defmacro datalog [form]
   (if (vector? form)
@@ -1716,6 +1764,18 @@
         (unquote query-form)
         ([]Query-Input [(splice (emit-query-input-list inputs))])))))
 
+(defmacro q-scalar [db query-form & inputs]
+  (quasiquote
+    (result-scalar (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-collection [db query-form & inputs]
+  (quasiquote
+    (result-collection (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-tuple [db query-form & inputs]
+  (quasiquote
+    (result-tuple (q (unquote db) (unquote query-form) (splice inputs)))))
+
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)
     (quasiquote
@@ -1726,11 +1786,24 @@
 
 (defmacro pull [db pattern entity]
   (if (vector? pattern)
-    (quasiquote
-      (pull-pattern-spec
-        (unquote db)
-        (unquote entity)
-        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+    (if (lookup-ref? entity)
+      (quasiquote
+        (pull-pattern-lookup-ref
+          (unquote db)
+          (unquote (emit-attr (nth entity 0)))
+          (unquote (emit-literal-value (nth entity 1)))
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+      (if (keyword? entity)
+        (quasiquote
+          (pull-pattern-ident
+            (unquote db)
+            (unquote (source entity))
+            ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+        (quasiquote
+          (pull-pattern-spec
+            (unquote db)
+            (unquote entity)
+            ([]Pull-Spec [(splice (emit-pull-specs pattern))])))))
     (quasiquote (pull-pattern (unquote db) (unquote entity) (unquote pattern)))))
 
 (defmacro pull-many [db pattern entities]
@@ -1840,7 +1913,8 @@
       (for [binding bindings]
         (let [next (clone-binding binding)]
           (for [name index tuple.vars]
-            (binding-store! (addr next) name input.values[index]))
+            (when (not (= name ""))
+              (binding-store! (addr next) name input.values[index])))
           (arr.push! out next))))
     out))
 
@@ -1855,7 +1929,8 @@
             (let [next (clone-binding binding)
                   offset (* row width)]
               (for [name index relation.vars]
-                (binding-store! (addr next) name input.values[(+ offset index)]))
+                (when (not (= name ""))
+                  (binding-store! (addr next) name input.values[(+ offset index)])))
               (arr.push! out next))))))
     out))
 
@@ -1902,10 +1977,22 @@
     .Var (return (binding-lookup binding term.name))
     :else (return (Value {}) false)))
 
+(defn resolve-entity-term [db: DB, term: Term, binding: Binding] -> [value: Value, ok: bool]
+  (when (= term.kind .LookupRef)
+    (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup_attr term.lookup_value)]
+      (return (value-entity entity) lookup-ok)))
+  (let [[resolved resolved-ok] (resolve-term term binding)]
+    (when (not resolved-ok)
+      (return resolved false))
+    (when (= resolved.kind .Keyword)
+      (let [[entity ident-ok] (schema-entity-for-attr db resolved.text)]
+        (return (value-entity entity) ident-ok)))
+    (return resolved true)))
+
 (defn predicate-pair-matches? [op: string, left: Value, right: Value] -> bool
   (if (= op "=")
     (value-equal? left right)
-    (if (= op "!=")
+    (if (or (= op "!=") (= op "not="))
       (not (value-equal? left right))
       (if (= op ">")
         (value-less? right left)
@@ -2213,12 +2300,9 @@
       report)))
 
 (defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
-  (when (and (= term.kind .Value)
-             (= term.value.kind .Keyword))
-    (let [[entity ok] (schema-entity-for-attr db term.value.text)]
-      (return (and ok
-                   (= actual.kind .Entity)
-                   (= actual.entity entity)))))
+  (let [[resolved resolved-ok] (resolve-entity-term db term binding^)]
+    (when resolved-ok
+      (return (value-equal? resolved actual))))
   (match-term? term actual binding))
 
 (defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
@@ -2254,7 +2338,8 @@
   true)
 
 (defn clause-selectivity-score [clause: Clause, binding: Binding] -> int
-  (let [[_ e-ok] (resolve-term clause.e binding)
+  (let [[ignored-e e-bound] (resolve-term clause.e binding)
+        e-ok (or (= clause.e.kind .LookupRef) e-bound)
         [a-value a-ok] (resolve-term clause.a binding)
         [_ v-ok] (resolve-term clause.v binding)]
     (when (and a-ok (not (= a-value.kind .Keyword)))
@@ -2280,16 +2365,11 @@
     best))
 
 (defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
-  (let [[e-value e-ok] (resolve-term clause.e binding)
+  (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
         [a-value a-ok] (resolve-term clause.a binding)
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
-    (when (and e-ok (= e-value.kind .Keyword))
-      (let [[entity ident-ok] (schema-entity-for-attr db e-value.text)]
-        (if ident-ok
-          (set! e-value (value-entity entity))
-          (return out))))
     (when (and a-ok
                (= a-value.kind .Keyword)
                (reverse-attr? a-value.text))
@@ -2419,7 +2499,7 @@
         (return out true)))))
 
 (defn apply-get-else [db: DB, binding: Binding, clause: Get-Else] -> [next: Binding, ok: bool]
-  (let [[entity entity-ok] (resolve-term clause.e binding)]
+  (let [[entity entity-ok] (resolve-entity-term db clause.e binding)]
     (when (not (and entity-ok (= entity.kind .Entity)))
       (return binding false))
     (let [[value value-ok] (pull-attr-value db entity.entity clause.a)]
@@ -2428,7 +2508,7 @@
         (binding-with-value binding clause.out clause.default_value)))))
 
 (defn apply-get-some [db: DB, binding: Binding, clause: Get-Some] -> [next: Binding, ok: bool]
-  (let [[entity entity-ok] (resolve-term clause.e binding)]
+  (let [[entity entity-ok] (resolve-entity-term db clause.e binding)]
     (when (not (and entity-ok (= entity.kind .Entity)))
       (return binding false))
     (for [attr clause.attrs]
@@ -2702,6 +2782,25 @@
 (defn q-query [db: DB, query: Query] -> Result-Set
   (q-query-with-inputs db query ([]Query-Input [])))
 
+(defn result-scalar [result: Result-Set] -> [value: Value, ok: bool]
+  (when (not (= (count result.rows) 1))
+    (return (Value {}) false))
+  (when (not (= (count result.rows[0].values) 1))
+    (return (Value {}) false))
+  (return result.rows[0].values[0] true))
+
+(defn result-collection [result: Result-Set] -> [dynamic]Value
+  (let [out (make [dynamic]Value 0 (count result.rows))]
+    (for [row result.rows]
+      (when (= (count row.values) 1)
+        (arr.push! out row.values[0])))
+    out))
+
+(defn result-tuple [result: Result-Set] -> [dynamic]Value
+  (if (= (count result.rows) 1)
+    (arr.into [dynamic]Value (slice result.rows[0].values 0))
+    (make [dynamic]Value)))
+
 (defn q-strings [db: DB, query: Query] -> [dynamic]string
   (let [result (q-query db query)
         out (make [dynamic]string 0 (count result.rows))]
@@ -2811,6 +2910,18 @@
     (for [spec pattern]
       (pull-spec-attr! (addr out) db entity spec))
     (Pull-Result {e: entity attrs: out})))
+
+(defn pull-pattern-lookup-ref [db: DB, attr: string, value: Value, pattern: []Pull-Spec] -> Pull-Result
+  (let [[entity ok] (resolve-lookup-ref db attr value)]
+    (if ok
+      (pull-pattern-spec db entity pattern)
+      (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}))))
+
+(defn pull-pattern-ident [db: DB, ident: string, pattern: []Pull-Spec] -> Pull-Result
+  (let [[entity ok] (schema-entity-for-attr db ident)]
+    (if ok
+      (pull-pattern-spec db entity pattern)
+      (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}))))
 
 (defn flat-pull-spec [attr: string] -> Pull-Spec
   (Pull-Spec {a: attr

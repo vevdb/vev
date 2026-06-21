@@ -203,6 +203,19 @@
     (t.is (= (count result.rows) 1))
     (t.is (= result.rows[0].values[0].entity 1))))
 
+(t.deftest datalog-macro-supports-tuple-input-wildcards
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find ?e
+                  :in [?name _]
+                  :where
+                  [?e :user/name ?name]]
+                 ["Ada" 999])]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].entity 1))))
+
 (t.deftest datalog-macro-supports-relation-inputs
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -214,6 +227,19 @@
                   [?e :user/name ?name]
                   [?e :user/age ?age]]
                  [["Ada" 37] ["Nobody" 99]])]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].entity 1))))
+
+(t.deftest datalog-macro-supports-relation-input-wildcards
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find ?e
+                  :in [[?name _]]
+                  :where
+                  [?e :user/name ?name]]
+                 [["Ada" 1] ["Nobody" 2]])]
     (t.is (= (count result.rows) 1))
     (t.is (= result.rows[0].values[0].entity 1))))
 
@@ -244,6 +270,18 @@
     (t.is (= (count result.rows) 1))
     (t.is (= result.rows[0].values[0].int_value 37))
     (t.is (= result.rows[0].values[1].int_value 41))))
+
+(t.deftest datalog-macro-supports-not-equal-predicate-alias
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find ?name
+                  :where
+                  [?e :user/name ?name]
+                  [(not= ?name "Ada")]])]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].text "Grace"))))
 
 (t.deftest datalog-macro-supports-not-clauses
   (defer (free_all context.allocator))
@@ -380,6 +418,35 @@
       (t.is (= result.rows[0].values[1].text "ada@example.com"))
       (t.is (= (count missing.rows) 0)))))
 
+(t.deftest datalog-macro-supports-lookup-ref-entity-terms
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 100 :db/ident :user/email]
+                [:db/add 100 :db/valueType :db.type/string]
+                [:db/add 100 :db/unique :db.unique/identity]]))
+    (discard (vev.seed-people (addr conn)))
+    (let [name (vev.q conn.db
+                 [:find ?name
+                  :where
+                  [[:user/email "ada@example.com"] :user/name ?name]])
+          email (vev.q conn.db
+                  [:find ?email
+                   :where
+                   [(get-else $ [:user/email "ada@example.com"] :user/email "none") ?email]])
+          some (vev.q conn.db
+                 [:find ?attr ?value
+                  :where
+                  [(get-some $ [:user/email "ada@example.com"] :user/missing :user/name) [?attr ?value]]])]
+      (t.is (= (count name.rows) 1))
+      (t.is (= name.rows[0].values[0].text "Ada"))
+      (t.is (= (count email.rows) 1))
+      (t.is (= email.rows[0].values[0].text "ada@example.com"))
+      (t.is (= (count some.rows) 1))
+      (t.is (= some.rows[0].values[0].text ":user/name"))
+      (t.is (= some.rows[0].values[1].text "Ada")))))
+
 (t.deftest datalog-macro-supports-ground
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -471,6 +538,18 @@
     (t.is (= result.rows[0].pulls[0].attrs[0].v.entity 1))
     (t.is (= result.rows[0].pulls[0].attrs[1].v.text "Ada"))))
 
+(t.deftest datalog-macro-supports-find-pull-source-var
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        result (vev.q report.db_after
+                 [:find (pull $ ?e [:db/id :user/name])
+                  :where
+                  [?e :user/email "ada@example.com"]])]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].pulls[0].attrs[0].v.entity 1))
+    (t.is (= result.rows[0].pulls[0].attrs[1].v.text "Ada"))))
+
 (t.deftest datalog-macro-accepts-scalar-find
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -509,6 +588,62 @@
     (t.is (= result.rows[0].values[1].int_value 37))
     (t.is (= result.rows[1].values[0].text "Grace"))
     (t.is (= result.rows[1].values[1].int_value 41))))
+
+(t.deftest query-shape-helpers-return-scalar-collection-and-tuple
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        [scalar scalar-ok] (vev.q-scalar report.db_after
+                             [:find ?name .
+                              :where
+                              [?e :user/email "ada@example.com"]
+                              [?e :user/name ?name]])
+        collection (vev.q-collection report.db_after
+                     [:find [?name ...]
+                      :where
+                      [?e :user/name ?name]])
+        tuple (vev.q-tuple report.db_after
+                [:find [[?name ?age]]
+                 :where
+                 [?e :user/email "ada@example.com"]
+                 [?e :user/name ?name]
+                 [?e :user/age ?age]])]
+    (t.is scalar-ok)
+    (t.is (= scalar.text "Ada"))
+    (t.is (= (count collection) 2))
+    (t.is (= collection[0].text "Ada"))
+    (t.is (= collection[1].text "Grace"))
+    (t.is (= (count tuple) 2))
+    (t.is (= tuple[0].text "Ada"))
+    (t.is (= tuple[1].int_value 37))))
+
+(t.deftest datalog-macro-accepts-return-map-find-markers
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        keys (vev.q report.db_after
+               [:find ?name ?age :keys name age
+                :where
+                [?e :user/email "ada@example.com"]
+                [?e :user/name ?name]
+                [?e :user/age ?age]])
+        strs (vev.q report.db_after
+               [:find ?name :strs name
+                :where
+                [?e :user/email "ada@example.com"]
+                [?e :user/name ?name]])
+        syms (vev.q report.db_after
+               [:find ?name :syms name
+                :where
+                [?e :user/email "ada@example.com"]
+                [?e :user/name ?name]])]
+    (t.is (= (count keys.rows) 1))
+    (t.is (= keys.rows[0].values[0].text "Ada"))
+    (t.is (= keys.rows[0].values[1].int_value 37))
+    (t.is (= (count strs.rows) 1))
+    (t.is (= strs.rows[0].values[0].text "Ada"))
+    (t.is (= (count syms.rows) 1))
+    (t.is (= syms.rows[0].values[0].text "Ada"))))
 
 (t.deftest datalog-macro-accepts-with
   (defer (free_all context.allocator))
@@ -709,6 +844,41 @@
       (t.is (= result.rows[0].values[0].entity 2))
       (t.is (= result.rows[0].values[1].text "Grace")))))
 
+(t.deftest transact-data-supports-retract-entity-lookup-ref
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 100 :db/ident :user/email]
+                [:db/add 100 :db/valueType :db.type/string]
+                [:db/add 100 :db/unique :db.unique/identity]]))
+    (discard (vev.seed-people (addr conn)))
+    (let [report (vev.transact (addr conn) [[:db/retractEntity [:user/email "ada@example.com"]]])
+          names (vev.q-collection report.db_after
+                  [:find [?name ...]
+                   :where
+                   [?e :user/name ?name]])]
+      (t.is report.ok)
+      (t.is (= (count report.tx_data) 5))
+      (t.is (= (count names) 1))
+      (t.is (= names[0].text "Grace")))))
+
+(t.deftest transact-data-supports-retract-entity-ident
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 10 :db/ident :user/ada]
+                [:db/add 10 :user/name "Ada"]]))
+    (let [report (vev.transact (addr conn) [[:db/retractEntity :user/ada]])
+          names (vev.q-collection report.db_after
+                  [:find [?name ...]
+                   :where
+                   [?e :user/name ?name]])]
+      (t.is report.ok)
+      (t.is (= (count report.tx_data) 2))
+      (t.is (= (count names) 0)))))
+
 (t.deftest transact-data-resolves-string-tempids
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -872,6 +1042,24 @@
     (t.is (= report.tempids[0].tempid "friend"))
     (t.is (= (count result.rows) 1))
     (t.is (= result.rows[0].values[0].text "Ada"))))
+
+(t.deftest transact-data-supports-map-vector-values
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 1
+                   :user/name "Ada"
+                   :user/tag ["engineer" "lisp"]}])
+        tags (vev.q-collection report.db_after
+               [:find [?tag ...]
+                :where
+                [1 :user/tag ?tag]])]
+    (t.is report.ok)
+    (t.is (= (count report.tx_data) 3))
+    (t.is (= (count tags) 2))
+    (t.is (= tags[0].text "engineer"))
+    (t.is (= tags[1].text "lisp"))))
 
 (t.deftest transact-data-supports-map-forms-with-db-id-last
   (defer (free_all context.allocator))
@@ -1047,6 +1235,32 @@
       (t.is (= (count pulled.attrs) 2))
       (t.is (= pulled.attrs[0].v.entity 2))
       (t.is (= pulled.attrs[1].v.text "Grace")))))
+
+(t.deftest pull-accepts-lookup-ref-entity
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 100 :db/ident :user/email]
+                [:db/add 100 :db/valueType :db.type/string]
+                [:db/add 100 :db/unique :db.unique/identity]]))
+    (discard (vev.seed-people (addr conn)))
+    (let [pulled (vev.pull conn.db [:db/id :user/name] [:user/email "ada@example.com"])]
+      (t.is (= (count pulled.attrs) 2))
+      (t.is (= pulled.attrs[0].v.entity 1))
+      (t.is (= pulled.attrs[1].v.text "Ada")))))
+
+(t.deftest pull-accepts-ident-entity
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 10 :db/ident :user/ada]
+                [:db/add 10 :user/name "Ada"]]))
+    (let [pulled (vev.pull conn.db [:db/id :user/name] :user/ada)]
+      (t.is (= (count pulled.attrs) 2))
+      (t.is (= pulled.attrs[0].v.entity 10))
+      (t.is (= pulled.attrs[1].v.text "Ada")))))
 
 (t.deftest pull-supports-default-attr-option
   (defer (free_all context.allocator))

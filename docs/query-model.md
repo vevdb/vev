@@ -87,6 +87,7 @@ Supported now:
 - `:find` with one or more variables
 - `:with`
 - scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [[?x ?y]]`
+- return-map find markers: `:keys`, `:strs`, and `:syms`
 - standalone and grouped `count`, `min`, `max`, `sum`, and `avg` aggregates
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
@@ -95,6 +96,7 @@ Supported now:
 - wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
 - ident keywords in entity position
+- lookup refs in entity position, such as `[:user/email "ada@example.com"]`
 - entity refs as values
 - joins through repeated variables
 - positional `:in` variables
@@ -102,8 +104,9 @@ Supported now:
 - collection `:in` variables shaped like `[?x ...]`
 - tuple `:in` variables shaped like `[?a ?b]`
 - relation `:in` variables shaped like `[[?a ?b]]`
-- pull expressions in `:find`
-- predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`, including chained comparisons
+- `_` holes in tuple and relation inputs
+- pull expressions in `:find`, with optional `$` source var
+- predicate clauses: `=`, `!=`, `not=`, `<`, `<=`, `>`, `>=`, including chained comparisons
 - `missing?`
 - `get-else`
 - `get-some`
@@ -128,6 +131,13 @@ Example:
 
 ```clojure
 (v.q db
+  [:find ?name
+   :where
+   [[:user/email "ada@example.com"] :user/name ?name]])
+```
+
+```clojure
+(v.q db
   [:find ?source
    :where
    [2 :_user/friend ?source]])
@@ -140,11 +150,12 @@ Example:
    [:user/ada :user/name ?name]])
 ```
 
-Vev accepts DataScript scalar and collection find syntax, currently lowered to
-the same row-oriented `Result-Set` representation:
+Vev accepts DataScript scalar, collection, and tuple find syntax. `q` still
+returns the row-oriented `Result-Set`; use `q-scalar`, `q-collection`, or
+`q-tuple` when a shaped result is more convenient:
 
 ```clojure
-(v.q db
+(v.q-scalar db
   [:find ?name .
    :where
    [?e :user/email "ada@example.com"]
@@ -152,15 +163,26 @@ the same row-oriented `Result-Set` representation:
 ```
 
 ```clojure
-(v.q db
+(v.q-collection db
   [:find [?name ...]
    :where
    [?e :user/name ?name]])
 ```
 
 ```clojure
-(v.q db
+(v.q-tuple db
   [:find [[?name ?age]]
+   :where
+   [?e :user/name ?name]
+   [?e :user/age ?age]])
+```
+
+Return-map markers are accepted with the same current row-oriented result
+shape:
+
+```clojure
+(v.q db
+  [:find ?name ?age :keys name age
    :where
    [?e :user/name ?name]
    [?e :user/age ?age]])
@@ -257,7 +279,23 @@ the same row-oriented `Result-Set` representation:
 
 ```clojure
 (v.q db
+  [:find ?e
+   :in [[?name _]]
+   :where
+   [?e :user/name ?name]]
+  [["Ada" 1] ["Grace" 2]])
+```
+
+```clojure
+(v.q db
   [:find (pull ?e [:db/id :user/name])
+   :where
+   [?e :user/email "ada@example.com"]])
+```
+
+```clojure
+(v.q db
+  [:find (pull $ ?e [:db/id :user/name])
    :where
    [?e :user/email "ada@example.com"]])
 ```
