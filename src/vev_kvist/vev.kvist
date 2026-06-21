@@ -284,6 +284,32 @@
 (defn string-less? [left: string, right: string] -> bool
   (< (strings.compare left right) 0))
 
+(defn slash-index [text: string] -> int
+  (for [_ index text]
+    (when (= (slice text index (+ index 1)) "/")
+      (return index)))
+  -1)
+
+(defn keyword-less? [left: string, right: string] -> bool
+  (let [left-slash (slash-index left)
+        right-slash (slash-index right)
+        left-ns ""
+        right-ns ""]
+    (when (not (= left-slash -1))
+      (set! left-ns (slice left 1 left-slash)))
+    (when (not (= right-slash -1))
+      (set! right-ns (slice right 1 right-slash)))
+    (let [ns-compare (strings.compare left-ns right-ns)]
+      (when (not (= ns-compare 0))
+        (return (< ns-compare 0))))
+    (let [left-name (slice left 1)
+          right-name (slice right 1)]
+      (when (not (= left-slash -1))
+        (set! left-name (slice left (+ left-slash 1))))
+      (when (not (= right-slash -1))
+        (set! right-name (slice right (+ right-slash 1))))
+      (string-less? left-name right-name))))
+
 (defn value-less? [left: Value, right: Value] -> bool
   (if (not (= left.kind right.kind))
     (< (int left.kind) (int right.kind))
@@ -292,7 +318,7 @@
       .String (string-less? left.text right.text)
       .Int (< left.int_value right.int_value)
       .Bool (and (not left.bool_value) right.bool_value)
-      .Keyword (string-less? left.text right.text)
+      .Keyword (keyword-less? left.text right.text)
       .Nil false
       :else false)))
 
@@ -388,6 +414,9 @@
 
 (defn add-value-lookup-ref [e: u64, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" e: e a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
+
+(defn add-tempid-value-lookup-ref [tempid: string, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
 
 (defn retract-value-lookup-ref [e: u64, a: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" e: e a: a value_lookup_attr: lookup-attr value_lookup_value: lookup-value has_value_lookup_ref: true}))
@@ -704,11 +733,18 @@
           (unquote (emit-attr a))
           (unquote (emit-literal-value v))))
       (if (string? e)
-        (quasiquote
-          ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
-            (unquote e)
-            (unquote (emit-attr a))
-            (unquote (emit-literal-value v))))
+        (if (lookup-ref? v)
+          (quasiquote
+            (add-tempid-value-lookup-ref
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-attr (nth v 0)))
+              (unquote (emit-literal-value (nth v 1)))))
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v)))))
 	    (if (keyword? e)
 	      (quasiquote
 	        ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
@@ -2557,6 +2593,29 @@
         (return data.expected false "lookup ref not found"))))
   (resolve-tx-value db data.a data.expected))
 
+(defn resolve-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
+  (when data.has_value_lookup_ref
+    (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
+      (if lookup-ok
+        (return (value-entity lookup-e) true "")
+        (return data.v false "lookup ref not found"))))
+  (resolve-tx-value db data.a data.v))
+
+(defn tx-data-has-tempid? [tx-data: []Tx-Data, tempid: string] -> bool
+  (for [data tx-data]
+    (when (and data.has_tempid
+               (= data.tempid tempid))
+      (return true)))
+  false)
+
+(defn ref-string-tempid? [db: DB, tx-data: []Tx-Data, attr: string, value: Value] -> bool
+  (when (not (= value.kind .String))
+    (return false))
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (and has-type
+         (= schema-type ":db.type/ref")
+         (tx-data-has-tempid? tx-data value.text))))
+
 (defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
   (let [found: u64 0
         has-found false]
@@ -2565,12 +2624,14 @@
                  (= data.tempid tempid)
                  (= data.op ":db/add")
                  (schema-unique? db data.a))
-        (let [[entity entity-ok] (resolve-lookup-ref db data.a data.v)]
-          (when entity-ok
-            (when (and has-found (not (= found entity)))
-              (return found false true))
-            (set! found entity)
-            (set! has-found true)))))
+        (let [[value value-ok _] (resolve-tx-data-value db data)]
+          (when value-ok
+            (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
+              (when entity-ok
+                (when (and has-found (not (= found entity)))
+                  (return found false true))
+                (set! found entity)
+                (set! has-found true)))))))
     (return found has-found false)))
 
 (defn db-with-resolved-ops [db: DB, ops: []Tx-Op] -> DB
@@ -2609,7 +2670,7 @@
             (if ok
               (set! e existing)
               (do
-                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity db tx-data data.tempid)]
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data data.tempid)]
                   (when upsert-conflict
                     (return (Resolved-Tx {ok: false
                                           error: "conflicting upsert"
@@ -2682,14 +2743,29 @@
 	                                        tempids: resolved-tempids}))))))
 	          (when skip-data
 	            (continue))
-	          (when data.has_value_tempid
-	            (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.value_tempid)]
+	          (when (or data.has_value_tempid
+                       (ref-string-tempid? current-db tx-data data.a v))
+	            (let [value-tempid data.value_tempid]
+              (when (not data.has_value_tempid)
+                (set! value-tempid v.text))
+              (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
               (if ok
                 (set! v (value-entity existing))
-                (do
-                  (set! v (value-entity next-e))
-                  (arr.push! resolved-tempids (Tempid {tempid: data.value_tempid e: next-e}))
-                  (set! next-e (+ next-e 1))))))
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data value-tempid)]
+                  (when upsert-conflict
+                    (return (Resolved-Tx {ok: false
+                                          error: "conflicting upsert"
+                                          ops: resolved-ops
+                                          tx_meta: resolved-meta
+                                          tempids: resolved-tempids})))
+                  (if upsert-ok
+                    (do
+                      (set! v (value-entity upsert-e))
+                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: upsert-e})))
+                    (do
+                      (set! v (value-entity next-e))
+                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: next-e}))
+                      (set! next-e (+ next-e 1)))))))))
           (when (not value-ok)
             (return (Resolved-Tx {ok: false
                                   error: value-error
@@ -3182,10 +3258,10 @@
   (when (or (= aggregate.op "count")
             (= aggregate.op "count-distinct"))
     (return (value-int (+ current.int_value 1))))
-  (when (not (= value.kind .Int))
-    (return current))
   (when (or (= aggregate.op "sum")
             (= aggregate.op "avg"))
+    (when (not (= value.kind .Int))
+      (return current))
     (return (value-int (+ current.int_value value.int_value))))
   (when (= current.kind .Nil)
     (return value))

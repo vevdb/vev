@@ -1444,6 +1444,24 @@
     (t.is (= aggregate-result.rows[0].values[4].int_value 2))
     (t.is (= aggregate-result.rows[0].values[5].int_value 1))))
 
+(t.deftest datascript-query-keyword-min-max-aggregate-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        result (vev.q conn.db
+                 [:find ?group (min ?x) (max ?x)
+                  :in [[?group ?x]]]
+                 [[:a :a-/b]
+                  [:a :a/b]
+                  [:b :b/c]
+                  [:b :b/a]])]
+    (t.is (= (count result.rows) 2))
+    (t.is (= result.rows[0].values[0].text ":a"))
+    (t.is (= result.rows[0].values[1].text ":a/b"))
+    (t.is (= result.rows[0].values[2].text ":a-/b"))
+    (t.is (= result.rows[1].values[0].text ":b"))
+    (t.is (= result.rows[1].values[1].text ":b/a"))
+    (t.is (= result.rows[1].values[2].text ":b/c"))))
+
 (t.deftest datalog-supports-grouped-sum-avg-aggregates
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1871,6 +1889,232 @@
     (t.is (= list-tempid.tempids[0].tempid "2"))
     (t.is (= list-tempid.tempids[0].e 1))
     (t.is (= ivan-list-updated.rows[0].values[0].int_value 37))))
+
+(t.deftest datascript-upsert-by-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :ref]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :age]
+             [:db/add 101 :db/valueType :db.type/long]
+             [:db/add 101 :db/cardinality :db.cardinality/one]
+             [:db/add 2 :name "Petr"]
+             [:db/add 3 :name "Dima"]
+             [:db/add 2 :ref 3]])
+        report (vev.transact
+                 (addr conn)
+                 [{:ref 3 :age 36}])
+        [age age-ok] (vev.q-scalar report.db_after
+                       [:find ?age .
+                        :where
+                        [2 :age ?age]])]
+    (t.is report.ok)
+    (t.is (= (count report.tempids) 1))
+    (t.is (= report.tempids[0].e 2))
+    (t.is age-ok)
+    (t.is (= age.int_value 36))))
+
+(t.deftest datascript-upsert-by-lookup-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :ref]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/unique :db.unique/identity]
+             [:db/add 102 :db/ident :age]
+             [:db/add 102 :db/valueType :db.type/long]
+             [:db/add 102 :db/cardinality :db.cardinality/one]
+             [:db/add 2 :name "Petr"]
+             [:db/add 3 :name "Dima"]
+             [:db/add 2 :ref 3]])
+        report (vev.transact
+                 (addr conn)
+                 [{:ref [:name "Dima"] :age 36}])
+        [age age-ok] (vev.q-scalar report.db_after
+                       [:find ?age .
+                        :where
+                        [2 :age ?age]])]
+    (t.is report.ok)
+    (t.is (= (count report.tempids) 1))
+    (t.is (= report.tempids[0].e 2))
+    (t.is age-ok)
+    (t.is (= age.int_value 36))))
+
+(t.deftest datascript-upsert-string-tempid-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :ref]
+             [:db/add 101 :db/valueType :db.type/ref]
+             {:name "Alice"}])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id "user" :name "Alice"}
+                  {:age 36 :ref "user"}])
+        [ref ref-ok] (vev.q-scalar report.db_after
+                       [:find ?ref .
+                        :where
+                        [?e :age 36]
+                        [?e :ref ?ref]])
+        [alice alice-ok] (vev.q-scalar report.db_after
+                           [:find ?alice .
+                            :where
+                            [?alice :name "Alice"]])]
+    (t.is report.ok)
+    (t.is (= (count report.tempids) 2))
+    (t.is (= report.tempids[0].tempid "user"))
+    (t.is ref-ok)
+    (t.is alice-ok)
+    (t.is (= report.tempids[0].e alice.entity))
+    (t.is (= ref.entity alice.entity))))
+
+(t.deftest datascript-upsert-string-tempid-ref-vector-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :ref]
+             [:db/add 101 :db/valueType :db.type/ref]
+             {:name "Alice"}])
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add "user" :name "Alice"]
+                  {:age 36 :ref "user"}])
+        [ref ref-ok] (vev.q-scalar report.db_after
+                       [:find ?ref .
+                        :where
+                        [?e :age 36]
+                        [?e :ref ?ref]])
+        [alice alice-ok] (vev.q-scalar report.db_after
+                           [:find ?alice .
+                            :where
+                            [?alice :name "Alice"]])]
+    (t.is report.ok)
+    (t.is ref-ok)
+    (t.is alice-ok)
+    (t.is (= ref.entity alice.entity))))
+
+(t.deftest datascript-upsert-over-intermediate-db-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :age]
+             [:db/add 101 :db/valueType :db.type/long]
+             [:db/add 101 :db/cardinality :db.cardinality/one]])
+        report (vev.transact
+                 (addr conn)
+                 [{:name "Igor" :age 35}
+                  {:name "Igor" :age 36}])
+        ages (vev.q-collection report.db_after
+               [:find [?age ...]
+                :where
+                [?e :name "Igor"]
+                [?e :age ?age]])]
+    (t.is report.ok)
+    (t.is (= (count ages) 1))
+    (t.is (= ages[0].int_value 36))))
+
+(t.deftest datascript-upsert-over-intermediate-db-tempid-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :age]
+             [:db/add 101 :db/valueType :db.type/long]
+             [:db/add 101 :db/cardinality :db.cardinality/one]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id "igor" :name "Igor" :age 35}
+                  {:db/id "igor" :name "Igor" :age 36}])
+        ages (vev.q-collection report.db_after
+               [:find [?age ...]
+                :where
+                [?e :name "Igor"]
+                [?e :age ?age]])]
+    (t.is report.ok)
+    (t.is (= (count ages) 1))
+    (t.is (= ages[0].int_value 36))))
+
+(t.deftest datascript-upsert-conflicting-unique-fields-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :email]
+             [:db/add 101 :db/valueType :db.type/string]
+             [:db/add 101 :db/unique :db.unique/identity]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :email "@2"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:name "Ivan" :email "@2" :age 35}])]
+    (t.is (not report.ok))
+    (t.is (= report.error "conflicting upsert"))))
+
+(t.deftest datascript-upsert-conflicts-with-explicit-id-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 1 :name "Ivan"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 2 :name "Ivan" :age 36}])]
+    (t.is (not report.ok))
+    (t.is (= report.error "schema unique conflict"))))
+
+(t.deftest datascript-upsert-over-intermediate-db-different-tempids-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :age]
+             [:db/add 101 :db/valueType :db.type/long]
+             [:db/add 101 :db/cardinality :db.cardinality/one]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id "igor-1" :name "Igor" :age 35}
+                  {:db/id "igor-2" :name "Igor" :age 36}])
+        ages (vev.q-collection report.db_after
+               [:find [?age ...]
+                :where
+                [?e :name "Igor"]
+                [?e :age ?age]])]
+    (t.is report.ok)
+    (t.is (= (count report.tempids) 2))
+    (t.is (= report.tempids[0].e report.tempids[1].e))
+    (t.is (= (count ages) 1))
+    (t.is (= ages[0].int_value 36))))
 
 (t.deftest transact-data-resolves-lookup-refs
   (defer (free_all context.allocator))
