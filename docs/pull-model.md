@@ -138,6 +138,12 @@ Forward nested refs can use `:limit` to cap cardinality-many attrs:
 (v.pull db [{:user/friend [:user/name :limit 2]}] 1)
 ```
 
+The limited child pattern can include multiple attrs:
+
+```clojure
+(v.pull db [{:user/friend [:db/id :user/name :limit 2]}] 1)
+```
+
 Nested reverse refs can use `:limit` to cap fan-out:
 
 ```clojure
@@ -160,7 +166,6 @@ Delay these until later unless they become immediately necessary:
 
 - recursion limits
 - richer attribute options such as `:xform`
-- option parsing for multiple child attrs, e.g. `[:db/id :user/name :limit 2]`
 
 This keeps the early implementation small while preserving syntax direction.
 
