@@ -126,6 +126,10 @@
   join_vars: []string
 })
 
+(defstruct Or-Group {
+  branches: []Not-Group
+})
+
 (defstruct Pull-Find {
   var: string
   attrs: []string
@@ -139,6 +143,7 @@
   clauses: [dynamic]Clause
   predicates: [dynamic]Predicate
   not_groups: [dynamic]Not-Group
+  or_groups: [dynamic]Or-Group
   pulls: [dynamic]Pull-Find
 })
 
@@ -851,6 +856,16 @@
       false)
     false))
 
+(defmacro- or-clause? [form]
+  (if (list? form)
+    (if (> (count form) 1)
+      (let [head (first form)]
+        (if (symbol? head)
+          (= (source head) "or")
+          false))
+      false)
+    false))
+
 (defmacro- emit-not-join-vars [forms]
   (if (= (count forms) 0)
     (forms)
@@ -872,6 +887,25 @@
         (not-group ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
       (error "not clauses must have shape (not [e a v] ...) or (not-join [?x] [e a v] ...)"))))
 
+(defmacro- emit-datalog-or-branch [form]
+  (if (vector? form)
+    (quasiquote
+      (not-group ([]Clause [(unquote (emit-datalog-clause form))])))
+    (error "or branches currently support single data clauses")))
+
+(defmacro- emit-datalog-or-branches [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-datalog-or-branch (first forms))
+      (emit-datalog-or-branches (rest forms)))))
+
+(defmacro- emit-datalog-or-group [form]
+  (if (or-clause? form)
+    (quasiquote
+      (or-group ([]Not-Group [(splice (emit-datalog-or-branches (rest form)))])))
+    (error "or clauses must have shape (or [e a v] [e a v] ...)")))
+
 (defmacro- emit-datalog-predicate [form]
   (if (predicate-clause? form)
     (let [expr (first form)]
@@ -892,9 +926,11 @@
         (emit-datalog-clauses (rest forms))
         (if (not-join-clause? (first forms))
           (emit-datalog-clauses (rest forms))
-          (forms
-            (emit-datalog-clause (first forms))
-            (emit-datalog-clauses (rest forms))))))))
+          (if (or-clause? (first forms))
+            (emit-datalog-clauses (rest forms))
+            (forms
+              (emit-datalog-clause (first forms))
+              (emit-datalog-clauses (rest forms)))))))))
 
 (defmacro- emit-datalog-predicates [forms]
   (if (= (count forms) 0)
@@ -917,6 +953,15 @@
           (emit-datalog-not-group (first forms))
           (emit-datalog-not-groups (rest forms)))
         (emit-datalog-not-groups (rest forms))))))
+
+(defmacro- emit-datalog-or-groups [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (or-clause? (first forms))
+      (forms
+        (emit-datalog-or-group (first forms))
+        (emit-datalog-or-groups (rest forms)))
+      (emit-datalog-or-groups (rest forms)))))
 
 (defmacro- emit-pull-attrs [forms]
   (if (= (count forms) 0)
@@ -1051,6 +1096,7 @@
                 ([]Clause [(splice (emit-datalog-clauses where-items))])
                 ([]Predicate [(splice (emit-datalog-predicates where-items))])
                 ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
+                ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
                 ([]Pull-Find [(splice (emit-pull-finds find-items))]))))
           (error "datalog query must start with :find"))
         (error "datalog query must start with :find")))
@@ -1137,13 +1183,17 @@
               has_join: true
               join_vars: join-vars}))
 
-(defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, pulls: []Pull-Find] -> Query
+(defn or-group [branches: []Not-Group] -> Or-Group
+  (Or-Group {branches: branches}))
+
+(defn query [find: []string, inputs: []string, collection-inputs: []string, clauses: []Clause, predicates: []Predicate, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-inputs (arr.into [dynamic]string inputs)
         owned-collection-inputs (arr.into [dynamic]string collection-inputs)
         owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
         owned-not-groups (arr.into [dynamic]Not-Group not-groups)
+        owned-or-groups (arr.into [dynamic]Or-Group or-groups)
         owned-pulls (arr.into [dynamic]Pull-Find pulls)]
     (Query {find: owned-find
             inputs: owned-inputs
@@ -1151,6 +1201,7 @@
             clauses: owned-clauses
             predicates: owned-predicates
             not_groups: owned-not-groups
+            or_groups: owned-or-groups
             pulls: owned-pulls})))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
@@ -1607,6 +1658,24 @@
               (return true)))))))
   false)
 
+(defn bindings-after-clause-group [db: DB, group: Not-Group, binding: Binding] -> [dynamic]Binding
+  (let [bindings ([dynamic]Binding [(clone-binding binding)])]
+    (for [clause group.clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (let [candidates (clause-candidate-indexes db clause candidate-binding) :defer]
+            (for [datom-index candidates]
+              (let [datom db.datoms[datom-index]]
+                (when (datom-current-at? db datom-index)
+                  (let [next (clone-binding candidate-binding)]
+                    (when (datom-clause-matches? datom clause (addr next))
+                      (arr.push! next-bindings next))))))))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (return bindings))))
+    bindings))
+
 (defn project-binding [binding: Binding, names: []string] -> Binding
   (let [out (Binding {})]
     (for [name names]
@@ -1662,6 +1731,16 @@
         (for [binding bindings]
           (when (predicate-matches? predicate binding)
             (arr.push! next-bindings binding)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [group query.or_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (for [branch group.branches]
+            (let [branch-bindings (bindings-after-clause-group db branch binding)]
+              (for [branch-binding branch-bindings]
+                (arr.push! next-bindings branch-binding))
+              (delete branch-bindings))))
         (delete bindings)
         (set! bindings next-bindings)))
     (for [not-group query.not_groups]
@@ -1864,6 +1943,7 @@
        (clause (term-var "e") ":user/name" (term-var "name"))])
     ([]Predicate [])
     ([]Not-Group [])
+    ([]Or-Group [])
     ([]Pull-Find [])))
 
 (defn seed-people [conn: ^Conn] -> Tx-Report

@@ -98,6 +98,7 @@ Supported now:
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
 - `not` groups
 - `not-join`
+- simple `or` groups with single data-clause branches
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -175,6 +176,15 @@ Example:
    (not-join [?e]
      [?e :user/friend ?friend]
      [?friend :user/name ?name])])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   (or [?e :user/email "ada@example.com"]
+       [?e :user/email "grace@example.com"])
+   [?e :user/name ?name]])
 ```
 
 Basic clauses now use in-memory indexes. Text parsing, rules, and advanced

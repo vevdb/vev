@@ -154,6 +154,7 @@ The first supported subset should be:
 - `:where`
 - data patterns
 - simple predicate expressions only if clearly needed
+- simple `or` clauses
 
 ### Query data patterns
 
@@ -183,7 +184,7 @@ the core path is stable:
 
 - `:with`
 - rules
-- `or` / `or-join`
+- `or-join`
 - `and`
 - function expressions
 - aggregates beyond a very small starter subset
