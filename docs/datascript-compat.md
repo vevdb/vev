@@ -26,7 +26,7 @@ Status key:
 | `query_or` | partial | Single-source DataScript subset ported, including scalar-input `or`; default-source forms and relation-source `or-join` incomplete |
 | `query_pull` | partial | Basic literal-pattern and `:in` variable-pattern DataScript subsets ported; multi-source pull, returning pattern values, and exact tuple return shape incomplete |
 | `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
-| `query_rules` | partial | Literal rule input subset started: rule branches plus bounded recursive/mutual rules with data clauses, predicates including `even?`, `ground`, and built-in function clauses; rule sources and validation incomplete |
+| `query_rules` | partial | Literal rule input subset started: rule branches plus bounded recursive/mutual rules with data clauses, predicates including `even?`, `ground`, built-in function clauses, false arguments, and source-qualified relation rule calls; host predicate inputs and validation incomplete |
 | `parser_*` | missing | Required for EDN string APIs and broad interop; not required for the in-memory semantic engine because Kvist literals lower to the same internal representation |
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, nested ref-map filtering, pull-many, string/false/ref defaults, reverse-ref defaults, default/numeric/nil limits, bounded recursion, capped `...` recursion, and component expansion examples covered; exact rendered collection/scalar shapes missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |

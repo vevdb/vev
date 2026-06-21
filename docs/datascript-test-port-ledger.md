@@ -14,7 +14,7 @@ DataScript assertion or exact Clojure API shape.
 | `query_not.cljc` | 5 | subset | error behavior and default-source forms |
 | `query_or.cljc` | 5 | subset | default-source forms and exact validation errors |
 | `query_pull.cljc` | 7 | subset | multi-source pull |
-| `query_rules.cljc` | 3 | subset | rule sources, validation, unbounded fixpoint |
+| `query_rules.cljc` | 3 | subset | source-qualified relation rule calls covered; host predicate inputs, validation, and unbounded fixpoint remain |
 | `query_fns.cljc` | 6 | subset | more built-in predicates covered; arbitrary host functions |
 | `query_return_map.cljc` | 1 | covered | Vev uses keyed rows with keyword/string/symbol key kinds instead of Clojure maps |
 | `lookup_refs.cljc` | 5 | subset | exact invalid lookup-ref error messages |
