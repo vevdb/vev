@@ -86,7 +86,7 @@ Supported now:
 
 - `:find` with one or more variables
 - `:with` parsing
-- scalar and collection find syntax: `:find ?x .`, `:find [?x ...]`
+- scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [[?x ?y]]`
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
 - variables in entity, attribute, and value positions
@@ -143,6 +143,14 @@ the same row-oriented `Result-Set` representation:
   [:find [?name ...]
    :where
    [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find [[?name ?age]]
+   :where
+   [?e :user/name ?name]
+   [?e :user/age ?age]])
 ```
 
 `$` source-var clauses parse the same way against the current DB:
