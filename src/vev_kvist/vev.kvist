@@ -46,6 +46,11 @@
   added: bool
 })
 
+(defstruct Datom-Result {
+  found: bool
+  datom: Datom
+})
+
 (defstruct DB {
   datoms: [dynamic]Datom
   current: [dynamic]int
@@ -293,6 +298,8 @@
   default_value: Value
   has_alias: bool
   alias: string
+  has_recursion: bool
+  recursion_depth: int
 })
 
 (defenum Query-Input-Kind [
@@ -312,7 +319,15 @@
   has_lookup_ref: bool
   lookup_attr: string
   lookup_value: Value
+  lookup_attrs: []string
   lookup_values: []Value
+})
+
+(defstruct Index-Arg {
+  value: Value
+  has_lookup_ref: bool
+  lookup_attr: string
+  lookup_value: Value
 })
 
 (defn value-entity [id: u64] -> Value
@@ -797,6 +812,22 @@
       false
       true)
     false))
+
+(defmacro- emit-index-arg [form]
+  (if (lookup-ref? form)
+    (quasiquote
+      (Index-Arg {has_lookup_ref: true
+                  lookup_attr: (unquote (emit-attr (nth form 0)))
+                  lookup_value: (unquote (emit-literal-value (nth form 1)))}))
+    (quasiquote
+      (Index-Arg {value: (unquote (emit-literal-value form))}))))
+
+(defmacro- emit-index-args [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-index-arg (first forms))
+      (emit-index-args (rest forms)))))
 
 (defmacro- emit-tx-data-call [op e a v]
   (let [is-retract (= (source op) ":db/retract")]
@@ -2131,7 +2162,12 @@
 (defmacro- emit-pull-map-spec [attr pattern]
   (if (vector? pattern)
     (emit-pull-nested-spec attr pattern)
-    (error "nested pull attrs expect vector patterns")))
+    (if (int? pattern)
+      (quasiquote
+        (pull-spec-recursion
+          (unquote (pull-attr-source attr))
+          (unquote pattern)))
+      (error "nested pull attrs expect vector patterns or recursion depth"))))
 
 (defmacro- emit-pull-map-specs [forms]
   (if (= (count forms) 0)
@@ -2293,6 +2329,17 @@
         (emit-query-input-lookup-ref-values (rest forms)))
       (error "lookup-ref collection inputs must contain lookup refs"))))
 
+(defmacro- emit-query-input-lookup-ref-attrs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (lookup-ref? (first forms))
+      (if (keyword? (nth (first forms) 0))
+        (forms
+          (source (nth (first forms) 0))
+          (emit-query-input-lookup-ref-attrs (rest forms)))
+        (error "lookup-ref collection inputs require keyword attrs"))
+      (error "lookup-ref collection inputs must contain lookup refs"))))
+
 (defmacro- emit-query-relation-row-values [row]
   (if (= (count row) 0)
     (forms)
@@ -2364,12 +2411,10 @@
       (pull-pattern-var-in-finds? find-items name))))
 
 (defmacro- emit-query-collection-lookup-ref-input [value]
-  (if (keyword? (nth (first value) 0))
-    (quasiquote
-      (Query-Input {kind: .CollectionLookupRefs
-                    lookup_attr: (unquote (source (nth (first value) 0)))
-                    lookup_values: ([]Value [(splice (emit-query-input-lookup-ref-values value))])}))
-    (error "lookup-ref collection inputs currently require keyword attrs")))
+  (quasiquote
+    (Query-Input {kind: .CollectionLookupRefs
+                  lookup_attrs: ([]string [(splice (emit-query-input-lookup-ref-attrs value))])
+                  lookup_values: ([]Value [(splice (emit-query-input-lookup-ref-values value))])})))
 
 (defmacro- collection-lookup-ref-input? [spec value]
   (if (input-collection? spec)
@@ -2380,6 +2425,26 @@
       false)
     false))
 
+(defmacro- scalar-lookup-ref-input? [spec value]
+  (if (input-source? spec)
+    false
+    (if (input-collection? spec)
+      false
+      (if (input-relation? spec)
+        false
+        (if (input-tuple? spec)
+          false
+          (lookup-ref? value))))))
+
+(defmacro- emit-query-scalar-lookup-ref-input [value]
+  (if (keyword? (nth value 0))
+    (quasiquote
+      (Query-Input {kind: .Scalar
+                    has_lookup_ref: true
+                    lookup_attr: (unquote (emit-attr (nth value 0)))
+                    lookup_value: (unquote (emit-literal-value (nth value 1)))}))
+    (error "lookup-ref scalar inputs require keyword attrs")))
+
 (defmacro- emit-query-input-for-spec [find-items spec value]
   (if (pull-pattern-input? find-items spec)
     (if (vector? value)
@@ -2387,9 +2452,11 @@
         (Query-Input {kind: .PullPattern
                       pattern: ([]Pull-Spec [(splice (emit-pull-specs value))])}))
       (error "pull pattern inputs must be literal vectors"))
-    (if (collection-lookup-ref-input? spec value)
-      (emit-query-collection-lookup-ref-input value)
-      (emit-query-input value))))
+    (if (scalar-lookup-ref-input? spec value)
+      (emit-query-scalar-lookup-ref-input value)
+      (if (collection-lookup-ref-input? spec value)
+        (emit-query-collection-lookup-ref-input value)
+        (emit-query-input value)))))
 
 (defmacro- emit-query-input-list-for-query [find-items specs values]
   (if (= (count values) 0)
@@ -2531,6 +2598,52 @@
         .Symbol
         ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":syms")))])))
     (error "q-syms expects a literal datalog query")))
+
+(defmacro datoms [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (datoms-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "datoms index order must be a keyword")))
+
+(defmacro seek-datoms [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (seek-datoms-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "seek-datoms index order must be a keyword")))
+
+(defmacro rseek-datoms [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (rseek-datoms-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "rseek-datoms index order must be a keyword")))
+
+(defmacro find-datom [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (find-datom-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "find-datom index order must be a keyword")))
+
+(defmacro index-range [db attr start end]
+  (quasiquote
+    (index-range-with-args
+      (unquote db)
+      (unquote (emit-attr attr))
+      (unquote (emit-index-arg start))
+      (unquote (if (nil? start) (quasiquote false) (quasiquote true)))
+      (unquote (emit-index-arg end))
+      (unquote (if (nil? end) (quasiquote false) (quasiquote true))))))
 
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)
@@ -2700,8 +2813,8 @@
   (let [out (make [dynamic]Binding)]
     (when (= input.kind .CollectionLookupRefs)
       (for [binding bindings]
-        (for [value input.lookup_values]
-          (let [[entity ok] (resolve-lookup-ref db input.lookup_attr value)]
+        (for [value index input.lookup_values]
+          (let [[entity ok] (resolve-lookup-ref db input.lookup_attrs[index] value)]
             (when ok
               (let [next (clone-binding binding)]
                 (binding-store! (addr next) name (value-entity entity))
@@ -2881,6 +2994,194 @@
     (and (< found (count current))
          (= current[found] index))))
 
+(defn index-arg-value [db: DB, arg: Index-Arg] -> [value: Value, ok: bool]
+  (when arg.has_lookup_ref
+    (let [[entity found] (resolve-lookup-ref db arg.lookup_attr arg.lookup_value)]
+      (when found
+        (return (value-entity entity) true))
+      (return (Value {}) false)))
+  (return arg.value true))
+
+(defn resolve-index-args [db: DB, args: []Index-Arg] -> [values: [dynamic]Value, ok: bool]
+  (let [resolved (make [dynamic]Value)]
+    (for [arg args]
+      (let [[value ok] (index-arg-value db arg)]
+        (when (not ok)
+          (return resolved false))
+        (arr.push! resolved value)))
+    (return resolved true)))
+
+(defn datom-index-position-value [datom: Datom, order: string, position: int] -> Value
+  (if (= order ":eavt")
+    (if (= position 0)
+      (value-entity datom.e)
+      (if (= position 1)
+        (value-keyword datom.a)
+        (if (= position 2)
+          datom.v
+          (Value {}))))
+    (if (= order ":aevt")
+      (if (= position 0)
+        (value-keyword datom.a)
+        (if (= position 1)
+          (value-entity datom.e)
+          (if (= position 2)
+            datom.v
+            (Value {}))))
+      (if (= order ":avet")
+        (if (= position 0)
+          (value-keyword datom.a)
+          (if (= position 1)
+            datom.v
+            (if (= position 2)
+              (value-entity datom.e)
+              (Value {}))))
+        (if (= position 0)
+          datom.v
+          (if (= position 1)
+            (value-keyword datom.a)
+            (if (= position 2)
+              (value-entity datom.e)
+              (Value {}))))))))
+
+(defn index-position-equal? [actual: Value, expected: Value] -> bool
+  (predicate-value-equal? actual expected))
+
+(defn index-position-compare [actual: Value, expected: Value] -> int
+  (if (and (= actual.kind .Entity) (= expected.kind .Int))
+    (let [right (u64 expected.int_value)]
+      (if (< actual.entity right)
+        -1
+        (if (> actual.entity right) 1 0)))
+    (if (and (= actual.kind .Keyword) (= expected.kind .String))
+      (strings.compare actual.text expected.text)
+      (value-compare actual expected))))
+
+(defn datom-matches-index-values? [datom: Datom, order: string, values: []Value] -> bool
+  (for [value position values]
+    (when (not (index-position-equal? (datom-index-position-value datom order position) value))
+      (return false)))
+  true)
+
+(defn datom-index-compare-values [datom: Datom, order: string, values: []Value] -> int
+  (for [value position values]
+    (let [compare (index-position-compare (datom-index-position-value datom order position) value)]
+      (when (not (= compare 0))
+        (return compare))))
+  0)
+
+(defn public-index-datom-visible? [db: DB, order: string, datom: Datom] -> bool
+  (if (= order ":avet")
+    (if (db-has-schema? db)
+      (or (schema-indexed? db datom.a)
+          (schema-unique? db datom.a)
+          (schema-ref? db datom.a))
+      true)
+    true))
+
+(defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (for [datom-index indexes]
+    (when (datom-current-at? db datom-index)
+      (let [datom db.datoms[datom-index]]
+        (when (and (public-index-datom-visible? db order datom)
+                   (datom-matches-index-values? datom order values))
+          (arr.push! out^ datom))))))
+
+(defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        [values ok] (resolve-index-args db args)]
+    (defer (delete values))
+    (when (not ok)
+      (return out))
+    (if (= order ":eavt")
+      (append-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
+      (if (= order ":aevt")
+        (append-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
+        (if (= order ":avet")
+          (append-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
+          (append-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
+
+(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (for [datom-index indexes]
+    (when (datom-current-at? db datom-index)
+      (let [datom db.datoms[datom-index]]
+        (when (and (public-index-datom-visible? db order datom)
+                   (>= (datom-index-compare-values datom order values) 0))
+          (arr.push! out^ datom))))))
+
+(defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        [values ok] (resolve-index-args db args)]
+    (defer (delete values))
+    (when (not ok)
+      (return out))
+    (if (= order ":eavt")
+      (append-seek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
+      (if (= order ":aevt")
+        (append-seek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
+        (if (= order ":avet")
+          (append-seek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
+          (append-seek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
+
+(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (let [i (count indexes)]
+    (while (> i 0)
+      (set! i (- i 1))
+      (let [datom-index indexes[i]]
+        (when (datom-current-at? db datom-index)
+          (let [datom db.datoms[datom-index]]
+            (when (and (public-index-datom-visible? db order datom)
+                       (<= (datom-index-compare-values datom order values) 0))
+              (arr.push! out^ datom))))))))
+
+(defn rseek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        [values ok] (resolve-index-args db args)]
+    (defer (delete values))
+    (when (not ok)
+      (return out))
+    (if (= order ":eavt")
+      (append-rseek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
+      (if (= order ":aevt")
+        (append-rseek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
+        (if (= order ":avet")
+          (append-rseek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
+          (append-rseek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
+
+(defn find-datom-with-args [db: DB, order: string, args: []Index-Arg] -> Datom-Result
+  (let [found (datoms-with-args db order args)]
+    (defer (delete found))
+    (when (> (count found) 0)
+      (return (Datom-Result {found: true datom: found[0]})))
+    (Datom-Result {})))
+
+(defn index-range-with-args [db: DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        start-value (Value {})
+        end-value (Value {})]
+    (when has-start
+      (let [[value ok] (index-arg-value db start)]
+        (when (not ok)
+          (return out))
+        (set! start-value value)))
+    (when has-end
+      (let [[value ok] (index-arg-value db end)]
+        (when (not ok)
+          (return out))
+        (set! end-value value)))
+    (for [datom-index db.avet]
+      (when (datom-current-at? db datom-index)
+        (let [datom db.datoms[datom-index]]
+          (when (and (= datom.a attr)
+                     (public-index-datom-visible? db ":avet" datom))
+            (when (or (not has-start) (>= (index-position-compare datom.v start-value) 0))
+              (when (or (not has-end) (<= (index-position-compare datom.v end-value) 0))
+                (arr.push! out datom)))))))
+    out))
+
 (defn u64-contains? [items: []u64, value: u64] -> bool
   (for [item items]
     (when (= item value)
@@ -2966,20 +3267,29 @@
             (return datom.v.text true))))))
   (return "" false))
 
-(defn schema-component? [db: DB, attr: string] -> bool
+(defn schema-bool? [db: DB, attr: string, schema-attr: string] -> bool
   (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
     (when (not schema-ok)
       (return false))
     (let [indexes (slice db.eavt 0)
-          low (lower-bound-index db indexes "eavt-ea" schema-e ":db/isComponent" (Value {}))
-          high (upper-bound-index db indexes "eavt-ea" schema-e ":db/isComponent" (Value {}))]
+          low (lower-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))]
       (for [datom-index (slice indexes low high)]
         (let [datom db.datoms[datom-index]]
           (when (and (datom-current-at? db datom-index)
-                     (= datom.v.kind .Bool)
-                     datom.v.bool_value)
-            (return true))))))
+                     (= datom.v.kind .Bool))
+            (return datom.v.bool_value))))))
   false)
+
+(defn schema-indexed? [db: DB, attr: string] -> bool
+  (schema-bool? db attr ":db/index"))
+
+(defn schema-ref? [db: DB, attr: string] -> bool
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (and has-type (= schema-type ":db.type/ref"))))
+
+(defn schema-component? [db: DB, attr: string] -> bool
+  (schema-bool? db attr ":db/isComponent"))
 
 (defn value-matches-schema-type? [value: Value, schema-type: string] -> bool
   (if (= schema-type ":db.type/string")
@@ -4170,7 +4480,7 @@
 (defn pull-limit [spec: Pull-Spec] -> int
   (if (> spec.limit 0) spec.limit 1000))
 
-(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec] -> bool
+(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec] -> bool
   (let [forward-attr (forward-attr-for-reverse spec.a) :defer
         ref-value (value-entity entity)
         indexes (slice db.vaet 0)
@@ -4187,6 +4497,13 @@
             (when (> (count spec.pattern) 0)
               (let [pulled (pull-pattern-spec db datom.e spec.pattern)]
                 (set! children pulled.attrs)))
+            (when (and (= (count spec.pattern) 0)
+                       spec.has_recursion
+                       (> spec.recursion_depth 0))
+              (let [pattern (pull-recursion-pattern root spec.a)]
+                (defer (delete pattern))
+                (let [pulled (pull-pattern-spec db datom.e (slice pattern 0))]
+                  (set! children pulled.attrs))))
             (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                         v: (value-entity datom.e)
                                         attrs: children}))
@@ -4242,7 +4559,28 @@
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has_alias spec.alias spec.a))
 
-(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec] -> bool
+(defn pull-spec-decrement-recursion [spec: Pull-Spec, attr: string] -> Pull-Spec
+  (if (and spec.has_recursion
+           (= spec.a attr)
+           (> spec.recursion_depth 0))
+    (Pull-Spec {a: spec.a
+                pattern: spec.pattern
+                limit: spec.limit
+                has_default: spec.has_default
+                default_value: spec.default_value
+                has_alias: spec.has_alias
+                alias: spec.alias
+                has_recursion: true
+                recursion_depth: (- spec.recursion_depth 1)})
+    spec))
+
+(defn pull-recursion-pattern [root: []Pull-Spec, attr: string] -> [dynamic]Pull-Spec
+  (let [out (make [dynamic]Pull-Spec)]
+    (for [spec root]
+      (arr.push! out (pull-spec-decrement-recursion spec attr)))
+    out))
+
+(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec] -> bool
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
         high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
@@ -4257,8 +4595,13 @@
               (if (> (count spec.pattern) 0)
                 (let [pulled (pull-pattern-spec db datom.v.entity spec.pattern)]
                   (set! children pulled.attrs))
-                (when (schema-component? db datom.a)
-                  (set! children (pull-component-children db entity datom.v.entity)))))
+                (if (and spec.has_recursion (> spec.recursion_depth 0))
+                  (let [pattern (pull-recursion-pattern root spec.a)]
+                    (defer (delete pattern))
+                    (let [pulled (pull-pattern-spec db datom.v.entity (slice pattern 0))]
+                      (set! children pulled.attrs)))
+                  (when (schema-component? db datom.a)
+                    (set! children (pull-component-children db entity datom.v.entity))))))
             (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                         v: datom.v
                                         attrs: children}))
@@ -4268,7 +4611,9 @@
               (return found))))))
     found))
 
-(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
+(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec]
+  (when (and spec.has_recursion (<= spec.recursion_depth 0))
+    (return))
   (when (= spec.a "*")
     (pull-wildcard! out db entity)
     (return))
@@ -4279,13 +4624,13 @@
                                   attrs: (make [dynamic]Pull-Attr)})))
     (return))
   (when (reverse-attr? spec.a)
-    (let [found (pull-reverse-attr! out db entity spec)]
+    (let [found (pull-reverse-attr! out db entity spec root)]
       (when (and (not found) spec.has_default)
         (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                     v: spec.default_value
                                     attrs: (make [dynamic]Pull-Attr)}))))
     (return))
-  (let [found (pull-forward-attr! out db entity spec)]
+  (let [found (pull-forward-attr! out db entity spec root)]
     (when (and (not found) spec.has_default)
       (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                   v: spec.default_value
@@ -4294,7 +4639,7 @@
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
     (for [spec pattern]
-      (pull-spec-attr! (addr out) db entity spec))
+      (pull-spec-attr! (addr out) db entity spec pattern))
     (Pull-Result {e: entity attrs: out})))
 
 (defn pull-pattern-lookup-ref [db: DB, attr: string, value: Value, pattern: []Pull-Spec] -> Pull-Result
@@ -4431,6 +4776,17 @@
               has_alias: false
               alias: ""
               pattern: pattern}))
+
+(defn pull-spec-recursion [attr: string, depth: int] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: ([]Pull-Spec [])
+              has_recursion: true
+              recursion_depth: depth}))
 
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
   (Pull-Spec {a: attr

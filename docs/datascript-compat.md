@@ -28,16 +28,17 @@ Status key:
 | `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
 | `query_rules` | partial | Literal rule input subset started: rule branches plus bounded recursive/mutual rules with data clauses, predicates including `even?`, `ground`, and built-in function clauses; rule sources and validation incomplete |
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
-| `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, string/false/ref defaults, reverse-ref defaults, explicit/default limits, and component expansion examples covered; recursion and exact rendered collection/scalar shapes missing |
+| `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, string/false/ref defaults, reverse-ref defaults, explicit/default limits, bounded recursion, and component expansion examples covered; infinite recursion, cycle handling, and exact rendered collection/scalar shapes missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
 | `transact` | partial | Add/retract/map forms, nil item skipping, value-specific retract no-ops, incoming-ref cleanup on retractEntity, ref-typed numeric value resolution, intermediate-DB lookup/CAS resolution subset, cardinality-one/unique/default replacement, and CAS one/many/nil/lookup-ref value subset covered; tx fn call and exact errors incomplete |
 | `upsert` | partial | Unique-identity map/list tempid upsert, intermediate-db retry subset, string tempid refs, unique-ref numeric/lookup-ref upsert, and conflicting unique-field subsets covered; exact conflict messages incomplete |
-| `lookup_refs` | partial | Lookup refs covered in query entity/value positions, scalar non-keyword query inputs, pull, tx entity/value/map-value/CAS entity/expected/value positions, and missing-ref retract no-ops for entity and value refs; collection/keyword-valued input lookup refs incomplete |
+| `lookup_refs` | partial | Lookup refs covered in query entity/value positions, scalar and collection query inputs, pull, tx entity/value/map-value/CAS entity/expected/value positions, missing-ref retract no-ops, and `datoms`/`seek-datoms`/`index-range` index access; exact Clojure invalid lookup-ref errors not modeled |
 | `ident` | partial | DataScript query/transact/pull subset, entity ident lookup, and missing-ident retract no-ops covered |
 | `components` | partial | Component `retractEntity`, `retractAttribute`, incoming-ref cleanup, forward pull expansion, explicit reverse pull subsets, and entity `touch` covered; exact reverse scalar shape missing |
 | `entity` | partial | Basic entity view API covered: id/db access, lookup-ref and ident construction, scalar/many attr reads, forward and reverse ref navigation, contains, missing entities, and touch; Clojure map protocol/cache/print/equality semantics do not apply directly in Kvist |
+| `index` | partial | `datoms`, `find-datom`, `seek-datoms`, `rseek-datoms`, `index-range`, range bounds, and public AVET filtering covered; exact indexed-attribute error behavior incomplete |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
-| `db`, `index`, `tuples`, `validation`, `issues` | partial | Need namespace-by-namespace porting |
+| `db`, `tuples`, `validation`, `issues` | partial | Need namespace-by-namespace porting |
 
 ## Next Porting Order
 

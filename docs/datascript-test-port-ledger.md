@@ -15,15 +15,15 @@ DataScript assertion or exact Clojure API shape.
 | `query_rules.cljc` | 3 | subset | rule sources, validation, unbounded fixpoint |
 | `query_fns.cljc` | 6 | subset | vector/hash-map result values, arbitrary host functions, nil-result filtering |
 | `query_return_map.cljc` | 1 | covered | Vev uses keyed rows with keyword/string/symbol key kinds instead of Clojure maps |
-| `lookup_refs.cljc` | 5 | subset | keyword-valued input refs, mixed-attr lookup-ref collections, index API lookup refs |
+| `lookup_refs.cljc` | 5 | subset | exact invalid lookup-ref error messages |
 | `ident.cljc` | 4 | covered | Vev returns ref values as `Value.Entity`; behavior is otherwise covered |
 | `entity.cljc` | 6 | subset | Clojure equality/hash/print/cache protocol semantics |
-| `pull_api.cljc` | 17 | subset | recursion and exact collection/scalar render shape |
+| `pull_api.cljc` | 17 | subset | infinite recursion, cycle handling, and exact collection/scalar render shape |
 | `components.cljc` | 2 | subset | exact entity/touch reverse shapes |
 | `transact.cljc` | 19 | subset | tx functions and exact errors |
 | `upsert.cljc` | 6 | subset | full conflict matrix and messages |
 | `db.cljc` | 4 | partial | datom/index API compatibility |
-| `index.cljc` | 5 | partial | API-level datoms/index/rseek coverage |
+| `index.cljc` | 5 | partial | exact indexed-attribute error behavior |
 | `tuples.cljc` | 11 | missing | tuple attrs |
 | `validation.cljc` | 2 | partial | full schema validation behavior |
 | `parser*.cljc` | 19 | missing | EDN/text parser |

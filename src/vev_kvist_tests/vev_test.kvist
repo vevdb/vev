@@ -775,14 +775,19 @@
         _ (vev.transact
             (addr conn)
             [[:db/add 100 :db/ident :name]
-             [:db/add 100 :db/valueType :db.type/string]
-             [:db/add 100 :db/unique :db.unique/identity]])
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :email]
+             [:db/add 101 :db/unique :db.unique/identity]])
         _ (vev.transact
             (addr conn)
             [[:db/add 1 :name "Ivan"]
+             [:db/add 1 :email "ivan@example.com"]
              [:db/add 1 :age 15]
              [:db/add 2 :name "Petr"]
-             [:db/add 2 :age 22]])
+             [:db/add 2 :email "petr@example.com"]
+             [:db/add 2 :age 22]
+             [:db/add 3 :name :person/ivan]
+             [:db/add 3 :age 35]])
         age (vev.q-collection conn.db
               [:find [?age ...]
                :in ?e
@@ -795,6 +800,24 @@
                 :where
                 [?e :age ?age]]
                [[:name "Ivan"] [:name "Petr"]])
+        mixed-attr-ages (vev.q-collection conn.db
+                          [:find [?age ...]
+                           :in [?e ...]
+                           :where
+                           [?e :age ?age]]
+                          [[:name "Ivan"] [:email "petr@example.com"]])
+        keyword-age (vev.q-collection conn.db
+                      [:find [?age ...]
+                       :in ?e
+                       :where
+                       [?e :age ?age]]
+                      [:name :person/ivan])
+        keyword-values (vev.q-collection conn.db
+                         [:find [?value ...]
+                          :in [?value ...]
+                          :where
+                          [(ground true) ?ok]]
+                         [:person/ivan :person/petr])
         missing (vev.q-collection conn.db
                   [:find [?age ...]
                    :in ?e
@@ -806,7 +829,152 @@
     (t.is (= (count ages) 2))
     (t.is (= ages[0].int_value 15))
     (t.is (= ages[1].int_value 22))
+    (t.is (= (count mixed-attr-ages) 2))
+    (t.is (= mixed-attr-ages[0].int_value 15))
+    (t.is (= mixed-attr-ages[1].int_value 22))
+    (t.is (= (count keyword-age) 1))
+    (t.is (= keyword-age[0].int_value 35))
+    (t.is (= (count keyword-values) 2))
+    (t.is (= keyword-values[0].text ":person/ivan"))
+    (t.is (= keyword-values[1].text ":person/petr"))
     (t.is (= (count missing) 0))))
+
+(t.deftest datascript-lookup-ref-datoms-index-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friends]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/many]])
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :name "Ivan"]
+             [:db/add 1 :friends (vev.value-entity 2)]
+             [:db/add 1 :friends (vev.value-entity 3)]
+             [:db/add 2 :name "Petr"]
+             [:db/add 2 :friends (vev.value-entity 3)]
+             [:db/add 3 :name "Oleg"]])
+        eavt (vev.datoms conn.db :eavt [:name "Ivan"])
+        eavt-friend (vev.datoms conn.db :eavt [:name "Ivan"] :friends [:name "Petr"])
+        aevt (vev.datoms conn.db :aevt :friends [:name "Ivan"])
+        avet (vev.datoms conn.db :avet :friends [:name "Oleg"])
+        seek-lookup (vev.seek-datoms conn.db :eavt [:name "Ivan"] :friends [:name "Oleg"])
+        seek-resolved (vev.seek-datoms conn.db :eavt 1 :friends 3)
+        seek-aevt-lookup (vev.seek-datoms conn.db :aevt :friends [:name "Petr"])
+        seek-aevt-resolved (vev.seek-datoms conn.db :aevt :friends 2)
+        seek-avet-lookup (vev.seek-datoms conn.db :avet :friends [:name "Oleg"])
+        seek-avet-resolved (vev.seek-datoms conn.db :avet :friends 3)
+        range-exact (vev.index-range conn.db :friends [:name "Oleg"] [:name "Oleg"])
+        range-bounded (vev.index-range conn.db :friends [:name "Petr"] [:name "Oleg"])]
+    (t.is (= (count eavt) 3))
+    (t.is (= eavt[0].e 1))
+    (t.is (= eavt[0].a ":friends"))
+    (t.is (= eavt[1].a ":friends"))
+    (t.is (= eavt[2].a ":name"))
+    (t.is (= (count eavt-friend) 1))
+    (t.is (= eavt-friend[0].e 1))
+    (t.is (= eavt-friend[0].v.entity 2))
+    (t.is (= (count aevt) 2))
+    (t.is (= aevt[0].v.entity 2))
+    (t.is (= aevt[1].v.entity 3))
+    (t.is (= (count avet) 2))
+    (t.is (= avet[0].e 1))
+    (t.is (= avet[1].e 2))
+    (t.is (= (count seek-lookup) (count seek-resolved)))
+    (t.is (= seek-lookup[0].e seek-resolved[0].e))
+    (t.is (= seek-lookup[0].a seek-resolved[0].a))
+    (t.is (= seek-lookup[0].v.entity seek-resolved[0].v.entity))
+    (t.is (= (count seek-aevt-lookup) (count seek-aevt-resolved)))
+    (t.is (= seek-aevt-lookup[0].e seek-aevt-resolved[0].e))
+    (t.is (= seek-aevt-lookup[0].v.entity seek-aevt-resolved[0].v.entity))
+    (t.is (= (count seek-avet-lookup) (count seek-avet-resolved)))
+    (t.is (= seek-avet-lookup[0].e seek-avet-resolved[0].e))
+    (t.is (= seek-avet-lookup[0].v.entity seek-avet-resolved[0].v.entity))
+    (t.is (= (count range-exact) 2))
+    (t.is (= range-exact[0].e 1))
+    (t.is (= range-exact[1].e 2))
+    (t.is (= (count range-bounded) 3))
+    (t.is (= range-bounded[0].v.entity 2))
+    (t.is (= range-bounded[1].v.entity 3))
+    (t.is (= range-bounded[2].v.entity 3))))
+
+(t.deftest datascript-index-api-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :name "Petr"]
+             [:db/add 1 :age 44]
+             [:db/add 2 :name "Ivan"]
+             [:db/add 2 :age 25]
+             [:db/add 3 :name "Sergey"]
+             [:db/add 3 :age 11]])
+        first (vev.find-datom conn.db :eavt)
+        petr (vev.find-datom conn.db :eavt 1 :name "Petr")
+        missing (vev.find-datom conn.db :eavt 1 :name "Ivan")
+        seek (vev.seek-datoms conn.db :avet :name "Petr")
+        rseek-name (vev.rseek-datoms conn.db :avet :name "Petr")
+        rseek-age (vev.rseek-datoms conn.db :avet :age 26)
+        range-name (vev.index-range conn.db :name "I" "Sergey")
+        range-before (vev.index-range conn.db :name nil "P")
+        range-after (vev.index-range conn.db :name "R" nil)
+        range-age (vev.index-range conn.db :age 15 25)]
+    (t.is first.found)
+    (t.is (= first.datom.e 1))
+    (t.is (= first.datom.a ":age"))
+    (t.is petr.found)
+    (t.is (= petr.datom.e 1))
+    (t.is (= petr.datom.v.text "Petr"))
+    (t.is (not missing.found))
+    (t.is (= (count seek) 2))
+    (t.is (= seek[0].e 1))
+    (t.is (= seek[1].e 3))
+    (t.is (= (count rseek-name) 5))
+    (t.is (= rseek-name[0].e 1))
+    (t.is (= rseek-name[1].e 2))
+    (t.is (= rseek-name[4].e 3))
+    (t.is (= (count rseek-age) 2))
+    (t.is (= rseek-age[0].e 2))
+    (t.is (= rseek-age[1].e 3))
+    (t.is (= (count range-name) 3))
+    (t.is (= range-name[0].v.text "Ivan"))
+    (t.is (= range-name[1].v.text "Petr"))
+    (t.is (= range-name[2].v.text "Sergey"))
+    (t.is (= (count range-before) 1))
+    (t.is (= range-before[0].v.text "Ivan"))
+    (t.is (= (count range-after) 1))
+    (t.is (= range-after[0].v.text "Sergey"))
+    (t.is (= (count range-age) 1))
+    (t.is (= range-age[0].v.int_value 25))))
+
+(t.deftest datascript-index-avet-schema-filter-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :age]
+             [:db/add 100 :db/index true]
+             [:db/add 101 :db/ident :name]
+             [:db/add 102 :db/ident :email]
+             [:db/add 102 :db/unique :db.unique/identity]])
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :name "Petr"]
+             [:db/add 1 :age 44]
+             [:db/add 1 :email "petr@example.com"]])
+        age (vev.datoms conn.db :avet :age)
+        email (vev.datoms conn.db :avet :email)
+        name (vev.datoms conn.db :avet :name)
+        name-range (vev.index-range conn.db :name nil nil)]
+    (t.is (= (count age) 1))
+    (t.is (= age[0].v.int_value 44))
+    (t.is (= (count email) 1))
+    (t.is (= email[0].v.text "petr@example.com"))
+    (t.is (= (count name) 0))
+    (t.is (= (count name-range) 0))))
 
 (t.deftest datalog-macro-supports-ground
   (defer (free_all context.allocator))
@@ -3598,6 +3766,49 @@
       (t.is (= (count as-first.attrs) 1))
       (t.is (= as-first.attrs[0].a ":friends"))
       (t.is (= as-first.attrs[0].v.entity 2))))
+
+(t.deftest datascript-pull-bounded-recursion-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :friend :db/valueType :db.type/ref}
+             {:db/id 1 :name "Ada" :friend 2}
+             {:db/id 2 :name "Grace" :friend 3}
+             {:db/id 3 :name "Katherine" :friend 4}
+             {:db/id 4 :name "Margaret"}])
+        pulled (vev.pull conn.db [:db/id :name {:friend 2}] 1)
+        first-friend pulled.attrs[2]
+        second-friend first-friend.attrs[2]]
+    (t.is (= (count pulled.attrs) 3))
+    (t.is (= pulled.attrs[0].v.entity 1))
+    (t.is (= pulled.attrs[1].v.text "Ada"))
+    (t.is (= first-friend.v.entity 2))
+    (t.is (= first-friend.attrs[0].v.entity 2))
+    (t.is (= first-friend.attrs[1].v.text "Grace"))
+    (t.is (= second-friend.v.entity 3))
+    (t.is (= second-friend.attrs[0].v.entity 3))
+    (t.is (= second-friend.attrs[1].v.text "Katherine"))
+    (t.is (= (count second-friend.attrs) 2))))
+
+(t.deftest datascript-pull-bounded-reverse-recursion-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :friend :db/valueType :db.type/ref}
+             {:db/id 1 :name "Ada" :friend 2}
+             {:db/id 2 :name "Grace" :friend 3}
+             {:db/id 3 :name "Katherine"}])
+        pulled (vev.pull conn.db [:db/id {:_friend 2}] 3)
+        parent pulled.attrs[1]
+        grandparent parent.attrs[1]]
+    (t.is (= pulled.attrs[0].v.entity 3))
+    (t.is (= parent.v.entity 2))
+    (t.is (= parent.attrs[0].v.entity 2))
+    (t.is (= grandparent.v.entity 1))
+    (t.is (= grandparent.attrs[0].v.entity 1))
+    (t.is (= (count grandparent.attrs) 1))))
 
 (t.deftest pull-many-returns-multiple-entities
   (defer (free_all context.allocator))
