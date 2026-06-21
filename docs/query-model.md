@@ -106,7 +106,7 @@ Supported now:
 - relation `:in` variables shaped like `[[?a ?b]]`
 - `_` holes in tuple and relation inputs
 - pull expressions in `:find`, with optional `$` source var
-- predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`, including chained comparisons
+- predicate clauses: `=`, `!=`, `not=`, `<`, `<=`, `>`, `>=`, including chained comparisons
 - `missing?`
 - `get-else`
 - `get-some`
