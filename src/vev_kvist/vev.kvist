@@ -704,10 +704,45 @@
       (source (gensym "vev_tx_map")))
     (error "nested tx map expected")))
 
+(defmacro- tx-map-has-numeric-id? [form]
+  (if (brace? form)
+    (if (tx-map-has-id? form)
+      (int? (tx-map-id form))
+      false)
+    false))
+
 (defmacro- tx-map-entity-id [form]
   (if (tx-map-has-id? form)
     (tx-map-id form)
     (source (gensym "vev_tx_map"))))
+
+(defmacro- emit-tx-map-entity-ref-call [e a value-e]
+  (if (lookup-ref? e)
+    (quasiquote
+      (add-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (unquote (emit-attr a))
+        (value-entity (unquote value-e))))
+    (if (keyword? e)
+      (quasiquote
+        (add-ident
+          (unquote (source e))
+          (unquote (emit-attr a))
+          (value-entity (unquote value-e))))
+      (if (string? e)
+        (quasiquote
+          (add-tempid
+            (unquote e)
+            (unquote (emit-attr a))
+            (value-entity (unquote value-e))))
+        (if (int? e)
+          (quasiquote
+            (add
+              (unquote e)
+              (unquote (emit-attr a))
+              (value-entity (unquote value-e))))
+          (error "nested tx map parent currently supports numeric, string, lookup ref, or ident :db/id"))))))
 
 (defmacro- emit-tx-map-ref-call [e a value-tempid]
   (if (lookup-ref? e)
@@ -739,10 +774,15 @@
 
 (defmacro- emit-tx-map-attr [e a v]
   (if (brace? v)
-    (let [value-tempid (tx-map-ref-tempid v)]
-      (forms
-        (emit-tx-map-ref-call e a value-tempid)
-        (emit-tx-map-attrs value-tempid v)))
+    (if (tx-map-has-numeric-id? v)
+      (let [value-e (tx-map-id v)]
+        (forms
+          (emit-tx-map-entity-ref-call e a value-e)
+          (emit-tx-map-attrs value-e v)))
+      (let [value-tempid (tx-map-ref-tempid v)]
+        (forms
+          (emit-tx-map-ref-call e a value-tempid)
+          (emit-tx-map-attrs value-tempid v))))
     (if (vector? v)
       (emit-tx-map-vector-attr e a v)
       (forms
