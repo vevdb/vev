@@ -168,6 +168,8 @@
 
 (defstruct Pull-Find {
   var: string
+  has_pattern_var: bool
+  pattern_var: string
   attrs: []string
   pattern: []Pull-Spec
 })
@@ -287,12 +289,14 @@
   Scalar
   Collection
   Relation
+  PullPattern
 ])
 
 (defstruct Query-Input {
   kind: Query-Input-Kind
   value: Value
   values: []Value
+  pattern: []Pull-Spec
   width: int
   has_lookup_ref: bool
   lookup_attr: string
@@ -2135,10 +2139,19 @@
       (if (vector? pattern)
         (quasiquote
           (Pull-Find {var: (unquote (emit-find-var var))
+                      has_pattern_var: false
+                      pattern_var: ""
                       attrs: ([]string [(splice (emit-pull-attrs pattern))])
                       pattern: ([]Pull-Spec [(splice (emit-pull-specs pattern))])}))
-        (error "find pull expects a literal vector pattern")))
-    (error ":find pull expressions must be (pull ?e [...]) or (pull $ ?e [...])")))
+        (if (symbol? pattern)
+          (quasiquote
+            (Pull-Find {var: (unquote (emit-find-var var))
+                        has_pattern_var: true
+                        pattern_var: (unquote (emit-find-var pattern))
+                        attrs: ([]string [])
+                        pattern: ([]Pull-Spec [])}))
+          (error "find pull expects a literal vector pattern or an input pattern var"))))
+    (error ":find pull expressions must be (pull ?e pattern) or (pull $ ?e pattern)")))
 
 (defmacro- emit-pull-finds [forms]
   (if (= (count forms) 0)
@@ -2288,6 +2301,65 @@
         (Query-Input {kind: .Scalar
                       value: (unquote (emit-literal-value form))})))))
 
+(defmacro- pull-find-pattern-var-name [form]
+  (if (pull-find? form)
+    (let [pattern (if (= (count form) 4) (nth form 3) (nth form 2))]
+      (if (symbol? pattern)
+        (emit-find-var pattern)
+        ""))
+    ""))
+
+(defmacro- pull-pattern-var-in-finds? [forms name]
+  (if (= (count forms) 0)
+    false
+    (if (= (pull-find-pattern-var-name (first forms)) name)
+      true
+      (pull-pattern-var-in-finds? (rest forms) name))))
+
+(defmacro- input-spec-var-name [form]
+  (if (input-source? form)
+    ""
+    (if (input-collection? form)
+      (emit-find-var (nth form 0))
+      (if (input-relation? form)
+        ""
+        (if (input-tuple? form)
+          ""
+          (emit-find-var form))))))
+
+(defmacro- pull-pattern-input? [find-items spec]
+  (let [name (input-spec-var-name spec)]
+    (if (= name "")
+      false
+      (pull-pattern-var-in-finds? find-items name))))
+
+(defmacro- emit-query-input-for-spec [find-items spec value]
+  (if (pull-pattern-input? find-items spec)
+    (if (vector? value)
+      (quasiquote
+        (Query-Input {kind: .PullPattern
+                      pattern: ([]Pull-Spec [(splice (emit-pull-specs value))])}))
+      (error "pull pattern inputs must be literal vectors"))
+    (emit-query-input value)))
+
+(defmacro- emit-query-input-list-for-query [find-items specs values]
+  (if (= (count values) 0)
+    (forms)
+    (if (= (count specs) 0)
+      (emit-query-input-list-without-rules values)
+      (let [spec (first specs)]
+        (if (input-source? spec)
+          (if (= (source spec) "%")
+            (if (rule-list? (first values))
+              (emit-query-input-list-for-query find-items (rest specs) (rest values))
+              (emit-query-input-list-for-query find-items (rest specs) values))
+            (emit-query-input-list-for-query find-items (rest specs) values))
+          (if (rule-list? (first values))
+            (emit-query-input-list-for-query find-items specs (rest values))
+            (forms
+              (emit-query-input-for-spec find-items spec (first values))
+              (emit-query-input-list-for-query find-items (rest specs) (rest values)))))))))
+
 (defmacro- emit-query-input-list [forms]
   (if (= (count forms) 0)
     (forms)
@@ -2356,13 +2428,16 @@
 
 (defmacro q [db query-form & inputs]
   (if (vector? query-form)
-    (quasiquote
-      (q-query-with-inputs
-        (unquote db)
-        (query-with-rules
-          (unquote (datalog query-form))
-          ([]Rule [(splice (emit-rule-input-rules inputs))]))
-        ([]Query-Input [(splice (emit-query-input-list-without-rules inputs))])))
+    (let [tail (rest query-form)
+          find-items (datalog-find-items tail)
+          input-items (datalog-input-items tail)]
+      (quasiquote
+        (q-query-with-inputs
+          (unquote db)
+          (query-with-rules
+            (unquote (datalog query-form))
+            ([]Rule [(splice (emit-rule-input-rules inputs))]))
+          ([]Query-Input [(splice (emit-query-input-list-for-query find-items input-items inputs))]))))
     (quasiquote
       (q-query-with-inputs
         (unquote db)
@@ -3762,6 +3837,20 @@
       (set! row.values[(+ (count query.find) index)]
         (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
 
+(defn pull-pattern-input [query: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]
+  (for [input-name index query.inputs]
+    (when (= input-name name)
+      (when (and (< index (count inputs))
+                 (= inputs[index].kind .PullPattern))
+        (return inputs[index].pattern true))
+      (return ([]Pull-Spec []) false)))
+  (return ([]Pull-Spec []) false))
+
+(defn pull-find-pattern [query: Query, inputs: []Query-Input, pull-find: Pull-Find] -> [pattern: []Pull-Spec, ok: bool]
+  (if pull-find.has_pattern_var
+    (pull-pattern-input query inputs pull-find.pattern_var)
+    (return pull-find.pattern true)))
+
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
         bindings (bindings-from-inputs db query inputs)
@@ -3876,7 +3965,10 @@
           (for [pull-find query.pulls]
             (let [[entity ok] (binding-lookup binding pull-find.var)]
               (if (and ok (= entity.kind .Entity))
-                (arr.push! pulls (pull-pattern-spec db entity.entity pull-find.pattern))
+                (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)]
+                  (if pattern-ok
+                    (arr.push! pulls (pull-pattern-spec db entity.entity pattern))
+                    (set! complete false)))
                 (set! complete false))))
           (when complete
             (when (or (> (count pulls) 0)
