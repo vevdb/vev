@@ -98,7 +98,7 @@ Supported now:
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
 - `not` groups
 - `not-join`
-- simple `or` groups with single data-clause branches
+- simple `or` groups with data-clause or `(and ...)` data-clause branches
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -183,6 +183,16 @@ Example:
   [:find ?name
    :where
    (or [?e :user/email "ada@example.com"]
+       [?e :user/email "grace@example.com"])
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   (or (and [?e :user/active true]
+            [?e :user/age 37])
        [?e :user/email "grace@example.com"])
    [?e :user/name ?name]])
 ```
