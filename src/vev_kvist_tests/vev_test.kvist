@@ -2121,6 +2121,133 @@
     (t.is (= mixed-width.rows[1].values[0].text ":a2"))
     (t.is (= mixed-width.rows[1].values[1].text ":c2"))))
 
+(t.deftest datascript-query-source-prefixed-not-or-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        source-not (vev.q-collection conn.db
+                     [:find [?e ...]
+                      :in $names $ages
+                      :where
+                      [$names ?e :name]
+                      ($ages not [?e :age 10])]
+                     [[1 :name]
+                      [2 :name]]
+                     [[1 :age 10]
+                      [2 :age 20]])
+        source-or (vev.q-collection conn.db
+                    [:find [?e ...]
+                     :in $names $ages
+                     :where
+                     [$names ?e :name]
+                     ($ages or [?e :age 10])]
+                    [[1 :name]
+                     [2 :name]]
+                    [[1 :age 10]
+                     [2 :age 20]])
+        source-or-and (vev.q-collection conn.db
+                        [:find [?e ...]
+                         :in $names $ages
+                         :where
+                         [$names ?e :name]
+                         ($ages or (and [?e :age ?age]
+                                        [1 :age ?age]))]
+                        [[1 :name]
+                         [2 :name]]
+                        [[1 :age 10]
+                         [2 :age 20]])
+        override-not (vev.q-collection conn.db
+                       [:find [?e ...]
+                        :in $names $ages
+                        :where
+                        [$names ?e :name ?name]
+                        ($ages not [$names ?e :name "Ivan"])]
+                       [[1 :name "Ivan"]
+                        [2 :name "Oleg"]]
+                       [[1 :age 10]
+                        [2 :age 20]])
+        override-or (vev.q-collection conn.db
+                      [:find [?e ...]
+                       :in $names $ages
+                       :where
+                       [$names ?e :name ?name]
+                       ($ages or [$names ?e :name "Ivan"])]
+                      [[1 :name "Ivan"]
+                       [2 :name "Oleg"]]
+                      [[1 :age 10]
+                       [2 :age 20]])
+        nested-not (vev.q-collection conn.db
+                     [:find [?e ...]
+                      :in $names $ages
+                      :where
+                      [$names ?e :name]
+                      ($ages not (not [?e :age 10]))]
+                     [[1 :name]
+                      [2 :name]]
+                     [[1 :age 10]
+                      [2 :age 20]])
+        nested-or (vev.q-collection conn.db
+                    [:find [?e ...]
+                     :in $names $ages
+                     :where
+                     [$names ?e :name]
+                     ($ages or (or [?e :age 10]))]
+                    [[1 :name]
+                     [2 :name]]
+                    [[1 :age 10]
+                     [2 :age 20]])
+        nested-override-not (vev.q-collection conn.db
+                              [:find [?e ...]
+                               :in $names $ages
+                               :where
+                               [$names ?e :name ?name]
+                               ($ages not ($names not [?e :name "Ivan"]))]
+                              [[1 :name "Ivan"]
+                               [2 :name "Oleg"]]
+                              [[1 :age 10]
+                               [2 :age 20]])
+        nested-or-two-branches (vev.q-collection conn.db
+                                 [:find [?e ...]
+                                  :in $names $ages
+                                  :where
+                                  [$names ?e :name]
+                                  ($ages or (or [?e :age 10]
+                                                [?e :age 20]))]
+                                 [[1 :name]
+                                  [2 :name]]
+                                 [[1 :age 10]
+                                  [2 :age 20]])
+        nested-override-or (vev.q-collection conn.db
+                             [:find [?e ...]
+                              :in $names $ages
+                              :where
+                              [$names ?e :name ?name]
+                              ($ages or ($names or [?e :name "Ivan"]))]
+                             [[1 :name "Ivan"]
+                              [2 :name "Oleg"]]
+                             [[1 :age 10]
+                              [2 :age 20]])]
+    (t.is (= (count source-not) 1))
+    (t.is (= source-not[0].int_value 2))
+    (t.is (= (count source-or) 1))
+    (t.is (= source-or[0].int_value 1))
+    (t.is (= (count source-or-and) 1))
+    (t.is (= source-or-and[0].int_value 1))
+    (t.is (= (count override-not) 1))
+    (t.is (= override-not[0].int_value 2))
+    (t.is (= (count override-or) 1))
+    (t.is (= override-or[0].int_value 1))
+    (t.is (= (count nested-not) 1))
+    (t.is (= nested-not[0].int_value 1))
+    (t.is (= (count nested-or) 1))
+    (t.is (= nested-or[0].int_value 1))
+    (t.is (= (count nested-override-not) 1))
+    (t.is (= nested-override-not[0].int_value 1))
+    (t.is (= (count nested-or-two-branches) 2))
+    (t.is (= nested-or-two-branches[0].int_value 1))
+    (t.is (= nested-or-two-branches[1].int_value 2))
+    (t.is (= (count nested-override-or) 1))
+    (t.is (= nested-override-or[0].int_value 1))))
+
 (t.deftest datalog-macro-supports-find-pull
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -3473,6 +3600,59 @@
     (t.is (= direct.error "cannot modify tuple attrs directly"))
     (t.is (= (count gone.rows) 0))))
 
+(t.deftest datascript-tuple-attrs-maintains-multiple-tuples-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        two-schema (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice two-schema 0))
+        three-schema (vev.transact
+                       (addr conn)
+                       ([]vev.Tx-Data
+                         [(vev.add 101 ":db/ident" (vev.value-keyword ":a-c-d"))
+                          (vev.add 101 ":db/tupleAttrs"
+                            (vev.value-vector
+                              ([]vev.Value
+                                [(vev.value-keyword ":a")
+                                 (vev.value-keyword ":c")
+                                 (vev.value-keyword ":d")])))]))
+        _ (vev.transact (addr conn) [[:db/add 1 :a "A"]])
+        [after-a after-a-ok] (vev.q-scalar conn.db
+                               [:find ?tuple .
+                                :where
+                                [1 :a-c-d ?tuple]])
+        _ (vev.transact (addr conn) [[:db/add 1 :b "B"]
+                                     [:db/add 1 :c "C"]
+                                     [:db/add 1 :d "D"]])
+        [after-all after-all-ok] (vev.q-scalar conn.db
+                                   [:find ?tuple .
+                                    :where
+                                    [1 :a-c-d ?tuple]])
+        _ (vev.transact (addr conn) [[:db/retract 1 :a "A"]])
+        [after-retract-a after-retract-a-ok] (vev.q-scalar conn.db
+                                               [:find ?tuple .
+                                                :where
+                                                [1 :a-c-d ?tuple]])
+        _ (vev.transact (addr conn) [[:db/retract 1 :c "C"]
+                                     [:db/retract 1 :d "D"]])
+        gone (vev.q conn.db
+               [:find ?tuple
+                :where
+                [1 :a-c-d ?tuple]])]
+    (t.is three-schema.ok)
+    (t.is after-a-ok)
+    (t.is (= after-a.items[0].text "A"))
+    (t.is (= after-a.items[1].kind .Nil))
+    (t.is (= after-a.items[2].kind .Nil))
+    (t.is after-all-ok)
+    (t.is (= after-all.items[0].text "A"))
+    (t.is (= after-all.items[1].text "C"))
+    (t.is (= after-all.items[2].text "D"))
+    (t.is after-retract-a-ok)
+    (t.is (= after-retract-a.items[0].kind .Nil))
+    (t.is (= after-retract-a.items[1].text "C"))
+    (t.is (= after-retract-a.items[2].text "D"))
+    (t.is (= (count gone.rows) 0))))
+
 (t.deftest datascript-tuple-attrs-ignore-correct-direct-value-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -3682,12 +3862,22 @@
         _ (vev.transact (addr conn) [{:db/id 1 :a "A" :b "B"}
                                      {:db/id 2 :a "C" :b "B"}])
         report (vev.transact (addr conn) [[:db/add 2 :a "A"]])
+        reverse-report (vev.transact (addr conn) [[:db/add 1 :a "C"]])
+        both-report (vev.transact (addr conn) [[:db/add 2 :a "A"]
+                                               [:db/add 2 :b "B"]])
+        new-entity-report (vev.transact (addr conn) [{:db/id 4 :a "A" :b "B"}])
         [a a-ok] (vev.q-scalar conn.db
                    [:find ?a .
                     :where
                     [2 :a ?a]])]
     (t.is (not report.ok))
     (t.is (= report.error "schema unique conflict"))
+    (t.is (not reverse-report.ok))
+    (t.is (= reverse-report.error "schema unique conflict"))
+    (t.is (not both-report.ok))
+    (t.is (= both-report.error "schema unique conflict"))
+    (t.is (not new-entity-report.ok))
+    (t.is (= new-entity-report.error "schema unique conflict"))
     (t.is a-ok)
     (t.is (= a.text "C"))))
 
