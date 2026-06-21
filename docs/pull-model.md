@@ -113,6 +113,13 @@ And one-level nested ref maps:
 (v.pull db [{:user/friend [:user/name]}] 1)
 ```
 
+Maps can contain multiple nested ref entries:
+
+```clojure
+(v.pull db [{:user/friend [:user/name]
+             :user/manager [:user/name]}] 1)
+```
+
 Nested reverse refs can use `:limit` to cap fan-out:
 
 ```clojure
