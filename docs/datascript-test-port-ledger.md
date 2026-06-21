@@ -8,7 +8,7 @@ DataScript assertion or exact Clojure API shape.
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
-| `query_aggregates.cljc` | 1 | subset | grouped parameter aggregates, custom aggregates |
+| `query_aggregates.cljc` | 1 | subset | custom aggregates |
 | `query_not.cljc` | 5 | subset | error behavior and default-source forms |
 | `query_or.cljc` | 5 | subset | relation-source `or-join` |
 | `query_pull.cljc` | 7 | subset | returning pattern values, multi-source pull |

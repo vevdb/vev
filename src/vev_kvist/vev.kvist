@@ -198,6 +198,8 @@
   var: string
   limit: int
   has_limit: bool
+  limit_var: string
+  has_limit_var: bool
 })
 
 (defstruct Tuple-Input {
@@ -1335,7 +1337,8 @@
           (let [op (source head)]
             (if (= (count form) 3)
               (and (top-n-aggregate-op? op)
-                   (int? (nth form 1))
+                   (or (int? (nth form 1))
+                       (find-var? (nth form 1)))
                    (find-var? (nth form 2)))
               (and (find-var? (nth form 1))
                    (aggregate-op? op))))
@@ -2375,11 +2378,17 @@
 (defmacro- emit-aggregate-find [form]
   (if (aggregate-find? form)
     (if (= (count form) 3)
-      (quasiquote
-        (Aggregate-Find {op: (unquote (source (first form)))
-                         var: (unquote (emit-find-var (nth form 2)))
-                         limit: (unquote (nth form 1))
-                         has_limit: true}))
+      (if (int? (nth form 1))
+        (quasiquote
+          (Aggregate-Find {op: (unquote (source (first form)))
+                           var: (unquote (emit-find-var (nth form 2)))
+                           limit: (unquote (nth form 1))
+                           has_limit: true}))
+        (quasiquote
+          (Aggregate-Find {op: (unquote (source (first form)))
+                           var: (unquote (emit-find-var (nth form 2)))
+                           limit_var: (unquote (emit-find-var (nth form 1)))
+                           has_limit_var: true})))
       (quasiquote
         (Aggregate-Find {op: (unquote (source (first form)))
                          var: (unquote (emit-find-var (nth form 1)))})))
@@ -2615,23 +2624,51 @@
         (emit-query-collection-lookup-ref-input value)
         (emit-query-input value)))))
 
+(defmacro- input-kind? [spec kind]
+  (if (= kind "scalar")
+    (if (input-source? spec)
+      false
+      (if (input-collection? spec)
+        false
+        (if (input-relation? spec)
+          false
+          (not (input-tuple? spec)))))
+    (if (= kind "collection")
+      (input-collection? spec)
+      (if (= kind "tuple")
+        (input-tuple? spec)
+        (input-relation? spec)))))
+
+(defmacro- emit-query-input-list-for-kind [find-items specs values kind]
+  (if (= (count values) 0)
+    (forms)
+    (if (= (count specs) 0)
+      (forms)
+      (let [spec (first specs)]
+        (if (input-source? spec)
+          (if (= (source spec) "%")
+            (if (rule-list? (first values))
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)
+              (emit-query-input-list-for-kind find-items (rest specs) values kind))
+            (emit-query-input-list-for-kind find-items (rest specs) values kind))
+          (if (rule-list? (first values))
+            (emit-query-input-list-for-kind find-items specs (rest values) kind)
+            (if (input-kind? spec kind)
+              (forms
+                (emit-query-input-for-spec find-items spec (first values))
+                (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind))
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind))))))))
+
 (defmacro- emit-query-input-list-for-query [find-items specs values]
   (if (= (count values) 0)
     (forms)
     (if (= (count specs) 0)
       (emit-query-input-list-without-rules values)
-      (let [spec (first specs)]
-        (if (input-source? spec)
-          (if (= (source spec) "%")
-            (if (rule-list? (first values))
-              (emit-query-input-list-for-query find-items (rest specs) (rest values))
-              (emit-query-input-list-for-query find-items (rest specs) values))
-            (emit-query-input-list-for-query find-items (rest specs) values))
-          (if (rule-list? (first values))
-            (emit-query-input-list-for-query find-items specs (rest values))
-            (forms
-              (emit-query-input-for-spec find-items spec (first values))
-              (emit-query-input-list-for-query find-items (rest specs) (rest values)))))))))
+      (forms
+        (emit-query-input-list-for-kind find-items specs values "scalar")
+        (emit-query-input-list-for-kind find-items specs values "collection")
+        (emit-query-input-list-for-kind find-items specs values "tuple")
+        (emit-query-input-list-for-kind find-items specs values "relation")))))
 
 (defmacro- emit-query-input-list [forms]
   (if (= (count forms) 0)
@@ -4643,6 +4680,7 @@
 (defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
+        resolved-limit aggregate.limit
         aggregate-ints (make [dynamic]i64)
         aggregate-values (make [dynamic]Value)
         distinct-values (make [dynamic]Value)
@@ -4654,6 +4692,10 @@
     (for [binding bindings]
       (let [[binding-group ok] (binding-values-for-vars binding (slice query.find 0))]
         (when (and ok (values-equal? (slice binding-group 0) group-values))
+          (when aggregate.has_limit_var
+            (let [[limit-value limit-ok] (binding-lookup binding aggregate.limit_var)]
+              (when (and limit-ok (= limit-value.kind .Int))
+                (set! resolved-limit (int limit-value.int_value)))))
           (let [[key key-ok] (aggregate-key-values binding query aggregate)]
             (when (and key-ok (not (row-values-exist? (slice seen-keys 0) (slice key 0))))
               (arr.push! seen-keys (aggregate-key-row (slice key 0)))
@@ -4670,7 +4712,7 @@
                                        (= aggregate.op "stddev"))
                                    (= value.kind .Int))
                           (arr.push! aggregate-ints value.int_value))
-                        (when (and aggregate.has_limit
+                        (when (and (or aggregate.has_limit aggregate.has_limit_var)
                                    (or (= aggregate.op "min")
                                        (= aggregate.op "max")))
                           (arr.push! aggregate-values value))
@@ -4680,10 +4722,10 @@
                         (set! current (apply-aggregate-value current aggregate value))))))))))))
     (when (= aggregate.op "count-distinct")
       (return (value-int (i64 (count distinct-values)))))
-    (when (and aggregate.has_limit
+    (when (and (or aggregate.has_limit aggregate.has_limit_var)
                (or (= aggregate.op "min")
                    (= aggregate.op "max")))
-      (return (top-n-values (slice aggregate-values 0) aggregate.limit (= aggregate.op "max"))))
+      (return (top-n-values (slice aggregate-values 0) resolved-limit (= aggregate.op "max"))))
     (when (and (= aggregate.op "avg") (> avg-count 0))
       (set! current.int_value (/ current.int_value avg-count)))
     (when (= aggregate.op "median")
