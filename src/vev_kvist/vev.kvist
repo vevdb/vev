@@ -312,6 +312,7 @@
   has_lookup_ref: bool
   lookup_attr: string
   lookup_value: Value
+  lookup_attrs: []string
   lookup_values: []Value
 })
 
@@ -2293,6 +2294,17 @@
         (emit-query-input-lookup-ref-values (rest forms)))
       (error "lookup-ref collection inputs must contain lookup refs"))))
 
+(defmacro- emit-query-input-lookup-ref-attrs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (lookup-ref? (first forms))
+      (if (keyword? (nth (first forms) 0))
+        (forms
+          (source (nth (first forms) 0))
+          (emit-query-input-lookup-ref-attrs (rest forms)))
+        (error "lookup-ref collection inputs require keyword attrs"))
+      (error "lookup-ref collection inputs must contain lookup refs"))))
+
 (defmacro- emit-query-relation-row-values [row]
   (if (= (count row) 0)
     (forms)
@@ -2364,12 +2376,10 @@
       (pull-pattern-var-in-finds? find-items name))))
 
 (defmacro- emit-query-collection-lookup-ref-input [value]
-  (if (keyword? (nth (first value) 0))
-    (quasiquote
-      (Query-Input {kind: .CollectionLookupRefs
-                    lookup_attr: (unquote (source (nth (first value) 0)))
-                    lookup_values: ([]Value [(splice (emit-query-input-lookup-ref-values value))])}))
-    (error "lookup-ref collection inputs currently require keyword attrs")))
+  (quasiquote
+    (Query-Input {kind: .CollectionLookupRefs
+                  lookup_attrs: ([]string [(splice (emit-query-input-lookup-ref-attrs value))])
+                  lookup_values: ([]Value [(splice (emit-query-input-lookup-ref-values value))])})))
 
 (defmacro- collection-lookup-ref-input? [spec value]
   (if (input-collection? spec)
@@ -2722,8 +2732,8 @@
   (let [out (make [dynamic]Binding)]
     (when (= input.kind .CollectionLookupRefs)
       (for [binding bindings]
-        (for [value input.lookup_values]
-          (let [[entity ok] (resolve-lookup-ref db input.lookup_attr value)]
+        (for [value index input.lookup_values]
+          (let [[entity ok] (resolve-lookup-ref db input.lookup_attrs[index] value)]
             (when ok
               (let [next (clone-binding binding)]
                 (binding-store! (addr next) name (value-entity entity))
