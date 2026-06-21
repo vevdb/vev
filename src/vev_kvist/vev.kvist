@@ -77,6 +77,8 @@
   has_ident: bool
   a: string
   v: Value
+  value_tempid: string
+  has_value_tempid: bool
 })
 
 (defstruct Tempid {
@@ -299,6 +301,12 @@
 
 (defn add-tempid [tempid: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a v: v}))
+
+(defn add-value-tempid [e: u64, a: string, value-tempid: string] -> Tx-Data
+  (Tx-Data {op: ":db/add" e: e a: a value_tempid: value-tempid has_value_tempid: true}))
+
+(defn add-tempid-value-tempid [tempid: string, a: string, value-tempid: string] -> Tx-Data
+  (Tx-Data {op: ":db/add" tempid: tempid has_tempid: true a: a value_tempid: value-tempid has_value_tempid: true}))
 
 (defn retract-tempid [tempid: string, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" tempid: tempid has_tempid: true a: a v: v}))
@@ -602,6 +610,43 @@
               (unquote (emit-attr a))
               (unquote (emit-literal-value v)))))))))
 
+(defmacro- tx-map-string-id [form]
+  (if (brace? form)
+    (if (> (count form) 1)
+      (if (keyword? (nth form 0))
+        (if (= (source (nth form 0)) ":db/id")
+          (if (string? (nth form 1))
+            (text (nth form 1))
+            (error "nested tx maps currently require string :db/id"))
+          (error "nested tx maps currently require :db/id first"))
+        (error "nested tx maps currently require :db/id first"))
+      (error "nested tx maps currently require :db/id"))
+    (error "nested tx map expected")))
+
+(defmacro- emit-tx-map-ref-call [e a value-tempid]
+  (if (string? e)
+    (quasiquote
+      (add-tempid-value-tempid
+        (unquote e)
+        (unquote (emit-attr a))
+        (unquote value-tempid)))
+    (if (int? e)
+      (quasiquote
+        (add-value-tempid
+          (unquote e)
+          (unquote (emit-attr a))
+          (unquote value-tempid)))
+      (error "nested tx map parent currently supports numeric or string :db/id"))))
+
+(defmacro- emit-tx-map-attr [e a v]
+  (if (brace? v)
+    (let [value-tempid (tx-map-string-id v)]
+      (forms
+        (emit-tx-map-ref-call e a value-tempid)
+        (emit-tx-map-items v)))
+    (forms
+      (emit-tx-data-call (keyword "db/add") e a v))))
+
 (defmacro- emit-retract-entity-call [e]
   (if (lookup-ref? e)
     (quasiquote
@@ -643,25 +688,25 @@
       (if (= (source (nth form 4)) ":db/id")
         (let [e (nth form 5)]
           (forms
-            (emit-tx-data-call (keyword "db/add") e (nth form 0) (nth form 1))
-            (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))))
+            (emit-tx-map-attr e (nth form 0) (nth form 1))
+            (emit-tx-map-attr e (nth form 2) (nth form 3))))
         (let [e (nth form 1)]
           (forms
-            (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))
-            (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5)))))
+            (emit-tx-map-attr e (nth form 2) (nth form 3))
+            (emit-tx-map-attr e (nth form 4) (nth form 5)))))
       (let [e (nth form 1)]
         (forms
-          (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))
-          (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5)))))
+          (emit-tx-map-attr e (nth form 2) (nth form 3))
+          (emit-tx-map-attr e (nth form 4) (nth form 5)))))
     (let [e (nth form 1)]
       (if (= (count form) 4)
         (forms
-          (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3)))
+          (emit-tx-map-attr e (nth form 2) (nth form 3)))
         (if (= (count form) 8)
           (forms
-            (emit-tx-data-call (keyword "db/add") e (nth form 2) (nth form 3))
-            (emit-tx-data-call (keyword "db/add") e (nth form 4) (nth form 5))
-            (emit-tx-data-call (keyword "db/add") e (nth form 6) (nth form 7)))
+            (emit-tx-map-attr e (nth form 2) (nth form 3))
+            (emit-tx-map-attr e (nth form 4) (nth form 5))
+            (emit-tx-map-attr e (nth form 6) (nth form 7)))
           (error "tx map forms currently support :db/id first with one to three attrs, or :db/id last with two attrs"))))))
 
 (defmacro- emit-tx-data-item [form]
@@ -1767,6 +1812,14 @@
           (append-retract-attr-ops! (addr resolved-ops) db e data.a)
           (continue))
         (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
+          (when data.has_value_tempid
+            (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.value_tempid)]
+              (if ok
+                (set! v (value-entity existing))
+                (do
+                  (set! v (value-entity next-e))
+                  (arr.push! resolved-tempids (Tempid {tempid: data.value_tempid e: next-e}))
+                  (set! next-e (+ next-e 1))))))
           (when (not value-ok)
             (return (Resolved-Tx {ok: false
                                   error: value-error

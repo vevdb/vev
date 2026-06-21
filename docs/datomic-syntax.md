@@ -106,7 +106,15 @@ Examples:
 
 Current Vev supports map forms in tx data when `:db/id` is first, with one to
 three attrs after it, and the common two-attr shape with `:db/id` last. Nested
-component maps and arbitrary key order remain later work.
+map values are supported when the nested map has an explicit string `:db/id`:
+
+```clojure
+{:db/id 1
+ :user/address {:db/id "address"
+                :address/city "London"}}
+```
+
+Auto-generated component ids and arbitrary key order remain later work.
 
 ### Transaction metadata
 
