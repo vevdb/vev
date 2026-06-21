@@ -19,7 +19,7 @@ DataScript assertion or exact Clojure API shape.
 | `ident.cljc` | 4 | covered | Vev returns ref values as `Value.Entity`; behavior is otherwise covered |
 | `entity.cljc` | 6 | subset | Clojure equality/hash/print/cache protocol semantics |
 | `pull_api.cljc` | 17 | subset | exact collection/scalar render shape |
-| `components.cljc` | 2 | subset | exact entity/touch reverse shapes |
+| `components.cljc` | 2 | subset | schema validation errors and exact entity/touch render shapes |
 | `transact.cljc` | 19 | subset | tx functions and exact errors |
 | `upsert.cljc` | 6 | subset | full conflict matrix and messages |
 | `db.cljc` | 4 | partial | datom/index API compatibility |
