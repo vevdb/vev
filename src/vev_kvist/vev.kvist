@@ -351,6 +351,20 @@
       .Keyword (= left.text right.text)
       :else false)))
 
+(defn values-equal? [left: []Value, right: []Value] -> bool
+  (when (not (= (count left) (count right)))
+    (return false))
+  (for [value index left]
+    (when (not (value-equal? value right[index]))
+      (return false)))
+  true)
+
+(defn row-values-exist? [rows: []Result-Row, values: []Value] -> bool
+  (for [row rows]
+    (when (values-equal? (slice row.values 0) values)
+      (return true)))
+  false)
+
 (defn datom-less-eavt? [datoms: []Datom, left-index: int, right-index: int] -> bool
   (let [left datoms[left-index]
         right datoms[right-index]]
@@ -2010,12 +2024,20 @@
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
       (for [binding bindings]
         (let [values (make [dynamic]Value 0 (count query.find))
+              dedupe-values (make [dynamic]Value)
               pulls (make [dynamic]Pull-Result 0 (count query.pulls))
               complete true]
           (for [name query.find]
             (let [[value ok] (binding-lookup binding name)]
               (if ok
-                (arr.push! values value)
+                (do
+                  (arr.push! values value)
+                  (arr.push! dedupe-values value))
+                (set! complete false))))
+          (for [name query.with]
+            (let [[value ok] (binding-lookup binding name)]
+              (if ok
+                (arr.push! dedupe-values value)
                 (set! complete false))))
           (for [pull-find query.pulls]
             (let [[entity ok] (binding-lookup binding pull-find.var)]
@@ -2023,7 +2045,9 @@
                 (arr.push! pulls (pull-pattern-spec db entity.entity pull-find.pattern))
                 (set! complete false))))
           (when complete
-            (arr.push! rows (Result-Row {values: values pulls: pulls})))))
+            (when (or (> (count pulls) 0)
+                      (not (row-values-exist? (slice rows 0) (slice dedupe-values 0))))
+              (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
       (delete bindings)
       (Result-Set {rows: rows}))))
 

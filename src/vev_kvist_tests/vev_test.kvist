@@ -411,6 +411,42 @@
     (t.is (= result.rows[0].values[0].text "Ada"))
     (t.is (= result.rows[1].values[0].text "Grace"))))
 
+(t.deftest datalog-dedupes-result-values
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (discard (vev.seed-people (addr conn)))
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 3 :user/name "Alan"]
+                [:db/add 3 :user/age 37]]))
+    (let [result (vev.q conn.db
+                   [:find ?age
+                    :where
+                    [?e :user/age ?age]])]
+      (t.is (= (count result.rows) 2))
+      (t.is (= result.rows[0].values[0].int_value 37))
+      (t.is (= result.rows[1].values[0].int_value 41)))))
+
+(t.deftest datalog-with-keeps-duplicate-visible-values
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (discard (vev.seed-people (addr conn)))
+    (discard (vev.transact
+               (addr conn)
+               [[:db/add 3 :user/name "Alan"]
+                [:db/add 3 :user/age 37]]))
+    (let [result (vev.q conn.db
+                   [:find ?age
+                    :with ?e
+                    :where
+                    [?e :user/age ?age]])
+          age-37-count 0]
+      (for [row result.rows]
+        (when (= row.values[0].int_value 37)
+          (set! age-37-count (+ age-37-count 1))))
+      (t.is (= (count result.rows) 3))
+      (t.is (= age-37-count 2)))))
+
 (t.deftest transact-data-uses-datomic-shaped-ops
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
