@@ -2222,6 +2222,16 @@
   (match-term? term actual binding))
 
 (defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
+  (when (and (= clause.a.kind .Value)
+             (= clause.a.value.kind .Keyword)
+             (reverse-attr? clause.a.value.text))
+    (when (not (= datom.v.kind .Entity))
+      (return false))
+    (let [forward-attr (forward-attr-for-reverse clause.a.value.text) :defer]
+      (return
+        (and (= datom.a forward-attr)
+             (match-entity-term? db clause.e (value-entity datom.v.entity) binding)
+             (match-term? clause.v (value-entity datom.e) binding)))))
   (and (match-entity-term? db clause.e (value-entity datom.e) binding)
        (match-term? clause.a (value-keyword datom.a) binding)
        (match-term? clause.v datom.v binding)))
@@ -2280,6 +2290,35 @@
         (if ident-ok
           (set! e-value (value-entity entity))
           (return out))))
+    (when (and a-ok
+               (= a-value.kind .Keyword)
+               (reverse-attr? a-value.text))
+      (let [forward-attr (forward-attr-for-reverse a-value.text) :defer]
+        (when (and e-ok (not (= e-value.kind .Entity)))
+          (return out))
+        (when (and v-ok (not (= v-value.kind .Entity)))
+          (return out))
+        (if e-ok
+          (let [indexes (slice db.vaet 0)
+                ref-value (value-entity e-value.entity)
+                low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+                high (upper-bound-index db indexes "vaet" 0 "" ref-value)]
+            (set! source (slice indexes low high)))
+          (if v-ok
+            (let [indexes (slice db.eavt 0)
+                  low (lower-bound-index db indexes "eavt-ea" v-value.entity forward-attr (Value {}))
+                  high (upper-bound-index db indexes "eavt-ea" v-value.entity forward-attr (Value {}))]
+              (set! source (slice indexes low high)))
+            (let [indexes (slice db.aevt 0)
+                  low (lower-bound-index db indexes "aevt" 0 forward-attr (Value {}))
+                  high (upper-bound-index db indexes "aevt" 0 forward-attr (Value {}))]
+              (set! source (slice indexes low high)))))
+        (for [datom-index source]
+          (let [datom db.datoms[datom-index]]
+            (when (and (= datom.a forward-attr)
+                       (= datom.v.kind .Entity))
+              (arr.push! out datom-index))))
+        (return out)))
     (if (and e-ok a-ok)
       (do
         (when (not (and (= e-value.kind .Entity)

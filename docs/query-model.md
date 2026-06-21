@@ -90,6 +90,7 @@ Supported now:
 - standalone and grouped `count`, `min`, `max`, `sum`, and `avg` aggregates
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
+- reverse attrs in datom clauses, such as `:_user/friend`
 - variables in entity, attribute, and value positions
 - wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
@@ -123,6 +124,13 @@ Example:
    [?e :user/email "ada@example.com"]
    [?e :user/active _]
    [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?source
+   :where
+   [2 :_user/friend ?source]])
 ```
 
 ```clojure
