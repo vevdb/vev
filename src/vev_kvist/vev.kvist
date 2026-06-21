@@ -298,6 +298,8 @@
   default_value: Value
   has_alias: bool
   alias: string
+  has_recursion: bool
+  recursion_depth: int
 })
 
 (defenum Query-Input-Kind [
@@ -2160,7 +2162,12 @@
 (defmacro- emit-pull-map-spec [attr pattern]
   (if (vector? pattern)
     (emit-pull-nested-spec attr pattern)
-    (error "nested pull attrs expect vector patterns")))
+    (if (int? pattern)
+      (quasiquote
+        (pull-spec-recursion
+          (unquote (pull-attr-source attr))
+          (unquote pattern)))
+      (error "nested pull attrs expect vector patterns or recursion depth"))))
 
 (defmacro- emit-pull-map-specs [forms]
   (if (= (count forms) 0)
@@ -4545,7 +4552,28 @@
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has_alias spec.alias spec.a))
 
-(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec] -> bool
+(defn pull-spec-decrement-recursion [spec: Pull-Spec, attr: string] -> Pull-Spec
+  (if (and spec.has_recursion
+           (= spec.a attr)
+           (> spec.recursion_depth 0))
+    (Pull-Spec {a: spec.a
+                pattern: spec.pattern
+                limit: spec.limit
+                has_default: spec.has_default
+                default_value: spec.default_value
+                has_alias: spec.has_alias
+                alias: spec.alias
+                has_recursion: true
+                recursion_depth: (- spec.recursion_depth 1)})
+    spec))
+
+(defn pull-recursion-pattern [root: []Pull-Spec, attr: string] -> [dynamic]Pull-Spec
+  (let [out (make [dynamic]Pull-Spec)]
+    (for [spec root]
+      (arr.push! out (pull-spec-decrement-recursion spec attr)))
+    out))
+
+(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec] -> bool
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
         high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
@@ -4560,8 +4588,13 @@
               (if (> (count spec.pattern) 0)
                 (let [pulled (pull-pattern-spec db datom.v.entity spec.pattern)]
                   (set! children pulled.attrs))
-                (when (schema-component? db datom.a)
-                  (set! children (pull-component-children db entity datom.v.entity)))))
+                (if (and spec.has_recursion (> spec.recursion_depth 0))
+                  (let [pattern (pull-recursion-pattern root spec.a)]
+                    (defer (delete pattern))
+                    (let [pulled (pull-pattern-spec db datom.v.entity (slice pattern 0))]
+                      (set! children pulled.attrs)))
+                  (when (schema-component? db datom.a)
+                    (set! children (pull-component-children db entity datom.v.entity))))))
             (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                         v: datom.v
                                         attrs: children}))
@@ -4571,7 +4604,9 @@
               (return found))))))
     found))
 
-(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec]
+(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec]
+  (when (and spec.has_recursion (<= spec.recursion_depth 0))
+    (return))
   (when (= spec.a "*")
     (pull-wildcard! out db entity)
     (return))
@@ -4588,7 +4623,7 @@
                                     v: spec.default_value
                                     attrs: (make [dynamic]Pull-Attr)}))))
     (return))
-  (let [found (pull-forward-attr! out db entity spec)]
+  (let [found (pull-forward-attr! out db entity spec root)]
     (when (and (not found) spec.has_default)
       (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
                                   v: spec.default_value
@@ -4597,7 +4632,7 @@
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
     (for [spec pattern]
-      (pull-spec-attr! (addr out) db entity spec))
+      (pull-spec-attr! (addr out) db entity spec pattern))
     (Pull-Result {e: entity attrs: out})))
 
 (defn pull-pattern-lookup-ref [db: DB, attr: string, value: Value, pattern: []Pull-Spec] -> Pull-Result
@@ -4734,6 +4769,17 @@
               has_alias: false
               alias: ""
               pattern: pattern}))
+
+(defn pull-spec-recursion [attr: string, depth: int] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: ([]Pull-Spec [])
+              has_recursion: true
+              recursion_depth: depth}))
 
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
   (Pull-Spec {a: attr
