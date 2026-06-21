@@ -177,8 +177,8 @@ returns the row-oriented `Result-Set`; use `q-scalar`, `q-collection`, or
    [?e :user/age ?age]])
 ```
 
-Return-map markers are accepted. `q-keys` returns keyed rows for `:keys`;
-`:strs` and `:syms` are syntax-only for now:
+Return-map markers are accepted. `q-keys`, `q-strs`, and `q-syms` return Vev
+keyed rows:
 
 ```clojure
 (v.q-keys db
