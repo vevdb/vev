@@ -225,12 +225,13 @@
 })
 
 (defstruct Ground {
+  source: Term
   out: string
   tuple_vars: []string
   is_collection: bool
   is_tuple: bool
-  value: Value
-  values: []Value
+  is_relation: bool
+  width: int
 })
 
 (defstruct Query {
@@ -1912,13 +1913,6 @@
                    out_value: (unquote (emit-find-var (nth out 1)))})))
     (error "get-some clauses must have shape [(get-some $ ?e :attr ...) [?a ?v]]")))
 
-(defmacro- emit-ground-values [forms]
-  (if (= (count forms) 0)
-    (forms)
-    (forms
-      (emit-literal-value (first forms))
-      (emit-ground-values (rest forms)))))
-
 (defmacro- emit-ground-tuple-vars [forms]
   (if (= (count forms) 0)
     (forms)
@@ -1926,36 +1920,52 @@
       (emit-input-var (first forms))
       (emit-ground-tuple-vars (rest forms)))))
 
+(defmacro- ground-relation-output? [form]
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    (not (vector? (nth form 0))) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "...")))
+
 (defmacro- emit-datalog-ground [form]
   (if (ground-clause? form)
     (let [expr (first form)
           value (nth expr 1)
           out (nth form 1)]
-      (if (input-collection? out)
-        (if (vector? value)
+      (if (ground-relation-output? out)
+        (quasiquote
+          (Ground {source: (unquote (emit-value-term value))
+                   out: ""
+                   tuple_vars: ([]string [(splice (emit-ground-tuple-vars (nth out 0)))])
+                   is_collection: false
+                   is_tuple: false
+                   is_relation: true
+                   width: (unquote (count (nth out 0)))}))
+        (if (input-collection? out)
           (quasiquote
-            (Ground {out: (unquote (emit-input-var out))
+            (Ground {source: (unquote (emit-value-term value))
+                     out: (unquote (emit-input-var out))
                      tuple_vars: ([]string [])
                      is_collection: true
                      is_tuple: false
-                     values: ([]Value [(splice (emit-ground-values value))])}))
-          (error "collection ground clauses require vector literal values"))
+                     is_relation: false}))
         (if (vector? out)
-          (if (vector? value)
-            (quasiquote
-              (Ground {out: ""
-                       tuple_vars: ([]string [(splice (emit-ground-tuple-vars out))])
-                       is_collection: false
-                       is_tuple: true
-                       values: ([]Value [(splice (emit-ground-values value))])}))
-            (error "tuple ground clauses require vector literal values"))
           (quasiquote
-            (Ground {out: (unquote (emit-find-var out))
+            (Ground {source: (unquote (emit-value-term value))
+                     out: ""
+                     tuple_vars: ([]string [(splice (emit-ground-tuple-vars out))])
+                     is_collection: false
+                     is_tuple: true
+                     is_relation: false}))
+          (quasiquote
+            (Ground {source: (unquote (emit-value-term value))
+                     out: (unquote (if (input-wildcard? out) (quasiquote "") (emit-find-var out)))
                      tuple_vars: ([]string [])
                      is_collection: false
                      is_tuple: false
-                     value: (unquote (emit-literal-value value))})))))
-    (error "ground clauses must have shape [(ground value) ?out] or [(ground [...]) [?out ...]]")))
+                     is_relation: false}))))))
+    (error "ground clauses must have shape [(ground value) ?out], [(ground [...]) [?out ...]], or [(ground [[...]]) [[?out ...]...]]")))
 
 (defmacro- datalog-non-data-clause? [form]
   (if (predicate-clause? form)
@@ -2553,6 +2563,17 @@
                     lookup_value: (unquote (emit-literal-value (nth value 1)))}))
     (error "lookup-ref scalar inputs require keyword attrs")))
 
+(defmacro- emit-query-scalar-input [value]
+  (quasiquote
+    (Query-Input {kind: .Scalar
+                  value: (unquote (emit-literal-value value))})))
+
+(defmacro- scalar-input-spec? [spec]
+  (not (or (input-source? spec)
+           (input-collection? spec)
+           (input-relation? spec)
+           (input-tuple? spec))))
+
 (defmacro- emit-query-input-for-spec [find-items spec value]
   (if (pull-pattern-input? find-items spec)
     (if (vector? value)
@@ -2564,14 +2585,13 @@
       (emit-query-scalar-lookup-ref-input value)
       (if (collection-lookup-ref-input? spec value)
         (emit-query-collection-lookup-ref-input value)
-        (emit-query-input value)))))
+        (if (scalar-input-spec? spec)
+          (emit-query-scalar-input value)
+          (emit-query-input value))))))
 
 (defmacro- input-kind? [spec kind]
   (cond
-    (= kind "scalar") (not (or (input-source? spec)
-                               (input-collection? spec)
-                               (input-relation? spec)
-                               (input-tuple? spec)))
+    (= kind "scalar") (scalar-input-spec? spec)
     (= kind "collection") (input-collection? spec)
     (= kind "tuple") (input-tuple? spec)
     :else (input-relation? spec)))
@@ -4319,31 +4339,47 @@
             (return (binding-with-value with-attr clause.out_value value))))))
     (return binding false)))
 
+(defn ground-bind-values [binding: Binding, vars: []string, values: []Value] -> [next: Binding, ok: bool]
+  (when (not (= (count vars) (count values)))
+    (return binding false))
+  (let [bound-binding (clone-binding binding)]
+    (for [name index vars]
+      (when (not (= name ""))
+        (let [[bound bound-ok] (binding-with-value bound-binding name values[index])]
+          (when (not bound-ok)
+            (return binding false))
+          (set! bound-binding bound))))
+    (return bound-binding true)))
+
 (defn apply-ground [bindings: []Binding, ground: Ground] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
-    (if ground.is_tuple
-      (for [binding bindings]
-        (when (= (count ground.tuple_vars) (count ground.values))
-          (let [next (clone-binding binding)
-                ok true]
-            (for [name index ground.tuple_vars]
-              (when (not (= name ""))
-                (let [[bound bound-ok] (binding-with-value next name ground.values[index])]
-                  (if bound-ok
-                    (set! next bound)
-                    (set! ok false)))))
-            (when ok
-              (arr.push! out next)))))
-      (if ground.is_collection
-        (for [binding bindings]
-          (for [value ground.values]
-            (let [[next ok] (binding-with-value binding ground.out value)]
-              (when ok
-                (arr.push! out next)))))
-        (for [binding bindings]
-          (let [[next ok] (binding-with-value binding ground.out ground.value)]
-            (when ok
-              (arr.push! out next))))))
+    (for [binding bindings]
+      (let [[source source-ok] (resolve-term ground.source binding)]
+        (when source-ok
+          (if ground.is_tuple
+            (when (= source.kind .Vector)
+              (let [[next ok] (ground-bind-values binding ground.tuple_vars (slice source.items 0))]
+                (when ok
+                  (arr.push! out next))))
+            (if ground.is_relation
+              (when (= source.kind .Vector)
+                (for [row source.items]
+                  (when (and (= row.kind .Vector)
+                             (= (count row.items) ground.width))
+                    (let [[next ok] (ground-bind-values binding ground.tuple_vars (slice row.items 0))]
+                      (when ok
+                        (arr.push! out next))))))
+              (if ground.is_collection
+                (when (= source.kind .Vector)
+                  (for [value source.items]
+                    (let [[next ok] (binding-with-value binding ground.out value)]
+                      (when ok
+                        (arr.push! out next)))))
+                (if (= ground.out "")
+                  (arr.push! out binding)
+                  (let [[next ok] (binding-with-value binding ground.out source)]
+                    (when ok
+                      (arr.push! out next))))))))))
     out))
 
 (defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
