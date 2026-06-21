@@ -27,7 +27,7 @@ Status key:
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
 | `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, limits covered; recursion/components missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
-| `transact` | partial | Add/retract/map forms covered; tx fns/CAS/call mostly missing |
+| `transact` | partial | Add/retract/map forms and explicit cardinality-one replacement covered; tx fns/CAS/call and unschematized default cardinality-one incomplete |
 | `upsert` | partial | Unique lookup exists; full DataScript upsert semantics missing |
 | `lookup_refs` | partial | Lookup refs covered in key paths |
 | `ident` | partial | Idents covered in key paths |

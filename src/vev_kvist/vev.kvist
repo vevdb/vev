@@ -2318,17 +2318,6 @@
             (= value.kind .Keyword)
             true))))))
 
-(defn cardinality-one-conflict? [db: DB, op: Tx-Op] -> bool
-  (let [indexes (slice db.eavt 0)
-        low (lower-bound-index db indexes "eavt-ea" op.e op.a (Value {}))
-        high (upper-bound-index db indexes "eavt-ea" op.e op.a (Value {}))]
-    (for [datom-index (slice indexes low high)]
-      (let [datom db.datoms[datom-index]]
-        (when (and (datom-current-at? db datom-index)
-                   (not (value-equal? datom.v op.v)))
-          (return true)))))
-  false)
-
 (defn unique-conflict? [db: DB, op: Tx-Op] -> bool
   (let [indexes (slice db.avet 0)
         low (lower-bound-index db indexes "avet" 0 op.a op.v)
@@ -2345,6 +2334,11 @@
     (and has-unique
          (or (= unique ":db.unique/identity")
              (= unique ":db.unique/value")))))
+
+(defn schema-cardinality-one? [db: DB, attr: string] -> bool
+  (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
+    (and has-cardinality
+         (= cardinality ":db.cardinality/one"))))
 
 (defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
   (when (not (schema-unique? db attr))
@@ -2441,11 +2435,6 @@
   (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
     (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
       (return false "schema value type mismatch")))
-  (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
-    (when (and has-cardinality
-               (= cardinality ":db.cardinality/one")
-               (cardinality-one-conflict? db op))
-      (return false "schema cardinality one conflict")))
   (let [[unique has-unique] (schema-keyword db op.a ":db/unique")]
     (when (and has-unique
                (or (= unique ":db.unique/identity")
@@ -2484,15 +2473,40 @@
               tx_meta: (make [dynamic]Tx-Meta)
               tempids: (make [dynamic]Tempid)}))
 
+(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64, schema-active: bool]
+  (when (not schema-active)
+    (return))
+  (when (not (= op.kind .Add))
+    (return))
+  (let [current (build-db (clone-datoms after-datoms^))]
+    (when (not (schema-cardinality-one? current op.a))
+      (return))
+    (let [indexes (slice current.eavt 0)
+          low (lower-bound-index current indexes "eavt-ea" op.e op.a (Value {}))
+          high (upper-bound-index current indexes "eavt-ea" op.e op.a (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom current.datoms[datom-index]]
+          (when (and (datom-current-at? current datom-index)
+                     (not (value-equal? datom.v op.v)))
+            (let [retract (Datom {e: datom.e
+                                  a: datom.a
+                                  v: datom.v
+                                  tx: tx
+                                  added: false})]
+              (arr.push! after-datoms^ retract)
+              (arr.push! tx-data^ retract))))))))
+
 (defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count ops))
-        tx conn^.next_tx]
+        tx conn^.next_tx
+        schema-active (db-has-schema? before)]
     (let [[valid error] (validate-ops before ops)]
       (when (not valid)
         (return (failed-tx-report before error))))
     (for [op ops]
+      (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx schema-active)
       (let [datom (Datom {e: op.e
                           a: op.a
                           v: op.v
