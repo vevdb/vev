@@ -2569,6 +2569,17 @@
             (set! has-found true)))))
     (return found has-found false)))
 
+(defn db-with-resolved-ops [db: DB, ops: []Tx-Op] -> DB
+  (let [datoms (clone-datoms db.datoms)]
+    (for [op ops]
+      (arr.push! datoms
+        (Datom {e: op.e
+                a: op.a
+                v: op.v
+                tx: 0
+                added: (= op.kind .Add)})))
+    (build-db datoms)))
+
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
@@ -2582,6 +2593,7 @@
         (set! next-e (+ data.e 1))))
     (for [data tx-data]
       (let [e data.e
+            current-db (db-with-resolved-ops db (slice resolved-ops 0))
             skip-data false]
         (when (and data.has_tempid
                    (= data.tempid "datomic.tx"))
@@ -2607,7 +2619,7 @@
                       (set! next-e (+ next-e 1)))))
                 (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
         (when data.has_lookup_ref
-          (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.lookup_attr data.lookup_value)]
+          (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.lookup_attr data.lookup_value)]
             (if lookup-ok
               (set! e lookup-e)
               (if (= data.op ":db/add")
@@ -2620,7 +2632,7 @@
         (when skip-data
           (continue))
         (when data.has_ident
-          (let [[ident-e ident-ok] (schema-entity-for-attr db data.ident)]
+          (let [[ident-e ident-ok] (schema-entity-for-attr current-db data.ident)]
             (if ident-ok
               (set! e ident-e)
               (if (= data.op ":db/add")
@@ -2633,28 +2645,28 @@
         (when skip-data
           (continue))
         (when (= data.op ":db/retractEntity")
-          (append-retract-entity-ops! (addr resolved-ops) db e)
+          (append-retract-entity-ops! (addr resolved-ops) current-db e)
           (continue))
         (when (= data.op ":db/retractAttr")
-          (append-retract-attr-ops! (addr resolved-ops) db e data.a)
+          (append-retract-attr-ops! (addr resolved-ops) current-db e data.a)
           (continue))
         (when (= data.op ":db.fn/cas")
-          (let [[expected expected-ok expected-error] (resolve-cas-expected db data)]
+          (let [[expected expected-ok expected-error] (resolve-cas-expected current-db data)]
             (when (not expected-ok)
               (return (Resolved-Tx {ok: false
                                     error: expected-error
                                     ops: resolved-ops
                                     tx_meta: resolved-meta
                                     tempids: resolved-tempids})))
-            (when (not (cas-expected-matches? db e data.a expected))
+            (when (not (cas-expected-matches? current-db e data.a expected))
               (return (Resolved-Tx {ok: false
                                     error: "cas failed"
                                     ops: resolved-ops
                                     tx_meta: resolved-meta
                                     tempids: resolved-tempids})))))
-	        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
+	        (let [[v value-ok value-error] (resolve-tx-value current-db data.a data.v)]
 	          (when data.has_value_lookup_ref
-	            (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
+	            (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value_lookup_attr data.value_lookup_value)]
 	              (if lookup-ok
 	                (set! v (value-entity lookup-e))
 	                (if (= data.op ":db/retract")
