@@ -113,6 +113,8 @@ And `:as`, either alone or combined with `:default`:
 (v.pull db [[:user/nickname :default "Unknown" :as :nickname]] 1)
 ```
 
+The `:as` and `:default` options can appear in either order.
+
 Attribute option vectors also support `:limit` for capping multivalued attrs:
 
 ```clojure
