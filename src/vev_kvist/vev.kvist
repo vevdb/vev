@@ -295,6 +295,7 @@
 (defenum Query-Input-Kind [
   Scalar
   Collection
+  CollectionLookupRefs
   Relation
   PullPattern
 ])
@@ -308,6 +309,7 @@
   has_lookup_ref: bool
   lookup_attr: string
   lookup_value: Value
+  lookup_values: []Value
 })
 
 (defn value-entity [id: u64] -> Value
@@ -2272,6 +2274,15 @@
       (emit-literal-value (first forms))
       (emit-query-input-values (rest forms)))))
 
+(defmacro- emit-query-input-lookup-ref-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (lookup-ref? (first forms))
+      (forms
+        (emit-literal-value (nth (first forms) 1))
+        (emit-query-input-lookup-ref-values (rest forms)))
+      (error "lookup-ref collection inputs must contain lookup refs"))))
+
 (defmacro- emit-query-relation-row-values [row]
   (if (= (count row) 0)
     (forms)
@@ -2342,6 +2353,23 @@
       false
       (pull-pattern-var-in-finds? find-items name))))
 
+(defmacro- emit-query-collection-lookup-ref-input [value]
+  (if (keyword? (nth (first value) 0))
+    (quasiquote
+      (Query-Input {kind: .CollectionLookupRefs
+                    lookup_attr: (unquote (source (nth (first value) 0)))
+                    lookup_values: ([]Value [(splice (emit-query-input-lookup-ref-values value))])}))
+    (error "lookup-ref collection inputs currently require keyword attrs")))
+
+(defmacro- collection-lookup-ref-input? [spec value]
+  (if (input-collection? spec)
+    (if (vector? value)
+      (if (> (count value) 0)
+        (lookup-ref? (first value))
+        false)
+      false)
+    false))
+
 (defmacro- emit-query-input-for-spec [find-items spec value]
   (if (pull-pattern-input? find-items spec)
     (if (vector? value)
@@ -2349,7 +2377,9 @@
         (Query-Input {kind: .PullPattern
                       pattern: ([]Pull-Spec [(splice (emit-pull-specs value))])}))
       (error "pull pattern inputs must be literal vectors"))
-    (emit-query-input value)))
+    (if (collection-lookup-ref-input? spec value)
+      (emit-query-collection-lookup-ref-input value)
+      (emit-query-input value))))
 
 (defmacro- emit-query-input-list-for-query [find-items specs values]
   (if (= (count values) 0)
@@ -2656,6 +2686,18 @@
             (arr.push! out next)))))
     out))
 
+(defn expand-collection-lookup-ref-input [db: DB, bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (= input.kind .CollectionLookupRefs)
+      (for [binding bindings]
+        (for [value input.lookup_values]
+          (let [[entity ok] (resolve-lookup-ref db input.lookup_attr value)]
+            (when ok
+              (let [next (clone-binding binding)]
+                (binding-store! (addr next) name (value-entity entity))
+                (arr.push! out next)))))))
+    out))
+
 (defn expand-tuple-input [bindings: []Binding, tuple: Tuple-Input, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (when (= (count tuple.vars) (count input.values))
@@ -2691,7 +2733,10 @@
     (for [name index query.collection_inputs]
       (let [input-index (+ collection-offset index)]
         (when (< input-index (count inputs))
-          (let [next-bindings (expand-collection-input (slice bindings 0) name inputs[input-index])]
+          (let [next-bindings (make [dynamic]Binding)]
+            (if (= inputs[input-index].kind .CollectionLookupRefs)
+              (set! next-bindings (expand-collection-lookup-ref-input db (slice bindings 0) name inputs[input-index]))
+              (set! next-bindings (expand-collection-input (slice bindings 0) name inputs[input-index])))
             (delete bindings)
             (set! bindings next-bindings)))))
     (for [tuple index query.tuple_inputs]
