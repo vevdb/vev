@@ -88,7 +88,7 @@ Supported now:
 - `:with`
 - scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [[?x ?y]]`
 - return-map find markers: `:keys`, `:strs`, and `:syms`
-- standalone and grouped `count`, `min`, `max`, `sum`, and `avg` aggregates
+- standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, and `avg` aggregates
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
 - reverse attrs in datom clauses, such as `:_user/friend`
@@ -177,11 +177,11 @@ returns the row-oriented `Result-Set`; use `q-scalar`, `q-collection`, or
    [?e :user/age ?age]])
 ```
 
-Return-map markers are accepted with the same current row-oriented result
-shape:
+Return-map markers are accepted. `q-keys`, `q-strs`, and `q-syms` return Vev
+keyed rows:
 
 ```clojure
-(v.q db
+(v.q-keys db
   [:find ?name ?age :keys name age
    :where
    [?e :user/name ?name]
@@ -402,8 +402,8 @@ shape:
 Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
 predicates remain later work. Results are deduped by returned values, with
 `:with` vars included in the dedupe key but not returned.
-Aggregates currently support `count`, `min`, `max`, `sum`, and `avg`.
-Numeric aggregates are currently integer-only; `avg` uses integer division.
+Aggregates currently support `count`, `count-distinct`, `min`, `max`, `sum`, and `avg`.
+`sum` and `avg` are currently integer-only; `avg` uses integer division.
 
 ## Pull model
 
