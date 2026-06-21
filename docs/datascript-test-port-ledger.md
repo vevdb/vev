@@ -9,6 +9,7 @@ DataScript assertion or exact Clojure API shape.
 
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
+| `query.cljc` | 11 | subset | basic joins, inputs, bindings, source joins, constants, and placeholders covered; collection DBs, host functions, and exact input errors remain |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
 | `query_aggregates.cljc` | 1 | subset | custom aggregates |
 | `query_not.cljc` | 5 | subset | source-prefixed forms plus nested inherited/override source covered; error behavior remains |
