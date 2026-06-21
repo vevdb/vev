@@ -620,6 +620,21 @@
       (return item.e true)))
   (return 0 false))
 
+(defn current-tx-tempid? [tempid: string] -> bool
+  (or (= tempid ":db/current-tx")
+      (= tempid "datomic.tx")
+      (= tempid "datascript.tx")))
+
+(defn current-tx-value? [value: Value] -> bool
+  (and (or (= value.kind .Keyword)
+           (= value.kind .String))
+       (current-tx-tempid? value.text)))
+
+(defn ensure-tempid! [tempids: ^[dynamic]Tempid, tempid: string, e: u64]
+  (let [[_ ok] (tempid-lookup (slice tempids^ 0) tempid)]
+    (when (not ok)
+      (arr.push! tempids^ (Tempid {tempid: tempid e: e})))))
+
 (defn next-entity-id [datoms: []Datom] -> u64
   (let [next: u64 1]
     (for [datom datoms]
@@ -906,6 +921,13 @@
   (and (lookup-ref? form)
        (not (keyword? (nth form 1)))))
 
+(defmacro- current-tx-form? [form]
+  (cond
+    (keyword? form) (= (source form) ":db/current-tx")
+    (string? form) (or (= (text form) "datomic.tx")
+                       (= (text form) "datascript.tx"))
+    :else false))
+
 (defmacro- emit-index-arg [form]
   (if (lookup-ref? form)
     (quasiquote
@@ -945,11 +967,17 @@
               (unquote (emit-attr a))
               (unquote (emit-literal-value v)))))
 	    (if (keyword? e)
-	      (quasiquote
-	        ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
-	          (unquote (source e))
-	          (unquote (emit-attr a))
-	          (unquote (emit-literal-value v))))
+        (if (current-tx-form? e)
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+              (unquote (source e))
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v))))
+	        (quasiquote
+	          ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
+	            (unquote (source e))
+	            (unquote (emit-attr a))
+	            (unquote (emit-literal-value v)))))
 	          (if (lookup-ref? v)
 	            (quasiquote
 	              ((unquote (if is-retract (quasiquote retract-value-lookup-ref) (quasiquote add-value-lookup-ref)))
@@ -4003,7 +4031,9 @@
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
-        next-e (next-entity-id (slice db.datoms 0))]
+        next-e (next-entity-id (slice db.datoms 0))
+        current-tx-e next-e
+        current-tx-reserved false]
     (for [data tx-data]
       (when (and (not data.has_tempid)
                  (not data.has_lookup_ref)
@@ -4014,12 +4044,17 @@
       (let [e data.e
             current-db (db-with-resolved-ops db (slice resolved-ops 0))
             skip-data false]
-        (when (and data.has_tempid
-                   (= data.tempid "datomic.tx"))
-          (when (= data.op ":db/add")
-            (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v})))
-          (continue))
         (when data.has_tempid
+          (if (current-tx-tempid? data.tempid)
+            (do
+              (when (not current-tx-reserved)
+                (set! current-tx-e next-e)
+                (set! next-e (+ next-e 1))
+                (set! current-tx-reserved true))
+              (set! e current-tx-e)
+              (ensure-tempid! (addr resolved-tempids) data.tempid current-tx-e)
+              (when (= data.op ":db/add")
+                (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v}))))
           (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
             (if ok
               (set! e existing)
@@ -4036,7 +4071,7 @@
                     (do
                       (set! e next-e)
                       (set! next-e (+ next-e 1)))))
-                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
+                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e})))))))
         (when data.has_lookup_ref
           (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.lookup_attr data.lookup_value)]
             (if lookup-ok
@@ -4092,7 +4127,14 @@
                                     ops: resolved-ops
                                     tx_meta: resolved-meta
                                     tempids: resolved-tempids})))))
-	        (let [[v value-ok value-error] (resolve-tx-value current-db data.a data.v)]
+	        (let [v data.v
+                value-ok true
+                value-error ""]
+            (when (not (current-tx-value? v))
+              (let [[resolved resolved-ok resolved-error] (resolve-tx-value current-db data.a data.v)]
+                (set! v resolved)
+                (set! value-ok resolved-ok)
+                (set! value-error resolved-error)))
 	          (when data.has_value_lookup_ref
 	            (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value_lookup_attr data.value_lookup_value)]
 	              (if lookup-ok
@@ -4106,11 +4148,26 @@
 	                                        tempids: resolved-tempids}))))))
 	          (when skip-data
 	            (continue))
+            (when (current-tx-value? v)
+              (when (not current-tx-reserved)
+                (set! current-tx-e next-e)
+                (set! next-e (+ next-e 1))
+                (set! current-tx-reserved true))
+              (set! v (value-entity current-tx-e))
+              (ensure-tempid! (addr resolved-tempids) v.text current-tx-e))
 	          (when (or data.has_value_tempid
                        (ref-string-tempid? current-db tx-data data.a v))
 	            (let [value-tempid data.value_tempid]
               (when (not data.has_value_tempid)
                 (set! value-tempid v.text))
+              (if (current-tx-tempid? value-tempid)
+                (do
+                  (when (not current-tx-reserved)
+                    (set! current-tx-e next-e)
+                    (set! next-e (+ next-e 1))
+                    (set! current-tx-reserved true))
+                  (set! v (value-entity current-tx-e))
+                  (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
               (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
               (if ok
                 (set! v (value-entity existing))
@@ -4128,7 +4185,7 @@
                     (do
                       (set! v (value-entity next-e))
                       (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: next-e}))
-                      (set! next-e (+ next-e 1)))))))))
+                      (set! next-e (+ next-e 1))))))))))
           (when (not value-ok)
             (return (Resolved-Tx {ok: false
                                   error: value-error

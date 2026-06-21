@@ -22,7 +22,7 @@ DataScript assertion or exact Clojure API shape.
 | `entity.cljc` | 6 | subset | Clojure equality/hash/print/cache protocol semantics |
 | `pull_api.cljc` | 17 | subset | xform/visitor options and exact collection/scalar render shape |
 | `components.cljc` | 2 | subset | schema validation errors and exact entity/touch render shapes |
-| `transact.cljc` | 19 | subset | tx functions and exact errors |
+| `transact.cljc` | 19 | subset | current tx tempids covered; tx functions and exact errors remain |
 | `upsert.cljc` | 6 | subset | unique cardinality-many and redefining tempids covered; remaining conflict matrix and messages |
 | `db.cljc` | 4 | partial | datom/index API compatibility |
 | `index.cljc` | 5 | partial | main order, checked indexed-attribute errors, and sequence compare covered; finish exact public index surface |

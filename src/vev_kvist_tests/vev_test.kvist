@@ -51,11 +51,20 @@
                  [{:db/id "datomic.tx"
                    :request/id "req-1"
                    :tx/reason :profile-edit}
-                  [:db/add 1 :user/name "Ada"]])]
+                  [:db/add 1 :user/name "Ada"]])
+        tx-e report.tempids[0].e
+        tx-props (vev.q report.db_after
+                   [:find ?a ?v
+                    :where
+                    [?tx :request/id "req-1"]
+                    [?tx ?a ?v]])]
     (t.is report.ok)
-    (t.is (= (count report.tx_data) 1))
-    (t.is (= report.tx_data[0].e 1))
-    (t.is (= (count report.tempids) 0))
+    (t.is (= (count report.tx_data) 3))
+    (t.is (= report.tx_data[0].e tx-e))
+    (t.is (= report.tx_data[1].e tx-e))
+    (t.is (= report.tx_data[2].e 1))
+    (t.is (= (count report.tempids) 1))
+    (t.is (= (count tx-props.rows) 2))
     (t.is (= (count report.tx_meta) 2))
     (t.is (= report.tx_meta[0].a ":request/id"))
     (t.is (= report.tx_meta[0].v.text "req-1"))
@@ -3864,6 +3873,39 @@
     (t.is (= report.tempids[0].e report.tempids[1].e))
     (t.is (= (count ages) 1))
     (t.is (= ages[0].int_value 36))))
+
+(t.deftest datascript-resolves-current-tx-tempids
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :created-at]
+             [:db/add 100 :db/valueType :db.type/ref]])
+        report (vev.transact
+                 (addr conn)
+                 [[:db/add 1 :name "X"]
+                  [:db/add 1 :created-at :db/current-tx]
+                  [:db/add :db/current-tx :prop1 "prop1"]
+                  [:db/add "datomic.tx" :prop2 "prop2"]
+                  [:db/add "datascript.tx" :prop3 "prop3"]])
+        [tx tx-ok] (vev.q-scalar report.db_after
+                     [:find ?tx .
+                      :where
+                      [1 :created-at ?tx]])
+        props (vev.q report.db_after
+                [:find ?p
+                 :where
+                 [?tx :prop1 "prop1"]
+                 [?tx ?p _]])]
+    (t.is report.ok)
+    (t.is tx-ok)
+    (t.is (>= (count report.tempids) 3))
+    (for [tempid report.tempids]
+      (t.is (= tempid.e tx.entity)))
+    (t.is (= (count props.rows) 3))
+    (t.is (= props.rows[0].values[0].text ":prop1"))
+    (t.is (= props.rows[1].values[0].text ":prop2"))
+    (t.is (= props.rows[2].values[0].text ":prop3"))))
 
 (t.deftest transact-data-resolves-lookup-refs
   (defer (free_all context.allocator))
