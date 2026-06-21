@@ -2433,6 +2433,21 @@
       (return (value-equal? resolved actual))))
   (match-term? term actual binding))
 
+(defn ref-entity-literal [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool]
+  (when (not (= value.kind .Int))
+    (return value false))
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (when (and has-type (= schema-type ":db.type/ref"))
+      (return (value-entity (u64 value.int_value)) true)))
+  (return value false))
+
+(defn match-clause-value-term? [db: DB, attr: string, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (= term.kind .Value)
+    (let [[resolved ok] (ref-entity-literal db attr term.value)]
+      (when ok
+        (return (value-equal? resolved actual)))))
+  (match-term? term actual binding))
+
 (defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
   (when (and (= clause.a.kind .Value)
              (= clause.a.value.kind .Keyword)
@@ -2446,7 +2461,7 @@
              (match-term? clause.v (value-entity datom.e) binding)))))
   (and (match-entity-term? db clause.e (value-entity datom.e) binding)
        (match-term? clause.a (value-keyword datom.a) binding)
-       (match-term? clause.v datom.v binding)))
+       (match-clause-value-term? db datom.a clause.v datom.v binding)))
 
 (defn candidate-index-matches? [datom: Datom,
                                 e-value: Value, e-ok: bool,
@@ -2498,6 +2513,10 @@
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
+    (when (and a-ok v-ok (= a-value.kind .Keyword))
+      (let [[resolved resolved-ok] (ref-entity-literal db a-value.text v-value)]
+        (when resolved-ok
+          (set! v-value resolved))))
     (when (and a-ok
                (= a-value.kind .Keyword)
                (reverse-attr? a-value.text))

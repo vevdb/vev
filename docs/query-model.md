@@ -98,6 +98,7 @@ Supported now:
 - ident keywords in entity position
 - lookup refs in entity position, such as `[:user/email "ada@example.com"]`
 - entity refs as values
+- numeric value literals on attrs declared `:db.type/ref` resolve as entity refs
 - joins through repeated variables
 - positional `:in` variables
 - `$` in `:in` as the current DB source
