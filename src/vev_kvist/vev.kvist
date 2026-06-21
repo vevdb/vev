@@ -1095,7 +1095,59 @@
               (unquote value-tempid)))
           (error "nested tx map parent currently supports numeric, string, lookup ref, or ident :db/id"))))))
 
+(defmacro- reverse-attr-form? [form]
+  (if (keyword? form)
+    ;; ponytail: replace with macro-time string prefix/slice when Kvist exposes it.
+    (contains? [":_friends" ":_friend" ":_child" ":_ref" ":_user/friend"] (source form))
+    false))
+
+(defmacro- forward-attr-source [form]
+  (let [attr (source form)]
+    (cond
+      (= attr ":_friends") ":friends"
+      (= attr ":_friend") ":friend"
+      (= attr ":_child") ":child"
+      (= attr ":_ref") ":ref"
+      (= attr ":_user/friend") ":user/friend"
+      :else (error "unknown reverse tx map attr"))))
+
+(defmacro- emit-tx-map-reverse-attr [e a v]
+  (if (int? e)
+    (if (lookup-ref? v)
+      (quasiquote
+        (add-lookup-ref
+          (unquote (emit-attr (nth v 0)))
+          (unquote (emit-literal-value (nth v 1)))
+          (unquote (forward-attr-source a))
+          (value-entity (unquote e))))
+      (if (int? v)
+        (quasiquote
+          (add
+            (unquote v)
+            (unquote (forward-attr-source a))
+            (value-entity (unquote e))))
+        (if (keyword? v)
+          (quasiquote
+            (add-ident
+              (unquote (source v))
+              (unquote (forward-attr-source a))
+              (value-entity (unquote e))))
+          (if (string? v)
+            (quasiquote
+              (add-tempid
+                (unquote v)
+                (unquote (forward-attr-source a))
+                (value-entity (unquote e))))
+            (error "reverse tx map attrs currently require id, tempid, ident, or lookup ref values")))))
+    (error "reverse tx map attrs currently require numeric :db/id on the map entity")))
+
 (defmacro- emit-tx-map-attr [e a v]
+  (if (reverse-attr-form? a)
+    (if (vector? v)
+      (if (lookup-ref? v)
+        (emit-tx-map-reverse-attr e a v)
+        (emit-tx-map-vector-attr e a v))
+      (emit-tx-map-reverse-attr e a v))
   (if (brace? v)
     (if (tx-map-has-numeric-id? v)
       (let [value-e (tx-map-id v)]
@@ -1116,7 +1168,7 @@
         (emit-tx-data-call (keyword "db/add") e a v)
         (emit-tx-map-vector-attr e a v))
       (forms
-        (emit-tx-data-call (keyword "db/add") e a v)))))
+        (emit-tx-data-call (keyword "db/add") e a v))))))
 
 (defmacro- emit-tx-map-vector-attr [e a values]
   (if (= (count values) 0)

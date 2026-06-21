@@ -12,6 +12,13 @@
       (return true)))
   false)
 
+(defn values-has-entity? [values: []vev.Value, entity: u64] -> bool
+  (for [value values]
+    (when (and (= value.kind .Entity)
+               (= value.entity entity))
+      (return true)))
+  false)
+
 (t.deftest transact-reports-snapshots-and-metadata
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -568,7 +575,40 @@
                     [?e :age ?age]
                     (not-join [?e]
                       [?e :name "Oleg"]
-                      [?e :age ?age])])]
+                      [?e :age ?age])])
+        not-join-const (vev.q report.db_after
+                         [:find ?e ?age
+                          :where
+                          [?e :age ?age]
+                          [?e :age 10]
+                          (not-join [?e]
+                            [?e :name "Oleg"]
+                            [?e :age ?age]
+                            [?e :age 10])])
+        not-join-extra-binding (vev.q report.db_after
+                                  [:find ?e ?age
+                                   :where
+                                   [?e :age ?age]
+                                   (not-join [?age]
+                                     [?e :name "Petr"]
+                                     [?e :age ?age])])
+        const-empty (vev.q-collection report.db_after
+                      [:find [?e ...]
+                       :where
+                       [?e :name "Oleg"]
+                       [?e :age 10]
+                       (not [?e :age 20])])
+        const-const (vev.q-collection report.db_after
+                      [:find [?e ...]
+                       :where
+                       [?e :name "Oleg"]
+                       [?e :age 10]
+                       (not [?e :age 10])])
+        rel-const (vev.q-collection report.db_after
+                    [:find [?e ...]
+                     :where
+                     [?e :name "Oleg"]
+                     (not [?e :age 10])])]
     (t.is (= (count not-ivan) 2))
     (t.is (= not-ivan[0].entity 3))
     (t.is (= not-ivan[1].entity 4))
@@ -601,7 +641,16 @@
     (t.is (= not-join.rows[0].values[0].entity 1))
     (t.is (= not-join.rows[0].values[1].int_value 10))
     (t.is (= not-join.rows[1].values[0].entity 2))
-    (t.is (= not-join.rows[1].values[1].int_value 20))))
+    (t.is (= not-join.rows[1].values[1].int_value 20))
+    (t.is (= (count not-join-const.rows) 2))
+    (t.is (= not-join-const.rows[0].values[0].entity 1))
+    (t.is (= not-join-const.rows[1].values[0].entity 5))
+    (t.is (= (count not-join-extra-binding.rows) 6))
+    (t.is (= (count const-empty) 1))
+    (t.is (= const-empty[0].entity 3))
+    (t.is (= (count const-const) 0))
+    (t.is (= (count rel-const) 1))
+    (t.is (= rel-const[0].entity 4))))
 
 (t.deftest datalog-macro-supports-missing
   (defer (free_all context.allocator))
@@ -860,7 +909,9 @@
         eavt (vev.datoms conn.db :eavt [:name "Ivan"])
         eavt-friend (vev.datoms conn.db :eavt [:name "Ivan"] :friends [:name "Petr"])
         aevt (vev.datoms conn.db :aevt :friends [:name "Ivan"])
+        aevt-friend (vev.datoms conn.db :aevt :friends [:name "Ivan"] [:name "Petr"])
         avet (vev.datoms conn.db :avet :friends [:name "Oleg"])
+        avet-bounded (vev.datoms conn.db :avet :friends [:name "Oleg"] [:name "Ivan"])
         seek-lookup (vev.seek-datoms conn.db :eavt [:name "Ivan"] :friends [:name "Oleg"])
         seek-resolved (vev.seek-datoms conn.db :eavt 1 :friends 3)
         seek-aevt-lookup (vev.seek-datoms conn.db :aevt :friends [:name "Petr"])
@@ -880,9 +931,14 @@
     (t.is (= (count aevt) 2))
     (t.is (= aevt[0].v.entity 2))
     (t.is (= aevt[1].v.entity 3))
+    (t.is (= (count aevt-friend) 1))
+    (t.is (= aevt-friend[0].v.entity 2))
     (t.is (= (count avet) 2))
     (t.is (= avet[0].e 1))
     (t.is (= avet[1].e 2))
+    (t.is (= (count avet-bounded) 1))
+    (t.is (= avet-bounded[0].e 1))
+    (t.is (= avet-bounded[0].v.entity 3))
     (t.is (= (count seek-lookup) (count seek-resolved)))
     (t.is (= seek-lookup[0].e seek-resolved[0].e))
     (t.is (= seek-lookup[0].a seek-resolved[0].a))
@@ -1231,6 +1287,10 @@
                                  :where
                                  [_ :age ?age]
                                  [(identity 100) ?age]])
+        nil-result-filtered (vev.q conn.db
+                              [:find ?x
+                               :where
+                               [(first []) ?x]])
         ground-scalar-output (vev.q conn.db
                                [:find ?in
                                 :in ?in
@@ -1286,6 +1346,7 @@
     (t.is (= pair-unification.rows[0].values[0].items[1].text ":a"))
     (t.is (= pair-unification.rows[0].values[1].text ":a"))
     (t.is (= (count rel-function-conflict.rows) 0))
+    (t.is (= (count nil-result-filtered.rows) 0))
     (t.is (= (count ground-scalar-output.rows) 1))
     (t.is (= ground-scalar-output.rows[0].values[0].text ":a"))
     (t.is (= (count ground-relation-output.rows) 2))
@@ -1484,6 +1545,32 @@
     (t.is (result-has-entity-pair? result 3 5))
     (t.is (result-has-entity-pair? result 4 5))))
 
+(t.deftest datascript-query-rules-false-arguments-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :attr true}
+             {:db/id 2 :attr false}])
+        true-result (vev.q-collection conn.db
+                      [:find [?id ...]
+                       :in $ %
+                       :where
+                       (is ?id true)]
+                      [[(is ?id ?val)
+                        [?id :attr ?val]]])
+        false-result (vev.q-collection conn.db
+                       [:find [?id ...]
+                        :in $ %
+                        :where
+                        (is ?id false)]
+                       [[(is ?id ?val)
+                         [?id :attr ?val]]])]
+    (t.is (= (count true-result) 1))
+    (t.is (= true-result[0].entity 1))
+    (t.is (= (count false-result) 1))
+    (t.is (= false-result[0].entity 2))))
+
 (t.deftest datalog-macro-supports-or-join
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1533,6 +1620,14 @@
                         [?e :name "Ivan"]
                         (or [?e :name "Oleg"]
                             [?e :age 10])])
+        join-two-vars (vev.q-collection report.db_after
+                        [:find [?e ...]
+                         :where
+                         [?e :age ?a]
+                         (or (and [?e :name "Ivan"]
+                                  [1 :age ?a])
+                             (and [?e :name "Oleg"]
+                                  [2 :age ?a]))])
         introduces-vars (vev.q-collection report.db_after
                           [:find [?e ...]
                            :where
@@ -1541,6 +1636,22 @@
                                (and [?e :name "Oleg"]
                                     [2 :age ?a]))
                            [?e :age ?a]])
+        introduces-vars-different-order (vev.q-collection report.db_after
+                                          [:find [?e ...]
+                                           :where
+                                           (or (and [?e :name "Ivan"]
+                                                    [1 :age ?a])
+                                               (and [2 :age ?a]
+                                                    [?e :name "Oleg"]))
+                                           [?e :age ?a]])
+        short-circuit-resolution (vev.q-collection report.db_after
+                                   [:find [?e ...]
+                                    :where
+                                    (or (and [?e :age 30]
+                                             [?e :name ?n])
+                                        (and [?e :age 20]
+                                             [?e :name ?n]))
+                                    [(ground "Ivan") ?n]])
         or-join (vev.q-collection report.db_after
                   [:find [?e ...]
                    :where
@@ -1575,10 +1686,21 @@
     (t.is (= (count join-one-var) 2))
     (t.is (= join-one-var[0].entity 1))
     (t.is (= join-one-var[1].entity 5))
+    (t.is (= (count join-two-vars) 3))
+    (t.is (values-has-entity? (slice join-two-vars 0) 1))
+    (t.is (values-has-entity? (slice join-two-vars 0) 4))
+    (t.is (values-has-entity? (slice join-two-vars 0) 5))
     (t.is (= (count introduces-vars) 3))
     (t.is (= introduces-vars[0].entity 1))
     (t.is (= introduces-vars[1].entity 4))
     (t.is (= introduces-vars[2].entity 5))
+    (t.is (= (count introduces-vars-different-order) 3))
+    (t.is (= introduces-vars-different-order[0].entity 1))
+    (t.is (= introduces-vars-different-order[1].entity 4))
+    (t.is (= introduces-vars-different-order[2].entity 5))
+    (t.is (= (count short-circuit-resolution) 2))
+    (t.is (= short-circuit-resolution[0].entity 2))
+    (t.is (= short-circuit-resolution[1].entity 6))
     (t.is (= (count or-join) 6))
     (t.is (= or-join[0].entity 1))
     (t.is (= or-join[5].entity 6))
@@ -3629,6 +3751,110 @@
     (t.is friend-ok)
     (t.is (= friend.entity 2))))
 
+(t.deftest datascript-map-vector-values-support-lookup-refs
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friends]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Petr"]
+             [:db/add 3 :name "Oleg"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 1 :friends [[:name "Petr"] [:name "Oleg"]]}])
+        friends (vev.q-collection report.db_after
+                  [:find [?friend ...]
+                   :where
+                   [1 :friends ?friend]])]
+    (t.is report.ok)
+    (t.is (= (count friends) 2))
+    (t.is (= friends[0].entity 2))
+    (t.is (= friends[1].entity 3))))
+
+(t.deftest datascript-map-vector-values-mix-ids-and-lookup-refs
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friends]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Petr"]
+             [:db/add 3 :name "Oleg"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 1 :friends [2 [:name "Oleg"]]}])
+        friends (vev.q-collection report.db_after
+                  [:find [?friend ...]
+                   :where
+                   [1 :friends ?friend]])]
+    (t.is report.ok)
+    (t.is (= (count friends) 2))
+    (t.is (= friends[0].entity 2))
+    (t.is (= friends[1].entity 3))))
+
+(t.deftest datascript-map-reverse-ref-value-supports-lookup-ref
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friends]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Petr"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 2 :_friends [:name "Ivan"]}])
+        friends (vev.q-collection report.db_after
+                  [:find [?friend ...]
+                   :where
+                   [1 :friends ?friend]])]
+    (t.is report.ok)
+    (t.is (= (count friends) 1))
+    (t.is (= friends[0].entity 2))))
+
+(t.deftest datascript-map-reverse-ref-vector-supports-lookup-refs
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friends]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Petr"]
+             [:db/add 3 :name "Oleg"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 2 :_friends [[:name "Ivan"] [:name "Oleg"]]}])
+        friends (vev.q conn.db
+                  [:find ?e ?friend
+                   :where
+                   [?e :friends ?friend]])]
+    (t.is report.ok)
+    (t.is (= (count friends.rows) 2))
+    (t.is (= friends.rows[0].values[0].entity 1))
+    (t.is (= friends.rows[0].values[1].entity 2))
+    (t.is (= friends.rows[1].values[0].entity 3))
+    (t.is (= friends.rows[1].values[1].entity 2))))
+
 (t.deftest datascript-map-lookup-refs-use-intermediate-tx-db
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -4250,6 +4476,30 @@
     (t.is (= friend.attrs[0].v.text "2"))
     (t.is (= enemy.v.entity 2))
     (t.is (= enemy.attrs[0].v.text "2"))))
+
+(t.deftest datascript-pull-dual-recursion-depths-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 101 :db/ident :enemy]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 1 :friend (vev.value-entity 2)]
+             [:db/add 2 :enemy (vev.value-entity 3)]
+             [:db/add 3 :friend (vev.value-entity 4)]
+             [:db/add 4 :enemy (vev.value-entity 5)]])
+        pulled (vev.pull conn.db [:db/id {:friend 2 :enemy 1}] 1)
+        friend pulled.attrs[1]
+        enemy friend.attrs[1]
+        friend-again enemy.attrs[1]]
+    (t.is (= pulled.attrs[0].v.entity 1))
+    (t.is (= friend.v.entity 2))
+    (t.is (= enemy.v.entity 3))
+    (t.is (= friend-again.v.entity 4))
+    (t.is (= (count friend-again.attrs) 1))
+    (t.is (= friend-again.attrs[0].v.entity 4))))
 
 (t.deftest pull-many-returns-multiple-entities
   (defer (free_all context.allocator))
