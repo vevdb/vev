@@ -3944,6 +3944,23 @@
       (return false "schema unique conflict")))
   (return true ""))
 
+(defn validate-tuple-type-schema [db: DB] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword)
+                   (= datom.v.text ":db.type/tuple"))
+          (let [[attr attr-ok] (schema-ident-for-entity db datom.e)]
+            (when attr-ok
+              (let [tuple-attrs (schema-tuple-attrs db attr)]
+                (defer (delete tuple-attrs))
+                (when (= (count tuple-attrs) 0)
+                  (return false "invalid tuple schema")))))))))
+  (return true ""))
+
 (defn validate-ops [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
   (let [scratch-datoms (clone-datoms before.datoms)]
     (defer (delete scratch-datoms))
@@ -3960,6 +3977,11 @@
                 v: op.v
                 tx: 0
                 added: (= op.kind .Add)})))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-tuple-type-schema scratch)]
+      (when (not ok)
+        (return false error)))
     (return true "")))
 
 (defn failed-tx-report [db: DB, error: string] -> Tx-Report
