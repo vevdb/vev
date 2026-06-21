@@ -150,11 +150,12 @@ Example:
    [:user/ada :user/name ?name]])
 ```
 
-Vev accepts DataScript scalar and collection find syntax, currently lowered to
-the same row-oriented `Result-Set` representation:
+Vev accepts DataScript scalar, collection, and tuple find syntax. `q` still
+returns the row-oriented `Result-Set`; use `q-scalar`, `q-collection`, or
+`q-tuple` when a shaped result is more convenient:
 
 ```clojure
-(v.q db
+(v.q-scalar db
   [:find ?name .
    :where
    [?e :user/email "ada@example.com"]
@@ -162,14 +163,14 @@ the same row-oriented `Result-Set` representation:
 ```
 
 ```clojure
-(v.q db
+(v.q-collection db
   [:find [?name ...]
    :where
    [?e :user/name ?name]])
 ```
 
 ```clojure
-(v.q db
+(v.q-tuple db
   [:find [[?name ?age]]
    :where
    [?e :user/name ?name]
