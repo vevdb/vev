@@ -1253,15 +1253,20 @@
     (if (= (source form) "_")
       (quasiquote (term-wildcard))
       (quasiquote (term-var (unquote (source form)))))
-    (if (string? form)
-      (quasiquote (term-string (unquote form)))
-      (if (int? form)
-        (quasiquote (term-int (unquote form)))
-        (if (bool? form)
-          (quasiquote (term-bool (unquote form)))
-          (if (keyword? form)
-            (quasiquote (term-keyword (unquote (source form))))
-            (quasiquote (unquote form))))))))
+    (if (lookup-ref? form)
+      (quasiquote
+        (term-lookup-ref
+          (unquote (emit-attr (nth form 0)))
+          (unquote (emit-literal-value (nth form 1)))))
+      (if (string? form)
+        (quasiquote (term-string (unquote form)))
+        (if (int? form)
+          (quasiquote (term-int (unquote form)))
+          (if (bool? form)
+            (quasiquote (term-bool (unquote form)))
+            (if (keyword? form)
+              (quasiquote (term-keyword (unquote (source form))))
+              (quasiquote (unquote form)))))))))
 
 (defmacro- emit-datalog-clause [form]
   (if (vector? form)
@@ -2560,6 +2565,9 @@
   (return value false))
 
 (defn match-clause-value-term? [db: DB, attr: string, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (= term.kind .LookupRef)
+    (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup_attr term.lookup_value)]
+      (return (and lookup-ok (value-equal? (value-entity entity) actual)))))
   (when (= term.kind .Value)
     (let [[resolved ok] (ref-entity-literal db attr term.value)]
       (when ok
@@ -2631,6 +2639,11 @@
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
+    (when (= clause.v.kind .LookupRef)
+      (let [[lookup-entity lookup-ok] (resolve-lookup-ref db clause.v.lookup_attr clause.v.lookup_value)]
+        (when lookup-ok
+          (set! v-value (value-entity lookup-entity))
+          (set! v-ok true))))
     (when (and a-ok v-ok (= a-value.kind .Keyword))
       (let [[resolved resolved-ok] (ref-entity-literal db a-value.text v-value)]
         (when resolved-ok
