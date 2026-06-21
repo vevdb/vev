@@ -90,6 +90,7 @@ Supported now:
 - standalone and grouped `count`, `min`, `max`, `sum`, and `avg` aggregates
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
+- reverse attrs in datom clauses, such as `:_user/friend`
 - variables in entity, attribute, and value positions
 - wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
@@ -100,9 +101,13 @@ Supported now:
 - `$` in `:in` as the current DB source
 - collection `:in` variables shaped like `[?x ...]`
 - tuple `:in` variables shaped like `[?a ?b]`
+- relation `:in` variables shaped like `[[?a ?b]]`
 - pull expressions in `:find`
-- simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
+- predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`, including chained comparisons
 - `missing?`
+- `get-else`
+- `get-some`
+- `ground` scalar and collection bindings
 - `not` groups
 - `not-join`
 - simple `or` groups with data-clause or `(and ...)` data-clause branches
@@ -119,6 +124,13 @@ Example:
    [?e :user/email "ada@example.com"]
    [?e :user/active _]
    [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?source
+   :where
+   [2 :_user/friend ?source]])
 ```
 
 ```clojure
@@ -206,6 +218,15 @@ the same row-oriented `Result-Set` representation:
 
 ```clojure
 (v.q db
+  [:find ?younger ?older
+   :where
+   [?a :user/age ?younger]
+   [?b :user/age ?older]
+   [(< ?younger 40 ?older)]])
+```
+
+```clojure
+(v.q db
   [:find ?name
    :in [?email ...]
    :where
@@ -222,6 +243,16 @@ the same row-oriented `Result-Set` representation:
    [?e :user/name ?name]
    [?e :user/age ?age]]
   ["Ada" 37])
+```
+
+```clojure
+(v.q db
+  [:find ?e
+   :in [[?name ?age]]
+   :where
+   [?e :user/name ?name]
+   [?e :user/age ?age]]
+  [["Ada" 37] ["Grace" 41]])
 ```
 
 ```clojure
@@ -245,6 +276,30 @@ the same row-oriented `Result-Set` representation:
    :where
    [?e :user/name ?name]
    [(missing? $ ?e :user/email)]])
+```
+
+```clojure
+(v.q db
+  [:find ?email
+   :where
+   [?e :user/name "Ada"]
+   [(get-else $ ?e :user/email "none") ?email]])
+```
+
+```clojure
+(v.q db
+  [:find ?attr ?value
+   :where
+   [?e :user/name "Ada"]
+   [(get-some $ ?e :user/email :user/age) [?attr ?value]]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [(ground ["Ada" "Grace"]) [?name ...]]
+   [?e :user/name ?name]])
 ```
 
 ```clojure

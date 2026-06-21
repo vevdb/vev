@@ -104,9 +104,29 @@ Examples:
  :user/name "Anna"}
 ```
 
-Current Vev supports map forms in tx data when `:db/id` is first, with one to
-three attrs after it, and the common two-attr shape with `:db/id` last. Nested
-component maps and arbitrary key order remain later work.
+Current Vev supports map forms in tx data with either an explicit `:db/id` in
+any position or an auto-generated tempid:
+
+```clojure
+{:user/name "Anna"
+ :user/email "anna@example.com"}
+```
+
+Nested map values are supported with either an explicit string `:db/id` or an
+auto-generated nested tempid:
+
+```clojure
+{:db/id 1
+ :user/address {:db/id "address"
+                :address/city "London"}}
+```
+
+```clojure
+{:db/id 1
+ :user/address {:address/city "London"}}
+```
+
+Generated map tempids are returned in the transaction report tempid mapping.
 
 ### Transaction metadata
 
