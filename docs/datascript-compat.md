@@ -25,7 +25,7 @@ Status key:
 | `query_return_map` | partial | DataScript subset ported for all-row `:keys`/`:strs`/`:syms` and tuple return maps |
 | `query_rules` | missing | Biggest remaining query feature |
 | `parser_*` | missing | Vev currently uses Kvist query literals, not an EDN/text parser |
-| `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, explicit/default limits covered; recursion/components missing |
+| `pull_api` | partial | Attrs, wildcard, reverse refs, nesting, pull-many, explicit/default limits covered; recursion/components missing |
 | `pull_parser` | partial | Kvist pull literals cover a subset; full attr-expr parser missing |
 | `transact` | partial | Add/retract/map forms and explicit cardinality-one replacement covered; tx fns/CAS/call and unschematized default cardinality-one incomplete |
 | `upsert` | partial | Unique-identity map/list tempid upsert subset covered; conflict reporting, intermediate-db retries, and full ref upsert incomplete |
