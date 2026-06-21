@@ -113,6 +113,16 @@ And `:as`, either alone or combined with `:default`:
 (v.pull db [[:user/nickname :default "Unknown" :as :nickname]] 1)
 ```
 
+The `:as` and `:default` options can appear in either order.
+
+Attribute option vectors also support `:limit` for capping multivalued attrs:
+
+```clojure
+(v.pull db [[:user/friend :limit 2]] 1)
+```
+
+`:limit` can be combined with `:as` in either order.
+
 It also supports reverse ref attrs in the Datomic style:
 
 ```clojure
@@ -150,7 +160,7 @@ Nested reverse refs can use `:limit` to cap fan-out:
 (v.pull db [{:_user/friend [:user/name :limit 2]}] 2)
 ```
 
-And wildcard attrs for current forward attrs:
+And wildcard attrs for `:db/id` plus current forward attrs:
 
 ```clojure
 (v.pull db [*] 1)

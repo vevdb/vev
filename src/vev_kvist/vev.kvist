@@ -704,10 +704,52 @@
       (source (gensym "vev_tx_map")))
     (error "nested tx map expected")))
 
+(defmacro- tx-map-has-numeric-id? [form]
+  (if (brace? form)
+    (if (tx-map-has-id? form)
+      (int? (tx-map-id form))
+      false)
+    false))
+
+(defmacro- tx-map-has-keyword-id? [form]
+  (if (brace? form)
+    (if (tx-map-has-id? form)
+      (keyword? (tx-map-id form))
+      false)
+    false))
+
 (defmacro- tx-map-entity-id [form]
   (if (tx-map-has-id? form)
     (tx-map-id form)
     (source (gensym "vev_tx_map"))))
+
+(defmacro- emit-tx-map-entity-ref-call [e a value-e]
+  (if (lookup-ref? e)
+    (quasiquote
+      (add-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (unquote (emit-attr a))
+        (value-entity (unquote value-e))))
+    (if (keyword? e)
+      (quasiquote
+        (add-ident
+          (unquote (source e))
+          (unquote (emit-attr a))
+          (value-entity (unquote value-e))))
+      (if (string? e)
+        (quasiquote
+          (add-tempid
+            (unquote e)
+            (unquote (emit-attr a))
+            (value-entity (unquote value-e))))
+        (if (int? e)
+          (quasiquote
+            (add
+              (unquote e)
+              (unquote (emit-attr a))
+              (value-entity (unquote value-e))))
+          (error "nested tx map parent currently supports numeric, string, lookup ref, or ident :db/id"))))))
 
 (defmacro- emit-tx-map-ref-call [e a value-tempid]
   (if (lookup-ref? e)
@@ -739,10 +781,20 @@
 
 (defmacro- emit-tx-map-attr [e a v]
   (if (brace? v)
-    (let [value-tempid (tx-map-ref-tempid v)]
-      (forms
-        (emit-tx-map-ref-call e a value-tempid)
-        (emit-tx-map-attrs value-tempid v)))
+    (if (tx-map-has-numeric-id? v)
+      (let [value-e (tx-map-id v)]
+        (forms
+          (emit-tx-map-entity-ref-call e a value-e)
+          (emit-tx-map-attrs value-e v)))
+      (if (tx-map-has-keyword-id? v)
+        (let [value-ident (tx-map-id v)]
+          (forms
+            (emit-tx-data-call (keyword "db/add") e a value-ident)
+            (emit-tx-map-attrs value-ident v)))
+        (let [value-tempid (tx-map-ref-tempid v)]
+          (forms
+            (emit-tx-map-ref-call e a value-tempid)
+            (emit-tx-map-attrs value-tempid v)))))
     (if (vector? v)
       (emit-tx-map-vector-attr e a v)
       (forms
@@ -1636,19 +1688,50 @@
               (pull-spec-as
                 (unquote (pull-attr-source (nth form 0)))
                 (unquote (pull-alias-source (nth form 2)))))
-            (error "pull option vectors currently support :default and :as")))
+            (if (= (source (nth form 1)) ":limit")
+              (quasiquote
+                (pull-spec-limit
+                  (unquote (pull-attr-source (nth form 0)))
+                  ([]Pull-Spec [])
+                  (unquote (nth form 2))))
+              (error "pull option vectors currently support :default, :as, and :limit"))))
         (if (= (count form) 5)
           (if (keyword? (nth form 3))
-            (if (and (= (source (nth form 1)) ":default")
-                     (= (source (nth form 3)) ":as"))
-              (quasiquote
-                (pull-spec-default-as
-                  (unquote (pull-attr-source (nth form 0)))
-                  (unquote (emit-literal-value (nth form 2)))
-                  (unquote (pull-alias-source (nth form 4)))))
-              (error "combined pull option vectors currently support [:attr :default value :as alias]"))
+            (if (= (source (nth form 1)) ":as")
+              (if (= (source (nth form 3)) ":default")
+                (quasiquote
+                  (pull-spec-default-as
+                    (unquote (pull-attr-source (nth form 0)))
+                    (unquote (emit-literal-value (nth form 4)))
+                    (unquote (pull-alias-source (nth form 2)))))
+                (if (= (source (nth form 3)) ":limit")
+                  (quasiquote
+                    (pull-spec-limit-as
+                      (unquote (pull-attr-source (nth form 0)))
+                      ([]Pull-Spec [])
+                      (unquote (nth form 4))
+                      (unquote (pull-alias-source (nth form 2)))))
+                  (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]")))
+              (if (= (source (nth form 1)) ":default")
+                (if (= (source (nth form 3)) ":as")
+                  (quasiquote
+                    (pull-spec-default-as
+                      (unquote (pull-attr-source (nth form 0)))
+                      (unquote (emit-literal-value (nth form 2)))
+                      (unquote (pull-alias-source (nth form 4)))))
+                  (error "combined pull option vectors currently support [:attr :default value :as alias] or [:attr :as alias :default value]"))
+                (if (= (source (nth form 1)) ":limit")
+                  (if (= (source (nth form 3)) ":as")
+                    (quasiquote
+                      (pull-spec-limit-as
+                        (unquote (pull-attr-source (nth form 0)))
+                        ([]Pull-Spec [])
+                        (unquote (nth form 2))
+                        (unquote (pull-alias-source (nth form 4)))))
+                    (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]"))
+                  (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]"))))
             (error "combined pull option vectors expect keyword options"))
-          (error "pull option vectors currently have shape [:attr :default value], [:attr :as alias], or [:attr :default value :as alias]")))
+          (error "pull option vectors currently have shape [:attr :default value], [:attr :as alias], [:attr :limit n], or [:attr :default value :as alias]")))
       (error "pull option vectors expect a keyword option"))
   (if (brace? form)
     (if (= (count form) 2)
@@ -2075,6 +2158,8 @@
     (when (= resolved.kind .Keyword)
       (let [[entity ident-ok] (schema-entity-for-attr db resolved.text)]
         (return (value-entity entity) ident-ok)))
+    (when (= resolved.kind .Int)
+      (return (value-entity (u64 resolved.int_value)) true))
     (return resolved true)))
 
 (defn predicate-pair-matches? [op: string, left: Value, right: Value] -> bool
@@ -2393,6 +2478,21 @@
       (return (value-equal? resolved actual))))
   (match-term? term actual binding))
 
+(defn ref-entity-literal [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool]
+  (when (not (= value.kind .Int))
+    (return value false))
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (when (and has-type (= schema-type ":db.type/ref"))
+      (return (value-entity (u64 value.int_value)) true)))
+  (return value false))
+
+(defn match-clause-value-term? [db: DB, attr: string, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (= term.kind .Value)
+    (let [[resolved ok] (ref-entity-literal db attr term.value)]
+      (when ok
+        (return (value-equal? resolved actual)))))
+  (match-term? term actual binding))
+
 (defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
   (when (and (= clause.a.kind .Value)
              (= clause.a.value.kind .Keyword)
@@ -2403,10 +2503,10 @@
       (return
         (and (= datom.a forward-attr)
              (match-entity-term? db clause.e (value-entity datom.v.entity) binding)
-             (match-term? clause.v (value-entity datom.e) binding)))))
+             (match-entity-term? db clause.v (value-entity datom.e) binding)))))
   (and (match-entity-term? db clause.e (value-entity datom.e) binding)
        (match-term? clause.a (value-keyword datom.a) binding)
-       (match-term? clause.v datom.v binding)))
+       (match-clause-value-term? db datom.a clause.v datom.v binding)))
 
 (defn candidate-index-matches? [datom: Datom,
                                 e-value: Value, e-ok: bool,
@@ -2458,10 +2558,18 @@
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
+    (when (and a-ok v-ok (= a-value.kind .Keyword))
+      (let [[resolved resolved-ok] (ref-entity-literal db a-value.text v-value)]
+        (when resolved-ok
+          (set! v-value resolved))))
     (when (and a-ok
                (= a-value.kind .Keyword)
                (reverse-attr? a-value.text))
       (let [forward-attr (forward-attr-for-reverse a-value.text) :defer]
+        (let [[source-entity source-ok] (resolve-entity-term db clause.v binding)]
+          (when source-ok
+            (set! v-value source-entity)
+            (set! v-ok true)))
         (when (and e-ok (not (= e-value.kind .Entity)))
           (return out))
         (when (and v-ok (not (= v-value.kind .Entity)))
@@ -2940,6 +3048,12 @@
 (defn forward-attr-for-reverse [attr: string] -> string
   (strings.concatenate ([]string [":" (slice attr 2)])))
 
+(defn pull-output-has-attr? [out: [dynamic]Pull-Attr, attr: string] -> bool
+  (for [pulled out]
+    (when (= pulled.a attr)
+      (return true)))
+  false)
+
 (defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
@@ -2975,15 +3089,20 @@
               (return))))))))
 
 (defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
+  (when (not (pull-output-has-attr? out^ ":db/id"))
+    (arr.push! out^ (Pull-Attr {a: ":db/id"
+                                v: (value-entity entity)
+                                attrs: (make [dynamic]Pull-Attr)})))
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt" entity "" (Value {}))
         high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
     (for [datom-index (slice indexes low high)]
       (let [datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
-          (arr.push! out^ (Pull-Attr {a: datom.a
-                                      v: datom.v
-                                      attrs: (make [dynamic]Pull-Attr)})))))))
+          (when (not (pull-output-has-attr? out^ datom.a))
+            (arr.push! out^ (Pull-Attr {a: datom.a
+                                        v: datom.v
+                                        attrs: (make [dynamic]Pull-Attr)}))))))))
 
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has_alias spec.alias spec.a))
@@ -3016,9 +3135,10 @@
     (pull-wildcard! out db entity)
     (return))
   (when (= spec.a ":db/id")
-    (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                v: (value-entity entity)
-                                attrs: (make [dynamic]Pull-Attr)}))
+    (when (not (pull-output-has-attr? out^ (pull-output-attr spec)))
+      (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                  v: (value-entity entity)
+                                  attrs: (make [dynamic]Pull-Attr)})))
     (return))
   (when (reverse-attr? spec.a)
     (pull-reverse-attr! out db entity spec)
@@ -3072,6 +3192,15 @@
               default_value: (Value {})
               has_alias: false
               alias: ""
+              pattern: pattern}))
+
+(defn pull-spec-limit-as [attr: string, pattern: []Pull-Spec, limit: int, alias: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: limit
+              has_default: false
+              default_value: (Value {})
+              has_alias: true
+              alias: alias
               pattern: pattern}))
 
 (defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
