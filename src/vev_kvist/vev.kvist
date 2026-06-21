@@ -142,6 +142,9 @@
   e: Term
   a: Term
   v: Term
+  source: string
+  has_source: bool
+  source_width: int
 })
 
 (defstruct Predicate {
@@ -498,7 +501,10 @@
 (defn clause [e: Term, a: string, v: Term] -> Clause
   (Clause {e: e
            a: (attr a)
-           v: v}))
+           v: v
+           source: ""
+           has_source: false
+           source_width: 0}))
 
 (defn tx-add [e: u64, a: string, v: Value] -> Tx-Op
   (Tx-Op {kind: .Add e: e a: a v: v}))
@@ -1453,6 +1459,12 @@
     (contains? ["$" "%"] (source form))
     false))
 
+(defmacro- relation-source? [form]
+  // ponytail: macro-time prefix checks would make this generic for all $source names.
+  (if (symbol? form)
+    (contains? ["$xs" "$ys"] (source form))
+    false))
+
 (defmacro- input-wildcard? [form]
   (and (symbol? form)
        (= (source form) "_")))
@@ -1656,7 +1668,15 @@
                  a: (unquote (emit-attr-term (nth form 1)))
                  v: (term-wildcard)}))
       (if (= (count form) 3)
-        (if (input-source? (nth form 0))
+        (if (relation-source? (nth form 0))
+          (quasiquote
+            (Clause {e: (unquote (emit-value-term (nth form 1)))
+                     a: (unquote (emit-value-term (nth form 2)))
+                     v: (term-wildcard)
+                     source: (unquote (source (nth form 0)))
+                     has_source: true
+                     source_width: 2}))
+          (if (input-source? (nth form 0))
           (quasiquote
             (Clause {e: (unquote (emit-entity-term (nth form 1)))
                      a: (unquote (emit-attr-term (nth form 2)))
@@ -1664,12 +1684,20 @@
           (quasiquote
             (Clause {e: (unquote (emit-entity-term (nth form 0)))
                      a: (unquote (emit-attr-term (nth form 1)))
-                     v: (unquote (emit-value-term (nth form 2)))})))
+                     v: (unquote (emit-value-term (nth form 2)))}))))
         (if (= (count form) 4)
-          (quasiquote
-            (Clause {e: (unquote (emit-entity-term (nth form 1)))
-                     a: (unquote (emit-attr-term (nth form 2)))
-                     v: (unquote (emit-value-term (nth form 3)))}))
+          (if (input-source? (nth form 0))
+            (quasiquote
+              (Clause {e: (unquote (emit-entity-term (nth form 1)))
+                       a: (unquote (emit-attr-term (nth form 2)))
+                       v: (unquote (emit-value-term (nth form 3)))}))
+            (quasiquote
+              (Clause {e: (unquote (emit-value-term (nth form 1)))
+                       a: (unquote (emit-value-term (nth form 2)))
+                       v: (unquote (emit-value-term (nth form 3)))
+                       source: (unquote (source (nth form 0)))
+                       has_source: true
+                       source_width: 3})))
           (error "datalog clauses must have shape [e a], [e a v], [src e a], or [src e a v]"))))
     (error "datalog :where entries must be clauses")))
 
@@ -1706,7 +1734,7 @@
     (not (or (symbol? (nth form 1)) (vector? (nth form 1)))) false
     (not (symbol? (first (first form)))) false
     :else (let [op (source (first (first form)))]
-            (contains? ["count" "+" "-" "*" "identity" "vector" "hash-map" "first" "second"] op))))
+            (contains? ["count" "+" "-" "*" "identity" "vector" "tuple" "untuple" "hash-map" "first" "second"] op))))
 
 (defmacro- get-else-clause? [form]
   (if (vector? form)
@@ -2601,6 +2629,7 @@
     (if (vector? value)
       (quasiquote
         (Query-Input {kind: .PullPattern
+                      value: (unquote (emit-literal-value value))
                       pattern: ([]Pull-Spec [(splice (emit-pull-specs value))])}))
       (error "pull pattern inputs must be literal vectors"))
     (if (scalar-lookup-ref-input? spec value)
@@ -2850,11 +2879,20 @@
 
 (defmacro pull-many [db pattern entities]
   (if (vector? pattern)
-    (quasiquote
-      (pull-many-pattern-spec
-        (unquote db)
-        (unquote entities)
-        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+    (if (and (vector? entities)
+             (> (count entities) 0)
+             (lookup-ref? (first entities)))
+      (quasiquote
+        (pull-many-pattern-lookup-refs
+          (unquote db)
+          ([]string [(splice (emit-query-input-lookup-ref-attrs entities))])
+          ([]Value [(splice (emit-query-input-lookup-ref-values entities))])
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+      (quasiquote
+        (pull-many-pattern-spec
+          (unquote db)
+          (unquote entities)
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
     (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
 (defn not-group-simple [clauses: []Clause] -> Not-Group
@@ -2964,7 +3002,8 @@
         out (make [dynamic]Binding)]
     (for [name index names]
       (when (and (< index (count values))
-                 (= values[index].kind .Scalar))
+                 (or (= values[index].kind .Scalar)
+                     (= values[index].kind .PullPattern)))
         (let [[value ok] (query-input-scalar-value db values[index])]
           (if ok
             (binding-store! (addr binding) name value)
@@ -3133,7 +3172,8 @@
                  (< index (count input.items)))
         (return input.items[index] true))
       (return (Value {}) false)))
-  (when (= function.op "vector")
+  (when (or (= function.op "vector")
+            (= function.op "tuple"))
     (let [items (make [dynamic]Value 0 (count function.terms))]
       (for [term function.terms]
         (let [[value ok] (resolve-term term binding)]
@@ -3141,6 +3181,12 @@
             (return (Value {}) false))
           (arr.push! items value)))
       (return (value-vector (slice items 0)) true)))
+  (when (and (= function.op "untuple")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (and input-ok (= input.kind .Vector))
+        (return input true))
+      (return (Value {}) false)))
   (when (= function.op "hash-map")
     (when (not (= (% (count function.terms) 2) 0))
       (return (Value {}) false))
@@ -3616,13 +3662,36 @@
 (defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
   (when (not (schema-unique? db attr))
     (return 0 false))
+  (let [lookup-value value
+        tuple-attrs (schema-tuple-attrs db attr)]
+    (defer (delete tuple-attrs))
+    (when (and (= value.kind .Vector)
+               (= (count tuple-attrs) (count value.items)))
+      (let [items (make [dynamic]Value 0 (count value.items))]
+        (defer (delete items))
+        (for [item index value.items]
+          (let [component-attr tuple-attrs[index]]
+            (if (schema-ref? db component-attr)
+              (cond
+                (= item.kind .Entity) (arr.push! items item)
+                (= item.kind .Int) (arr.push! items (value-entity (u64 item.int_value)))
+                (and (= item.kind .Vector)
+                     (= (count item.items) 2)
+                     (= item.items[0].kind .Keyword))
+                  (let [[entity entity-ok] (resolve-lookup-ref db item.items[0].text item.items[1])]
+                    (when (not entity-ok)
+                      (return 0 false))
+                    (arr.push! items (value-entity entity)))
+                :else (arr.push! items item))
+              (arr.push! items item))))
+        (set! lookup-value (value-vector (slice items 0)))))
   (let [indexes (slice db.avet 0)
-        low (lower-bound-index db indexes "avet" 0 attr value)
-        high (upper-bound-index db indexes "avet" 0 attr value)]
+        low (lower-bound-index db indexes "avet" 0 attr lookup-value)
+        high (upper-bound-index db indexes "avet" 0 attr lookup-value)]
     (for [datom-index (slice indexes low high)]
       (when (datom-current-at? db datom-index)
         (return db.datoms[datom-index].e true))))
-  (return 0 false))
+  (return 0 false)))
 
 (defn current-value-exists? [db: DB, entity: u64, attr: string, value: Value] -> bool
   (let [indexes (slice db.eavt 0)
@@ -3812,9 +3881,22 @@
           (append-retract-attr-ops! out db op.e schema.attr)))
       (delete schema.attrs))))
 
+(defn direct-tuple-add-matches? [db: DB, op: Tx-Op] -> bool
+  (when (not (= op.kind .Add))
+    (return false))
+  (let [tuple-attrs (schema-tuple-attrs db op.a)]
+    (defer (delete tuple-attrs))
+    (when (= (count tuple-attrs) 0)
+      (return false))
+    (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice tuple-attrs 0))]
+      (and has-value (value-equal? tuple-value op.v)))))
+
 (defn expand-tuple-ops [db: DB, ops: []Tx-Op] -> [dynamic]Tx-Op
   (let [out (make [dynamic]Tx-Op 0 (count ops))]
     (for [op ops]
+      (let [scratch-before (db-with-resolved-ops db (slice out 0))]
+        (when (direct-tuple-add-matches? scratch-before op)
+          (continue)))
       (arr.push! out op)
       (let [scratch (db-with-resolved-ops db (slice out 0))]
         (append-tuple-maintenance-ops! (addr out) scratch op)))
@@ -4183,6 +4265,46 @@
           (set! best-score score))))
     best))
 
+(defn relation-source-row-matches? [clause: Clause, row: Value, binding: ^Binding] -> bool
+  (when (not (= row.kind .Vector))
+    (return false))
+  (when (not (= (count row.items) clause.source_width))
+    (return false))
+  (when (= clause.source_width 2)
+    (return
+      (and (match-term? clause.e row.items[0] binding)
+           (match-term? clause.a row.items[1] binding))))
+  (and (match-term? clause.e row.items[0] binding)
+       (match-term? clause.a row.items[1] binding)
+       (match-term? clause.v row.items[2] binding)))
+
+(defn bindings-after-relation-source-clause [clause: Clause, binding: Binding] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)
+        [source source-ok] (binding-lookup binding clause.source)]
+    (when (not (and source-ok (= source.kind .Vector)))
+      (return out))
+    (for [row source.items]
+      (let [next (clone-binding binding)]
+        (when (relation-source-row-matches? clause row (addr next))
+          (arr.push! out next))))
+    out))
+
+(defn append-bindings-after-clause! [out: ^[dynamic]Binding, db: DB, clause-value: Clause, binding: Binding]
+  (when clause-value.has_source
+    (let [source-bindings (bindings-after-relation-source-clause clause-value binding)]
+      (defer (delete source-bindings))
+      (for [source-binding source-bindings]
+        (arr.push! out^ source-binding)))
+    (return))
+  (let [candidates (clause-candidate-indexes db clause-value binding)]
+    (defer (delete candidates))
+    (for [datom-index candidates]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [next (clone-binding binding)]
+            (when (datom-clause-matches? db datom clause-value (addr next))
+              (arr.push! out^ next))))))))
+
 (defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
   (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
         [a-value a-ok] (resolve-term clause.a binding)
@@ -4276,6 +4398,9 @@
     out))
 
 (defn binding-matches-clause? [db: DB, clause: Clause, binding: Binding] -> bool
+  (when clause.has_source
+    (let [source-bindings (bindings-after-relation-source-clause clause binding) :defer]
+      (return (> (count source-bindings) 0))))
   (let [candidates (clause-candidate-indexes db clause binding) :defer]
     (for [datom-index candidates]
       (let [datom db.datoms[datom-index]]
@@ -4290,13 +4415,7 @@
     (for [clause group.clauses]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
-          (let [candidates (clause-candidate-indexes db clause candidate-binding) :defer]
-            (for [datom-index candidates]
-              (let [datom db.datoms[datom-index]]
-                (when (datom-current-at? db datom-index)
-                  (let [next (clone-binding candidate-binding)]
-                    (when (datom-clause-matches? db datom clause (addr next))
-                      (arr.push! next-bindings next))))))))
+          (append-bindings-after-clause! (addr next-bindings) db clause candidate-binding))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
@@ -4504,11 +4623,18 @@
 (defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
   (let [initial (clone-binding binding)]
     (when group.has_join
-      (set! initial (project-binding binding group.join_vars)))
+      (set! initial (project-binding binding group.join_vars))
+      (for [branch-clause branch.clauses]
+        (let [has-source branch-clause.has_source]
+          (when has-source
+          (let [[source source-ok] (binding-lookup binding branch-clause.source)]
+            (when source-ok
+              (binding-store! (addr initial) branch-clause.source source)))))))
   (let [branch-bindings (bindings-after-clause-group db branch initial) :defer
         out (make [dynamic]Binding)]
     (for [branch-binding branch-bindings]
-      (let [[merged ok] (merge-binding binding branch-binding)]
+      (let [branch-output (if group.has_join (project-binding branch-binding group.join_vars) branch-binding)
+            [merged ok] (merge-binding binding branch-output)]
         (when ok
           (arr.push! out merged))))
     out)))
@@ -4521,13 +4647,7 @@
     (for [clause group.clauses]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
-          (let [candidates (clause-candidate-indexes db clause candidate-binding) :defer]
-            (for [datom-index candidates]
-              (let [datom db.datoms[datom-index]]
-                (when (datom-current-at? db datom-index)
-                  (let [next (clone-binding candidate-binding)]
-                    (when (datom-clause-matches? db datom clause (addr next))
-                      (arr.push! next-bindings next))))))))
+          (append-bindings-after-clause! (addr next-bindings) db clause candidate-binding))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
@@ -4752,8 +4872,7 @@
     (return pull-find.pattern true)))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
-  (let [datoms (slice db.datoms 0)
-        bindings (bindings-from-inputs db query inputs)
+  (let [bindings (bindings-from-inputs db query inputs)
         remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
     (defer (delete remaining))
     (while (and (> (count bindings) 0) (> (count remaining) 0))
@@ -4761,14 +4880,7 @@
             clause remaining[clause-index]
             next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
-          (let [candidates (clause-candidate-indexes db clause binding)]
-            (for [datom-index candidates]
-              (let [datom datoms[datom-index]]
-                (when (datom-current-at? db datom-index)
-                  (let [candidate (clone-binding binding)]
-                    (when (datom-clause-matches? db datom clause (addr candidate))
-                      (arr.push! next-bindings candidate))))))
-            (delete candidates)))
+          (append-bindings-after-clause! (addr next-bindings) db clause binding))
         (delete bindings)
         (set! bindings next-bindings)
         (arr.remove-ordered-at! remaining clause-index)))
@@ -5334,6 +5446,15 @@
   (let [out (make [dynamic]Pull-Result 0 (count entities))]
     (for [entity entities]
       (arr.push! out (pull-pattern-spec db entity pattern)))
+    out))
+
+(defn pull-many-pattern-lookup-refs [db: DB, attrs: []string, values: []Value, pattern: []Pull-Spec] -> [dynamic]Pull-Result
+  (let [out (make [dynamic]Pull-Result 0 (count values))]
+    (for [value index values]
+      (let [[entity ok] (resolve-lookup-ref db attrs[index] value)]
+        (if ok
+          (arr.push! out (pull-pattern-spec db entity pattern))
+          (arr.push! out (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)})))))
     out))
 
 (defn pull-many-pattern [db: DB, entities: []u64, attrs: []string] -> [dynamic]Pull-Result
