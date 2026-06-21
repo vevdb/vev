@@ -14,7 +14,7 @@ DataScript assertion or exact Clojure API shape.
 | `query_not.cljc` | 5 | subset | error behavior and default-source forms |
 | `query_or.cljc` | 5 | subset | default-source forms and exact validation errors |
 | `query_pull.cljc` | 7 | subset | multi-source pull |
-| `query_rules.cljc` | 3 | subset | rule sources, validation, unbounded fixpoint |
+| `query_rules.cljc` | 3 | subset | source-qualified relation rule calls covered; host predicate inputs, validation, and unbounded fixpoint remain |
 | `query_fns.cljc` | 6 | subset | more built-in predicates covered; arbitrary host functions |
 | `query_return_map.cljc` | 1 | covered | Vev uses keyed rows with keyword/string/symbol key kinds instead of Clojure maps |
 | `lookup_refs.cljc` | 5 | subset | exact invalid lookup-ref error messages |
@@ -22,8 +22,8 @@ DataScript assertion or exact Clojure API shape.
 | `entity.cljc` | 6 | subset | Clojure equality/hash/print/cache protocol semantics |
 | `pull_api.cljc` | 17 | subset | xform/visitor options and exact collection/scalar render shape |
 | `components.cljc` | 2 | subset | schema validation errors and exact entity/touch render shapes |
-| `transact.cljc` | 19 | subset | tx functions and exact errors |
-| `upsert.cljc` | 6 | subset | unique cardinality-many and redefining tempids covered; remaining conflict matrix and messages |
+| `transact.cljc` | 19 | subset | current tx tempids and unused value-tempid rejection covered; tx functions and exact errors remain |
+| `upsert.cljc` | 6 | subset | unique cardinality-many, unique-value no-upsert, and redefining tempids covered; remaining conflict matrix and messages |
 | `db.cljc` | 4 | partial | datom/index API compatibility |
 | `index.cljc` | 5 | partial | main order, checked indexed-attribute errors, and sequence compare covered; finish exact public index surface |
 | `tuples.cljc` | 11 | partial | tuple value/component upsert and direct tuple attr add/retract validation covered; remaining tuple conflict matrix and schema validation |

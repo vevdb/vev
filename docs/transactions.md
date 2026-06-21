@@ -162,7 +162,10 @@ through `tempids`.
 Lookup refs in list-form entity positions resolve through `:db/unique` attrs.
 Missing lookup refs fail the report with `ok=false`.
 
-The reserved tempid `"datomic.tx"` writes transaction metadata into `tx_meta`.
+The reserved tempids `:db/current-tx`, `"datomic.tx"`, and `"datascript.tx"`
+name the current transaction entity. Facts targeting that entity are written
+as datoms and are also mirrored into `tx_meta` for convenient transaction
+report inspection.
 
 In the embedded single-process case, this is usually enough:
 

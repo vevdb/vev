@@ -178,6 +178,8 @@
 
 (defstruct Rule-Call {
   name: string
+  source: string
+  has_source: bool
   args: []Term
 })
 
@@ -620,6 +622,21 @@
       (return item.e true)))
   (return 0 false))
 
+(defn current-tx-tempid? [tempid: string] -> bool
+  (or (= tempid ":db/current-tx")
+      (= tempid "datomic.tx")
+      (= tempid "datascript.tx")))
+
+(defn current-tx-value? [value: Value] -> bool
+  (and (or (= value.kind .Keyword)
+           (= value.kind .String))
+       (current-tx-tempid? value.text)))
+
+(defn ensure-tempid! [tempids: ^[dynamic]Tempid, tempid: string, e: u64]
+  (let [[_ ok] (tempid-lookup (slice tempids^ 0) tempid)]
+    (when (not ok)
+      (arr.push! tempids^ (Tempid {tempid: tempid e: e})))))
+
 (defn next-entity-id [datoms: []Datom] -> u64
   (let [next: u64 1]
     (for [datom datoms]
@@ -906,6 +923,13 @@
   (and (lookup-ref? form)
        (not (keyword? (nth form 1)))))
 
+(defmacro- current-tx-form? [form]
+  (cond
+    (keyword? form) (= (source form) ":db/current-tx")
+    (string? form) (or (= (text form) "datomic.tx")
+                       (= (text form) "datascript.tx"))
+    :else false))
+
 (defmacro- emit-index-arg [form]
   (if (lookup-ref? form)
     (quasiquote
@@ -945,11 +969,17 @@
               (unquote (emit-attr a))
               (unquote (emit-literal-value v)))))
 	    (if (keyword? e)
-	      (quasiquote
-	        ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
-	          (unquote (source e))
-	          (unquote (emit-attr a))
-	          (unquote (emit-literal-value v))))
+        (if (current-tx-form? e)
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+              (unquote (source e))
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v))))
+	        (quasiquote
+	          ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
+	            (unquote (source e))
+	            (unquote (emit-attr a))
+	            (unquote (emit-literal-value v)))))
 	          (if (lookup-ref? v)
 	            (quasiquote
 	              ((unquote (if is-retract (quasiquote retract-value-lookup-ref) (quasiquote add-value-lookup-ref)))
@@ -1731,7 +1761,7 @@
     (not (or (symbol? (nth form 1)) (vector? (nth form 1)))) false
     (not (symbol? (first (first form)))) false
     :else (let [op (source (first (first form)))]
-            (contains? ["count" "+" "-" "*" "identity" "vector" "tuple" "untuple" "hash-map" "first" "second"] op))))
+            (contains? ["count" "+" "-" "*" "inc" "identity" "vector" "tuple" "untuple" "hash-map" "first" "second"] op))))
 
 (defmacro- get-else-clause? [form]
   (if (vector? form)
@@ -1823,6 +1853,8 @@
     (not (list? form)) false
     (= (count form) 0) false
     (not (symbol? (first form))) false
+    (relation-source? (first form)) (and (> (count form) 1)
+                                         (symbol? (nth form 1)))
     :else (let [name (source (first form))]
             (not (contains? ["not" "not-join" "or" "or-join" "and"] name)))))
 
@@ -2069,9 +2101,15 @@
 
 (defmacro- emit-datalog-rule-call [form]
   (if (rule-call? form)
-    (quasiquote
-      (Rule-Call {name: (unquote (source (first form)))
-                  args: ([]Term [(splice (emit-rule-call-args (rest form)))])}))
+    (if (relation-source? (first form))
+      (quasiquote
+        (Rule-Call {name: (unquote (source (nth form 1)))
+                    source: (unquote (source (first form)))
+                    has_source: true
+                    args: ([]Term [(splice (emit-rule-call-args (slice form 2)))])}))
+      (quasiquote
+        (Rule-Call {name: (unquote (source (first form)))
+                    args: ([]Term [(splice (emit-rule-call-args (rest form)))])})))
     (error "rule calls must have shape (rule ?arg ...)")))
 
 (defmacro- emit-datalog-rule-calls [forms]
@@ -3210,6 +3248,12 @@
   (when (and (= function.op "identity")
              (= (count function.terms) 1))
     (return (resolve-term function.terms[0] binding)))
+  (when (and (= function.op "inc")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (and input-ok (= input.kind .Int))
+        (return (value-int (+ input.int_value 1)) true))
+      (return (Value {}) false)))
   (when (and (or (= function.op "first")
                  (= function.op "second"))
              (= (count function.terms) 1))
@@ -3742,6 +3786,11 @@
          (or (= unique ":db.unique/identity")
              (= unique ":db.unique/value")))))
 
+(defn schema-unique-identity? [db: DB, attr: string] -> bool
+  (let [[unique has-unique] (schema-keyword db attr ":db/unique")]
+    (and has-unique
+         (= unique ":db.unique/identity"))))
+
 (defn schema-cardinality-one? [db: DB, attr: string] -> bool
   (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
     (if (and has-cardinality
@@ -3888,7 +3937,7 @@
         (defer (delete schemas))
         (for [schema schemas]
           (defer (delete schema.attrs))
-          (when (not (schema-unique? db schema.attr))
+          (when (not (schema-unique-identity? db schema.attr))
             (continue))
           (when (tuple-schema-already-seen? (slice seen 0) schema.attr)
             (continue))
@@ -3919,7 +3968,7 @@
       (when (and data.has_tempid
                  (= data.tempid tempid)
                  (= data.op ":db/add")
-                 (schema-unique? db data.a))
+                 (schema-unique-identity? db data.a))
         (let [[value value-ok _] (resolve-tx-data-value db data)]
           (when value-ok
             (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
@@ -4003,7 +4052,9 @@
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
-        next-e (next-entity-id (slice db.datoms 0))]
+        next-e (next-entity-id (slice db.datoms 0))
+        current-tx-e next-e
+        current-tx-reserved false]
     (for [data tx-data]
       (when (and (not data.has_tempid)
                  (not data.has_lookup_ref)
@@ -4014,12 +4065,17 @@
       (let [e data.e
             current-db (db-with-resolved-ops db (slice resolved-ops 0))
             skip-data false]
-        (when (and data.has_tempid
-                   (= data.tempid "datomic.tx"))
-          (when (= data.op ":db/add")
-            (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v})))
-          (continue))
         (when data.has_tempid
+          (if (current-tx-tempid? data.tempid)
+            (do
+              (when (not current-tx-reserved)
+                (set! current-tx-e next-e)
+                (set! next-e (+ next-e 1))
+                (set! current-tx-reserved true))
+              (set! e current-tx-e)
+              (ensure-tempid! (addr resolved-tempids) data.tempid current-tx-e)
+              (when (= data.op ":db/add")
+                (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v}))))
           (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
             (if ok
               (set! e existing)
@@ -4036,7 +4092,7 @@
                     (do
                       (set! e next-e)
                       (set! next-e (+ next-e 1)))))
-                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e}))))))
+                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e})))))))
         (when data.has_lookup_ref
           (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.lookup_attr data.lookup_value)]
             (if lookup-ok
@@ -4092,7 +4148,14 @@
                                     ops: resolved-ops
                                     tx_meta: resolved-meta
                                     tempids: resolved-tempids})))))
-	        (let [[v value-ok value-error] (resolve-tx-value current-db data.a data.v)]
+	        (let [v data.v
+                value-ok true
+                value-error ""]
+            (when (not (current-tx-value? v))
+              (let [[resolved resolved-ok resolved-error] (resolve-tx-value current-db data.a data.v)]
+                (set! v resolved)
+                (set! value-ok resolved-ok)
+                (set! value-error resolved-error)))
 	          (when data.has_value_lookup_ref
 	            (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value_lookup_attr data.value_lookup_value)]
 	              (if lookup-ok
@@ -4106,11 +4169,32 @@
 	                                        tempids: resolved-tempids}))))))
 	          (when skip-data
 	            (continue))
+            (when (current-tx-value? v)
+              (when (not current-tx-reserved)
+                (set! current-tx-e next-e)
+                (set! next-e (+ next-e 1))
+                (set! current-tx-reserved true))
+              (set! v (value-entity current-tx-e))
+              (ensure-tempid! (addr resolved-tempids) v.text current-tx-e))
 	          (when (or data.has_value_tempid
                        (ref-string-tempid? current-db tx-data data.a v))
 	            (let [value-tempid data.value_tempid]
               (when (not data.has_value_tempid)
                 (set! value-tempid v.text))
+              (if (current-tx-tempid? value-tempid)
+                (do
+                  (when (not current-tx-reserved)
+                    (set! current-tx-e next-e)
+                    (set! next-e (+ next-e 1))
+                    (set! current-tx-reserved true))
+                  (set! v (value-entity current-tx-e))
+                  (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
+              (if (not (tx-data-has-tempid? tx-data value-tempid))
+                (return (Resolved-Tx {ok: false
+                                      error: "tempid used only as value"
+                                      ops: resolved-ops
+                                      tx_meta: resolved-meta
+                                      tempids: resolved-tempids}))
               (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
               (if ok
                 (set! v (value-entity existing))
@@ -4128,7 +4212,7 @@
                     (do
                       (set! v (value-entity next-e))
                       (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: next-e}))
-                      (set! next-e (+ next-e 1)))))))))
+                      (set! next-e (+ next-e 1)))))))))))
           (when (not value-ok)
             (return (Resolved-Tx {ok: false
                                   error: value-error
@@ -4644,16 +4728,46 @@
         (arr.push! out binding)))
     out))
 
-(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int] -> [dynamic]Binding
-  (let [group (Not-Group {clauses: rule.clauses
-                          not_groups: ([]Not-Group [])
-                          has_join: false
-                          join_vars: ([]string [])})
+(defn rule-clause-with-source [clause: Clause, source: string, has-source: bool] -> Clause
+  (when (or (not has-source) clause.has_source)
+    (return clause))
+  (Clause {e: clause.e
+           a: clause.a
+           v: clause.v
+           source: source
+           has_source: true
+           source_width: (if (= clause.v.kind .Wildcard) 2 3)}))
+
+(defn rule-clauses-with-source [clauses: []Clause, source: string, has-source: bool] -> [dynamic]Clause
+  (let [out (make [dynamic]Clause 0 (count clauses))]
+    (for [clause clauses]
+      (arr.push! out (rule-clause-with-source clause source has-source)))
+    out))
+
+(defn bind-rule-source [outer: Binding, initial: Binding, source: string, has-source: bool] -> [binding: Binding, ok: bool]
+  (when (not has-source)
+    (return initial true))
+  (let [[source-value source-ok] (binding-lookup outer source)]
+    (when (not source-ok)
+      (return initial false))
+    (let [next (clone-binding initial)]
+      (binding-store! (addr next) source source-value)
+      (return next true))))
+
+(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (let [clauses (rule-clauses-with-source rule.clauses source has-source)
+        group (Not-Group {clauses: clauses
+                           not_groups: ([]Not-Group [])
+                           has_join: false
+                           join_vars: ([]string [])})
         bindings (bindings-after-clause-group db group initial)]
+    (delete clauses)
     (for [call rule.rule_calls]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
-          (let [rule-bindings (bindings-after-rule-call-depth db rules call binding (- depth 1))]
+          (let [next-source (if call.has_source call.source source)
+                next-has-source (or call.has_source has-source)
+                rule-bindings (bindings-after-rule-call-depth db rules call binding (- depth 1) next-source next-has-source)]
             (for [rule-binding rule-bindings]
               (arr.push! next-bindings rule-binding))
             (delete rule-bindings)))
@@ -4706,7 +4820,7 @@
                 (set! out next)))))))
     (return out true)))
 
-(defn bindings-after-rule-call-depth [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int] -> [dynamic]Binding
+(defn bindings-after-rule-call-depth [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (when (<= depth 0)
       (return out))
@@ -4714,17 +4828,19 @@
       (when (= rule.name call.name)
         (let [[initial ok] (bind-rule-args binding call rule)]
           (when ok
-            (let [results (bindings-after-rule-body-depth db rules rule initial depth)]
-              (for [result results]
-                (let [[merged merged-ok] (merge-rule-output binding call rule result)]
-                  (when merged-ok
-                    (arr.push! out merged))))
-              (delete results))))))
+            (let [[source-initial source-ok] (bind-rule-source binding initial source has-source)]
+              (when source-ok
+                (let [results (bindings-after-rule-body-depth db rules rule source-initial depth source has-source)]
+                  (for [result results]
+                    (let [[merged merged-ok] (merge-rule-output binding call rule result)]
+                      (when merged-ok
+                        (arr.push! out merged))))
+                  (delete results))))))))
     out))
 
 (defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
   // ponytail: bounded recursion; replace with semi-naive fixpoint when rules benchmarks require it.
-  (bindings-after-rule-call-depth db rules call binding 16))
+  (bindings-after-rule-call-depth db rules call binding 16 call.source call.has_source))
 
 (defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
   (let [initial (clone-binding binding)]
@@ -5182,6 +5298,10 @@
     (pull-id-attrs entity)
     (pull-child-pattern db entity pattern pattern seen)))
 
+(defn pull-include-ref-result? [spec: Pull-Spec, children: []Pull-Attr] -> bool
+  (or (= (count spec.pattern) 0)
+      (> (count children) 0)))
+
 (defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> bool
   (let [forward-attr (forward-attr-for-reverse spec.a) :defer
         ref-value (value-entity entity)
@@ -5204,13 +5324,16 @@
               (let [pattern (pull-recursion-pattern root spec.a)]
                 (defer (delete pattern))
                 (set! children (pull-child-recursion db datom.e (slice pattern 0) seen-entities))))
-            (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                        v: (value-entity datom.e)
-                                        attrs: children}))
-            (set! found true)
-            (set! seen (+ seen 1))
-            (when (>= seen limit)
-              (return found))))))
+            (if (pull-include-ref-result? spec (slice children 0))
+              (do
+                (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                            v: (value-entity datom.e)
+                                            attrs: children}))
+                (set! found true)
+                (set! seen (+ seen 1))
+                (when (>= seen limit)
+                  (return found)))
+              (delete children))))))
     found))
 
 (defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen: ^[dynamic]u64]
@@ -5303,13 +5426,16 @@
                     (set! children (pull-child-recursion db datom.v.entity (slice pattern 0) seen-entities)))
                   (when (schema-component? db datom.a)
                     (set! children (pull-component-children db entity datom.v.entity))))))
-            (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                        v: datom.v
-                                        attrs: children}))
-            (set! found true)
-            (set! seen (+ seen 1))
-            (when (>= seen limit)
-              (return found))))))
+            (if (pull-include-ref-result? spec (slice children 0))
+              (do
+                (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                            v: datom.v
+                                            attrs: children}))
+                (set! found true)
+                (set! seen (+ seen 1))
+                (when (>= seen limit)
+                  (return found)))
+              (delete children))))))
     found))
 
 (defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
