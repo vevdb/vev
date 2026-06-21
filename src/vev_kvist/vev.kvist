@@ -160,6 +160,13 @@
   out: string
 })
 
+(defstruct Get-Some {
+  e: Term
+  attrs: []string
+  out_attr: string
+  out_value: string
+})
+
 (defstruct Query {
   find: [dynamic]string
   with: [dynamic]string
@@ -170,6 +177,7 @@
   clauses: [dynamic]Clause
   predicates: [dynamic]Predicate
   get_elses: [dynamic]Get-Else
+  get_somes: [dynamic]Get-Some
   not_groups: [dynamic]Not-Group
   or_groups: [dynamic]Or-Group
   pulls: [dynamic]Pull-Find
@@ -1119,6 +1127,26 @@
       false)
     false))
 
+(defmacro- get-some-clause? [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (let [expr (first form)
+            out (nth form 1)]
+        (if (list? expr)
+          (if (>= (count expr) 4)
+            (let [head (first expr)]
+              (if (symbol? head)
+                (if (= (source head) "get-some")
+                  (if (vector? out)
+                    (= (count out) 2)
+                    false)
+                  false)
+                false))
+            false)
+          false))
+      false)
+    false))
+
 (defmacro- not-clause? [form]
   (if (list? form)
     (if (> (count form) 1)
@@ -1252,6 +1280,24 @@
                    out: (unquote (emit-find-var (nth form 1)))})))
     (error "get-else clauses must have shape [(get-else $ ?e :attr default) ?out]")))
 
+(defmacro- emit-get-some-attrs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-attr (first forms))
+      (emit-get-some-attrs (rest forms)))))
+
+(defmacro- emit-datalog-get-some [form]
+  (if (get-some-clause? form)
+    (let [expr (first form)
+          out (nth form 1)]
+      (quasiquote
+        (Get-Some {e: (unquote (emit-entity-term (nth expr 2)))
+                   attrs: ([]string [(splice (emit-get-some-attrs (slice expr 3)))])
+                   out_attr: (unquote (emit-find-var (nth out 0)))
+                   out_value: (unquote (emit-find-var (nth out 1)))})))
+    (error "get-some clauses must have shape [(get-some $ ?e :attr ...) [?a ?v]]")))
+
 (defmacro- emit-datalog-clauses [forms]
   (if (= (count forms) 0)
     (forms)
@@ -1259,23 +1305,25 @@
       (emit-datalog-clauses (rest forms))
       (if (get-else-clause? (first forms))
         (emit-datalog-clauses (rest forms))
-        (if (missing-clause? (first forms))
+        (if (get-some-clause? (first forms))
           (emit-datalog-clauses (rest forms))
-          (if (not-clause? (first forms))
+          (if (missing-clause? (first forms))
             (emit-datalog-clauses (rest forms))
-            (if (not-join-clause? (first forms))
+            (if (not-clause? (first forms))
               (emit-datalog-clauses (rest forms))
-              (if (or-clause? (first forms))
+              (if (not-join-clause? (first forms))
                 (emit-datalog-clauses (rest forms))
-                (if (or-join-clause? (first forms))
+                (if (or-clause? (first forms))
                   (emit-datalog-clauses (rest forms))
-                  (if (and-clause? (first forms))
-                    (forms
-                      (emit-datalog-clauses (rest (first forms)))
-                      (emit-datalog-clauses (rest forms)))
-                    (forms
-                      (emit-datalog-clause (first forms))
-                      (emit-datalog-clauses (rest forms)))))))))))))
+                  (if (or-join-clause? (first forms))
+                    (emit-datalog-clauses (rest forms))
+                    (if (and-clause? (first forms))
+                      (forms
+                        (emit-datalog-clauses (rest (first forms)))
+                        (emit-datalog-clauses (rest forms)))
+                      (forms
+                        (emit-datalog-clause (first forms))
+                        (emit-datalog-clauses (rest forms))))))))))))))
 
 (defmacro- emit-datalog-predicates [forms]
   (if (= (count forms) 0)
@@ -1294,6 +1342,15 @@
         (emit-datalog-get-else (first forms))
         (emit-datalog-get-elses (rest forms)))
       (emit-datalog-get-elses (rest forms)))))
+
+(defmacro- emit-datalog-get-somes [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (get-some-clause? (first forms))
+      (forms
+        (emit-datalog-get-some (first forms))
+        (emit-datalog-get-somes (rest forms)))
+      (emit-datalog-get-somes (rest forms)))))
 
 (defmacro- emit-datalog-not-groups [forms]
   (if (= (count forms) 0)
@@ -1517,6 +1574,7 @@
                 ([]Clause [(splice (emit-datalog-clauses where-items))])
                 ([]Predicate [(splice (emit-datalog-predicates where-items))])
                 ([]Get-Else [(splice (emit-datalog-get-elses where-items))])
+                ([]Get-Some [(splice (emit-datalog-get-somes where-items))])
                 ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
                 ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
                 ([]Pull-Find [(splice (emit-pull-finds find-items))])
@@ -1639,7 +1697,7 @@
              has_join: true
              join_vars: join-vars}))
 
-(defn query [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, get-elses: []Get-Else, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
+(defn query [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, get-elses: []Get-Else, get-somes: []Get-Some, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
         owned-with (arr.into [dynamic]string with)
         owned-inputs (arr.into [dynamic]string inputs)
@@ -1649,6 +1707,7 @@
         owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
         owned-get-elses (arr.into [dynamic]Get-Else get-elses)
+        owned-get-somes (arr.into [dynamic]Get-Some get-somes)
         owned-not-groups (arr.into [dynamic]Not-Group not-groups)
         owned-or-groups (arr.into [dynamic]Or-Group or-groups)
         owned-pulls (arr.into [dynamic]Pull-Find pulls)
@@ -1662,6 +1721,7 @@
             clauses: owned-clauses
             predicates: owned-predicates
             get_elses: owned-get-elses
+            get_somes: owned-get-somes
             not_groups: owned-not-groups
             or_groups: owned-or-groups
             pulls: owned-pulls
@@ -2253,6 +2313,19 @@
         (binding-with-value binding clause.out value)
         (binding-with-value binding clause.out clause.default_value)))))
 
+(defn apply-get-some [db: DB, binding: Binding, clause: Get-Some] -> [next: Binding, ok: bool]
+  (let [[entity entity-ok] (resolve-term clause.e binding)]
+    (when (not (and entity-ok (= entity.kind .Entity)))
+      (return binding false))
+    (for [attr clause.attrs]
+      (let [[value value-ok] (pull-attr-value db entity.entity attr)]
+        (when value-ok
+          (let [[with-attr attr-ok] (binding-with-value binding clause.out_attr (value-keyword attr))]
+            (when (not attr-ok)
+              (return with-attr false))
+            (return (binding-with-value with-attr clause.out_value value))))))
+    (return binding false)))
+
 (defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
   (let [initial (clone-binding binding)]
     (when group.has_join
@@ -2417,6 +2490,14 @@
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
           (let [[next ok] (apply-get-else db binding get-else)]
+            (when ok
+              (arr.push! next-bindings next))))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [get-some query.get_somes]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [[next ok] (apply-get-some db binding get-some)]
             (when ok
               (arr.push! next-bindings next))))
         (delete bindings)
@@ -2678,6 +2759,7 @@
        (clause (term-var "e") ":user/name" (term-var "name"))])
     ([]Predicate [])
     ([]Get-Else [])
+    ([]Get-Some [])
     ([]Not-Group [])
     ([]Or-Group [])
     ([]Pull-Find [])

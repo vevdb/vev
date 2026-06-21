@@ -105,6 +105,7 @@ Supported now:
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
 - `missing?`
 - `get-else`
+- `get-some`
 - `not` groups
 - `not-join`
 - simple `or` groups with data-clause or `(and ...)` data-clause branches
@@ -265,6 +266,14 @@ the same row-oriented `Result-Set` representation:
    :where
    [?e :user/name "Ada"]
    [(get-else $ ?e :user/email "none") ?email]])
+```
+
+```clojure
+(v.q db
+  [:find ?attr ?value
+   :where
+   [?e :user/name "Ada"]
+   [(get-some $ ?e :user/email :user/age) [?attr ?value]]])
 ```
 
 ```clojure
