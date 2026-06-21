@@ -4,6 +4,7 @@
 (import strings "core:strings")
 
 (defenum Value-Kind [
+  Nil
   Entity
   String
   Int
@@ -274,6 +275,9 @@
 (defn value-keyword [text: string] -> Value
   (Value {kind: .Keyword text: text}))
 
+(defn value-nil [] -> Value
+  (Value {kind: .Nil}))
+
 (defn string-less? [left: string, right: string] -> bool
   (< (strings.compare left right) 0))
 
@@ -286,6 +290,7 @@
       .Int (< left.int_value right.int_value)
       .Bool (and (not left.bool_value) right.bool_value)
       .Keyword (string-less? left.text right.text)
+      .Nil false
       :else false)))
 
 (defn value-compare [left: Value, right: Value] -> int
@@ -442,6 +447,7 @@
       .Int (= left.int_value right.int_value)
       .Bool (= left.bool_value right.bool_value)
       .Keyword (= left.text right.text)
+      .Nil true
       :else false)))
 
 (defn predicate-value-equal? [left: Value, right: Value] -> bool
@@ -653,7 +659,9 @@
          next_tx: 1}))
 
 (defmacro- emit-literal-value [form]
-  (if (string? form)
+  (if (nil? form)
+    (quasiquote (value-nil))
+    (if (string? form)
     (quasiquote (value-string (unquote form)))
     (if (int? form)
       (quasiquote (value-int (unquote form)))
@@ -661,7 +669,7 @@
         (quasiquote (value-bool (unquote form)))
         (if (keyword? form)
           (quasiquote (value-keyword (unquote (source form))))
-          (quasiquote (unquote form)))))))
+          (quasiquote (unquote form))))))))
 
 (defmacro- emit-attr [form]
   (if (keyword? form)
@@ -2486,6 +2494,20 @@
           (return true)))))
   false)
 
+(defn current-attr-exists? [db: DB, entity: u64, attr: string] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn cas-expected-matches? [db: DB, entity: u64, attr: string, expected: Value] -> bool
+  (if (= expected.kind .Nil)
+    (not (current-attr-exists? db entity attr))
+    (current-value-exists? db entity attr expected)))
+
 (defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
   (when (= value.kind .Keyword)
     (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
@@ -2582,7 +2604,7 @@
           (append-retract-attr-ops! (addr resolved-ops) db e data.a)
           (continue))
         (when (= data.op ":db.fn/cas")
-          (when (not (current-value-exists? db e data.a data.expected))
+          (when (not (cas-expected-matches? db e data.a data.expected))
             (return (Resolved-Tx {ok: false
                                   error: "cas failed"
                                   ops: resolved-ops
@@ -3107,7 +3129,7 @@
   (when (or (= aggregate.op "sum")
             (= aggregate.op "avg"))
     (return (value-int (+ current.int_value value.int_value))))
-  (when (and (= current.kind .Entity) (= current.entity 0))
+  (when (= current.kind .Nil)
     (return value))
   (if (= aggregate.op "min")
     (if (value-less? value current) value current)
