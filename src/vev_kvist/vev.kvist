@@ -82,6 +82,9 @@
   a: string
   v: Value
   expected: Value
+  expected_lookup_attr: string
+  expected_lookup_value: Value
+  has_expected_lookup_ref: bool
   value_tempid: string
   has_value_tempid: bool
   value_lookup_attr: string
@@ -364,6 +367,12 @@
 
 (defn cas-lookup-ref [lookup-attr: string, lookup-value: Value, a: string, expected: Value, v: Value] -> Tx-Data
   (Tx-Data {op: ":db.fn/cas" lookup_attr: lookup-attr lookup_value: lookup-value has_lookup_ref: true a: a expected: expected v: v}))
+
+(defn cas-expected-lookup-ref [e: u64, a: string, expected-attr: string, expected-value: Value, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db.fn/cas" e: e a: a expected_lookup_attr: expected-attr expected_lookup_value: expected-value has_expected_lookup_ref: true v: v}))
+
+(defn cas-value-lookup-ref [e: u64, a: string, expected: Value, value-attr: string, value-value: Value] -> Tx-Data
+  (Tx-Data {op: ":db.fn/cas" e: e a: a expected: expected value_lookup_attr: value-attr value_lookup_value: value-value has_value_lookup_ref: true}))
 
 (defn retract-attr [e: u64, a: string] -> Tx-Data
   (Tx-Data {op: ":db/retractAttr" e: e a: a}))
@@ -726,12 +735,28 @@
         (unquote (emit-attr a))
         (unquote (emit-literal-value expected))
         (unquote (emit-literal-value v))))
-    (quasiquote
-      (cas
-        (unquote e)
-        (unquote (emit-attr a))
-        (unquote (emit-literal-value expected))
-        (unquote (emit-literal-value v))))))
+    (if (lookup-ref? expected)
+      (quasiquote
+        (cas-expected-lookup-ref
+          (unquote e)
+          (unquote (emit-attr a))
+          (unquote (emit-attr (nth expected 0)))
+          (unquote (emit-literal-value (nth expected 1)))
+          (unquote (emit-literal-value v))))
+      (if (lookup-ref? v)
+        (quasiquote
+          (cas-value-lookup-ref
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value expected))
+            (unquote (emit-attr (nth v 0)))
+            (unquote (emit-literal-value (nth v 1)))))
+        (quasiquote
+          (cas
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value expected))
+            (unquote (emit-literal-value v))))))))
 
 (defmacro- tx-map-id [items]
   (if (= (count items) 0)
@@ -2509,14 +2534,24 @@
     (current-value-exists? db entity attr expected)))
 
 (defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
-  (when (= value.kind .Keyword)
-    (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-      (when (and has-type (= schema-type ":db.type/ref"))
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (when (and has-type (= schema-type ":db.type/ref"))
+      (when (= value.kind .Int)
+        (return (value-entity (u64 value.int_value)) true ""))
+      (when (= value.kind .Keyword)
         (let [[entity ident-ok] (schema-entity-for-attr db value.text)]
           (if ident-ok
             (return (value-entity entity) true "")
             (return value false "ident not found"))))))
   (return value true ""))
+
+(defn resolve-cas-expected [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
+  (when data.has_expected_lookup_ref
+    (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.expected_lookup_attr data.expected_lookup_value)]
+      (if lookup-ok
+        (return (value-entity lookup-e) true "")
+        (return data.expected false "lookup ref not found"))))
+  (resolve-tx-value db data.a data.expected))
 
 (defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
   (let [found: u64 0
@@ -2604,12 +2639,19 @@
           (append-retract-attr-ops! (addr resolved-ops) db e data.a)
           (continue))
         (when (= data.op ":db.fn/cas")
-          (when (not (cas-expected-matches? db e data.a data.expected))
-            (return (Resolved-Tx {ok: false
-                                  error: "cas failed"
-                                  ops: resolved-ops
-                                  tx_meta: resolved-meta
-                                  tempids: resolved-tempids}))))
+          (let [[expected expected-ok expected-error] (resolve-cas-expected db data)]
+            (when (not expected-ok)
+              (return (Resolved-Tx {ok: false
+                                    error: expected-error
+                                    ops: resolved-ops
+                                    tx_meta: resolved-meta
+                                    tempids: resolved-tempids})))
+            (when (not (cas-expected-matches? db e data.a expected))
+              (return (Resolved-Tx {ok: false
+                                    error: "cas failed"
+                                    ops: resolved-ops
+                                    tx_meta: resolved-meta
+                                    tempids: resolved-tempids})))))
 	        (let [[v value-ok value-error] (resolve-tx-value db data.a data.v)]
 	          (when data.has_value_lookup_ref
 	            (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
