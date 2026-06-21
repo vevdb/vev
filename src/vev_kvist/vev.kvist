@@ -186,7 +186,9 @@
 
 (defstruct Ground {
   out: string
+  tuple_vars: []string
   is_collection: bool
+  is_tuple: bool
   value: Value
   values: []Value
 })
@@ -1743,6 +1745,13 @@
       (emit-literal-value (first forms))
       (emit-ground-values (rest forms)))))
 
+(defmacro- emit-ground-tuple-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-input-var (first forms))
+      (emit-ground-tuple-vars (rest forms)))))
+
 (defmacro- emit-datalog-ground [form]
   (if (ground-clause? form)
     (let [expr (first form)
@@ -1752,13 +1761,26 @@
         (if (vector? value)
           (quasiquote
             (Ground {out: (unquote (emit-input-var out))
+                     tuple_vars: ([]string [])
                      is_collection: true
+                     is_tuple: false
                      values: ([]Value [(splice (emit-ground-values value))])}))
           (error "collection ground clauses require vector literal values"))
-        (quasiquote
-          (Ground {out: (unquote (emit-find-var out))
-                   is_collection: false
-                   value: (unquote (emit-literal-value value))}))))
+        (if (vector? out)
+          (if (vector? value)
+            (quasiquote
+              (Ground {out: ""
+                       tuple_vars: ([]string [(splice (emit-ground-tuple-vars out))])
+                       is_collection: false
+                       is_tuple: true
+                       values: ([]Value [(splice (emit-ground-values value))])}))
+            (error "tuple ground clauses require vector literal values"))
+          (quasiquote
+            (Ground {out: (unquote (emit-find-var out))
+                     tuple_vars: ([]string [])
+                     is_collection: false
+                     is_tuple: false
+                     value: (unquote (emit-literal-value value))})))))
     (error "ground clauses must have shape [(ground value) ?out] or [(ground [...]) [?out ...]]")))
 
 (defmacro- datalog-non-data-clause? [form]
@@ -3318,16 +3340,29 @@
 
 (defn apply-ground [bindings: []Binding, ground: Ground] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
-    (if ground.is_collection
+    (if ground.is_tuple
       (for [binding bindings]
-        (for [value ground.values]
-          (let [[next ok] (binding-with-value binding ground.out value)]
+        (when (= (count ground.tuple_vars) (count ground.values))
+          (let [next (clone-binding binding)
+                ok true]
+            (for [name index ground.tuple_vars]
+              (when (not (= name ""))
+                (let [[bound bound-ok] (binding-with-value next name ground.values[index])]
+                  (if bound-ok
+                    (set! next bound)
+                    (set! ok false)))))
             (when ok
               (arr.push! out next)))))
-      (for [binding bindings]
-        (let [[next ok] (binding-with-value binding ground.out ground.value)]
-          (when ok
-            (arr.push! out next)))))
+      (if ground.is_collection
+        (for [binding bindings]
+          (for [value ground.values]
+            (let [[next ok] (binding-with-value binding ground.out value)]
+              (when ok
+                (arr.push! out next)))))
+        (for [binding bindings]
+          (let [[next ok] (binding-with-value binding ground.out ground.value)]
+            (when ok
+              (arr.push! out next))))))
     out))
 
 (defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
