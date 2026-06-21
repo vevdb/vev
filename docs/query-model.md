@@ -96,7 +96,7 @@ Supported now:
 - collection `:in` variables shaped like `[?x ...]`
 - pull expressions in `:find`
 - simple predicate clauses: `=`, `!=`, `<`, `<=`, `>`, `>=`
-- single-clause `not`, shaped like `(not [e a v])`
+- `not` with one or two clauses
 - append-only transaction history with retractions hidden from current reads
 
 Example:
@@ -157,8 +157,17 @@ Example:
    (not [?e :user/active true])])
 ```
 
-Basic clauses now use in-memory indexes. Text parsing, rules, `not-join`, and
-advanced predicates remain later work.
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [?e :user/name ?name]
+   (not [?e :user/friend ?friend]
+        [?friend :user/active false])])
+```
+
+Basic clauses now use in-memory indexes. Text parsing, rules, larger `not`
+groups, `not-join`, and advanced predicates remain later work.
 
 ## Pull model
 
