@@ -18,7 +18,7 @@ Status key:
 
 | DataScript area | Status | Notes |
 | --- | --- | --- |
-| `query` | partial | DataScript join subset ported; inputs, no-where input-only queries, empty collection/relation inputs, plain int entity inputs, collection/tuple/relation bindings, named relation source joins, `_` input placeholders, and constant-substitution subset covered |
+| `query` | partial | DataScript join subset ported; inputs, no-where input-only queries, empty collection/relation inputs, plain int entity inputs, collection/tuple/relation bindings, cardinality-many joins, named relation source joins, `_` input placeholders, and constant-substitution subset covered |
 | `query_aggregates` | partial | Relation-input subset ported; grouped aggregates, `:with` duplicate preservation, keyword min/max comparator subset, literal top-n min/max, and parameterized top-n min/max covered; custom aggregates and exact edge behavior incomplete |
 | `query_find_specs` | partial | Subset ported; scalar, collection, tuple, aggregate find specs, and multiple-result cuts covered |
 | `query_fns` | partial | DataScript subset ported for predicates including `even?`, mixed-type predicate comparison, scalar/collection/tuple `ground`, `get-else`, `get-some`, lookup-ref inputs to query functions, `missing?`, literal vector/function args, tuple construction/destructuring, function-result unification with vector `first`/`second`, and built-in result clauses for `identity`, `inc`, `vector`, `tuple`, `untuple`, `hash-map`, `get`, string `count`, and integer arithmetic; arbitrary host/function clauses missing |
