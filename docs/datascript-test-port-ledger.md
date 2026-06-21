@@ -25,7 +25,7 @@ DataScript assertion or exact Clojure API shape.
 | `db.cljc` | 4 | partial | datom/index API compatibility |
 | `index.cljc` | 5 | partial | exact indexed-attribute error behavior |
 | `tuples.cljc` | 11 | missing | tuple attrs |
-| `validation.cljc` | 2 | partial | full schema validation behavior |
+| `validation.cljc` | 2 | partial | bad transaction forms and exact validation errors |
 | `parser*.cljc` | 19 | missing | EDN/text parser |
 | `conn.cljc`, `listen.cljc`, `filter.cljc`, `serialize.cljc`, `datafy.cljc` | 15 | later | app/runtime APIs after core parity |
 
