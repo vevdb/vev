@@ -85,6 +85,7 @@ representation and evaluates that directly.
 Supported now:
 
 - `:find` with one or more variables
+- scalar and collection find syntax: `:find ?x .`, `:find [?x ...]`
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
 - variables in entity, attribute, and value positions
@@ -123,6 +124,24 @@ Example:
   [:find ?name
    :where
    [:user/ada :user/name ?name]])
+```
+
+Vev accepts DataScript scalar and collection find syntax, currently lowered to
+the same row-oriented `Result-Set` representation:
+
+```clojure
+(v.q db
+  [:find ?name .
+   :where
+   [?e :user/email "ada@example.com"]
+   [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find [?name ...]
+   :where
+   [?e :user/name ?name]])
 ```
 
 `$` source-var clauses parse the same way against the current DB:
