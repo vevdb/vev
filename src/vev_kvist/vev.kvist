@@ -2596,6 +2596,15 @@
         ([]Index-Arg [(splice (emit-index-args args))])))
     (error "datoms index order must be a keyword")))
 
+(defmacro seek-datoms [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (seek-datoms-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "seek-datoms index order must be a keyword")))
+
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)
     (quasiquote
@@ -2998,11 +3007,28 @@
 (defn index-position-equal? [actual: Value, expected: Value] -> bool
   (predicate-value-equal? actual expected))
 
+(defn index-position-compare [actual: Value, expected: Value] -> int
+  (if (and (= actual.kind .Entity) (= expected.kind .Int))
+    (let [right (u64 expected.int_value)]
+      (if (< actual.entity right)
+        -1
+        (if (> actual.entity right) 1 0)))
+    (if (and (= actual.kind .Keyword) (= expected.kind .String))
+      (strings.compare actual.text expected.text)
+      (value-compare actual expected))))
+
 (defn datom-matches-index-values? [datom: Datom, order: string, values: []Value] -> bool
   (for [value position values]
     (when (not (index-position-equal? (datom-index-position-value datom order position) value))
       (return false)))
   true)
+
+(defn datom-index-compare-values [datom: Datom, order: string, values: []Value] -> int
+  (for [value position values]
+    (let [compare (index-position-compare (datom-index-position-value datom order position) value)]
+      (when (not (= compare 0))
+        (return compare))))
+  0)
 
 (defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
   (for [datom-index indexes]
@@ -3024,6 +3050,28 @@
         (if (= order ":avet")
           (append-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
           (append-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
+
+(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (for [datom-index indexes]
+    (when (datom-current-at? db datom-index)
+      (let [datom db.datoms[datom-index]]
+        (when (>= (datom-index-compare-values datom order values) 0)
+          (arr.push! out^ datom))))))
+
+(defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        [values ok] (resolve-index-args db args)]
+    (defer (delete values))
+    (when (not ok)
+      (return out))
+    (if (= order ":eavt")
+      (append-seek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
+      (if (= order ":aevt")
+        (append-seek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
+        (if (= order ":avet")
+          (append-seek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
+          (append-seek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
     out))
 
 (defn u64-contains? [items: []u64, value: u64] -> bool
