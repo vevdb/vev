@@ -788,7 +788,9 @@
       (quasiquote (term-var (unquote (source form)))))
     (if (int? form)
       (quasiquote (term-entity (unquote form)))
-      (quasiquote (unquote form)))))
+      (if (keyword? form)
+        (quasiquote (term-keyword (unquote (source form))))
+        (quasiquote (unquote form))))))
 
 (defmacro- emit-attr-term [form]
   (if (symbol? form)
@@ -1600,8 +1602,17 @@
       (delete resolved.tx_meta)
       report)))
 
-(defn datom-clause-matches? [datom: Datom, clause: Clause, binding: ^Binding] -> bool
-  (and (match-term? clause.e (value-entity datom.e) binding)
+(defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (and (= term.kind .Value)
+             (= term.value.kind .Keyword))
+    (let [[entity ok] (schema-entity-for-attr db term.value.text)]
+      (return (and ok
+                   (= actual.kind .Entity)
+                   (= actual.entity entity)))))
+  (match-term? term actual binding))
+
+(defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
+  (and (match-entity-term? db clause.e (value-entity datom.e) binding)
        (match-term? clause.a (value-keyword datom.a) binding)
        (match-term? clause.v datom.v binding)))
 
@@ -1654,6 +1665,11 @@
         [v-value v-ok] (resolve-term clause.v binding)
         source: []int (slice db.eavt 0)
         out (make [dynamic]int)]
+    (when (and e-ok (= e-value.kind .Keyword))
+      (let [[entity ident-ok] (schema-entity-for-attr db e-value.text)]
+        (if ident-ok
+          (set! e-value (value-entity entity))
+          (return out))))
     (if (and e-ok a-ok)
       (do
         (when (not (and (= e-value.kind .Entity)
@@ -1704,7 +1720,7 @@
       (let [datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
           (let [candidate (clone-binding binding)]
-            (when (datom-clause-matches? datom clause (addr candidate))
+            (when (datom-clause-matches? db datom clause (addr candidate))
               (return true)))))))
   false)
 
@@ -1718,7 +1734,7 @@
               (let [datom db.datoms[datom-index]]
                 (when (datom-current-at? db datom-index)
                   (let [next (clone-binding candidate-binding)]
-                    (when (datom-clause-matches? datom clause (addr next))
+                    (when (datom-clause-matches? db datom clause (addr next))
                       (arr.push! next-bindings next))))))))
         (delete bindings)
         (set! bindings next-bindings)
@@ -1769,7 +1785,7 @@
               (let [datom db.datoms[datom-index]]
                 (when (datom-current-at? db datom-index)
                   (let [next (clone-binding candidate-binding)]
-                    (when (datom-clause-matches? datom clause (addr next))
+                    (when (datom-clause-matches? db datom clause (addr next))
                       (arr.push! next-bindings next))))))))
         (delete bindings)
         (set! bindings next-bindings)
@@ -1792,7 +1808,7 @@
               (let [datom datoms[datom-index]]
                 (when (datom-current-at? db datom-index)
                   (let [candidate (clone-binding binding)]
-                    (when (datom-clause-matches? datom clause (addr candidate))
+                    (when (datom-clause-matches? db datom clause (addr candidate))
                       (arr.push! next-bindings candidate))))))
             (delete candidates)))
         (delete bindings)

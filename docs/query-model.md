@@ -90,6 +90,7 @@ Supported now:
 - variables in entity, attribute, and value positions
 - wildcard `_` pattern terms
 - literal entity, keyword, string, int, and bool values
+- ident keywords in entity position
 - entity refs as values
 - joins through repeated variables
 - positional `:in` variables
@@ -112,6 +113,13 @@ Example:
    [?e :user/email "ada@example.com"]
    [?e :user/active _]
    [?e :user/name ?name]])
+```
+
+```clojure
+(v.q db
+  [:find ?name
+   :where
+   [:user/ada :user/name ?name]])
 ```
 
 `$` source-var clauses parse the same way against the current DB:
