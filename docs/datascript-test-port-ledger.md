@@ -18,7 +18,7 @@ DataScript assertion or exact Clojure API shape.
 | `lookup_refs.cljc` | 5 | subset | exact invalid lookup-ref error messages |
 | `ident.cljc` | 4 | covered | Vev returns ref values as `Value.Entity`; behavior is otherwise covered |
 | `entity.cljc` | 6 | subset | Clojure equality/hash/print/cache protocol semantics |
-| `pull_api.cljc` | 17 | subset | infinite recursion, cycle handling, and exact collection/scalar render shape |
+| `pull_api.cljc` | 17 | subset | cycle handling and exact collection/scalar render shape |
 | `components.cljc` | 2 | subset | exact entity/touch reverse shapes |
 | `transact.cljc` | 19 | subset | tx functions and exact errors |
 | `upsert.cljc` | 6 | subset | full conflict matrix and messages |

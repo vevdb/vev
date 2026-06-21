@@ -2074,6 +2074,11 @@
     (quasiquote -1)
     form))
 
+(defmacro- recursion-ellipsis? [form]
+  (if (symbol? form)
+    (= (source form) "...")
+    false))
+
 (defmacro- emit-pull-nested-spec [attr pattern]
   (if (pull-pattern-has-trailing-limit? pattern)
     (if (= (count pattern) 3)
@@ -2157,7 +2162,17 @@
             pattern (nth form 1)]
         (if (vector? pattern)
           (emit-pull-nested-spec attr pattern)
-          (error "nested pull attrs expect vector patterns")))
+          (if (int? pattern)
+            (quasiquote
+              (pull-spec-recursion
+                (unquote (pull-attr-source attr))
+                (unquote pattern)))
+            (if (recursion-ellipsis? pattern)
+              (quasiquote
+                (pull-spec-recursion
+                  (unquote (pull-attr-source attr))
+                  32))
+              (error "nested pull attrs expect vector patterns or recursion depth")))))
       (error "nested pull maps currently support one attr"))
     (quasiquote
       (pull-spec
@@ -2172,7 +2187,12 @@
         (pull-spec-recursion
           (unquote (pull-attr-source attr))
           (unquote pattern)))
-      (error "nested pull attrs expect vector patterns or recursion depth"))))
+      (if (recursion-ellipsis? pattern)
+        (quasiquote
+          (pull-spec-recursion
+            (unquote (pull-attr-source attr))
+            32))
+        (error "nested pull attrs expect vector patterns or recursion depth")))))
 
 (defmacro- emit-pull-map-specs [forms]
   (if (= (count forms) 0)
@@ -4506,7 +4526,7 @@
                 (set! children pulled.attrs)))
             (when (and (= (count spec.pattern) 0)
                        spec.has_recursion
-                       (> spec.recursion_depth 0))
+                       (not (= spec.recursion_depth 0)))
               (let [pattern (pull-recursion-pattern root spec.a)]
                 (defer (delete pattern))
                 (let [pulled (pull-pattern-spec db datom.e (slice pattern 0))]
@@ -4566,10 +4586,13 @@
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has_alias spec.alias spec.a))
 
+(defn pull-next-recursion-depth [depth: int] -> int
+  (- depth 1))
+
 (defn pull-spec-decrement-recursion [spec: Pull-Spec, attr: string] -> Pull-Spec
   (if (and spec.has_recursion
            (= spec.a attr)
-           (> spec.recursion_depth 0))
+           (not (= spec.recursion_depth 0)))
     (Pull-Spec {a: spec.a
                 pattern: spec.pattern
                 limit: spec.limit
@@ -4578,7 +4601,7 @@
                 has_alias: spec.has_alias
                 alias: spec.alias
                 has_recursion: true
-                recursion_depth: (- spec.recursion_depth 1)})
+                recursion_depth: (pull-next-recursion-depth spec.recursion_depth)})
     spec))
 
 (defn pull-recursion-pattern [root: []Pull-Spec, attr: string] -> [dynamic]Pull-Spec
@@ -4602,7 +4625,7 @@
               (if (> (count spec.pattern) 0)
                 (let [pulled (pull-pattern-spec db datom.v.entity spec.pattern)]
                   (set! children pulled.attrs))
-                (if (and spec.has_recursion (> spec.recursion_depth 0))
+                (if (and spec.has_recursion (not (= spec.recursion_depth 0)))
                   (let [pattern (pull-recursion-pattern root spec.a)]
                     (defer (delete pattern))
                     (let [pulled (pull-pattern-spec db datom.v.entity (slice pattern 0))]
