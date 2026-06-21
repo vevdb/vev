@@ -160,7 +160,7 @@ Nested reverse refs can use `:limit` to cap fan-out:
 (v.pull db [{:_user/friend [:user/name :limit 2]}] 2)
 ```
 
-And wildcard attrs for current forward attrs:
+And wildcard attrs for `:db/id` plus current forward attrs:
 
 ```clojure
 (v.pull db [*] 1)
