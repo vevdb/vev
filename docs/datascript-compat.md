@@ -15,7 +15,7 @@ Status key:
 
 | DataScript area | Status | Notes |
 | --- | --- | --- |
-| `query` | partial | Joins, inputs, collection/tuple/relation bindings partly covered |
+| `query` | partial | DataScript join subset ported; inputs, collection/tuple/relation bindings partly covered |
 | `query_aggregates` | partial | Core aggregates covered; exact edge behavior still incomplete |
 | `query_find_specs` | partial | Scalar, collection, tuple find covered |
 | `query_fns` | partial | Built-ins covered; arbitrary host/function clauses missing |
@@ -43,4 +43,3 @@ Status key:
 2. Finish cheap transaction syntax aliases from `transact.cljc`.
 3. Decide the minimum viable rules implementation before porting
    `query_rules.cljc`.
-
