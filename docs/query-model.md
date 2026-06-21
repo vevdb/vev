@@ -88,7 +88,7 @@ Supported now:
 - `:with`
 - scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [[?x ?y]]`
 - return-map find markers: `:keys`, `:strs`, and `:syms`
-- standalone and grouped `count`, `min`, `max`, `sum`, and `avg` aggregates
+- standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, and `avg` aggregates
 - datom clauses shaped like `[e a v]`
 - source-var datom clauses shaped like `[$ e a v]` with single-source semantics
 - reverse attrs in datom clauses, such as `:_user/friend`

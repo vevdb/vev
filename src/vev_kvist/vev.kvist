@@ -418,6 +418,12 @@
       (return false)))
   true)
 
+(defn value-exists? [values: []Value, value: Value] -> bool
+  (for [existing values]
+    (when (value-equal? existing value)
+      (return true)))
+  false)
+
 (defn row-values-exist? [rows: []Result-Row, values: []Value] -> bool
   (for [row rows]
     (when (values-equal? (slice row.values 0) values)
@@ -887,6 +893,7 @@
         (if (symbol? head)
           (let [op (source head)]
             (or (= op "count")
+                (= op "count-distinct")
                 (= op "min")
                 (= op "max")
                 (= op "sum")
@@ -2650,9 +2657,20 @@
           (set! n (+ n 1)))))
     n))
 
+(defn aggregate-count-distinct [bindings: []Binding, var: string] -> i64
+  (let [seen (make [dynamic]Value)]
+    (defer (delete seen))
+    (for [binding bindings]
+      (let [[value ok] (binding-lookup binding var)]
+        (when (and ok (not (value-exists? (slice seen 0) value)))
+          (arr.push! seen value))))
+    (i64 (count seen))))
+
 (defn aggregate-value [bindings: []Binding, aggregate: Aggregate-Find] -> Value
   (when (= aggregate.op "count")
     (return (value-int (aggregate-count bindings aggregate.var))))
+  (when (= aggregate.op "count-distinct")
+    (return (value-int (aggregate-count-distinct bindings aggregate.var))))
   (when (or (= aggregate.op "sum")
             (= aggregate.op "avg"))
     (let [sum: i64 0
@@ -2683,13 +2701,15 @@
 
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
   (if (or (= aggregate.op "count")
+          (= aggregate.op "count-distinct")
           (= aggregate.op "sum")
           (= aggregate.op "avg"))
     (value-int 0)
     (Value {})))
 
 (defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
-  (when (= aggregate.op "count")
+  (when (or (= aggregate.op "count")
+            (= aggregate.op "count-distinct"))
     (return (value-int (+ current.int_value 1))))
   (when (not (= value.kind .Int))
     (return current))
@@ -2735,18 +2755,28 @@
                     (apply-aggregate-value row.values[(+ (count query.find) index)] aggregate value))))))))))
   (for [row rows^]
     (for [aggregate index query.aggregates]
-      (when (= aggregate.op "avg")
-        (let [sum-index (+ (count query.find) index)
-              count: i64 0]
+      (when (or (= aggregate.op "avg")
+                (= aggregate.op "count-distinct"))
+        (let [aggregate-index (+ (count query.find) index)
+              count: i64 0
+              seen (make [dynamic]Value)]
+          (defer (delete seen))
           (for [binding bindings]
             (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
               (when (and ok
                          (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0)))
                 (let [[_ has-value] (binding-lookup binding aggregate.var)]
                   (when has-value
-                    (set! count (+ count 1)))))))
-          (when (> count 0)
-            (set! row.values[sum-index].int_value (/ row.values[sum-index].int_value count))))))))
+                    (set! count (+ count 1))))
+                (when (= aggregate.op "count-distinct")
+                  (let [[value has-distinct-value] (binding-lookup binding aggregate.var)]
+                    (when (and has-distinct-value
+                               (not (value-exists? (slice seen 0) value)))
+                      (arr.push! seen value)))))))
+          (if (= aggregate.op "avg")
+            (when (> count 0)
+              (set! row.values[aggregate-index].int_value (/ row.values[aggregate-index].int_value count)))
+            (set! row.values[aggregate-index].int_value (i64 (count seen)))))))))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
