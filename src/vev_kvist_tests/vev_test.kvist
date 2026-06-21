@@ -55,6 +55,41 @@
     (t.is (= report.tx_meta[1].a ":tx/reason"))
     (t.is (= report.tx_meta[1].v.text ":profile-edit"))))
 
+(t.deftest transact-defaults-unschematized-attrs-to-cardinality-one
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        first-report (vev.transact
+                       (addr conn)
+                       [[:db/add 1 :name "Ivan"]])
+        second-report (vev.transact
+                        (addr conn)
+                        [[:db/add 1 :name "Oleg"]])
+        names (vev.q-collection second-report.db_after
+                [:find [?name ...]
+                 :where
+                 [1 :name ?name]])]
+    (t.is first-report.ok)
+    (t.is second-report.ok)
+    (t.is (= (count names) 1))
+    (t.is (= names[0].text "Oleg"))))
+
+(t.deftest transact-preserves-schema-cardinality-many
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 100 :db/ident :aka :db/cardinality :db.cardinality/many}
+                  [:db/add 1 :aka "X"]
+                  [:db/add 1 :aka "Y"]])
+        akas (vev.q-collection report.db_after
+               [:find [?aka ...]
+                :where
+                [1 :aka ?aka]])]
+    (t.is report.ok)
+    (t.is (= (count akas) 2))
+    (t.is (= akas[0].text "X"))
+    (t.is (= akas[1].text "Y"))))
+
 (t.deftest query-joins-and-returns-multiple-columns
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -149,7 +184,8 @@
                   {:db/id 1 :name "Ivan" :age 19 :email "ivan@example.com" :aka ["X" "Y"] :children [10]}
                   {:db/id 10 :father 1 :children [100 101]}
                   {:db/id 100 :father 10}
-                  {:db/id 101 :father 10}])
+                  {:db/id 101 :father 10}
+                  {:db/id 200 :father 999}])
         ivan (vev.db-entity report.db_after 1)
         by-email (vev.entity-lookup-ref report.db_after ":email" (vev.value-string "ivan@example.com"))
         aka (vev.entity-values ivan ":aka")
@@ -159,6 +195,7 @@
         reverse-father (vev.entity-refs ivan ":_father")
         schema-attr (vev.entity-ident report.db_after ":children")
         missing (vev.db-entity report.db_after 777)
+        dangling (vev.entity-refs (vev.db-entity report.db_after 200) ":father")
         touched (vev.touch ivan)]
     (t.is ivan.found)
     (t.is (= (vev.entity-id ivan) 1))
@@ -184,6 +221,7 @@
     (t.is (= schema-attr.e 11))
     (t.is (not missing.found))
     (t.is (= (vev.entity-get missing ":name").kind .Nil))
+    (t.is (= (count dangling) 0))
     (t.is (= touched.e 1))
     (t.is (> (count touched.attrs) 0))))
 
@@ -742,21 +780,32 @@
         _ (vev.transact
             (addr conn)
             [[:db/add 1 :name "Ivan"]
-             [:db/add 1 :age 15]])
+             [:db/add 1 :age 15]
+             [:db/add 2 :name "Petr"]
+             [:db/add 2 :age 22]])
         age (vev.q-collection conn.db
               [:find [?age ...]
                :in ?e
                :where
                [?e :age ?age]]
               [:name "Ivan"])
+        ages (vev.q-collection conn.db
+               [:find [?age ...]
+                :in [?e ...]
+                :where
+                [?e :age ?age]]
+               [[:name "Ivan"] [:name "Petr"]])
         missing (vev.q-collection conn.db
                   [:find [?age ...]
                    :in ?e
                    :where
                    [?e :age ?age]]
-                  [:name "Petr"])]
+                  [:name "Sergey"])]
     (t.is (= (count age) 1))
     (t.is (= age[0].int_value 15))
+    (t.is (= (count ages) 2))
+    (t.is (= ages[0].int_value 15))
+    (t.is (= ages[1].int_value 22))
     (t.is (= (count missing) 0))))
 
 (t.deftest datalog-macro-supports-ground
@@ -782,9 +831,10 @@
   (let [conn (vev.create-conn)
         _ (vev.transact
             (addr conn)
-            [{:db/id 1 :name "Ivan" :age 15}
-             {:db/id 2 :name "Petr" :age 22 :height 240}
-             {:db/id 3 :name "Slava" :age 37}
+            [{:db/id 100 :db/ident :parent :db/valueType :db.type/ref}
+             {:db/id 1 :name "Ivan" :age 15}
+             {:db/id 2 :name "Petr" :age 22 :height 240 :parent 1}
+             {:db/id 3 :name "Slava" :age 37 :parent 2}
              {:db/id 10 :mixed 0}
              {:db/id 11 :mixed 1}
              {:db/id 12 :mixed ""}])
@@ -817,6 +867,11 @@
                    :where
                    [?e :age ?age]
                    [(missing? $ ?e :height)]])
+        missing-back-ref (vev.q-collection conn.db
+                           [:find [?e ...]
+                            :where
+                            [?e :age ?age]
+                            [(missing? $ ?e :_parent)]])
         less-than (vev.q conn.db
                     [:find ?e1 ?e2
                      :where
@@ -881,6 +936,8 @@
     (t.is (= (count missing.rows) 2))
     (t.is (= missing.rows[0].values[0].entity 1))
     (t.is (= missing.rows[1].values[0].entity 3))
+    (t.is (= (count missing-back-ref) 1))
+    (t.is (= missing-back-ref[0].entity 3))
     (t.is (= (count less-than.rows) 2))
     (t.is (= less-than.rows[0].values[0].entity 1))
     (t.is (= less-than.rows[0].values[1].entity 2))
@@ -1007,7 +1064,10 @@
   (let [conn (vev.create-conn)
         report (vev.transact
                  (addr conn)
-                 [[:db/add 5 :follow (vev.value-entity 3)]
+                 [[:db/add 100 :db/ident :follow]
+                  [:db/add 100 :db/valueType :db.type/ref]
+                  [:db/add 100 :db/cardinality :db.cardinality/many]
+                  [:db/add 5 :follow (vev.value-entity 3)]
                   [:db/add 1 :follow (vev.value-entity 2)]
                   [:db/add 2 :follow (vev.value-entity 3)]
                   [:db/add 3 :follow (vev.value-entity 4)]
@@ -1094,8 +1154,7 @@
     (t.is (= joined-even.rows[1].values[1].entity 2))
     (t.is (= joined-even.rows[2].values[0].entity 6))
     (t.is (= joined-even.rows[2].values[1].entity 4))
-    (t.is (= (count isolated) 1))
-    (t.is (= isolated[0].text ":follow"))
+    (t.is (vev.value-exists? (slice isolated 0) (vev.value-keyword ":follow")))
     (t.is (= (count branches) 3))
     (t.is (= branches[0].entity 2))
     (t.is (= branches[1].entity 3))
@@ -1590,6 +1649,7 @@
                 [?e :user/age ?age]])]
     (t.is (= (count rows) 1))
     (t.is (= (count rows[0].items) 2))
+    (t.is (= rows[0].items[0].kind .Keyword))
     (t.is (= rows[0].items[0].key "name"))
     (t.is (= rows[0].items[0].value.text "Ada"))
     (t.is (= rows[0].items[1].key "age"))
@@ -1630,8 +1690,10 @@
                 [?e :user/email "ada@example.com"]
                 [?e :user/name ?name]])]
     (t.is (= strs[0].items[0].key "name"))
+    (t.is (= strs[0].items[0].kind .String))
     (t.is (= strs[0].items[0].value.text "Ada"))
     (t.is (= syms[0].items[0].key "name"))
+    (t.is (= syms[0].items[0].kind .Symbol))
     (t.is (= syms[0].items[0].value.text "Ada"))))
 
 (t.deftest datascript-query-return-map-all-rows-subset
@@ -1658,15 +1720,18 @@
                 [?e :name ?name]
                 [?e :age ?age]])]
     (t.is (= (count keys) 3))
+    (t.is (= keys[0].items[0].kind .Keyword))
     (t.is (= keys[0].items[0].key "n"))
     (t.is (= keys[0].items[0].value.text "Petr"))
     (t.is (= keys[0].items[1].key "a"))
     (t.is (= keys[0].items[1].value.int_value 44))
     (t.is (= keys[2].items[0].value.text "Sergey"))
     (t.is (= (count strs) 3))
+    (t.is (= strs[1].items[0].kind .String))
     (t.is (= strs[1].items[0].key "n"))
     (t.is (= strs[1].items[0].value.text "Ivan"))
     (t.is (= (count syms) 3))
+    (t.is (= syms[2].items[0].kind .Symbol))
     (t.is (= syms[2].items[0].key "n"))
     (t.is (= syms[2].items[0].value.text "Sergey"))))
 
@@ -1868,7 +1933,19 @@
                                    [["Cerberus" 3]
                                     ["Medusa" 1]
                                     ["Cyclops" 1]
-                                    ["Chimera" 1]])]
+                                    ["Chimera" 1]])
+        median-result (vev.q conn.db
+                        [:find (median ?x)
+                         :in [?x ...]]
+                        [10 15 20 35 75])
+        variance-result (vev.q conn.db
+                          [:find (variance ?x)
+                           :in [?x ...]]
+                          [10 15 20 35 75])
+        stddev-result (vev.q conn.db
+                         [:find (stddev ?x)
+                          :in [?x ...]]
+                          [10 15 20 35 75])]
     (t.is (= (count with-result.rows) 4))
     (t.is (= with-result.rows[0].values[0].int_value 3))
     (t.is (= with-result.rows[1].values[0].int_value 1))
@@ -1882,7 +1959,11 @@
     (t.is (= aggregate-result.rows[0].values[4].int_value 2))
     (t.is (= aggregate-result.rows[0].values[5].int_value 1))
     (t.is (= (count deduped-aggregate-result.rows) 1))
-    (t.is (= deduped-aggregate-result.rows[0].values[0].int_value 4))))
+    (t.is (= deduped-aggregate-result.rows[0].values[0].int_value 4))
+    (t.is (= median-result.rows[0].values[0].int_value 20))
+    (t.is (= variance-result.rows[0].values[0].int_value 554))
+    (t.is (> stddev-result.rows[0].values[0].float_value 23.5))
+    (t.is (< stddev-result.rows[0].values[0].float_value 23.6))))
 
 (t.deftest datascript-query-keyword-min-max-aggregate-subset
   (defer (free_all context.allocator))
@@ -2998,6 +3079,9 @@
 (t.deftest transact-data-supports-map-vector-values
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :user/tag :db/cardinality :db.cardinality/many}])
         report (vev.transact
                  (addr conn)
                  [{:db/id 1
@@ -3467,7 +3551,10 @@
         _ (vev.seed-people (addr conn))
         _ (vev.transact
                (addr conn)
-               [[:db/add 1 :user/friend (vev.value-entity 3)]
+               [[:db/add 100 :db/ident :user/friend]
+                [:db/add 100 :db/valueType :db.type/ref]
+                [:db/add 100 :db/cardinality :db.cardinality/many]
+                [:db/add 1 :user/friend (vev.value-entity 3)]
                 [:db/add 1 :user/friend (vev.value-entity 4)]])
         pulled (vev.pull conn.db [[:user/friend :limit 2]] 1)]
       (t.is (= (count pulled.attrs) 2))
@@ -3478,7 +3565,10 @@
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
         ops (make [dynamic]vev.Tx-Op)
-        idx 0]
+        idx 0
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :aka :db/cardinality :db.cardinality/many}])]
     (defer (delete ops))
     (while (< idx 1001)
       (arr.push! ops (vev.tx-add 1 ":aka" (vev.value-int (i64 idx))))
@@ -3495,7 +3585,10 @@
         _ (vev.seed-people (addr conn))
         _ (vev.transact
                (addr conn)
-               [[:db/add 1 :user/friend (vev.value-entity 3)]
+               [[:db/add 100 :db/ident :user/friend]
+                [:db/add 100 :db/valueType :db.type/ref]
+                [:db/add 100 :db/cardinality :db.cardinality/many]
+                [:db/add 1 :user/friend (vev.value-entity 3)]
                 [:db/add 1 :user/friend (vev.value-entity 4)]])
         limit-first (vev.pull conn.db [[:user/friend :limit 1 :as :friends]] 1)
         as-first (vev.pull conn.db [[:user/friend :as :friends :limit 1]] 1)]
@@ -3610,7 +3703,10 @@
         _ (vev.seed-people (addr conn))
         _ (vev.transact
                (addr conn)
-               [[:db/add 1 :user/friend (vev.value-entity 3)]
+               [[:db/add 100 :db/ident :user/friend]
+                [:db/add 100 :db/valueType :db.type/ref]
+                [:db/add 100 :db/cardinality :db.cardinality/many]
+                [:db/add 1 :user/friend (vev.value-entity 3)]
                 [:db/add 3 :user/name "Alan"]
                 [:db/add 1 :user/friend (vev.value-entity 4)]
                 [:db/add 4 :user/name "Barbara"]])
@@ -3627,7 +3723,10 @@
         _ (vev.seed-people (addr conn))
         _ (vev.transact
                (addr conn)
-               [[:db/add 1 :user/friend (vev.value-entity 3)]
+               [[:db/add 100 :db/ident :user/friend]
+                [:db/add 100 :db/valueType :db.type/ref]
+                [:db/add 100 :db/cardinality :db.cardinality/many]
+                [:db/add 1 :user/friend (vev.value-entity 3)]
                 [:db/add 3 :user/name "Alan"]
                 [:db/add 3 :user/age 42]
                 [:db/add 1 :user/friend (vev.value-entity 4)]

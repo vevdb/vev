@@ -1,6 +1,7 @@
 (package vev)
 
 (import arr "kvist:arr")
+(import math "core:math")
 (import strings "core:strings")
 
 (defenum Value-Kind [
@@ -8,6 +9,7 @@
   Entity
   String
   Int
+  Float
   Bool
   Keyword
 ])
@@ -17,6 +19,7 @@
   entity: u64
   text: string
   int_value: i64
+  float_value: f64
   bool_value: bool
 })
 
@@ -249,7 +252,14 @@
   rows: [dynamic]Result-Row
 })
 
+(defenum Key-Kind [
+  Keyword
+  String
+  Symbol
+])
+
 (defstruct Keyed-Value {
+  kind: Key-Kind
   key: string
   value: Value
 })
@@ -288,6 +298,7 @@
 (defenum Query-Input-Kind [
   Scalar
   Collection
+  CollectionLookupRefs
   Relation
   PullPattern
 ])
@@ -301,6 +312,7 @@
   has_lookup_ref: bool
   lookup_attr: string
   lookup_value: Value
+  lookup_values: []Value
 })
 
 (defn value-entity [id: u64] -> Value
@@ -311,6 +323,9 @@
 
 (defn value-int [value: i64] -> Value
   (Value {kind: .Int int_value: value}))
+
+(defn value-float [value: f64] -> Value
+  (Value {kind: .Float float_value: value}))
 
 (defn value-bool [value: bool] -> Value
   (Value {kind: .Bool bool_value: value}))
@@ -329,9 +344,10 @@
     .Nil 0
     .Entity 1
     .Int 2
-    .String 3
-    .Bool 4
-    .Keyword 5
+    .Float 3
+    .String 4
+    .Bool 5
+    .Keyword 6
     :else 99))
 
 (defn slash-index [text: string] -> int
@@ -367,6 +383,7 @@
       .Entity (< left.entity right.entity)
       .String (string-less? left.text right.text)
       .Int (< left.int_value right.int_value)
+      .Float (< left.float_value right.float_value)
       .Bool (and (not left.bool_value) right.bool_value)
       .Keyword (keyword-less? left.text right.text)
       .Nil false
@@ -533,6 +550,7 @@
       .Entity (= left.entity right.entity)
       .String (= left.text right.text)
       .Int (= left.int_value right.int_value)
+      .Float (= left.float_value right.float_value)
       .Bool (= left.bool_value right.bool_value)
       .Keyword (= left.text right.text)
       .Nil true
@@ -1184,7 +1202,10 @@
                 (= op "min")
                 (= op "max")
                 (= op "sum")
-                (= op "avg")))
+                (= op "avg")
+                (= op "median")
+                (= op "variance")
+                (= op "stddev")))
           false))
       false)
     false))
@@ -2169,7 +2190,7 @@
     (quasiquote
       (Aggregate-Find {op: (unquote (source (first form)))
                        var: (unquote (emit-find-var (nth form 1)))}))
-    (error "aggregate find expressions currently support count, count-distinct, min, max, sum, and avg")))
+    (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, variance, and stddev")))
 
 (defmacro- emit-aggregate-finds [forms]
   (if (= (count forms) 0)
@@ -2263,6 +2284,15 @@
       (emit-literal-value (first forms))
       (emit-query-input-values (rest forms)))))
 
+(defmacro- emit-query-input-lookup-ref-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (lookup-ref? (first forms))
+      (forms
+        (emit-literal-value (nth (first forms) 1))
+        (emit-query-input-lookup-ref-values (rest forms)))
+      (error "lookup-ref collection inputs must contain lookup refs"))))
+
 (defmacro- emit-query-relation-row-values [row]
   (if (= (count row) 0)
     (forms)
@@ -2333,6 +2363,23 @@
       false
       (pull-pattern-var-in-finds? find-items name))))
 
+(defmacro- emit-query-collection-lookup-ref-input [value]
+  (if (keyword? (nth (first value) 0))
+    (quasiquote
+      (Query-Input {kind: .CollectionLookupRefs
+                    lookup_attr: (unquote (source (nth (first value) 0)))
+                    lookup_values: ([]Value [(splice (emit-query-input-lookup-ref-values value))])}))
+    (error "lookup-ref collection inputs currently require keyword attrs")))
+
+(defmacro- collection-lookup-ref-input? [spec value]
+  (if (input-collection? spec)
+    (if (vector? value)
+      (if (> (count value) 0)
+        (lookup-ref? (first value))
+        false)
+      false)
+    false))
+
 (defmacro- emit-query-input-for-spec [find-items spec value]
   (if (pull-pattern-input? find-items spec)
     (if (vector? value)
@@ -2340,7 +2387,9 @@
         (Query-Input {kind: .PullPattern
                       pattern: ([]Pull-Spec [(splice (emit-pull-specs value))])}))
       (error "pull pattern inputs must be literal vectors"))
-    (emit-query-input value)))
+    (if (collection-lookup-ref-input? spec value)
+      (emit-query-collection-lookup-ref-input value)
+      (emit-query-input value))))
 
 (defmacro- emit-query-input-list-for-query [find-items specs values]
   (if (= (count values) 0)
@@ -2461,6 +2510,7 @@
     (quasiquote
       (result-keys
         (q (unquote db) (unquote query-form) (splice inputs))
+        .Keyword
         ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":keys")))])))
     (error "q-keys expects a literal datalog query")))
 
@@ -2469,6 +2519,7 @@
     (quasiquote
       (result-keys
         (q (unquote db) (unquote query-form) (splice inputs))
+        .String
         ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":strs")))])))
     (error "q-strs expects a literal datalog query")))
 
@@ -2477,6 +2528,7 @@
     (quasiquote
       (result-keys
         (q (unquote db) (unquote query-form) (splice inputs))
+        .Symbol
         ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":syms")))])))
     (error "q-syms expects a literal datalog query")))
 
@@ -2644,6 +2696,18 @@
             (arr.push! out next)))))
     out))
 
+(defn expand-collection-lookup-ref-input [db: DB, bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (= input.kind .CollectionLookupRefs)
+      (for [binding bindings]
+        (for [value input.lookup_values]
+          (let [[entity ok] (resolve-lookup-ref db input.lookup_attr value)]
+            (when ok
+              (let [next (clone-binding binding)]
+                (binding-store! (addr next) name (value-entity entity))
+                (arr.push! out next)))))))
+    out))
+
 (defn expand-tuple-input [bindings: []Binding, tuple: Tuple-Input, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (when (= (count tuple.vars) (count input.values))
@@ -2679,7 +2743,10 @@
     (for [name index query.collection_inputs]
       (let [input-index (+ collection-offset index)]
         (when (< input-index (count inputs))
-          (let [next-bindings (expand-collection-input (slice bindings 0) name inputs[input-index])]
+          (let [next-bindings (make [dynamic]Binding)]
+            (if (= inputs[input-index].kind .CollectionLookupRefs)
+              (set! next-bindings (expand-collection-lookup-ref-input db (slice bindings 0) name inputs[input-index]))
+              (set! next-bindings (expand-collection-input (slice bindings 0) name inputs[input-index])))
             (delete bindings)
             (set! bindings next-bindings)))))
     (for [tuple index query.tuple_inputs]
@@ -2946,9 +3013,17 @@
 
 (defn schema-cardinality-one? [db: DB, attr: string] -> bool
   (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
-    (or (schema-unique? db attr)
-        (and has-cardinality
-             (= cardinality ":db.cardinality/one")))))
+    (if (and has-cardinality
+             (= cardinality ":db.cardinality/many"))
+      false
+      true)))
+
+(defn tx-op-cardinality-one? [db: DB, op: Tx-Op] -> bool
+  (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
+    (when (and has-cardinality
+               (= cardinality ":db.cardinality/many"))
+      (return false))
+    true))
 
 (defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
   (when (not (schema-unique? db attr))
@@ -3232,13 +3307,11 @@
               tx_meta: (make [dynamic]Tx-Meta)
               tempids: (make [dynamic]Tempid)}))
 
-(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64, schema-active: bool]
-  (when (not schema-active)
-    (return))
+(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
   (let [current (build-db (clone-datoms after-datoms^))]
-    (when (not (schema-cardinality-one? current op.a))
+    (when (not (tx-op-cardinality-one? current op))
       (return))
     (let [indexes (slice current.eavt 0)
           low (lower-bound-index current indexes "eavt-ea" op.e op.a (Value {}))
@@ -3259,13 +3332,12 @@
   (let [before (build-db (clone-datoms conn^.db.datoms))
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count ops))
-        tx conn^.next_tx
-        schema-active (db-has-schema? before)]
+        tx conn^.next_tx]
     (let [[valid error] (validate-ops before ops)]
       (when (not valid)
         (return (failed-tx-report before error))))
     (for [op ops]
-      (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx schema-active)
+      (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx)
       (let [datom (Datom {e: op.e
                           a: op.a
                           v: op.v
@@ -3738,9 +3810,51 @@
   (if (or (= aggregate.op "count")
           (= aggregate.op "count-distinct")
           (= aggregate.op "sum")
-          (= aggregate.op "avg"))
+          (= aggregate.op "avg")
+          (= aggregate.op "median")
+          (= aggregate.op "variance")
+          (= aggregate.op "stddev"))
     (value-int 0)
     (Value {})))
+
+(defn sort-i64! [values: ^[dynamic]i64]
+  // ponytail: insertion sort is enough for current aggregate tests; replace if aggregate benches care.
+  (for [i (arr.range 1 (count values^))]
+    (let [current values^[i]
+          j i]
+      (while (and (> j 0)
+                  (< current values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] current))))
+
+(defn median-int [values: []i64] -> Value
+  (when (= (count values) 0)
+    (return (value-int 0)))
+  (let [sorted (arr.into [dynamic]i64 values)]
+    (defer (delete sorted))
+    (sort-i64! (addr sorted))
+    (let [mid (/ (count sorted) 2)]
+      (if (= (% (count sorted) 2) 1)
+        (value-int sorted[mid])
+        (value-int (/ (+ sorted[(- mid 1)] sorted[mid]) 2))))))
+
+(defn variance-int [values: []i64] -> Value
+  (when (= (count values) 0)
+    (return (value-int 0)))
+  (let [sum: i64 0]
+    (for [value values]
+      (set! sum (+ sum value)))
+    (let [mean (/ sum (i64 (count values)))
+          squared: i64 0]
+      (for [value values]
+        (let [diff (- value mean)]
+          (set! squared (+ squared (* diff diff)))))
+      (value-int (/ squared (i64 (count values)))))))
+
+(defn stddev-float [values: []i64] -> Value
+  (let [variance (variance-int values)]
+    (value-float (math.sqrt (f64 variance.int_value)))))
 
 (defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
   (when (or (= aggregate.op "count")
@@ -3794,8 +3908,10 @@
 (defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
+        aggregate-ints (make [dynamic]i64)
         distinct-values (make [dynamic]Value)
         seen-keys (make [dynamic]Result-Row)]
+    (defer (delete aggregate-ints))
     (defer (delete distinct-values))
     (defer (delete seen-keys))
     (for [binding bindings]
@@ -3812,6 +3928,11 @@
                       (when (not (value-exists? (slice distinct-values 0) value))
                         (arr.push! distinct-values value))
                       (do
+                        (when (and (or (= aggregate.op "median")
+                                       (= aggregate.op "variance")
+                                       (= aggregate.op "stddev"))
+                                   (= value.kind .Int))
+                          (arr.push! aggregate-ints value.int_value))
                         (when (and (= aggregate.op "avg")
                                    (= value.kind .Int))
                           (set! avg-count (+ avg-count 1)))
@@ -3820,6 +3941,12 @@
       (return (value-int (i64 (count distinct-values)))))
     (when (and (= aggregate.op "avg") (> avg-count 0))
       (set! current.int_value (/ current.int_value avg-count)))
+    (when (= aggregate.op "median")
+      (return (median-int (slice aggregate-ints 0))))
+    (when (= aggregate.op "variance")
+      (return (variance-int (slice aggregate-ints 0))))
+    (when (= aggregate.op "stddev")
+      (return (stddev-float (slice aggregate-ints 0))))
     current))
 
 (defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, bindings: []Binding, query: Query]
@@ -3999,13 +4126,13 @@
     (arr.into [dynamic]Value (slice result.rows[0].values 0))
     (make [dynamic]Value)))
 
-(defn result-keys [result: Result-Set, keys: []string] -> [dynamic]Keyed-Row
+(defn result-keys [result: Result-Set, kind: Key-Kind, keys: []string] -> [dynamic]Keyed-Row
   (let [out (make [dynamic]Keyed-Row 0 (count result.rows))]
     (for [row result.rows]
       (when (= (count row.values) (count keys))
         (let [items (make [dynamic]Keyed-Value 0 (count keys))]
           (for [key index keys]
-            (arr.push! items (Keyed-Value {key: key value: row.values[index]})))
+            (arr.push! items (Keyed-Value {kind: kind key: key value: row.values[index]})))
           (arr.push! out (Keyed-Row {items: items})))))
     out))
 
