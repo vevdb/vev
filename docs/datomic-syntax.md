@@ -74,10 +74,11 @@ Examples:
 ```
 
 Current Vev supports numeric entity ids, string tempids, lookup refs, and
-idents in list-form entity positions. Repeated use of the same tempid in one
-transaction resolves to the same entity and the transaction report exposes the
-resolved `tempids` mapping. Lookup refs require a current `:db/unique` schema
-attr. Idents resolve through current `:db/ident` facts.
+idents in list-form entity positions. Add/retract forms use the same entity
+identifier surface. Repeated use of the same tempid in one transaction resolves
+to the same entity and the transaction report exposes the resolved `tempids`
+mapping. Lookup refs require a current `:db/unique` schema attr. Idents resolve
+through current `:db/ident` facts.
 
 For attrs declared with `:db/valueType :db.type/ref`, keyword ident values in
 tx data resolve to entity refs:
