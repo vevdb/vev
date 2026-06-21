@@ -68,7 +68,9 @@ Start with a tight slice:
 - `:find`
 - `:in`
 - `:where`
+- queries with no `:where`, for input-only find/aggregate cases
 - simple clauses `[?e :attr ?v]`
+- attr-existence shorthand clauses `[?e :attr]`
 - scalar equality/predicate clauses as needed
 - rules only after base query flow works
 - pull after basic query/transact is stable
@@ -86,11 +88,11 @@ Supported now:
 
 - `:find` with one or more variables
 - `:with`
-- scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [[?x ?y]]`
+- scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [?x ?y]`
 - return-map find markers: `:keys`, `:strs`, and `:syms`
 - standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, and `avg` aggregates
-- datom clauses shaped like `[e a v]`
-- source-var datom clauses shaped like `[$ e a v]` with single-source semantics
+- datom clauses shaped like `[e a]` or `[e a v]`
+- source-var datom clauses shaped like `[$ e a]` or `[$ e a v]` with single-source semantics
 - reverse attrs in datom clauses, such as `:_user/friend`
 - variables in entity, attribute, and value positions
 - wildcard `_` pattern terms
@@ -173,7 +175,7 @@ returns the row-oriented `Result-Set`; use `q-scalar`, `q-collection`, or
 
 ```clojure
 (v.q-tuple db
-  [:find [[?name ?age]]
+  [:find [?name ?age]
    :where
    [?e :user/name ?name]
    [?e :user/age ?age]])
@@ -224,6 +226,7 @@ keyed rows:
 (v.q db
   [:find ?name
    :where
+   [$ ?e :user/email]
    [$ ?e :user/email "ada@example.com"]
    [$ ?e :user/name ?name]])
 ```

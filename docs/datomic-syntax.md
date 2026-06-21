@@ -45,12 +45,15 @@ These are the core transaction forms Vev should match first:
 [:db/retract e a v]
 [:db/retract e a]
 [:db/retractEntity e]
+[:db.fn/retractAttribute e a]
+[:db.fn/retractEntity e]
 ```
 
 Important compatibility notes from Datomic:
 
 - `:db/retract` may omit the value
 - `:db/retractEntity` retracts the entity's current facts
+- `:db.fn/retractAttribute` and `:db.fn/retractEntity` are supported aliases
 - transaction data is authored as an ordered collection for convenience
 - semantically it is still one atomic information set
 
@@ -214,6 +217,12 @@ The most important practical pattern for Vev phase 1 is:
 
 ```clojure
 [?e :attr ?v]
+```
+
+Attribute-existence shorthand is also accepted:
+
+```clojure
+[?e :attr]
 ```
 
 Phase 1 should also be prepared for these common variations:

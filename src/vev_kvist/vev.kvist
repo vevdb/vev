@@ -880,7 +880,9 @@
           (if (keyword? op)
             (if (= (source op) ":db/retractEntity")
               (forms (emit-retract-entity-call e))
-              (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity"))
+              (if (= (source op) ":db.fn/retractEntity")
+                (forms (emit-retract-entity-call e))
+                (error "tx-data operation must be :db/add, :db/retract, :db/retractEntity, or :db.fn/retractEntity")))
             (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity")))
         (if (= (count form) 3)
           (let [op (nth form 0)
@@ -889,9 +891,11 @@
             (if (keyword? op)
               (if (= (source op) ":db/retract")
                 (forms (emit-retract-attr-call e a))
-                (error "three-item tx-data vectors currently support :db/retract"))
-              (error "three-item tx-data vectors currently support :db/retract")))
-          (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], or [:db/retractEntity e]"))))
+                (if (= (source op) ":db.fn/retractAttribute")
+                  (forms (emit-retract-attr-call e a))
+                  (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
+              (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
+          (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], [:db.fn/retractAttribute e :attr], or [:db/retractEntity e]"))))
     (if (brace? form)
       (emit-tx-map-items form)
       (error "tx-data expects vector forms like [:db/add e :attr value] or map forms"))))
@@ -932,6 +936,15 @@
       false)
     false))
 
+(defmacro- find-direct-tuple? [form]
+  (if (vector? form)
+    (if (find-collection? form)
+      false
+      (if (= (count form) 1)
+        (not (vector? (first form)))
+        true))
+    false))
+
 (defmacro- find-return-map-marker? [form]
   (if (keyword? form)
     (let [marker (source form)]
@@ -943,9 +956,11 @@
 (defmacro- emit-find-tuple-vars [forms]
   (if (= (count forms) 0)
     (forms)
-    (forms
-      (emit-find-var (first forms))
-      (emit-find-tuple-vars (rest forms)))))
+    (if (aggregate-find? (first forms))
+      (emit-find-tuple-vars (rest forms))
+      (forms
+        (emit-find-var (first forms))
+        (emit-find-tuple-vars (rest forms))))))
 
 (defmacro- pull-find? [form]
   (if (list? form)
@@ -985,9 +1000,11 @@
           (if (find-scalar-marker? (first forms))
             (emit-find-vars (rest forms))
             (if (find-collection? (first forms))
-              (forms
-                (emit-find-var (nth (first forms) 0))
-                (emit-find-vars (rest forms)))
+              (if (aggregate-find? (nth (first forms) 0))
+                (emit-find-vars (rest forms))
+                (forms
+                  (emit-find-var (nth (first forms) 0))
+                  (emit-find-vars (rest forms))))
               (if (find-tuple? (first forms))
                 (forms
                   (emit-find-tuple-vars (first (first forms)))
@@ -1194,11 +1211,15 @@
 (defmacro- datalog-input-items [forms]
   (if (datalog-has-marker-before? forms ":in" ":where")
     (let [after-in (datalog-items-after forms ":in")]
-      (datalog-items-before after-in ":where"))
+      (if (datalog-has-marker-before? after-in ":where" ":where")
+        (datalog-items-before after-in ":where")
+        after-in))
     (forms)))
 
 (defmacro- datalog-where-items [forms]
-  (datalog-items-after forms ":where"))
+  (if (datalog-has-marker-before? forms ":where" ":where")
+    (datalog-items-after forms ":where")
+    (forms)))
 
 (defmacro- emit-entity-term [form]
   (if (symbol? form)
@@ -1244,17 +1265,27 @@
 
 (defmacro- emit-datalog-clause [form]
   (if (vector? form)
-    (if (= (count form) 3)
+    (if (= (count form) 2)
       (quasiquote
         (Clause {e: (unquote (emit-entity-term (nth form 0)))
                  a: (unquote (emit-attr-term (nth form 1)))
-                 v: (unquote (emit-value-term (nth form 2)))}))
-      (if (= (count form) 4)
-        (quasiquote
-          (Clause {e: (unquote (emit-entity-term (nth form 1)))
-                   a: (unquote (emit-attr-term (nth form 2)))
-                   v: (unquote (emit-value-term (nth form 3)))}))
-        (error "datalog clauses must have shape [e a v] or [src e a v]")))
+                 v: (term-wildcard)}))
+      (if (= (count form) 3)
+        (if (input-source? (nth form 0))
+          (quasiquote
+            (Clause {e: (unquote (emit-entity-term (nth form 1)))
+                     a: (unquote (emit-attr-term (nth form 2)))
+                     v: (term-wildcard)}))
+          (quasiquote
+            (Clause {e: (unquote (emit-entity-term (nth form 0)))
+                     a: (unquote (emit-attr-term (nth form 1)))
+                     v: (unquote (emit-value-term (nth form 2)))})))
+        (if (= (count form) 4)
+          (quasiquote
+            (Clause {e: (unquote (emit-entity-term (nth form 1)))
+                     a: (unquote (emit-attr-term (nth form 2)))
+                     v: (unquote (emit-value-term (nth form 3)))}))
+          (error "datalog clauses must have shape [e a], [e a v], [src e a], or [src e a v]"))))
     (error "datalog :where entries must be clauses")))
 
 (defmacro- missing-clause? [form]
@@ -1810,7 +1841,17 @@
         (forms
           (emit-aggregate-find (first forms))
           (emit-aggregate-finds (rest forms)))
-        (emit-aggregate-finds (rest forms))))))
+        (if (find-collection? (first forms))
+          (if (aggregate-find? (nth (first forms) 0))
+            (forms
+              (emit-aggregate-find (nth (first forms) 0))
+              (emit-aggregate-finds (rest forms)))
+            (emit-aggregate-finds (rest forms)))
+          (if (find-tuple? (first forms))
+            (concat
+              (emit-aggregate-finds (first (first forms)))
+              (emit-aggregate-finds (rest forms)))
+            (emit-aggregate-finds (rest forms))))))))
 
 (defmacro datalog [form]
   (if (vector? form)
@@ -1822,23 +1863,41 @@
                 with-items (datalog-with-items tail)
                 input-items (datalog-input-items tail)
                 where-items (datalog-where-items tail)]
-            (quasiquote
-              (query
-                ([]string [(splice (emit-find-vars find-items))])
-                ([]string [(splice (emit-find-vars with-items))])
-                ([]string [(splice (emit-input-vars input-items))])
-                ([]string [(splice (emit-collection-input-vars input-items))])
-                ([]Tuple-Input [(splice (emit-tuple-inputs input-items))])
-                ([]Relation-Input [(splice (emit-relation-inputs input-items))])
-                ([]Clause [(splice (emit-datalog-clauses where-items))])
-                ([]Predicate [(splice (emit-datalog-predicates where-items))])
-                ([]Get-Else [(splice (emit-datalog-get-elses where-items))])
-                ([]Get-Some [(splice (emit-datalog-get-somes where-items))])
-                ([]Ground [(splice (emit-datalog-grounds where-items))])
-                ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
-                ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
-                ([]Pull-Find [(splice (emit-pull-finds find-items))])
-                ([]Aggregate-Find [(splice (emit-aggregate-finds find-items))]))))
+            (if (find-direct-tuple? (first tail))
+              (quasiquote
+                (query
+                  ([]string [(splice (emit-find-tuple-vars (first tail)))])
+                  ([]string [(splice (emit-find-vars with-items))])
+                  ([]string [(splice (emit-input-vars input-items))])
+                  ([]string [(splice (emit-collection-input-vars input-items))])
+                  ([]Tuple-Input [(splice (emit-tuple-inputs input-items))])
+                  ([]Relation-Input [(splice (emit-relation-inputs input-items))])
+                  ([]Clause [(splice (emit-datalog-clauses where-items))])
+                  ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                  ([]Get-Else [(splice (emit-datalog-get-elses where-items))])
+                  ([]Get-Some [(splice (emit-datalog-get-somes where-items))])
+                  ([]Ground [(splice (emit-datalog-grounds where-items))])
+                  ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
+                  ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
+                  ([]Pull-Find [])
+                  ([]Aggregate-Find [(splice (emit-aggregate-finds (first tail)))])))
+              (quasiquote
+                (query
+                  ([]string [(splice (emit-find-vars find-items))])
+                  ([]string [(splice (emit-find-vars with-items))])
+                  ([]string [(splice (emit-input-vars input-items))])
+                  ([]string [(splice (emit-collection-input-vars input-items))])
+                  ([]Tuple-Input [(splice (emit-tuple-inputs input-items))])
+                  ([]Relation-Input [(splice (emit-relation-inputs input-items))])
+                  ([]Clause [(splice (emit-datalog-clauses where-items))])
+                  ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                  ([]Get-Else [(splice (emit-datalog-get-elses where-items))])
+                  ([]Get-Some [(splice (emit-datalog-get-somes where-items))])
+                  ([]Ground [(splice (emit-datalog-grounds where-items))])
+                  ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
+                  ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
+                  ([]Pull-Find [(splice (emit-pull-finds find-items))])
+                  ([]Aggregate-Find [(splice (emit-aggregate-finds find-items))])))))
           (error "datalog query must start with :find"))
         (error "datalog query must start with :find")))
     (error "datalog expects a vector query")))
