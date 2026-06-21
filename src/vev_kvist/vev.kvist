@@ -3193,59 +3193,6 @@
           (return false))))
     (return (> (count bindings) 0)))))
 
-(defn aggregate-count [bindings: []Binding, var: string] -> i64
-  (let [n: i64 0]
-    (for [binding bindings]
-      (let [[_ ok] (binding-lookup binding var)]
-        (when ok
-          (set! n (+ n 1)))))
-    n))
-
-(defn aggregate-count-distinct [bindings: []Binding, var: string] -> i64
-  (let [seen (make [dynamic]Value)]
-    (defer (delete seen))
-    (for [binding bindings]
-      (let [[value ok] (binding-lookup binding var)]
-        (when (and ok (not (value-exists? (slice seen 0) value)))
-          (arr.push! seen value))))
-    (i64 (count seen))))
-
-(defn aggregate-value [bindings: []Binding, aggregate: Aggregate-Find] -> Value
-  (when (= aggregate.op "count")
-    (return (value-int (aggregate-count bindings aggregate.var))))
-  (when (= aggregate.op "count-distinct")
-    (return (value-int (aggregate-count-distinct bindings aggregate.var))))
-  (when (or (= aggregate.op "sum")
-            (= aggregate.op "avg"))
-    (let [sum: i64 0
-          n: i64 0]
-      (for [binding bindings]
-        (let [[value ok] (binding-lookup binding aggregate.var)]
-          (when (and ok (= value.kind .Int))
-            (set! sum (+ sum value.int_value))
-            (set! n (+ n 1)))))
-      (if (= aggregate.op "sum")
-        (return (value-int sum))
-        (if (> n 0)
-          (return (value-int (/ sum n)))
-          (return (Value {}))))))
-  (let [out (Value {})
-        seen false]
-    (for [binding bindings]
-      (let [[value ok] (binding-lookup binding aggregate.var)]
-        (when ok
-          (if (not seen)
-            (do
-              (set! out value)
-              (set! seen true))
-            (if (= aggregate.op "min")
-              (when (value-less? value out)
-                (set! out value))
-              (when (and (= aggregate.op "max")
-                         (value-less? out value))
-                (set! out value)))))))
-    out))
-
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
   (if (or (= aggregate.op "count")
           (= aggregate.op "count-distinct")
@@ -3280,6 +3227,60 @@
           (return out false))))
     (return out true)))
 
+(defn aggregate-key-values [binding: Binding, query: Query, aggregate: Aggregate-Find] -> [values: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value)]
+    (for [name query.find]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (for [name query.with]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (let [[value ok] (binding-lookup binding aggregate.var)]
+      (if ok
+        (arr.push! out value)
+        (return out false)))
+    (return out true)))
+
+(defn aggregate-key-row [values: []Value] -> Result-Row
+  (let [stored (arr.into [dynamic]Value values)
+        pulls (make [dynamic]Pull-Result)]
+    (Result-Row {values: stored pulls: pulls})))
+
+(defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
+  (let [current (aggregate-initial-value aggregate)
+        avg-count: i64 0
+        distinct-values (make [dynamic]Value)
+        seen-keys (make [dynamic]Result-Row)]
+    (defer (delete distinct-values))
+    (defer (delete seen-keys))
+    (for [binding bindings]
+      (let [[binding-group ok] (binding-values-for-vars binding (slice query.find 0))]
+        (when (and ok (values-equal? (slice binding-group 0) group-values))
+          (let [[key key-ok] (aggregate-key-values binding query aggregate)]
+            (when (and key-ok (not (row-values-exist? (slice seen-keys 0) (slice key 0))))
+              (arr.push! seen-keys (aggregate-key-row (slice key 0)))
+              (let [[value has-value] (binding-lookup binding aggregate.var)]
+                (when has-value
+                  (if (= aggregate.op "count")
+                    (set! current.int_value (+ current.int_value 1))
+                    (if (= aggregate.op "count-distinct")
+                      (when (not (value-exists? (slice distinct-values 0) value))
+                        (arr.push! distinct-values value))
+                      (do
+                        (when (and (= aggregate.op "avg")
+                                   (= value.kind .Int))
+                          (set! avg-count (+ avg-count 1)))
+                        (set! current (apply-aggregate-value current aggregate value))))))))))))
+    (when (= aggregate.op "count-distinct")
+      (return (value-int (i64 (count distinct-values)))))
+    (when (and (= aggregate.op "avg") (> avg-count 0))
+      (set! current.int_value (/ current.int_value avg-count)))
+    current))
+
 (defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, bindings: []Binding, query: Query]
   (for [binding bindings]
     (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
@@ -3290,40 +3291,10 @@
             (for [aggregate query.aggregates]
               (arr.push! values (aggregate-initial-value aggregate)))
             (arr.push! rows^ (Result-Row {values: values pulls: pulls})))))))
-  (for [binding bindings]
-    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
-      (when ok
-        (for [row rows^]
-          (when (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0))
-            (for [aggregate index query.aggregates]
-              (let [[value has-value] (binding-lookup binding aggregate.var)]
-                (when has-value
-                  (set! row.values[(+ (count query.find) index)]
-                    (apply-aggregate-value row.values[(+ (count query.find) index)] aggregate value))))))))))
   (for [row rows^]
     (for [aggregate index query.aggregates]
-      (when (or (= aggregate.op "avg")
-                (= aggregate.op "count-distinct"))
-        (let [aggregate-index (+ (count query.find) index)
-              count: i64 0
-              seen (make [dynamic]Value)]
-          (defer (delete seen))
-          (for [binding bindings]
-            (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
-              (when (and ok
-                         (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0)))
-                (let [[_ has-value] (binding-lookup binding aggregate.var)]
-                  (when has-value
-                    (set! count (+ count 1))))
-                (when (= aggregate.op "count-distinct")
-                  (let [[value has-distinct-value] (binding-lookup binding aggregate.var)]
-                    (when (and has-distinct-value
-                               (not (value-exists? (slice seen 0) value)))
-                      (arr.push! seen value)))))))
-          (if (= aggregate.op "avg")
-            (when (> count 0)
-              (set! row.values[aggregate-index].int_value (/ row.values[aggregate-index].int_value count)))
-            (set! row.values[aggregate-index].int_value (i64 (count seen)))))))))
+      (set! row.values[(+ (count query.find) index)]
+        (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
@@ -3396,7 +3367,7 @@
           (let [values (make [dynamic]Value 0 (count query.aggregates))
                 pulls (make [dynamic]Pull-Result)]
             (for [aggregate query.aggregates]
-              (arr.push! values (aggregate-value (slice bindings 0) aggregate)))
+              (arr.push! values (aggregate-value-for-group (slice bindings 0) query aggregate ([]Value []))))
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
           (append-aggregate-rows! (addr rows) (slice bindings 0) query))
         (delete bindings)
