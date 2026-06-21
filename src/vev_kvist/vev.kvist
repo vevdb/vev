@@ -371,6 +371,12 @@
       (return true)))
   false)
 
+(defn row-value-prefix-exists? [rows: []Result-Row, values: []Value] -> bool
+  (for [row rows]
+    (when (values-equal? (slice row.values 0 (count values)) values)
+      (return true)))
+  false)
+
 (defn datom-less-eavt? [datoms: []Datom, left-index: int, right-index: int] -> bool
   (let [left datoms[left-index]
         right datoms[right-index]]
@@ -2021,6 +2027,36 @@
           (set! n (+ n 1)))))
     n))
 
+(defn binding-values-for-vars [binding: Binding, names: []string] -> [values: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value 0 (count names))]
+    (for [name names]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (return out true)))
+
+(defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, bindings: []Binding, query: Query]
+  (for [binding bindings]
+    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
+      (when ok
+        (when (not (row-value-prefix-exists? (slice rows^ 0) (slice group-values 0)))
+          (let [values (arr.into [dynamic]Value (slice group-values 0))
+                pulls (make [dynamic]Pull-Result)]
+            (for [aggregate query.aggregates]
+              (arr.push! values (value-int 0)))
+            (arr.push! rows^ (Result-Row {values: values pulls: pulls})))))))
+  (for [binding bindings]
+    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
+      (when ok
+        (for [row rows^]
+          (when (values-equal? (slice row.values 0 (count query.find)) (slice group-values 0))
+            (for [aggregate index query.aggregates]
+              (let [[_ has-value] (binding-lookup binding aggregate.var)]
+                (when (and has-value (= aggregate.op "count"))
+                  (set! row.values[(+ (count query.find) index)].int_value
+                    (+ row.values[(+ (count query.find) index)].int_value 1)))))))))))
+
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (let [datoms (slice db.datoms 0)
         bindings (bindings-from-inputs query inputs)
@@ -2067,14 +2103,16 @@
         (delete bindings)
         (set! bindings next-bindings)))
     (when (> (count query.aggregates) 0)
-      (let [values (make [dynamic]Value 0 (count query.aggregates))
-            pulls (make [dynamic]Pull-Result)
-            rows (make [dynamic]Result-Row 0 1)]
-        (for [aggregate query.aggregates]
-          (if (= aggregate.op "count")
-            (arr.push! values (value-int (aggregate-count (slice bindings 0) aggregate.var)))
-            (arr.push! values (value-int 0))))
-        (arr.push! rows (Result-Row {values: values pulls: pulls}))
+      (let [rows (make [dynamic]Result-Row)]
+        (if (= (count query.find) 0)
+          (let [values (make [dynamic]Value 0 (count query.aggregates))
+                pulls (make [dynamic]Pull-Result)]
+            (for [aggregate query.aggregates]
+              (if (= aggregate.op "count")
+                (arr.push! values (value-int (aggregate-count (slice bindings 0) aggregate.var)))
+                (arr.push! values (value-int 0))))
+            (arr.push! rows (Result-Row {values: values pulls: pulls})))
+          (append-aggregate-rows! (addr rows) (slice bindings 0) query))
         (delete bindings)
         (return (Result-Set {rows: rows}))))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
