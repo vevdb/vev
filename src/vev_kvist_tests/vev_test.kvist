@@ -3231,6 +3231,22 @@
     (t.is (= (count employed) 1))
     (t.is employed[0].bool_value)))
 
+(t.deftest datascript-retract-int-does-not-match-float-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-tx-data
+            (addr conn)
+            ([]vev.Tx-Data [(vev.add 1 ":num" (vev.value-float 42.5))]))
+        report (vev.transact (addr conn) [[:db/retract 1 :num 42]])
+        values (vev.q-collection report.db_after
+                [:find [?num ...]
+                 :where
+                 [1 :num ?num]])]
+    (t.is report.ok)
+    (t.is (= (count values) 1))
+    (t.is (= values[0].kind .Float))
+    (t.is (= values[0].float_value 42.5))))
+
 (t.deftest datascript-duplicate-retract-is-idempotent
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -5482,6 +5498,47 @@
     (t.is (vev.value-equal? multi[1].v map-2))
     (t.is (= (count exact-index) 1))
     (t.is (vev.value-equal? exact-index[0].v map-3))))
+
+(t.deftest datascript-transitive-type-compare-unique-lookup-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :block/uid]
+             [:db/add 100 :db/unique :db.unique/identity]])
+        _ (vev.transact
+            (addr conn)
+            [{:block/uid "2LB4tlJGy"}
+             {:block/uid "2ON453J0Z"}
+             {:block/uid "2KqLLNbPg"}
+             {:block/uid "2L0dcD7yy"}
+             {:block/uid "2KqFNrhTZ"}
+             {:block/uid "2KdQmItUD"}
+             {:block/uid "2O8BcBfIL"}
+             {:block/uid "2L4ZbI7nK"}
+             {:block/uid "2KotiW36Z"}
+             {:block/uid "2O4o-y5J8"}
+             {:block/uid "2KimvuGko"}
+             {:block/uid "dTR20ficj"}
+             {:block/uid "wRmp6bXAx"}
+             {:block/uid "rfL-iQOZm"}
+             {:block/uid "tya6s422-"}
+             {:block/uid 45619}])
+        datoms (vev.datoms conn.db :avet :block/uid)
+        first-string (vev.entity-lookup-ref conn.db ":block/uid" (vev.value-string "2LB4tlJGy"))
+        middle-string (vev.entity-lookup-ref conn.db ":block/uid" (vev.value-string "2O4o-y5J8"))
+        last-string (vev.entity-lookup-ref conn.db ":block/uid" (vev.value-string "tya6s422-"))
+        int-uid (vev.entity-lookup-ref conn.db ":block/uid" (vev.value-int 45619))]
+    (t.is (= (count datoms) 16))
+    (t.is (= datoms[0].v.kind .Int))
+    (t.is (= datoms[0].v.int_value 45619))
+    (t.is (= datoms[1].v.kind .String))
+    (t.is first-string.found)
+    (t.is middle-string.found)
+    (t.is last-string.found)
+    (t.is int-uid.found)
+    (t.is (not (= (vev.entity-id first-string) (vev.entity-id middle-string))))
+    (t.is (not (= (vev.entity-id first-string) (vev.entity-id int-uid))))))
 
 (t.deftest datascript-map-reverse-ref-value-supports-lookup-ref
   (defer (free_all context.allocator))
