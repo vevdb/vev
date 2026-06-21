@@ -103,10 +103,14 @@ Attribute option vectors support `:default`:
 (v.pull db [[:user/nickname :default "Unknown"]] 1)
 ```
 
-And `:as`:
+And `:as`, either alone or combined with `:default`:
 
 ```clojure
 (v.pull db [[:user/name :as :name]] 1)
+```
+
+```clojure
+(v.pull db [[:user/nickname :default "Unknown" :as :nickname]] 1)
 ```
 
 It also supports reverse ref attrs in the Datomic style:
