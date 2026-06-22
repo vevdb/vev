@@ -1047,6 +1047,88 @@
     (t.is (= (count names2) 1))
     (t.is (= names2[0].text "Ivan"))))
 
+(t.deftest datascript-pure-db-with-tx-data-subset
+  (defer (free_all context.allocator))
+  (let [empty (vev.init-db ([]vev.Datom []))
+        first (vev.with-tx-data
+                empty
+                ([]vev.Tx-Data
+                  [(vev.add 100 ":db/ident" (vev.value-keyword ":aka"))
+                   (vev.add 100 ":db/cardinality" (vev.value-keyword ":db.cardinality/many"))
+                   (vev.add 1 ":name" (vev.value-string "Ivan"))]))
+        original-names (vev.q-collection empty
+                         [:find [?name ...]
+                          :where
+                          [1 :name ?name]])
+        first-names (vev.q-collection first.db_after
+                      [:find [?name ...]
+                       :where
+                       [1 :name ?name]])
+        second-db (vev.db-with-tx-data
+                    first.db_after
+                    ([]vev.Tx-Data
+                      [(vev.add 1 ":name" (vev.value-string "Petr"))
+                       (vev.add 1 ":aka" (vev.value-string "Devil"))
+                       (vev.add 1 ":aka" (vev.value-string "Tupen"))]))
+        second-name (vev.q-collection second-db
+                      [:find [?name ...]
+                       :where
+                       [1 :name ?name]])
+        second-aka (vev.q-collection second-db
+                    [:find [?aka ...]
+                     :where
+                     [1 :aka ?aka]])
+        failed (vev.with-tx-data
+                 second-db
+                 ([]vev.Tx-Data
+                   [(vev.Tx-Data {op: ":db/nope" e: 1 a: ":name" v: (vev.value-string "Bad")})]))
+        after-failed (vev.q-collection failed.db_after
+                       [:find [?name ...]
+                        :where
+                        [1 :name ?name]])]
+    (t.is first.ok)
+    (t.is (= first.tx 1))
+    (t.is (= (count original-names) 0))
+    (t.is (= (count first-names) 1))
+    (t.is (= first-names[0].text "Ivan"))
+    (t.is (= (count second-name) 1))
+    (t.is (= second-name[0].text "Petr"))
+    (t.is (= (count second-aka) 2))
+    (t.is (= second-aka[0].text "Devil"))
+    (t.is (= second-aka[1].text "Tupen"))
+    (t.is (not failed.ok))
+    (t.is (= failed.error "unknown tx op"))
+    (t.is (= (count after-failed) 1))
+    (t.is (= after-failed[0].text "Petr"))))
+
+(t.deftest datascript-db-with-datoms-preserves-tx-and-retractions-subset
+  (defer (free_all context.allocator))
+  (let [empty (vev.init-db ([]vev.Datom []))
+        db (vev.db-with-datoms
+             empty
+             ([]vev.Datom
+               [(vev.datom-tx 1 ":name" (vev.value-string "Oleg") 0 true)
+                (vev.datom-tx 1 ":age" (vev.value-int 17) 1 true)
+                (vev.datom-tx 1 ":aka" (vev.value-string "x") 2 true)]))
+        rows (vev.datoms db :eavt)
+        retracted (vev.db-with-datoms
+                    empty
+                    ([]vev.Datom
+                      [(vev.datom-tx 1 ":name" (vev.value-string "Oleg") 0 true)
+                       (vev.datom-tx 1 ":age" (vev.value-int 17) 0 true)
+                       (vev.datom-tx 1 ":name" (vev.value-string "Oleg") 0 false)]))
+        current (vev.datoms retracted :eavt)]
+    (t.is (= (count rows) 3))
+    (t.is (= rows[0].a ":age"))
+    (t.is (= rows[0].tx 1))
+    (t.is (= rows[1].a ":aka"))
+    (t.is (= rows[1].tx 2))
+    (t.is (= rows[2].a ":name"))
+    (t.is (= rows[2].tx 0))
+    (t.is (= (count current) 1))
+    (t.is (= current[0].a ":age"))
+    (t.is (= current[0].tx 0))))
+
 (t.deftest datascript-serializable-roundtrip-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
