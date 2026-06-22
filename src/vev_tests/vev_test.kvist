@@ -373,6 +373,15 @@
              {:db/id 2 :name "Grace Hopper" :active false :age 41}])
         collection-query (vev.empty-query)
         [collection-ok collection-error] (vev.parse-query-text! (addr collection-query) "[:find [?name ...] :where [_ :name ?name]]")
+        prepared (vev.prepare-query-text "[:find ?name :where [?e :name ?name] [?e :active true]]")
+        prepared-result (vev.q-prepared conn.db prepared)
+        prepared-input (vev.prepare-query-text "[:find ?e :in ?name :where [?e :name ?name]]")
+        prepared-input-result (vev.q-prepared-with-inputs
+                                conn.db
+                                prepared-input
+                                ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Grace Hopper"))]))
+        bad-prepared (vev.prepare-query-text "[:where [?e :name ?name]]")
+        bad-prepared-result (vev.q-prepared conn.db bad-prepared)
         relation (vev.q-text conn.db "[:find ?e ?name :where [?e :name ?name] [?e :active true]]")
         collection (vev.result-collection (vev.q-query conn.db collection-query))
         constant (vev.q-text conn.db "[:find ?e :where [?e :name \"Grace Hopper\"]]")
@@ -461,6 +470,14 @@
     (t.is (= (count collection) 2))
     (t.is (= collection[0].text "Ada Lovelace"))
     (t.is (= collection[1].text "Grace Hopper"))
+    (t.is prepared.ok)
+    (t.is (= (count prepared-result.rows) 1))
+    (t.is (= prepared-result.rows[0].values[0].text "Ada Lovelace"))
+    (t.is prepared-input.ok)
+    (t.is (= (count prepared-input-result.rows) 1))
+    (t.is (= prepared-input-result.rows[0].values[0].entity 2))
+    (t.is (not bad-prepared.ok))
+    (t.is (not bad-prepared-result.ok))
     (t.is (= (count constant.rows) 1))
     (t.is (= constant.rows[0].values[0].entity 2))
     (t.is (= (count numeric.rows) 1))
@@ -1037,6 +1054,13 @@
 (t.deftest datascript-parser-tx-text-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
+        prepared (vev.prepare-tx-text "[{:db/id 10 :user/name \"Prepared\"}]")
+        prepared-report (vev.transact-prepared (addr conn) prepared)
+        prepared-name (vev.q-text
+                        prepared-report.db-after
+                        "[:find ?name :where [10 :user/name ?name]]")
+        bad-prepared (vev.prepare-tx-text "{:db/id 1}")
+        bad-prepared-report (vev.transact-prepared (addr conn) bad-prepared)
         schema (vev.transact-text
                  (addr conn)
                  "[[:db/add 100 :db/ident :user/email] [:db/add 100 :db/valueType :db.type/string] [:db/add 100 :db/unique :db.unique/identity] [:db/add 101 :db/ident :user/friend] [:db/add 101 :db/valueType :db.type/ref] [:db/add 102 :db/ident :user/address] [:db/add 102 :db/valueType :db.type/ref]]")
@@ -1064,6 +1088,12 @@
         remaining (vev.q-text
                     retract.db-after
                     "[:find ?e :where [?e :user/email \"ada@example.com\"]]")]
+    (t.is prepared.ok)
+    (t.is prepared-report.ok)
+    (t.is (= (count prepared-name.rows) 1))
+    (t.is (= prepared-name.rows[0].values[0].text "Prepared"))
+    (t.is (not bad-prepared.ok))
+    (t.is (not bad-prepared-report.ok))
     (t.is schema.ok)
     (t.is initial.ok)
     (t.is (>= (count names.rows) 3))

@@ -99,6 +99,10 @@ The current in-memory implementation has two query frontends:
 - a text API, `q-text` / `q-text-with-inputs` / `q-text-with-sources` /
   `parse-query-text!`, that parses a growing `[:find ... :in ... :where ...]`
   EDN subset for portable callers
+- prepared text query values, `prepare-query-text` /
+  `prepare-query-text-with-sources`, plus `q-prepared` /
+  `q-prepared-with-inputs` / `q-prepared-with-sources`, for callers that want
+  to parse once and run repeatedly
 - a Kvist query literal macro that lowers Datomic-shaped data to the same typed
   `Query` representation
 
@@ -106,6 +110,8 @@ The transaction side has the same split:
 
 - a text API, `transact-text` / `parse-tx-text!`, that parses common
   DataScript-shaped EDN tx-data strings into normal `Tx-Data` before execution
+- prepared tx-data values, `prepare-tx-text` plus `transact-prepared`, for
+  parsing EDN tx-data once and applying it through the same transaction engine
 - a Kvist tx-data literal macro used by `transact`
 
 Supported now:
