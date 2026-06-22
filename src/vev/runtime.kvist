@@ -3135,6 +3135,117 @@
       (append-or-group-vars! (addr vars) group))
     vars))
 
+(defn query-positive-vars [query-value: Query] -> [dynamic]string
+  (let [vars (make [dynamic]string)]
+    (append-query-input-vars! (addr vars) query-value)
+    (for [clause query-value.clauses]
+      (append-clause-vars! (addr vars) clause))
+    (for [call query-value.rule-calls]
+      (append-rule-call-vars! (addr vars) call))
+    (for [ground query-value.grounds]
+      (append-ground-output-vars! (addr vars) ground))
+    (for [function query-value.function-clauses]
+      (append-function-output-vars! (addr vars) function))
+    vars))
+
+(defn query-input-vars [query-value: Query] -> [dynamic]string
+  (let [vars (make [dynamic]string)]
+    (append-query-input-vars! (addr vars) query-value)
+    vars))
+
+(defn string-slices-intersect? [left: []string, right: []string] -> bool
+  (for [item left]
+    (when (string-slice-contains? right item)
+      (return true)))
+  false)
+
+(defn append-unbound-vars! [out: ^[dynamic]string, vars: []string, available: []string]
+  (for [name vars]
+    (when (not (string-slice-contains? available name))
+      (append-var-once! out name))))
+
+(defn string-slices-same-set? [left: []string, right: []string] -> bool
+  (for [item left]
+    (when (not (string-slice-contains? right item))
+      (return false)))
+  (for [item right]
+    (when (not (string-slice-contains? left item))
+      (return false)))
+  true)
+
+(defn validate-not-group-bindings [available: []string, group: Not-Group] -> [ok: bool, error: string]
+  (let [vars (make [dynamic]string) :defer]
+    (append-not-group-vars! (addr vars) group)
+    (when (and (> (count vars) 0)
+               (not (string-slices-intersect? (slice vars 0) available)))
+      (return false (fmt.tprintf "insufficient bindings for not: %s" vars[0])))
+    (when group.has-join
+      (for [name group.join-vars]
+        (when (not (string-slice-contains? available name))
+          (return false (fmt.tprintf "insufficient bindings for not-join: %s" name)))))
+    (for [child group.not-groups]
+      (let [[ok error] (validate-not-group-bindings available child)]
+        (when (not ok)
+          (return false error)))))
+  (return true ""))
+
+(defn or-branch-unbound-vars [branch: Not-Group, available: []string, join-vars: []string] -> [dynamic]string
+  (let [branch-vars (make [dynamic]string) :defer
+        blocked (arr.into [dynamic]string available) :defer
+        out (make [dynamic]string)]
+    (for [name join-vars]
+      (append-var-once! (addr blocked) name))
+    (append-not-group-vars! (addr branch-vars) branch)
+    (append-unbound-vars! (addr out) (slice branch-vars 0) (slice blocked 0))
+    out))
+
+(defn validate-or-branch-child-not-bindings [available: []string, branch: Not-Group] -> [ok: bool, error: string]
+  (for [child branch.not-groups]
+    (let [[ok error] (validate-not-group-bindings available child)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-or-group-bindings [available: []string, group: Or-Group] -> [ok: bool, error: string]
+  (when (= (count group.branches) 0)
+    (return false "or requires at least one branch"))
+  (let [join-vars (if group.has-join (slice group.join-vars 0) ([]string []))
+        expected (or-branch-unbound-vars group.branches[0] available join-vars)]
+    (defer (delete expected))
+    (for [branch index group.branches]
+      (let [vars (or-branch-unbound-vars branch available join-vars)]
+        (defer (delete vars))
+        (when (and (not group.has-join)
+                   (not (string-slices-same-set? (slice expected 0) (slice vars 0))))
+          (return false "or branches must use same vars"))
+        (let [[ok error] (validate-or-branch-child-not-bindings available branch)]
+          (when (not ok)
+            (return false error)))))
+    (when group.has-join
+      (for [name group.join-vars]
+        (for [branch group.branches]
+          (let [branch-vars (make [dynamic]string) :defer]
+            (append-not-group-vars! (addr branch-vars) branch)
+            (when (and (not (string-slice-contains? available name))
+                       (not (string-slice-contains? (slice branch-vars 0) name)))
+              (return false (fmt.tprintf "or-join branch missing join var: %s" name))))))))
+  (return true ""))
+
+(defn validate-query-not-or-bindings [query-value: Query] -> [ok: bool, error: string]
+  (let [available (query-positive-vars query-value)
+        input-vars (query-input-vars query-value)]
+    (defer (delete available))
+    (defer (delete input-vars))
+    (for [group query-value.not-groups]
+      (let [[ok error] (validate-not-group-bindings (slice available 0) group)]
+        (when (not ok)
+          (return false error))))
+    (for [group query-value.or-groups]
+      (let [[ok error] (validate-or-group-bindings (slice input-vars 0) group)]
+        (when (not ok)
+          (return false error)))))
+  (return true ""))
+
 (defn predicate-op-supported? [op: string] -> bool
   (or (= op "=")
       (= op "!=")
@@ -3253,6 +3364,9 @@
   (let [[source-ok source-error] (validate-query-sources query-value sources)]
     (when (not source-ok)
       (return false source-error)))
+  (let [[binding-ok binding-error] (validate-query-not-or-bindings query-value)]
+    (when (not binding-ok)
+      (return false binding-error)))
   (validate-query-predicates-and-functions query-value))
 
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
