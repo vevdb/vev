@@ -1526,6 +1526,104 @@
         (append-tuple-maintenance-ops! (addr out) scratch op)))
     out))
 
+(defn lookup-ref-vector-value? [value: Value] -> bool
+  (and (= value.kind .Vector)
+       (= (count value.items) 2)
+       (= value.items[0].kind .Keyword)))
+
+(defn tx-map-db-id [map-value: Value] -> [value: Value, ok: bool]
+  (when (not (= map-value.kind .Map))
+    (return (Value {}) false))
+  (let [index 0]
+    (while (< (+ index 1) (count map-value.items))
+      (when (and (= map-value.items[index].kind .Keyword)
+                 (= map-value.items[index].text ":db/id"))
+        (return map-value.items[(+ index 1)] true))
+      (set! index (+ index 2))))
+  (return (Value {}) false))
+
+(defn nested-entity-ref-data [map-value: Value, generated-tempid: string] -> [data: Tx-Data, ok: bool, error: string]
+  (let [[id-value has-id] (tx-map-db-id map-value)]
+    (when (not has-id)
+      (return (Tx-Data {tempid: generated-tempid has_tempid: true}) true ""))
+    (case id-value.kind
+      .Entity (return (Tx-Data {e: id-value.entity}) true "")
+      .Int (return (Tx-Data {e: (u64 id-value.int_value)}) true "")
+      .String (return (Tx-Data {tempid: id-value.text has_tempid: true}) true "")
+      .Keyword (return (Tx-Data {ident: id-value.text has_ident: true}) true "")
+      .Vector
+        (if (lookup-ref-vector-value? id-value)
+          (return (Tx-Data {lookup_attr: id-value.items[0].text
+                            lookup_value: id-value.items[1]
+                            has_lookup_ref: true}) true "")
+          (return (Tx-Data {}) false "nested map :db/id vector must be a lookup ref"))
+      :else (return (Tx-Data {}) false "nested map :db/id must be int, entity, tempid string, ident keyword, or lookup ref"))))
+
+(defn tx-add-from-entity-data [entity: Tx-Data, attr: string, value: Value] -> Tx-Data
+  (cond
+    entity.has_tempid (add-tempid entity.tempid attr value)
+    entity.has_lookup_ref (add-lookup-ref entity.lookup_attr entity.lookup_value attr value)
+    entity.has_ident (add-ident entity.ident attr value)
+    :else (add entity.e attr value)))
+
+(defn tx-add-value-tempid-from-entity-data [entity: Tx-Data, attr: string, value-tempid: string] -> Tx-Data
+  (cond
+    entity.has_tempid (add-tempid-value-tempid entity.tempid attr value-tempid)
+    entity.has_lookup_ref (add-lookup-ref-value-tempid entity.lookup_attr entity.lookup_value attr value-tempid)
+    entity.has_ident (add-ident-value-tempid entity.ident attr value-tempid)
+    :else (add-value-tempid entity.e attr value-tempid)))
+
+(defn tx-add-value-lookup-from-entity-data [entity: Tx-Data, attr: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (cond
+    entity.has_tempid (add-tempid-value-lookup-ref entity.tempid attr lookup-attr lookup-value)
+    entity.has_lookup_ref (Tx-Data {op: ":db/add"
+                                    lookup_attr: entity.lookup_attr
+                                    lookup_value: entity.lookup_value
+                                    has_lookup_ref: true
+                                    a: attr
+                                    value_lookup_attr: lookup-attr
+                                    value_lookup_value: lookup-value
+                                    has_value_lookup_ref: true})
+    entity.has_ident (Tx-Data {op: ":db/add"
+                               ident: entity.ident
+                               has_ident: true
+                               a: attr
+                               value_lookup_attr: lookup-attr
+                               value_lookup_value: lookup-value
+                               has_value_lookup_ref: true})
+    :else (add-value-lookup-ref entity.e attr lookup-attr lookup-value)))
+
+(defn tx-add-nested-map-from-entity-data [entity: Tx-Data, attr: string, nested-map: Value, nested-tempid: string] -> Tx-Data
+  (cond
+    entity.has_tempid (add-tempid-nested-map entity.tempid attr nested-map nested-tempid)
+    entity.has_lookup_ref (add-lookup-ref-nested-map entity.lookup_attr entity.lookup_value attr nested-map nested-tempid)
+    entity.has_ident (add-ident-nested-map entity.ident attr nested-map nested-tempid)
+    :else (add-nested-map entity.e attr nested-map nested-tempid)))
+
+(defn append-nested-map-value-tx! [pending: ^[dynamic]Tx-Data, entity: Tx-Data, attr: string, value: Value, seed: string]
+  (if (= value.kind .Vector)
+    (if (lookup-ref-vector-value? value)
+      (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity attr value.items[0].text value.items[1]))
+      (for [item value.items]
+        (append-nested-map-value-tx! pending entity attr item seed)))
+    (if (= value.kind .Map)
+      (arr.push! pending^ (tx-add-nested-map-from-entity-data entity attr value (fmt.tprintf "%s_%d" seed (count pending^))))
+      (arr.push! pending^ (tx-add-from-entity-data entity attr value)))))
+
+(defn append-nested-map-tx! [pending: ^[dynamic]Tx-Data, entity: Tx-Data, map-value: Value, seed: string] -> [ok: bool, error: string]
+  (when (not (= map-value.kind .Map))
+    (return false "nested tx value must be a map"))
+  (let [index 0]
+    (while (< (+ index 1) (count map-value.items))
+      (let [key map-value.items[index]
+            value map-value.items[(+ index 1)]]
+        (when (not (= key.kind .Keyword))
+          (return false "nested tx map attributes must be keywords"))
+        (when (not (= key.text ":db/id"))
+          (append-nested-map-value-tx! pending entity key.text value seed)))
+      (set! index (+ index 2))))
+  (return true ""))
+
 (defn tx-data-op-known? [op: string] -> bool
   (or (= op ":db/add")
       (= op ":db/retract")
@@ -1565,19 +1663,24 @@
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
+        pending (arr.into [dynamic]Tx-Data tx-data)
         next-e (next-entity-id (slice db.datoms 0))
         current-tx-e next-e
-        current-tx-reserved false]
-    (for [data tx-data]
+        current-tx-reserved false
+        data-index 0]
+    (defer (delete pending))
+    (for [data pending]
       (when (and (not data.has_tempid)
                  (not data.has_lookup_ref)
                  (not data.has_ident)
                  (>= data.e next-e))
         (set! next-e (+ data.e 1))))
-    (for [data tx-data]
-      (let [e data.e
+    (while (< data-index (count pending))
+      (let [data pending[data-index]
             current-db (db-with-resolved-ops db (slice resolved-ops 0))
+            e data.e
             skip-data false]
+        (set! data-index (+ data-index 1))
         (let [[shape-ok shape-error] (validate-tx-data-item data)]
           (when (not shape-ok)
             (return (Resolved-Tx {ok: false
@@ -1606,7 +1709,7 @@
             (if ok
               (set! e existing)
               (do
-                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data data.tempid)]
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db (slice pending 0) data.tempid)]
                   (when upsert-conflict
                     (return (Resolved-Tx {ok: false
                                           error: "conflicting upsert"
@@ -1645,6 +1748,41 @@
                 (set! skip-data true)))))
         (when skip-data
           (continue))
+        (when data.has_nested_map
+          (if (schema-ref? current-db data.a)
+            (let [[nested-entity nested-ok nested-error] (nested-entity-ref-data data.nested_map data.nested_tempid)]
+              (when (not nested-ok)
+                (return (Resolved-Tx {ok: false
+                                      error: nested-error
+                                      ops: resolved-ops
+                                      tx_meta: resolved-meta
+                                      tempids: resolved-tempids})))
+              (let [[children-ok children-error] (append-nested-map-tx! (addr pending) nested-entity data.nested_map data.nested_tempid)]
+                (when (not children-ok)
+                  (return (Resolved-Tx {ok: false
+                                        error: children-error
+                                        ops: resolved-ops
+                                        tx_meta: resolved-meta
+                                        tempids: resolved-tempids}))))
+              (set! data.has_nested_map false)
+              (let [nested-assigned false]
+                (when nested-entity.has_tempid
+                  (set! data.has_value_tempid true)
+                  (set! data.value_tempid nested-entity.tempid)
+                  (set! nested-assigned true))
+                (when (and (not nested-assigned) nested-entity.has_lookup_ref)
+                  (set! data.has_value_lookup_ref true)
+                  (set! data.value_lookup_attr nested-entity.lookup_attr)
+                  (set! data.value_lookup_value nested-entity.lookup_value)
+                  (set! nested-assigned true))
+                (when (and (not nested-assigned) nested-entity.has_ident)
+                  (set! data.v (value-keyword nested-entity.ident))
+                  (set! nested-assigned true))
+                (when (not nested-assigned)
+                  (set! data.v (value-entity nested-entity.e)))))
+            (do
+              (set! data.v data.nested_map)
+              (set! data.has_nested_map false))))
         (when (or (= data.op ":db/retract")
                   (= data.op ":db/retractAttr"))
           (let [tuple-attrs (schema-tuple-attrs current-db data.a) :defer]
@@ -1731,7 +1869,7 @@
                     (set! current-tx-reserved true))
                   (set! v (value-entity current-tx-e))
                   (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
-              (if (not (tx-data-has-tempid? tx-data value-tempid))
+              (if (not (tx-data-has-tempid? (slice pending 0) value-tempid))
                 (return (Resolved-Tx {ok: false
                                       error: "tempid used only as value"
                                       ops: resolved-ops
@@ -1740,7 +1878,7 @@
               (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
               (if ok
                 (set! v (value-entity existing))
-                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data value-tempid)]
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db (slice pending 0) value-tempid)]
                   (when upsert-conflict
                     (return (Resolved-Tx {ok: false
                                           error: "conflicting upsert"
