@@ -3246,6 +3246,51 @@
           (return false error)))))
   (return true ""))
 
+(defn append-query-step-output-vars! [available: ^[dynamic]string, query-value: Query, step: Query-Step]
+  (case step.kind
+    .Clause (append-clause-vars! available query-value.clauses[step.index])
+    .RuleCall (append-rule-call-vars! available query-value.rule-calls[step.index])
+    .Ground (append-ground-output-vars! available query-value.grounds[step.index])
+    .Function (append-function-output-vars! available query-value.function-clauses[step.index])
+    .Or (if query-value.or-groups[step.index].has-join
+          (for [name query-value.or-groups[step.index].join-vars]
+            (append-var-once! available name))
+          (append-or-group-vars! available query-value.or-groups[step.index]))
+    :else (do)))
+
+(defn validate-query-ordered-step [available: ^[dynamic]string, query-value: Query, step: Query-Step] -> [ok: bool, error: string]
+  (case step.kind
+    .Predicate (let [predicate query-value.predicates[step.index]]
+                 (when (not (predicate-op-supported? predicate.op))
+                   (return false (fmt.tprintf "unknown query predicate: %s" predicate.op)))
+                 (let [[ok error] (validate-term-vars-bound (slice available^ 0) predicate.terms predicate.op)]
+                   (when (not ok)
+                     (return false error))))
+    .Function (let [function query-value.function-clauses[step.index]]
+                (when (not (function-op-supported? function.op))
+                  (return false (fmt.tprintf "unknown query function: %s" function.op)))
+                (let [[ok error] (validate-term-vars-bound (slice available^ 0) function.terms function.op)]
+                  (when (not ok)
+                    (return false error))))
+    .Not (let [[ok error] (validate-not-group-bindings (slice available^ 0) query-value.not-groups[step.index])]
+           (when (not ok)
+             (return false error)))
+    .Or (let [[ok error] (validate-or-group-bindings (slice available^ 0) query-value.or-groups[step.index])]
+          (when (not ok)
+            (return false error)))
+    :else (do))
+  (append-query-step-output-vars! available query-value step)
+  (return true ""))
+
+(defn validate-query-ordered-bindings [query-value: Query] -> [ok: bool, error: string]
+  (let [available (query-input-vars query-value)]
+    (defer (delete available))
+    (for [step query-value.where-steps]
+      (let [[ok error] (validate-query-ordered-step (addr available) query-value step)]
+        (when (not ok)
+          (return false error)))))
+  (return true ""))
+
 (defn predicate-op-supported? [op: string] -> bool
   (or (= op "=")
       (= op "!=")
@@ -3364,10 +3409,13 @@
   (let [[source-ok source-error] (validate-query-sources query-value sources)]
     (when (not source-ok)
       (return false source-error)))
-  (let [[binding-ok binding-error] (validate-query-not-or-bindings query-value)]
-    (when (not binding-ok)
-      (return false binding-error)))
-  (validate-query-predicates-and-functions query-value))
+  (if (> (count query-value.where-steps) 0)
+    (validate-query-ordered-bindings query-value)
+    (do
+      (let [[binding-ok binding-error] (validate-query-not-or-bindings query-value)]
+        (when (not binding-ok)
+          (return false binding-error)))
+      (validate-query-predicates-and-functions query-value))))
 
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
   (if (or (= aggregate.op "count")
@@ -3624,10 +3672,126 @@
 (defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, db: DB, query: Query, inputs: []Query-Input, bindings: []Binding]
   (append-aggregate-rows-with-sources! rows db ([]DB-Source []) query inputs bindings))
 
+(defn bindings-after-rule-call-step [db: DB, rules: []Rule, bindings: []Binding, call: Rule-Call] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (let [rule-bindings (bindings-after-rule-call db rules call binding)]
+        (for [rule-binding rule-bindings]
+          (arr.push! out rule-binding))
+        (delete rule-bindings)))
+    out))
+
+(defn bindings-after-get-else-step [db: DB, bindings: []Binding, get-else: Get-Else] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (let [[next ok] (apply-get-else db binding get-else)]
+        (when ok
+          (arr.push! out next))))
+    out))
+
+(defn bindings-after-get-some-step [db: DB, bindings: []Binding, get-some: Get-Some] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (let [[next ok] (apply-get-some db binding get-some)]
+        (when ok
+          (arr.push! out next))))
+    out))
+
+(defn bindings-after-or-group-step [db: DB, sources: []DB-Source, bindings: []Binding, group: Or-Group] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (for [branch group.branches]
+        (let [branch-bindings (bindings-after-or-branch-with-sources db sources group branch binding)]
+          (for [branch-binding branch-bindings]
+            (arr.push! out branch-binding))
+          (delete branch-bindings))))
+    out))
+
+(defn bindings-after-not-group-step [db: DB, sources: []DB-Source, bindings: []Binding, group: Not-Group] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (when (not (binding-matches-not-group-with-sources? db sources group binding))
+        (arr.push! out binding)))
+    out))
+
+(defn bindings-after-query-step [db: DB, sources: []DB-Source, query: ^Query, bindings: []Binding, step: Query-Step] -> [dynamic]Binding
+  (when (= step.kind .Clause)
+    (let [out (make [dynamic]Binding)]
+      (for [binding bindings]
+        (append-bindings-after-clause-with-sources! (addr out) db sources query^.clauses[step.index] binding))
+      (return out)))
+  (when (= step.kind .RuleCall)
+    (return (bindings-after-rule-call-step db (slice query^.rules 0) bindings query^.rule-calls[step.index])))
+  (when (= step.kind .Ground)
+    (return (apply-ground bindings query^.grounds[step.index])))
+  (when (= step.kind .GetElse)
+    (return (bindings-after-get-else-step db bindings query^.get-elses[step.index])))
+  (when (= step.kind .GetSome)
+    (return (bindings-after-get-some-step db bindings query^.get-somes[step.index])))
+  (when (= step.kind .Function)
+    (return (bindings-after-function bindings query^.function-clauses[step.index])))
+  (when (= step.kind .Predicate)
+    (return (bindings-after-predicate bindings query^.predicates[step.index])))
+  (when (= step.kind .Or)
+    (return (bindings-after-or-group-step db sources bindings query^.or-groups[step.index])))
+  (when (= step.kind .Not)
+    (return (bindings-after-not-group-step db sources bindings query^.not-groups[step.index])))
+  (make [dynamic]Binding))
+
+(defn bindings-after-ordered-where [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input] -> [dynamic]Binding
+  (let [bindings (bindings-from-inputs db query^ inputs)]
+    (for [step query^.where-steps]
+      (let [next-bindings (bindings-after-query-step db sources query (slice bindings 0) step)]
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (return bindings))))
+    (return bindings)))
+
 (defn q-query-with-sources [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
   (let [[valid error] (validate-query-call query inputs sources)]
     (when (not valid)
       (return (result-set-error error))))
+  (when (> (count query.where-steps) 0)
+    (let [ordered-query query
+          bindings (bindings-after-ordered-where db sources (addr ordered-query) inputs)]
+      (when (> (count query.aggregates) 0)
+        (let [rows (make [dynamic]Result-Row)]
+          (if (= (count query.find) 0)
+            (let [values (make [dynamic]Value 0 (count query.aggregates))
+                  pulls (make [dynamic]Pull-Result)]
+              (for [aggregate query.aggregates]
+                (arr.push! values (aggregate-value-for-group (slice bindings 0) query aggregate ([]Value []))))
+              (arr.push! rows (Result-Row {values: values pulls: pulls})))
+            (append-aggregate-rows-with-sources! (addr rows) db sources query inputs (slice bindings 0)))
+          (delete bindings)
+          (return (result-set-ok rows))))
+      (let [rows (make [dynamic]Result-Row 0 (count bindings))]
+        (for [binding bindings]
+          (let [values (make [dynamic]Value 0 (count query.find))
+                dedupe-values (make [dynamic]Value)
+                [pulls pulls-ok] (pulls-for-binding-with-sources db sources query inputs binding)
+                complete true]
+            (when (not pulls-ok)
+              (set! complete false))
+            (for [name query.find]
+              (let [[value ok] (binding-lookup binding name)]
+                (if ok
+                  (do
+                    (arr.push! values value)
+                    (arr.push! dedupe-values value))
+                  (set! complete false))))
+            (for [name query.with]
+              (let [[value ok] (binding-lookup binding name)]
+                (if ok
+                  (arr.push! dedupe-values value)
+                  (set! complete false))))
+            (when complete
+              (when (or (> (count pulls) 0)
+                        (not (row-values-exist? (slice rows 0) (slice dedupe-values 0))))
+                (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
+        (delete bindings)
+        (return (result-set-ok rows)))))
   (let [bindings (bindings-from-inputs db query inputs)
         remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
     (defer (delete remaining))
