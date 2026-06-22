@@ -38,8 +38,9 @@ Status key:
 | `entity` | partial | Basic entity view API covered: id/db access, lookup-ref and ident construction, scalar/many attr reads, forward and reverse ref navigation, contains, missing entities, and touch; Clojure map protocol/cache/print/equality semantics do not apply directly in Kvist |
 | `index` | partial | `datoms`, `find-datom` including empty DB and prefix lookups, `seek-datoms`, `rseek-datoms`, upstream `index-range` bounds/order examples, and public AVET filtering covered; exact indexed-attribute error behavior incomplete |
 | `validation` | partial | Nil value rejection plus value type, uniqueness, component schema, ident values, schema boolean attrs, schema keyword enum attrs, and cardinality subsets covered; bad transaction forms and exact validation errors incomplete |
+| `db` | partial | Immutable DB values, current datom indexes, public datom access, and semantic DB diff covered; Clojure hash/cache/record/uuid helpers are host/runtime-specific |
+| `issues` | partial | Need namespace-by-namespace triage |
 | `conn`, `listen`, `filter`, `serialize`, `storage`, `datafy` | later | API/package features after semantic core |
-| `db`, `issues` | partial | Need namespace-by-namespace porting |
 | `tuples` | partial | Tuple attr schema, derived multi-tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, query lookup refs over tuple attrs, component-based tuple upsert, tuple unique conflict and multi-component update shapes, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation including invalid `:db/tupleAttrs` shapes, nested tuple dependency rejection, and cardinality-many tuple/component rejection subsets started; remaining upsert conflict matrix missing |
 
 ## Next Porting Order

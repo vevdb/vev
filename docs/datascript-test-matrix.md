@@ -65,7 +65,7 @@ These are useful, but not the next engine-parity gate.
 | `serialize.cljc` | 5 | planned | serialization format decision later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
-| `db.cljc` | 4 | partial | diff/index pieces are semantic; hash/cache record behavior is host |
+| `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
 | `issues.cljc` | 5 | planned | triage individually; some may already be covered elsewhere |
 | `query_v3.cljc` | 2 | planned | triage after query parity pass |
 | `explode.cljc` | 4 | host | likely implementation/debug tooling specific |
