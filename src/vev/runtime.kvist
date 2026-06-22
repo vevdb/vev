@@ -3328,6 +3328,8 @@
       (append-var-once! vars pull-find.pattern-var)))
   (for [aggregate query-value.aggregates]
     (append-var-once! vars aggregate.var)
+    (when aggregate.has-function-var
+      (append-var-once! vars aggregate.function-var))
     (when aggregate.has-limit-var
       (append-var-once! vars aggregate.limit-var))))
 
@@ -3837,6 +3839,20 @@
         (arr.push! out sorted[index]))
       (Value {kind: .Vector items: out}))))
 
+(defn sorted-values-vector [values: []Value, descending?: bool] -> Value
+  (let [sorted (arr.into [dynamic]Value values)
+        out (make [dynamic]Value)]
+    (defer (delete sorted))
+    (sort-values! (addr sorted))
+    (if descending?
+      (let [index (count sorted)]
+        (while (> index 0)
+          (set! index (- index 1))
+          (arr.push! out sorted[index])))
+      (for [value sorted]
+        (arr.push! out value)))
+    (Value {kind: .Vector items: out})))
+
 (defn median-int [values: []i64] -> Value
   (when (= (count values) 0)
     (return (value-int 0)))
@@ -3864,6 +3880,25 @@
 (defn stddev-float [values: []i64] -> Value
   (let [variance (variance-int values)]
     (value-float (math.sqrt (f64 variance.int-value)))))
+
+(defn aggregate-function-name [binding: Binding, aggregate: Aggregate-Find] -> [name: string, ok: bool]
+  (when (not aggregate.has-function-var)
+    (return "" false))
+  (let [[value ok] (binding-lookup binding aggregate.function-var)]
+    (when (not ok)
+      (return "" false))
+    (when (or (= value.kind .Keyword)
+              (= value.kind .String))
+      (return value.text true)))
+  (return "" false))
+
+(defn apply-named-aggregate [name: string, values: []Value] -> [value: Value, ok: bool]
+  (cond
+    (or (= name "sort-reverse")
+        (= name ":sort-reverse")) (return (sorted-values-vector values true) true)
+    (or (= name "sort")
+        (= name ":sort")) (return (sorted-values-vector values false) true)
+    :else (return (Value {}) false)))
 
 (defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
   (when (or (= aggregate.op "count")
@@ -3921,7 +3956,9 @@
         aggregate-ints (make [dynamic]i64)
         aggregate-values (make [dynamic]Value)
         distinct-values (make [dynamic]Value)
-        seen-keys (make [dynamic]Result-Row)]
+        seen-keys (make [dynamic]Result-Row)
+        custom-name ""
+        custom-name-ok false]
     (defer (delete aggregate-ints))
     (defer (delete aggregate-values))
     (defer (delete distinct-values))
@@ -3953,6 +3990,13 @@
                                    (or (= aggregate.op "min")
                                        (= aggregate.op "max")))
                           (arr.push! aggregate-values value))
+                        (when (= aggregate.op "aggregate")
+                          (arr.push! aggregate-values value)
+                          (when (not custom-name-ok)
+                            (let [[name name-ok] (aggregate-function-name binding aggregate)]
+                              (when name-ok
+                                (set! custom-name name)
+                                (set! custom-name-ok true)))))
                         (when (and (= aggregate.op "avg")
                                    (= value.kind .Int))
                           (set! avg-count (+ avg-count 1)))
@@ -3971,6 +4015,10 @@
       (return (variance-int (slice aggregate-ints 0))))
     (when (= aggregate.op "stddev")
       (return (stddev-float (slice aggregate-ints 0))))
+    (when (= aggregate.op "aggregate")
+      (let [[value ok] (apply-named-aggregate custom-name (slice aggregate-values 0))]
+        (when ok
+          (return value))))
     current))
 
 (defn pull-pattern-input [query: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]

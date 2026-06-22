@@ -11,7 +11,7 @@ DataScript assertion or exact Clojure API shape.
 | --- | ---: | --- | --- |
 | `query.cljc` | 11 | subset | basic joins, inputs, bindings, map-form text queries, nested `:in` binding patterns, relation source joins, primary/named collection datom sources including long `[e a v tx op]` rows, map relation inputs and nested map values, multi-DB source joins, constants, and placeholders covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
-| `query_aggregates.cljc` | 1 | subset | built-in aggregates covered; custom aggregates remain host/pluggability work |
+| `query_aggregates.cljc` | 1 | subset | built-in aggregates and DataScript-shaped `(aggregate ?f ?x)` with named native aggregate functions covered; arbitrary host callback aggregates remain pluggability work |
 | `query_not.cljc` | 5 | subset | relation and DB source-prefixed forms, nested inherited/override source, checked unbound-group errors, query text plus Kvist literal macro source-order top-level `not` validation, and supported ordered rule bodies covered |
 | `query_or.cljc` | 5 | subset | relation and DB source-prefixed forms, nested inherited/override source, plain-`or` branch var matching, nested `or-join` binding forms, and `or-join` projection validation covered; exact diagnostics remain |
 | `query_pull.cljc` | 8 | subset | basic, variable-pattern including bare pattern names, text pattern-variable, aggregate, lookup-ref pull, multi-source pull, and scalar/collection/tuple pull find-spec shapes covered; exact Clojure return rendering remains |
