@@ -30,10 +30,11 @@ DataScript assertion or exact Clojure API shape.
 | `tuples.cljc` | 11 | partial | tuple value/component upsert, tuple lookup-ref queries, multi-component unique updates, direct tuple attr add/retract validation, and invalid tuple schema shapes covered; remaining tuple conflict matrix and exact errors |
 | `validation.cljc` | 2 | partial | runtime unknown op, bad attr, bad lookup attr, nil value, and tempid placement validation covered; reader/macro bad forms and exact errors remain |
 | `parser*.cljc` | 19 | partial | query text subset parses scalar/collection/tuple/pull/aggregate find specs, flat pull option vectors, `:with`, return-map markers for keyed text helpers, scalar/collection/tuple/relation/relation-source/named-DB-source `:in`, optional `:where`, data, predicate, built-in function, missing?, not/not-join, or/or-join, ordinary/source-qualified rule calls and rule definitions, and transaction text parses common vector/map tx-data; nested pull options and exact validation remain |
-| `conn.cljc` | 2 | subset | conn-from-db/from-datoms and reset reports covered; listeners remain |
+| `conn.cljc` | 2 | subset | conn-from-db/from-datoms and reset reports covered |
 | `serialize.cljc` | 5 | subset | init-db from datoms covered; text/EDN/JSON serialization format later |
 | `filter.cljc` | 1 | subset | materialized `filter-db` covers predicate filters, chaining, entity reads, and index-backed queries; exact hash/equality/runtime wrapper behavior remains |
-| `listen.cljc`, `storage.clj`, `datafy.cljc` | 7 | later | app/runtime APIs after core parity |
+| `listen.cljc` | 1 | subset | named report-sink listeners covered; arbitrary callback/closure API remains |
+| `storage.clj`, `datafy.cljc` | 6 | later | app/runtime APIs after core parity |
 
 Near-term rule: port one namespace at a time, and only mark `covered` when the
 remaining differences are intentional non-Clojure API shape differences.

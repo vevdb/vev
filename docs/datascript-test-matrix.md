@@ -60,8 +60,8 @@ These are useful, but not the next engine-parity gate.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered; listeners remain |
-| `listen.cljc` | 1 | planned | listener API after connection surface |
+| `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered |
+| `listen.cljc` | 1 | partial | named report-sink listeners covered; arbitrary callback/closure API remains |
 | `serialize.cljc` | 5 | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |

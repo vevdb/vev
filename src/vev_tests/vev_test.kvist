@@ -114,6 +114,49 @@
     (t.is (= report.tx_meta[1].a ":tx/reason"))
     (t.is (= report.tx_meta[1].v.text ":profile-edit"))))
 
+(t.deftest datascript-listen-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        reports (make [dynamic]vev.Tx-Report) :defer
+        _ (vev.transact (addr conn) [[:db/add 1 :name "Alex"]
+                                     [:db/add 2 :name "Boris"]])
+        _ (vev.listen! (addr conn) "test" (addr reports))
+        first (vev.transact-with-meta
+                (addr conn)
+                ([]vev.Tx-Op [(vev.tx-add 3 ":name" (vev.value-string "Dima"))
+                               (vev.tx-add 3 ":age" (vev.value-int 19))
+                               (vev.tx-add 4 ":name" (vev.value-string "Evgeny"))])
+                ([]vev.Tx-Meta [(vev.Tx-Meta {a: ":some-metadata" v: (vev.value-int 1)})]))
+        second (vev.transact
+                 (addr conn)
+                 [[:db/add 5 :name "Fedor"]
+                  [:db/add 1 :name "Alex2"]
+                  [:db/retract 2 :name "Not Boris"]
+                  [:db/retract 4 :name "Evgeny"]])
+        _ (vev.unlisten! (addr conn) "test")
+        _ (vev.transact (addr conn) [[:db/add 6 :name "Georgy"]])]
+    (t.is first.ok)
+    (t.is second.ok)
+    (t.is (= (count reports) 2))
+    (t.is (= (count reports[0].tx_data) 3))
+    (t.is (= reports[0].tx_data[0].e 3))
+    (t.is (= reports[0].tx_data[0].a ":name"))
+    (t.is (= reports[0].tx_data[0].v.text "Dima"))
+    (t.is (= reports[0].tx_data[1].a ":age"))
+    (t.is (= reports[0].tx_data[1].v.int_value 19))
+    (t.is (= reports[0].tx_meta[0].a ":some-metadata"))
+    (t.is (= reports[0].tx_meta[0].v.int_value 1))
+    (t.is (= (count reports[1].tx_data) 4))
+    (t.is (= reports[1].tx_data[0].e 5))
+    (t.is reports[1].tx_data[0].added)
+    (t.is (= reports[1].tx_data[1].e 1))
+    (t.is (not reports[1].tx_data[1].added))
+    (t.is (= reports[1].tx_data[2].e 1))
+    (t.is reports[1].tx_data[2].added)
+    (t.is (= reports[1].tx_data[3].e 4))
+    (t.is (not reports[1].tx_data[3].added))
+    (t.is (= (count reports[1].tx_meta) 0))))
+
 (t.deftest transact-defaults-unschematized-attrs-to-cardinality-one
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

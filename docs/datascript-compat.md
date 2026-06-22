@@ -39,7 +39,7 @@ Status key:
 | `index` | partial | `datoms`, `find-datom` including empty DB and prefix lookups, `seek-datoms`, `rseek-datoms`, upstream `index-range` bounds/order examples, and public AVET filtering covered; exact indexed-attribute error behavior incomplete |
 | `validation` | partial | Nil value rejection plus value type, uniqueness, component schema, ident values, schema boolean attrs, schema keyword enum attrs, cardinality, unknown tx op, bad attrs, bad lookup attrs, and tempids-outside-add subsets covered; remaining reader/macro bad forms and exact validation errors incomplete |
 | `db` | partial | Immutable DB values, current datom indexes, public datom access, and semantic DB diff covered; Clojure hash/cache/record/uuid helpers are host/runtime-specific |
-| `conn` | partial | `conn-from-db`, `conn-from-datoms`, and reset reports covered; listener callbacks remain |
+| `conn` | partial | `conn-from-db`, `conn-from-datoms`, reset reports, and named report-sink listeners covered; arbitrary callback/closure API remains |
 | `filter` | partial | Materialized `filter-db` covers DataScript-style predicate filtering, chained filters, filtered entity reads, and index-backed queries; exact hash/equality/runtime wrapper behavior remains |
 | `serialize` | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
 | `issues` | partial | Need namespace-by-namespace triage |
