@@ -737,7 +737,8 @@
       (if (< actual.entity right)
         -1
         (if (> actual.entity right) 1 0)))
-    (if (and (= actual.kind .Keyword) (= expected.kind .String))
+    (if (and (= actual.kind .Keyword)
+             (or (= expected.kind .Keyword) (= expected.kind .String)))
       (strings.compare actual.text expected.text)
       (value-compare actual expected))))
 
@@ -792,12 +793,58 @@
   (return true ""))
 
 (defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (for [datom-index indexes]
-    (when (datom-current-at? db datom-index)
-      (let [datom db.datoms[datom-index]]
-        (when (and (public-index-datom-visible? db order datom)
-                   (datom-matches-index-values? datom order values))
-          (arr.push! out^ datom))))))
+  (let [low (lower-bound-index-values db indexes order values)
+        high (upper-bound-index-values db indexes order values)]
+    (for [i (arr.range low high)]
+      (let [datom-index indexes[i]]
+        (when (datom-current-at? db datom-index)
+          (let [datom db.datoms[datom-index]]
+            (when (and (public-index-datom-visible? db order datom)
+                       (datom-matches-index-values? datom order values))
+              (arr.push! out^ datom))))))))
+
+(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (let [low (lower-bound-index-values db indexes order values)]
+    (for [i (arr.range low (count indexes))]
+      (let [datom-index indexes[i]]
+        (when (datom-current-at? db datom-index)
+          (let [datom db.datoms[datom-index]]
+            (when (public-index-datom-visible? db order datom)
+              (arr.push! out^ datom))))))))
+
+(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (let [i (upper-bound-index-values db indexes order values)]
+    (while (> i 0)
+      (set! i (- i 1))
+      (let [datom-index indexes[i]]
+        (when (datom-current-at? db datom-index)
+          (let [datom db.datoms[datom-index]]
+            (when (public-index-datom-visible? db order datom)
+              (arr.push! out^ datom))))))))
+
+(defn append-index-range-datoms! [out: ^[dynamic]Datom, db: DB, attr: string, start-value: Value, has-start: bool, end-value: Value, has-end: bool]
+  (let [indexes (slice db.avet 0)
+        lower-values (make [dynamic]Value)
+        upper-values (make [dynamic]Value)]
+    (defer (delete lower-values))
+    (defer (delete upper-values))
+    (arr.push! lower-values (value-keyword attr))
+    (arr.push! upper-values (value-keyword attr))
+    (when has-start
+      (arr.push! lower-values start-value))
+    (when has-end
+      (arr.push! upper-values end-value))
+    (let [low (lower-bound-index-values db indexes ":avet" (slice lower-values 0))
+          high (if has-end
+                 (upper-bound-index-values db indexes ":avet" (slice upper-values 0))
+                 (upper-bound-index-values db indexes ":avet" ([]Value [(value-keyword attr)])))]
+      (for [i (arr.range low high)]
+        (let [datom-index indexes[i]]
+          (when (datom-current-at? db datom-index)
+            (let [datom db.datoms[datom-index]]
+              (when (and (= datom.a attr)
+                         (public-index-datom-visible? db ":avet" datom))
+                (arr.push! out^ datom)))))))))
 
 (defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
@@ -820,14 +867,6 @@
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (datoms-with-args db order args)})))
 
-(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (for [datom-index indexes]
-    (when (datom-current-at? db datom-index)
-      (let [datom db.datoms[datom-index]]
-        (when (and (public-index-datom-visible? db order datom)
-                   (>= (datom-index-compare-values datom order values) 0))
-          (arr.push! out^ datom))))))
-
 (defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
         [values ok] (resolve-index-args db args)]
@@ -848,17 +887,6 @@
     (when (not valid)
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (seek-datoms-with-args db order args)})))
-
-(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (let [i (count indexes)]
-    (while (> i 0)
-      (set! i (- i 1))
-      (let [datom-index indexes[i]]
-        (when (datom-current-at? db datom-index)
-          (let [datom db.datoms[datom-index]]
-            (when (and (public-index-datom-visible? db order datom)
-                       (<= (datom-index-compare-values datom order values) 0))
-              (arr.push! out^ datom))))))))
 
 (defn rseek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
@@ -902,14 +930,7 @@
         (when (not ok)
           (return out))
         (set! end-value value)))
-    (for [datom-index db.avet]
-      (when (datom-current-at? db datom-index)
-        (let [datom db.datoms[datom-index]]
-          (when (and (= datom.a attr)
-                     (public-index-datom-visible? db ":avet" datom))
-            (when (or (not has-start) (>= (index-position-compare datom.v start-value) 0))
-              (when (or (not has-end) (<= (index-position-compare datom.v end-value) 0))
-                (arr.push! out datom)))))))
+    (append-index-range-datoms! (addr out) db attr start-value has-start end-value has-end)
     out))
 
 (defn index-range-checked-with-args [db: DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> Datoms-Result
