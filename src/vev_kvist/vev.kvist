@@ -3411,6 +3411,17 @@
       (= ch 125)
       (= ch 34)))
 
+(defn ascii-digit? [ch: u8] -> bool
+  (and (>= ch 48) (<= ch 57)))
+
+(defn edn-int-token? [token: string] -> bool
+  (let [n (kstr.count token)]
+    (when (= n 0)
+      (return false))
+    (if (= (kstr.get token 0) 45)
+      (and (> n 1) (ascii-digit? (kstr.get token 1)))
+      (ascii-digit? (kstr.get token 0)))))
+
 (defn edn-skip-ws [text: string, i: int] -> int
   (let [out i
         n (kstr.count text)]
@@ -3452,6 +3463,8 @@
             (return cursor (edn-add-node! doc node) true ""))
         (strings.has_prefix token ":")
           (return cursor (edn-add-node! doc (edn-node .Keyword token)) true "")
+        (not (edn-int-token? token))
+          (return cursor (edn-add-node! doc (edn-node .Symbol token)) true "")
         :else
           (let [[parsed parsed-ok] (strconv.parse_int token)]
             (if parsed-ok
@@ -3511,159 +3524,124 @@
     (set! out^ doc)
     (return true "")))
 
-(defn edn-token-boundary? [ch: u8] -> bool
-  (or (= ch 32)
-      (= ch 10)
-      (= ch 13)
-      (= ch 9)
-      (= ch 44)
-      (= ch 91)
-      (= ch 93)))
+(defn edn-child-at [doc: EDN-Doc, node-index: int, position: int] -> int
+  (let [child doc.nodes[node-index].first_child
+        current 0]
+    (while (and (not (= child -1)) (< current position))
+      (set! child doc.nodes[child].next_sibling)
+      (set! current (+ current 1)))
+    child))
 
-(defn tokenize-edn-query [text: string] -> [dynamic]string
-  // Current text entrypoint is a narrow query subset; replace this tokenizer with a real EDN reader as the string API grows.
-  (let [tokens (make [dynamic]string)
-        i 0
-        n (kstr.count text)]
-    (while (< i n)
-      (let [ch (kstr.get text i)]
-        (cond
-          (or (= ch 32) (= ch 10) (= ch 13) (= ch 9) (= ch 44))
-            (set! i (+ i 1))
-          (or (= ch 91) (= ch 93))
-            (do
-              (arr.push! tokens (kstr.slice text i (+ i 1)))
-              (set! i (+ i 1)))
-          (= ch 34)
-            (do
-              (let [start i]
-                (set! i (+ i 1))
-                (while (and (< i n) (not (= (kstr.get text i) 34)))
-                  (set! i (+ i 1)))
-                (if (< i n)
-                  (do
-                    (set! i (+ i 1))
-                    (arr.push! tokens (kstr.slice text start i)))
-                  (do
-                    (arr.push! tokens (kstr.slice text start n))
-                    (set! i n)))))
-          :else
-            (let [start i]
-              (while (and (< i n) (not (edn-token-boundary? (kstr.get text i))))
-                (set! i (+ i 1)))
-              (arr.push! tokens (kstr.slice text start i))))))
-    tokens))
+(defn edn-symbol-text? [doc: EDN-Doc, node-index: int, text: string] -> bool
+  (and (not (= node-index -1))
+       (= doc.nodes[node-index].kind .Symbol)
+       (= doc.nodes[node-index].text text)))
 
-(defn token-source-var? [token: string] -> bool
-  (strings.has_prefix token "$"))
+(defn edn-keyword-text? [doc: EDN-Doc, node-index: int, text: string] -> bool
+  (and (not (= node-index -1))
+       (= doc.nodes[node-index].kind .Keyword)
+       (= doc.nodes[node-index].text text)))
 
-(defn token-var? [token: string] -> bool
-  (strings.has_prefix token "?"))
+(defn edn-source-var? [doc: EDN-Doc, node-index: int] -> bool
+  (and (not (= node-index -1))
+       (= doc.nodes[node-index].kind .Symbol)
+       (strings.has_prefix doc.nodes[node-index].text "$")))
 
-(defn token-string? [token: string] -> bool
-  (and (>= (kstr.count token) 2)
-       (= (kstr.get token 0) 34)
-       (= (kstr.get token (- (kstr.count token) 1)) 34)))
+(defn edn-var? [doc: EDN-Doc, node-index: int] -> bool
+  (and (not (= node-index -1))
+       (= doc.nodes[node-index].kind .Symbol)
+       (strings.has_prefix doc.nodes[node-index].text "?")))
 
-(defn token-keyword? [token: string] -> bool
-  (strings.has_prefix token ":"))
+(defn term-from-edn-node [doc: EDN-Doc, node-index: int, attr-position: bool] -> Term
+  (let [node doc.nodes[node-index]]
+    (cond
+      (and (= node.kind .Symbol) (= node.text "_")) (term-wildcard)
+      (and (= node.kind .Symbol) (strings.has_prefix node.text "?")) (term-var node.text)
+      (= node.kind .String) (term-string node.text)
+      (= node.kind .Keyword) (if attr-position (term-keyword node.text) (term-value (value-keyword node.text)))
+      (= node.kind .Bool) (term-value (value-bool node.bool_value))
+      (= node.kind .Int) (if attr-position (term-value (value-int node.int_value)) (term-entity (u64 node.int_value)))
+      :else (term-string node.text))))
 
-(defn token-bool? [token: string] -> bool
-  (or (= token "true") (= token "false")))
-
-(defn term-from-token [token: string, attr-position: bool] -> Term
-  (cond
-    (= token "_") (term-wildcard)
-    (token-var? token) (term-var token)
-    (token-string? token) (term-string (kstr.slice token 1 (- (kstr.count token) 1)))
-    (token-keyword? token) (if attr-position (term-keyword token) (term-value (value-keyword token)))
-    (token-bool? token) (term-value (value-bool (= token "true")))
-    :else
-      (let [[parsed ok] (strconv.parse_int token)]
-        (if ok
-          (if attr-position
-            (term-value (value-int (i64 parsed)))
-            (term-entity (u64 parsed)))
-          (term-string token)))))
-
-(defn value-term-from-token [token: string] -> Term
-  (when (= token "_")
-    (return (term-wildcard)))
-  (when (token-var? token)
-    (return (term-var token)))
-  (when (token-string? token)
-    (return (term-string (kstr.slice token 1 (- (kstr.count token) 1)))))
-  (when (token-keyword? token)
-    (return (term-value (value-keyword token))))
-  (when (token-bool? token)
-    (return (term-value (value-bool (= token "true")))))
-  (let [[parsed ok] (strconv.parse_int token)]
-    (if ok
-      (term-value (value-int (i64 parsed)))
-      (term-string token))))
+(defn value-term-from-edn-node [doc: EDN-Doc, node-index: int] -> Term
+  (let [node doc.nodes[node-index]]
+    (cond
+      (and (= node.kind .Symbol) (= node.text "_")) (term-wildcard)
+      (and (= node.kind .Symbol) (strings.has_prefix node.text "?")) (term-var node.text)
+      (= node.kind .String) (term-string node.text)
+      (= node.kind .Keyword) (term-value (value-keyword node.text))
+      (= node.kind .Bool) (term-value (value-bool node.bool_value))
+      (= node.kind .Int) (term-value (value-int node.int_value))
+      (= node.kind .Nil) (term-value (value-nil))
+      :else (term-string node.text))))
 
 (defn query-from-text-parts [find: []string, clauses: []Clause, collection-find: bool] -> Query
   (query find ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) clauses ([]Predicate []) ([]Function-Clause []) ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) ([]Not-Group []) ([]Or-Group []) ([]Pull-Find []) ([]Aggregate-Find [])))
 
-(defn parse-query-tokens! [out: ^Query, tokens: []string] -> [ok: bool, error: string]
-  (when (or (< (count tokens) 5)
-            (not (= tokens[0] "["))
-            (not (= tokens[1] ":find")))
-    (return false "query text must start with [:find"))
+(defn parse-query-edn! [out: ^Query, doc: EDN-Doc] -> [ok: bool, error: string]
+  (when (or (= doc.root -1)
+            (not (= doc.nodes[doc.root].kind .Vector)))
+    (return false "query text must be an EDN vector"))
+  (let [head (edn-child-at doc doc.root 0)]
+    (when (not (edn-keyword-text? doc head ":find"))
+      (return false "query text must start with [:find")))
   (let [find (make [dynamic]string)
         clauses (make [dynamic]Clause)
         collection-find false
-        i 2]
-    (when (= tokens[i] "[")
-      (set! collection-find true)
-      (set! i (+ i 1)))
-    (while (and (< i (count tokens)) (not (= tokens[i] ":where")))
-      (when (and collection-find (= tokens[i] "..."))
-        (set! i (+ i 1))
-        (continue))
-      (when (= tokens[i] "]")
-        (set! i (+ i 1))
-        (continue))
-      (when (not (token-var? tokens[i]))
+        cursor (edn-child-at doc doc.root 1)]
+    (when (and (not (= cursor -1))
+               (= doc.nodes[cursor].kind .Vector))
+      (let [first-find (edn-child-at doc cursor 0)
+            marker (edn-child-at doc cursor 1)]
+        (when (and (edn-var? doc first-find)
+                   (edn-symbol-text? doc marker "..."))
+          (set! collection-find true)
+          (arr.push! find doc.nodes[first-find].text)
+          (set! cursor doc.nodes[cursor].next_sibling))))
+    (while (and (not (= cursor -1)) (not (edn-keyword-text? doc cursor ":where")))
+      (when (not (edn-var? doc cursor))
         (delete find)
         (delete clauses)
         (return false "query text :find currently supports vars"))
-      (arr.push! find tokens[i])
-      (set! i (+ i 1)))
-    (when (or (>= i (count tokens)) (not (= tokens[i] ":where")))
+      (arr.push! find doc.nodes[cursor].text)
+      (set! cursor doc.nodes[cursor].next_sibling))
+    (when (not (edn-keyword-text? doc cursor ":where"))
       (delete find)
       (delete clauses)
       (return false "query text missing :where"))
-    (set! i (+ i 1))
-    (while (< i (count tokens))
-      (when (= tokens[i] "]")
-        (set! i (+ i 1))
-        (continue))
-      (when (not (= tokens[i] "["))
+    (set! cursor doc.nodes[cursor].next_sibling)
+    (while (not (= cursor -1))
+      (when (not (= doc.nodes[cursor].kind .Vector))
         (delete find)
         (delete clauses)
         (return false "query text where clauses must be vectors"))
-      (set! i (+ i 1))
       (let [source ""
-            has-source false]
-        (when (and (< i (count tokens)) (token-source-var? tokens[i]))
-          (set! source tokens[i])
+            has-source false
+            term-node (edn-child-at doc cursor 0)]
+        (when (edn-source-var? doc term-node)
+          (set! source doc.nodes[term-node].text)
           (set! has-source true)
-          (set! i (+ i 1)))
-        (when (> (+ i 2) (count tokens))
+          (set! term-node doc.nodes[term-node].next_sibling))
+        (when (or (= term-node -1)
+                  (= doc.nodes[term-node].next_sibling -1)
+                  (= doc.nodes[doc.nodes[term-node].next_sibling].next_sibling -1))
           (delete find)
           (delete clauses)
           (return false "query text clause is incomplete"))
-        (let [e (term-from-token tokens[i] false)
-              a (term-from-token tokens[(+ i 1)] true)
-              v (value-term-from-token tokens[(+ i 2)])]
-          (set! i (+ i 3))
-          (when (or (>= i (count tokens)) (not (= tokens[i] "]")))
+        (let [e-node term-node
+              a-node doc.nodes[e-node].next_sibling
+              v-node doc.nodes[a-node].next_sibling]
+          (when (not (= doc.nodes[v-node].next_sibling -1))
             (delete find)
             (delete clauses)
             (return false "query text clauses currently need three terms"))
-          (arr.push! clauses (Clause {e: e a: a v: v source: source has_source: has-source}))
-          (set! i (+ i 1)))))
+          (arr.push! clauses
+            (Clause {e: (term-from-edn-node doc e-node false)
+                     a: (term-from-edn-node doc a-node true)
+                     v: (value-term-from-edn-node doc v-node)
+                     source: source
+                     has_source: has-source}))))
+      (set! cursor doc.nodes[cursor].next_sibling))
     (let [query-value (query-from-text-parts (slice find 0) (slice clauses 0) collection-find)]
       (set! out^ query-value)
       (delete find)
@@ -3671,9 +3649,13 @@
       (return true ""))))
 
 (defn parse-query-text! [out: ^Query, text: string] -> [ok: bool, error: string]
-  (let [tokens (tokenize-edn-query text)]
-    (let [[parsed-ok parsed-error] (parse-query-tokens! out (slice tokens 0))]
-      (delete tokens)
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return false read-error))
+    (let [[parsed-ok parsed-error] (parse-query-edn! out doc)]
+      (delete doc.nodes)
       (return parsed-ok parsed-error))))
 
 (defn q-text [db: DB, text: string] -> Result-Set
