@@ -202,19 +202,19 @@
 
 (defstruct Rule {
   name: string
-  params: []string
-  clauses: []Clause
-  predicates: []Predicate
-  function_clauses: []Function-Clause
-  grounds: []Ground
-  rule_calls: []Rule-Call
+  params: [dynamic]string
+  clauses: [dynamic]Clause
+  predicates: [dynamic]Predicate
+  function_clauses: [dynamic]Function-Clause
+  grounds: [dynamic]Ground
+  rule_calls: [dynamic]Rule-Call
 })
 
 (defstruct Rule-Call {
   name: string
   source: string
   has_source: bool
-  args: []Term
+  args: [dynamic]Term
 })
 
 (defstruct Not-Group {
@@ -2416,10 +2416,10 @@
         (Rule-Call {name: (unquote (source (nth form 1)))
                     source: (unquote (source (first form)))
                     has_source: true
-                    args: ([]Term [(splice (emit-rule-call-args (slice form 2)))])}))
+                    args: ([dynamic]Term [(splice (emit-rule-call-args (slice form 2)))])}))
       (quasiquote
         (Rule-Call {name: (unquote (source (first form)))
-                    args: ([]Term [(splice (emit-rule-call-args (rest form)))])})))
+                    args: ([dynamic]Term [(splice (emit-rule-call-args (rest form)))])})))
     (error "rule calls must have shape (rule ?arg ...)")))
 
 (defmacro- emit-datalog-rule-calls [forms]
@@ -3091,12 +3091,12 @@
       (if (list? head)
         (quasiquote
           (Rule {name: (unquote (source (first head)))
-                 params: ([]string [(splice (emit-rule-params (rest head)))])
-                 clauses: ([]Clause [(splice (emit-datalog-clauses (rest form)))])
-                 predicates: ([]Predicate [(splice (emit-datalog-predicates (rest form)))])
-                 function_clauses: ([]Function-Clause [(splice (emit-datalog-function-clauses (rest form)))])
-                 grounds: ([]Ground [(splice (emit-datalog-grounds (rest form)))])
-                 rule_calls: ([]Rule-Call [(splice (emit-datalog-rule-calls (rest form)))])}))
+                 params: ([dynamic]string [(splice (emit-rule-params (rest head)))])
+                 clauses: ([dynamic]Clause [(splice (emit-datalog-clauses (rest form)))])
+                 predicates: ([dynamic]Predicate [(splice (emit-datalog-predicates (rest form)))])
+                 function_clauses: ([dynamic]Function-Clause [(splice (emit-datalog-function-clauses (rest form)))])
+                 grounds: ([dynamic]Ground [(splice (emit-datalog-grounds (rest form)))])
+                 rule_calls: ([dynamic]Rule-Call [(splice (emit-datalog-rule-calls (rest form)))])}))
         (error "rule definitions must start with a rule head")))
     (error "rule definitions must be vectors")))
 
@@ -3647,8 +3647,8 @@
 (defn query-input-lookup-ref [attr: string, value: Value] -> Query-Input
   (Query-Input {kind: .Scalar has_lookup_ref: true lookup_attr: attr lookup_value: value}))
 
-(defn query-from-text-parts [find: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, collection-find: bool] -> Query
-  (query find ([]string []) inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls ([]Aggregate-Find [])))
+(defn query-from-text-parts [find: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, collection-find: bool] -> Query
+  (query find ([]string []) inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls ([]Aggregate-Find [])))
 
 (defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, doc: EDN-Doc, node-index: int] -> [ok: bool, error: string]
   (let [node doc.nodes[node-index]]
@@ -3669,7 +3669,8 @@
               (return false "empty :in vector spec")
             (= doc.nodes[first-node].kind .Vector)
               (do
-                (arr.push! relation-inputs^ (Relation-Input {vars: (slice (edn-vars-from-vector doc first-node) 0)}))
+                (let [vars (edn-vars-from-vector doc first-node)]
+                  (arr.push! relation-inputs^ (Relation-Input {vars: (slice vars 0)})))
                 (return true ""))
             (and (edn-var? doc first-node) (edn-symbol-text? doc second-node "..."))
               (do
@@ -3677,7 +3678,8 @@
                 (return true ""))
             :else
               (do
-                (arr.push! tuple-inputs^ (Tuple-Input {vars: (slice (edn-vars-from-vector doc node-index) 0)}))
+                (let [vars (edn-vars-from-vector doc node-index)]
+                  (arr.push! tuple-inputs^ (Tuple-Input {vars: (slice vars 0)})))
                 (return true ""))))
       :else (return false "query text :in currently supports vars, [?x ...], [?x ?y], and [[?x ?y]]"))))
 
@@ -3841,13 +3843,29 @@
     (arr.push! out^ (or-group (slice branches 0)))
     (return true "")))
 
+(defn rule-call-from-text-parts [name: string, args: []Term] -> Rule-Call
+  (let [owned-args (arr.into [dynamic]Term args)]
+    (Rule-Call {name: name args: owned-args})))
+
+(defn append-edn-rule-call! [out: ^[dynamic]Rule-Call, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
+  (let [head doc.nodes[form].first_child]
+    (when (or (= head -1) (not (= doc.nodes[head].kind .Symbol)))
+      (return false "rule calls must start with a symbol"))
+    (let [args (make [dynamic]Term) :defer
+          cursor doc.nodes[head].next_sibling]
+      (while (not (= cursor -1))
+        (arr.push! args (value-term-from-edn-node doc cursor))
+        (set! cursor doc.nodes[cursor].next_sibling))
+      (arr.push! out^ (rule-call-from-text-parts doc.nodes[head].text (slice args 0)))
+      (return true ""))))
+
 (defn append-edn-where-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
   (if (= doc.nodes[item].kind .List)
     (let [head (edn-list-head-text doc item)]
       (cond
         (= head "not") (append-edn-not-group! not-groups doc item)
         (= head "or") (append-edn-or-group! or-groups doc item)
-        :else (return false "query text list where clauses currently support not and or")))
+        :else (return false "query text list where clauses currently support not, or, and rules")))
     (if (= doc.nodes[item].kind .Vector)
       (let [first-item (edn-child-at doc item 0)]
         (if (and (not (= first-item -1)) (= doc.nodes[first-item].kind .List))
@@ -3860,6 +3878,82 @@
               :else (append-edn-predicate! predicates doc expr)))
           (append-edn-data-clause! clauses doc item)))
       (return false "query text where clauses must be vectors or lists"))))
+
+(defn append-edn-where-or-rule-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, rule-calls: ^[dynamic]Rule-Call, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
+  (if (= doc.nodes[item].kind .List)
+    (let [head (edn-list-head-text doc item)]
+      (cond
+        (= head "not") (append-edn-not-group! not-groups doc item)
+        (= head "or") (append-edn-or-group! or-groups doc item)
+        :else (append-edn-rule-call! rule-calls doc item)))
+    (append-edn-where-item! clauses predicates function-clauses not-groups or-groups doc item)))
+
+(defn rule-from-text-parts [name: string, params: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call] -> Rule
+  (let [owned-params (arr.into [dynamic]string params)
+        owned-clauses (arr.into [dynamic]Clause clauses)
+        owned-predicates (arr.into [dynamic]Predicate predicates)
+        owned-functions (arr.into [dynamic]Function-Clause function-clauses)
+        owned-grounds (make [dynamic]Ground)
+        owned-calls (arr.into [dynamic]Rule-Call rule-calls)]
+    (Rule {name: name
+           params: owned-params
+           clauses: owned-clauses
+           predicates: owned-predicates
+           function_clauses: owned-functions
+           grounds: owned-grounds
+           rule_calls: owned-calls})))
+
+(defn append-edn-rule! [out: ^[dynamic]Rule, doc: EDN-Doc, rule-node: int] -> [ok: bool, error: string]
+  (when (or (= rule-node -1) (not (= doc.nodes[rule-node].kind .Vector)))
+    (return false "rule definitions must be vectors"))
+  (let [head doc.nodes[rule-node].first_child]
+    (when (or (= head -1) (not (= doc.nodes[head].kind .List)))
+      (return false "rule definitions must start with a rule head"))
+    (let [name-node doc.nodes[head].first_child]
+      (when (or (= name-node -1) (not (= doc.nodes[name-node].kind .Symbol)))
+        (return false "rule head must start with a symbol"))
+        (let [params (make [dynamic]string) :defer
+            clauses (make [dynamic]Clause) :defer
+            predicates (make [dynamic]Predicate) :defer
+            function-clauses (make [dynamic]Function-Clause) :defer
+            not-groups (make [dynamic]Not-Group) :defer
+            or-groups (make [dynamic]Or-Group) :defer
+            rule-calls (make [dynamic]Rule-Call) :defer
+            param doc.nodes[name-node].next_sibling
+            body doc.nodes[head].next_sibling]
+        (while (not (= param -1))
+          (when (not (edn-var? doc param))
+            (return false "rule params must be variables"))
+          (arr.push! params doc.nodes[param].text)
+          (set! param doc.nodes[param].next_sibling))
+        (while (not (= body -1))
+          (let [[body-ok body-error] (append-edn-where-or-rule-item! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr or-groups) (addr rule-calls) doc body)]
+            (when (not body-ok)
+              (return false body-error)))
+          (set! body doc.nodes[body].next_sibling))
+        (arr.push! out^ (rule-from-text-parts doc.nodes[name-node].text (slice params 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0)))
+        (return true "")))))
+
+(defn parse-rules-edn! [out: ^[dynamic]Rule, doc: EDN-Doc] -> [ok: bool, error: string]
+  (when (or (= doc.root -1) (not (= doc.nodes[doc.root].kind .Vector)))
+    (return false "rules text must be an EDN vector"))
+  (let [cursor doc.nodes[doc.root].first_child]
+    (while (not (= cursor -1))
+      (let [[rule-ok rule-error] (append-edn-rule! out doc cursor)]
+        (when (not rule-ok)
+          (return false rule-error)))
+      (set! cursor doc.nodes[cursor].next_sibling))
+    (return true "")))
+
+(defn parse-rules-text! [out: ^[dynamic]Rule, text: string] -> [ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return false read-error))
+    (let [[parsed-ok parsed-error] (parse-rules-edn! out doc)]
+      (delete doc.nodes)
+      (return parsed-ok parsed-error))))
 
 (defn parse-query-edn! [out: ^Query, doc: EDN-Doc] -> [ok: bool, error: string]
   (when (or (= doc.root -1)
@@ -3876,6 +3970,7 @@
         clauses (make [dynamic]Clause) :defer
         predicates (make [dynamic]Predicate) :defer
         function-clauses (make [dynamic]Function-Clause) :defer
+        rule-calls (make [dynamic]Rule-Call) :defer
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer
         pulls (make [dynamic]Pull-Find) :defer
@@ -3914,11 +4009,11 @@
     (when (edn-keyword-text? doc cursor ":where")
       (set! cursor doc.nodes[cursor].next_sibling))
     (while (not (= cursor -1))
-      (let [[item-ok item-error] (append-edn-where-item! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr or-groups) doc cursor)]
+      (let [[item-ok item-error] (append-edn-where-or-rule-item! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr or-groups) (addr rule-calls) doc cursor)]
         (when (not item-ok)
           (return false item-error)))
       (set! cursor doc.nodes[cursor].next_sibling))
-    (let [query-value (query-from-text-parts (slice find 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) collection-find)]
+    (let [query-value (query-from-text-parts (slice find 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) collection-find)]
       (set! out^ query-value)
       (return true ""))))
 
@@ -3945,6 +4040,17 @@
     (if ok
       (q-query-with-inputs db query-value inputs)
       (Result-Set {rows: (make [dynamic]Result-Row)}))))
+
+(defn q-text-with-rules [db: DB, text: string, rules-text: string, inputs: []Query-Input] -> Result-Set
+  (let [query-value (empty-query)
+        rules (make [dynamic]Rule) :defer
+        [query-ok _] (parse-query-text! (addr query-value) text)]
+    (when (not query-ok)
+      (return (Result-Set {rows: (make [dynamic]Result-Row)})))
+    (let [[rules-ok _] (parse-rules-text! (addr rules) rules-text)]
+      (when (not rules-ok)
+        (return (Result-Set {rows: (make [dynamic]Result-Row)})))
+      (q-query-with-inputs db (query-with-rules query-value (slice rules 0)) inputs))))
 
 (defn edn-attr-text [doc: EDN-Doc, node-index: int] -> [attr: string, ok: bool]
   (when (= node-index -1)

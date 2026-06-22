@@ -49,8 +49,8 @@ now exist, but full parser parity still trails the native Kvist literal surface.
 | `parser_find.cljc` | 4 | interop | query parser |
 | `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers `:find`, `:in`, optional `:where`, and execution through normal query inputs; validation remains |
 | `parser_return_map.cljc` | 1 | interop | query parser |
-| `parser_rules.cljc` | 3 | interop | query parser plus rules |
-| `parser_where.cljc` | 6 | partial | data pattern, predicate, built-in function, missing?, not, and or clauses covered; rules and source inputs remain |
+| `parser_rules.cljc` | 3 | partial | ordinary rule calls and rule definitions covered; source-qualified rules and validation remain |
+| `parser_where.cljc` | 6 | partial | data pattern, predicate, built-in function, missing?, not, or, and ordinary rule clauses covered; source inputs remain |
 | `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, and nested maps; options remain |
 | transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, and nested maps through the normal transaction engine |
 
@@ -75,7 +75,7 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Broaden parser/EDN APIs around query rules, pull options, source inputs, and exact
+1. Broaden parser/EDN APIs around pull options, source-qualified rules/inputs, and exact
    validation now that the first query/tx text paths are active.
 2. Port remaining `transact.cljc`, `upsert.cljc`, and `validation.cljc`
    semantics that are not host-runtime-specific.

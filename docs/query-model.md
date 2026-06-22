@@ -117,6 +117,8 @@ Supported now:
   strings, booleans, ints, keywords, wildcards, and source vars
 - text query inputs for scalar vars, collections, tuples, relations, and
   no-`:where` input-only queries
+- text query rules through `q-text-with-rules`, covering ordinary rule calls,
+  recursion, predicates, and function clauses
 - text transactions with `:db/add`, `:db/retract`, `:db/retractEntity`,
   `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, tempids,
   idents, generated map ids, and nested maps through ref attributes
