@@ -3872,21 +3872,30 @@
     (arr.push! out^ (or-group (slice branches 0)))
     (return true "")))
 
-(defn rule-call-from-text-parts [name: string, args: []Term] -> Rule-Call
+(defn rule-call-from-text-parts [name: string, source: string, has-source: bool, args: []Term] -> Rule-Call
   (let [owned-args (arr.into [dynamic]Term args)]
-    (Rule-Call {name: name args: owned-args})))
+    (Rule-Call {name: name source: source has_source: has-source args: owned-args})))
 
 (defn append-edn-rule-call! [out: ^[dynamic]Rule-Call, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [head doc.nodes[form].first_child]
     (when (or (= head -1) (not (= doc.nodes[head].kind .Symbol)))
       (return false "rule calls must start with a symbol"))
+    (let [name-node head
+          source ""
+          has-source false]
+      (when (edn-source-var? doc head)
+        (set! source doc.nodes[head].text)
+        (set! has-source true)
+        (set! name-node doc.nodes[head].next_sibling)
+        (when (or (= name-node -1) (not (= doc.nodes[name-node].kind .Symbol)))
+          (return false "source-qualified rule calls must name a rule")))
     (let [args (make [dynamic]Term) :defer
-          cursor doc.nodes[head].next_sibling]
+          cursor doc.nodes[name-node].next_sibling]
       (while (not (= cursor -1))
         (arr.push! args (value-term-from-edn-node doc cursor))
         (set! cursor doc.nodes[cursor].next_sibling))
-      (arr.push! out^ (rule-call-from-text-parts doc.nodes[head].text (slice args 0)))
-      (return true ""))))
+      (arr.push! out^ (rule-call-from-text-parts doc.nodes[name-node].text source has-source (slice args 0)))
+      (return true "")))))
 
 (defn append-edn-where-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
   (if (= doc.nodes[item].kind .List)
@@ -6655,8 +6664,9 @@
 (defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)
         depth 1
+        min-depth (+ (count rules) 1)
         changed true]
-    (while changed
+    (while (or changed (<= depth min-depth))
       (set! changed false)
       (let [candidates (bindings-after-rule-call-depth db rules call binding depth call.source call.has_source)]
         (defer (delete candidates))

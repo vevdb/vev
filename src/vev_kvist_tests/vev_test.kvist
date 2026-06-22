@@ -453,6 +453,45 @@
     (t.is (= long.rows[0].values[2].int_value 39))
     (t.is (= long.rows[0].values[3].int_value 999))))
 
+(t.deftest datascript-parser-query-text-source-qualified-rules
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        rows (vev.value-vector
+               ([]vev.Value [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 19)]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Petr")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":age") (vev.value-int 17)]))]))
+        parsed-query (vev.empty-query)
+        parsed-rules (make [dynamic]vev.Rule) :defer
+        [query-ok query-error] (vev.parse-query-text! (addr parsed-query) "[:find ?name :in $rows % :where ($rows adult-name ?e ?name)]")
+        [rules-ok rules-error] (vev.parse-rules-text! (addr parsed-rules) "[[(adult ?e) [?e :age ?age] [(>= ?age 18)]] [(adult-name ?e ?name) ($rows adult ?e) [?e :name ?name]]]")
+        simple (vev.q-text-with-rules
+                 conn.db
+                 "[:find ?name :in $rows % :where ($rows named ?e ?name)]"
+                 "[[(named ?e ?name) [?e :name ?name]]]"
+                 ([]vev.Query-Input [(vev.query-input-scalar rows)]))
+        direct (vev.q-text-with-rules
+                 conn.db
+                 "[:find ?name :in $rows % :where ($rows adult-name ?e ?name)]"
+                 "[[(adult ?e) [?e :age ?age] [(>= ?age 18)]] [(adult-name ?e ?name) ($rows adult ?e) [?e :name ?name]]]"
+                 ([]vev.Query-Input [(vev.query-input-scalar rows)]))]
+    (t.is query-ok query-error)
+    (t.is rules-ok rules-error)
+    (t.is (= (count parsed-query.rule_calls) 1))
+    (t.is parsed-query.rule_calls[0].has_source)
+    (t.is (= parsed-query.rule_calls[0].source "$rows"))
+    (t.is (= parsed-query.rule_calls[0].name "adult-name"))
+    (t.is (= (count parsed-rules) 2))
+    (t.is (= (count parsed-rules[1].rule_calls) 1))
+    (t.is parsed-rules[1].rule_calls[0].has_source)
+    (t.is (= parsed-rules[1].rule_calls[0].source "$rows"))
+    (t.is (= parsed-rules[1].rule_calls[0].name "adult"))
+    (t.is (= (count simple.rows) 2))
+    (t.is (= simple.rows[0].values[0].text "Ivan"))
+    (t.is (= simple.rows[1].values[0].text "Petr"))
+    (t.is (= (count direct.rows) 1))
+    (t.is (= direct.rows[0].values[0].text "Ivan"))))
+
 (t.deftest datascript-parser-query-text-not-or-and-missing
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
