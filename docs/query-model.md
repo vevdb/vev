@@ -103,6 +103,9 @@ The current in-memory implementation has two query frontends:
   `prepare-query-text-with-sources`, plus `q-prepared` /
   `q-prepared-with-inputs` / `q-prepared-with-sources`, for callers that want
   to parse once and run repeatedly
+- prepared pull pattern values, `prepare-pull-pattern-text`, plus
+  `pull-prepared`, `pull-prepared-lookup-ref`, `pull-many-prepared`, and
+  `pull-many-prepared-lookup-refs`
 - a Kvist query literal macro that lowers Datomic-shaped data to the same typed
   `Query` representation
 
