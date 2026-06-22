@@ -129,6 +129,7 @@ Supported now:
   idents, generated map ids, nested maps through ref attributes, and
   schema-aware map vector values for cardinality-many and tuple attrs
 - datom clauses shaped like `[e a]` or `[e a v]`
+- lookup refs in text datom entity positions, such as `[[:name "Petr"] :age ?age]`
 - source-var datom clauses shaped like `[$ e a]` or `[$ e a v]` with single-source semantics
 - reverse attrs in datom clauses, such as `:_user/friend`
 - variables in entity, attribute, and value positions
