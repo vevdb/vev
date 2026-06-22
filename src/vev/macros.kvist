@@ -13,7 +13,9 @@
           (quasiquote (value-keyword (unquote (source form))))
           (if (vector? form)
             (quasiquote (value-vector ([]Value [(splice (emit-literal-values form))])))
-            (quasiquote (unquote form)))))))))
+            (if (brace? form)
+              (quasiquote (value-map ([]Value [(splice (emit-literal-map-values form))])))
+              (quasiquote (unquote form))))))))))
 
 (defmacro- emit-literal-values [forms]
   (if (= (count forms) 0)
@@ -21,6 +23,16 @@
     (forms
       (emit-literal-value (first forms))
       (emit-literal-values (rest forms)))))
+
+(defmacro- emit-literal-map-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (= (count forms) 1)
+      (error "map literals require key/value pairs")
+      (forms
+        (emit-literal-value (first forms))
+        (emit-literal-value (nth forms 1))
+        (emit-literal-map-values (rest (rest forms)))))))
 
 (defmacro- emit-attr [form]
   (if (keyword? form)
@@ -1860,6 +1872,16 @@
       (emit-query-relation-row-values (first forms))
       (emit-query-relation-input-values (rest forms)))))
 
+(defmacro- emit-query-map-relation-input-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (= (count forms) 1)
+      (error "map relation inputs require key/value pairs")
+      (forms
+        (emit-literal-value (first forms))
+        (emit-literal-value (nth forms 1))
+        (emit-query-map-relation-input-values (rest (rest forms)))))))
+
 (defmacro- emit-query-input [form]
   (if (query-input-lookup-ref? form)
     (quasiquote
@@ -1975,9 +1997,16 @@
       (emit-query-scalar-lookup-ref-input value)
       (if (collection-lookup-ref-input? spec value)
         (emit-query-collection-lookup-ref-input value)
-        (if (scalar-input-spec? spec)
-          (emit-query-scalar-input value)
-          (emit-query-input value))))))
+        (if (and (input-relation? spec) (brace? value))
+          (if (= (count (first spec)) 2)
+            (quasiquote
+              (Query-Input {kind: .Relation
+                            values: ([]Value [(splice (emit-query-map-relation-input-values value))])
+                            width: 2}))
+            (error "map relation inputs require a two-column relation spec"))
+          (if (scalar-input-spec? spec)
+            (emit-query-scalar-input value)
+            (emit-query-input value)))))))
 
 (defmacro- input-kind? [spec kind]
   (cond

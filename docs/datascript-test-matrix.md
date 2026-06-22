@@ -17,7 +17,7 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | primary/named collection datom sources covered; host functions and exact input errors remain |
+| `query.cljc` | 11 | partial | primary/named collection datom sources, map relation inputs, and nested map values covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | built-ins covered; decide host function surface and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
@@ -25,7 +25,7 @@ These are the main in-memory parity target before durable storage.
 | `query_pull.cljc` | 8 | partial | multi-source pull covered; finish exact find-spec return shapes |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, and repeated calls covered; validation and semi-naive performance remain |
-| `query_aggregates.cljc` | 1 | partial | remaining built-ins and exact edge cases; custom aggregates later |
+| `query_aggregates.cljc` | 1 | partial | built-in aggregates including top-n, median, variance, and stddev covered; custom aggregates later |
 | `transact.cljc` | 19 | partial | native tx functions and tempids-outside-add validation covered; ident-stored tx functions and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation covered; reader/macro bad forms and exact errors remain |
@@ -47,7 +47,7 @@ now exist, but full parser parity still trails the native Kvist literal surface.
 | --- | ---: | --- | --- |
 | `parser.cljc` | 3 | partial | flat EDN node reader supports nested vectors/lists/maps and now feeds query/tx text subsets; full EDN lowering remains |
 | `parser_find.cljc` | 4 | partial | text query parser covers scalar, collection, tuple, pull, aggregate, and top-n aggregate find specs; exact validation remains |
-| `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers `:find`, `:with`, `:in`, named DB sources, optional `:where`, and execution through normal query inputs/sources; validation remains |
+| `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers `:find`, `:with`, `:in`, named DB sources, optional `:where`, map relation inputs via helper, and execution through normal query inputs/sources; validation remains |
 | `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls and rule definitions covered; validation remains |
 | `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, and ordinary rule clauses covered; exact validation remains |
