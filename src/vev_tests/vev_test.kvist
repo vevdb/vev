@@ -1047,6 +1047,87 @@
     (t.is (= (count names2) 1))
     (t.is (= names2[0].text "Ivan"))))
 
+(t.deftest datascript-serializable-roundtrip-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema (vev.transact
+                 (addr conn)
+                 [[:db/add 100 :db/ident :name]
+                  [:db/add 100 :db/unique :db.unique/identity]
+                  [:db/add 101 :db/ident :aka]
+                  [:db/add 101 :db/cardinality :db.cardinality/many]
+                  [:db/add 102 :db/ident :friend]
+                  [:db/add 102 :db/valueType :db.type/ref]])
+        first-report (vev.transact
+                       (addr conn)
+                       [{:db/id 2
+                         :name "Oleg"
+                         :attach (vev.value-vector
+                                   ([dynamic]vev.Value
+                                     [(vev.value-keyword ":just")
+                                      (vev.value-keyword ":values")]))}])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id 1
+                   :name "Petr"
+                   :aka ["Devil" "Tupen"]
+                   :friend (vev.value-entity 2)
+                   :attach (vev.value-map
+                             ([dynamic]vev.Value
+                               [(vev.value-keyword ":some-key")
+                                (vev.value-keyword ":some-value")]))}])
+        retract (vev.transact (addr conn) [[:db/retract 1 :aka "Devil"]])
+        data (vev.serializable conn.db)
+        restored (vev.from-serializable data)
+        restored-conn (vev.conn-from-db restored)
+        original-names (vev.q-collection conn.db
+                         [:find [?name ...]
+                          :where
+                          [?e :name ?name]])
+        restored-names (vev.q-collection restored
+                         [:find [?name ...]
+                          :where
+                          [?e :name ?name]])
+        restored-aka (vev.q-collection restored
+                       [:find [?aka ...]
+                        :where
+                        [1 :aka ?aka]])
+        restored-friend (vev.q restored
+                          [:find ?friend-name
+                           :where
+                           [1 :friend ?friend]
+                           [?friend :name ?friend-name]])
+        restored-attach (vev.entity-get (vev.db-entity restored 1) ":attach")
+        restored-next-tx restored-conn.next_tx
+        next (vev.transact (addr restored-conn) [[:db/add 3 :name "Ivan"]])
+        next-names (vev.q-collection next.db_after
+                     [:find [?name ...]
+                      :where
+                      [?e :name ?name]])]
+    (defer (vev.delete-serializable data))
+    (t.is schema.ok)
+    (t.is first-report.ok)
+    (t.is report.ok)
+    (t.is retract.ok)
+    (when (and schema.ok first-report.ok report.ok retract.ok)
+      (t.is (= (count data.datoms) (count conn.db.datoms)))
+      (t.is (= (count restored.current) (count conn.db.current)))
+      (t.is (= (count original-names) (count restored-names)))
+      (t.is (= restored-names[0].text "Petr"))
+      (t.is (= restored-names[1].text "Oleg"))
+      (t.is (= (count restored-aka) 1))
+      (t.is (= restored-aka[0].text "Tupen"))
+      (t.is (= (count restored-friend.rows) 1))
+      (t.is (= restored-friend.rows[0].values[0].text "Oleg"))
+      (t.is (= restored-attach.kind .Map))
+      (t.is (= restored-attach.items[0].text ":some-key"))
+      (t.is (= restored-attach.items[1].text ":some-value"))
+      (t.is (= restored-next-tx 5))
+      (t.is (= next.tx 5))
+      (t.is next.ok)
+      (t.is (= (count next-names) 3))
+      (t.is (= next-names[2].text "Ivan")))))
+
 (t.deftest datascript-reset-conn-subset
   (defer (free_all context.allocator))
   (let [conn (vev.conn-from-datoms
