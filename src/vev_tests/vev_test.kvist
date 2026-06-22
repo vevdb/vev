@@ -2610,6 +2610,14 @@
                          [(re-find ?pattern ?name)]]
                         ["axb" "a-b" "ab" "xyz"]
                         "a.b")
+        match-output (vev.q conn.db
+                       [:find ?name ?match
+                        :in [?name ...] ?key
+                        :where
+                        [(re-pattern ?key) ?pattern]
+                        [(re-find ?pattern ?name) ?match]]
+                       ["axb" "a-b" "ab" "xyz"]
+                       "a.b")
         text (vev.q-text-with-inputs
                conn.db
                "[:find ?name :in [?name ...] ?key :where [(re-pattern ?key) ?pattern] [(re-find ?pattern ?name)]]"
@@ -2620,6 +2628,16 @@
                      (vev.value-string "abcX")
                      (vev.value-string "aXb")]))
                  (vev.query-input-scalar (vev.value-string "X"))]))
+        text-match-output (vev.q-text-with-inputs
+                            conn.db
+                            "[:find ?name ?match :in [?name ...] ?key :where [(re-pattern ?key) ?pattern] [(re-find ?pattern ?name) ?match]]"
+                            ([]vev.Query-Input
+                             [(vev.query-input-collection
+                                ([]vev.Value
+                                 [(vev.value-string "abc")
+                                  (vev.value-string "abcX")
+                                  (vev.value-string "aXb")]))
+                              (vev.query-input-scalar (vev.value-string "X"))]))
         invalid (vev.q conn.db
                   [:find ?name
                    :in [?name ...] ?key
@@ -2634,9 +2652,15 @@
     (t.is (= (count regex-pattern.rows) 2))
     (t.is (= regex-pattern.rows[0].values[0].text "axb"))
     (t.is (= regex-pattern.rows[1].values[0].text "a-b"))
+    (t.is (= (count match-output.rows) 2))
+    (t.is (= match-output.rows[0].values[1].text "axb"))
+    (t.is (= match-output.rows[1].values[1].text "a-b"))
     (t.is (= (count text.rows) 2))
     (t.is (= text.rows[0].values[0].text "abcX"))
     (t.is (= text.rows[1].values[0].text "aXb"))
+    (t.is (= (count text-match-output.rows) 2))
+    (t.is (= text-match-output.rows[0].values[1].text "X"))
+    (t.is (= text-match-output.rows[1].values[1].text "X"))
     (t.is (= (count invalid.rows) 0))))
 
 (t.deftest datascript-query-expanded-built-ins-subset
@@ -2673,17 +2697,21 @@
                     [1 2 3]
                     nil)
         strings (vev.q conn.db
-                  [:find ?e ?short ?slice ?has ?starts ?ends
+                  [:find ?e ?short ?slice ?joined ?kw ?has ?starts ?ends
                    :where
                    [?e :name ?name]
                    [(contains? ?name "Hopper")]
                    [(name :person/name) ?short]
                    [(subs ?name 0 5) ?slice]
+                   [(str ?short "-" ?slice "-" 42) ?joined]
+                   [(keyword "person" ?short) ?kw]
                    [(contains? ?name "Grace") ?has]
                    [(contains? ?name "Grace") ?starts]
                    [(contains? ?name "Hopper") ?ends]])
         text (vev.q-text conn.db
-               "[:find ?name ?n :where [?e :name ?name] [(clojure.string/starts-with? ?name \"Ada\")] [(subs ?name 0 3) ?n]]")]
+               "[:find ?name ?n ?label :where [?e :name ?name] [(clojure.string/starts-with? ?name \"Ada\")] [(subs ?name 0 3) ?n] [(str ?n \"!\" ) ?label]]")
+        text-keyword (vev.q-text conn.db
+                       "[:find ?kw :where [(keyword \"person\" \"name\") ?kw]]")]
     (t.is (= (count arithmetic.rows) 1))
     (t.is (= arithmetic.rows[0].values[0].int_value 37))
     (t.is (= arithmetic.rows[0].values[1].int_value 36))
@@ -2700,12 +2728,17 @@
     (t.is (= strings.rows[0].values[0].entity 2))
     (t.is (= strings.rows[0].values[1].text "name"))
     (t.is (= strings.rows[0].values[2].text "Grace"))
-    (t.is strings.rows[0].values[3].bool_value)
-    (t.is strings.rows[0].values[4].bool_value)
+    (t.is (= strings.rows[0].values[3].text "name-Grace-42"))
+    (t.is (= strings.rows[0].values[4].text ":person/name"))
     (t.is strings.rows[0].values[5].bool_value)
+    (t.is strings.rows[0].values[6].bool_value)
+    (t.is strings.rows[0].values[7].bool_value)
     (t.is (= (count text.rows) 1))
     (t.is (= text.rows[0].values[0].text "Ada Lovelace"))
-    (t.is (= text.rows[0].values[1].text "Ada"))))
+    (t.is (= text.rows[0].values[1].text "Ada"))
+    (t.is (= text.rows[0].values[2].text "Ada!"))
+    (t.is (= (count text-keyword.rows) 1))
+    (t.is (= text-keyword.rows[0].values[0].text ":person/name"))))
 
 (t.deftest datalog-macro-supports-or-clauses
   (defer (free_all context.allocator))

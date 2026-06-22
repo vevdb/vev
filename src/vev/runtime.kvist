@@ -313,6 +313,32 @@
     (let [[_ _ ok] (regex.match (addr iter))]
       ok)))
 
+(defn re-find-value [pattern: Value, text: Value] -> [value: Value, ok: bool]
+  (when (not (and (= pattern.kind .String)
+                  (= text.kind .String)))
+    (return (Value {}) false))
+  (let [[iter err] (regex.create_iterator text.text pattern.text)]
+    (when (!= err nil)
+      (return (Value {}) false))
+    (defer (regex.destroy iter))
+    (let [[capture _ ok] (regex.match (addr iter))]
+      (when (and ok (> (count capture.groups) 0))
+        (return (value-string capture.groups[0]) true))))
+  (return (Value {}) false))
+
+(defn value-str [value: Value] -> [text: string, ok: bool]
+  (case value.kind
+    .String (return value.text true)
+    .Keyword (return value.text true)
+    .Int (return (fmt.tprintf "%d" value.int_value) true)
+    .Float (return (fmt.tprintf "%v" value.float_value) true)
+    .Bool (if value.bool_value
+            (return "true" true)
+            (return "false" true))
+    .Entity (return (fmt.tprintf "%d" value.entity) true)
+    .Nil (return "" true)
+    :else (return "" false)))
+
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
   (when (and (or (= predicate.op "true?")
                  (= predicate.op "false?")
@@ -460,6 +486,46 @@
             (regex.destroy compiled)
             (return input true))))
       (return (Value {}) false)))
+  (when (and (= function.op "re-find")
+             (= (count function.terms) 2))
+    (let [[pattern pattern-ok] (resolve-term function.terms[0] binding)
+          [text text-ok] (resolve-term function.terms[1] binding)]
+      (when (and pattern-ok text-ok)
+        (return (re-find-value pattern text)))
+      (return (Value {}) false)))
+  (when (= function.op "str")
+    (let [parts (make [dynamic]string 0 (count function.terms))]
+      (defer (delete parts))
+      (for [term function.terms]
+        (let [[value value-ok] (resolve-term term binding)]
+          (when (not value-ok)
+            (return (Value {}) false))
+          (let [[part part-ok] (value-str value)]
+            (when (not part-ok)
+              (return (Value {}) false))
+            (arr.push! parts part))))
+      (return (value-string (strings.concatenate (slice parts 0))) true)))
+  (when (and (= function.op "keyword")
+             (or (= (count function.terms) 1)
+                 (= (count function.terms) 2)))
+    (if (= (count function.terms) 1)
+      (let [[input input-ok] (resolve-term function.terms[0] binding)]
+        (when (not input-ok)
+          (return (Value {}) false))
+        (when (= input.kind .Keyword)
+          (return input true))
+        (when (= input.kind .String)
+          (if (strings.has_prefix input.text ":")
+            (return (value-keyword input.text) true)
+            (return (value-keyword (strings.concatenate ([]string [":" input.text]))) true)))
+        (return (Value {}) false))
+      (let [[namespace namespace-ok] (resolve-term function.terms[0] binding)
+            [name name-ok] (resolve-term function.terms[1] binding)]
+        (when (not (and namespace-ok name-ok (= namespace.kind .String) (= name.kind .String)))
+          (return (Value {}) false))
+        (return
+          (value-keyword (strings.concatenate ([]string [":" namespace.text "/" name.text])))
+          true))))
   (when (and (or (= function.op "first")
                  (= function.op "second"))
              (= (count function.terms) 1))

@@ -19,7 +19,7 @@ These are the main in-memory parity target before durable storage.
 | --- | ---: | --- | --- |
 | `query.cljc` | 11 | partial | primary/named collection datom sources, map relation inputs, nested `:in` binding patterns, and nested map values covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
-| `query_fns.cljc` | 7 | partial | broader native built-ins including regex predicate surface and nested result binding covered; decide host function surface, `keyword`/`str`, regex capture-return functions, and exact error behavior |
+| `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, regex predicate surface, regex match-return clauses, and nested result binding covered; decide host function surface and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
 | `query_or.cljc` | 5 | partial | source semantics covered; validation/error cases remain |
 | `query_pull.cljc` | 8 | partial | multi-source pull covered; finish exact find-spec return shapes |
