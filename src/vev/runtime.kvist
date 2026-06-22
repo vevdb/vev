@@ -2983,6 +2983,92 @@
 (defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
   (binding-matches-not-group-with-sources? db ([]DB-Source []) group binding))
 
+(defn query-expected-input-count [query-value: Query] -> int
+  (if (> (count query-value.input-specs) 0)
+    (count query-value.input-specs)
+    (+ (count query-value.inputs)
+       (count query-value.collection-inputs)
+       (count query-value.tuple-inputs)
+       (count query-value.relation-inputs))))
+
+(defn query-source-input? [query-value: Query, source: string] -> bool
+  (for [input query-value.inputs]
+    (when (= input source)
+      (return true)))
+  (for [spec query-value.input-specs]
+    (when (and (= spec.kind .Scalar)
+               (= spec.name source))
+      (return true)))
+  false)
+
+(defn query-source-db? [sources: []DB-Source, source: string] -> bool
+  (for [item sources]
+    (when (= item.name source)
+      (return true)))
+  false)
+
+(defn query-source-known? [query-value: Query, sources: []DB-Source, source: string] -> bool
+  (or (= source "$")
+      (query-source-input? query-value source)
+      (query-source-db? sources source)))
+
+(defn validate-query-clause-source [query-value: Query, sources: []DB-Source, source: string] -> [ok: bool, error: string]
+  (if (query-source-known? query-value sources source)
+    (return true "")
+    (return false (fmt.tprintf "unknown query source: %s" source))))
+
+(defn validate-query-not-group-sources [query-value: Query, sources: []DB-Source, group: Not-Group] -> [ok: bool, error: string]
+  (for [item group.clauses]
+    (if item.has-source
+      (let [[ok error] (validate-query-clause-source query-value sources item.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [child group.not-groups]
+    (let [[ok error] (validate-query-not-group-sources query-value sources child)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-query-or-group-sources [query-value: Query, sources: []DB-Source, group: Or-Group] -> [ok: bool, error: string]
+  (for [branch group.branches]
+    (let [[ok error] (validate-query-not-group-sources query-value sources branch)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-query-sources [query-value: Query, sources: []DB-Source] -> [ok: bool, error: string]
+  (for [item query-value.clauses]
+    (if item.has-source
+      (let [[ok error] (validate-query-clause-source query-value sources item.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [item query-value.rule-calls]
+    (if item.has-source
+      (let [[ok error] (validate-query-clause-source query-value sources item.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [item query-value.pulls]
+    (if item.has-source
+      (let [[ok error] (validate-query-clause-source query-value sources item.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [group query-value.not-groups]
+    (let [[ok error] (validate-query-not-group-sources query-value sources group)]
+      (when (not ok)
+        (return false error))))
+  (for [group query-value.or-groups]
+    (let [[ok error] (validate-query-or-group-sources query-value sources group)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-query-call [query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
+  (let [expected (query-expected-input-count query-value)
+        provided (count inputs)]
+    (when (not (= expected provided))
+      (return false (fmt.tprintf "wrong number of query inputs: expected %d, got %d" expected provided))))
+  (validate-query-sources query-value sources))
+
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
   (if (or (= aggregate.op "count")
           (= aggregate.op "count-distinct")
@@ -3239,6 +3325,9 @@
   (append-aggregate-rows-with-sources! rows db ([]DB-Source []) query inputs bindings))
 
 (defn q-query-with-sources [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
+  (let [[valid error] (validate-query-call query inputs sources)]
+    (when (not valid)
+      (return (result-set-error error))))
   (let [bindings (bindings-from-inputs db query inputs)
         remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
     (defer (delete remaining))
@@ -3318,7 +3407,7 @@
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
           (append-aggregate-rows-with-sources! (addr rows) db sources query inputs (slice bindings 0)))
         (delete bindings)
-        (return (Result-Set {rows: rows}))))
+        (return (result-set-ok rows))))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
       (for [binding bindings]
         (let [values (make [dynamic]Value 0 (count query.find))
@@ -3344,7 +3433,7 @@
                       (not (row-values-exist? (slice rows 0) (slice dedupe-values 0))))
               (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
       (delete bindings)
-      (Result-Set {rows: rows}))))
+      (result-set-ok rows))))
 
 (defn relation-db-not-group [group: Not-Group, source: string] -> Not-Group
   (let [clauses (rule-clauses-with-source (slice group.clauses 0) source true) :defer

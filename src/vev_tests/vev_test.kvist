@@ -335,7 +335,27 @@
         map-keys (vev.q-text-keys
                    conn.db
                    "{:find [?name ?age] :keys [name age] :where [[?e :name ?name] [?e :age ?age]]}")
-        bad (vev.q-text conn.db "[:where [?e :name ?name]]")]
+        bad (vev.q-text conn.db "[:where [?e :name ?name]]")
+        missing-input (vev.q-text-with-inputs
+                        conn.db
+                        "[:find ?x :in ?x]"
+                        ([]vev.Query-Input []))
+        extra-input (vev.q-text-with-inputs
+                      conn.db
+                      "[:find ?e :where [?e :name ?name]]"
+                      ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "unused"))]))
+        unknown-source (vev.q-text conn.db "[:find ?name :where [$2 ?e :name ?name]]")
+        relation-source (vev.q-text-with-inputs
+                          conn.db
+                          "[:find ?name :in $rows :where [$rows ?e :name ?name]]"
+                          ([]vev.Query-Input
+                            [(vev.query-input-scalar
+                               (vev.value-vector
+                                 ([]vev.Value
+                                   [(vev.value-vector
+                                      ([]vev.Value [(vev.value-int 1)
+                                                    (vev.value-keyword ":name")
+                                                    (vev.value-string "Ada Lovelace")]))])))]))]
     (defer (delete collection))
     (t.is (= (count relation.rows) 1))
     (t.is (= relation.rows[0].values[0].entity 1))
@@ -363,7 +383,18 @@
     (t.is (= map-keys[0].items[0].value.text "Ada Lovelace"))
     (t.is (= map-keys[0].items[1].key "age"))
     (t.is (= map-keys[0].items[1].value.int-value 37))
-    (t.is (= (count bad.rows) 0))))
+    (t.is (not bad.ok))
+    (t.is (= bad.error "query text must start with [:find"))
+    (t.is (= (count bad.rows) 0))
+    (t.is (not missing-input.ok))
+    (t.is (= missing-input.error "wrong number of query inputs: expected 1, got 0"))
+    (t.is (not extra-input.ok))
+    (t.is (= extra-input.error "wrong number of query inputs: expected 0, got 1"))
+    (t.is (not unknown-source.ok))
+    (t.is (= unknown-source.error "unknown query source: $2"))
+    (t.is relation-source.ok)
+    (t.is (= (count relation-source.rows) 1))
+    (t.is (= relation-source.rows[0].values[0].text "Ada Lovelace"))))
 
 (t.deftest datascript-parser-query-text-predicates-and-functions
   (defer (free_all context.allocator))
