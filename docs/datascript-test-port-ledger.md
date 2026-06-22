@@ -23,12 +23,12 @@ DataScript assertion or exact Clojure API shape.
 | `entity.cljc` | 6 | subset | Clojure equality/hash/print/cache protocol semantics |
 | `pull_api.cljc` | 17 | subset | xform/visitor options and exact collection/scalar render shape |
 | `components.cljc` | 2 | subset | schema validation errors and exact entity/touch render shapes |
-| `transact.cljc` | 19 | subset | current tx tempids, forward/cyclic tempid ref values including generated-id map parents, map-valued datom compare/lookup, type-sensitive numeric retract, mixed-type unique lookup/index compare, adjacent retractEntity tx-data reporting, retract not-found/idempotency, unused value-tempid rejection including empty cardinality-many definitions, CAS tempid rejection, and native transaction functions covered; ident-stored tx functions and exact errors remain |
+| `transact.cljc` | 19 | subset | current tx tempids, forward/cyclic tempid ref values including generated-id map parents, map-valued datom compare/lookup, type-sensitive numeric retract, mixed-type unique lookup/index compare, adjacent retractEntity tx-data reporting, retract not-found/idempotency, unused value-tempid rejection including empty cardinality-many definitions, tempids-outside-add rejection, and native transaction functions covered; ident-stored tx functions and exact errors remain |
 | `upsert.cljc` | 6 | subset | unique cardinality-many, multi-identity convergence, unique-value no-upsert, vector tx tempid ordering, redefining tempids, current-tx conflict, forward string tempid refs, and non-upsert of new ref tempids covered; exact messages remain |
 | `db.cljc` | 4 | subset | DB diff and datom/index API compatibility covered; hash/cache/uuid/record behavior is host |
 | `index.cljc` | 5 | partial | main order, `find-datom` prefixes, seek/rseek/range, checked indexed-attribute errors, and sequence compare covered; finish exact public index surface |
 | `tuples.cljc` | 11 | partial | tuple value/component upsert, tuple lookup-ref queries, multi-component unique updates, direct tuple attr add/retract validation, and invalid tuple schema shapes covered; remaining tuple conflict matrix and exact errors |
-| `validation.cljc` | 2 | partial | bad transaction forms and exact validation errors |
+| `validation.cljc` | 2 | partial | runtime unknown op, bad attr, bad lookup attr, nil value, and tempid placement validation covered; reader/macro bad forms and exact errors remain |
 | `parser*.cljc` | 19 | missing | EDN/text parser |
 | `conn.cljc` | 2 | subset | conn-from-db/from-datoms and reset reports covered; listeners remain |
 | `serialize.cljc` | 5 | subset | init-db from datoms covered; text/EDN/JSON serialization format later |

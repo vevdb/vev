@@ -4266,6 +4266,49 @@
     (t.is (= report.error "cannot store nil"))
     (t.is (= (count conn.db.datoms) 0))))
 
+(t.deftest datascript-validation-rejects-bad-tx-data-runtime-subset
+  (defer (free_all context.allocator))
+  (let [unknown-op-conn (vev.create-conn)
+        unknown-op (vev.transact-tx-data
+                     (addr unknown-op-conn)
+                     ([]vev.Tx-Data
+                       [(vev.Tx-Data {op: ":db/nope" e: 1 a: ":name" v: (vev.value-string "Ivan")})]))
+        bad-attr-conn (vev.create-conn)
+        bad-attr (vev.transact-tx-data
+                   (addr bad-attr-conn)
+                   ([]vev.Tx-Data
+                     [(vev.add 1 "" (vev.value-string "Ivan"))]))
+        bad-lookup-conn (vev.create-conn)
+        bad-lookup (vev.transact-tx-data
+                     (addr bad-lookup-conn)
+                     ([]vev.Tx-Data
+                       [(vev.add-lookup-ref "" (vev.value-string "Ivan") ":age" (vev.value-int 37))]))
+        retract-tempid-conn (vev.create-conn)
+        retract-tempid (vev.transact-tx-data
+                         (addr retract-tempid-conn)
+                         ([]vev.Tx-Data
+                           [(vev.retract-tempid "x" ":name" (vev.value-string "Ivan"))]))
+        cas-tempid-conn (vev.create-conn)
+        cas-tempid (vev.transact-tx-data
+                     (addr cas-tempid-conn)
+                     ([]vev.Tx-Data
+                       [(vev.cas-tempid "x" ":age" (vev.value-nil) (vev.value-int 1))]))]
+    (t.is (not unknown-op.ok))
+    (t.is (= unknown-op.error "unknown tx op"))
+    (t.is (not bad-attr.ok))
+    (t.is (= bad-attr.error "bad entity attribute"))
+    (t.is (not bad-lookup.ok))
+    (t.is (= bad-lookup.error "bad lookup attribute"))
+    (t.is (not retract-tempid.ok))
+    (t.is (= retract-tempid.error "tempids not allowed outside add"))
+    (t.is (not cas-tempid.ok))
+    (t.is (= cas-tempid.error "tempids not allowed outside add"))
+    (t.is (= (count unknown-op-conn.db.datoms) 0))
+    (t.is (= (count bad-attr-conn.db.datoms) 0))
+    (t.is (= (count bad-lookup-conn.db.datoms) 0))
+    (t.is (= (count retract-tempid-conn.db.datoms) 0))
+    (t.is (= (count cas-tempid-conn.db.datoms) 0))))
+
 (t.deftest datascript-tuple-attrs-derived-tx-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -5672,7 +5715,7 @@
                  [[:db/add "x" :name "Ivan"]
                   [:db.fn/cas "x" :attr nil :val]])]
     (t.is (not report.ok))
-    (t.is (= report.error "tempids not allowed in cas"))
+    (t.is (= report.error "tempids not allowed outside add"))
     (t.is (= (count conn.db.datoms) 0))))
 
 (t.deftest transact-data-resolves-ident-entities

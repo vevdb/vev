@@ -4400,6 +4400,41 @@
         (append-tuple-maintenance-ops! (addr out) scratch op)))
     out))
 
+(defn tx-data-op-known? [op: string] -> bool
+  (or (= op ":db/add")
+      (= op ":db/retract")
+      (= op ":db/retractAttr")
+      (= op ":db/retractEntity")
+      (= op ":db.fn/cas")
+      (= op ":db/cas")))
+
+(defn tx-data-op-needs-attr? [op: string] -> bool
+  (not (= op ":db/retractEntity")))
+
+(defn attr-name-valid? [attr: string] -> bool
+  (and (strings.has_prefix attr ":")
+       (> (count attr) 1)))
+
+(defn validate-tx-data-item [data: Tx-Data] -> [ok: bool, error: string]
+  (when (not (tx-data-op-known? data.op))
+    (return false "unknown tx op"))
+  (when (and data.has_tempid
+             (not (= data.op ":db/add")))
+    (return false "tempids not allowed outside add"))
+  (when (and (tx-data-op-needs-attr? data.op)
+             (not (attr-name-valid? data.a)))
+    (return false "bad entity attribute"))
+  (when (and data.has_lookup_ref
+             (not (attr-name-valid? data.lookup_attr)))
+    (return false "bad lookup attribute"))
+  (when (and data.has_expected_lookup_ref
+             (not (attr-name-valid? data.expected_lookup_attr)))
+    (return false "bad lookup attribute"))
+  (when (and data.has_value_lookup_ref
+             (not (attr-name-valid? data.value_lookup_attr)))
+    (return false "bad lookup attribute"))
+  (return true ""))
+
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
@@ -4417,12 +4452,13 @@
       (let [e data.e
             current-db (db-with-resolved-ops db (slice resolved-ops 0))
             skip-data false]
-        (when (and (= data.op ":db.fn/cas") data.has_tempid)
-          (return (Resolved-Tx {ok: false
-                                error: "tempids not allowed in cas"
-                                ops: resolved-ops
-                                tx_meta: resolved-meta
-                                tempids: resolved-tempids})))
+        (let [[shape-ok shape-error] (validate-tx-data-item data)]
+          (when (not shape-ok)
+            (return (Resolved-Tx {ok: false
+                                  error: shape-error
+                                  ops: resolved-ops
+                                  tx_meta: resolved-meta
+                                  tempids: resolved-tempids}))))
         (when data.has_tempid
           (if (current-tx-tempid? data.tempid)
             (do

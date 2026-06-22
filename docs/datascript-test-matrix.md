@@ -26,9 +26,9 @@ These are the main in-memory parity target before durable storage.
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, and repeated calls covered; validation and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | remaining built-ins and exact edge cases; custom aggregates later |
-| `transact.cljc` | 19 | partial | native tx functions returning tx-data covered; ident-stored tx functions, bad forms, and exact errors remain |
+| `transact.cljc` | 19 | partial | native tx functions and tempids-outside-add validation covered; ident-stored tx functions and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, and main conflict matrix covered; exact messages remain |
-| `validation.cljc` | 2 | partial | bad transaction forms and schema validation errors |
+| `validation.cljc` | 2 | partial | runtime bad tx-data validation covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface covered; exact indexed-attribute errors remain |
 | `tuples.cljc` | 11 | partial | remaining schema validation and tuple upsert/conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
