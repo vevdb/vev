@@ -9,6 +9,16 @@
     (set! out.input-specs (arr.into [dynamic]Query-Input-Spec input-specs))
     out))
 
+(defn edn-section-has-rules-input? [doc: EDN-Doc, section: int] -> bool
+  (when (= section -1)
+    (return false))
+  (let [cursor (if (= doc.nodes[section].kind .Vector) doc.nodes[section].first-child section)]
+    (while (not (= cursor -1))
+      (when (edn-symbol-text? doc cursor "%")
+        (return true))
+      (set! cursor doc.nodes[cursor].next-sibling)))
+  false)
+
 (defn db-source-name? [sources: []DB-Source, name: string] -> bool
   (when (= name "$")
     (return true))
@@ -998,6 +1008,7 @@
         pulls (make [dynamic]Pull-Find) :defer
         aggregates (make [dynamic]Aggregate-Find) :defer
         return-map-allowed true
+        has-rules-input false
         cursor (edn-child-at doc doc.root 1)]
     (while (and (not (= cursor -1))
                 (not (edn-keyword-text? doc cursor ":in"))
@@ -1047,6 +1058,8 @@
     (when (edn-keyword-text? doc cursor ":in")
       (set! cursor doc.nodes[cursor].next-sibling)
       (while (and (not (= cursor -1)) (not (edn-keyword-text? doc cursor ":where")))
+        (when (edn-symbol-text? doc cursor "%")
+          (set! has-rules-input true))
         (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) doc cursor db-sources)]
           (when (not input-ok)
             (return false input-error)))
@@ -1058,7 +1071,9 @@
         (when (not item-ok)
           (return false item-error)))
       (set! cursor doc.nodes[cursor].next-sibling))
-    (let [query-value (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))]
+    (let [query-value (query-with-rules-input
+                        (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
+                        has-rules-input)]
       (set! out^ query-value)
       (return true ""))))
 
@@ -1218,6 +1233,7 @@
         with-node (edn-map-value-node doc doc.root ":with")
         in-node (edn-map-value-node doc doc.root ":in")
         where-node (edn-map-value-node doc doc.root ":where")
+        has-rules-input (edn-section-has-rules-input? doc in-node)
         [find-ok find-error] (append-edn-find-section! (addr find) (addr pulls) (addr aggregates) doc find-node)]
     (when (not find-ok)
       (return false find-error))
@@ -1239,7 +1255,9 @@
     (let [[where-ok where-error] (append-edn-where-section! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc where-node)]
       (when (not where-ok)
         (return false where-error)))
-    (let [query-value (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))]
+    (let [query-value (query-with-rules-input
+                        (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
+                        has-rules-input)]
       (set! out^ query-value)
       (return true ""))))
 
