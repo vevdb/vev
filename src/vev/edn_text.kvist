@@ -3,8 +3,11 @@
 (defn db-source [name: string, db: DB] -> DB-Source
   (DB-Source {name: name db: db}))
 
-(defn query-from-text-parts [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
-  (query find with inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls aggregates))
+(defn query-from-text-parts [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, input-specs: []Query-Input-Spec, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
+  (let [out (query find with inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls aggregates)]
+    (delete out.input_specs)
+    (set! out.input_specs (arr.into [dynamic]Query-Input-Spec input-specs))
+    out))
 
 (defn db-source-name? [sources: []DB-Source, name: string] -> bool
   (when (= name "$")
@@ -14,7 +17,39 @@
       (return true)))
   false)
 
-(defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
+(defn edn-input-binding-from-node [doc: EDN-Doc, node-index: int] -> [binding: Input-Binding, ok: bool, error: string]
+  (when (= node-index -1)
+    (return (input-binding-none) false "missing :in binding"))
+  (let [node doc.nodes[node-index]]
+    (cond
+      (edn-var? doc node-index)
+        (return (input-binding-var node.text) true "")
+      (and (= node.kind .Symbol) (= node.text "_"))
+        (return (input-binding-ignore) true "")
+      (= node.kind .Vector)
+        (let [first-node node.first_child
+              second-node (if (= first-node -1) -1 doc.nodes[first-node].next_sibling)]
+          (when (= first-node -1)
+            (return (input-binding-none) false "empty :in binding vector"))
+          (when (and (not (= second-node -1))
+                     (= doc.nodes[second-node].next_sibling -1)
+                     (edn-symbol-text? doc second-node "..."))
+            (let [[item item-ok item-error] (edn-input-binding-from-node doc first-node)]
+              (if item-ok
+                (return (input-binding-collection item) true "")
+                (return item false item-error))))
+          (let [items (make [dynamic]Input-Binding) :defer
+                child first-node]
+            (while (not (= child -1))
+              (let [[item item-ok item-error] (edn-input-binding-from-node doc child)]
+                (when (not item-ok)
+                  (return item false item-error))
+                (arr.push! items item))
+              (set! child doc.nodes[child].next_sibling))
+            (return (input-binding-tuple (slice items 0)) true "")))
+      :else (return (input-binding-none) false "unsupported :in binding form"))))
+
+(defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
   (let [node doc.nodes[node-index]]
     (cond
       (and (= node.kind .Symbol) (db-source-name? db-sources node.text))
@@ -24,10 +59,12 @@
       (and (= node.kind .Symbol) (strings.has_prefix node.text "$"))
         (do
           (arr.push! inputs^ node.text)
+          (arr.push! input-specs^ (Query-Input-Spec {kind: .Scalar name: node.text}))
           (return true ""))
       (edn-var? doc node-index)
         (do
           (arr.push! inputs^ node.text)
+          (arr.push! input-specs^ (Query-Input-Spec {kind: .Scalar name: node.text}))
           (return true ""))
       (= node.kind .Vector)
         (let [first-node node.first_child
@@ -35,19 +72,38 @@
           (cond
             (= first-node -1)
               (return false "empty :in vector spec")
-            (= doc.nodes[first-node].kind .Vector)
-              (do
-                (let [vars (edn-vars-from-vector doc first-node)]
-                  (arr.push! relation-inputs^ (Relation-Input {vars: (slice vars 0)})))
-                (return true ""))
             (and (edn-var? doc first-node) (edn-symbol-text? doc second-node "..."))
               (do
                 (arr.push! collection-inputs^ doc.nodes[first-node].text)
+                (arr.push! input-specs^ (Query-Input-Spec {kind: .Collection name: doc.nodes[first-node].text}))
+                (return true ""))
+            (= doc.nodes[first-node].kind .Vector)
+              (do
+                (let [[parsed parsed-ok parsed-error] (edn-input-binding-from-node doc node-index)]
+                  (when (not parsed-ok)
+                    (return false parsed-error))
+                  (let [row-binding (if (= parsed.kind .Collection)
+                                      parsed.items[0]
+                                      (if (and (= parsed.kind .Tuple) (= (count parsed.items) 1))
+                                        parsed.items[0]
+                                        parsed))
+                        vars (input-binding-relation-vars row-binding)
+                        relation-binding (if (= parsed.kind .Collection)
+                                           parsed
+                                           (input-binding-collection row-binding))
+                        relation (Relation-Input {vars: (slice vars 0) binding: relation-binding})]
+                    (arr.push! relation-inputs^ relation)
+                    (arr.push! input-specs^ (Query-Input-Spec {kind: .Relation relation: relation}))))
                 (return true ""))
             :else
               (do
-                (let [vars (edn-vars-from-vector doc node-index)]
-                  (arr.push! tuple-inputs^ (Tuple-Input {vars: (slice vars 0)})))
+                (let [[binding binding-ok binding-error] (edn-input-binding-from-node doc node-index)]
+                  (when (not binding-ok)
+                    (return false binding-error))
+                  (let [vars (input-binding-vars binding)
+                        tuple (Tuple-Input {vars: (slice vars 0) binding: binding})]
+                    (arr.push! tuple-inputs^ tuple)
+                    (arr.push! input-specs^ (Query-Input-Spec {kind: .Tuple tuple: tuple}))))
                 (return true ""))))
       :else (return false "query text :in currently supports vars, [?x ...], [?x ?y], and [[?x ?y]]"))))
 
@@ -71,6 +127,18 @@
       .Symbol (return node.text true)
       :else (return "" false))))
 
+(defn edn-pull-xform-source [doc: EDN-Doc, node-index: int] -> [xform: string, ok: bool]
+  (when (= node-index -1)
+    (return "" false))
+  (let [node doc.nodes[node-index]]
+    (case node.kind
+      .Keyword (if (strings.has_prefix node.text ":")
+                 (return (slice node.text 1) true)
+                 (return node.text true))
+      .Symbol (return node.text true)
+      .String (return node.text true)
+      :else (return "" false))))
+
 (defn edn-pull-limit-value [doc: EDN-Doc, node-index: int] -> [limit: int, ok: bool]
   (when (= node-index -1)
     (return 0 false))
@@ -84,49 +152,110 @@
   (when (= node-index -1)
     (return false))
   (let [text doc.nodes[node-index].text]
-    (or (= text name) (= text (strings.concatenate ([]string [":" name])))))
+    (or (= text name) (= text (strings.concatenate ([]string [":" name]))))))
 
-(defn edn-pull-apply-option [spec: Pull-Spec, doc: EDN-Doc, option-node: int, value-node: int] -> [spec: Pull-Spec, ok: bool]
+(defn edn-pull-apply-option [base: Pull-Spec, doc: EDN-Doc, option-node: int, value-node: int] -> [spec: Pull-Spec, ok: bool]
   (when (edn-pull-option-name? doc option-node "default")
     (let [[value value-ok _] (edn-value-from-node doc value-node)]
       (when (not value-ok)
-        (return spec false))
-      (return (Pull-Spec {a: spec.a
-                          limit: spec.limit
+        (return base false))
+      (return (Pull-Spec {a: base.a
+                          limit: base.limit
                           has_default: true
                           default_value: value
-                          has_alias: spec.has_alias
-                          alias: spec.alias
-                          pattern: spec.pattern
-                          has_recursion: spec.has_recursion
-                          recursion_depth: spec.recursion_depth}) true)))
+                          has_alias: base.has_alias
+                          alias: base.alias
+                          has_xform: base.has_xform
+                          xform: base.xform
+                          pattern: base.pattern
+                          has_recursion: base.has_recursion
+                          recursion_depth: base.recursion_depth}) true)))
   (when (edn-pull-option-name? doc option-node "as")
     (let [[alias alias-ok] (edn-pull-alias-source doc value-node)]
       (when (not alias-ok)
-        (return spec false))
-      (return (Pull-Spec {a: spec.a
-                          limit: spec.limit
-                          has_default: spec.has_default
-                          default_value: spec.default_value
+        (return base false))
+      (return (Pull-Spec {a: base.a
+                          limit: base.limit
+                          has_default: base.has_default
+                          default_value: base.default_value
                           has_alias: true
                           alias: alias
-                          pattern: spec.pattern
-                          has_recursion: spec.has_recursion
-                          recursion_depth: spec.recursion_depth}) true)))
+                          has_xform: base.has_xform
+                          xform: base.xform
+                          pattern: base.pattern
+                          has_recursion: base.has_recursion
+                          recursion_depth: base.recursion_depth}) true)))
+  (when (edn-pull-option-name? doc option-node "xform")
+    (let [[xform xform-ok] (edn-pull-xform-source doc value-node)]
+      (when (not xform-ok)
+        (return base false))
+      (return (Pull-Spec {a: base.a
+                          limit: base.limit
+                          has_default: base.has_default
+                          default_value: base.default_value
+                          has_alias: base.has_alias
+                          alias: base.alias
+                          has_xform: true
+                          xform: xform
+                          pattern: base.pattern
+                          has_recursion: base.has_recursion
+                          recursion_depth: base.recursion_depth}) true)))
   (when (edn-pull-option-name? doc option-node "limit")
     (let [[limit limit-ok] (edn-pull-limit-value doc value-node)]
       (when (not limit-ok)
-        (return spec false))
-      (return (Pull-Spec {a: spec.a
+        (return base false))
+      (return (Pull-Spec {a: base.a
                           limit: limit
-                          has_default: spec.has_default
-                          default_value: spec.default_value
-                          has_alias: spec.has_alias
-                          alias: spec.alias
-                          pattern: spec.pattern
-                          has_recursion: spec.has_recursion
-                          recursion_depth: spec.recursion_depth}) true)))
-  (return spec false))
+                          has_default: base.has_default
+                          default_value: base.default_value
+                          has_alias: base.has_alias
+                          alias: base.alias
+                          has_xform: base.has_xform
+                          xform: base.xform
+                          pattern: base.pattern
+                          has_recursion: base.has_recursion
+                          recursion_depth: base.recursion_depth}) true)))
+  (return base false))
+
+(defn edn-pull-spec-with-pattern [base: Pull-Spec, pattern: []Pull-Spec] -> Pull-Spec
+  (Pull-Spec {a: base.a
+              limit: base.limit
+              has_default: base.has_default
+              default_value: base.default_value
+              has_alias: base.has_alias
+              alias: base.alias
+              has_xform: base.has_xform
+              xform: base.xform
+              pattern: pattern
+              has_recursion: base.has_recursion
+              recursion_depth: base.recursion_depth}))
+
+(defn edn-pull-spec-with-recursion [base: Pull-Spec, depth: int] -> Pull-Spec
+  (Pull-Spec {a: base.a
+              limit: base.limit
+              has_default: base.has_default
+              default_value: base.default_value
+              has_alias: base.has_alias
+              alias: base.alias
+              has_xform: base.has_xform
+              xform: base.xform
+              pattern: base.pattern
+              has_recursion: true
+              recursion_depth: depth}))
+
+(defn edn-pull-recursion-depth [doc: EDN-Doc, node-index: int] -> [depth: int, ok: bool]
+  (when (= node-index -1)
+    (return 0 false))
+  (let [node doc.nodes[node-index]]
+    (case node.kind
+      .Int (return (int node.int_value) true)
+      .Symbol (if (= node.text "...")
+                (return 32 true)
+                (return 0 false))
+      .String (if (= node.text "...")
+                (return 32 true)
+                (return 0 false))
+      :else (return 0 false))))
 
 (defn edn-pull-spec-node [doc: EDN-Doc, node-index: int] -> [spec: Pull-Spec, ok: bool]
   (let [[attr attr-ok] (edn-pull-attr-source doc node-index)]
@@ -138,7 +267,8 @@
       (when (= head -1)
         (return (Pull-Spec {}) false))
       (when (or (edn-pull-option-name? doc head "limit")
-                (edn-pull-option-name? doc head "default"))
+                (edn-pull-option-name? doc head "default")
+                (edn-pull-option-name? doc head "xform"))
         (when (not (= doc.nodes[node-index].child_count 3))
           (return (Pull-Spec {}) false))
         (let [attr-node (edn-child-at doc node-index 1)
@@ -172,10 +302,14 @@
         (let [entry doc.nodes[child].first_child]
           (while (not (= entry -1))
             (let [pattern-node doc.nodes[entry].next_sibling
-                  [attr attr-ok] (edn-pull-attr-source doc entry)]
-              (when (and attr-ok (not (= pattern-node -1)) (= doc.nodes[pattern-node].kind .Vector))
-                (let [nested (edn-pull-specs doc pattern-node)]
-                  (arr.push! out (pull-spec attr (slice nested 0)))))
+                  [base base-ok] (edn-pull-spec-node doc entry)]
+              (when (and base-ok (not (= pattern-node -1)))
+                (if (= doc.nodes[pattern-node].kind .Vector)
+                  (let [nested (edn-pull-specs doc pattern-node)]
+                    (arr.push! out (edn-pull-spec-with-pattern base (slice nested 0))))
+                  (let [[depth depth-ok] (edn-pull-recursion-depth doc pattern-node)]
+                    (when depth-ok
+                      (arr.push! out (edn-pull-spec-with-recursion base depth))))))
               (if (= pattern-node -1)
                 (set! entry -1)
                 (set! entry doc.nodes[pattern-node].next_sibling)))))
@@ -213,6 +347,46 @@
                       attrs: ([]string [])
                       pattern: (slice pattern 0)}))
         (return true "")))))
+
+(defn parse-pull-pattern-text [text: string] -> [pattern: [dynamic]Pull-Spec, ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (defer (delete doc.nodes))
+    (when (not read-ok)
+      (return (make [dynamic]Pull-Spec) false read-error))
+    (when (or (= doc.root -1)
+              (not (= doc.nodes[doc.root].kind .Vector)))
+      (return (make [dynamic]Pull-Spec) false "pull text pattern must be an EDN vector"))
+    (let [out (edn-pull-specs doc doc.root)]
+      (return out true ""))))
+
+(defn pull-text [db: DB, pattern-text: string, entity: u64] -> Pull-Result
+  (let [[pattern ok _] (parse-pull-pattern-text pattern-text)]
+    (defer (delete pattern))
+    (if ok
+      (pull-pattern-spec db entity (slice pattern 0))
+      (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}))))
+
+(defn pull-text-lookup-ref [db: DB, pattern-text: string, attr: string, value: Value] -> Pull-Result
+  (let [[pattern ok _] (parse-pull-pattern-text pattern-text)]
+    (defer (delete pattern))
+    (if ok
+      (pull-pattern-lookup-ref db attr value (slice pattern 0))
+      (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}))))
+
+(defn pull-many-text [db: DB, pattern-text: string, entities: []u64] -> [dynamic]Pull-Result
+  (let [[pattern ok _] (parse-pull-pattern-text pattern-text)]
+    (defer (delete pattern))
+    (if ok
+      (pull-many-pattern-spec db entities (slice pattern 0))
+      (make [dynamic]Pull-Result))))
+
+(defn pull-many-text-lookup-refs [db: DB, pattern-text: string, attrs: []string, values: []Value] -> [dynamic]Pull-Result
+  (let [[pattern ok _] (parse-pull-pattern-text pattern-text)]
+    (defer (delete pattern))
+    (if ok
+      (pull-many-pattern-lookup-refs db attrs values (slice pattern 0))
+      (make [dynamic]Pull-Result))))
 
 (defn edn-aggregate-op? [op: string] -> bool
   (or (= op "count")
@@ -352,11 +526,15 @@
       (return false "function clauses must have shape [(op arg ...) ?out]"))
     (let [terms (edn-terms-from-list-tail doc expr)]
       (if (= doc.nodes[output].kind .Vector)
-        (let [out-vars (edn-vars-from-vector doc output)]
+        (let [out-vars (edn-vars-from-vector doc output)
+              [binding binding-ok binding-error] (edn-input-binding-from-node doc output)]
+          (when (not binding-ok)
+            (return false binding-error))
           (arr.push! out^
             (Function-Clause {op: (edn-node-text doc op-node)
                               terms: (slice terms 0)
                               out_vars: (slice out-vars 0)
+                              out_binding: binding
                               is_tuple: true})))
         (if (edn-var? doc output)
           (arr.push! out^
@@ -588,6 +766,7 @@
         collection-inputs (make [dynamic]string) :defer
         tuple-inputs (make [dynamic]Tuple-Input) :defer
         relation-inputs (make [dynamic]Relation-Input) :defer
+        input-specs (make [dynamic]Query-Input-Spec) :defer
         clauses (make [dynamic]Clause) :defer
         predicates (make [dynamic]Predicate) :defer
         function-clauses (make [dynamic]Function-Clause) :defer
@@ -634,7 +813,7 @@
     (when (edn-keyword-text? doc cursor ":in")
       (set! cursor doc.nodes[cursor].next_sibling)
       (while (and (not (= cursor -1)) (not (edn-keyword-text? doc cursor ":where")))
-        (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) doc cursor db-sources)]
+        (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) doc cursor db-sources)]
           (when (not input-ok)
             (return false input-error)))
         (set! cursor doc.nodes[cursor].next_sibling)))
@@ -645,7 +824,7 @@
         (when (not item-ok)
           (return false item-error)))
       (set! cursor doc.nodes[cursor].next_sibling))
-    (let [query-value (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0))]
+    (let [query-value (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0))]
       (set! out^ query-value)
       (return true ""))))
 

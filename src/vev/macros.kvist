@@ -13,7 +13,9 @@
           (quasiquote (value-keyword (unquote (source form))))
           (if (vector? form)
             (quasiquote (value-vector ([]Value [(splice (emit-literal-values form))])))
-            (quasiquote (unquote form)))))))))
+            (if (brace? form)
+              (quasiquote (value-map ([]Value [(splice (emit-literal-map-values form))])))
+              (quasiquote (unquote form))))))))))
 
 (defmacro- emit-literal-values [forms]
   (if (= (count forms) 0)
@@ -21,6 +23,16 @@
     (forms
       (emit-literal-value (first forms))
       (emit-literal-values (rest forms)))))
+
+(defmacro- emit-literal-map-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (= (count forms) 1)
+      (error "map literals require key/value pairs")
+      (forms
+        (emit-literal-value (first forms))
+        (emit-literal-value (nth forms 1))
+        (emit-literal-map-values (rest (rest forms)))))))
 
 (defmacro- emit-attr [form]
   (if (keyword? form)
@@ -671,10 +683,26 @@
         (emit-find-var (first forms)))
       (emit-tuple-vars (rest forms)))))
 
+(defmacro- emit-input-binding-items [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-input-binding (first forms))
+      (emit-input-binding-items (rest forms)))))
+
+(defmacro- emit-input-binding [form]
+  (cond
+    (input-wildcard? form) (quasiquote (input-binding-ignore))
+    (symbol? form) (quasiquote (input-binding-var (unquote (emit-find-var form))))
+    (input-collection? form) (quasiquote (input-binding-collection (unquote (emit-input-binding (nth form 0)))))
+    (vector? form) (quasiquote (input-binding-tuple ([]Input-Binding [(splice (emit-input-binding-items form))])))
+    :else (error "binding patterns expect variables, _, tuples, or [pattern ...]")))
+
 (defmacro- emit-tuple-input [form]
   (if (input-tuple? form)
     (quasiquote
-      (Tuple-Input {vars: ([]string [(splice (emit-tuple-vars form))])}))
+      (Tuple-Input {vars: ([]string [(splice (emit-tuple-vars form))])
+                    binding: (unquote (emit-input-binding form))}))
     (error "tuple inputs must have shape [?a ?b]")))
 
 (defmacro- emit-tuple-inputs [forms]
@@ -691,7 +719,8 @@
 (defmacro- emit-relation-input [form]
   (if (input-relation? form)
     (quasiquote
-      (Relation-Input {vars: ([]string [(splice (emit-tuple-vars (first form)))])}))
+      (Relation-Input {vars: ([]string [(splice (emit-tuple-vars (first form)))])
+                       binding: (input-binding-collection (unquote (emit-input-binding (first form))))}))
     (error "relation inputs must have shape [[?a ?b]]")))
 
 (defmacro- emit-relation-inputs [forms]
@@ -924,7 +953,7 @@
     (not (or (symbol? (nth form 1)) (vector? (nth form 1)))) false
     (not (symbol? (first (first form)))) false
     :else (let [op (source (first (first form)))]
-            (contains? ["count" "+" "-" "*" "inc" "identity" "vector" "tuple" "untuple" "hash-map" "get" "first" "second"] op))))
+            (contains? ["count" "+" "-" "*" "quot" "rem" "mod" "min" "max" "compare" "inc" "dec" "identity" "name" "str" "keyword" "subs" "vector" "tuple" "untuple" "hash-map" "get" "first" "second" "contains?" "re-pattern" "re-find"] op))))
 
 (defmacro- get-else-clause? [form]
   (if (vector? form)
@@ -1246,7 +1275,8 @@
         (quasiquote
           (Function-Clause {op: (unquote (source (nth expr 0)))
                             terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])
-                            out_vars: ([]string [(splice (emit-datalog-function-out-vars out))])
+                            out_vars: ([]string [])
+                            out_binding: (unquote (emit-input-binding out))
                             is_tuple: true}))
         (quasiquote
           (Function-Clause {op: (unquote (source (nth expr 0)))
@@ -1314,6 +1344,7 @@
           (Ground {source: (unquote (emit-value-term value))
                    out: ""
                    tuple_vars: ([]string [(splice (emit-ground-tuple-vars (nth out 0)))])
+                   binding: (unquote (emit-input-binding out))
                    is_collection: false
                    is_tuple: false
                    is_relation: true
@@ -1323,6 +1354,7 @@
             (Ground {source: (unquote (emit-value-term value))
                      out: (unquote (emit-input-var out))
                      tuple_vars: ([]string [])
+                     binding: (unquote (emit-input-binding out))
                      is_collection: true
                      is_tuple: false
                      is_relation: false}))
@@ -1331,6 +1363,7 @@
             (Ground {source: (unquote (emit-value-term value))
                      out: ""
                      tuple_vars: ([]string [(splice (emit-ground-tuple-vars out))])
+                     binding: (unquote (emit-input-binding out))
                      is_collection: false
                      is_tuple: true
                      is_relation: false}))
@@ -1522,6 +1555,15 @@
         (source form)
         (error "pull :as expects keyword, string, or symbol alias")))))
 
+(defmacro- pull-xform-source [form]
+  (if (keyword? form)
+    (name form)
+    (if (string? form)
+      (text form)
+      (if (symbol? form)
+        (source form)
+        (error "pull :xform expects keyword, string, or symbol transform")))))
+
 (defmacro- pull-pattern-has-trailing-limit? [pattern]
   (if (= (count pattern) 3)
     (if (keyword? (nth pattern 1))
@@ -1556,10 +1598,19 @@
           (unquote (pull-attr-source attr))
           ([]Pull-Spec [(splice (emit-pull-specs (slice pattern 0 2)))])
           (unquote (emit-pull-limit (nth pattern 3))))))
-    (quasiquote
-      (pull-spec
-        (unquote (pull-attr-source attr))
-        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))))
+    (if (and (vector? attr)
+             (= (count attr) 3)
+             (keyword? (nth attr 1))
+             (= (source (nth attr 1)) ":xform"))
+      (quasiquote
+        (pull-spec-xform
+          (unquote (pull-attr-source (nth attr 0)))
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))])
+          (unquote (pull-xform-source (nth attr 2)))))
+      (quasiquote
+        (pull-spec
+          (unquote (pull-attr-source attr))
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))))
 
 (defmacro- emit-pull-spec [form]
   (if (vector? form)
@@ -1581,7 +1632,13 @@
                   (unquote (pull-attr-source (nth form 0)))
                   ([]Pull-Spec [])
                   (unquote (emit-pull-limit (nth form 2)))))
-              (error "pull option vectors currently support :default, :as, and :limit"))))
+              (if (= (source (nth form 1)) ":xform")
+                (quasiquote
+                  (pull-spec-xform
+                    (unquote (pull-attr-source (nth form 0)))
+                    ([]Pull-Spec [])
+                    (unquote (pull-xform-source (nth form 2)))))
+                (error "pull option vectors currently support :default, :as, :limit, and :xform")))))
         (if (= (count form) 5)
           (if (keyword? (nth form 3))
             (if (= (source (nth form 1)) ":as")
@@ -1606,7 +1663,13 @@
                       (unquote (pull-attr-source (nth form 0)))
                       (unquote (emit-literal-value (nth form 2)))
                       (unquote (pull-alias-source (nth form 4)))))
-                  (error "combined pull option vectors currently support [:attr :default value :as alias] or [:attr :as alias :default value]"))
+                  (if (= (source (nth form 3)) ":xform")
+                    (quasiquote
+                      (pull-spec-default-xform
+                        (unquote (pull-attr-source (nth form 0)))
+                        (unquote (emit-literal-value (nth form 2)))
+                        (unquote (pull-xform-source (nth form 4)))))
+                    (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :default value :xform transform], or [:attr :xform transform :default value]")))
                 (if (= (source (nth form 1)) ":limit")
                   (if (= (source (nth form 3)) ":as")
                     (quasiquote
@@ -1616,7 +1679,15 @@
                         (unquote (emit-pull-limit (nth form 2)))
                         (unquote (pull-alias-source (nth form 4)))))
                     (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]"))
-                  (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]"))))
+                  (if (= (source (nth form 1)) ":xform")
+                    (if (= (source (nth form 3)) ":default")
+                      (quasiquote
+                        (pull-spec-default-xform
+                          (unquote (pull-attr-source (nth form 0)))
+                          (unquote (emit-literal-value (nth form 4)))
+                          (unquote (pull-xform-source (nth form 2)))))
+                      (error "combined pull option vectors currently support [:attr :default value :xform transform] or [:attr :xform transform :default value]"))
+                    (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], [:attr :as alias :limit n], [:attr :default value :xform transform], or [:attr :xform transform :default value]")))))
             (error "combined pull option vectors expect keyword options"))
           (error "pull option vectors currently have shape [:attr :default value], [:attr :as alias], [:attr :limit n], or [:attr :default value :as alias]")))
       (error "pull option vectors expect a keyword option"))
@@ -1860,6 +1931,16 @@
       (emit-query-relation-row-values (first forms))
       (emit-query-relation-input-values (rest forms)))))
 
+(defmacro- emit-query-map-relation-input-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (= (count forms) 1)
+      (error "map relation inputs require key/value pairs")
+      (forms
+        (emit-literal-value (first forms))
+        (emit-literal-value (nth forms 1))
+        (emit-query-map-relation-input-values (rest (rest forms)))))))
+
 (defmacro- emit-query-input [form]
   (if (query-input-lookup-ref? form)
     (quasiquote
@@ -1975,9 +2056,16 @@
       (emit-query-scalar-lookup-ref-input value)
       (if (collection-lookup-ref-input? spec value)
         (emit-query-collection-lookup-ref-input value)
-        (if (scalar-input-spec? spec)
-          (emit-query-scalar-input value)
-          (emit-query-input value))))))
+        (if (and (input-relation? spec) (brace? value))
+          (if (= (count (first spec)) 2)
+            (quasiquote
+              (Query-Input {kind: .Relation
+                            values: ([]Value [(splice (emit-query-map-relation-input-values value))])
+                            width: 2}))
+            (error "map relation inputs require a two-column relation spec"))
+          (if (scalar-input-spec? spec)
+            (emit-query-scalar-input value)
+            (emit-query-input value)))))))
 
 (defmacro- input-kind? [spec kind]
   (cond

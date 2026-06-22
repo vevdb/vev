@@ -48,6 +48,7 @@
         owned-collection-inputs (arr.into [dynamic]string collection-inputs)
         owned-tuple-inputs (arr.into [dynamic]Tuple-Input tuple-inputs)
         owned-relation-inputs (arr.into [dynamic]Relation-Input relation-inputs)
+        owned-input-specs (make [dynamic]Query-Input-Spec)
         owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
         owned-function-clauses (arr.into [dynamic]Function-Clause function-clauses)
@@ -66,6 +67,7 @@
             collection_inputs: owned-collection-inputs
             tuple_inputs: owned-tuple-inputs
             relation_inputs: owned-relation-inputs
+            input_specs: owned-input-specs
             clauses: owned-clauses
             predicates: owned-predicates
             function_clauses: owned-function-clauses
@@ -321,6 +323,56 @@
       (set! child doc.nodes[child].next_sibling))
     out))
 
+(defn input-binding-none [] -> Input-Binding
+  (let [items (make [dynamic]Input-Binding)]
+    (Input-Binding {kind: .None items: items})))
+
+(defn input-binding-ignore [] -> Input-Binding
+  (let [items (make [dynamic]Input-Binding)]
+    (Input-Binding {kind: .Ignore items: items})))
+
+(defn input-binding-var [name: string] -> Input-Binding
+  (let [items (make [dynamic]Input-Binding)]
+    (Input-Binding {kind: .Var name: name items: items})))
+
+(defn input-binding-tuple [items: []Input-Binding] -> Input-Binding
+  (let [owned (arr.into [dynamic]Input-Binding items)]
+    (Input-Binding {kind: .Tuple items: owned})))
+
+(defn input-binding-collection [item: Input-Binding] -> Input-Binding
+  (let [items (make [dynamic]Input-Binding)]
+    (arr.push! items item)
+    (Input-Binding {kind: .Collection items: items})))
+
+(defn input-binding-first-var [binding: Input-Binding] -> [name: string, ok: bool]
+  (when (= binding.kind .Var)
+    (return binding.name true))
+  (return "" false))
+
+(defn input-binding-vars [binding: Input-Binding] -> [dynamic]string
+  (let [out (make [dynamic]string)]
+    (case binding.kind
+      .Var (arr.push! out binding.name)
+      .Ignore (arr.push! out "")
+      .Tuple (for [item binding.items]
+               (let [vars (input-binding-vars item)]
+                 (if (= (count vars) 0)
+                   (arr.push! out "")
+                   (for [name vars]
+                     (arr.push! out name)))))
+      :else (do))
+    out))
+
+(defn input-binding-relation-vars [binding: Input-Binding] -> [dynamic]string
+  (let [out (make [dynamic]string)]
+    (if (= binding.kind .Tuple)
+      (for [item binding.items]
+        (if (= item.kind .Var)
+          (arr.push! out item.name)
+          (arr.push! out "")))
+      (return (input-binding-vars binding)))
+    out))
+
 (defn query-input-scalar [value: Value] -> Query-Input
   (Query-Input {kind: .Scalar value: value}))
 
@@ -329,6 +381,11 @@
 
 (defn query-input-relation [values: []Value, width: int] -> Query-Input
   (Query-Input {kind: .Relation values: values width: width}))
+
+(defn query-input-map-relation [value: Value] -> Query-Input
+  (if (= value.kind .Map)
+    (Query-Input {kind: .Relation values: (slice value.items 0) width: 2})
+    (Query-Input {kind: .Relation values: ([]Value []) width: 2})))
 
 (defn query-input-lookup-ref [attr: string, value: Value] -> Query-Input
   (Query-Input {kind: .Scalar has_lookup_ref: true lookup_attr: attr lookup_value: value}))
