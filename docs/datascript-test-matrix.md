@@ -22,11 +22,11 @@ These are the main in-memory parity target before durable storage.
 | `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, regex predicate surface, regex match-return clauses, and nested result binding covered; decide host function surface and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
 | `query_or.cljc` | 5 | partial | source semantics covered; validation/error cases remain |
-| `query_pull.cljc` | 8 | partial | multi-source pull covered; finish exact find-spec return shapes |
+| `query_pull.cljc` | 8 | partial | multi-source pull plus scalar, collection, and tuple pull find-spec shapes covered; exact Clojure return rendering remains |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, and repeated calls covered; validation and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | built-in aggregates including top-n, median, variance, and stddev covered; custom aggregates later |
-| `transact.cljc` | 19 | partial | native tx functions, registry-backed ident tx functions, and tempids-outside-add validation covered; exact Clojure function-value storage and exact errors remain |
+| `transact.cljc` | 19 | partial | native tx functions, registry-backed ident tx functions, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface covered; exact indexed-attribute errors remain |

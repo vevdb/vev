@@ -1306,6 +1306,17 @@
     (not (current-attr-exists? db entity attr))
     (current-value-exists? db entity attr expected)))
 
+(defn max-entity-id [] -> u64
+  (u64 2147483647))
+
+(defn entity-id-valid? [entity: u64] -> bool
+  (<= entity (max-entity-id)))
+
+(defn validate-entity-id [entity: u64] -> [ok: bool, error: string]
+  (if (entity-id-valid? entity)
+    (return true "")
+    (return false "entity id exceeds supported range")))
+
 (defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
   (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
     (when (and has-type (= schema-type ":db.type/ref"))
@@ -1927,6 +1938,16 @@
       (return false "schema unique conflict")))
   (return true ""))
 
+(defn validate-op-entity-ids [op: Tx-Op] -> [ok: bool, error: string]
+  (let [[entity-ok entity-error] (validate-entity-id op.e)]
+    (when (not entity-ok)
+      (return false entity-error)))
+  (when (= op.v.kind .Entity)
+    (let [[value-ok value-error] (validate-entity-id op.v.entity)]
+      (when (not value-ok)
+        (return false value-error))))
+  (return true ""))
+
 (defn validate-tuple-type-schema [db: DB] -> [ok: bool, error: string]
   (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
@@ -2013,6 +2034,9 @@
   (let [scratch-datoms (clone-datoms before.datoms)]
     (defer (delete scratch-datoms))
     (for [op ops]
+      (let [[entity-ok entity-error] (validate-op-entity-ids op)]
+        (when (not entity-ok)
+          (return false entity-error)))
       (when (= op.kind .Add)
         (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
               scratch (build-db scratch-owned)
