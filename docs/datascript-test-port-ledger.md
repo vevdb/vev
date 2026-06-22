@@ -30,7 +30,9 @@ DataScript assertion or exact Clojure API shape.
 | `tuples.cljc` | 11 | partial | tuple value/component upsert, tuple lookup-ref queries, multi-component unique updates, direct tuple attr add/retract validation, and invalid tuple schema shapes covered; remaining tuple conflict matrix and exact errors |
 | `validation.cljc` | 2 | partial | bad transaction forms and exact validation errors |
 | `parser*.cljc` | 19 | missing | EDN/text parser |
-| `conn.cljc`, `listen.cljc`, `filter.cljc`, `serialize.cljc`, `storage.clj`, `datafy.cljc` | 15 | later | app/runtime APIs after core parity |
+| `conn.cljc` | 2 | subset | conn-from-db/from-datoms and reset reports covered; listeners remain |
+| `serialize.cljc` | 5 | subset | init-db from datoms covered; text/EDN/JSON serialization format later |
+| `listen.cljc`, `filter.cljc`, `storage.clj`, `datafy.cljc` | 8 | later | app/runtime APIs after core parity |
 
 Near-term rule: port one namespace at a time, and only mark `covered` when the
 remaining differences are intentional non-Clojure API shape differences.

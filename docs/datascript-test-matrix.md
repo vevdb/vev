@@ -59,10 +59,10 @@ These are useful, but not the next engine-parity gate.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `conn.cljc` | 2 | planned | connection API after semantic core |
+| `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered; listeners remain |
 | `listen.cljc` | 1 | planned | listener API after connection surface |
 | `filter.cljc` | 1 | planned | filtered DB API later |
-| `serialize.cljc` | 5 | planned | serialization format decision later |
+| `serialize.cljc` | 5 | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |

@@ -870,6 +870,32 @@
          avet: (build-index slice-datoms "avet")
          vaet: (build-index slice-datoms "vaet")})))
 
+(defn clone-datom-slice [datoms: []Datom] -> [dynamic]Datom
+  (arr.into [dynamic]Datom datoms))
+
+(defn make-datom [e: u64, a: string, v: Value] -> Datom
+  (Datom {e: e a: a v: v tx: 0 added: true}))
+
+(defn datom-tx [e: u64, a: string, v: Value, tx: u64, added: bool] -> Datom
+  (Datom {e: e a: a v: v tx: tx added: added}))
+
+(defn init-db [datoms: []Datom] -> DB
+  (build-db (clone-datom-slice datoms)))
+
+(defn max-tx [datoms: []Datom] -> u64
+  (let [tx: u64 0]
+    (for [datom datoms]
+      (when (> datom.tx tx)
+        (set! tx datom.tx)))
+    tx))
+
+(defn conn-from-db [db: DB] -> Conn
+  (Conn {db: (build-db (clone-datom-slice (slice db.datoms 0)))
+         next_tx: (+ (max-tx (slice db.datoms 0)) 1)}))
+
+(defn conn-from-datoms [datoms: []Datom] -> Conn
+  (conn-from-db (init-db datoms)))
+
 (defn compare-eavt-prefix [datom: Datom, e: u64] -> int
   (if (< datom.e e)
     -1
@@ -4718,6 +4744,35 @@
               tx: 0
               tx_meta: (make [dynamic]Tx-Meta)
               tempids: (make [dynamic]Tempid)}))
+
+(defn reset-conn-with-meta [conn: ^Conn, next-db: DB, tx-meta: []Tx-Meta] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        after (build-db (clone-datom-slice (slice next-db.datoms 0)))
+        diff (db-diff before after)
+        tx conn^.next_tx
+        tx-data (make [dynamic]Datom 0 (+ (count diff.only_left) (count diff.only_right)))]
+    (for [datom diff.only_left]
+      (arr.push! tx-data
+        (Datom {e: datom.e a: datom.a v: datom.v tx: tx added: false})))
+    (for [datom diff.only_right]
+      (arr.push! tx-data
+        (Datom {e: datom.e a: datom.a v: datom.v tx: tx added: true})))
+    (delete diff.only_left)
+    (delete diff.only_right)
+    (delete diff.both)
+    (set! conn^.db after)
+    (set! conn^.next_tx (+ conn^.next_tx 1))
+    (Tx-Report {ok: true
+                error: ""
+                db_before: before
+                db_after: after
+                tx_data: tx-data
+                tx: tx
+                tx_meta: (clone-tx-meta tx-meta)
+                tempids: (make [dynamic]Tempid)})))
+
+(defn reset-conn [conn: ^Conn, next-db: DB] -> Tx-Report
+  (reset-conn-with-meta conn next-db ([]Tx-Meta [])))
 
 (defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
