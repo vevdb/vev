@@ -48,9 +48,9 @@ now exist, but full parser parity still trails the native Kvist literal surface.
 | `parser.cljc` | 3 | partial | flat EDN node reader supports nested vectors/lists/maps and now feeds query/tx text subsets; full EDN lowering remains |
 | `parser_find.cljc` | 4 | interop | query parser |
 | `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers `:find`, `:in`, named DB sources, optional `:where`, and execution through normal query inputs/sources; validation remains |
-| `parser_return_map.cljc` | 1 | interop | query parser |
+| `parser_return_map.cljc` | 1 | interop | query parser return-map markers |
 | `parser_rules.cljc` | 3 | partial | ordinary rule calls and rule definitions covered; source-qualified rules and validation remain |
-| `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, predicate, built-in function, missing?, not, or, and ordinary rule clauses covered; relation-source text inputs remain |
+| `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not, or, and ordinary rule clauses covered; exact validation remains |
 | `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, and nested maps; options remain |
 | transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, and nested maps through the normal transaction engine |
 
@@ -75,7 +75,7 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Broaden parser/EDN APIs around pull options, relation-source text inputs, source-qualified rules, and exact
+1. Broaden parser/EDN APIs around pull options, return-map markers, source-qualified rules, and exact
    validation now that the first query/tx text paths are active.
 2. Port remaining `transact.cljc`, `upsert.cljc`, and `validation.cljc`
    semantics that are not host-runtime-specific.

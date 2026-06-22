@@ -117,6 +117,8 @@ Supported now:
   strings, booleans, ints, keywords, wildcards, and source vars
 - text query inputs for scalar vars, collections, tuples, relations, and
   no-`:where` input-only queries
+- text relation-source inputs such as `:in $rows` with 2/3/4/5-wide row
+  clauses like `[$rows ?e ?a ?v ?tx ?op]`
 - text query named DB sources for multi-source joins and source-specific pull
 - text query rules through `q-text-with-rules`, covering ordinary rule calls,
   recursion, predicates, and function clauses

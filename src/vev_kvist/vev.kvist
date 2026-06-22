@@ -3656,13 +3656,25 @@
 (defn query-from-text-parts [find: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, collection-find: bool] -> Query
   (query find ([]string []) inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls ([]Aggregate-Find [])))
 
-(defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, doc: EDN-Doc, node-index: int] -> [ok: bool, error: string]
+(defn db-source-name? [sources: []DB-Source, name: string] -> bool
+  (when (= name "$")
+    (return true))
+  (for [source sources]
+    (when (= source.name name)
+      (return true)))
+  false)
+
+(defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
   (let [node doc.nodes[node-index]]
     (cond
-      (and (= node.kind .Symbol) (strings.has_prefix node.text "$"))
+      (and (= node.kind .Symbol) (db-source-name? db-sources node.text))
         (return true "")
       (and (= node.kind .Symbol) (= node.text "%"))
         (return true "")
+      (and (= node.kind .Symbol) (strings.has_prefix node.text "$"))
+        (do
+          (arr.push! inputs^ node.text)
+          (return true ""))
       (edn-var? doc node-index)
         (do
           (arr.push! inputs^ node.text)
@@ -3764,23 +3776,34 @@
       (return false "query text clause is incomplete"))
     (let [e-node term-node
           a-node doc.nodes[e-node].next_sibling
-          v-node doc.nodes[a-node].next_sibling]
+          v-node doc.nodes[a-node].next_sibling
+          tx-node -1
+          op-node -1]
       (when (= v-node -1)
         (arr.push! out^
           (Clause {e: (term-from-edn-node doc e-node false)
                    a: (term-from-edn-node doc a-node true)
                    v: (term-wildcard)
                    source: source
-                   has_source: has-source}))
+                   has_source: has-source
+                   source_width: (if has-source 2 0)}))
         (return true ""))
-      (when (not (= doc.nodes[v-node].next_sibling -1))
-        (return false "query text clauses currently need two or three terms"))
+      (set! tx-node doc.nodes[v-node].next_sibling)
+      (when (not (= tx-node -1))
+        (set! op-node doc.nodes[tx-node].next_sibling))
+      (when (and (not has-source) (not (= tx-node -1)))
+        (return false "query text clauses currently need two or three terms unless source-qualified"))
+      (when (and has-source (not (= op-node -1)) (not (= doc.nodes[op-node].next_sibling -1)))
+        (return false "source query text clauses currently need two to five terms"))
       (arr.push! out^
         (Clause {e: (term-from-edn-node doc e-node false)
                  a: (term-from-edn-node doc a-node true)
                  v: (value-term-from-edn-node doc v-node)
+                 tx_term: (if (= tx-node -1) (term-wildcard) (value-term-from-edn-node doc tx-node))
+                 op_term: (if (= op-node -1) (term-wildcard) (value-term-from-edn-node doc op-node))
                  source: source
-                 has_source: has-source}))
+                 has_source: has-source
+                 source_width: (if has-source (if (= tx-node -1) 3 (if (= op-node -1) 4 5)) 0)}))
       (return true ""))))
 
 (defn append-edn-predicate! [out: ^[dynamic]Predicate, doc: EDN-Doc, expr: int] -> [ok: bool, error: string]
@@ -3961,7 +3984,7 @@
       (delete doc.nodes)
       (return parsed-ok parsed-error))))
 
-(defn parse-query-edn! [out: ^Query, doc: EDN-Doc] -> [ok: bool, error: string]
+(defn parse-query-edn-with-sources! [out: ^Query, doc: EDN-Doc, db-sources: []DB-Source] -> [ok: bool, error: string]
   (when (or (= doc.root -1)
             (not (= doc.nodes[doc.root].kind .Vector)))
     (return false "query text must be an EDN vector"))
@@ -4008,7 +4031,7 @@
     (when (edn-keyword-text? doc cursor ":in")
       (set! cursor doc.nodes[cursor].next_sibling)
       (while (and (not (= cursor -1)) (not (edn-keyword-text? doc cursor ":where")))
-        (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) doc cursor)]
+        (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) doc cursor db-sources)]
           (when (not input-ok)
             (return false input-error)))
         (set! cursor doc.nodes[cursor].next_sibling)))
@@ -4022,6 +4045,19 @@
     (let [query-value (query-from-text-parts (slice find 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) collection-find)]
       (set! out^ query-value)
       (return true ""))))
+
+(defn parse-query-edn! [out: ^Query, doc: EDN-Doc] -> [ok: bool, error: string]
+  (parse-query-edn-with-sources! out doc ([]DB-Source [])))
+
+(defn parse-query-text-with-sources! [out: ^Query, text: string, db-sources: []DB-Source] -> [ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return false read-error))
+    (let [[parsed-ok parsed-error] (parse-query-edn-with-sources! out doc db-sources)]
+      (delete doc.nodes)
+      (return parsed-ok parsed-error))))
 
 (defn parse-query-text! [out: ^Query, text: string] -> [ok: bool, error: string]
   (let [doc (empty-edn-doc)
@@ -4049,7 +4085,7 @@
 
 (defn q-text-with-sources [db: DB, text: string, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
   (let [query-value (empty-query)
-        [ok _] (parse-query-text! (addr query-value) text)]
+        [ok _] (parse-query-text-with-sources! (addr query-value) text sources)]
     (if ok
       (q-query-with-sources db query-value inputs sources)
       (Result-Set {rows: (make [dynamic]Result-Row)}))))
