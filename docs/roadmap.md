@@ -134,6 +134,25 @@ Possible shapes:
 - simple server/daemon wrapper
 - later, if justified, transactor/peer-style split
 
+## Later: Replication and sync primitives
+
+Immutable transactions and stable snapshots may make replication and
+local-first sync natural later extensions.
+
+Possible goal:
+
+- export/import transaction logs
+- identify database snapshots by stable basis/version
+- support backup and copy workflows
+- explore local-first sync without committing to distributed query execution
+
+Non-goal:
+
+- designing Vev around sync from phase 1
+- CRDT-first semantics
+- distributed Datalog query execution
+- hosted sync service
+
 ## Current rule
 
 Do not start by solving:

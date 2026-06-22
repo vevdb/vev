@@ -14,7 +14,6 @@ The intended identity is:
 - native
 - embedded
 - embedded-first, not embedded-only
-- local-first
 - Kvist-first implementation, with readable Odin output
 - immutable snapshot reads
 - Datomic-flavored Datalog query syntax
@@ -26,6 +25,10 @@ The intended identity is:
 - future multi-language consumption through a stable native ABI
 
 Vev follows Datomic/DataScript semantics as a practical compatibility target.
+
+Vev is not trying to be a Datomic clone or a SQL database. The core bet is that
+immutable database values, flexible facts, and Datalog-as-data are useful well
+outside Clojure when packaged as a small embedded native library.
 
 ## Initial direction
 
