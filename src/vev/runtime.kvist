@@ -3345,6 +3345,63 @@
         (return false error))))
   (return true ""))
 
+(defn query-clause-db [db: DB, sources: []DB-Source, clause-value: Clause] -> [clause-db: DB, ok: bool]
+  (if clause-value.has-source
+    (source-db-lookup db sources clause-value.source)
+    (return db true)))
+
+(defn validate-inline-lookup-ref-term [db: DB, term: Term] -> [ok: bool, error: string]
+  (when (= term.kind .LookupRef)
+    (let [[_ found] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
+      (when (not found)
+        (return false "lookup ref not found"))))
+  (return true ""))
+
+(defn validate-query-clause-inline-lookup-refs [db: DB, sources: []DB-Source, clause-value: Clause] -> [ok: bool, error: string]
+  (let [[clause-db db-ok] (query-clause-db db sources clause-value)]
+    (when (not db-ok)
+      (return true ""))
+    (let [[e-ok e-error] (validate-inline-lookup-ref-term clause-db clause-value.e)]
+      (when (not e-ok)
+        (return false e-error)))
+    (let [[v-ok v-error] (validate-inline-lookup-ref-term clause-db clause-value.v)]
+      (when (not v-ok)
+        (return false v-error))))
+  (return true ""))
+
+(defn validate-not-group-inline-lookup-refs [db: DB, sources: []DB-Source, group: Not-Group] -> [ok: bool, error: string]
+  (for [item group.clauses]
+    (let [[ok error] (validate-query-clause-inline-lookup-refs db sources item)]
+      (when (not ok)
+        (return false error))))
+  (for [child group.not-groups]
+    (let [[ok error] (validate-not-group-inline-lookup-refs db sources child)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-or-group-inline-lookup-refs [db: DB, sources: []DB-Source, group: Or-Group] -> [ok: bool, error: string]
+  (for [branch group.branches]
+    (let [[ok error] (validate-not-group-inline-lookup-refs db sources branch)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-query-inline-lookup-refs [db: DB, query-value: Query, sources: []DB-Source] -> [ok: bool, error: string]
+  (for [item query-value.clauses]
+    (let [[ok error] (validate-query-clause-inline-lookup-refs db sources item)]
+      (when (not ok)
+        (return false error))))
+  (for [group query-value.not-groups]
+    (let [[ok error] (validate-not-group-inline-lookup-refs db sources group)]
+      (when (not ok)
+        (return false error))))
+  (for [group query-value.or-groups]
+    (let [[ok error] (validate-or-group-inline-lookup-refs db sources group)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
 (defn string-slice-contains? [items: []string, value: string] -> bool
   (for [item items]
     (when (= item value)
@@ -3910,7 +3967,7 @@
         (return false error))))
   (return true ""))
 
-(defn validate-query-call [query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
+(defn validate-query-call [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
   (let [expected (query-expected-input-count query-value)
         provided (count inputs)]
     (when (not (= expected provided))
@@ -3924,6 +3981,9 @@
   (let [[source-input-ok source-input-error] (validate-query-source-input-values query-value inputs sources)]
     (when (not source-input-ok)
       (return false source-input-error)))
+  (let [[lookup-ok lookup-error] (validate-query-inline-lookup-refs db query-value sources)]
+    (when (not lookup-ok)
+      (return false lookup-error)))
   (let [[rules-ok rules-error] (validate-query-rules query-value)]
     (when (not rules-ok)
       (return false rules-error)))
@@ -4320,7 +4380,7 @@
     (return bindings)))
 
 (defn q-query-with-sources [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
-  (let [[valid error] (validate-query-call query inputs sources)]
+  (let [[valid error] (validate-query-call db query inputs sources)]
     (when (not valid)
       (return (result-set-error error))))
   (when (> (count query.where-steps) 0)
