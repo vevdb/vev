@@ -3420,6 +3420,51 @@
     (t.is (= (count names) 1))
     (t.is (= names[0].text "Ivan"))))
 
+(t.deftest datascript-retract-fns-not-found-and-idempotent-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 1 :name "Ivan"]])
+        missing-retract (vev.transact (addr conn) [[:db/retract 2 :name "Petr"]])
+        missing-attr (vev.transact (addr conn) [[:db.fn/retractAttribute 2 :name]])
+        missing-entity (vev.transact (addr conn) [[:db.fn/retractEntity 2]])
+        missing-entity-op (vev.transact (addr conn) [[:db/retractEntity 2]])
+        missing-lookup-retract (vev.transact (addr conn) [[:db/retract [:name "Petr"] :name "Petr"]])
+        missing-lookup-attr (vev.transact (addr conn) [[:db.fn/retractAttribute [:name "Petr"] :name]])
+        missing-lookup-entity (vev.transact (addr conn) [[:db.fn/retractEntity [:name "Petr"]]])
+        after-missing (vev.q-collection conn.db
+                        [:find [?name ...]
+                         :where
+                         [?e :name ?name]])
+        retract-once (vev.transact (addr conn) [[:db/retract 1 :name "Ivan"]])
+        retract-twice (vev.transact (addr conn) [[:db/retract 1 :name "Ivan"]
+                                                 [:db/retract 1 :name "Ivan"]])
+        names-once (vev.q-collection retract-once.db_after
+                     [:find [?name ...]
+                      :where
+                      [?e :name ?name]])
+        names-twice (vev.q-collection retract-twice.db_after
+                      [:find [?name ...]
+                       :where
+                       [?e :name ?name]])]
+    (t.is missing-retract.ok)
+    (t.is missing-attr.ok)
+    (t.is missing-entity.ok)
+    (t.is missing-entity-op.ok)
+    (t.is missing-lookup-retract.ok)
+    (t.is missing-lookup-attr.ok)
+    (t.is missing-lookup-entity.ok)
+    (t.is (= (count after-missing) 1))
+    (t.is (= after-missing[0].text "Ivan"))
+    (t.is retract-once.ok)
+    (t.is retract-twice.ok)
+    (t.is (= (count names-once) 0))
+    (t.is (= (count names-twice) 0))))
+
 (t.deftest datascript-retract-different-boolean-value-is-noop
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -5057,6 +5102,27 @@
     (t.is (= props.rows[0].values[0].text ":prop1"))
     (t.is (= props.rows[1].values[0].text ":prop2"))
     (t.is (= props.rows[2].values[0].text ":prop3"))))
+
+(t.deftest datascript-upsert-current-tx-conflict-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 1 :name "Ivan"]])
+        report (vev.transact
+                 (addr conn)
+                 [{:db/id :db/current-tx :name "Ivan" :age 35}])
+        names (vev.q-collection conn.db
+                [:find [?name ...]
+                 :where
+                 [?e :name ?name]])]
+    (t.is (not report.ok))
+    (t.is (= report.error "conflicting upsert"))
+    (t.is (= (count names) 1))
+    (t.is (= names[0].text "Ivan"))))
 
 (t.deftest transact-data-resolves-lookup-refs
   (defer (free_all context.allocator))

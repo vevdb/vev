@@ -4164,6 +4164,16 @@
         (set! has-found true)))
     (return found has-found false)))
 
+(defn current-tx-upsert-conflict? [db: DB, data: Tx-Data, current-tx-e: u64] -> bool
+  (when (not (and (= data.op ":db/add")
+                  (schema-unique-identity? db data.a)))
+    (return false))
+  (let [[value value-ok _] (resolve-tx-data-value db data)]
+    (when (not value-ok)
+      (return false))
+    (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
+      (and entity-ok (not (= entity current-tx-e))))))
+
 (defn db-with-resolved-ops [db: DB, ops: []Tx-Op] -> DB
   (let [datoms (clone-datoms db.datoms)]
     (for [op ops]
@@ -4283,6 +4293,12 @@
                 (set! current-tx-reserved true))
               (set! e current-tx-e)
               (ensure-tempid! (addr resolved-tempids) data.tempid current-tx-e)
+              (when (current-tx-upsert-conflict? current-db data current-tx-e)
+                (return (Resolved-Tx {ok: false
+                                      error: "conflicting upsert"
+                                      ops: resolved-ops
+                                      tx_meta: resolved-meta
+                                      tempids: resolved-tempids})))
               (when (= data.op ":db/add")
                 (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v}))))
           (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
