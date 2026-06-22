@@ -1570,6 +1570,188 @@
              (return (value-map (slice items 0)) true ""))
       :else (return (Value {}) false "unsupported EDN value"))))
 
+(defn edn-escaped-string-text [text: string] -> string
+  (let [parts (make [dynamic]string) :defer
+        index 0
+        n (kstr.count text)]
+    (arr.push! parts "\"")
+    (while (< index n)
+      (let [ch (kstr.get text index)]
+        (cond
+          (= ch 34) (arr.push! parts "\\\"")
+          (= ch 92) (arr.push! parts "\\\\")
+          :else (arr.push! parts (kstr.slice text index (+ index 1)))))
+      (set! index (+ index 1)))
+    (arr.push! parts "\"")
+    (strings.concatenate (slice parts 0))))
+
+(defn value-serializable-text [value: Value] -> string
+  (case value.kind
+    .Nil "nil"
+    .Bool (if value.bool-value "true" "false")
+    .Int (fmt.tprintf "%d" value.int-value)
+    .Float (fmt.tprintf "[:vev/float \"%v\"]" value.float-value)
+    .String (edn-escaped-string-text value.text)
+    .Keyword value.text
+    .Entity (fmt.tprintf "[:vev/entity %d]" value.entity)
+    .Vector
+      (let [parts (make [dynamic]string) :defer]
+        (arr.push! parts "[")
+        (for [item index value.items]
+          (when (> index 0)
+            (arr.push! parts " "))
+          (arr.push! parts (value-serializable-text item)))
+        (arr.push! parts "]")
+        (strings.concatenate (slice parts 0)))
+    .Map
+      (let [parts (make [dynamic]string) :defer]
+        (arr.push! parts "{")
+        (for [item index value.items]
+          (when (> index 0)
+            (arr.push! parts " "))
+          (arr.push! parts (value-serializable-text item)))
+        (arr.push! parts "}")
+        (strings.concatenate (slice parts 0)))
+    :else "nil"))
+
+(defn attr-serializable-text [attr: string] -> string
+  (if (strings.has_prefix attr ":")
+    attr
+    (edn-escaped-string-text attr)))
+
+(defn datom-serializable-text [datom: Datom] -> string
+  (fmt.tprintf "[%d %s %s %d %v]"
+               datom.e
+               (attr-serializable-text datom.a)
+               (value-serializable-text datom.v)
+               datom.tx
+               datom.added))
+
+(defn serializable-text [db: DB] -> string
+  (let [parts (make [dynamic]string) :defer]
+    (arr.push! parts "[")
+    (for [datom index db.datoms]
+      (when (> index 0)
+        (arr.push! parts " "))
+      (arr.push! parts (datom-serializable-text datom)))
+    (arr.push! parts "]")
+    (strings.concatenate (slice parts 0))))
+
+(defn edn-int-u64 [doc: EDN-Doc, node-index: int, label: string] -> [value: u64, ok: bool, error: string]
+  (when (= node-index -1)
+    (return 0 false (fmt.tprintf "expected %s" label)))
+  (let [node doc.nodes[node-index]]
+    (when (not (= node.kind .Int))
+      (return 0 false (fmt.tprintf "expected integer %s" label)))
+    (when (< node.int-value 0)
+      (return 0 false (fmt.tprintf "expected non-negative %s" label)))
+    (return (u64 node.int-value) true "")))
+
+(defn serial-value-from-edn-node [doc: EDN-Doc, node-index: int] -> [value: Value, ok: bool, error: string]
+  (when (= node-index -1)
+    (return (Value {}) false "expected serialized value"))
+  (let [node doc.nodes[node-index]]
+    (when (and (= node.kind .Vector) (= node.child-count 2))
+      (let [tag-node (edn-child-at doc node-index 0)
+            value-node (edn-child-at doc node-index 1)]
+        (when (and (not (= tag-node -1))
+                   (= doc.nodes[tag-node].kind .Keyword)
+                   (= doc.nodes[tag-node].text ":vev/entity"))
+          (let [[entity entity-ok entity-error] (edn-int-u64 doc value-node "entity id")]
+            (if entity-ok
+              (return (value-entity entity) true "")
+              (return (Value {}) false entity-error))))
+        (when (and (not (= tag-node -1))
+                   (= doc.nodes[tag-node].kind .Keyword)
+                   (= doc.nodes[tag-node].text ":vev/float"))
+          (when (not (= doc.nodes[value-node].kind .String))
+            (return (Value {}) false "expected serialized float string"))
+          (let [[parsed parsed-ok] (strconv.parse_f64 doc.nodes[value-node].text)]
+            (if parsed-ok
+              (return (value-float parsed) true "")
+              (return (Value {}) false "invalid serialized float"))))))
+    (case node.kind
+      .Nil (return (value-nil) true "")
+      .Bool (return (value-bool node.bool-value) true "")
+      .Int (return (value-int node.int-value) true "")
+      .String (return (value-string node.text) true "")
+      .Keyword (return (value-keyword node.text) true "")
+      .Vector (let [items (make [dynamic]Value) :defer
+                    child node.first-child]
+                (while (not (= child -1))
+                  (let [[item item-ok item-error] (serial-value-from-edn-node doc child)]
+                    (when (not item-ok)
+                      (return (Value {}) false item-error))
+                    (arr.push! items item))
+                  (set! child doc.nodes[child].next-sibling))
+                (return (value-vector (slice items 0)) true ""))
+      .Map (let [items (make [dynamic]Value) :defer
+                 child node.first-child]
+             (while (not (= child -1))
+               (let [value-node doc.nodes[child].next-sibling]
+                 (when (= value-node -1)
+                   (return (Value {}) false "serialized map value missing"))
+                 (let [[key key-ok key-error] (serial-value-from-edn-node doc child)
+                       [value value-ok value-error] (serial-value-from-edn-node doc value-node)]
+                   (when (not key-ok)
+                     (return (Value {}) false key-error))
+                   (when (not value-ok)
+                     (return (Value {}) false value-error))
+                   (arr.push! items key)
+                   (arr.push! items value)
+                   (set! child doc.nodes[value-node].next-sibling))))
+             (return (value-map (slice items 0)) true ""))
+      :else (return (Value {}) false "unsupported serialized value"))))
+
+(defn datom-from-edn-node [doc: EDN-Doc, node-index: int] -> [datom: Datom, ok: bool, error: string]
+  (when (or (= node-index -1)
+            (not (= doc.nodes[node-index].kind .Vector))
+            (not (= doc.nodes[node-index].child-count 5)))
+    (return (Datom {}) false "expected serialized datom vector [e a v tx added]"))
+  (let [e-node (edn-child-at doc node-index 0)
+        a-node (edn-child-at doc node-index 1)
+        v-node (edn-child-at doc node-index 2)
+        tx-node (edn-child-at doc node-index 3)
+        added-node (edn-child-at doc node-index 4)
+        [e e-ok e-error] (edn-int-u64 doc e-node "entity id")
+        [attr attr-ok] (edn-attr-text doc a-node)
+        [value value-ok value-error] (serial-value-from-edn-node doc v-node)
+        [tx tx-ok tx-error] (edn-int-u64 doc tx-node "tx")
+        added-doc-node doc.nodes[added-node]]
+    (when (not e-ok)
+      (return (Datom {}) false e-error))
+    (when (not attr-ok)
+      (return (Datom {}) false "expected datom attribute keyword or string"))
+    (when (not value-ok)
+      (return (Datom {}) false value-error))
+    (when (not tx-ok)
+      (return (Datom {}) false tx-error))
+    (when (not (= added-doc-node.kind .Bool))
+      (return (Datom {}) false "expected datom added boolean"))
+    (return (datom-tx e attr value tx added-doc-node.bool-value) true "")))
+
+(defn from-serializable-text [text: string] -> [db: DB, ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return (build-db (make [dynamic]Datom)) false read-error))
+    (when (not (= doc.nodes[doc.root].kind .Vector))
+      (delete doc.nodes)
+      (return (build-db (make [dynamic]Datom)) false "expected serialized DB vector"))
+    (let [datoms (make [dynamic]Datom)
+          child doc.nodes[doc.root].first-child]
+      (while (not (= child -1))
+        (let [[datom datom-ok datom-error] (datom-from-edn-node doc child)]
+          (when (not datom-ok)
+            (delete datoms)
+            (delete doc.nodes)
+            (return (build-db (make [dynamic]Datom)) false datom-error))
+          (arr.push! datoms datom))
+        (set! child doc.nodes[child].next-sibling))
+      (delete doc.nodes)
+      (return (build-db datoms) true ""))))
+
 (defn edn-lookup-ref-node? [doc: EDN-Doc, node-index: int] -> bool
   (when (or (= node-index -1)
             (not (= doc.nodes[node-index].kind .Vector))

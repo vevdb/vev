@@ -63,7 +63,7 @@ These are useful, but not the next engine-parity gate.
 | --- | ---: | --- | --- |
 | `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered |
 | `listen.cljc` | 1 | partial | named report-sink listeners covered; arbitrary callback/closure API remains |
-| `serialize.cljc` | 5 | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
+| `serialize.cljc` | 5 | partial | `init-db` from datoms and typed EDN-ish datom snapshot text roundtrip covered, including schema, retractions, refs, map/vector values, and next-tx recovery; JSON/transit-style formats later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
