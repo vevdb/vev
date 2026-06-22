@@ -200,16 +200,16 @@
 })
 
 (defstruct Not-Group {
-  clauses: []Clause
-  not_groups: []Not-Group
+  clauses: [dynamic]Clause
+  not_groups: [dynamic]Not-Group
   has_join: bool
-  join_vars: []string
+  join_vars: [dynamic]string
 })
 
 (defstruct Or-Group {
-  branches: []Not-Group
+  branches: [dynamic]Not-Group
   has_join: bool
-  join_vars: []string
+  join_vars: [dynamic]string
 })
 
 (defstruct Pull-Find {
@@ -3297,32 +3297,45 @@
     (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
 
 (defn not-group-simple [clauses: []Clause] -> Not-Group
-  (Not-Group {clauses: clauses
-              not_groups: ([]Not-Group [])
-              has_join: false
-              join_vars: ([]string [])}))
+  (let [owned-clauses (arr.into [dynamic]Clause clauses)
+        owned-not-groups (make [dynamic]Not-Group)
+        owned-join-vars (make [dynamic]string)]
+    (Not-Group {clauses: owned-clauses
+                not_groups: owned-not-groups
+                has_join: false
+                join_vars: owned-join-vars})))
 
 (defn not-group [clauses: []Clause, not-groups: []Not-Group] -> Not-Group
-  (Not-Group {clauses: clauses
-              not_groups: not-groups
-              has_join: false
-              join_vars: ([]string [])}))
+  (let [owned-clauses (arr.into [dynamic]Clause clauses)
+        owned-not-groups (arr.into [dynamic]Not-Group not-groups)
+        owned-join-vars (make [dynamic]string)]
+    (Not-Group {clauses: owned-clauses
+                not_groups: owned-not-groups
+                has_join: false
+                join_vars: owned-join-vars})))
 
 (defn not-join-group [join-vars: []string, clauses: []Clause, not-groups: []Not-Group] -> Not-Group
-  (Not-Group {clauses: clauses
-              not_groups: not-groups
-              has_join: true
-              join_vars: join-vars}))
+  (let [owned-clauses (arr.into [dynamic]Clause clauses)
+        owned-not-groups (arr.into [dynamic]Not-Group not-groups)
+        owned-join-vars (arr.into [dynamic]string join-vars)]
+    (Not-Group {clauses: owned-clauses
+                not_groups: owned-not-groups
+                has_join: true
+                join_vars: owned-join-vars})))
 
 (defn or-group [branches: []Not-Group] -> Or-Group
-  (Or-Group {branches: branches
-             has_join: false
-             join_vars: ([]string [])}))
+  (let [owned-branches (arr.into [dynamic]Not-Group branches)
+        owned-join-vars (make [dynamic]string)]
+    (Or-Group {branches: owned-branches
+               has_join: false
+               join_vars: owned-join-vars})))
 
 (defn or-join-group [join-vars: []string, branches: []Not-Group] -> Or-Group
-  (Or-Group {branches: branches
-             has_join: true
-             join_vars: join-vars}))
+  (let [owned-branches (arr.into [dynamic]Not-Group branches)
+        owned-join-vars (arr.into [dynamic]string join-vars)]
+    (Or-Group {branches: owned-branches
+               has_join: true
+               join_vars: owned-join-vars})))
 
 (defn query [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rules: []Rule, rule-calls: []Rule-Call, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
   (let [owned-find (arr.into [dynamic]string find)
@@ -3670,12 +3683,49 @@
           (return false "function output must be a variable or vector of variables")))
       (return true ""))))
 
+(defn append-edn-missing-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, expr: int] -> [ok: bool, error: string]
+  (when (not (= doc.nodes[expr].child_count 4))
+    (return false "missing? clauses must have shape [(missing? $ ?e :attr)]"))
+  (let [db-node doc.nodes[doc.nodes[expr].first_child].next_sibling
+        entity-node doc.nodes[db-node].next_sibling
+        attr-node doc.nodes[entity-node].next_sibling]
+    (arr.push! out^
+      (not-group-simple
+        ([]Clause [(Clause {e: (term-from-edn-node doc entity-node false)
+                            a: (term-from-edn-node doc attr-node true)
+                            v: (term-wildcard)})])))
+    (return true "")))
+
+(defn append-edn-not-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
+  (let [clauses (make [dynamic]Clause) :defer
+        cursor doc.nodes[doc.nodes[form].first_child].next_sibling]
+    (while (not (= cursor -1))
+      (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
+        (when (not ok)
+          (return false error)))
+      (set! cursor doc.nodes[cursor].next_sibling))
+    (arr.push! out^ (not-group-simple (slice clauses 0)))
+    (return true "")))
+
+(defn append-edn-or-group! [out: ^[dynamic]Or-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
+  (let [branches (make [dynamic]Not-Group) :defer
+        cursor doc.nodes[doc.nodes[form].first_child].next_sibling]
+    (while (not (= cursor -1))
+      (let [clauses (make [dynamic]Clause) :defer
+            [ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
+        (when (not ok)
+          (return false error))
+        (arr.push! branches (not-group-simple (slice clauses 0))))
+      (set! cursor doc.nodes[cursor].next_sibling))
+    (arr.push! out^ (or-group (slice branches 0)))
+    (return true "")))
+
 (defn append-edn-where-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
   (if (= doc.nodes[item].kind .List)
     (let [head (edn-list-head-text doc item)]
       (cond
-        (= head "not") (return false "query text not clauses need owned query groups")
-        (= head "or") (return false "query text or clauses need owned query groups")
+        (= head "not") (append-edn-not-group! not-groups doc item)
+        (= head "or") (append-edn-or-group! or-groups doc item)
         :else (return false "query text list where clauses currently support not and or")))
     (if (= doc.nodes[item].kind .Vector)
       (let [first-item (edn-child-at doc item 0)]
@@ -3684,7 +3734,7 @@
                 output doc.nodes[expr].next_sibling
                 op (edn-list-head-text doc expr)]
             (cond
-              (= op "missing?") (return false "query text missing? clauses need owned query groups")
+              (= op "missing?") (append-edn-missing-group! not-groups doc expr)
               (not (= output -1)) (append-edn-function-clause! function-clauses doc expr output)
               :else (append-edn-predicate! predicates doc expr)))
           (append-edn-data-clause! clauses doc item)))
@@ -5782,10 +5832,7 @@
 
 (defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
   (let [clauses (rule-clauses-with-source rule.clauses source has-source)
-        group (Not-Group {clauses: clauses
-                           not_groups: ([]Not-Group [])
-                           has_join: false
-                           join_vars: ([]string [])})
+        group (not-group-simple (slice clauses 0))
         bindings (bindings-after-clause-group db group initial)]
     (delete clauses)
     (for [call rule.rule_calls]

@@ -51,7 +51,7 @@ exist.
 | `parser_query.cljc` | 1 | partial | EDN-reader-backed `[:find ... :where ...]` text query subset covered; validation remains |
 | `parser_return_map.cljc` | 1 | interop | query parser |
 | `parser_rules.cljc` | 3 | interop | query parser plus rules |
-| `parser_where.cljc` | 6 | partial | data pattern, predicate, and built-in function clauses covered; not/or/rules remain |
+| `parser_where.cljc` | 6 | partial | data pattern, predicate, built-in function, missing?, not, and or clauses covered; rules remain |
 | `pull_parser.cljc` | 1 | interop | pull parser |
 
 ## Host Or Later Runtime APIs
