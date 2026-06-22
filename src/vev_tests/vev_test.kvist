@@ -663,7 +663,9 @@
         entity-and-pull (vev.q-text conn.db "[:find ?e (pull ?e [:name]) :where [?e :name \"Ada Lovelace\"]]")
         nested (vev.q-text conn.db "[:find (pull ?e [{:friend [:name]}]) :where [?e :name \"Ada Lovelace\"]]")
         options (vev.q-text conn.db "[:find (pull ?e [[:missing :default \"Unknown\" :as :nickname] [:name :as :full-name] [:friend :limit 1]]) :where [?e :name \"Ada Lovelace\"]]")
-        nested-options (vev.q-text conn.db "[:find (pull ?e [(default (limit :missing 1) \"Unknown\") ((limit :friend 1) :as :first-friend)]) :where [?e :name \"Ada Lovelace\"]]")]
+        nested-options (vev.q-text conn.db "[:find (pull ?e [(default (limit :missing 1) \"Unknown\") ((limit :friend 1) :as :first-friend)]) :where [?e :name \"Ada Lovelace\"]]")
+        map-key-options (vev.q-text conn.db "[:find (pull ?e [{((limit :friend 1) :as :first-friend) [:name]}]) :where [?e :name \"Ada Lovelace\"]]")
+        recursive-map (vev.q-text conn.db "[:find (pull ?e [:db/id {:friend 1}]) :where [?e :name \"Ada Lovelace\"]]")]
     (t.is (= (count pulled.rows) 1))
     (t.is (= (count pulled.rows[0].values) 0))
     (t.is (= (count pulled.rows[0].pulls) 1))
@@ -684,7 +686,14 @@
     (t.is (= nested-options.rows[0].pulls[0].attrs[0].a ":missing"))
     (t.is (= nested-options.rows[0].pulls[0].attrs[0].v.text "Unknown"))
     (t.is (= nested-options.rows[0].pulls[0].attrs[1].a ":first-friend"))
-    (t.is (= nested-options.rows[0].pulls[0].attrs[1].v.entity 2))))
+    (t.is (= nested-options.rows[0].pulls[0].attrs[1].v.entity 2))
+    (t.is (= (count map-key-options.rows[0].pulls[0].attrs) 1))
+    (t.is (= map-key-options.rows[0].pulls[0].attrs[0].a ":first-friend"))
+    (t.is (= map-key-options.rows[0].pulls[0].attrs[0].v.entity 2))
+    (t.is (= map-key-options.rows[0].pulls[0].attrs[0].attrs[0].v.text "Grace Hopper"))
+    (t.is (= recursive-map.rows[0].pulls[0].attrs[0].v.entity 1))
+    (t.is (= recursive-map.rows[0].pulls[0].attrs[1].v.entity 2))
+    (t.is (= recursive-map.rows[0].pulls[0].attrs[1].attrs[0].v.entity 2))))
 
 (t.deftest datascript-parser-query-text-find-specs
   (defer (free_all context.allocator))
@@ -7676,6 +7685,48 @@
     (t.is (= (count pulled[2].attrs) 0))
     (t.is (= (count pulled[3].attrs) 0))
     (t.is (= (count pulled[4].attrs) 0))))
+
+(t.deftest datascript-pull-text-api-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :friend]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             {:db/id 1 :name "Petr" :friend 2}
+             {:db/id 2 :name "David"}
+             {:db/id 3 :name "Thomas"}
+             [:db/add 1 :friend 3]])
+        pulled (vev.pull-text conn.db "[:db/id :name {((limit :friend 1) :as :first-friend) [:name]}]" 1)
+        by-lookup (vev.pull-text-lookup-ref conn.db "[:name {:friend [:name]}]" ":name" (vev.value-string "Petr"))
+        many (vev.pull-many-text conn.db "[:name]" ([]u64 [1 2 3]))
+        many-lookup (vev.pull-many-text-lookup-refs
+                      conn.db
+                      "[:name]"
+                      ([]string [":name" ":name" ":name"])
+                      ([]vev.Value [(vev.value-string "Petr")
+                                    (vev.value-string "David")
+                                    (vev.value-string "Missing")]))
+        invalid (vev.pull-text conn.db ":name" 1)]
+    (t.is (= pulled.attrs[0].v.entity 1))
+    (t.is (= pulled.attrs[1].v.text "Petr"))
+    (t.is (= pulled.attrs[2].a ":first-friend"))
+    (t.is (= pulled.attrs[2].v.entity 2))
+    (t.is (= pulled.attrs[2].attrs[0].v.text "David"))
+    (t.is (= by-lookup.attrs[0].v.text "Petr"))
+    (t.is (= by-lookup.attrs[1].attrs[0].v.text "David"))
+    (t.is (= (count many) 3))
+    (t.is (= many[0].attrs[0].v.text "Petr"))
+    (t.is (= many[1].attrs[0].v.text "David"))
+    (t.is (= many[2].attrs[0].v.text "Thomas"))
+    (t.is (= (count many-lookup) 3))
+    (t.is (= many-lookup[0].attrs[0].v.text "Petr"))
+    (t.is (= many-lookup[1].attrs[0].v.text "David"))
+    (t.is (= (count many-lookup[2].attrs) 0))
+    (t.is (= (count invalid.attrs) 0))))
 
 (t.deftest datascript-pull-lookup-ref-subset
   (defer (free_all context.allocator))
