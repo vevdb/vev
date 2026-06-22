@@ -356,6 +356,46 @@
     (t.is (= nested.rows[0].pulls[0].attrs[0].v.entity 2))
     (t.is (= nested.rows[0].pulls[0].attrs[0].attrs[0].v.text "Grace Hopper"))))
 
+(t.deftest datascript-parser-tx-text-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema (vev.transact-text
+                 (addr conn)
+                 "[[:db/add 100 :db/ident :user/email] [:db/add 100 :db/valueType :db.type/string] [:db/add 100 :db/unique :db.unique/identity] [:db/add 101 :db/ident :user/friend] [:db/add 101 :db/valueType :db.type/ref] [:db/add 102 :db/ident :user/address] [:db/add 102 :db/valueType :db.type/ref]]")
+        initial (vev.transact-text
+                  (addr conn)
+                  "[[:db/add 1 :user/email \"ada@example.com\"] [:db/add 1 :user/name \"Ada\"] [:db/add 1 :user/friend [:user/email \"ada@example.com\"]] {:db/id \"grace\" :user/name \"Grace\" :user/friend 1} {:user/name \"Generated\"} {:db/id [:user/email \"ada@example.com\"] :user/age 37} {:db/id 3 :user/name \"Parent\" :user/address {:user/city \"London\"}}]")
+        names (vev.q-text
+                initial.db_after
+                "[:find ?name :where [?e :user/name ?name]]")
+        age (vev.q-text
+              initial.db_after
+              "[:find ?age :where [1 :user/age ?age]]")
+        nested (vev.q-text
+                 initial.db_after
+                 "[:find ?city :where [3 :user/address ?address] [?address :user/city ?city]]")
+        cas (vev.transact-text
+              (addr conn)
+              "[[:db.fn/cas 1 :user/friend [:user/email \"ada@example.com\"] 3]]")
+        friend (vev.q-text
+                 cas.db_after
+                 "[:find ?friend :where [1 :user/friend ?friend]]")
+        retract (vev.transact-text
+                  (addr conn)
+                  "[[:db/retract 1 :user/name \"Ada\"] [:db.fn/retractAttribute 3 :user/address] [:db.fn/retractEntity [:user/email \"ada@example.com\"]]]")
+        remaining (vev.q-text
+                    retract.db_after
+                    "[:find ?e :where [?e :user/email \"ada@example.com\"]]")]
+    (t.is schema.ok)
+    (t.is initial.ok)
+    (t.is (>= (count names.rows) 3))
+    (t.is (= age.rows[0].values[0].int_value 37))
+    (t.is (= nested.rows[0].values[0].text "London"))
+    (t.is cas.ok)
+    (t.is (= friend.rows[0].values[0].entity 3))
+    (t.is retract.ok)
+    (t.is (= (count remaining.rows) 0))))
+
 (t.deftest edn-reader-parses-nested-forms
   (defer (free_all context.allocator))
   (let [doc (vev.empty-edn-doc)

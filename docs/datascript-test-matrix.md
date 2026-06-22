@@ -40,19 +40,19 @@ These are the main in-memory parity target before durable storage.
 
 ## Parser And Interop
 
-These matter for broad consumption, but they should not block the in-memory
-semantic engine. They become active once EDN string APIs and prepared queries
-exist.
+These matter for broad consumption. The first query and transaction text APIs
+now exist, but full parser parity still trails the native Kvist literal surface.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `parser.cljc` | 3 | partial | flat EDN node reader started for nested vectors/lists/maps; full EDN lowering remains |
+| `parser.cljc` | 3 | partial | flat EDN node reader supports nested vectors/lists/maps and now feeds query/tx text subsets; full EDN lowering remains |
 | `parser_find.cljc` | 4 | interop | query parser |
 | `parser_query.cljc` | 1 | partial | EDN-reader-backed `[:find ... :where ...]` text query subset covered; validation remains |
 | `parser_return_map.cljc` | 1 | interop | query parser |
 | `parser_rules.cljc` | 3 | interop | query parser plus rules |
 | `parser_where.cljc` | 6 | partial | data pattern, predicate, built-in function, missing?, not, and or clauses covered; rules remain |
 | `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, and nested maps; options remain |
+| transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, and nested maps through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
 
@@ -75,9 +75,10 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Port `transact.cljc`, `upsert.cljc`, and `validation.cljc` as one tx/schema
-   batch, focusing on real semantics before exact message text.
-2. Finish tuple/index public API behavior as one schema/index batch.
-3. Keep primary collection DB syntax for EDN/interoperability APIs; Kvist native
+1. Broaden parser/EDN APIs around query inputs, rules, pull options, and exact
+   validation now that the first query/tx text paths are active.
+2. Port remaining `transact.cljc`, `upsert.cljc`, and `validation.cljc`
+   semantics that are not host-runtime-specific.
+3. Finish tuple/index public API behavior as one schema/index batch.
+4. Keep primary collection DB syntax for EDN/interoperability APIs; Kvist native
    code uses named collection sources for raw datom rows.
-4. Start parser/EDN API work once semantic query/tx behavior is less volatile.

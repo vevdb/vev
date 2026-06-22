@@ -1,6 +1,7 @@
 (package vev)
 
 (import arr "kvist:arr")
+(import fmt "core:fmt")
 (import kstr "kvist:str")
 (import math "core:math")
 (import strings "core:strings")
@@ -151,6 +152,23 @@
   ok: bool
   error: string
   tx_data: [dynamic]Tx-Data
+})
+
+(defenum Tx-EDN-Entity-Kind [
+  Invalid
+  Id
+  Tempid
+  LookupRef
+  Ident
+])
+
+(defstruct Tx-EDN-Entity {
+  kind: Tx-EDN-Entity-Kind
+  e: u64
+  tempid: string
+  lookup_attr: string
+  lookup_value: Value
+  ident: string
 })
 
 (defstruct Tuple-Schema {
@@ -3865,6 +3883,444 @@
     (if ok
       (q-query db query-value)
       (Result-Set {rows: (make [dynamic]Result-Row)}))))
+
+(defn edn-attr-text [doc: EDN-Doc, node-index: int] -> [attr: string, ok: bool]
+  (when (= node-index -1)
+    (return "" false))
+  (let [node doc.nodes[node-index]]
+    (cond
+      (= node.kind .Keyword) (return node.text true)
+      (= node.kind .String) (return node.text true)
+      :else (return "" false))))
+
+(defn edn-value-from-node [doc: EDN-Doc, node-index: int] -> [value: Value, ok: bool, error: string]
+  (when (= node-index -1)
+    (return (Value {}) false "expected EDN value"))
+  (let [node doc.nodes[node-index]]
+    (case node.kind
+      .Nil (return (value-nil) true "")
+      .Bool (return (value-bool node.bool_value) true "")
+      .Int (return (value-int node.int_value) true "")
+      .String (return (value-string node.text) true "")
+      .Symbol (return (value-string node.text) true "")
+      .Keyword (return (value-keyword node.text) true "")
+      .Vector (let [items (make [dynamic]Value) :defer
+                    child node.first_child]
+                (while (not (= child -1))
+                  (let [[item item-ok item-error] (edn-value-from-node doc child)]
+                    (when (not item-ok)
+                      (return (Value {}) false item-error))
+                    (arr.push! items item))
+                  (set! child doc.nodes[child].next_sibling))
+                (return (value-vector (slice items 0)) true ""))
+      .Map (let [items (make [dynamic]Value) :defer
+                 child node.first_child]
+             (while (not (= child -1))
+               (let [value-node doc.nodes[child].next_sibling]
+                 (when (= value-node -1)
+                   (return (Value {}) false "EDN map value missing"))
+                 (let [[key key-ok key-error] (edn-value-from-node doc child)
+                       [value value-ok value-error] (edn-value-from-node doc value-node)]
+                   (when (not key-ok)
+                     (return (Value {}) false key-error))
+                   (when (not value-ok)
+                     (return (Value {}) false value-error))
+                   (arr.push! items key)
+                   (arr.push! items value)
+                   (set! child doc.nodes[value-node].next_sibling))))
+             (return (value-map (slice items 0)) true ""))
+      :else (return (Value {}) false "unsupported EDN value"))))
+
+(defn edn-lookup-ref-node? [doc: EDN-Doc, node-index: int] -> bool
+  (when (or (= node-index -1)
+            (not (= doc.nodes[node-index].kind .Vector))
+            (not (= doc.nodes[node-index].child_count 2)))
+    (return false))
+  (let [attr-node (edn-child-at doc node-index 0)
+        [attr attr-ok] (edn-attr-text doc attr-node)]
+    (and attr-ok (strings.has_prefix attr ":"))))
+
+(defn edn-entity-ref-from-node [doc: EDN-Doc, node-index: int] -> [ref: Tx-EDN-Entity, ok: bool, error: string]
+  (when (= node-index -1)
+    (return (Tx-EDN-Entity {}) false "expected entity id"))
+  (let [node doc.nodes[node-index]]
+    (cond
+      (= node.kind .Int)
+        (return (Tx-EDN-Entity {kind: .Id e: (u64 node.int_value)}) true "")
+      (= node.kind .String)
+        (return (Tx-EDN-Entity {kind: .Tempid tempid: node.text}) true "")
+      (= node.kind .Keyword)
+        (if (current-tx-tempid? node.text)
+          (return (Tx-EDN-Entity {kind: .Tempid tempid: node.text}) true "")
+          (return (Tx-EDN-Entity {kind: .Ident ident: node.text}) true ""))
+      (edn-lookup-ref-node? doc node-index)
+        (let [attr-node (edn-child-at doc node-index 0)
+              value-node (edn-child-at doc node-index 1)
+              [attr attr-ok] (edn-attr-text doc attr-node)
+              [value value-ok value-error] (edn-value-from-node doc value-node)]
+          (when (not attr-ok)
+            (return (Tx-EDN-Entity {}) false "lookup ref attribute must be keyword or string"))
+          (when (not value-ok)
+            (return (Tx-EDN-Entity {}) false value-error))
+          (return (Tx-EDN-Entity {kind: .LookupRef lookup_attr: attr lookup_value: value}) true ""))
+      :else (return (Tx-EDN-Entity {}) false "entity id must be int, tempid string, ident keyword, or lookup ref"))))
+
+(defn tx-add-from-ref [ref: Tx-EDN-Entity, a: string, v: Value] -> Tx-Data
+  (case ref.kind
+    .Id (add ref.e a v)
+    .Tempid (add-tempid ref.tempid a v)
+    .LookupRef (add-lookup-ref ref.lookup_attr ref.lookup_value a v)
+    .Ident (add-ident ref.ident a v)
+    :else (Tx-Data {})))
+
+(defn tx-add-value-tempid-from-ref [ref: Tx-EDN-Entity, a: string, value-tempid: string] -> Tx-Data
+  (case ref.kind
+    .Id (add-value-tempid ref.e a value-tempid)
+    .Tempid (add-tempid-value-tempid ref.tempid a value-tempid)
+    .LookupRef (add-lookup-ref-value-tempid ref.lookup_attr ref.lookup_value a value-tempid)
+    .Ident (add-ident-value-tempid ref.ident a value-tempid)
+    :else (Tx-Data {})))
+
+(defn tx-add-value-lookup-ref-from-ref [ref: Tx-EDN-Entity, a: string, value-attr: string, value-value: Value] -> Tx-Data
+  (case ref.kind
+    .Id (add-value-lookup-ref ref.e a value-attr value-value)
+    .Tempid (add-tempid-value-lookup-ref ref.tempid a value-attr value-value)
+    .LookupRef (Tx-Data {op: ":db/add"
+                         lookup_attr: ref.lookup_attr
+                         lookup_value: ref.lookup_value
+                         has_lookup_ref: true
+                         a: a
+                         value_lookup_attr: value-attr
+                         value_lookup_value: value-value
+                         has_value_lookup_ref: true})
+    .Ident (Tx-Data {op: ":db/add"
+                     ident: ref.ident
+                     has_ident: true
+                     a: a
+                     value_lookup_attr: value-attr
+                     value_lookup_value: value-value
+                     has_value_lookup_ref: true})
+    :else (Tx-Data {})))
+
+(defn tx-add-ref-value-from-ref [ref: Tx-EDN-Entity, a: string, value-ref: Tx-EDN-Entity] -> Tx-Data
+  (case value-ref.kind
+    .Id (tx-add-from-ref ref a (value-entity value-ref.e))
+    .Tempid (tx-add-value-tempid-from-ref ref a value-ref.tempid)
+    .LookupRef (tx-add-value-lookup-ref-from-ref ref a value-ref.lookup_attr value-ref.lookup_value)
+    .Ident (tx-add-from-ref ref a (value-keyword value-ref.ident))
+    :else (Tx-Data {})))
+
+(defn tx-retract-from-ref [ref: Tx-EDN-Entity, a: string, v: Value] -> Tx-Data
+  (case ref.kind
+    .Id (retract ref.e a v)
+    .Tempid (retract-tempid ref.tempid a v)
+    .LookupRef (retract-lookup-ref ref.lookup_attr ref.lookup_value a v)
+    .Ident (retract-ident ref.ident a v)
+    :else (Tx-Data {})))
+
+(defn tx-retract-value-lookup-ref-from-ref [ref: Tx-EDN-Entity, a: string, value-attr: string, value-value: Value] -> Tx-Data
+  (case ref.kind
+    .Id (retract-value-lookup-ref ref.e a value-attr value-value)
+    .Tempid (Tx-Data {op: ":db/retract"
+                      tempid: ref.tempid
+                      has_tempid: true
+                      a: a
+                      value_lookup_attr: value-attr
+                      value_lookup_value: value-value
+                      has_value_lookup_ref: true})
+    .LookupRef (Tx-Data {op: ":db/retract"
+                         lookup_attr: ref.lookup_attr
+                         lookup_value: ref.lookup_value
+                         has_lookup_ref: true
+                         a: a
+                         value_lookup_attr: value-attr
+                         value_lookup_value: value-value
+                         has_value_lookup_ref: true})
+    .Ident (Tx-Data {op: ":db/retract"
+                     ident: ref.ident
+                     has_ident: true
+                     a: a
+                     value_lookup_attr: value-attr
+                     value_lookup_value: value-value
+                     has_value_lookup_ref: true})
+    :else (Tx-Data {})))
+
+(defn tx-retract-attr-from-ref [ref: Tx-EDN-Entity, a: string] -> Tx-Data
+  (case ref.kind
+    .Id (retract-attr ref.e a)
+    .Tempid (retract-attr-tempid ref.tempid a)
+    .LookupRef (retract-attr-lookup-ref ref.lookup_attr ref.lookup_value a)
+    .Ident (retract-attr-ident ref.ident a)
+    :else (Tx-Data {})))
+
+(defn tx-retract-entity-from-ref [ref: Tx-EDN-Entity] -> Tx-Data
+  (case ref.kind
+    .Id (retract-entity ref.e)
+    .Tempid (retract-entity-tempid ref.tempid)
+    .LookupRef (retract-entity-lookup-ref ref.lookup_attr ref.lookup_value)
+    .Ident (retract-entity-ident ref.ident)
+    :else (Tx-Data {})))
+
+(defn tx-cas-from-ref [ref: Tx-EDN-Entity, a: string, expected: Value, v: Value] -> Tx-Data
+  (case ref.kind
+    .Id (cas ref.e a expected v)
+    .Tempid (cas-tempid ref.tempid a expected v)
+    .LookupRef (cas-lookup-ref ref.lookup_attr ref.lookup_value a expected v)
+    .Ident (Tx-Data {op: ":db.fn/cas" ident: ref.ident has_ident: true a: a expected: expected v: v})
+    :else (Tx-Data {})))
+
+(defn tx-cas-lookup-values-from-ref [ref: Tx-EDN-Entity, a: string, expected: Value, has-expected-lookup: bool, expected-attr: string, expected-value: Value, v: Value, has-value-lookup: bool, value-attr: string, value-value: Value] -> Tx-Data
+  (let [data (tx-cas-from-ref ref a expected v)]
+    (when has-expected-lookup
+      (set! data.expected_lookup_attr expected-attr)
+      (set! data.expected_lookup_value expected-value)
+      (set! data.has_expected_lookup_ref true))
+    (when has-value-lookup
+      (set! data.value_lookup_attr value-attr)
+      (set! data.value_lookup_value value-value)
+      (set! data.has_value_lookup_ref true))
+    data))
+
+(defn edn-lookup-ref-parts [doc: EDN-Doc, node-index: int] -> [attr: string, value: Value, ok: bool, error: string]
+  (when (not (edn-lookup-ref-node? doc node-index))
+    (return "" (Value {}) false "expected lookup ref"))
+  (let [attr-node (edn-child-at doc node-index 0)
+        lookup-value-node (edn-child-at doc node-index 1)
+        [lookup-attr attr-ok] (edn-attr-text doc attr-node)
+        [lookup-value value-ok value-error] (edn-value-from-node doc lookup-value-node)]
+    (when (not attr-ok)
+      (return "" (Value {}) false "lookup ref attribute must be keyword or string"))
+    (when (not value-ok)
+      (return "" (Value {}) false value-error))
+    (return lookup-attr lookup-value true "")))
+
+(defn append-edn-tx-add-value! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, ref: Tx-EDN-Entity, a: string, value-node: int] -> [ok: bool, error: string]
+  (if (and (= doc.nodes[value-node].kind .String)
+           (not (edn-lookup-ref-node? doc value-node)))
+    (do
+      (arr.push! out^ (tx-add-from-ref ref a (value-string doc.nodes[value-node].text)))
+      (return true ""))
+    (if (edn-lookup-ref-node? doc value-node)
+      (let [[lookup-attr lookup-value lookup-ok lookup-error] (edn-lookup-ref-parts doc value-node)]
+        (when (not lookup-ok)
+          (return false lookup-error))
+        (arr.push! out^ (tx-add-value-lookup-ref-from-ref ref a lookup-attr lookup-value))
+        (return true ""))
+      (let [[value value-ok value-error] (edn-value-from-node doc value-node)]
+        (when (not value-ok)
+          (return false value-error))
+        (arr.push! out^ (tx-add-from-ref ref a value))
+        (return true "")))))
+
+(defn append-edn-tx-map-attr! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, ref: Tx-EDN-Entity, attr-node: int, value-node: int] -> [ok: bool, error: string]
+  (let [[attr attr-ok] (edn-attr-text doc attr-node)]
+    (when (not attr-ok)
+      (return false "tx map attributes must be keywords or strings"))
+    (when (= attr ":db/id")
+      (return true ""))
+    (if (= doc.nodes[value-node].kind .Vector)
+      (do
+        (if (edn-lookup-ref-node? doc value-node)
+          (append-edn-tx-add-value! out doc ref attr value-node)
+          (let [child doc.nodes[value-node].first_child]
+            (while (not (= child -1))
+              (let [[item-ok item-error] (append-edn-tx-add-value! out doc ref attr child)]
+                (when (not item-ok)
+                  (return false item-error)))
+              (set! child doc.nodes[child].next_sibling))
+            (return true ""))))
+      (if (= doc.nodes[value-node].kind .Map)
+        (let [nested-tempid (fmt.tprintf "__vev_tx_map_%d" value-node)
+              [nested-id nested-has-id nested-id-error] (edn-tx-map-entity-ref doc value-node nested-tempid)]
+          (when (not nested-has-id)
+            (return false nested-id-error))
+          (arr.push! out^ (tx-add-ref-value-from-ref ref attr nested-id))
+          (append-edn-tx-map-items! out doc value-node nested-id))
+        (append-edn-tx-add-value! out doc ref attr value-node)))))
+
+(defn edn-tx-map-entity-ref [doc: EDN-Doc, map-node: int, generated-tempid: string] -> [ref: Tx-EDN-Entity, ok: bool, error: string]
+  (let [child doc.nodes[map-node].first_child]
+    (while (not (= child -1))
+      (let [value-node doc.nodes[child].next_sibling]
+        (when (= value-node -1)
+          (return (Tx-EDN-Entity {}) false "tx map value missing"))
+        (when (edn-keyword-text? doc child ":db/id")
+          (return (edn-entity-ref-from-node doc value-node)))
+        (set! child doc.nodes[value-node].next_sibling)))
+    (return (Tx-EDN-Entity {kind: .Tempid tempid: generated-tempid}) true "")))
+
+(defn append-edn-tx-map-items! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, map-node: int, ref: Tx-EDN-Entity] -> [ok: bool, error: string]
+  (let [child doc.nodes[map-node].first_child]
+    (while (not (= child -1))
+      (let [value-node doc.nodes[child].next_sibling]
+        (when (= value-node -1)
+          (return false "tx map value missing"))
+        (let [[item-ok item-error] (append-edn-tx-map-attr! out doc ref child value-node)]
+          (when (not item-ok)
+            (return false item-error)))
+        (set! child doc.nodes[value-node].next_sibling)))
+    (return true "")))
+
+(defn append-edn-tx-map! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, map-node: int] -> [ok: bool, error: string]
+  (let [generated-tempid (fmt.tprintf "__vev_tx_map_%d" map-node)
+        [ref ref-ok ref-error] (edn-tx-map-entity-ref doc map-node generated-tempid)]
+    (when (not ref-ok)
+      (return false ref-error))
+    (append-edn-tx-map-items! out doc map-node ref)))
+
+(defn append-edn-tx-vector! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, vector-node: int] -> [ok: bool, error: string]
+  (let [op-node (edn-child-at doc vector-node 0)]
+    (when (= op-node -1)
+      (return true ""))
+    (when (not (= doc.nodes[op-node].kind .Keyword))
+      (return false "tx-data operation must be a keyword"))
+    (let [op doc.nodes[op-node].text]
+      (cond
+        (or (= op ":db/add") (= op ":db/retract"))
+          (do
+            (when (and (= op ":db/add") (not (= doc.nodes[vector-node].child_count 4)))
+              (return false ":db/add expects [op e a v]"))
+            (when (and (= op ":db/retract")
+                       (not (= doc.nodes[vector-node].child_count 3))
+                       (not (= doc.nodes[vector-node].child_count 4)))
+              (return false ":db/retract expects [op e a] or [op e a v]"))
+            (let [e-node (edn-child-at doc vector-node 1)
+                  a-node (edn-child-at doc vector-node 2)
+                  v-node (edn-child-at doc vector-node 3)
+                  [ref ref-ok ref-error] (edn-entity-ref-from-node doc e-node)
+                  [attr attr-ok] (edn-attr-text doc a-node)]
+              (when (not ref-ok)
+                (return false ref-error))
+              (when (not attr-ok)
+                (return false "tx-data attributes must be keywords or strings"))
+              (if (= v-node -1)
+                (do
+                  (arr.push! out^ (tx-retract-attr-from-ref ref attr))
+                  (return true ""))
+                (if (= op ":db/add")
+                  (append-edn-tx-add-value! out doc ref attr v-node)
+                  (if (edn-lookup-ref-node? doc v-node)
+                    (let [[lookup-attr lookup-value lookup-ok lookup-error] (edn-lookup-ref-parts doc v-node)]
+                      (when (not lookup-ok)
+                        (return false lookup-error))
+                      (arr.push! out^ (tx-retract-value-lookup-ref-from-ref ref attr lookup-attr lookup-value))
+                      (return true ""))
+                    (let [[value value-ok value-error] (edn-value-from-node doc v-node)]
+                      (when (not value-ok)
+                        (return false value-error))
+                      (arr.push! out^ (tx-retract-from-ref ref attr value))
+                      (return true "")))))))
+        (or (= op ":db/retractEntity") (= op ":db.fn/retractEntity"))
+          (do
+            (when (not (= doc.nodes[vector-node].child_count 2))
+              (return false ":db/retractEntity expects [op e]"))
+            (let [[ref ref-ok ref-error] (edn-entity-ref-from-node doc (edn-child-at doc vector-node 1))]
+              (when (not ref-ok)
+                (return false ref-error))
+              (arr.push! out^ (tx-retract-entity-from-ref ref))
+              (return true "")))
+        (= op ":db.fn/retractAttribute")
+          (do
+            (when (not (= doc.nodes[vector-node].child_count 3))
+              (return false ":db.fn/retractAttribute expects [op e a]"))
+            (let [e-node (edn-child-at doc vector-node 1)
+                  a-node (edn-child-at doc vector-node 2)
+                  [ref ref-ok ref-error] (edn-entity-ref-from-node doc e-node)
+                  [attr attr-ok] (edn-attr-text doc a-node)]
+              (when (not ref-ok)
+                (return false ref-error))
+              (when (not attr-ok)
+                (return false "tx-data attributes must be keywords or strings"))
+              (arr.push! out^ (tx-retract-attr-from-ref ref attr))
+              (return true "")))
+        (or (= op ":db.fn/cas") (= op ":db/cas"))
+          (do
+            (when (not (= doc.nodes[vector-node].child_count 5))
+              (return false ":db.fn/cas expects [op e a old new]"))
+            (let [e-node (edn-child-at doc vector-node 1)
+                  a-node (edn-child-at doc vector-node 2)
+                  old-node (edn-child-at doc vector-node 3)
+                  new-node (edn-child-at doc vector-node 4)
+                  [ref ref-ok ref-error] (edn-entity-ref-from-node doc e-node)
+                  [attr attr-ok] (edn-attr-text doc a-node)
+                  expected (Value {})
+                  expected-ok true
+                  expected-error ""
+                  expected-lookup-attr ""
+                  expected-lookup-value (Value {})
+                  has-expected-lookup false
+                  value (Value {})
+                  value-ok true
+                  value-error ""
+                  value-lookup-attr ""
+                  value-lookup-value (Value {})
+                  has-value-lookup false]
+              (when (not ref-ok)
+                (return false ref-error))
+              (when (not attr-ok)
+                (return false "tx-data attributes must be keywords or strings"))
+              (if (edn-lookup-ref-node? doc old-node)
+                (let [[lookup-attr lookup-value lookup-ok lookup-error] (edn-lookup-ref-parts doc old-node)]
+                  (set! expected-lookup-attr lookup-attr)
+                  (set! expected-lookup-value lookup-value)
+                  (set! has-expected-lookup true)
+                  (set! expected-ok lookup-ok)
+                  (set! expected-error lookup-error))
+                (let [[plain-value plain-ok plain-error] (edn-value-from-node doc old-node)]
+                  (set! expected plain-value)
+                  (set! expected-ok plain-ok)
+                  (set! expected-error plain-error)))
+              (if (edn-lookup-ref-node? doc new-node)
+                (let [[lookup-attr lookup-value lookup-ok lookup-error] (edn-lookup-ref-parts doc new-node)]
+                  (set! value-lookup-attr lookup-attr)
+                  (set! value-lookup-value lookup-value)
+                  (set! has-value-lookup true)
+                  (set! value-ok lookup-ok)
+                  (set! value-error lookup-error))
+                (let [[plain-value plain-ok plain-error] (edn-value-from-node doc new-node)]
+                  (set! value plain-value)
+                  (set! value-ok plain-ok)
+                  (set! value-error plain-error)))
+              (when (not expected-ok)
+                (return false expected-error))
+              (when (not value-ok)
+                (return false value-error))
+              (arr.push! out^ (tx-cas-lookup-values-from-ref ref attr expected has-expected-lookup expected-lookup-attr expected-lookup-value value has-value-lookup value-lookup-attr value-lookup-value))
+              (return true "")))
+        :else (return false "unknown tx-data operation")))))
+
+(defn append-edn-tx-item! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, node-index: int] -> [ok: bool, error: string]
+  (case doc.nodes[node-index].kind
+    .Nil (return true "")
+    .Vector (append-edn-tx-vector! out doc node-index)
+    .Map (append-edn-tx-map! out doc node-index)
+    :else (return false "tx-data expects vector or map items")))
+
+(defn parse-tx-text! [out: ^[dynamic]Tx-Data, text: string] -> [ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return false read-error))
+    (when (or (= doc.root -1) (not (= doc.nodes[doc.root].kind .Vector)))
+      (delete doc.nodes)
+      (return false "tx text must be an EDN vector"))
+    (let [child doc.nodes[doc.root].first_child]
+      (while (not (= child -1))
+        (let [[item-ok item-error] (append-edn-tx-item! out doc child)]
+          (when (not item-ok)
+            (delete doc.nodes)
+            (return false item-error)))
+        (set! child doc.nodes[child].next_sibling)))
+    (delete doc.nodes)
+    (return true "")))
+
+(defn transact-text [conn: ^Conn, text: string] -> Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (when (not parse-ok)
+      (return (failed-tx-report conn^.db parse-error)))
+    (transact-tx-data conn (slice tx-data 0))))
 
 (defn query-with-rules [query: Query, rules: []Rule] -> Query
   (let [out query]

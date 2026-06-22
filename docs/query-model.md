@@ -99,6 +99,12 @@ The current in-memory implementation has two query frontends:
 - a narrow text API, `q-text` / `parse-query-text!`, that parses a minimal
   `[:find ... :where ...]` subset for early interop work
 
+The transaction side has the same split:
+
+- a Kvist tx-data literal macro used by `transact`
+- a text API, `transact-text` / `parse-tx-text!`, that parses common
+  DataScript-shaped EDN tx-data strings into normal `Tx-Data` before execution
+
 Supported now:
 
 - `:find` with one or more variables
@@ -108,6 +114,9 @@ Supported now:
 - standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, and `avg` aggregates
 - text queries with simple data clauses, relation find, collection find,
   strings, booleans, ints, keywords, wildcards, and source vars
+- text transactions with `:db/add`, `:db/retract`, `:db/retractEntity`,
+  `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, tempids,
+  idents, generated map ids, and nested maps through ref attributes
 - datom clauses shaped like `[e a]` or `[e a v]`
 - source-var datom clauses shaped like `[$ e a]` or `[$ e a v]` with single-source semantics
 - reverse attrs in datom clauses, such as `:_user/friend`
