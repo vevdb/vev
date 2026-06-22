@@ -17,21 +17,21 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | port remaining basic query cases as one batch |
+| `query.cljc` | 11 | partial | collection DB behavior, host functions, and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
-| `query_fns.cljc` | 7 | partial | decide host function surface; port all built-in function cases |
-| `query_not.cljc` | 5 | partial | insufficient-binding/error cases and default-source variants |
-| `query_or.cljc` | 5 | partial | validation/error cases and default-source variants |
-| `query_pull.cljc` | 8 | partial | multi-source pull after query source semantics are settled |
+| `query_fns.cljc` | 7 | partial | built-ins covered; decide host function surface and exact error behavior |
+| `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
+| `query_or.cljc` | 5 | partial | source semantics covered; validation/error cases remain |
+| `query_pull.cljc` | 8 | partial | multi-source pull covered; finish exact find-spec return shapes |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
-| `query_rules.cljc` | 3 | partial | rule source args, validation, and broader recursion/fixpoint behavior |
+| `query_rules.cljc` | 3 | partial | source args, recursion, and repeated calls covered; validation and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | remaining built-ins and exact edge cases; custom aggregates later |
-| `transact.cljc` | 19 | partial | current tx tempids and unused value-tempid rejection covered; tx functions, bad forms, exact no-op/retract behavior remain |
-| `upsert.cljc` | 7 | partial | vector tx tempid ordering and unique-value no-upsert covered; remaining conflict matrix |
+| `transact.cljc` | 19 | partial | broad tx semantics and retract not-found/idempotency covered; tx functions, bad forms, and exact errors remain |
+| `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, and main conflict matrix covered; exact messages remain |
 | `validation.cljc` | 2 | partial | bad transaction forms and schema validation errors |
-| `index.cljc` | 5 | partial | checked indexed-attribute errors now started; finish exact index surface |
-| `tuples.cljc` | 13 | partial | remaining schema validation and tuple upsert/conflict matrix |
-| `lookup_refs.cljc` | 5 | partial | exact invalid lookup-ref behavior |
+| `index.cljc` | 5 | partial | main index surface covered; exact indexed-attribute errors remain |
+| `tuples.cljc` | 11 | partial | remaining schema validation and tuple upsert/conflict matrix |
+| `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
 | `components.cljc` | 2 | partial | exact schema validation and render/touch shapes |
 | `pull_api.cljc` | 17 | partial | xform/visitor options and exact collection/scalar shapes |
@@ -75,9 +75,9 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Finish `index.cljc` and `tuples.cljc` semantic cases.
-2. Port `transact.cljc`, `upsert.cljc`, and `validation.cljc` as one tx/schema
-   batch.
-3. Port remaining query namespaces by feature cluster, not one assertion at a
-   time.
-4. Only then start parser/EDN API work for interop.
+1. Port `transact.cljc`, `upsert.cljc`, and `validation.cljc` as one tx/schema
+   batch, focusing on real semantics before exact message text.
+2. Finish tuple/index public API behavior as one schema/index batch.
+3. Decide whether collection DB inputs are part of Vev's native API or only EDN
+   interop compatibility.
+4. Start parser/EDN API work once semantic query/tx behavior is less volatile.
