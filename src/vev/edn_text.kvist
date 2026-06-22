@@ -884,11 +884,17 @@
       :else (do))
     (return true "")))
 
-(defn rule-from-text-parts [name: string, params: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, steps: []Query-Step] -> Rule
+(defn rule-from-text-parts [name: string, required-param-count: int, params: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, steps: []Query-Step] -> Rule
   (let [step-kinds (make [dynamic]Query-Step-Kind) :defer]
     (for [step steps]
       (arr.push! step-kinds step.kind))
-    (make-rule name params clauses predicates function-clauses grounds rule-calls not-groups or-groups (slice step-kinds 0))))
+    (make-rule-with-required name required-param-count params clauses predicates function-clauses grounds rule-calls not-groups or-groups (slice step-kinds 0))))
+
+(defn append-edn-rule-param! [params: ^[dynamic]string, doc: EDN-Doc, node: int] -> [ok: bool, error: string]
+  (when (not (edn-var? doc node))
+    (return false "rule params must be variables"))
+  (arr.push! params^ doc.nodes[node].text)
+  (return true ""))
 
 (defn append-edn-rule! [out: ^[dynamic]Rule, doc: EDN-Doc, rule-node: int] -> [ok: bool, error: string]
   (when (or (= rule-node -1) (not (= doc.nodes[rule-node].kind .Vector)))
@@ -900,6 +906,7 @@
       (when (or (= name-node -1) (not (= doc.nodes[name-node].kind .Symbol)))
         (return false "rule head must start with a symbol"))
         (let [params (make [dynamic]string) :defer
+            required-param-count 0
             clauses (make [dynamic]Clause) :defer
             predicates (make [dynamic]Predicate) :defer
             function-clauses (make [dynamic]Function-Clause) :defer
@@ -912,11 +919,26 @@
             steps (make [dynamic]Query-Step) :defer
             param doc.nodes[name-node].next-sibling
             body doc.nodes[head].next-sibling]
-        (while (not (= param -1))
-          (when (not (edn-var? doc param))
-            (return false "rule params must be variables"))
-          (arr.push! params doc.nodes[param].text)
+        (when (= param -1)
+          (return false "Cannot parse rule-vars"))
+        (when (= doc.nodes[param].kind .Vector)
+          (let [required doc.nodes[param].first-child]
+            (when (= required -1)
+              (return false "Cannot parse rule-vars"))
+            (while (not (= required -1))
+              (let [[param-ok param-error] (append-edn-rule-param! (addr params) doc required)]
+                (when (not param-ok)
+                  (return false param-error)))
+              (set! required-param-count (+ required-param-count 1))
+              (set! required doc.nodes[required].next-sibling)))
           (set! param doc.nodes[param].next-sibling))
+        (while (not (= param -1))
+          (let [[param-ok param-error] (append-edn-rule-param! (addr params) doc param)]
+            (when (not param-ok)
+              (return false param-error)))
+          (set! param doc.nodes[param].next-sibling))
+        (when (= (count params) 0)
+          (return false "Cannot parse rule-vars"))
         (while (not (= body -1))
           (let [[body-ok body-error] (append-edn-where-or-rule-step! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr steps) doc body)]
             (when (not body-ok)
@@ -925,7 +947,7 @@
                     (> (count get-somes) 0))
             (return false "rules text currently does not support get-else or get-some"))
           (set! body doc.nodes[body].next-sibling))
-        (arr.push! out^ (rule-from-text-parts doc.nodes[name-node].text (slice params 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice grounds 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice steps 0)))
+        (arr.push! out^ (rule-from-text-parts doc.nodes[name-node].text required-param-count (slice params 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice grounds 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice steps 0)))
         (return true "")))))
 
 (defn parse-rules-edn! [out: ^[dynamic]Rule, doc: EDN-Doc] -> [ok: bool, error: string]

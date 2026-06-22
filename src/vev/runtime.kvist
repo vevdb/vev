@@ -2955,6 +2955,9 @@
       (let [arg call.args[index]]
         (case arg.kind
           .Var (let [[value value-ok] (binding-lookup outer arg.name)]
+                 (when (and (< index rule.required-param-count)
+                            (not value-ok))
+                   (return out false))
                  (when value-ok
                    (let [[next bind-ok] (binding-with-value out param value)]
                      (when (not bind-ok)
@@ -3454,6 +3457,10 @@
     .Or (let [[ok error] (validate-or-group-bindings (slice available^ 0) query-value.or-groups[step.index])]
           (when (not ok)
             (return false error)))
+    .RuleCall (let [call query-value.rule-calls[step.index]
+                    [ok error] (validate-rule-call-required-bindings (slice available^ 0) (slice query-value.rules 0) call)]
+                (when (not ok)
+                  (return false error)))
     :else (do))
   (append-query-step-output-vars! available query-value step)
   (return true ""))
@@ -3590,6 +3597,13 @@
   (and (= call.name rule.name)
        (= (count call.args) (count rule.params))))
 
+(defn string-slice-has-duplicate? [items: []string] -> bool
+  (for [item index items]
+    (for [other-index (arr.range (+ index 1) (count items))]
+      (when (= item items[other-index])
+        (return true))))
+  false)
+
 (defn validate-rule-call-known [rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
   (let [name-found false]
     (for [rule rules]
@@ -3602,6 +3616,13 @@
       (return false (fmt.tprintf "unknown rule: %s" call.name)))))
 
 (defn validate-rule-definition [rules: []Rule, rule: Rule] -> [ok: bool, error: string]
+  (when (string-slice-has-duplicate? (slice rule.params 0))
+    (return false "Rule variables should be distinct"))
+  (for [other rules]
+    (when (= other.name rule.name)
+      (when (or (not (= other.required-param-count rule.required-param-count))
+                (not (= (count other.params) (count rule.params))))
+        (return false (fmt.tprintf "Arity mismatch for rule: %s" rule.name)))))
   (for [param rule.params]
     (when (not (rule-param-valid? param))
       (return false (fmt.tprintf "rule params must be variables: %s" param))))
@@ -3609,6 +3630,18 @@
     (let [[ok error] (validate-rule-call-known rules call)]
       (when (not ok)
         (return false error))))
+  (return true ""))
+
+(defn validate-rule-call-required-bindings [available: []string, rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
+  (for [rule rules]
+    (when (rule-call-matches-rule? call rule)
+      (for [index (arr.range 0 rule.required-param-count)]
+        (let [arg call.args[index]]
+          (when (= arg.kind .Wildcard)
+            (return false (fmt.tprintf "insufficient bindings for rule: %s" call.name)))
+          (when (and (= arg.kind .Var)
+                     (not (string-slice-contains? available arg.name)))
+            (return false (fmt.tprintf "insufficient bindings for rule: %s" arg.name)))))))
   (return true ""))
 
 (defn validate-query-rules [query-value: Query] -> [ok: bool, error: string]
@@ -4168,6 +4201,7 @@
           owned-or-groups (arr.into [dynamic]Or-Group (slice or-groups 0))
           body-steps (arr.into [dynamic]Query-Step (slice rule.body-steps 0))]
       (Rule {name: rule.name
+             required-param-count: rule.required-param-count
              params: params
              clauses: owned-clauses
              predicates: predicates
