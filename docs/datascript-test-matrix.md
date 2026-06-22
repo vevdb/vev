@@ -68,7 +68,7 @@ These are useful, but not the next engine-parity gate.
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
 | `issues.cljc` | 5 | planned | triage individually; some may already be covered elsewhere |
-| `query_v3.cljc` | 2 | planned | triage after query parity pass |
+| `query_v3.cljc` | 2 | partial | input arity validation and non-collection source validation covered; remaining query-v3 engine surface later |
 | `explode.cljc` | 4 | host | likely implementation/debug tooling specific |
 | `lru.cljc` | 2 | host | DataScript implementation detail |
 | `core.cljc` | 1 | host | test harness/runtime behavior |
