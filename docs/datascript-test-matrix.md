@@ -17,7 +17,7 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | named collection datom sources covered; primary collection DB syntax, host functions, and exact input errors remain |
+| `query.cljc` | 11 | partial | primary/named collection datom sources covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | built-ins covered; decide host function surface and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
@@ -46,12 +46,12 @@ now exist, but full parser parity still trails the native Kvist literal surface.
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
 | `parser.cljc` | 3 | partial | flat EDN node reader supports nested vectors/lists/maps and now feeds query/tx text subsets; full EDN lowering remains |
-| `parser_find.cljc` | 4 | interop | query parser |
-| `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers `:find`, `:in`, named DB sources, optional `:where`, and execution through normal query inputs/sources; validation remains |
-| `parser_return_map.cljc` | 1 | interop | query parser |
-| `parser_rules.cljc` | 3 | partial | ordinary rule calls and rule definitions covered; source-qualified rules and validation remain |
-| `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, predicate, built-in function, missing?, not, or, and ordinary rule clauses covered; relation-source text inputs remain |
-| `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, and nested maps; options remain |
+| `parser_find.cljc` | 4 | partial | text query parser covers scalar, collection, tuple, pull, aggregate, and top-n aggregate find specs; exact validation remains |
+| `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers `:find`, `:with`, `:in`, named DB sources, optional `:where`, and execution through normal query inputs/sources; validation remains |
+| `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
+| `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls and rule definitions covered; validation remains |
+| `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, and ordinary rule clauses covered; exact validation remains |
+| `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, nested maps, and flat `:default`/`:as`/`:limit` option vectors; nested option forms remain |
 | transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, and nested maps through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
@@ -60,8 +60,8 @@ These are useful, but not the next engine-parity gate.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered; listeners remain |
-| `listen.cljc` | 1 | planned | listener API after connection surface |
+| `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered |
+| `listen.cljc` | 1 | partial | named report-sink listeners covered; arbitrary callback/closure API remains |
 | `serialize.cljc` | 5 | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
@@ -75,10 +75,10 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Broaden parser/EDN APIs around pull options, relation-source text inputs, source-qualified rules, and exact
+1. Broaden parser/EDN APIs around pull options, return-map markers, source-qualified rules, and exact
    validation now that the first query/tx text paths are active.
 2. Port remaining `transact.cljc`, `upsert.cljc`, and `validation.cljc`
    semantics that are not host-runtime-specific.
 3. Finish tuple/index public API behavior as one schema/index batch.
-4. Keep primary collection DB syntax for EDN/interoperability APIs; Kvist native
-   code uses named collection sources for raw datom rows.
+4. Continue EDN/interoperability API coverage; primary collection DB rows now
+   have a text API path, while Kvist native code can also use named sources.

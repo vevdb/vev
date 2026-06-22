@@ -9,7 +9,7 @@ DataScript assertion or exact Clojure API shape.
 
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | subset | basic joins, inputs, bindings, relation source joins, named collection datom sources including long `[e a v tx op]` rows, multi-DB source joins, constants, and placeholders covered; primary collection DB syntax, host functions, and exact input errors remain |
+| `query.cljc` | 11 | subset | basic joins, inputs, bindings, relation source joins, primary/named collection datom sources including long `[e a v tx op]` rows, multi-DB source joins, constants, and placeholders covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
 | `query_aggregates.cljc` | 1 | subset | custom aggregates |
 | `query_not.cljc` | 5 | subset | relation and DB source-prefixed forms plus nested inherited/override source covered; error behavior remains |
@@ -29,11 +29,12 @@ DataScript assertion or exact Clojure API shape.
 | `index.cljc` | 5 | partial | main order, `find-datom` prefixes, seek/rseek/range, checked indexed-attribute errors, and sequence compare covered; finish exact public index surface |
 | `tuples.cljc` | 11 | partial | tuple value/component upsert, tuple lookup-ref queries, multi-component unique updates, direct tuple attr add/retract validation, and invalid tuple schema shapes covered; remaining tuple conflict matrix and exact errors |
 | `validation.cljc` | 2 | partial | runtime unknown op, bad attr, bad lookup attr, nil value, and tempid placement validation covered; reader/macro bad forms and exact errors remain |
-| `parser*.cljc` | 19 | partial | query text subset parses relation/collection/pull find, scalar/collection/tuple/relation/named-DB-source `:in`, optional `:where`, data, predicate, built-in function, missing?, not, or, ordinary rule calls/definitions, and transaction text parses common vector/map tx-data; full EDN relation-source text inputs, pull options, source-qualified rules, and validation remain |
-| `conn.cljc` | 2 | subset | conn-from-db/from-datoms and reset reports covered; listeners remain |
+| `parser*.cljc` | 19 | partial | query text subset parses scalar/collection/tuple/pull/aggregate find specs, flat pull option vectors, `:with`, return-map markers for keyed text helpers, scalar/collection/tuple/relation/relation-source/named-DB-source `:in`, optional `:where`, data, predicate, built-in function, missing?, not/not-join, or/or-join, ordinary/source-qualified rule calls and rule definitions, and transaction text parses common vector/map tx-data; nested pull options and exact validation remain |
+| `conn.cljc` | 2 | subset | conn-from-db/from-datoms and reset reports covered |
 | `serialize.cljc` | 5 | subset | init-db from datoms covered; text/EDN/JSON serialization format later |
 | `filter.cljc` | 1 | subset | materialized `filter-db` covers predicate filters, chaining, entity reads, and index-backed queries; exact hash/equality/runtime wrapper behavior remains |
-| `listen.cljc`, `storage.clj`, `datafy.cljc` | 7 | later | app/runtime APIs after core parity |
+| `listen.cljc` | 1 | subset | named report-sink listeners covered; arbitrary callback/closure API remains |
+| `storage.clj`, `datafy.cljc` | 6 | later | app/runtime APIs after core parity |
 
 Near-term rule: port one namespace at a time, and only mark `covered` when the
 remaining differences are intentional non-Clojure API shape differences.
