@@ -198,6 +198,8 @@
 
 (defstruct Pull-Find {
   var: string
+  source: string
+  has_source: bool
   has_pattern_var: bool
   pattern_var: string
   attrs: []string
@@ -348,6 +350,11 @@
   lookup_value: Value
   lookup_attrs: []string
   lookup_values: []Value
+})
+
+(defstruct DB-Source {
+  name: string
+  db: DB
 })
 
 (defstruct Index-Arg {
@@ -1504,10 +1511,15 @@
     (contains? ["$" "%"] (source form))
     false))
 
+(defmacro- input-db-source? [spec]
+  // ponytail: $1..$9 covers DataScript tests; replace with digit parsing if users need more sources.
+  (and (symbol? spec)
+       (contains? ["$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"] (source spec))))
+
 (defmacro- relation-source? [form]
   (and (symbol? form)
        (starts-with? (source form) "$")
-       (not (input-source? form))))
+       (not (= (source form) "$"))))
 
 (defmacro- input-wildcard? [form]
   (and (symbol? form)
@@ -1521,7 +1533,7 @@
 (defmacro- emit-input-vars [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (input-source? (first forms))
+    (if (or (input-source? (first forms)) (input-db-source? (first forms)))
       (emit-input-vars (rest forms))
       (if (input-collection? (first forms))
         (emit-input-vars (rest forms))
@@ -1536,7 +1548,7 @@
 (defmacro- emit-collection-input-vars [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (input-source? (first forms))
+    (if (or (input-source? (first forms)) (input-db-source? (first forms)))
       (emit-collection-input-vars (rest forms))
       (if (input-collection? (first forms))
         (forms
@@ -1562,7 +1574,7 @@
 (defmacro- emit-tuple-inputs [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (input-source? (first forms))
+    (if (or (input-source? (first forms)) (input-db-source? (first forms)))
       (emit-tuple-inputs (rest forms))
       (if (input-tuple? (first forms))
         (forms
@@ -1579,7 +1591,7 @@
 (defmacro- emit-relation-inputs [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (input-source? (first forms))
+    (if (or (input-source? (first forms)) (input-db-source? (first forms)))
       (emit-relation-inputs (rest forms))
       (if (input-relation? (first forms))
         (forms
@@ -2502,11 +2514,14 @@
 
 (defmacro- emit-pull-find [form]
   (if (pull-find? form)
-    (let [var (if (= (count form) 4) (nth form 2) (nth form 1))
+    (let [source-name (if (= (count form) 4) (source (nth form 1)) "")
+          var (if (= (count form) 4) (nth form 2) (nth form 1))
           pattern (if (= (count form) 4) (nth form 3) (nth form 2))]
       (if (vector? pattern)
         (quasiquote
           (Pull-Find {var: (unquote (emit-find-var var))
+                      source: (unquote source-name)
+                      has_source: (unquote (= (count form) 4))
                       has_pattern_var: false
                       pattern_var: ""
                       attrs: ([]string [(splice (emit-pull-attrs pattern))])
@@ -2514,6 +2529,8 @@
         (if (symbol? pattern)
           (quasiquote
             (Pull-Find {var: (unquote (emit-find-var var))
+                        source: (unquote source-name)
+                        has_source: (unquote (= (count form) 4))
                         has_pattern_var: true
                         pattern_var: (unquote (emit-find-var pattern))
                         attrs: ([]string [])
@@ -2717,7 +2734,7 @@
       (pull-pattern-var-in-finds? (rest forms) name))))
 
 (defmacro- input-spec-var-name [form]
-  (if (input-source? form)
+  (if (or (input-source? form) (input-db-source? form))
     ""
     (if (input-collection? form)
       (emit-find-var (nth form 0))
@@ -2749,7 +2766,7 @@
     false))
 
 (defmacro- scalar-lookup-ref-input? [spec value]
-  (if (input-source? spec)
+  (if (or (input-source? spec) (input-db-source? spec))
     false
     (if (input-collection? spec)
       false
@@ -2775,6 +2792,7 @@
 
 (defmacro- scalar-input-spec? [spec]
   (not (or (input-source? spec)
+           (input-db-source? spec)
            (input-collection? spec)
            (input-relation? spec)
            (input-tuple? spec))))
@@ -2808,19 +2826,23 @@
     (if (= (count specs) 0)
       (forms)
       (let [spec (first specs)]
-        (if (input-source? spec)
+        (if (input-db-source? spec)
+          (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)
+          (if (input-source? spec)
           (if (= (source spec) "%")
             (if (rule-list? (first values))
               (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)
               (emit-query-input-list-for-kind find-items (rest specs) values kind))
-            (emit-query-input-list-for-kind find-items (rest specs) values kind))
+            (if (= (source spec) "$")
+              (emit-query-input-list-for-kind find-items (rest specs) values kind)
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)))
           (if (rule-list? (first values))
             (emit-query-input-list-for-kind find-items specs (rest values) kind)
             (if (input-kind? spec kind)
               (forms
                 (emit-query-input-for-spec find-items spec (first values))
                 (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind))
-              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind))))))))
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)))))))))
 
 (defmacro- emit-query-input-list-for-query [find-items specs values]
   (if (= (count values) 0)
@@ -2832,6 +2854,24 @@
         (emit-query-input-list-for-kind find-items specs values "collection")
         (emit-query-input-list-for-kind find-items specs values "tuple")
         (emit-query-input-list-for-kind find-items specs values "relation")))))
+
+(defmacro- emit-query-db-source-list [specs values]
+  (if (or (= (count specs) 0) (= (count values) 0))
+    (forms)
+    (let [spec (first specs)]
+      (if (input-db-source? spec)
+        (forms
+          (quasiquote (DB-Source {name: (unquote (source spec)) db: (unquote (first values))}))
+          (emit-query-db-source-list (rest specs) (rest values)))
+        (if (input-source? spec)
+          (if (= (source spec) "%")
+            (if (rule-list? (first values))
+              (emit-query-db-source-list (rest specs) (rest values))
+              (emit-query-db-source-list (rest specs) values))
+            (emit-query-db-source-list (rest specs) values))
+          (if (rule-list? (first values))
+            (emit-query-db-source-list specs (rest values))
+            (emit-query-db-source-list (rest specs) (rest values))))))))
 
 (defmacro- emit-query-input-list [forms]
   (if (= (count forms) 0)
@@ -2905,12 +2945,13 @@
           find-items (datalog-find-items tail)
           input-items (datalog-input-items tail)]
       (quasiquote
-        (q-query-with-inputs
+        (q-query-with-sources
           (unquote db)
           (query-with-rules
             (unquote (datalog query-form))
             ([]Rule [(splice (emit-rule-input-rules inputs))]))
-          ([]Query-Input [(splice (emit-query-input-list-for-query find-items input-items inputs))]))))
+          ([]Query-Input [(splice (emit-query-input-list-for-query find-items input-items inputs))])
+          ([]DB-Source [(splice (emit-query-db-source-list input-items inputs))]))))
     (quasiquote
       (q-query-with-inputs
         (unquote db)
@@ -4747,6 +4788,22 @@
           (arr.push! out next))))
     out))
 
+(defn source-db-lookup [db: DB, sources: []DB-Source, name: string] -> [source-db: DB, ok: bool]
+  (when (= name "$")
+    (return db true))
+  (for [source sources]
+    (when (= source.name name)
+      (return source.db true)))
+  (return db false))
+
+(defn unsourced-clause [clause: Clause] -> Clause
+  (Clause {e: clause.e
+           a: clause.a
+           v: clause.v
+           source: ""
+           has_source: false
+           source_width: 0}))
+
 (defn append-bindings-after-clause! [out: ^[dynamic]Binding, db: DB, clause-value: Clause, binding: Binding]
   (when clause-value.has_source
     (let [source-bindings (bindings-after-relation-source-clause clause-value binding)]
@@ -4762,6 +4819,14 @@
           (let [next (clone-binding binding)]
             (when (datom-clause-matches? db datom clause-value (addr next))
               (arr.push! out^ next))))))))
+
+(defn append-bindings-after-clause-with-sources! [out: ^[dynamic]Binding, db: DB, sources: []DB-Source, clause-value: Clause, binding: Binding]
+  (when clause-value.has_source
+    (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+      (when source-ok
+        (append-bindings-after-clause! out source-db (unsourced-clause clause-value) binding)
+        (return))))
+  (append-bindings-after-clause! out db clause-value binding))
 
 (defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
   (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
@@ -5372,25 +5437,34 @@
     (pull-pattern-input query inputs pull-find.pattern_var)
     (return pull-find.pattern true)))
 
-(defn pulls-for-binding [db: DB, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
+(defn pull-db-for-find [db: DB, sources: []DB-Source, pull-find: Pull-Find] -> [pull-db: DB, ok: bool]
+  (if pull-find.has_source
+    (source-db-lookup db sources pull-find.source)
+    (return db true)))
+
+(defn pulls-for-binding-with-sources [db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
   (let [out (make [dynamic]Pull-Result 0 (count query.pulls))]
     (for [pull-find query.pulls]
       (let [[entity ok] (binding-lookup binding pull-find.var)]
         (if (and ok (= entity.kind .Entity))
-          (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)]
-            (if pattern-ok
-              (arr.push! out (pull-pattern-spec db entity.entity pattern))
+          (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)
+                [pull-db pull-db-ok] (pull-db-for-find db sources pull-find)]
+            (if (and pattern-ok pull-db-ok)
+              (arr.push! out (pull-pattern-spec pull-db entity.entity pattern))
               (return out false)))
           (return out false))))
     (return out true)))
 
-(defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, db: DB, query: Query, inputs: []Query-Input, bindings: []Binding]
+(defn pulls-for-binding [db: DB, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
+  (pulls-for-binding-with-sources db ([]DB-Source []) query inputs binding))
+
+(defn append-aggregate-rows-with-sources! [rows: ^[dynamic]Result-Row, db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, bindings: []Binding]
   (for [binding bindings]
     (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
       (when ok
         (when (not (row-value-prefix-exists? (slice rows^ 0) (slice group-values 0)))
             (let [values (arr.into [dynamic]Value (slice group-values 0))
-                  [pulls pulls-ok] (pulls-for-binding db query inputs binding)]
+                  [pulls pulls-ok] (pulls-for-binding-with-sources db sources query inputs binding)]
             (when (not pulls-ok)
               (delete pulls)
               (return))
@@ -5402,7 +5476,10 @@
       (set! row.values[(+ (count query.find) index)]
         (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
 
-(defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
+(defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, db: DB, query: Query, inputs: []Query-Input, bindings: []Binding]
+  (append-aggregate-rows-with-sources! rows db ([]DB-Source []) query inputs bindings))
+
+(defn q-query-with-sources [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
   (let [bindings (bindings-from-inputs db query inputs)
         remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
     (defer (delete remaining))
@@ -5411,7 +5488,7 @@
             clause remaining[clause-index]
             next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
-          (append-bindings-after-clause! (addr next-bindings) db clause binding))
+          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause binding))
         (delete bindings)
         (set! bindings next-bindings)
         (arr.remove-ordered-at! remaining clause-index)))
@@ -5484,14 +5561,14 @@
             (for [aggregate query.aggregates]
               (arr.push! values (aggregate-value-for-group (slice bindings 0) query aggregate ([]Value []))))
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
-          (append-aggregate-rows! (addr rows) db query inputs (slice bindings 0)))
+          (append-aggregate-rows-with-sources! (addr rows) db sources query inputs (slice bindings 0)))
         (delete bindings)
         (return (Result-Set {rows: rows}))))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
       (for [binding bindings]
         (let [values (make [dynamic]Value 0 (count query.find))
               dedupe-values (make [dynamic]Value)
-              [pulls pulls-ok] (pulls-for-binding db query inputs binding)
+              [pulls pulls-ok] (pulls-for-binding-with-sources db sources query inputs binding)
               complete true]
           (when (not pulls-ok)
             (set! complete false))
@@ -5513,6 +5590,9 @@
               (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
       (delete bindings)
       (Result-Set {rows: rows}))))
+
+(defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
+  (q-query-with-sources db query inputs ([]DB-Source [])))
 
 (defn q-query [db: DB, query: Query] -> Result-Set
   (q-query-with-inputs db query ([]Query-Input [])))
