@@ -302,6 +302,33 @@
   rows: [dynamic]Result-Row
 })
 
+(defenum EDN-Kind [
+  Nil
+  Bool
+  Int
+  String
+  Symbol
+  Keyword
+  Vector
+  List
+  Map
+])
+
+(defstruct EDN-Node {
+  kind: EDN-Kind
+  text: string
+  int_value: i64
+  bool_value: bool
+  first_child: int
+  next_sibling: int
+  child_count: int
+})
+
+(defstruct EDN-Doc {
+  nodes: [dynamic]EDN-Node
+  root: int
+})
+
 (defenum Key-Kind [
   Keyword
   String
@@ -3337,6 +3364,152 @@
 
 (defn empty-query [] -> Query
   (query ([]string []) ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) ([]Clause []) ([]Predicate []) ([]Function-Clause []) ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) ([]Not-Group []) ([]Or-Group []) ([]Pull-Find []) ([]Aggregate-Find [])))
+
+(defn empty-edn-doc [] -> EDN-Doc
+  (EDN-Doc {nodes: (make [dynamic]EDN-Node) root: -1}))
+
+(defn edn-node [kind: EDN-Kind, text: string] -> EDN-Node
+  (EDN-Node {kind: kind text: text first_child: -1 next_sibling: -1 child_count: 0}))
+
+(defn edn-add-node! [doc: ^EDN-Doc, node: EDN-Node] -> int
+  (let [index (count doc^.nodes)]
+    (arr.push! doc^.nodes node)
+    index))
+
+(defn edn-set-root! [doc: ^EDN-Doc, index: int]
+  (set! doc^.root index))
+
+(defn edn-set-first-child! [doc: ^EDN-Doc, index: int, child: int]
+  (let [node doc^.nodes[index]]
+    (set! node.first_child child)
+    (set! doc^.nodes[index] node)))
+
+(defn edn-set-next-sibling! [doc: ^EDN-Doc, index: int, sibling: int]
+  (let [node doc^.nodes[index]]
+    (set! node.next_sibling sibling)
+    (set! doc^.nodes[index] node)))
+
+(defn edn-inc-child-count! [doc: ^EDN-Doc, index: int]
+  (let [node doc^.nodes[index]]
+    (set! node.child_count (+ node.child_count 1))
+    (set! doc^.nodes[index] node)))
+
+(defn edn-whitespace? [ch: u8] -> bool
+  (or (= ch 32)
+      (= ch 10)
+      (= ch 13)
+      (= ch 9)
+      (= ch 44)))
+
+(defn edn-delimiter? [ch: u8] -> bool
+  (or (edn-whitespace? ch)
+      (= ch 40)
+      (= ch 41)
+      (= ch 91)
+      (= ch 93)
+      (= ch 123)
+      (= ch 125)
+      (= ch 34)))
+
+(defn edn-skip-ws [text: string, i: int] -> int
+  (let [out i
+        n (kstr.count text)]
+    (while (and (< out n) (edn-whitespace? (kstr.get text out)))
+      (set! out (+ out 1)))
+    out))
+
+(defn read-edn-string! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
+  (let [start (+ i 1)
+        cursor start
+        n (kstr.count text)]
+    (while (and (< cursor n) (not (= (kstr.get text cursor) 34)))
+      (if (= (kstr.get text cursor) 92)
+        (set! cursor (+ cursor 2))
+        (set! cursor (+ cursor 1))))
+    (when (>= cursor n)
+      (return cursor -1 false "unterminated EDN string"))
+    (let [node-index (edn-add-node! doc (edn-node .String (kstr.slice text start cursor)))]
+      (return (+ cursor 1) node-index true ""))))
+
+(defn read-edn-atom! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
+  (let [cursor i
+        n (kstr.count text)]
+    (while (and (< cursor n) (not (edn-delimiter? (kstr.get text cursor))))
+      (set! cursor (+ cursor 1)))
+    (when (= cursor i)
+      (return cursor -1 false "expected EDN token"))
+    (let [token (kstr.slice text i cursor)]
+      (cond
+        (= token "nil")
+          (return cursor (edn-add-node! doc (edn-node .Nil token)) true "")
+        (= token "true")
+          (let [node (edn-node .Bool token)]
+            (set! node.bool_value true)
+            (return cursor (edn-add-node! doc node) true ""))
+        (= token "false")
+          (let [node (edn-node .Bool token)]
+            (set! node.bool_value false)
+            (return cursor (edn-add-node! doc node) true ""))
+        (strings.has_prefix token ":")
+          (return cursor (edn-add-node! doc (edn-node .Keyword token)) true "")
+        :else
+          (let [[parsed parsed-ok] (strconv.parse_int token)]
+            (if parsed-ok
+              (let [node (edn-node .Int token)]
+                (set! node.int_value (i64 parsed))
+                (return cursor (edn-add-node! doc node) true ""))
+              (return cursor (edn-add-node! doc (edn-node .Symbol token)) true "")))))))
+
+(defn read-edn-form! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
+  (let [cursor (edn-skip-ws text i)
+        n (kstr.count text)]
+    (when (>= cursor n)
+      (return cursor -1 false "expected EDN form"))
+    (let [ch (kstr.get text cursor)]
+      (cond
+        (= ch 91) (read-edn-container! doc text cursor .Vector 93)
+        (= ch 40) (read-edn-container! doc text cursor .List 41)
+        (= ch 123) (read-edn-container! doc text cursor .Map 125)
+        (= ch 34) (read-edn-string! doc text cursor)
+        (or (= ch 93) (= ch 41) (= ch 125))
+          (return cursor -1 false "unexpected EDN closing delimiter")
+        :else (read-edn-atom! doc text cursor)))))
+
+(defn read-edn-container! [doc: ^EDN-Doc, text: string, i: int, kind: EDN-Kind, close: u8] -> [next: int, node: int, ok: bool, error: string]
+  (let [container (edn-add-node! doc (edn-node kind ""))
+        cursor (+ i 1)
+        previous -1
+        n (kstr.count text)]
+    (while true
+      (set! cursor (edn-skip-ws text cursor))
+      (when (>= cursor n)
+        (return cursor -1 false "unterminated EDN container"))
+      (when (= (kstr.get text cursor) close)
+        (return (+ cursor 1) container true ""))
+      (let [[next child child-ok child-error] (read-edn-form! doc text cursor)]
+        (when (not child-ok)
+          (return next -1 false child-error))
+        (if (= previous -1)
+          (edn-set-first-child! doc container child)
+          (edn-set-next-sibling! doc previous child))
+        (edn-inc-child-count! doc container)
+        (set! previous child)
+        (set! cursor next)))
+    (return cursor -1 false "unreachable EDN container state")))
+
+(defn read-edn-text! [out: ^EDN-Doc, text: string] -> [ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [next root parsed-ok parsed-error] (read-edn-form! (addr doc) text 0)]
+    (when (not parsed-ok)
+      (delete doc.nodes)
+      (return false parsed-error))
+    (let [end (edn-skip-ws text next)]
+      (when (not (= end (kstr.count text)))
+        (delete doc.nodes)
+        (return false "trailing EDN input")))
+    (edn-set-root! (addr doc) root)
+    (set! out^ doc)
+    (return true "")))
 
 (defn edn-token-boundary? [ch: u8] -> bool
   (or (= ch 32)

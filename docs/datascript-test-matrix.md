@@ -46,7 +46,7 @@ exist.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `parser.cljc` | 3 | partial | minimal query text tokenization started; full EDN reader remains |
+| `parser.cljc` | 3 | partial | flat EDN node reader started for nested vectors/lists/maps; full EDN lowering remains |
 | `parser_find.cljc` | 4 | interop | query parser |
 | `parser_query.cljc` | 1 | partial | `[:find ... :where ...]` text query subset covered; validation remains |
 | `parser_return_map.cljc` | 1 | interop | query parser |
