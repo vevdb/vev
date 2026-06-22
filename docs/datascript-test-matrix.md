@@ -20,7 +20,7 @@ These are the main in-memory parity target before durable storage.
 | `query.cljc` | 11 | partial | primary/named collection datom sources, map-form text queries, map relation inputs, nested `:in` binding patterns, and nested map values covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, regex predicate surface, regex match-return clauses, and nested result binding covered; checked query errors now cover unknown native predicate/function ops and insufficient function/predicate bindings; host function surface remains |
-| `query_not.cljc` | 5 | partial | source semantics plus checked unbound-group errors covered; query text has ordered top-level `not` binding validation, literal macro/rule-body order remains |
+| `query_not.cljc` | 5 | partial | source semantics plus checked unbound-group errors covered; query text and Kvist literal macros have ordered top-level `not` binding validation; rule-body order remains |
 | `query_or.cljc` | 5 | partial | source semantics, plain-`or` branch var matching, and `or-join` projection validation covered; nested binding-form validation and exact diagnostics remain |
 | `query_pull.cljc` | 8 | partial | multi-source pull, text/Kvist `:in` pattern variables, plus scalar, collection, and tuple pull find-spec shapes covered; exact Clojure return rendering remains |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
