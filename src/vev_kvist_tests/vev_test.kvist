@@ -287,6 +287,228 @@
     (t.is (= numeric.rows[0].values[0].text "Ada Lovelace"))
     (t.is (= (count bad.rows) 0))))
 
+(t.deftest datascript-parser-query-text-predicates-and-functions
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ada Lovelace" :age 37}
+             {:db/id 2 :name "Grace Hopper" :age 41}
+             {:db/id 3 :name "Alan Turing" :age 40}])
+        older (vev.q-text conn.db "[:find ?name :where [?e :age ?age] [(> ?age 40)] [?e :name ?name]]")
+        even-age (vev.q-text conn.db "[:find ?name :where [?e :age ?age] [(even? ?age)] [?e :name ?name]]")
+        next-age (vev.q-text conn.db "[:find ?name ?next :where [?e :age ?age] [(inc ?age) ?next] [(> ?next 40)] [?e :name ?name]]")
+        destructured (vev.q-text conn.db "[:find ?name ?age :where [?e :name ?n] [?e :age ?a] [(vector ?n ?a) [?name ?age]] [(= ?name \"Ada Lovelace\")]]")]
+    (t.is (= (count older.rows) 1))
+    (t.is (= older.rows[0].values[0].text "Grace Hopper"))
+    (t.is (= (count even-age.rows) 1))
+    (t.is (= even-age.rows[0].values[0].text "Alan Turing"))
+    (t.is (= (count next-age.rows) 2))
+    (t.is (= next-age.rows[0].values[0].text "Grace Hopper"))
+    (t.is (= next-age.rows[0].values[1].int_value 42))
+    (t.is (= next-age.rows[1].values[0].text "Alan Turing"))
+    (t.is (= next-age.rows[1].values[1].int_value 41))
+    (t.is (= (count destructured.rows) 1))
+    (t.is (= destructured.rows[0].values[0].text "Ada Lovelace"))
+    (t.is (= destructured.rows[0].values[1].int_value 37))))
+
+(t.deftest datascript-parser-query-text-inputs
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ada" :age 37 :email "ada@example.com"}
+             {:db/id 2 :name "Grace" :age 85 :email "grace@example.com"}])
+        scalar (vev.q-text-with-inputs
+                 conn.db
+                 "[:find ?name :in ?email :where [?e :email ?email] [?e :name ?name]]"
+                 ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "ada@example.com"))]))
+        collection (vev.q-text-with-inputs
+                     conn.db
+                     "[:find ?name :in [?email ...] :where [?e :email ?email] [?e :name ?name]]"
+                     ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "ada@example.com") (vev.value-string "grace@example.com")]))]))
+        tuple (vev.q-text-with-inputs
+                conn.db
+                "[:find ?e :in [?name ?age] :where [?e :name ?name] [?e :age ?age]]"
+                ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "Ada") (vev.value-int 37)]))]))
+        relation (vev.q-text-with-inputs
+                   conn.db
+                   "[:find ?e :in [[?name ?age]] :where [?e :name ?name] [?e :age ?age]]"
+                   ([]vev.Query-Input [(vev.query-input-relation ([]vev.Value [(vev.value-string "Ada") (vev.value-int 37) (vev.value-string "Nope") (vev.value-int 0)]) 2)]))
+        no-where (vev.q-text-with-inputs
+                   conn.db
+                   "[:find ?x :in ?x]"
+                   ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":ok"))]))]
+    (t.is (= (count scalar.rows) 1))
+    (t.is (= scalar.rows[0].values[0].text "Ada"))
+    (t.is (= (count collection.rows) 2))
+    (t.is (= tuple.rows[0].values[0].entity 1))
+    (t.is (= relation.rows[0].values[0].entity 1))
+    (t.is (= no-where.rows[0].values[0].text ":ok"))))
+
+(t.deftest datascript-parser-query-text-rules
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :follow]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 100 :db/cardinality :db.cardinality/many]
+             [:db/add 1 :follow (vev.value-entity 2)]
+             [:db/add 2 :follow (vev.value-entity 3)]
+             [:db/add 3 :follow (vev.value-entity 4)]
+             [:db/add 4 :follow (vev.value-entity 6)]])
+        direct (vev.q-text-with-rules
+                 conn.db
+                 "[:find ?e1 ?e2 :in $ % :where (follow ?e1 ?e2)]"
+                 "[[(follow ?x ?y) [?x :follow ?y]]]"
+                 ([]vev.Query-Input []))
+        recursive (vev.q-text-with-rules
+                    conn.db
+                    "[:find [?e2 ...] :in $ ?e1 % :where (follow ?e1 ?e2)]"
+                    "[[(follow ?e1 ?e2) [?e1 :follow ?e2]] [(follow ?e1 ?e2) [?e1 :follow ?t] (follow ?t ?e2)]]"
+                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))]))
+        filtered (vev.q-text-with-rules
+                   conn.db
+                   "[:find ?x ?y :in $ % :where (match ?x ?y)]"
+                   "[[(match ?e ?e2) [?e :follow ?e2] [(even? ?e)] [(even? ?e2)]]]"
+                   ([]vev.Query-Input []))]
+    (t.is (= (count direct.rows) 4))
+    (t.is (= direct.rows[0].values[0].entity 1))
+    (t.is (= direct.rows[0].values[1].entity 2))
+    (t.is (= (count recursive.rows) 4))
+    (t.is (= recursive.rows[0].values[0].entity 2))
+    (t.is (= recursive.rows[3].values[0].entity 6))
+    (t.is (= (count filtered.rows) 1))
+    (t.is (= filtered.rows[0].values[0].entity 4))
+    (t.is (= filtered.rows[0].values[1].entity 6))))
+
+(t.deftest datascript-parser-query-text-sources
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        right (vev.create-conn)
+        _ (vev.transact
+            (addr left)
+            [{:db/id 100 :db/ident :name :db/unique :db.unique/identity}
+             {:db/id 1 :name "Ivan" :id 1}
+             {:db/id 2 :name "Petr" :id 2}
+             {:db/id 3 :name "Oleg" :id 3}])
+        _ (vev.transact
+            (addr right)
+            [{:db/id 100 :db/ident :name :db/unique :db.unique/identity}
+             {:db/id 3 :name "Ivan" :id 3}
+             {:db/id 1 :name "Petr" :id 1}
+             {:db/id 2 :name "Oleg" :id 2}])
+        numeric (vev.q-text-with-sources
+                  left.db
+                  "[:find ?e ?id1 ?id2 :in $1 $2 [?e ...] :where [$1 ?e :id ?id1] [$2 ?e :id ?id2]]"
+                  ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-int 1) (vev.value-int 2) (vev.value-int 3)]))])
+                  ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        lookup-refs (vev.q-text-with-sources
+                      left.db
+                      "[:find ?e ?id1 ?id2 :in $1 $2 [?e ...] :where [$1 ?e :id ?id1] [$2 ?e :id ?id2]]"
+                      ([]vev.Query-Input [(vev.query-input-collection-lookup-refs ([]string [":name" ":name" ":name"]) ([]vev.Value [(vev.value-string "Ivan") (vev.value-string "Petr") (vev.value-string "Oleg")]))])
+                      ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        pulled (vev.q-text-with-sources
+                 left.db
+                 "[:find ?e (pull $2 ?e [:name]) :in $1 $2 :where [$1 ?e :id 1]]"
+                 ([]vev.Query-Input [])
+                 ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))]
+    (t.is (= (count numeric.rows) 3))
+    (t.is (= numeric.rows[0].values[0].int_value 1))
+    (t.is (= numeric.rows[0].values[1].int_value 1))
+    (t.is (= numeric.rows[0].values[2].int_value 1))
+    (t.is (= (count lookup-refs.rows) 3))
+    (t.is (= lookup-refs.rows[0].values[0].entity 1))
+    (t.is (= lookup-refs.rows[1].values[0].entity 2))
+    (t.is (= lookup-refs.rows[2].values[0].entity 3))
+    (t.is (= (count pulled.rows) 1))
+    (t.is (= pulled.rows[0].pulls[0].attrs[0].v.text "Petr"))))
+
+(t.deftest datascript-parser-query-text-not-or-and-missing
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ada Lovelace" :active true :email "ada@example.com"}
+             {:db/id 2 :name "Grace Hopper" :active false}
+             {:db/id 3 :name "Alan Turing" :active true}])
+        missing-email (vev.q-text conn.db "[:find ?name :where [?e :name ?name] [(missing? $ ?e :email)]]")
+        inactive-or-ada (vev.q-text conn.db "[:find ?name :where [?e :name ?name] (or [?e :active false] [?e :name \"Ada Lovelace\"])]")
+        active-no-email (vev.q-text conn.db "[:find ?name :where [?e :active true] [?e :name ?name] (not [?e :email _])]")]
+    (t.is (= (count missing-email.rows) 2))
+    (t.is (= missing-email.rows[0].values[0].text "Grace Hopper"))
+    (t.is (= missing-email.rows[1].values[0].text "Alan Turing"))
+    (t.is (= (count inactive-or-ada.rows) 2))
+    (t.is (= inactive-or-ada.rows[0].values[0].text "Ada Lovelace"))
+    (t.is (= inactive-or-ada.rows[1].values[0].text "Grace Hopper"))
+    (t.is (= (count active-no-email.rows) 1))
+    (t.is (= active-no-email.rows[0].values[0].text "Alan Turing"))))
+
+(t.deftest datascript-parser-query-text-pull-find
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :friend]
+             [:db/add 100 :db/valueType :db.type/ref]
+             {:db/id 1 :name "Ada Lovelace" :friend (vev.value-entity 2)}
+             {:db/id 2 :name "Grace Hopper"}])
+        pulled (vev.q-text conn.db "[:find (pull ?e [:db/id :name]) :where [?e :name \"Ada Lovelace\"]]")
+        entity-and-pull (vev.q-text conn.db "[:find ?e (pull ?e [:name]) :where [?e :name \"Ada Lovelace\"]]")
+        nested (vev.q-text conn.db "[:find (pull ?e [{:friend [:name]}]) :where [?e :name \"Ada Lovelace\"]]")]
+    (t.is (= (count pulled.rows) 1))
+    (t.is (= (count pulled.rows[0].values) 0))
+    (t.is (= (count pulled.rows[0].pulls) 1))
+    (t.is (= pulled.rows[0].pulls[0].attrs[0].v.entity 1))
+    (t.is (= pulled.rows[0].pulls[0].attrs[1].v.text "Ada Lovelace"))
+    (t.is (= (count entity-and-pull.rows) 1))
+    (t.is (= entity-and-pull.rows[0].values[0].entity 1))
+    (t.is (= entity-and-pull.rows[0].pulls[0].attrs[0].v.text "Ada Lovelace"))
+    (t.is (= (count nested.rows) 1))
+    (t.is (= nested.rows[0].pulls[0].attrs[0].v.entity 2))
+    (t.is (= nested.rows[0].pulls[0].attrs[0].attrs[0].v.text "Grace Hopper"))))
+
+(t.deftest datascript-parser-tx-text-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema (vev.transact-text
+                 (addr conn)
+                 "[[:db/add 100 :db/ident :user/email] [:db/add 100 :db/valueType :db.type/string] [:db/add 100 :db/unique :db.unique/identity] [:db/add 101 :db/ident :user/friend] [:db/add 101 :db/valueType :db.type/ref] [:db/add 102 :db/ident :user/address] [:db/add 102 :db/valueType :db.type/ref]]")
+        initial (vev.transact-text
+                  (addr conn)
+                  "[[:db/add 1 :user/email \"ada@example.com\"] [:db/add 1 :user/name \"Ada\"] [:db/add 1 :user/friend [:user/email \"ada@example.com\"]] {:db/id \"grace\" :user/name \"Grace\" :user/friend 1} {:user/name \"Generated\"} {:db/id [:user/email \"ada@example.com\"] :user/age 37} {:db/id 3 :user/name \"Parent\" :user/address {:user/city \"London\"}}]")
+        names (vev.q-text
+                initial.db_after
+                "[:find ?name :where [?e :user/name ?name]]")
+        age (vev.q-text
+              initial.db_after
+              "[:find ?age :where [1 :user/age ?age]]")
+        nested (vev.q-text
+                 initial.db_after
+                 "[:find ?city :where [3 :user/address ?address] [?address :user/city ?city]]")
+        cas (vev.transact-text
+              (addr conn)
+              "[[:db.fn/cas 1 :user/friend [:user/email \"ada@example.com\"] 3]]")
+        friend (vev.q-text
+                 cas.db_after
+                 "[:find ?friend :where [1 :user/friend ?friend]]")
+        retract (vev.transact-text
+                  (addr conn)
+                  "[[:db/retract 1 :user/name \"Ada\"] [:db.fn/retractAttribute 3 :user/address] [:db.fn/retractEntity [:user/email \"ada@example.com\"]]]")
+        remaining (vev.q-text
+                    retract.db_after
+                    "[:find ?e :where [?e :user/email \"ada@example.com\"]]")]
+    (t.is schema.ok)
+    (t.is initial.ok)
+    (t.is (>= (count names.rows) 3))
+    (t.is (= age.rows[0].values[0].int_value 37))
+    (t.is (= nested.rows[0].values[0].text "London"))
+    (t.is cas.ok)
+    (t.is (= friend.rows[0].values[0].entity 3))
+    (t.is retract.ok)
+    (t.is (= (count remaining.rows) 0))))
+
 (t.deftest edn-reader-parses-nested-forms
   (defer (free_all context.allocator))
   (let [doc (vev.empty-edn-doc)

@@ -81,6 +81,7 @@ clarity require it, not because a new syntax looks nicer in Kvist.
 
 ## Documents
 
+- [docs/thesis.md](docs/thesis.md)
 - [docs/scope.md](docs/scope.md)
 - [docs/architecture.md](docs/architecture.md)
 - [docs/data-model.md](docs/data-model.md)
