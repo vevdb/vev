@@ -3465,6 +3465,45 @@
         (return false error))))
   (return true ""))
 
+(defn rule-param-valid? [name: string] -> bool
+  (strings.has_prefix name "?"))
+
+(defn rule-call-matches-rule? [call: Rule-Call, rule: Rule] -> bool
+  (and (= call.name rule.name)
+       (= (count call.args) (count rule.params))))
+
+(defn validate-rule-call-known [rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
+  (let [name-found false]
+    (for [rule rules]
+      (when (= call.name rule.name)
+        (set! name-found true)
+        (when (rule-call-matches-rule? call rule)
+          (return true ""))))
+    (if name-found
+      (return false (fmt.tprintf "wrong arity for rule: %s" call.name))
+      (return false (fmt.tprintf "unknown rule: %s" call.name)))))
+
+(defn validate-rule-definition [rules: []Rule, rule: Rule] -> [ok: bool, error: string]
+  (for [param rule.params]
+    (when (not (rule-param-valid? param))
+      (return false (fmt.tprintf "rule params must be variables: %s" param))))
+  (for [call rule.rule-calls]
+    (let [[ok error] (validate-rule-call-known rules call)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-query-rules [query-value: Query] -> [ok: bool, error: string]
+  (for [rule query-value.rules]
+    (let [[ok error] (validate-rule-definition (slice query-value.rules 0) rule)]
+      (when (not ok)
+        (return false error))))
+  (for [call query-value.rule-calls]
+    (let [[ok error] (validate-rule-call-known (slice query-value.rules 0) call)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
 (defn validate-query-call [query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
   (let [expected (query-expected-input-count query-value)
         provided (count inputs)]
@@ -3473,6 +3512,9 @@
   (let [[source-ok source-error] (validate-query-sources query-value sources)]
     (when (not source-ok)
       (return false source-error)))
+  (let [[rules-ok rules-error] (validate-query-rules query-value)]
+    (when (not rules-ok)
+      (return false rules-error)))
   (if (> (count query-value.where-steps) 0)
     (validate-query-ordered-bindings query-value)
     (do
