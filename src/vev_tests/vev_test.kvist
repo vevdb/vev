@@ -3462,7 +3462,22 @@
                         [[(match ?e ?e2)
                           [?e :follow ?e2]
                           [(even? ?e)]
-                          [(even? ?e2)]]])]
+                          [(even? ?e2)]]])
+        rule-predicate-input (vev.q report.db-after
+                               [:find ?x ?y
+                                :in $ % ?even
+                                :where
+                                (match ?even ?x ?y)]
+                               [[(match ?pred ?e ?e2)
+                                 [?e :follow ?e2]
+                                 [(?pred ?e)]
+                                 [(?pred ?e2)]]]
+                               :even?)
+        rule-predicate-input-text (vev.q-text-with-rules
+                                    report.db-after
+                                    "[:find ?x ?y :in $ % ?even :where (match ?even ?x ?y)]"
+                                    "[[(match ?pred ?e ?e2) [?e :follow ?e2] [(?pred ?e)] [(?pred ?e2)]]]"
+                                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":even?"))]))]
     (t.is (= (count follows.rows) 6))
     (t.is (= follows.rows[0].values[0].entity 1))
     (t.is (= follows.rows[0].values[1].entity 2))
@@ -3494,7 +3509,17 @@
     (t.is (= rule-builtins.rows[0].values[0].entity 2))
     (t.is (= rule-builtins.rows[0].values[1].entity 4))
     (t.is (= rule-builtins.rows[1].values[0].entity 4))
-    (t.is (= rule-builtins.rows[1].values[1].entity 6))))
+    (t.is (= rule-builtins.rows[1].values[1].entity 6))
+    (t.is (= (count rule-predicate-input.rows) 2))
+    (t.is (= rule-predicate-input.rows[0].values[0].entity 2))
+    (t.is (= rule-predicate-input.rows[0].values[1].entity 4))
+    (t.is (= rule-predicate-input.rows[1].values[0].entity 4))
+    (t.is (= rule-predicate-input.rows[1].values[1].entity 6))
+    (t.is (= (count rule-predicate-input-text.rows) 2))
+    (t.is (= rule-predicate-input-text.rows[0].values[0].entity 2))
+    (t.is (= rule-predicate-input-text.rows[0].values[1].entity 4))
+    (t.is (= rule-predicate-input-text.rows[1].values[0].entity 4))
+    (t.is (= rule-predicate-input-text.rows[1].values[1].entity 6))))
 
 (t.deftest datascript-query-mutual-recursive-rules-subset
   (defer (free_all context.allocator))
@@ -6175,8 +6200,12 @@
   (let [conn (vev.create-conn)
         schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
         _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
-        _ (vev.transact (addr conn) [[:db/add 1 :a "A"]
-                                     [:db/add 1 :b "B"]])
+        insert-ok (vev.transact
+                    (addr conn)
+                    [{:db/id 1
+                      :a "A"
+                      :b "B"
+                      :a-and-b ["A" "B"]}])
         ok (vev.transact
              (addr conn)
              ([]vev.Tx-Data
@@ -6191,6 +6220,29 @@
                    (vev.value-vector2
                      (vev.value-string "A")
                      (vev.value-string "wrong")))]))]
+    (t.is insert-ok.ok)
+    (t.is (= (count insert-ok.tx-data) 3))
+    (t.is ok.ok)
+    (t.is (= (count ok.tx-data) 0))
+    (t.is (not bad.ok))
+    (t.is (= bad.error "cannot modify tuple attrs directly"))))
+
+(t.deftest datascript-text-tuple-attrs-ignore-correct-direct-value-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        insert-ok (vev.transact-text
+                    (addr conn)
+                    "[{:db/id 1 :a \"A\" :b \"B\" :a-and-b [\"A\" \"B\"]}]")
+        ok (vev.transact-text
+             (addr conn)
+             "[[:db/add 1 :a-and-b [\"A\" \"B\"]]]")
+        bad (vev.transact-text
+              (addr conn)
+              "[[:db/add 1 :a-and-b [\"A\" \"wrong\"]]]")]
+    (t.is insert-ok.ok)
+    (t.is (= (count insert-ok.tx-data) 3))
     (t.is ok.ok)
     (t.is (= (count ok.tx-data) 0))
     (t.is (not bad.ok))

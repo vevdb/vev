@@ -26,11 +26,11 @@ These are the main in-memory parity target before durable storage.
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, repeated calls, ordered body execution for literal/text rules, and unknown/arity/param validation covered; host predicate inputs and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | built-in aggregates including top-n, median, variance, stddev, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
-| `transact.cljc` | 19 | partial | native tx functions, registry-backed ident tx functions, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
+| `transact.cljc` | 19 | partial | schema-aware map vector values, empty cardinality-many tempid validation, native tx functions, registry-backed ident tx functions, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation plus `transact-text` bad-shape rollback covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface and indexed-attribute errors covered; exact lazy sequence/API rendering details remain |
-| `tuples.cljc` | 11 | partial | direct/component tuple upsert and lookup-ref tuple values covered; remaining exact errors and edge conflict matrix |
+| `tuples.cljc` | 11 | partial | direct/component tuple upsert, redundant direct tuple-value ignore cases, and lookup-ref tuple values covered; remaining exact errors and edge conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
 | `components.cljc` | 2 | partial | reverse component pull id/pattern/recursion behavior covered; exact schema validation and render/touch shapes remain |

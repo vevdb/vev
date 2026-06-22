@@ -126,7 +126,8 @@ Supported now:
   recursion, predicates, and function clauses
 - text transactions with `:db/add`, `:db/retract`, `:db/retractEntity`,
   `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, tempids,
-  idents, generated map ids, and nested maps through ref attributes
+  idents, generated map ids, nested maps through ref attributes, and
+  schema-aware map vector values for cardinality-many and tuple attrs
 - datom clauses shaped like `[e a]` or `[e a v]`
 - source-var datom clauses shaped like `[$ e a]` or `[$ e a v]` with single-source semantics
 - reverse attrs in datom clauses, such as `:_user/friend`

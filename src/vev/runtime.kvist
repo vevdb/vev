@@ -1395,10 +1395,12 @@
         (return data.v false "lookup ref not found"))))
   (resolve-tx-value db data.a data.v))
 
-(defn tx-data-has-tempid? [tx-data: []Tx-Data, tempid: string] -> bool
+(defn tx-data-has-tempid? [db: DB, tx-data: []Tx-Data, tempid: string] -> bool
   (for [data tx-data]
     (when (and data.has-tempid
-               (= data.tempid tempid))
+               (= data.tempid tempid)
+               (not (and (should-split-map-collection? db data)
+                         (= (count data.v.items) 0))))
       (return true)))
   false)
 
@@ -1613,14 +1615,20 @@
       (and has-value (value-equal? tuple-value op.v)))))
 
 (defn expand-tuple-ops [db: DB, ops: []Tx-Op] -> [dynamic]Tx-Op
-  (let [out (make [dynamic]Tx-Op 0 (count ops))]
+  (let [out (make [dynamic]Tx-Op 0 (count ops))
+        whole-tx-db (db-with-resolved-ops db ops)]
     (for [op ops]
-      (let [scratch-before (db-with-resolved-ops db (slice out 0))]
-        (when (direct-tuple-add-matches? scratch-before op)
+      (let [before-op-db (db-with-resolved-ops db (slice out 0))
+            direct-tuple-matches (or (direct-tuple-add-matches? before-op-db op)
+                                     (direct-tuple-add-matches? whole-tx-db op))]
+        (delete-owned-db before-op-db)
+        (when direct-tuple-matches
           (continue)))
       (arr.push! out op)
       (let [scratch (db-with-resolved-ops db (slice out 0))]
-        (append-tuple-maintenance-ops! (addr out) scratch op)))
+        (append-tuple-maintenance-ops! (addr out) scratch op)
+        (delete-owned-db scratch)))
+    (delete-owned-db whole-tx-db)
     out))
 
 (defn lookup-ref-vector-value? [value: Value] -> bool
@@ -1720,6 +1728,47 @@
           (append-nested-map-value-tx! pending entity key.text value seed)))
       (set! index (+ index 2))))
   (return true ""))
+
+(defn tx-entity-ref-from-data [data: Tx-Data] -> Tx-Data
+  (Tx-Data {e: data.e
+            tempid: data.tempid
+            has-tempid: data.has-tempid
+            lookup-attr: data.lookup-attr
+            lookup-value: data.lookup-value
+            has-lookup-ref: data.has-lookup-ref
+            ident: data.ident
+            has-ident: data.has-ident}))
+
+(defn append-map-collection-items! [pending: ^[dynamic]Tx-Data, data: Tx-Data, db: DB]
+  (when (not (= data.v.kind .Vector))
+    (return))
+  (let [entity (tx-entity-ref-from-data data)
+        ref-attr (schema-ref? db data.a)]
+    (for [item index data.v.items]
+      (if (and ref-attr (lookup-ref-vector-value? item))
+        (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]))
+        (if (and ref-attr (= item.kind .Map))
+          (arr.push! pending^ (tx-add-nested-map-from-entity-data entity data.a item (fmt.tprintf "vev_tx_map_%d" (+ (count pending^) index))))
+          (arr.push! pending^ (tx-add-from-entity-data entity data.a item)))))))
+
+(defn should-split-map-collection? [db: DB, data: Tx-Data] -> bool
+  (when (not (and data.from-map-collection
+                  (= data.op ":db/add")
+                  (= data.v.kind .Vector)))
+    (return false))
+  (if (reverse-attr? data.a)
+    (let [schema-attr (forward-attr-for-reverse data.a)]
+      (defer (delete schema-attr))
+      (let [tuple-attrs (schema-tuple-attrs db schema-attr)]
+        (defer (delete tuple-attrs))
+        (when (> (count tuple-attrs) 0)
+          (return false)))
+      (return (not (schema-cardinality-one? db schema-attr)))))
+  (let [tuple-attrs (schema-tuple-attrs db data.a)]
+    (defer (delete tuple-attrs))
+    (when (> (count tuple-attrs) 0)
+      (return false)))
+  (not (schema-cardinality-one? db data.a)))
 
 (defn tx-data-op-known? [op: string] -> bool
   (or (= op ":db/add")
@@ -1842,6 +1891,9 @@
                                       tempids: resolved-tempids}))
                 (set! skip-data true)))))
         (when skip-data
+          (continue))
+        (when (should-split-map-collection? current-db data)
+          (append-map-collection-items! (addr pending) data current-db)
           (continue))
         (when data.has-ident
           (let [[ident-e ident-ok] (schema-entity-for-attr current-db data.ident)]
@@ -1977,7 +2029,7 @@
                     (set! current-tx-reserved true))
                   (set! v (value-entity current-tx-e))
                   (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
-              (if (not (tx-data-has-tempid? (slice pending 0) value-tempid))
+              (if (not (tx-data-has-tempid? current-db (slice pending 0) value-tempid))
                 (return (Resolved-Tx {ok: false
                                       error: "tempid used only as value"
                                       ops: resolved-ops
