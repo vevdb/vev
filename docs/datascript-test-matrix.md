@@ -17,12 +17,12 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | close multi-source DB/source semantics and collection DB behavior as one batch |
+| `query.cljc` | 11 | partial | collection DB behavior, host functions, and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | built-ins covered; decide host function surface and exact error behavior |
-| `query_not.cljc` | 5 | partial | insufficient-binding/error cases and default-source variants |
-| `query_or.cljc` | 5 | partial | validation/error cases and default-source variants |
-| `query_pull.cljc` | 8 | partial | multi-source pull started; finish exact find-spec return shapes |
+| `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
+| `query_or.cljc` | 5 | partial | source semantics covered; validation/error cases remain |
+| `query_pull.cljc` | 8 | partial | multi-source pull covered; finish exact find-spec return shapes |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, and repeated calls covered; validation and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | remaining built-ins and exact edge cases; custom aggregates later |
@@ -75,9 +75,9 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Finish source semantics as a query-wide batch: multi-source DB clauses,
-   multi-source pull, lookup refs across sources, and collection DB behavior.
-2. Port `transact.cljc`, `upsert.cljc`, and `validation.cljc` as one tx/schema
+1. Port `transact.cljc`, `upsert.cljc`, and `validation.cljc` as one tx/schema
    batch, focusing on real semantics before exact message text.
-3. Finish tuple/index public API behavior as one schema/index batch.
+2. Finish tuple/index public API behavior as one schema/index batch.
+3. Decide whether collection DB inputs are part of Vev's native API or only EDN
+   interop compatibility.
 4. Start parser/EDN API work once semantic query/tx behavior is less volatile.

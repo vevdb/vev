@@ -4933,12 +4933,12 @@
               (return true)))))))
   false)
 
-(defn bindings-after-clause-group [db: DB, group: Not-Group, binding: Binding] -> [dynamic]Binding
+(defn bindings-after-clause-group-with-sources [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> [dynamic]Binding
   (let [bindings ([dynamic]Binding [binding])]
     (for [clause group.clauses]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
-          (append-bindings-after-clause! (addr next-bindings) db clause candidate-binding))
+          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause candidate-binding))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
@@ -4946,13 +4946,16 @@
     (for [not-group group.not_groups]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
-          (when (not (binding-matches-not-group? db not-group candidate-binding))
+          (when (not (binding-matches-not-group-with-sources? db sources not-group candidate-binding))
             (arr.push! next-bindings candidate-binding)))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
           (return bindings))))
     bindings))
+
+(defn bindings-after-clause-group [db: DB, group: Not-Group, binding: Binding] -> [dynamic]Binding
+  (bindings-after-clause-group-with-sources db ([]DB-Source []) group binding))
 
 (defn project-binding [binding: Binding, names: []string] -> Binding
   (let [out (Binding {})]
@@ -5201,7 +5204,7 @@
       (set! depth (+ depth 1)))
     out))
 
-(defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
+(defn bindings-after-or-branch-with-sources [db: DB, sources: []DB-Source, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
   (let [initial (clone-binding binding)]
     (when group.has_join
       (set! initial (project-binding binding group.join_vars))
@@ -5211,7 +5214,7 @@
           (let [[source source-ok] (binding-lookup binding branch-clause.source)]
             (when source-ok
               (binding-store! (addr initial) branch-clause.source source)))))))
-  (let [branch-bindings (bindings-after-clause-group db branch initial) :defer
+  (let [branch-bindings (bindings-after-clause-group-with-sources db sources branch initial) :defer
         out (make [dynamic]Binding)]
     (for [branch-binding branch-bindings]
       (let [branch-output (if group.has_join (project-binding branch-binding group.join_vars) branch-binding)
@@ -5220,7 +5223,10 @@
           (arr.push! out merged))))
     out)))
 
-(defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
+(defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
+  (bindings-after-or-branch-with-sources db ([]DB-Source []) group branch binding))
+
+(defn binding-matches-not-group-with-sources? [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> bool
   (let [initial (clone-binding binding)]
     (when group.has_join
       (set! initial (project-binding binding group.join_vars)))
@@ -5228,7 +5234,7 @@
     (for [clause group.clauses]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
-          (append-bindings-after-clause! (addr next-bindings) db clause candidate-binding))
+          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause candidate-binding))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
@@ -5236,13 +5242,16 @@
     (for [not-group group.not_groups]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
-          (when (not (binding-matches-not-group? db not-group candidate-binding))
+          (when (not (binding-matches-not-group-with-sources? db sources not-group candidate-binding))
             (arr.push! next-bindings candidate-binding)))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
           (return false))))
     (return (> (count bindings) 0)))))
+
+(defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
+  (binding-matches-not-group-with-sources? db ([]DB-Source []) group binding))
 
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
   (if (or (= aggregate.op "count")
@@ -5540,7 +5549,7 @@
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
           (for [branch group.branches]
-            (let [branch-bindings (bindings-after-or-branch db group branch binding)]
+            (let [branch-bindings (bindings-after-or-branch-with-sources db sources group branch binding)]
               (for [branch-binding branch-bindings]
                 (arr.push! next-bindings branch-binding))
               (delete branch-bindings))))
@@ -5549,7 +5558,7 @@
     (for [not-group query.not_groups]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
-          (when (not (binding-matches-not-group? db not-group binding))
+          (when (not (binding-matches-not-group-with-sources? db sources not-group binding))
             (arr.push! next-bindings binding)))
         (delete bindings)
         (set! bindings next-bindings)))

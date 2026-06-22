@@ -9,16 +9,16 @@ DataScript assertion or exact Clojure API shape.
 
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | subset | basic joins, inputs, bindings, source joins, constants, and placeholders covered; collection DBs, host functions, and exact input errors remain |
+| `query.cljc` | 11 | subset | basic joins, inputs, bindings, relation source joins, multi-DB source joins, constants, and placeholders covered; collection DBs, host functions, and exact input errors remain |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
 | `query_aggregates.cljc` | 1 | subset | custom aggregates |
-| `query_not.cljc` | 5 | subset | source-prefixed forms plus nested inherited/override source covered; error behavior remains |
-| `query_or.cljc` | 5 | subset | source-prefixed forms plus nested inherited/override source covered; exact validation errors remain |
+| `query_not.cljc` | 5 | subset | relation and DB source-prefixed forms plus nested inherited/override source covered; error behavior remains |
+| `query_or.cljc` | 5 | subset | relation and DB source-prefixed forms plus nested inherited/override source covered; exact validation errors remain |
 | `query_pull.cljc` | 8 | subset | basic, variable-pattern, aggregate, lookup-ref pull, and multi-source pull covered; exact find-spec return shapes remain |
 | `query_rules.cljc` | 3 | subset | source-qualified relation rule calls, repeated rule calls, and fixpoint/symmetric recursion covered; host predicate inputs, validation, and semi-naive performance remain |
 | `query_fns.cljc` | 7 | subset | built-in predicates/functions, result unification, lookup-ref inputs, and rule/function binding interaction covered; arbitrary host functions and exact errors remain |
 | `query_return_map.cljc` | 1 | covered | Vev uses keyed rows with keyword/string/symbol key kinds instead of Clojure maps |
-| `lookup_refs.cljc` | 5 | subset | mixed entity-id collection inputs covered; exact invalid lookup-ref error messages remain |
+| `lookup_refs.cljc` | 5 | subset | mixed entity-id collection inputs and multi-source lookup-ref inputs covered; exact invalid lookup-ref error messages remain |
 | `ident.cljc` | 4 | covered | Vev returns ref values as `Value.Entity`; behavior is otherwise covered |
 | `entity.cljc` | 6 | subset | Clojure equality/hash/print/cache protocol semantics |
 | `pull_api.cljc` | 17 | subset | xform/visitor options and exact collection/scalar render shape |

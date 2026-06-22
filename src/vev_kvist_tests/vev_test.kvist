@@ -502,6 +502,57 @@
     (t.is (= result.rows[2].values[0].entity 3))
     (t.is (= result.rows[2].values[1].text "ivan@mail.ru"))))
 
+(t.deftest datascript-query-multiple-db-sources-subset
+  (defer (free_all context.allocator))
+  (let [db1 (vev.create-conn)
+        db2 (vev.create-conn)
+        _ (vev.transact
+            (addr db1)
+            [{:db/id 100 :db/ident :name :db/unique :db.unique/identity}
+             {:db/id 1 :name "Ivan" :id 1}
+             {:db/id 2 :name "Petr" :id 2}
+             {:db/id 3 :name "Oleg" :id 3}])
+        _ (vev.transact
+            (addr db2)
+            [{:db/id 100 :db/ident :name :db/unique :db.unique/identity}
+             {:db/id 3 :name "Ivan" :id 3}
+             {:db/id 1 :name "Petr" :id 1}
+             {:db/id 2 :name "Oleg" :id 2}])
+        numeric (vev.q db1.db
+                  [:find ?e ?id1 ?id2
+                   :in $1 $2 [?e ...]
+                   :where
+                   [$1 ?e :id ?id1]
+                   [$2 ?e :id ?id2]]
+                  db1.db db2.db [1 2 3])
+        lookup-refs (vev.q db1.db
+                      [:find ?e ?id1 ?id2
+                       :in $1 $2 [?e ...]
+                       :where
+                       [$1 ?e :id ?id1]
+                       [$2 ?e :id ?id2]]
+                      db1.db db2.db [[:name "Ivan"] [:name "Petr"] [:name "Oleg"]])]
+    (t.is (= (count numeric.rows) 3))
+    (t.is (= numeric.rows[0].values[0].int_value 1))
+    (t.is (= numeric.rows[0].values[1].int_value 1))
+    (t.is (= numeric.rows[0].values[2].int_value 1))
+    (t.is (= numeric.rows[1].values[0].int_value 2))
+    (t.is (= numeric.rows[1].values[1].int_value 2))
+    (t.is (= numeric.rows[1].values[2].int_value 2))
+    (t.is (= numeric.rows[2].values[0].int_value 3))
+    (t.is (= numeric.rows[2].values[1].int_value 3))
+    (t.is (= numeric.rows[2].values[2].int_value 3))
+    (t.is (= (count lookup-refs.rows) 3))
+    (t.is (= lookup-refs.rows[0].values[0].entity 1))
+    (t.is (= lookup-refs.rows[0].values[1].int_value 1))
+    (t.is (= lookup-refs.rows[0].values[2].int_value 1))
+    (t.is (= lookup-refs.rows[1].values[0].entity 2))
+    (t.is (= lookup-refs.rows[1].values[1].int_value 2))
+    (t.is (= lookup-refs.rows[1].values[2].int_value 2))
+    (t.is (= lookup-refs.rows[2].values[0].entity 3))
+    (t.is (= lookup-refs.rows[2].values[1].int_value 3))
+    (t.is (= lookup-refs.rows[2].values[2].int_value 3))))
+
 (t.deftest datascript-query-without-where-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -2390,6 +2441,91 @@
     (t.is (= nested-or-two-branches[1].int_value 2))
     (t.is (= (count nested-override-or) 1))
     (t.is (= nested-override-or[0].int_value 1))))
+
+(t.deftest datascript-query-db-source-prefixed-not-or-subset
+  (defer (free_all context.allocator))
+  (let [names (vev.create-conn)
+        ages (vev.create-conn)
+        _ (vev.transact
+            (addr names)
+            [[:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Oleg"]])
+        _ (vev.transact
+            (addr ages)
+            [[:db/add 1 :age 10]
+             [:db/add 2 :age 20]])
+        not-explicit (vev.q-collection names.db
+                       [:find [?e ...]
+                        :in $ $2
+                        :where
+                        [?e :name]
+                        (not [$2 ?e :age 10])]
+                       ages.db)
+        not-default (vev.q-collection names.db
+                      [:find [?e ...]
+                       :in $ $2
+                       :where
+                       [?e :name]
+                       ($2 not [?e :age 10])]
+                      ages.db)
+        not-override (vev.q-collection names.db
+                       [:find [?e ...]
+                        :in $ $2
+                        :where
+                        [?e :name]
+                        ($2 not [$ ?e :name "Ivan"])]
+                       ages.db)
+        not-nested (vev.q-collection names.db
+                     [:find [?e ...]
+                      :in $ $2
+                      :where
+                      [?e :name]
+                      ($2 not (not [?e :age 10]))]
+                     ages.db)
+        or-explicit (vev.q-collection names.db
+                     [:find [?e ...]
+                      :in $ $2
+                      :where
+                      [?e :name]
+                      (or [$2 ?e :age 10])]
+                     ages.db)
+        or-default (vev.q-collection names.db
+                    [:find [?e ...]
+                     :in $ $2
+                     :where
+                     [?e :name]
+                     ($2 or [?e :age 10])]
+                    ages.db)
+        or-override (vev.q-collection names.db
+                     [:find [?e ...]
+                      :in $ $2
+                      :where
+                      [?e :name]
+                      ($2 or [$ ?e :name "Ivan"])]
+                     ages.db)
+        or-nested (vev.q-collection names.db
+                   [:find [?e ...]
+                    :in $ $2
+                    :where
+                    [?e :name]
+                    ($2 or (or [?e :age 10]))]
+                   ages.db)]
+    (t.is (= (count not-explicit) 1))
+    (t.is (= not-explicit[0].entity 2))
+    (t.is (= (count not-default) 1))
+    (t.is (= not-default[0].entity 2))
+    (t.is (= (count not-override) 1))
+    (t.is (= not-override[0].entity 2))
+    (t.is (= (count not-nested) 1))
+    (t.is (= not-nested[0].entity 1))
+    (t.is (= (count or-explicit) 1))
+    (t.is (= or-explicit[0].entity 1))
+    (t.is (= (count or-default) 1))
+    (t.is (= or-default[0].entity 1))
+    (t.is (= (count or-override) 1))
+    (t.is (= or-override[0].entity 1))
+    (t.is (= (count or-nested) 1))
+    (t.is (= or-nested[0].entity 1))))
 
 (t.deftest datalog-macro-supports-find-pull
   (defer (free_all context.allocator))
