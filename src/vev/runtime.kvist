@@ -1891,6 +1891,15 @@
                    error: error
                    tx_data: empty})))
 
+(defn tx-fn-string [ident: string, f: fn [db: DB, arg: string] -> Tx-Fn-Result] -> Tx-Fn-String
+  (Tx-Fn-String {ident: ident f: f}))
+
+(defn tx-fn-string-index [registry: []Tx-Fn-String, ident: string] -> [index: int, ok: bool]
+  (for [entry index registry]
+    (when (= entry.ident ident)
+      (return index true)))
+  (return 0 false))
+
 (defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
@@ -1975,6 +1984,89 @@
     (let [report (transact-ops-with-tempids conn (slice resolved.ops 0) (slice resolved.tx_meta 0) resolved.tempids)]
       (delete resolved.ops)
       (delete resolved.tx_meta)
+      report)))
+
+(defn delete-owned-db [db: DB]
+  (delete db.current)
+  (delete db.eavt)
+  (delete db.aevt)
+  (delete db.avet)
+  (delete db.vaet)
+  (delete db.datoms))
+
+(defn append-resolved-tx! [ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, resolved: Resolved-Tx]
+  (for [op resolved.ops]
+    (arr.push! ops^ op))
+  (for [meta resolved.tx_meta]
+    (arr.push! tx-meta^ meta))
+  (for [tempid resolved.tempids]
+    (arr.push! tempids^ tempid)))
+
+(defn resolve-tx-segment! [base: DB, ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, segment: ^[dynamic]Tx-Data] -> [ok: bool, error: string]
+  (when (= (count segment^) 0)
+    (return true ""))
+  (let [current-db (db-with-resolved-ops base (slice ops^ 0))
+        resolved (resolve-tx-data current-db (slice segment^ 0))]
+    (delete-owned-db current-db)
+    (when (not resolved.ok)
+      (delete resolved.ops)
+      (delete resolved.tx_meta)
+      (delete resolved.tempids)
+      (return false resolved.error))
+    (append-resolved-tx! ops tx-meta tempids resolved)
+    (delete resolved.ops)
+    (delete resolved.tx_meta)
+    (delete resolved.tempids)
+    (delete segment^)
+    (set! segment^ (make [dynamic]Tx-Data))
+    (return true "")))
+
+(defn failed-registered-tx [before: DB, ops: [dynamic]Tx-Op, tx-meta: [dynamic]Tx-Meta, tempids: [dynamic]Tempid, segment: [dynamic]Tx-Data, error: string] -> Tx-Report
+  (delete ops)
+  (delete tx-meta)
+  (delete tempids)
+  (delete segment)
+  (failed-tx-report before error))
+
+(defn transact-tx-data-with-string-fns [conn: ^Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        ops (make [dynamic]Tx-Op)
+        tx-meta (make [dynamic]Tx-Meta)
+        tempids (make [dynamic]Tempid)
+        segment (make [dynamic]Tx-Data)]
+    (for [data tx-data]
+      (if (= data.op ":db.fn/call-ident")
+        (do
+          (let [[segment-ok segment-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+            (when (not segment-ok)
+              (return (failed-registered-tx before ops tx-meta tempids segment segment-error))))
+          (let [current-db (db-with-resolved-ops before (slice ops 0))
+                [_ fn-entity-ok] (schema-entity-for-attr current-db data.ident)
+                [fn-index fn-ok] (tx-fn-string-index registry data.ident)]
+            (when (not fn-entity-ok)
+              (delete-owned-db current-db)
+              (return (failed-registered-tx before ops tx-meta tempids segment "transaction fn not found")))
+            (when (not fn-ok)
+              (delete-owned-db current-db)
+              (return (failed-registered-tx before ops tx-meta tempids segment "transaction fn not registered")))
+            (let [f registry[fn-index].f
+                  result (f current-db data.v.text)]
+              (delete-owned-db current-db)
+              (when (not result.ok)
+                (delete result.tx_data)
+                (return (failed-registered-tx before ops tx-meta tempids segment result.error)))
+              (let [[result-ok result-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr result.tx_data))]
+                (delete result.tx_data)
+                (when (not result-ok)
+                  (return (failed-registered-tx before ops tx-meta tempids segment result-error)))))))
+        (arr.push! segment data)))
+    (let [[tail-ok tail-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+      (when (not tail-ok)
+        (return (failed-registered-tx before ops tx-meta tempids segment tail-error))))
+    (delete segment)
+    (let [report (transact-ops-with-tempids conn (slice ops 0) (slice tx-meta 0) tempids)]
+      (delete ops)
+      (delete tx-meta)
       report)))
 
 (defn transact-fn [conn: ^Conn, f: (fn [db: DB] -> Tx-Fn-Result)] -> Tx-Report

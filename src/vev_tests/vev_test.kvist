@@ -4402,6 +4402,46 @@
     (t.is (= created.tempids[0].tempid "new-person"))
     (t.is (= (vev.entity-get oleg ":name").text "Oleg"))))
 
+(t.deftest datascript-ident-transaction-functions-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" birthday-by-name)])
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 10 :db/ident :inc-age}
+             {:db/id 11 :db/ident :Petr}])
+        unknown (vev.transact-tx-data-with-string-fns
+                  (addr conn)
+                  (vev.tx-data [:unknown-fn])
+                  registry)
+        non-fn (vev.transact-tx-data-with-string-fns
+                 (addr conn)
+                 (vev.tx-data [:Petr])
+                 registry)
+        missing (vev.transact-tx-data-with-string-fns
+                  (addr conn)
+                  (vev.tx-data [:inc-age "Bob"])
+                  registry)
+        report (vev.transact-tx-data-with-string-fns
+                 (addr conn)
+                 (vev.tx-data
+                   [:db/add 1 :name "Petr"]
+                   [:db/add 1 :age 31]
+                   [:inc-age "Petr"]
+                   [:db/add 1 :label "after-call"])
+                 registry)
+        petr (vev.db-entity report.db_after 1)]
+    (t.is (not unknown.ok))
+    (t.is (= unknown.error "transaction fn not found"))
+    (t.is (not non-fn.ok))
+    (t.is (= non-fn.error "transaction fn not registered"))
+    (t.is (not missing.ok))
+    (t.is (= missing.error "No entity with name"))
+    (t.is report.ok)
+    (t.is (= (vev.entity-get petr ":age").int_value 32))
+    (t.is (vev.entity-get petr ":had-birthday").bool_value)
+    (t.is (= (vev.entity-get petr ":label").text "after-call"))))
+
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
