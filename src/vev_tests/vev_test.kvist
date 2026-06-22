@@ -300,6 +300,55 @@
     (t.is (= result.rows[3].values[0].text "Petr"))
     (t.is (= result.rows[3].values[1].text "Petr"))))
 
+(t.deftest datascript-query-symbol-comparison-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            ([]vev.Tx-Data
+              [(vev.add 1 ":s" (vev.value-symbol "a"))
+               (vev.add 2 ":s" (vev.value-symbol "b"))]))
+        literal (vev.q-collection conn.db
+                  [:find [?e ...]
+                   :where
+                   [?e :s b]])
+        text (vev.q-text conn.db "[:find [?e ...] :where [?e :s b]]")
+        text-tx-conn (vev.create-conn)
+        _ (vev.transact-text (addr text-tx-conn) "[{:db/id 1 :s a} {:db/id 2 :s b}]")
+        text-tx (vev.q-text text-tx-conn.db "[:find [?e ...] :where [?e :s b]]")
+        source (vev.q-text-with-inputs
+                 conn.db
+                 "[:find [?e ...] :in $rows :where [$rows ?e :s b]]"
+                 ([]vev.Query-Input
+                   [(vev.query-input-scalar
+                      (vev.value-vector
+                        ([]vev.Value
+                          [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":s") (vev.value-symbol "a")]))
+                           (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":s") (vev.value-symbol "b")]))])))]))
+        schema-conn (vev.create-conn)
+        _ (vev.transact
+            (addr schema-conn)
+            [[:db/add 100 :db/ident :s]
+             [:db/add 100 :db/valueType :db.type/symbol]])
+        schema-ok (vev.transact-tx-data
+                    (addr schema-conn)
+                    ([]vev.Tx-Data [(vev.add 1 ":s" (vev.value-symbol "ok"))]))
+        schema-bad (vev.transact (addr schema-conn) [[:db/add 2 :s "bad"]])]
+    (t.is (= (count literal) 1))
+    (t.is (= literal[0].entity 2))
+    (t.is text.ok)
+    (t.is (= (count text.rows) 1))
+    (t.is (= text.rows[0].values[0].entity 2))
+    (t.is text-tx.ok)
+    (t.is (= (count text-tx.rows) 1))
+    (t.is (= text-tx.rows[0].values[0].entity 2))
+    (t.is source.ok)
+    (t.is (= (count source.rows) 1))
+    (t.is (= source.rows[0].values[0].int-value 2))
+    (t.is schema-ok.ok)
+    (t.is (not schema-bad.ok))
+    (t.is (= schema-bad.error "schema value type mismatch"))))
+
 (t.deftest datalog-macro-builds-query-from-data-literal
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1435,6 +1484,7 @@
                    :friend (vev.value-entity 2)
                    :attach {:some-key :some-value}
                    :score (vev.value-float 42.5)
+                   :status (vev.value-symbol "active")
                    :quote "Ada \"Lovelace\" \\ math"}])
         retract (vev.transact (addr conn) [[:db/retract 1 :aka "Devil"]])
         data (vev.serializable conn.db)
@@ -1461,6 +1511,7 @@
                            [1 :friend ?friend]
                            [?friend :name ?friend-name]])
         restored-attach (vev.entity-get (vev.db-entity restored 1) ":attach")
+        restored-status (vev.entity-get (vev.db-entity restored 1) ":status")
         text-restored-names (vev.q-collection text-restored
                               [:find [?name ...]
                                :where
@@ -1476,6 +1527,7 @@
                                 [?friend :name ?friend-name]])
         text-restored-attach (vev.entity-get (vev.db-entity text-restored 1) ":attach")
         text-restored-score (vev.entity-get (vev.db-entity text-restored 1) ":score")
+        text-restored-status (vev.entity-get (vev.db-entity text-restored 1) ":status")
         text-restored-quote (vev.entity-get (vev.db-entity text-restored 1) ":quote")
         [invalid-db invalid-ok invalid-error] (vev.from-serializable-text "[[1 :name]]")
         restored-next-tx restored-conn.next-tx
@@ -1508,6 +1560,8 @@
       (t.is (= restored-attach.kind .Map))
       (t.is (= restored-attach.items[0].text ":some-key"))
       (t.is (= restored-attach.items[1].text ":some-value"))
+      (t.is (= restored-status.kind .Symbol))
+      (t.is (= restored-status.text "active"))
       (t.is (= restored-next-tx 5))
       (t.is (= next.tx 5))
       (t.is next.ok)
@@ -1528,6 +1582,8 @@
       (t.is (= text-restored-attach.items[1].text ":some-value"))
       (t.is (= text-restored-score.kind .Float))
       (t.is (= text-restored-score.float-value 42.5))
+      (t.is (= text-restored-status.kind .Symbol))
+      (t.is (= text-restored-status.text "active"))
       (t.is (= text-restored-quote.text "Ada \"Lovelace\" \\ math"))
       (t.is (not invalid-ok))
       (t.is (= invalid-error "expected serialized datom vector [e a v tx added]"))

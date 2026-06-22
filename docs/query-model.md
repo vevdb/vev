@@ -116,7 +116,7 @@ Supported now:
   `median`, `variance`, `stddev`, and named custom aggregates through
   `(aggregate ?f ?x)`
 - text queries with simple data clauses, relation find, collection find,
-  strings, booleans, ints, keywords, wildcards, and source vars
+  strings, booleans, ints, keywords, symbols, wildcards, and source vars
 - text query inputs for scalar vars, collections, tuples, relations, and
   no-`:where` input-only queries
 - text relation-source inputs such as `:in $rows` with 2/3/4/5-wide row

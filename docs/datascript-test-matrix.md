@@ -17,7 +17,7 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | primary/named collection datom sources, map-form text queries, map relation inputs, nested `:in` binding patterns, and nested map values covered; host functions and exact input errors remain |
+| `query.cljc` | 11 | partial | primary/named collection datom sources, map-form text queries, map relation inputs, nested `:in` binding patterns, nested map values, and issue-425 symbol constants covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, regex predicate surface, regex match-return clauses, nested result binding, and named predicate/function operator inputs covered; checked query errors now cover unknown native predicate/function ops and insufficient function/predicate bindings; arbitrary host function surface remains |
 | `query_not.cljc` | 5 | partial | source semantics plus checked unbound-group errors covered; query text and Kvist literal macros have ordered top-level `not` binding validation; supported rule bodies execute in source order |
@@ -28,7 +28,7 @@ These are the main in-memory parity target before durable storage.
 | `query_aggregates.cljc` | 1 | partial | built-in aggregates including top-n, median, variance, stddev, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
 | `transact.cljc` | 19 | partial | schema-aware map vector values, empty cardinality-many tempid validation, native tx functions, registry-backed ident tx functions, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
-| `validation.cljc` | 2 | partial | runtime bad tx-data validation plus `transact-text` bad-shape rollback covered; reader/macro bad forms and exact errors remain |
+| `validation.cljc` | 2 | partial | runtime bad tx-data validation including `:db.type/symbol` plus `transact-text` bad-shape rollback covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface and indexed-attribute errors covered; exact lazy sequence/API rendering details remain |
 | `tuples.cljc` | 11 | partial | direct/component tuple upsert, redundant direct tuple-value ignore cases, and lookup-ref tuple values covered; remaining exact errors and edge conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
@@ -63,7 +63,7 @@ These are useful, but not the next engine-parity gate.
 | --- | ---: | --- | --- |
 | `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered |
 | `listen.cljc` | 1 | partial | named report-sink listeners covered; arbitrary callback/closure API remains |
-| `serialize.cljc` | 5 | partial | `init-db` from datoms and typed EDN-ish datom snapshot text roundtrip covered, including schema, retractions, refs, map/vector values, and next-tx recovery; JSON/transit-style formats later |
+| `serialize.cljc` | 5 | partial | `init-db` from datoms and typed EDN-ish datom snapshot text roundtrip covered, including schema, retractions, refs, symbol/map/vector values, and next-tx recovery; JSON/transit-style formats later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
