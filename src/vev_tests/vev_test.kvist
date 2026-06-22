@@ -611,7 +611,8 @@
         pulled (vev.q-text conn.db "[:find (pull ?e [:db/id :name]) :where [?e :name \"Ada Lovelace\"]]")
         entity-and-pull (vev.q-text conn.db "[:find ?e (pull ?e [:name]) :where [?e :name \"Ada Lovelace\"]]")
         nested (vev.q-text conn.db "[:find (pull ?e [{:friend [:name]}]) :where [?e :name \"Ada Lovelace\"]]")
-        options (vev.q-text conn.db "[:find (pull ?e [[:missing :default \"Unknown\" :as :nickname] [:name :as :full-name] [:friend :limit 1]]) :where [?e :name \"Ada Lovelace\"]]")]
+        options (vev.q-text conn.db "[:find (pull ?e [[:missing :default \"Unknown\" :as :nickname] [:name :as :full-name] [:friend :limit 1]]) :where [?e :name \"Ada Lovelace\"]]")
+        nested-options (vev.q-text conn.db "[:find (pull ?e [(default (limit :missing 1) \"Unknown\") ((limit :friend 1) :as :first-friend)]) :where [?e :name \"Ada Lovelace\"]]")]
     (t.is (= (count pulled.rows) 1))
     (t.is (= (count pulled.rows[0].values) 0))
     (t.is (= (count pulled.rows[0].pulls) 1))
@@ -628,7 +629,11 @@
     (t.is (= options.rows[0].pulls[0].attrs[1].a ":full-name"))
     (t.is (= options.rows[0].pulls[0].attrs[1].v.text "Ada Lovelace"))
     (t.is (= (count options.rows[0].pulls[0].attrs) 3))
-    (t.is (= options.rows[0].pulls[0].attrs[2].v.entity 2))))
+    (t.is (= options.rows[0].pulls[0].attrs[2].v.entity 2))
+    (t.is (= nested-options.rows[0].pulls[0].attrs[0].a ":missing"))
+    (t.is (= nested-options.rows[0].pulls[0].attrs[0].v.text "Unknown"))
+    (t.is (= nested-options.rows[0].pulls[0].attrs[1].a ":first-friend"))
+    (t.is (= nested-options.rows[0].pulls[0].attrs[1].v.entity 2))))
 
 (t.deftest datascript-parser-query-text-find-specs
   (defer (free_all context.allocator))
@@ -4718,7 +4723,7 @@
     (t.is (not bad-bool.ok))
     (t.is (= bad-bool.error "schema value type mismatch"))
     (t.is (not duplicate-email.ok))
-    (t.is (= duplicate-email.error "schema unique conflict"))
+    (t.is (= duplicate-email.error "conflicting upsert"))
     (t.is second-email.ok)
     (t.is (= (count current-email.rows) 1))
     (t.is (= current-email.rows[0].values[0].text "ada2@example.com"))))
@@ -5844,9 +5849,14 @@
              [:db/add 1 :name "Ivan"]])
         report (vev.transact
                  (addr conn)
-                 [{:db/id 2 :name "Ivan" :age 36}])]
+                 [{:db/id 2 :name "Ivan" :age 36}])
+        non-existing (vev.transact
+                       (addr conn)
+                       [{:db/id 5 :name "Ivan" :age 37}])]
     (t.is (not report.ok))
-    (t.is (= report.error "schema unique conflict"))))
+    (t.is (= report.error "conflicting upsert"))
+    (t.is (not non-existing.ok))
+    (t.is (= non-existing.error "conflicting upsert"))))
 
 (t.deftest datascript-upsert-over-intermediate-db-different-tempids-subset
   (defer (free_all context.allocator))
