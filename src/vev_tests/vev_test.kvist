@@ -6844,6 +6844,53 @@
     (t.is second-ok)
     (t.is (= second-ref.entity 2))))
 
+(t.deftest datascript-upsert-retries-order-subset
+  (defer (free_all context.allocator))
+  (let [first-conn (vev.create-conn)
+        _ (vev.transact
+            (addr first-conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]])
+        first (vev.transact
+                (addr first-conn)
+                [{:db/id "a" :age 42}
+                 {:db/id "b" :likes "Pizza"}
+                 {:db/id "a" :name "Bob"}
+                 {:db/id "b" :name "Bob"}])
+        first-e first.tempids[0].e
+        first-pull (vev.pull first.db-after [*] first-e)
+        second-conn (vev.create-conn)
+        _ (vev.transact
+            (addr second-conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]])
+        second (vev.transact
+                 (addr second-conn)
+                 [{:db/id "a" :age 42}
+                  {:db/id "b" :likes "Pizza"}
+                  {:db/id "b" :name "Bob"}
+                  {:db/id "a" :name "Bob"}])
+        second-e second.tempids[0].e
+        second-pull (vev.pull second.db-after [*] second-e)]
+    (t.is first.ok)
+    (t.is (= first.tempids[0].tempid "a"))
+    (t.is (= first.tempids[1].tempid "b"))
+    (t.is (= first.tempids[1].e first-e))
+    (t.is (= first-pull.attrs[0].v.entity first-e))
+    (t.is (= first-pull.attrs[1].v.int-value 42))
+    (t.is (= first-pull.attrs[2].v.text "Pizza"))
+    (t.is (= first-pull.attrs[3].v.text "Bob"))
+    (t.is second.ok)
+    (t.is (= second.tempids[0].tempid "a"))
+    (t.is (= second.tempids[1].tempid "b"))
+    (t.is (= second.tempids[1].e second-e))
+    (t.is (= second-pull.attrs[0].v.entity second-e))
+    (t.is (= second-pull.attrs[1].v.int-value 42))
+    (t.is (= second-pull.attrs[2].v.text "Pizza"))
+    (t.is (= second-pull.attrs[3].v.text "Bob"))))
+
 (t.deftest datascript-rejects-tempids-used-only-as-values
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -8998,6 +9045,58 @@
       (t.is (= child.attrs[0].v.text "2"))
       (t.is (= grandchild.attrs[0].v.text "3"))
       (t.is (= reverse-parent.attrs[0].v.text "2"))))
+
+(t.deftest datascript-pull-reverse-component-shape-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+             (addr conn)
+             [[:db/add 100 :db/ident :part]
+              [:db/add 100 :db/valueType :db.type/ref]
+              [:db/add 100 :db/cardinality :db.cardinality/many]
+              [:db/add 100 :db/isComponent true]])
+        _ (vev.transact
+             (addr conn)
+             [[:db/add 10 :name "Part A"]
+              [:db/add 10 :part (vev.value-entity 11)]
+              [:db/add 11 :name "Part A.A"]
+              [:db/add 11 :part (vev.value-entity 12)]
+              [:db/add 12 :name "Part A.A.A"]
+              [:db/add 12 :part (vev.value-entity 14)]
+              [:db/add 14 :name "Part A.A.A.B"]])
+        parent-id (vev.pull conn.db [:name :_part] 11)
+        parent-name (vev.pull conn.db [:name {:_part [:name]}] 11)
+        reverse-ellipsis (vev.pull conn.db [:name {:_part ...}] 14)
+        reverse-depth (vev.pull conn.db [:name {:_part 2}] 14)
+        parent-id-attr parent-id.attrs[1]
+        parent-name-attr parent-name.attrs[1]
+        ellipsis-parent reverse-ellipsis.attrs[1]
+        ellipsis-grandparent ellipsis-parent.attrs[1]
+        ellipsis-root ellipsis-grandparent.attrs[1]
+        depth-parent reverse-depth.attrs[1]
+        depth-grandparent depth-parent.attrs[1]]
+    (t.is (= (count parent-id.attrs) 2))
+    (t.is (= parent-id.attrs[0].v.text "Part A.A"))
+    (t.is (= parent-id-attr.a ":_part"))
+    (t.is (= parent-id-attr.v.entity 10))
+    (t.is (= (count parent-id-attr.attrs) 0))
+    (t.is (= (count parent-name.attrs) 2))
+    (t.is (= parent-name-attr.v.entity 10))
+    (t.is (= (count parent-name-attr.attrs) 1))
+    (t.is (= parent-name-attr.attrs[0].v.text "Part A"))
+    (t.is (= reverse-ellipsis.attrs[0].v.text "Part A.A.A.B"))
+    (t.is (= ellipsis-parent.v.entity 12))
+    (t.is (= ellipsis-parent.attrs[0].v.text "Part A.A.A"))
+    (t.is (= ellipsis-grandparent.v.entity 11))
+    (t.is (= ellipsis-grandparent.attrs[0].v.text "Part A.A"))
+    (t.is (= ellipsis-root.v.entity 10))
+    (t.is (= ellipsis-root.attrs[0].v.text "Part A"))
+    (t.is (= reverse-depth.attrs[0].v.text "Part A.A.A.B"))
+    (t.is (= depth-parent.v.entity 12))
+    (t.is (= depth-parent.attrs[0].v.text "Part A.A.A"))
+    (t.is (= depth-grandparent.v.entity 11))
+    (t.is (= depth-grandparent.attrs[0].v.text "Part A.A"))
+    (t.is (= (count depth-grandparent.attrs) 1))))
 
 (t.deftest pull-supports-nested-ref-maps
   (defer (free_all context.allocator))

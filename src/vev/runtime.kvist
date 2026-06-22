@@ -1473,6 +1473,43 @@
     (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
       (and entity-ok (not (= entity current-tx-e))))))
 
+(defn remap-resolved-tempids! [tempids: ^[dynamic]Tempid, from: u64, to: u64]
+  (when (= from to)
+    (return))
+  (for [entry index tempids^]
+    (when (= entry.e from)
+      (set! tempids^[index] (Tempid {tempid: entry.tempid e: to})))))
+
+(defn remap-resolved-ops! [ops: ^[dynamic]Tx-Op, from: u64, to: u64]
+  (when (= from to)
+    (return))
+  (for [op index ops^]
+    (let [next op]
+      (when (= next.e from)
+        (set! next.e to))
+      (when (and (= next.v.kind .Entity)
+                 (= next.v.entity from))
+        (set! next.v (value-entity to)))
+      (set! ops^[index] next))))
+
+(defn remap-resolved-tempid-entity! [ops: ^[dynamic]Tx-Op, tempids: ^[dynamic]Tempid, from: u64, to: u64]
+  (remap-resolved-ops! ops from to)
+  (remap-resolved-tempids! tempids from to))
+
+(defn tempid-existing-upsert-target [db: DB, data: Tx-Data, existing: u64] -> [target: u64, ok: bool, conflict: bool]
+  (when (not (and (= data.op ":db/add")
+                  (schema-unique-identity? db data.a)))
+    (return existing false false))
+  (let [[value value-ok _] (resolve-tx-data-value db data)]
+    (when (not value-ok)
+      (return existing false false))
+    (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
+      (when (not entity-ok)
+        (return existing false false))
+      (when (= entity existing)
+        (return existing false false))
+      (return entity true false))))
+
 (defn db-with-resolved-ops [db: DB, ops: []Tx-Op] -> DB
   (let [datoms (clone-datoms db.datoms)]
     (for [op ops]
@@ -1741,7 +1778,18 @@
                 (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v}))))
           (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
             (if ok
-              (set! e existing)
+              (let [[target target-ok _] (tempid-existing-upsert-target current-db data existing)]
+                (if target-ok
+                  (if (entity-exists? db existing)
+                    (return (Resolved-Tx {ok: false
+                                          error: "conflicting upsert"
+                                          ops: resolved-ops
+                                          tx-meta: resolved-meta
+                                          tempids: resolved-tempids}))
+                    (do
+                      (remap-resolved-tempid-entity! (addr resolved-ops) (addr resolved-tempids) existing target)
+                      (set! e target)))
+                  (set! e existing)))
               (do
                 (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db (slice pending 0) data.tempid)]
                   (when upsert-conflict

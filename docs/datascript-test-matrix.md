@@ -27,14 +27,14 @@ These are the main in-memory parity target before durable storage.
 | `query_rules.cljc` | 3 | partial | source args, recursion, repeated calls, ordered body execution for literal/text rules, and unknown/arity/param validation covered; host predicate inputs and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | built-in aggregates including top-n, median, variance, stddev, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
 | `transact.cljc` | 19 | partial | native tx functions, registry-backed ident tx functions, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
-| `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
+| `upsert.cljc` | 6 | partial | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface and indexed-attribute errors covered; exact lazy sequence/API rendering details remain |
 | `tuples.cljc` | 11 | partial | direct/component tuple upsert and lookup-ref tuple values covered; remaining exact errors and edge conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
-| `components.cljc` | 2 | partial | exact schema validation and render/touch shapes |
-| `pull_api.cljc` | 17 | partial | ABI-friendly named `:xform` transforms for `vector`/`name` covered; arbitrary host xform functions, visitor options, and exact collection/scalar shapes remain |
+| `components.cljc` | 2 | partial | reverse component pull id/pattern/recursion behavior covered; exact schema validation and render/touch shapes remain |
+| `pull_api.cljc` | 17 | partial | reverse component pull id/pattern/recursion shapes and ABI-friendly named `:xform` transforms for `vector`/`name` covered; arbitrary host xform functions, visitor options, and exact collection/scalar shapes remain |
 | `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
 | `filter.cljc` | 1 | partial | materialized filtered DBs cover query/entity/index-visible semantics; exact hash/equality/runtime wrapper behavior remains |
 
