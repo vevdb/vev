@@ -3937,18 +3937,65 @@
     (arr.push! out^ (not-group-simple (slice clauses 0)))
     (return true "")))
 
+(defn append-edn-not-join-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
+  (let [join-node doc.nodes[doc.nodes[form].first_child].next_sibling]
+    (when (or (= join-node -1) (not (= doc.nodes[join-node].kind .Vector)))
+      (return false "not-join expects a vector of join vars"))
+    (let [join-vars (edn-vars-from-vector doc join-node) :defer
+          clauses (make [dynamic]Clause) :defer
+          not-groups (make [dynamic]Not-Group) :defer
+          cursor doc.nodes[join-node].next_sibling]
+      (while (not (= cursor -1))
+        (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
+          (when (not ok)
+            (return false error)))
+        (set! cursor doc.nodes[cursor].next_sibling))
+      (arr.push! out^ (not-join-group (slice join-vars 0) (slice clauses 0) (slice not-groups 0)))
+      (return true ""))))
+
+(defn append-edn-or-branch! [out: ^[dynamic]Not-Group, doc: EDN-Doc, branch: int] -> [ok: bool, error: string]
+  (let [clauses (make [dynamic]Clause) :defer]
+    (if (= doc.nodes[branch].kind .List)
+      (let [head (edn-list-head-text doc branch)]
+        (when (not (= head "and"))
+          (return false "query text or branches support data clauses or and"))
+        (let [cursor doc.nodes[doc.nodes[branch].first_child].next_sibling]
+          (while (not (= cursor -1))
+            (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
+              (when (not ok)
+                (return false error)))
+            (set! cursor doc.nodes[cursor].next_sibling))))
+      (let [[ok error] (append-edn-data-clause! (addr clauses) doc branch)]
+        (when (not ok)
+          (return false error))))
+    (arr.push! out^ (not-group-simple (slice clauses 0)))
+    (return true "")))
+
 (defn append-edn-or-group! [out: ^[dynamic]Or-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [branches (make [dynamic]Not-Group) :defer
         cursor doc.nodes[doc.nodes[form].first_child].next_sibling]
     (while (not (= cursor -1))
-      (let [clauses (make [dynamic]Clause) :defer
-            [ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
+      (let [[ok error] (append-edn-or-branch! (addr branches) doc cursor)]
         (when (not ok)
-          (return false error))
-        (arr.push! branches (not-group-simple (slice clauses 0))))
+          (return false error)))
       (set! cursor doc.nodes[cursor].next_sibling))
     (arr.push! out^ (or-group (slice branches 0)))
     (return true "")))
+
+(defn append-edn-or-join-group! [out: ^[dynamic]Or-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
+  (let [join-node doc.nodes[doc.nodes[form].first_child].next_sibling]
+    (when (or (= join-node -1) (not (= doc.nodes[join-node].kind .Vector)))
+      (return false "or-join expects a vector of join vars"))
+    (let [join-vars (edn-vars-from-vector doc join-node) :defer
+          branches (make [dynamic]Not-Group) :defer
+          cursor doc.nodes[join-node].next_sibling]
+      (while (not (= cursor -1))
+        (let [[ok error] (append-edn-or-branch! (addr branches) doc cursor)]
+          (when (not ok)
+            (return false error)))
+        (set! cursor doc.nodes[cursor].next_sibling))
+      (arr.push! out^ (or-join-group (slice join-vars 0) (slice branches 0)))
+      (return true ""))))
 
 (defn rule-call-from-text-parts [name: string, source: string, has-source: bool, args: []Term] -> Rule-Call
   (let [owned-args (arr.into [dynamic]Term args)]
@@ -3980,7 +4027,9 @@
     (let [head (edn-list-head-text doc item)]
       (cond
         (= head "not") (append-edn-not-group! not-groups doc item)
+        (= head "not-join") (append-edn-not-join-group! not-groups doc item)
         (= head "or") (append-edn-or-group! or-groups doc item)
+        (= head "or-join") (append-edn-or-join-group! or-groups doc item)
         :else (return false "query text list where clauses currently support not, or, and rules")))
     (if (= doc.nodes[item].kind .Vector)
       (let [first-item (edn-child-at doc item 0)]
@@ -4000,7 +4049,9 @@
     (let [head (edn-list-head-text doc item)]
       (cond
         (= head "not") (append-edn-not-group! not-groups doc item)
+        (= head "not-join") (append-edn-not-join-group! not-groups doc item)
         (= head "or") (append-edn-or-group! or-groups doc item)
+        (= head "or-join") (append-edn-or-join-group! or-groups doc item)
         :else (append-edn-rule-call! rule-calls doc item)))
     (append-edn-where-item! clauses predicates function-clauses not-groups or-groups doc item)))
 
