@@ -279,6 +279,39 @@
               (unquote value-tempid)))
           (error "nested tx map parent currently supports numeric, string, lookup ref, or ident :db/id"))))))
 
+(defmacro- emit-tx-map-nested-call [e a v]
+  (let [nested-tempid (source (gensym "vev_tx_map"))]
+    (if (lookup-ref? e)
+      (quasiquote
+        (add-lookup-ref-nested-map
+          (unquote (emit-attr (nth e 0)))
+          (unquote (emit-literal-value (nth e 1)))
+          (unquote (emit-attr a))
+          (unquote (emit-literal-value v))
+          (unquote nested-tempid)))
+      (if (keyword? e)
+        (quasiquote
+          (add-ident-nested-map
+            (unquote (source e))
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value v))
+            (unquote nested-tempid)))
+        (if (string? e)
+          (quasiquote
+            (add-tempid-nested-map
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v))
+              (unquote nested-tempid)))
+          (if (int? e)
+            (quasiquote
+              (add-nested-map
+                (unquote e)
+                (unquote (emit-attr a))
+                (unquote (emit-literal-value v))
+                (unquote nested-tempid)))
+            (error "nested tx map parent currently supports numeric, string, lookup ref, or ident :db/id")))))))
+
 (defmacro- reverse-attr-form? [form]
   (and (keyword? form)
        (starts-with? (source form) ":_")))
@@ -325,20 +358,7 @@
         (emit-tx-map-vector-attr e a v))
       (emit-tx-map-reverse-attr e a v))
   (if (brace? v)
-    (if (tx-map-has-numeric-id? v)
-      (let [value-e (tx-map-id v)]
-        (forms
-          (emit-tx-map-entity-ref-call e a value-e)
-          (emit-tx-map-attrs value-e v)))
-      (if (tx-map-has-keyword-id? v)
-        (let [value-ident (tx-map-id v)]
-          (forms
-            (emit-tx-data-call (keyword "db/add") e a value-ident)
-            (emit-tx-map-attrs value-ident v)))
-        (let [value-tempid (tx-map-ref-tempid v)]
-          (forms
-            (emit-tx-map-ref-call e a value-tempid)
-            (emit-tx-map-attrs value-tempid v)))))
+    (forms (emit-tx-map-nested-call e a v))
     (if (vector? v)
       (if (lookup-ref? v)
         (emit-tx-data-call (keyword "db/add") e a v)
@@ -441,7 +461,13 @@
               (forms (emit-retract-entity-call e))
               (if (= (source op) ":db.fn/retractEntity")
                 (forms (emit-retract-entity-call e))
-                (error "tx-data operation must be :db/add, :db/retract, :db/retractEntity, or :db.fn/retractEntity")))
+                (if (string? e)
+                  (forms
+                    (quasiquote
+                      (call-ident-string
+                        (unquote (source op))
+                        (unquote (text e)))))
+                  (error "two-item transaction function calls currently expect a string argument"))))
             (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity")))
         (if (= (count form) 3)
           (let [op (nth form 0)
@@ -454,7 +480,16 @@
                   (forms (emit-retract-attr-call e a))
                   (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
               (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
-          (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], [:db.fn/retractAttribute e :attr], or [:db/retractEntity e]")))))
+          (if (= (count form) 1)
+            (let [op (nth form 0)]
+              (if (keyword? op)
+                (forms
+                  (quasiquote
+                    (call-ident-string
+                      (unquote (source op))
+                      "")))
+                (error "one-item transaction function calls must start with a keyword ident")))
+            (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], [:db.fn/retractAttribute e :attr], [:db/retractEntity e], or [:tx-fn-ident arg]"))))))
     (if (brace? form)
       (emit-tx-map-items form)
       (error "tx-data expects vector forms like [:db/add e :attr value] or map forms")))))
@@ -521,7 +556,8 @@
 (defmacro- emit-find-tuple-vars [forms]
   (if (= (count forms) 0)
     (forms)
-    (if (aggregate-find? (first forms))
+    (if (or (aggregate-find? (first forms))
+            (pull-find? (first forms)))
       (emit-find-tuple-vars (rest forms))
       (forms
         (emit-find-var (first forms))
@@ -560,7 +596,8 @@
           (if (find-scalar-marker? (first forms))
             (emit-find-vars (rest forms))
             (if (find-collection? (first forms))
-              (if (aggregate-find? (nth (first forms) 0))
+              (if (or (aggregate-find? (nth (first forms) 0))
+                      (pull-find? (nth (first forms) 0)))
                 (emit-find-vars (rest forms))
                 (forms
                   (emit-find-var (nth (first forms) 0))
@@ -1784,7 +1821,17 @@
         (forms
           (emit-pull-find (first forms))
           (emit-pull-finds (rest forms)))
-        (emit-pull-finds (rest forms))))))
+        (if (find-collection? (first forms))
+          (if (pull-find? (nth (first forms) 0))
+            (forms
+              (emit-pull-find (nth (first forms) 0))
+              (emit-pull-finds (rest forms)))
+            (emit-pull-finds (rest forms)))
+          (if (find-tuple? (first forms))
+            (concat
+              (emit-pull-finds (first (first forms)))
+              (emit-pull-finds (rest forms)))
+            (emit-pull-finds (rest forms))))))))
 
 (defmacro- emit-aggregate-find [form]
   (if (aggregate-find? form)
@@ -1855,7 +1902,7 @@
                   ([]Ground [(splice (emit-datalog-grounds where-items))])
                   ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
                   ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
-                  ([]Pull-Find [])
+                  ([]Pull-Find [(splice (emit-pull-finds (first tail)))])
                   ([]Aggregate-Find [(splice (emit-aggregate-finds (first tail)))])))
               (quasiquote
                 (query
@@ -2223,6 +2270,18 @@
 (defmacro q-tuple [db query-form & inputs]
   (quasiquote
     (result-tuple (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-pull-scalar [db query-form & inputs]
+  (quasiquote
+    (result-pull-scalar (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-pull-collection [db query-form & inputs]
+  (quasiquote
+    (result-pull-collection (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-row-tuple [db query-form & inputs]
+  (quasiquote
+    (result-row-tuple (q (unquote db) (unquote query-form) (splice inputs)))))
 
 (defmacro q-keys [db query-form & inputs]
   (if (vector? query-form)

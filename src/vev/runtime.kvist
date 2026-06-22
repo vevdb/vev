@@ -1027,6 +1027,88 @@
           (return datom.v.text true)))))
   (return "" false))
 
+(defn schema-has-attr? [items: []Schema-Attr, attr: string] -> bool
+  (for [item items]
+    (when (= item.attr attr)
+      (return true)))
+  false)
+
+(defn schema-has-bool-property? [db: DB, entity: u64, schema-attr: string] -> [value: bool, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity schema-attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity schema-attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Bool))
+          (return datom.v.bool_value true)))))
+  (return false false))
+
+(defn schema-keyword-property [db: DB, entity: u64, schema-attr: string] -> [value: string, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity schema-attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity schema-attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword))
+          (return datom.v.text true)))))
+  (return "" false))
+
+(defn schema-tuple-attrs-for-entity [db: DB, entity: u64] -> [dynamic]string
+  (let [out (make [dynamic]string)
+        indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity ":db/tupleAttrs" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Vector))
+          (for [item datom.v.items]
+            (when (= item.kind .Keyword)
+              (arr.push! out item.text))))))
+    out))
+
+(defn schema-attr-for-entity [db: DB, entity: u64, attr: string] -> Schema-Attr
+  (let [[value-type has-value-type] (schema-keyword-property db entity ":db/valueType")
+        [cardinality has-cardinality] (schema-keyword-property db entity ":db/cardinality")
+        [unique has-unique] (schema-keyword-property db entity ":db/unique")
+        [indexed has-indexed] (schema-has-bool-property? db entity ":db/index")
+        [component has-component] (schema-has-bool-property? db entity ":db/isComponent")
+        tuple-attrs (schema-tuple-attrs-for-entity db entity)
+        has-tuple-attrs (> (count tuple-attrs) 0)]
+    (Schema-Attr {attr: attr
+                  value_type: value-type
+                  has_value_type: has-value-type
+                  cardinality: cardinality
+                  has_cardinality: has-cardinality
+                  unique: unique
+                  has_unique: has-unique
+                  indexed: indexed
+                  has_indexed: has-indexed
+                  component: component
+                  has_component: has-component
+                  tuple_attrs: tuple-attrs
+                  has_tuple_attrs: has-tuple-attrs})))
+
+(defn db-schema [db: DB] -> [dynamic]Schema-Attr
+  (let [out (make [dynamic]Schema-Attr)
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword)
+                   (not (schema-has-attr? (slice out 0) datom.v.text)))
+          (arr.push! out (schema-attr-for-entity db datom.e datom.v.text)))))
+    out))
+
+(defn delete-schema [schema: [dynamic]Schema-Attr]
+  (for [item schema]
+    (delete item.tuple_attrs))
+  (delete schema))
+
 (defn schema-tuple-attrs [db: DB, attr: string] -> [dynamic]string
   (let [out (make [dynamic]string)
         [schema-e schema-ok] (schema-entity-for-attr db attr)]
@@ -1224,14 +1306,30 @@
     (not (current-attr-exists? db entity attr))
     (current-value-exists? db entity attr expected)))
 
+(defn max-entity-id [] -> u64
+  (u64 2147483647))
+
+(defn entity-id-valid? [entity: u64] -> bool
+  (<= entity (max-entity-id)))
+
+(defn validate-entity-id [entity: u64] -> [ok: bool, error: string]
+  (if (entity-id-valid? entity)
+    (return true "")
+    (return false "entity id exceeds supported range")))
+
 (defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
   (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
     (when (and has-type (= schema-type ":db.type/ref"))
       (return (resolve-ref-component-value db value))))
   (resolve-tuple-value db attr value))
 
+(defn value-lookup-ref-vector [attr: string, value: Value] -> Value
+  (value-vector ([]Value [(value-keyword attr) value])))
+
 (defn resolve-cas-expected [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
   (when data.has_expected_lookup_ref
+    (when (not (schema-ref? db data.a))
+      (return (value-lookup-ref-vector data.expected_lookup_attr data.expected_lookup_value) true ""))
     (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.expected_lookup_attr data.expected_lookup_value)]
       (if lookup-ok
         (return (value-entity lookup-e) true "")
@@ -1240,6 +1338,8 @@
 
 (defn resolve-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
   (when data.has_value_lookup_ref
+    (when (not (schema-ref? db data.a))
+      (return (value-lookup-ref-vector data.value_lookup_attr data.value_lookup_value) true ""))
     (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
       (if lookup-ok
         (return (value-entity lookup-e) true "")
@@ -1437,6 +1537,104 @@
         (append-tuple-maintenance-ops! (addr out) scratch op)))
     out))
 
+(defn lookup-ref-vector-value? [value: Value] -> bool
+  (and (= value.kind .Vector)
+       (= (count value.items) 2)
+       (= value.items[0].kind .Keyword)))
+
+(defn tx-map-db-id [map-value: Value] -> [value: Value, ok: bool]
+  (when (not (= map-value.kind .Map))
+    (return (Value {}) false))
+  (let [index 0]
+    (while (< (+ index 1) (count map-value.items))
+      (when (and (= map-value.items[index].kind .Keyword)
+                 (= map-value.items[index].text ":db/id"))
+        (return map-value.items[(+ index 1)] true))
+      (set! index (+ index 2))))
+  (return (Value {}) false))
+
+(defn nested-entity-ref-data [map-value: Value, generated-tempid: string] -> [data: Tx-Data, ok: bool, error: string]
+  (let [[id-value has-id] (tx-map-db-id map-value)]
+    (when (not has-id)
+      (return (Tx-Data {tempid: generated-tempid has_tempid: true}) true ""))
+    (case id-value.kind
+      .Entity (return (Tx-Data {e: id-value.entity}) true "")
+      .Int (return (Tx-Data {e: (u64 id-value.int_value)}) true "")
+      .String (return (Tx-Data {tempid: id-value.text has_tempid: true}) true "")
+      .Keyword (return (Tx-Data {ident: id-value.text has_ident: true}) true "")
+      .Vector
+        (if (lookup-ref-vector-value? id-value)
+          (return (Tx-Data {lookup_attr: id-value.items[0].text
+                            lookup_value: id-value.items[1]
+                            has_lookup_ref: true}) true "")
+          (return (Tx-Data {}) false "nested map :db/id vector must be a lookup ref"))
+      :else (return (Tx-Data {}) false "nested map :db/id must be int, entity, tempid string, ident keyword, or lookup ref"))))
+
+(defn tx-add-from-entity-data [entity: Tx-Data, attr: string, value: Value] -> Tx-Data
+  (cond
+    entity.has_tempid (add-tempid entity.tempid attr value)
+    entity.has_lookup_ref (add-lookup-ref entity.lookup_attr entity.lookup_value attr value)
+    entity.has_ident (add-ident entity.ident attr value)
+    :else (add entity.e attr value)))
+
+(defn tx-add-value-tempid-from-entity-data [entity: Tx-Data, attr: string, value-tempid: string] -> Tx-Data
+  (cond
+    entity.has_tempid (add-tempid-value-tempid entity.tempid attr value-tempid)
+    entity.has_lookup_ref (add-lookup-ref-value-tempid entity.lookup_attr entity.lookup_value attr value-tempid)
+    entity.has_ident (add-ident-value-tempid entity.ident attr value-tempid)
+    :else (add-value-tempid entity.e attr value-tempid)))
+
+(defn tx-add-value-lookup-from-entity-data [entity: Tx-Data, attr: string, lookup-attr: string, lookup-value: Value] -> Tx-Data
+  (cond
+    entity.has_tempid (add-tempid-value-lookup-ref entity.tempid attr lookup-attr lookup-value)
+    entity.has_lookup_ref (Tx-Data {op: ":db/add"
+                                    lookup_attr: entity.lookup_attr
+                                    lookup_value: entity.lookup_value
+                                    has_lookup_ref: true
+                                    a: attr
+                                    value_lookup_attr: lookup-attr
+                                    value_lookup_value: lookup-value
+                                    has_value_lookup_ref: true})
+    entity.has_ident (Tx-Data {op: ":db/add"
+                               ident: entity.ident
+                               has_ident: true
+                               a: attr
+                               value_lookup_attr: lookup-attr
+                               value_lookup_value: lookup-value
+                               has_value_lookup_ref: true})
+    :else (add-value-lookup-ref entity.e attr lookup-attr lookup-value)))
+
+(defn tx-add-nested-map-from-entity-data [entity: Tx-Data, attr: string, nested-map: Value, nested-tempid: string] -> Tx-Data
+  (cond
+    entity.has_tempid (add-tempid-nested-map entity.tempid attr nested-map nested-tempid)
+    entity.has_lookup_ref (add-lookup-ref-nested-map entity.lookup_attr entity.lookup_value attr nested-map nested-tempid)
+    entity.has_ident (add-ident-nested-map entity.ident attr nested-map nested-tempid)
+    :else (add-nested-map entity.e attr nested-map nested-tempid)))
+
+(defn append-nested-map-value-tx! [pending: ^[dynamic]Tx-Data, entity: Tx-Data, attr: string, value: Value, seed: string]
+  (if (= value.kind .Vector)
+    (if (lookup-ref-vector-value? value)
+      (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity attr value.items[0].text value.items[1]))
+      (for [item value.items]
+        (append-nested-map-value-tx! pending entity attr item seed)))
+    (if (= value.kind .Map)
+      (arr.push! pending^ (tx-add-nested-map-from-entity-data entity attr value (fmt.tprintf "%s_%d" seed (count pending^))))
+      (arr.push! pending^ (tx-add-from-entity-data entity attr value)))))
+
+(defn append-nested-map-tx! [pending: ^[dynamic]Tx-Data, entity: Tx-Data, map-value: Value, seed: string] -> [ok: bool, error: string]
+  (when (not (= map-value.kind .Map))
+    (return false "nested tx value must be a map"))
+  (let [index 0]
+    (while (< (+ index 1) (count map-value.items))
+      (let [key map-value.items[index]
+            value map-value.items[(+ index 1)]]
+        (when (not (= key.kind .Keyword))
+          (return false "nested tx map attributes must be keywords"))
+        (when (not (= key.text ":db/id"))
+          (append-nested-map-value-tx! pending entity key.text value seed)))
+      (set! index (+ index 2))))
+  (return true ""))
+
 (defn tx-data-op-known? [op: string] -> bool
   (or (= op ":db/add")
       (= op ":db/retract")
@@ -1476,19 +1674,24 @@
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
+        pending (arr.into [dynamic]Tx-Data tx-data)
         next-e (next-entity-id (slice db.datoms 0))
         current-tx-e next-e
-        current-tx-reserved false]
-    (for [data tx-data]
+        current-tx-reserved false
+        data-index 0]
+    (defer (delete pending))
+    (for [data pending]
       (when (and (not data.has_tempid)
                  (not data.has_lookup_ref)
                  (not data.has_ident)
                  (>= data.e next-e))
         (set! next-e (+ data.e 1))))
-    (for [data tx-data]
-      (let [e data.e
+    (while (< data-index (count pending))
+      (let [data pending[data-index]
             current-db (db-with-resolved-ops db (slice resolved-ops 0))
+            e data.e
             skip-data false]
+        (set! data-index (+ data-index 1))
         (let [[shape-ok shape-error] (validate-tx-data-item data)]
           (when (not shape-ok)
             (return (Resolved-Tx {ok: false
@@ -1517,7 +1720,7 @@
             (if ok
               (set! e existing)
               (do
-                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data data.tempid)]
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db (slice pending 0) data.tempid)]
                   (when upsert-conflict
                     (return (Resolved-Tx {ok: false
                                           error: "conflicting upsert"
@@ -1556,6 +1759,41 @@
                 (set! skip-data true)))))
         (when skip-data
           (continue))
+        (when data.has_nested_map
+          (if (schema-ref? current-db data.a)
+            (let [[nested-entity nested-ok nested-error] (nested-entity-ref-data data.nested_map data.nested_tempid)]
+              (when (not nested-ok)
+                (return (Resolved-Tx {ok: false
+                                      error: nested-error
+                                      ops: resolved-ops
+                                      tx_meta: resolved-meta
+                                      tempids: resolved-tempids})))
+              (let [[children-ok children-error] (append-nested-map-tx! (addr pending) nested-entity data.nested_map data.nested_tempid)]
+                (when (not children-ok)
+                  (return (Resolved-Tx {ok: false
+                                        error: children-error
+                                        ops: resolved-ops
+                                        tx_meta: resolved-meta
+                                        tempids: resolved-tempids}))))
+              (set! data.has_nested_map false)
+              (let [nested-assigned false]
+                (when nested-entity.has_tempid
+                  (set! data.has_value_tempid true)
+                  (set! data.value_tempid nested-entity.tempid)
+                  (set! nested-assigned true))
+                (when (and (not nested-assigned) nested-entity.has_lookup_ref)
+                  (set! data.has_value_lookup_ref true)
+                  (set! data.value_lookup_attr nested-entity.lookup_attr)
+                  (set! data.value_lookup_value nested-entity.lookup_value)
+                  (set! nested-assigned true))
+                (when (and (not nested-assigned) nested-entity.has_ident)
+                  (set! data.v (value-keyword nested-entity.ident))
+                  (set! nested-assigned true))
+                (when (not nested-assigned)
+                  (set! data.v (value-entity nested-entity.e)))))
+            (do
+              (set! data.v data.nested_map)
+              (set! data.has_nested_map false))))
         (when (or (= data.op ":db/retract")
                   (= data.op ":db/retractAttr"))
           (let [tuple-attrs (schema-tuple-attrs current-db data.a) :defer]
@@ -1608,16 +1846,18 @@
                 (set! value-ok resolved-ok)
                 (set! value-error resolved-error)))
 	          (when data.has_value_lookup_ref
-	            (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value_lookup_attr data.value_lookup_value)]
-	              (if lookup-ok
-	                (set! v (value-entity lookup-e))
-	                (if (= data.op ":db/retract")
-	                  (set! skip-data true)
-	                  (return (Resolved-Tx {ok: false
-	                                        error: "lookup ref not found"
-	                                        ops: resolved-ops
-	                                        tx_meta: resolved-meta
-	                                        tempids: resolved-tempids}))))))
+              (if (not (schema-ref? current-db data.a))
+                (set! v (value-lookup-ref-vector data.value_lookup_attr data.value_lookup_value))
+	              (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value_lookup_attr data.value_lookup_value)]
+	                (if lookup-ok
+	                  (set! v (value-entity lookup-e))
+	                  (if (= data.op ":db/retract")
+	                    (set! skip-data true)
+	                    (return (Resolved-Tx {ok: false
+	                                          error: "lookup ref not found"
+	                                          ops: resolved-ops
+	                                          tx_meta: resolved-meta
+	                                          tempids: resolved-tempids})))))))
 	          (when skip-data
 	            (continue))
             (when (current-tx-value? v)
@@ -1640,7 +1880,7 @@
                     (set! current-tx-reserved true))
                   (set! v (value-entity current-tx-e))
                   (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
-              (if (not (tx-data-has-tempid? tx-data value-tempid))
+              (if (not (tx-data-has-tempid? (slice pending 0) value-tempid))
                 (return (Resolved-Tx {ok: false
                                       error: "tempid used only as value"
                                       ops: resolved-ops
@@ -1649,7 +1889,7 @@
               (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
               (if ok
                 (set! v (value-entity existing))
-                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data value-tempid)]
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db (slice pending 0) value-tempid)]
                   (when upsert-conflict
                     (return (Resolved-Tx {ok: false
                                           error: "conflicting upsert"
@@ -1696,6 +1936,16 @@
                    (= unique ":db.unique/value"))
                (unique-conflict? db op))
       (return false "schema unique conflict")))
+  (return true ""))
+
+(defn validate-op-entity-ids [op: Tx-Op] -> [ok: bool, error: string]
+  (let [[entity-ok entity-error] (validate-entity-id op.e)]
+    (when (not entity-ok)
+      (return false entity-error)))
+  (when (= op.v.kind .Entity)
+    (let [[value-ok value-error] (validate-entity-id op.v.entity)]
+      (when (not value-ok)
+        (return false value-error))))
   (return true ""))
 
 (defn validate-tuple-type-schema [db: DB] -> [ok: bool, error: string]
@@ -1784,6 +2034,9 @@
   (let [scratch-datoms (clone-datoms before.datoms)]
     (defer (delete scratch-datoms))
     (for [op ops]
+      (let [[entity-ok entity-error] (validate-op-entity-ids op)]
+        (when (not entity-ok)
+          (return false entity-error)))
       (when (= op.kind .Add)
         (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
               scratch (build-db scratch-owned)
@@ -1891,6 +2144,15 @@
                    error: error
                    tx_data: empty})))
 
+(defn tx-fn-string [ident: string, f: fn [db: DB, arg: string] -> Tx-Fn-Result] -> Tx-Fn-String
+  (Tx-Fn-String {ident: ident f: f}))
+
+(defn tx-fn-string-index [registry: []Tx-Fn-String, ident: string] -> [index: int, ok: bool]
+  (for [entry index registry]
+    (when (= entry.ident ident)
+      (return index true)))
+  (return 0 false))
+
 (defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
@@ -1975,6 +2237,124 @@
     (let [report (transact-ops-with-tempids conn (slice resolved.ops 0) (slice resolved.tx_meta 0) resolved.tempids)]
       (delete resolved.ops)
       (delete resolved.tx_meta)
+      report)))
+
+(defn with-tx-data [db: DB, tx-data: []Tx-Data] -> Tx-Report
+  (let [conn (conn-from-db db)]
+    (transact-tx-data (addr conn) tx-data)))
+
+(defn db-with-tx-data [db: DB, tx-data: []Tx-Data] -> DB
+  (let [report (with-tx-data db tx-data)]
+    (if report.ok
+      report.db_after
+      report.db_before)))
+
+(defn with-ops [db: DB, ops: []Tx-Op] -> Tx-Report
+  (let [conn (conn-from-db db)]
+    (transact-ops (addr conn) ops)))
+
+(defn db-with-ops [db: DB, ops: []Tx-Op] -> DB
+  (let [report (with-ops db ops)]
+    (if report.ok
+      report.db_after
+      report.db_before)))
+
+(defn db-with-datoms [db: DB, datoms: []Datom] -> DB
+  (let [out (clone-datoms db.datoms)]
+    (for [datom datoms]
+      (arr.push! out datom))
+    (build-db out)))
+
+(defn delete-owned-db [db: DB]
+  (delete db.current)
+  (delete db.eavt)
+  (delete db.aevt)
+  (delete db.avet)
+  (delete db.vaet)
+  (delete db.datoms))
+
+(defn serializable [db: DB] -> Serializable-DB
+  (Serializable-DB {datoms: (clone-datom-slice (slice db.datoms 0))}))
+
+(defn from-serializable [data: Serializable-DB] -> DB
+  (init-db (slice data.datoms 0)))
+
+(defn delete-serializable [data: Serializable-DB]
+  (delete data.datoms))
+
+(defn append-resolved-tx! [ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, resolved: Resolved-Tx]
+  (for [op resolved.ops]
+    (arr.push! ops^ op))
+  (for [meta resolved.tx_meta]
+    (arr.push! tx-meta^ meta))
+  (for [tempid resolved.tempids]
+    (arr.push! tempids^ tempid)))
+
+(defn resolve-tx-segment! [base: DB, ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, segment: ^[dynamic]Tx-Data] -> [ok: bool, error: string]
+  (when (= (count segment^) 0)
+    (return true ""))
+  (let [current-db (db-with-resolved-ops base (slice ops^ 0))
+        resolved (resolve-tx-data current-db (slice segment^ 0))]
+    (delete-owned-db current-db)
+    (when (not resolved.ok)
+      (delete resolved.ops)
+      (delete resolved.tx_meta)
+      (delete resolved.tempids)
+      (return false resolved.error))
+    (append-resolved-tx! ops tx-meta tempids resolved)
+    (delete resolved.ops)
+    (delete resolved.tx_meta)
+    (delete resolved.tempids)
+    (delete segment^)
+    (set! segment^ (make [dynamic]Tx-Data))
+    (return true "")))
+
+(defn failed-registered-tx [before: DB, ops: [dynamic]Tx-Op, tx-meta: [dynamic]Tx-Meta, tempids: [dynamic]Tempid, segment: [dynamic]Tx-Data, error: string] -> Tx-Report
+  (delete ops)
+  (delete tx-meta)
+  (delete tempids)
+  (delete segment)
+  (failed-tx-report before error))
+
+(defn transact-tx-data-with-string-fns [conn: ^Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        ops (make [dynamic]Tx-Op)
+        tx-meta (make [dynamic]Tx-Meta)
+        tempids (make [dynamic]Tempid)
+        segment (make [dynamic]Tx-Data)]
+    (for [data tx-data]
+      (if (= data.op ":db.fn/call-ident")
+        (do
+          (let [[segment-ok segment-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+            (when (not segment-ok)
+              (return (failed-registered-tx before ops tx-meta tempids segment segment-error))))
+          (let [current-db (db-with-resolved-ops before (slice ops 0))
+                [_ fn-entity-ok] (schema-entity-for-attr current-db data.ident)
+                [fn-index fn-ok] (tx-fn-string-index registry data.ident)]
+            (when (not fn-entity-ok)
+              (delete-owned-db current-db)
+              (return (failed-registered-tx before ops tx-meta tempids segment "transaction fn not found")))
+            (when (not fn-ok)
+              (delete-owned-db current-db)
+              (return (failed-registered-tx before ops tx-meta tempids segment "transaction fn not registered")))
+            (let [f registry[fn-index].f
+                  result (f current-db data.v.text)]
+              (delete-owned-db current-db)
+              (when (not result.ok)
+                (delete result.tx_data)
+                (return (failed-registered-tx before ops tx-meta tempids segment result.error)))
+              (let [[result-ok result-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr result.tx_data))]
+                (delete result.tx_data)
+                (when (not result-ok)
+                  (return (failed-registered-tx before ops tx-meta tempids segment result-error)))))))
+        (arr.push! segment data)))
+    (let [[tail-ok tail-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+      (when (not tail-ok)
+        (return (failed-registered-tx before ops tx-meta tempids segment tail-error))))
+    (delete segment)
+    (let [report (transact-ops-with-tempids conn (slice ops 0) (slice tx-meta 0) tempids)]
+      (delete ops)
+      (delete tx-meta)
       report)))
 
 (defn transact-fn [conn: ^Conn, f: (fn [db: DB] -> Tx-Fn-Result)] -> Tx-Report
@@ -2801,15 +3181,35 @@
     (source-db-lookup db sources pull-find.source)
     (return db true)))
 
+(defn pull-entity-from-value [db: DB, value: Value] -> [entity: u64, ok: bool]
+  (cond
+    (= value.kind .Entity) (return value.entity true)
+    (= value.kind .Int) (return (u64 value.int_value) true)
+    (= value.kind .Keyword)
+      (schema-entity-for-attr db value.text)
+    (and (= value.kind .Vector)
+         (= (count value.items) 2)
+         (= value.items[0].kind .Keyword))
+      (resolve-lookup-ref db value.items[0].text value.items[1])
+    :else (return 0 false)))
+
 (defn pulls-for-binding-with-sources [db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
   (let [out (make [dynamic]Pull-Result 0 (count query.pulls))]
     (for [pull-find query.pulls]
-      (let [[entity ok] (binding-lookup binding pull-find.var)]
-        (if (and ok (= entity.kind .Entity))
+      (let [[entity-value ok] (binding-lookup binding pull-find.var)]
+        (if ok
           (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)
-                [pull-db pull-db-ok] (pull-db-for-find db sources pull-find)]
+                [pull-db pull-db-ok] (pull-db-for-find db sources pull-find)
+                entity: u64 0
+                entity-ok false]
+            (when pull-db-ok
+              (let [[resolved resolved-ok] (pull-entity-from-value pull-db entity-value)]
+                (set! entity resolved)
+                (set! entity-ok resolved-ok)))
             (if (and pattern-ok pull-db-ok)
-              (arr.push! out (pull-pattern-spec pull-db entity.entity pattern))
+              (if entity-ok
+                (arr.push! out (pull-pattern-spec pull-db entity pattern))
+                (return out false))
               (return out false)))
           (return out false))))
     (return out true)))
@@ -3051,6 +3451,28 @@
   (if (> (count result.rows) 0)
     (arr.into [dynamic]Value (slice result.rows[0].values 0))
     (make [dynamic]Value)))
+
+(defn result-pull-scalar [result: Result-Set] -> [pull: Pull-Result, ok: bool]
+  (when (= (count result.rows) 0)
+    (return (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}) false))
+  (when (not (= (count result.rows[0].pulls) 1))
+    (return (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}) false))
+  (return result.rows[0].pulls[0] true))
+
+(defn result-pull-collection [result: Result-Set] -> [dynamic]Pull-Result
+  (let [out (make [dynamic]Pull-Result 0 (count result.rows))]
+    (for [row result.rows]
+      (when (= (count row.pulls) 1)
+        (arr.push! out row.pulls[0])))
+    out))
+
+(defn result-row-tuple [result: Result-Set] -> Result-Row
+  (if (> (count result.rows) 0)
+    (let [values (arr.into [dynamic]Value (slice result.rows[0].values 0))
+          pulls (arr.into [dynamic]Pull-Result (slice result.rows[0].pulls 0))]
+      (Result-Row {values: values pulls: pulls}))
+    (Result-Row {values: (make [dynamic]Value)
+                 pulls: (make [dynamic]Pull-Result)})))
 
 (defn result-keys [result: Result-Set, kind: Key-Kind, keys: []string] -> [dynamic]Keyed-Row
   (let [out (make [dynamic]Keyed-Row 0 (count result.rows))]
@@ -3472,6 +3894,9 @@
               has_xform: false
               xform: ""
               pattern: pattern}))
+
+(defn query-input-pull-pattern [pattern: []Pull-Spec] -> Query-Input
+  (Query-Input {kind: .PullPattern pattern: pattern}))
 
 (defn pull-spec-recursion [attr: string, depth: int] -> Pull-Spec
   (Pull-Spec {a: attr
