@@ -1027,6 +1027,88 @@
           (return datom.v.text true)))))
   (return "" false))
 
+(defn schema-has-attr? [items: []Schema-Attr, attr: string] -> bool
+  (for [item items]
+    (when (= item.attr attr)
+      (return true)))
+  false)
+
+(defn schema-has-bool-property? [db: DB, entity: u64, schema-attr: string] -> [value: bool, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity schema-attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity schema-attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Bool))
+          (return datom.v.bool_value true)))))
+  (return false false))
+
+(defn schema-keyword-property [db: DB, entity: u64, schema-attr: string] -> [value: string, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity schema-attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity schema-attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword))
+          (return datom.v.text true)))))
+  (return "" false))
+
+(defn schema-tuple-attrs-for-entity [db: DB, entity: u64] -> [dynamic]string
+  (let [out (make [dynamic]string)
+        indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity ":db/tupleAttrs" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Vector))
+          (for [item datom.v.items]
+            (when (= item.kind .Keyword)
+              (arr.push! out item.text))))))
+    out))
+
+(defn schema-attr-for-entity [db: DB, entity: u64, attr: string] -> Schema-Attr
+  (let [[value-type has-value-type] (schema-keyword-property db entity ":db/valueType")
+        [cardinality has-cardinality] (schema-keyword-property db entity ":db/cardinality")
+        [unique has-unique] (schema-keyword-property db entity ":db/unique")
+        [indexed has-indexed] (schema-has-bool-property? db entity ":db/index")
+        [component has-component] (schema-has-bool-property? db entity ":db/isComponent")
+        tuple-attrs (schema-tuple-attrs-for-entity db entity)
+        has-tuple-attrs (> (count tuple-attrs) 0)]
+    (Schema-Attr {attr: attr
+                  value_type: value-type
+                  has_value_type: has-value-type
+                  cardinality: cardinality
+                  has_cardinality: has-cardinality
+                  unique: unique
+                  has_unique: has-unique
+                  indexed: indexed
+                  has_indexed: has-indexed
+                  component: component
+                  has_component: has-component
+                  tuple_attrs: tuple-attrs
+                  has_tuple_attrs: has-tuple-attrs})))
+
+(defn db-schema [db: DB] -> [dynamic]Schema-Attr
+  (let [out (make [dynamic]Schema-Attr)
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword)
+                   (not (schema-has-attr? (slice out 0) datom.v.text)))
+          (arr.push! out (schema-attr-for-entity db datom.e datom.v.text)))))
+    out))
+
+(defn delete-schema [schema: [dynamic]Schema-Attr]
+  (for [item schema]
+    (delete item.tuple_attrs))
+  (delete schema))
+
 (defn schema-tuple-attrs [db: DB, attr: string] -> [dynamic]string
   (let [out (make [dynamic]string)
         [schema-e schema-ok] (schema-entity-for-attr db attr)]
