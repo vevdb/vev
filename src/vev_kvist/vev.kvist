@@ -3711,6 +3711,71 @@
       (and (= node.kind .Symbol) (= node.text "*")) (return "*" true)
       :else (return "" false))))
 
+(defn edn-pull-alias-source [doc: EDN-Doc, node-index: int] -> [alias: string, ok: bool]
+  (when (= node-index -1)
+    (return "" false))
+  (let [node doc.nodes[node-index]]
+    (case node.kind
+      .Keyword (return node.text true)
+      .String (return node.text true)
+      .Symbol (return node.text true)
+      :else (return "" false))))
+
+(defn edn-pull-limit-value [doc: EDN-Doc, node-index: int] -> [limit: int, ok: bool]
+  (when (= node-index -1)
+    (return 0 false))
+  (let [node doc.nodes[node-index]]
+    (case node.kind
+      .Nil (return -1 true)
+      .Int (return (int node.int_value) true)
+      :else (return 0 false))))
+
+(defn edn-pull-option-spec [doc: EDN-Doc, vector-node: int] -> [spec: Pull-Spec, ok: bool]
+  (let [attr-node (edn-child-at doc vector-node 0)
+        option-node (edn-child-at doc vector-node 1)
+        value-node (edn-child-at doc vector-node 2)
+        second-option-node (edn-child-at doc vector-node 3)
+        second-value-node (edn-child-at doc vector-node 4)
+        [attr attr-ok] (edn-pull-attr-source doc attr-node)]
+    (when (not attr-ok)
+      (return (Pull-Spec {}) false))
+    (when (= doc.nodes[vector-node].child_count 3)
+      (cond
+        (edn-keyword-text? doc option-node ":default")
+          (let [[value value-ok _] (edn-value-from-node doc value-node)]
+            (return (pull-spec-default attr value) value-ok))
+        (edn-keyword-text? doc option-node ":as")
+          (let [[alias alias-ok] (edn-pull-alias-source doc value-node)]
+            (return (pull-spec-as attr alias) alias-ok))
+        (edn-keyword-text? doc option-node ":limit")
+          (let [[limit limit-ok] (edn-pull-limit-value doc value-node)]
+            (return (pull-spec-limit attr ([]Pull-Spec []) limit) limit-ok))
+        :else (return (Pull-Spec {}) false)))
+    (when (= doc.nodes[vector-node].child_count 5)
+      (cond
+        (and (edn-keyword-text? doc option-node ":default")
+             (edn-keyword-text? doc second-option-node ":as"))
+          (let [[value value-ok _] (edn-value-from-node doc value-node)
+                [alias alias-ok] (edn-pull-alias-source doc second-value-node)]
+            (return (pull-spec-default-as attr value alias) (and value-ok alias-ok)))
+        (and (edn-keyword-text? doc option-node ":as")
+             (edn-keyword-text? doc second-option-node ":default"))
+          (let [[alias alias-ok] (edn-pull-alias-source doc value-node)
+                [value value-ok _] (edn-value-from-node doc second-value-node)]
+            (return (pull-spec-default-as attr value alias) (and value-ok alias-ok)))
+        (and (edn-keyword-text? doc option-node ":limit")
+             (edn-keyword-text? doc second-option-node ":as"))
+          (let [[limit limit-ok] (edn-pull-limit-value doc value-node)
+                [alias alias-ok] (edn-pull-alias-source doc second-value-node)]
+            (return (pull-spec-limit-as attr ([]Pull-Spec []) limit alias) (and limit-ok alias-ok)))
+        (and (edn-keyword-text? doc option-node ":as")
+             (edn-keyword-text? doc second-option-node ":limit"))
+          (let [[alias alias-ok] (edn-pull-alias-source doc value-node)
+                [limit limit-ok] (edn-pull-limit-value doc second-value-node)]
+            (return (pull-spec-limit-as attr ([]Pull-Spec []) limit alias) (and limit-ok alias-ok)))
+        :else (return (Pull-Spec {}) false)))
+    (return (Pull-Spec {}) false)))
+
 (defn edn-pull-specs [doc: EDN-Doc, vector-node: int] -> [dynamic]Pull-Spec
   (let [out (make [dynamic]Pull-Spec)
         child doc.nodes[vector-node].first_child]
@@ -3726,9 +3791,13 @@
               (if (= pattern-node -1)
                 (set! entry -1)
                 (set! entry doc.nodes[pattern-node].next_sibling)))))
-        (let [[attr attr-ok] (edn-pull-attr-source doc child)]
-          (when attr-ok
-            (arr.push! out (pull-spec attr ([]Pull-Spec []))))))
+        (if (= doc.nodes[child].kind .Vector)
+          (let [[spec spec-ok] (edn-pull-option-spec doc child)]
+            (when spec-ok
+              (arr.push! out spec)))
+          (let [[attr attr-ok] (edn-pull-attr-source doc child)]
+            (when attr-ok
+              (arr.push! out (pull-spec attr ([]Pull-Spec [])))))))
       (set! child doc.nodes[child].next_sibling))
     out))
 

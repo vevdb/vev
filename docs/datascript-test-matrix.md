@@ -51,7 +51,7 @@ now exist, but full parser parity still trails the native Kvist literal surface.
 | `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls and rule definitions covered; validation remains |
 | `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, and ordinary rule clauses covered; exact validation remains |
-| `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, and nested maps; options remain |
+| `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, nested maps, and flat `:default`/`:as`/`:limit` option vectors; nested option forms remain |
 | transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, and nested maps through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
