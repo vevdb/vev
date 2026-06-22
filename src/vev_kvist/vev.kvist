@@ -3653,8 +3653,8 @@
 (defn db-source [name: string, db: DB] -> DB-Source
   (DB-Source {name: name db: db}))
 
-(defn query-from-text-parts [find: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, collection-find: bool] -> Query
-  (query find ([]string []) inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls ([]Aggregate-Find [])))
+(defn query-from-text-parts [find: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
+  (query find ([]string []) inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls aggregates))
 
 (defn db-source-name? [sources: []DB-Source, name: string] -> bool
   (when (= name "$")
@@ -3760,6 +3760,84 @@
                       attrs: ([]string [])
                       pattern: (slice pattern 0)}))
         (return true "")))))
+
+(defn edn-aggregate-op? [op: string] -> bool
+  (or (= op "count")
+      (= op "count-distinct")
+      (= op "min")
+      (= op "max")
+      (= op "sum")
+      (= op "avg")
+      (= op "median")
+      (= op "variance")
+      (= op "stddev")))
+
+(defn edn-top-n-aggregate-op? [op: string] -> bool
+  (or (= op "min") (= op "max")))
+
+(defn append-edn-aggregate-find! [out: ^[dynamic]Aggregate-Find, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
+  (let [op-node doc.nodes[form].first_child]
+    (when (or (= op-node -1) (not (= doc.nodes[op-node].kind .Symbol)))
+      (return false "aggregate find expressions must start with a symbol"))
+    (let [op doc.nodes[op-node].text
+          first-arg doc.nodes[op-node].next_sibling
+          second-arg (if (= first-arg -1) -1 doc.nodes[first-arg].next_sibling)]
+      (when (not (edn-aggregate-op? op))
+        (return false "unsupported aggregate find expression"))
+      (when (= first-arg -1)
+        (return false "aggregate find expression missing variable"))
+      (if (= second-arg -1)
+        (do
+          (when (not (edn-var? doc first-arg))
+            (return false "aggregate find expression expects variable argument"))
+          (arr.push! out^ (Aggregate-Find {op: op var: doc.nodes[first-arg].text}))
+          (return true ""))
+        (do
+          (when (not (and (edn-top-n-aggregate-op? op)
+                          (= doc.nodes[second-arg].next_sibling -1)
+                          (edn-var? doc second-arg)))
+            (return false "top-n aggregate find expressions expect (min n ?x), (max n ?x), (min ?n ?x), or (max ?n ?x)"))
+          (if (= doc.nodes[first-arg].kind .Int)
+            (arr.push! out^ (Aggregate-Find {op: op
+                                             var: doc.nodes[second-arg].text
+                                             limit: (int doc.nodes[first-arg].int_value)
+                                             has_limit: true}))
+            (if (edn-var? doc first-arg)
+              (arr.push! out^ (Aggregate-Find {op: op
+                                               var: doc.nodes[second-arg].text
+                                               limit_var: doc.nodes[first-arg].text
+                                               has_limit_var: true}))
+              (return false "top-n aggregate limit must be an int or variable")))
+          (return true ""))))))
+
+(defn append-edn-find-item! [find: ^[dynamic]string, pulls: ^[dynamic]Pull-Find, aggregates: ^[dynamic]Aggregate-Find, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
+  (cond
+    (edn-var? doc item)
+      (do
+        (arr.push! find^ doc.nodes[item].text)
+        (return true ""))
+    (and (= doc.nodes[item].kind .Symbol) (= doc.nodes[item].text "."))
+      (return true "")
+    (= doc.nodes[item].kind .List)
+      (let [head (edn-list-head-text doc item)]
+        (if (= head "pull")
+          (append-edn-pull-find! pulls doc item)
+          (append-edn-aggregate-find! aggregates doc item)))
+    :else (return false "query text :find currently supports vars, tuples, pull, and aggregates")))
+
+(defn append-edn-find-vector! [find: ^[dynamic]string, pulls: ^[dynamic]Pull-Find, aggregates: ^[dynamic]Aggregate-Find, doc: EDN-Doc, vector-node: int] -> [ok: bool, error: string]
+  (let [first-node doc.nodes[vector-node].first_child
+        second-node (if (= first-node -1) -1 doc.nodes[first-node].next_sibling)]
+    (when (and (not (= first-node -1))
+               (edn-symbol-text? doc second-node "..."))
+      (return (append-edn-find-item! find pulls aggregates doc first-node)))
+    (let [cursor first-node]
+      (while (not (= cursor -1))
+        (let [[item-ok item-error] (append-edn-find-item! find pulls aggregates doc cursor)]
+          (when (not item-ok)
+            (return false item-error)))
+        (set! cursor doc.nodes[cursor].next_sibling))
+      (return true ""))))
 
 (defn append-edn-data-clause! [out: ^[dynamic]Clause, doc: EDN-Doc, node-index: int] -> [ok: bool, error: string]
   (when (not (= doc.nodes[node-index].kind .Vector))
@@ -4012,31 +4090,31 @@
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer
         pulls (make [dynamic]Pull-Find) :defer
-        collection-find false
+        aggregates (make [dynamic]Aggregate-Find) :defer
         cursor (edn-child-at doc doc.root 1)]
-    (when (and (not (= cursor -1))
-               (= doc.nodes[cursor].kind .Vector))
-      (let [first-find (edn-child-at doc cursor 0)
-            marker (edn-child-at doc cursor 1)]
-        (when (and (edn-var? doc first-find)
-                   (edn-symbol-text? doc marker "..."))
-          (set! collection-find true)
-          (arr.push! find doc.nodes[first-find].text)
-          (set! cursor doc.nodes[cursor].next_sibling))))
     (while (and (not (= cursor -1))
                 (not (edn-keyword-text? doc cursor ":in"))
-                (not (edn-keyword-text? doc cursor ":where")))
-      (when (and (= doc.nodes[cursor].kind .List)
-                 (= (edn-list-head-text doc cursor) "pull"))
-        (let [[pull-ok pull-error] (append-edn-pull-find! (addr pulls) doc cursor)]
-          (when (not pull-ok)
-            (return false pull-error)))
-        (set! cursor doc.nodes[cursor].next_sibling)
-        (continue))
-      (when (not (edn-var? doc cursor))
-        (return false "query text :find currently supports vars"))
-      (arr.push! find doc.nodes[cursor].text)
+                (not (edn-keyword-text? doc cursor ":where"))
+                (not (edn-keyword-text? doc cursor ":keys"))
+                (not (edn-keyword-text? doc cursor ":strs"))
+                (not (edn-keyword-text? doc cursor ":syms")))
+      (if (= doc.nodes[cursor].kind .Vector)
+        (let [[find-ok find-error] (append-edn-find-vector! (addr find) (addr pulls) (addr aggregates) doc cursor)]
+          (when (not find-ok)
+            (return false find-error)))
+        (let [[find-ok find-error] (append-edn-find-item! (addr find) (addr pulls) (addr aggregates) doc cursor)]
+          (when (not find-ok)
+            (return false find-error))))
       (set! cursor doc.nodes[cursor].next_sibling))
+    (when (or (edn-keyword-text? doc cursor ":keys")
+              (edn-keyword-text? doc cursor ":strs")
+              (edn-keyword-text? doc cursor ":syms"))
+      (set! cursor doc.nodes[cursor].next_sibling)
+      (while (and (not (= cursor -1))
+                  (not (edn-keyword-text? doc cursor ":in"))
+                  (not (edn-keyword-text? doc cursor ":where")))
+        (set! cursor doc.nodes[cursor].next_sibling)
+        (continue)))
     (when (edn-keyword-text? doc cursor ":in")
       (set! cursor doc.nodes[cursor].next_sibling)
       (while (and (not (= cursor -1)) (not (edn-keyword-text? doc cursor ":where")))
@@ -4051,7 +4129,7 @@
         (when (not item-ok)
           (return false item-error)))
       (set! cursor doc.nodes[cursor].next_sibling))
-    (let [query-value (query-from-text-parts (slice find 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) collection-find)]
+    (let [query-value (query-from-text-parts (slice find 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0))]
       (set! out^ query-value)
       (return true ""))))
 
@@ -4109,6 +4187,65 @@
       (when (not rules-ok)
         (return (Result-Set {rows: (make [dynamic]Result-Row)})))
       (q-query-with-inputs db (query-with-rules query-value (slice rules 0)) inputs))))
+
+(defn q-text-scalar [db: DB, text: string] -> [value: Value, ok: bool]
+  (result-scalar (q-text db text)))
+
+(defn q-text-scalar-with-inputs [db: DB, text: string, inputs: []Query-Input] -> [value: Value, ok: bool]
+  (result-scalar (q-text-with-inputs db text inputs)))
+
+(defn q-text-collection [db: DB, text: string] -> [dynamic]Value
+  (result-collection (q-text db text)))
+
+(defn q-text-collection-with-inputs [db: DB, text: string, inputs: []Query-Input] -> [dynamic]Value
+  (result-collection (q-text-with-inputs db text inputs)))
+
+(defn q-text-tuple [db: DB, text: string] -> [dynamic]Value
+  (result-tuple (q-text db text)))
+
+(defn q-text-tuple-with-inputs [db: DB, text: string, inputs: []Query-Input] -> [dynamic]Value
+  (result-tuple (q-text-with-inputs db text inputs)))
+
+(defn append-edn-return-keys! [out: ^[dynamic]string, doc: EDN-Doc, marker: string] -> bool
+  (let [cursor (edn-child-at doc doc.root 1)]
+    (while (not (= cursor -1))
+      (when (edn-keyword-text? doc cursor marker)
+        (set! cursor doc.nodes[cursor].next_sibling)
+        (while (and (not (= cursor -1))
+                    (not (edn-keyword-text? doc cursor ":in"))
+                    (not (edn-keyword-text? doc cursor ":where")))
+          (let [node doc.nodes[cursor]]
+            (case node.kind
+              .Symbol (arr.push! out^ node.text)
+              .Keyword (arr.push! out^ node.text)
+              .String (arr.push! out^ node.text)
+              :else (return false)))
+          (set! cursor doc.nodes[cursor].next_sibling))
+        (return true))
+      (set! cursor doc.nodes[cursor].next_sibling))
+    false))
+
+(defn query-text-return-keys [text: string, marker: string] -> [dynamic]string
+  (let [out (make [dynamic]string)
+        doc (empty-edn-doc)
+        keys-ok false
+        [read-ok _] (read-edn-text! (addr doc) text)]
+    (when read-ok
+      (set! keys-ok (append-edn-return-keys! (addr out) doc marker)))
+    (delete doc.nodes)
+    out))
+
+(defn q-text-keys [db: DB, text: string] -> [dynamic]Keyed-Row
+  (let [keys (query-text-return-keys text ":keys") :defer]
+    (result-keys (q-text db text) .Keyword (slice keys 0))))
+
+(defn q-text-strs [db: DB, text: string] -> [dynamic]Keyed-Row
+  (let [keys (query-text-return-keys text ":strs") :defer]
+    (result-keys (q-text db text) .String (slice keys 0))))
+
+(defn q-text-syms [db: DB, text: string] -> [dynamic]Keyed-Row
+  (let [keys (query-text-return-keys text ":syms") :defer]
+    (result-keys (q-text db text) .Symbol (slice keys 0))))
 
 (defn edn-attr-text [doc: EDN-Doc, node-index: int] -> [attr: string, ok: bool]
   (when (= node-index -1)
