@@ -22,7 +22,7 @@ These are the main in-memory parity target before durable storage.
 | `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, regex predicate surface, regex match-return clauses, and nested result binding covered; decide host function surface and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
 | `query_or.cljc` | 5 | partial | source semantics covered; validation/error cases remain |
-| `query_pull.cljc` | 8 | partial | multi-source pull plus scalar, collection, and tuple pull find-spec shapes covered; exact Clojure return rendering remains |
+| `query_pull.cljc` | 8 | partial | multi-source pull, text/Kvist `:in` pattern variables, plus scalar, collection, and tuple pull find-spec shapes covered; exact Clojure return rendering remains |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, and repeated calls covered; validation and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | built-in aggregates including top-n, median, variance, and stddev covered; custom aggregates later |
@@ -52,7 +52,7 @@ but full parser parity still trails the native Kvist literal surface.
 | `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls and rule definitions covered; validation remains |
 | `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, and ordinary rule clauses covered; exact validation remains |
-| `pull_parser.cljc` | 1 | partial | query text pull finds and direct pull text APIs cover attrs, wildcard, nested maps, recursive map values, flat/nested `:default`/`:as`/`:limit`/`:xform` option forms, and option-wrapped map keys; exact validation remains |
+| `pull_parser.cljc` | 1 | partial | query text pull finds, pull pattern variables, and direct pull text APIs cover attrs, wildcard, nested maps, recursive map values, flat/nested `:default`/`:as`/`:limit`/`:xform` option forms, and option-wrapped map keys; exact validation remains |
 | transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, and nested maps through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
