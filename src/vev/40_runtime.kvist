@@ -1,0 +1,3055 @@
+(package vev)
+
+
+(defn query-with-rules [query: Query, rules: []Rule] -> Query
+  (let [out query]
+    (delete out.rules)
+    (set! out.rules (arr.into [dynamic]Rule rules))
+    (return out)))
+
+(defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
+  (arr.into [dynamic]Datom (slice datoms 0)))
+
+(defn db [conn: ^Conn] -> DB
+  (build-db (clone-datoms conn^.db.datoms)))
+
+(defn clone-tx-meta [meta: []Tx-Meta] -> [dynamic]Tx-Meta
+  (arr.into [dynamic]Tx-Meta meta))
+
+(defn clone-binding [binding: Binding] -> Binding
+  (let [items (arr.into [dynamic]Var-Binding (slice binding.items 0))]
+    (Binding {items: items})))
+
+(defn binding-lookup [binding: Binding, name: string] -> [value: Value, ok: bool]
+  (for [item binding.items]
+    (when (= item.name name)
+      (return item.value true)))
+  (return (Value {}) false))
+
+(defn binding-store! [binding: ^Binding, name: string, value: Value]
+  (arr.push! binding^.items (Var-Binding {name: name value: value})))
+
+(defn query-input-scalar-value [db: DB, input: Query-Input] -> [value: Value, ok: bool]
+  (when input.has_lookup_ref
+    (let [[entity lookup-ok] (resolve-lookup-ref db input.lookup_attr input.lookup_value)]
+      (when lookup-ok
+        (return (value-entity entity) true))
+      (return (Value {}) false)))
+  (return input.value true))
+
+(defn binding-from-inputs [db: DB, names: []string, values: []Query-Input] -> [bindings: [dynamic]Binding]
+  (let [binding (Binding {})
+        out (make [dynamic]Binding)]
+    (for [name index names]
+      (when (and (< index (count values))
+                 (or (= values[index].kind .Scalar)
+                     (= values[index].kind .PullPattern)))
+        (let [[value ok] (query-input-scalar-value db values[index])]
+          (if ok
+            (binding-store! (addr binding) name value)
+            (return out)))))
+    (arr.push! out binding)
+    out))
+
+(defn expand-collection-input [bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (= input.kind .Collection)
+      (for [binding bindings]
+        (for [value input.values]
+          (let [next (clone-binding binding)]
+            (binding-store! (addr next) name value)
+            (arr.push! out next)))))
+    out))
+
+(defn expand-collection-lookup-ref-input [db: DB, bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (= input.kind .CollectionLookupRefs)
+      (for [binding bindings]
+        (for [value index input.lookup_values]
+          (let [[entity ok] (resolve-lookup-ref db input.lookup_attrs[index] value)]
+            (when ok
+              (let [next (clone-binding binding)]
+                (binding-store! (addr next) name (value-entity entity))
+                (arr.push! out next)))))))
+    out))
+
+(defn expand-tuple-input [bindings: []Binding, tuple: Tuple-Input, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (= (count tuple.vars) (count input.values))
+      (for [binding bindings]
+        (let [next (clone-binding binding)]
+          (for [name index tuple.vars]
+            (when (not (= name ""))
+              (binding-store! (addr next) name input.values[index])))
+          (arr.push! out next))))
+    out))
+
+(defn expand-relation-input [bindings: []Binding, relation: Relation-Input, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)
+        width (count relation.vars)]
+    (when (and (= input.kind .Relation)
+               (= input.width width))
+      (let [row_count (/ (count input.values) width)]
+        (for [binding bindings]
+          (for [row 0..<row_count]
+            (let [next (clone-binding binding)
+                  offset (* row width)]
+              (for [name index relation.vars]
+                (when (not (= name ""))
+                  (binding-store! (addr next) name input.values[(+ offset index)])))
+              (arr.push! out next))))))
+    out))
+
+(defn bindings-from-inputs [db: DB, query: Query, inputs: []Query-Input] -> [dynamic]Binding
+  (let [bindings (binding-from-inputs db (slice query.inputs 0) inputs)
+        collection-offset (count query.inputs)
+        tuple-offset (+ collection-offset (count query.collection_inputs))
+        relation-offset (+ tuple-offset (count query.tuple_inputs))]
+    (for [name index query.collection_inputs]
+      (let [input-index (+ collection-offset index)]
+        (when (< input-index (count inputs))
+          (let [next-bindings (make [dynamic]Binding)]
+            (if (= inputs[input-index].kind .CollectionLookupRefs)
+              (set! next-bindings (expand-collection-lookup-ref-input db (slice bindings 0) name inputs[input-index]))
+              (set! next-bindings (expand-collection-input (slice bindings 0) name inputs[input-index])))
+            (delete bindings)
+            (set! bindings next-bindings)))))
+    (for [tuple index query.tuple_inputs]
+      (let [input-index (+ tuple-offset index)]
+        (when (< input-index (count inputs))
+          (let [next-bindings (expand-tuple-input (slice bindings 0) tuple inputs[input-index])]
+            (delete bindings)
+            (set! bindings next-bindings)))))
+    (for [relation index query.relation_inputs]
+      (let [input-index (+ relation-offset index)]
+        (when (< input-index (count inputs))
+          (let [next-bindings (expand-relation-input (slice bindings 0) relation inputs[input-index])]
+            (delete bindings)
+            (set! bindings next-bindings)))))
+    bindings))
+
+(defn match-term? [term: Term, actual: Value, binding: ^Binding] -> bool
+  (case term.kind
+    .Value (value-equal? term.value actual)
+    .Wildcard true
+    .Var (let [[existing ok] (binding-lookup binding^ term.name)]
+           (if ok
+             (predicate-value-equal? existing actual)
+             (do
+               (binding-store! binding term.name actual)
+               true)))
+    :else false))
+
+(defn resolve-term [term: Term, binding: Binding] -> [value: Value, ok: bool]
+  (case term.kind
+    .Value (return term.value true)
+    .Var (return (binding-lookup binding term.name))
+    :else (return (Value {}) false)))
+
+(defn resolve-entity-term [db: DB, term: Term, binding: Binding] -> [value: Value, ok: bool]
+  (when (= term.kind .LookupRef)
+    (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup_attr term.lookup_value)]
+      (return (value-entity entity) lookup-ok)))
+  (let [[resolved resolved-ok] (resolve-term term binding)]
+    (when (not resolved-ok)
+      (return resolved false))
+    (when (= resolved.kind .Keyword)
+      (let [[entity ident-ok] (schema-entity-for-attr db resolved.text)]
+        (return (value-entity entity) ident-ok)))
+    (when (= resolved.kind .Int)
+      (return (value-entity (u64 resolved.int_value)) true))
+    (return resolved true)))
+
+(defn predicate-pair-matches? [op: string, left: Value, right: Value] -> bool
+  (cond
+    (= op "=") (predicate-value-equal? left right)
+    (or (= op "!=") (= op "not=")) (not (predicate-value-equal? left right))
+    (= op ">") (value-less? right left)
+    (= op "<") (value-less? left right)
+    (= op ">=") (not (value-less? left right))
+    (= op "<=") (not (value-less? right left))
+    :else false))
+
+(defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
+  (when (and (or (= predicate.op "even?")
+                 (= predicate.op "odd?")
+                 (= predicate.op "zero?")
+                 (= predicate.op "pos?")
+                 (= predicate.op "neg?"))
+             (= (count predicate.terms) 1))
+    (let [[value value-ok] (resolve-term predicate.terms[0] binding)]
+      (when (not value-ok)
+        (return false))
+      (when (= value.kind .Int)
+        (cond
+          (= predicate.op "even?") (return (= (% value.int_value 2) 0))
+          (= predicate.op "odd?") (return (not (= (% value.int_value 2) 0)))
+          (= predicate.op "zero?") (return (= value.int_value 0))
+          (= predicate.op "pos?") (return (> value.int_value 0))
+          (= predicate.op "neg?") (return (< value.int_value 0))))
+      (when (= value.kind .Entity)
+        (cond
+          (= predicate.op "even?") (return (= (% value.entity 2) 0))
+          (= predicate.op "odd?") (return (not (= (% value.entity 2) 0)))
+          (= predicate.op "zero?") (return (= value.entity 0))
+          (= predicate.op "pos?") (return (> value.entity 0))
+          (= predicate.op "neg?") (return false)))
+      (return false)))
+  (when (< (count predicate.terms) 2)
+    (return false))
+  (for [index (arr.range 0 (- (count predicate.terms) 1))]
+    (let [[left left-ok] (resolve-term predicate.terms[index] binding)
+          [right right-ok] (resolve-term predicate.terms[(+ index 1)] binding)]
+      (when (not (and left-ok right-ok))
+        (return false))
+      (when (not (predicate-pair-matches? predicate.op left right))
+        (return false))))
+  true)
+
+(defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
+  (when (not (= map-value.kind .Map))
+    (return (Value {}) false))
+  (let [index 0]
+    (while (< (+ index 1) (count map-value.items))
+      (when (value-equal? map-value.items[index] key)
+        (return map-value.items[(+ index 1)] true))
+      (set! index (+ index 2))))
+  (return (Value {}) false))
+
+(defn apply-function-op [function: Function-Clause, binding: Binding] -> [value: Value, ok: bool]
+  (when (and (= function.op "count")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (and input-ok (= input.kind .String))
+        (return (value-int (i64 (count input.text))) true))
+      (return (Value {}) false)))
+  (when (and (= function.op "identity")
+             (= (count function.terms) 1))
+    (return (resolve-term function.terms[0] binding)))
+  (when (and (= function.op "inc")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (and input-ok (= input.kind .Int))
+        (return (value-int (+ input.int_value 1)) true))
+      (return (Value {}) false)))
+  (when (and (or (= function.op "first")
+                 (= function.op "second"))
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)
+          index (if (= function.op "first") 0 1)]
+      (when (and input-ok
+                 (= input.kind .Vector)
+                 (< index (count input.items)))
+        (return input.items[index] true))
+      (return (Value {}) false)))
+  (when (or (= function.op "vector")
+            (= function.op "tuple"))
+    (let [items (make [dynamic]Value 0 (count function.terms))]
+      (for [term function.terms]
+        (let [[value ok] (resolve-term term binding)]
+          (when (not ok)
+            (return (Value {}) false))
+          (arr.push! items value)))
+      (return (value-vector (slice items 0)) true)))
+  (when (and (= function.op "untuple")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (and input-ok (= input.kind .Vector))
+        (return input true))
+      (return (Value {}) false)))
+  (when (= function.op "hash-map")
+    (when (not (= (% (count function.terms) 2) 0))
+      (return (Value {}) false))
+    (let [items (make [dynamic]Value 0 (count function.terms))]
+      (for [term function.terms]
+        (let [[value ok] (resolve-term term binding)]
+          (when (not ok)
+            (return (Value {}) false))
+          (arr.push! items value)))
+      (return (value-map (slice items 0)) true)))
+  (when (and (= function.op "get")
+             (= (count function.terms) 2))
+    (let [[map-value map-ok] (resolve-term function.terms[0] binding)
+          [key key-ok] (resolve-term function.terms[1] binding)]
+      (when (and map-ok key-ok)
+        (return (map-get-value map-value key)))
+      (return (Value {}) false)))
+  (when (or (= function.op "+")
+            (= function.op "-")
+            (= function.op "*"))
+    (when (= (count function.terms) 0)
+      (return (Value {}) false))
+    (let [[first-value first-ok] (resolve-term function.terms[0] binding)
+          result first-value.int_value]
+      (when (not (and first-ok (= first-value.kind .Int)))
+        (return (Value {}) false))
+      (for [term (slice function.terms 1)]
+        (let [[next next-ok] (resolve-term term binding)]
+          (when (not (and next-ok (= next.kind .Int)))
+            (return (Value {}) false))
+          (if (= function.op "+")
+            (set! result (+ result next.int_value))
+            (if (= function.op "-")
+              (set! result (- result next.int_value))
+              (set! result (* result next.int_value))))))
+      (return (value-int result) true)))
+  (return (Value {}) false))
+
+(defn apply-function-clause [binding: Binding, function: Function-Clause] -> [out: Binding, ok: bool]
+  (let [[value value-ok] (apply-function-op function binding)]
+    (when (not value-ok)
+      (return binding false))
+    (when function.is_tuple
+      (when (not (= value.kind .Vector))
+        (return binding false))
+      (when (not (= (count value.items) (count function.out_vars)))
+        (return binding false))
+      (let [next (clone-binding binding)]
+        (for [name index function.out_vars]
+          (when (not (= name "_"))
+            (let [[bound bound-ok] (binding-with-value next name value.items[index])]
+              (when (not bound-ok)
+                (return binding false))
+              (set! next bound))))
+        (return next true)))
+    (let [next (clone-binding binding)
+          [existing exists] (binding-lookup next function.out)]
+      (if exists
+        (return next (predicate-value-equal? existing value))
+        (do
+          (binding-store! (addr next) function.out value)
+          (return next true))))))
+
+(defn datom-current-at? [db: DB, index: int] -> bool
+  (let [current (slice db.current 0)
+        found (int-lower-bound current index)]
+    (and (< found (count current))
+         (= current[found] index))))
+
+(defn index-arg-value [db: DB, arg: Index-Arg] -> [value: Value, ok: bool]
+  (when arg.has_lookup_ref
+    (let [[entity found] (resolve-lookup-ref db arg.lookup_attr arg.lookup_value)]
+      (when found
+        (return (value-entity entity) true))
+      (return (Value {}) false)))
+  (return arg.value true))
+
+(defn resolve-index-args [db: DB, args: []Index-Arg] -> [values: [dynamic]Value, ok: bool]
+  (let [resolved (make [dynamic]Value)]
+    (for [arg args]
+      (let [[value ok] (index-arg-value db arg)]
+        (when (not ok)
+          (return resolved false))
+        (arr.push! resolved value)))
+    (return resolved true)))
+
+(defn datom-index-position-value [datom: Datom, order: string, position: int] -> Value
+  (if (= order ":eavt")
+    (if (= position 0)
+      (value-entity datom.e)
+      (if (= position 1)
+        (value-keyword datom.a)
+        (if (= position 2)
+          datom.v
+          (Value {}))))
+    (if (= order ":aevt")
+      (if (= position 0)
+        (value-keyword datom.a)
+        (if (= position 1)
+          (value-entity datom.e)
+          (if (= position 2)
+            datom.v
+            (Value {}))))
+      (if (= order ":avet")
+        (if (= position 0)
+          (value-keyword datom.a)
+          (if (= position 1)
+            datom.v
+            (if (= position 2)
+              (value-entity datom.e)
+              (Value {}))))
+        (if (= position 0)
+          datom.v
+          (if (= position 1)
+            (value-keyword datom.a)
+            (if (= position 2)
+              (value-entity datom.e)
+              (Value {}))))))))
+
+(defn index-position-equal? [actual: Value, expected: Value] -> bool
+  (predicate-value-equal? actual expected))
+
+(defn index-position-compare [actual: Value, expected: Value] -> int
+  (if (and (= actual.kind .Entity) (= expected.kind .Int))
+    (let [right (u64 expected.int_value)]
+      (if (< actual.entity right)
+        -1
+        (if (> actual.entity right) 1 0)))
+    (if (and (= actual.kind .Keyword) (= expected.kind .String))
+      (strings.compare actual.text expected.text)
+      (value-compare actual expected))))
+
+(defn datom-matches-index-values? [datom: Datom, order: string, values: []Value] -> bool
+  (for [value position values]
+    (when (not (index-position-equal? (datom-index-position-value datom order position) value))
+      (return false)))
+  true)
+
+(defn datom-index-compare-values [datom: Datom, order: string, values: []Value] -> int
+  (for [value position values]
+    (let [compare (index-position-compare (datom-index-position-value datom order position) value)]
+      (when (not (= compare 0))
+        (return compare))))
+  0)
+
+(defn public-avet-attr? [db: DB, attr: string] -> bool
+  (when (not (db-has-schema? db))
+    (return true))
+  (let [tuple-attrs (schema-tuple-attrs db attr)
+        visible (or (schema-indexed? db attr)
+                    (schema-unique? db attr)
+                    (schema-ref? db attr)
+                    (> (count tuple-attrs) 0))]
+    (delete tuple-attrs)
+    visible))
+
+(defn public-index-datom-visible? [db: DB, order: string, datom: Datom] -> bool
+  (if (= order ":avet")
+    (public-avet-attr? db datom.a)
+    true))
+
+(defn index-arg-attr [db: DB, arg: Index-Arg] -> [attr: string, ok: bool]
+  (let [[value value-ok] (index-arg-value db arg)]
+    (when (not value-ok)
+      (return "" false))
+    (when (or (= value.kind .Keyword)
+              (= value.kind .String))
+      (return value.text true))
+    (return "" false)))
+
+(defn validate-public-index-args [db: DB, order: string, args: []Index-Arg] -> [ok: bool, error: string]
+  (when (not (= order ":avet"))
+    (return true ""))
+  (when (= (count args) 0)
+    (return true ""))
+  (let [[attr attr-ok] (index-arg-attr db args[0])]
+    (when (not attr-ok)
+      (return false "invalid index attr"))
+    (when (not (public-avet-attr? db attr))
+      (return false "attribute should be marked as :db/index true")))
+  (return true ""))
+
+(defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (for [datom-index indexes]
+    (when (datom-current-at? db datom-index)
+      (let [datom db.datoms[datom-index]]
+        (when (and (public-index-datom-visible? db order datom)
+                   (datom-matches-index-values? datom order values))
+          (arr.push! out^ datom))))))
+
+(defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        [values ok] (resolve-index-args db args)]
+    (defer (delete values))
+    (when (not ok)
+      (return out))
+    (if (= order ":eavt")
+      (append-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
+      (if (= order ":aevt")
+        (append-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
+        (if (= order ":avet")
+          (append-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
+          (append-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
+
+(defn datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
+  (let [[valid error] (validate-public-index-args db order args)]
+    (when (not valid)
+      (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
+    (Datoms-Result {ok: true error: "" datoms: (datoms-with-args db order args)})))
+
+(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (for [datom-index indexes]
+    (when (datom-current-at? db datom-index)
+      (let [datom db.datoms[datom-index]]
+        (when (and (public-index-datom-visible? db order datom)
+                   (>= (datom-index-compare-values datom order values) 0))
+          (arr.push! out^ datom))))))
+
+(defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        [values ok] (resolve-index-args db args)]
+    (defer (delete values))
+    (when (not ok)
+      (return out))
+    (if (= order ":eavt")
+      (append-seek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
+      (if (= order ":aevt")
+        (append-seek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
+        (if (= order ":avet")
+          (append-seek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
+          (append-seek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
+
+(defn seek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
+  (let [[valid error] (validate-public-index-args db order args)]
+    (when (not valid)
+      (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
+    (Datoms-Result {ok: true error: "" datoms: (seek-datoms-with-args db order args)})))
+
+(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (let [i (count indexes)]
+    (while (> i 0)
+      (set! i (- i 1))
+      (let [datom-index indexes[i]]
+        (when (datom-current-at? db datom-index)
+          (let [datom db.datoms[datom-index]]
+            (when (and (public-index-datom-visible? db order datom)
+                       (<= (datom-index-compare-values datom order values) 0))
+              (arr.push! out^ datom))))))))
+
+(defn rseek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        [values ok] (resolve-index-args db args)]
+    (defer (delete values))
+    (when (not ok)
+      (return out))
+    (if (= order ":eavt")
+      (append-rseek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
+      (if (= order ":aevt")
+        (append-rseek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
+        (if (= order ":avet")
+          (append-rseek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
+          (append-rseek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    out))
+
+(defn rseek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
+  (let [[valid error] (validate-public-index-args db order args)]
+    (when (not valid)
+      (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
+    (Datoms-Result {ok: true error: "" datoms: (rseek-datoms-with-args db order args)})))
+
+(defn find-datom-with-args [db: DB, order: string, args: []Index-Arg] -> Datom-Result
+  (let [found (datoms-with-args db order args)]
+    (defer (delete found))
+    (when (> (count found) 0)
+      (return (Datom-Result {found: true datom: found[0]})))
+    (Datom-Result {})))
+
+(defn index-range-with-args [db: DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom)
+        start-value (Value {})
+        end-value (Value {})]
+    (when has-start
+      (let [[value ok] (index-arg-value db start)]
+        (when (not ok)
+          (return out))
+        (set! start-value value)))
+    (when has-end
+      (let [[value ok] (index-arg-value db end)]
+        (when (not ok)
+          (return out))
+        (set! end-value value)))
+    (for [datom-index db.avet]
+      (when (datom-current-at? db datom-index)
+        (let [datom db.datoms[datom-index]]
+          (when (and (= datom.a attr)
+                     (public-index-datom-visible? db ":avet" datom))
+            (when (or (not has-start) (>= (index-position-compare datom.v start-value) 0))
+              (when (or (not has-end) (<= (index-position-compare datom.v end-value) 0))
+                (arr.push! out datom)))))))
+    out))
+
+(defn index-range-checked-with-args [db: DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> Datoms-Result
+  (when (not (public-avet-attr? db attr))
+    (return (Datoms-Result {ok: false error: "attribute should be marked as :db/index true" datoms: (make [dynamic]Datom)})))
+  (Datoms-Result {ok: true error: "" datoms: (index-range-with-args db attr start has-start end has-end)}))
+
+(defn u64-contains? [items: []u64, value: u64] -> bool
+  (for [item items]
+    (when (= item value)
+      (return true)))
+  false)
+
+(defn append-retract-entity-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, seen: ^[dynamic]u64]
+  (when (u64-contains? (slice seen^ 0) entity)
+    (return))
+  (arr.push! seen^ entity)
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" entity "" (Value {}))
+        high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (when (and (= datom.v.kind .Entity)
+                     (schema-component? db datom.a))
+            (append-retract-entity-ops-seen! ops db datom.v.entity seen))
+          (push-tx-op-once! ops (tx-retract entity datom.a datom.v))))))
+  (let [ref-value (value-entity entity)
+        indexes (slice db.vaet 0)
+        low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index db indexes "vaet" 0 "" ref-value)]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (push-tx-op-once! ops (tx-retract datom.e datom.a datom.v)))))))
+
+(defn append-retract-entity-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64]
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (append-retract-entity-ops-seen! ops db entity (addr seen))))
+
+(defn append-retract-attr-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string, seen: ^[dynamic]u64]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (when (and (= datom.v.kind .Entity)
+                     (schema-component? db attr))
+            (append-retract-entity-ops-seen! ops db datom.v.entity seen))
+          (push-tx-op-once! ops (tx-retract entity attr datom.v)))))))
+
+(defn append-retract-attr-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string]
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (arr.push! seen entity)
+    (append-retract-attr-ops-seen! ops db entity attr (addr seen))))
+
+(defn schema-entity-for-attr [db: DB, attr: string] -> [e: u64, ok: bool]
+  (let [value (value-keyword attr)
+        indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 ":db/ident" value)
+        high (upper-bound-index db indexes "avet" 0 ":db/ident" value)]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return db.datoms[datom-index].e true))))
+  (return 0 false))
+
+(defn db-has-schema? [db: DB] -> bool
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn schema-keyword [db: DB, attr: string, schema-attr: string] -> [value: string, ok: bool]
+  (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
+    (when (not schema-ok)
+      (return "" false))
+    (let [indexes (slice db.eavt 0)
+          low (lower-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom db.datoms[datom-index]]
+          (when (and (datom-current-at? db datom-index)
+                     (= datom.v.kind .Keyword))
+            (return datom.v.text true))))))
+  (return "" false))
+
+(defn schema-bool? [db: DB, attr: string, schema-attr: string] -> bool
+  (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
+    (when (not schema-ok)
+      (return false))
+    (let [indexes (slice db.eavt 0)
+          low (lower-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e schema-attr (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom db.datoms[datom-index]]
+          (when (and (datom-current-at? db datom-index)
+                     (= datom.v.kind .Bool))
+            (return datom.v.bool_value))))))
+  false)
+
+(defn schema-ident-for-entity [db: DB, entity: u64] -> [attr: string, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword))
+          (return datom.v.text true)))))
+  (return "" false))
+
+(defn schema-tuple-attrs [db: DB, attr: string] -> [dynamic]string
+  (let [out (make [dynamic]string)
+        [schema-e schema-ok] (schema-entity-for-attr db attr)]
+    (when (not schema-ok)
+      (return out))
+    (let [indexes (slice db.eavt 0)
+          low (lower-bound-index db indexes "eavt-ea" schema-e ":db/tupleAttrs" (Value {}))
+          high (upper-bound-index db indexes "eavt-ea" schema-e ":db/tupleAttrs" (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom db.datoms[datom-index]]
+          (when (and (datom-current-at? db datom-index)
+                     (= datom.v.kind .Vector))
+            (for [item datom.v.items]
+              (when (= item.kind .Keyword)
+                (arr.push! out item.text)))))))
+    out))
+
+(defn tuple-schema-contains? [schema: Tuple-Schema, attr: string] -> bool
+  (for [component schema.attrs]
+    (when (= component attr)
+      (return true)))
+  false)
+
+(defn tuple-schemas-containing [db: DB, attr: string] -> [dynamic]Tuple-Schema
+  (let [out (make [dynamic]Tuple-Schema)
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [[tuple-attr ident-ok] (schema-ident-for-entity db datom.e)]
+            (when ident-ok
+              (let [attrs (schema-tuple-attrs db tuple-attr)
+                    schema (Tuple-Schema {attr: tuple-attr attrs: attrs})]
+                (if (tuple-schema-contains? schema attr)
+                  (arr.push! out schema)
+                  (delete attrs))))))))
+    out))
+
+(defn schema-indexed? [db: DB, attr: string] -> bool
+  (schema-bool? db attr ":db/index"))
+
+(defn schema-ref? [db: DB, attr: string] -> bool
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (and has-type (= schema-type ":db.type/ref"))))
+
+(defn schema-component? [db: DB, attr: string] -> bool
+  (schema-bool? db attr ":db/isComponent"))
+
+(defn value-matches-schema-type? [value: Value, schema-type: string] -> bool
+  (cond
+    (= schema-type ":db.type/string") (= value.kind .String)
+    (= schema-type ":db.type/long") (= value.kind .Int)
+    (= schema-type ":db.type/boolean") (= value.kind .Bool)
+    (= schema-type ":db.type/ref") (= value.kind .Entity)
+    (= schema-type ":db.type/keyword") (= value.kind .Keyword)
+    :else true))
+
+(defn valid-tuple-attrs-value? [db: DB, value: Value] -> bool
+  (when (not (= value.kind .Vector))
+    (return false))
+  (when (= (count value.items) 0)
+    (return false))
+  (for [item value.items]
+    (when (not (= item.kind .Keyword))
+      (return false))
+    (when (not (schema-cardinality-one? db item.text))
+      (return false))
+    (let [nested (schema-tuple-attrs db item.text)]
+      (defer (delete nested))
+      (when (> (count nested) 0)
+        (return false))))
+  true)
+
+(defn valid-tuple-attr-target? [db: DB, schema-e: u64] -> bool
+  (let [[attr attr-ok] (schema-ident-for-entity db schema-e)]
+    (when (not attr-ok)
+      (return true))
+    (schema-cardinality-one? db attr)))
+
+(defn unique-conflict? [db: DB, op: Tx-Op] -> bool
+  (let [indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 op.a op.v)
+        high (upper-bound-index db indexes "avet" 0 op.a op.v)]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (= datom.e op.e)))
+          (return true)))))
+  false)
+
+(defn schema-unique? [db: DB, attr: string] -> bool
+  (let [[unique has-unique] (schema-keyword db attr ":db/unique")]
+    (and has-unique
+         (or (= unique ":db.unique/identity")
+             (= unique ":db.unique/value")))))
+
+(defn schema-unique-identity? [db: DB, attr: string] -> bool
+  (let [[unique has-unique] (schema-keyword db attr ":db/unique")]
+    (and has-unique
+         (= unique ":db.unique/identity"))))
+
+(defn schema-cardinality-one? [db: DB, attr: string] -> bool
+  (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
+    (if (and has-cardinality
+             (= cardinality ":db.cardinality/many"))
+      false
+      true)))
+
+(defn tx-op-cardinality-one? [db: DB, op: Tx-Op] -> bool
+  (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
+    (when (and has-cardinality
+               (= cardinality ":db.cardinality/many"))
+      (return false))
+    true))
+
+(defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
+  (when (not (schema-unique? db attr))
+    (return 0 false))
+  (let [lookup-value value
+        tuple-attrs (schema-tuple-attrs db attr)]
+    (defer (delete tuple-attrs))
+    (when (and (= value.kind .Vector)
+               (= (count tuple-attrs) (count value.items)))
+      (let [items (make [dynamic]Value 0 (count value.items))]
+        (defer (delete items))
+        (for [item index value.items]
+          (let [component-attr tuple-attrs[index]]
+            (if (schema-ref? db component-attr)
+              (cond
+                (= item.kind .Entity) (arr.push! items item)
+                (= item.kind .Int) (arr.push! items (value-entity (u64 item.int_value)))
+                (and (= item.kind .Vector)
+                     (= (count item.items) 2)
+                     (= item.items[0].kind .Keyword))
+                  (let [[entity entity-ok] (resolve-lookup-ref db item.items[0].text item.items[1])]
+                    (when (not entity-ok)
+                      (return 0 false))
+                    (arr.push! items (value-entity entity)))
+                :else (arr.push! items item))
+              (arr.push! items item))))
+        (set! lookup-value (value-vector (slice items 0)))))
+  (let [indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 attr lookup-value)
+        high (upper-bound-index db indexes "avet" 0 attr lookup-value)]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return db.datoms[datom-index].e true))))
+  (return 0 false)))
+
+(defn current-value-exists? [db: DB, entity: u64, attr: string, value: Value] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (value-equal? datom.v value))
+          (return true)))))
+  false)
+
+(defn current-attr-exists? [db: DB, entity: u64, attr: string] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn cas-expected-matches? [db: DB, entity: u64, attr: string, expected: Value] -> bool
+  (if (= expected.kind .Nil)
+    (not (current-attr-exists? db entity attr))
+    (current-value-exists? db entity attr expected)))
+
+(defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (when (and has-type (= schema-type ":db.type/ref"))
+      (when (= value.kind .Int)
+        (return (value-entity (u64 value.int_value)) true ""))
+      (when (= value.kind .Keyword)
+        (let [[entity ident-ok] (schema-entity-for-attr db value.text)]
+          (if ident-ok
+            (return (value-entity entity) true "")
+            (return value false "ident not found"))))))
+  (return value true ""))
+
+(defn resolve-cas-expected [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
+  (when data.has_expected_lookup_ref
+    (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.expected_lookup_attr data.expected_lookup_value)]
+      (if lookup-ok
+        (return (value-entity lookup-e) true "")
+        (return data.expected false "lookup ref not found"))))
+  (resolve-tx-value db data.a data.expected))
+
+(defn resolve-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
+  (when data.has_value_lookup_ref
+    (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
+      (if lookup-ok
+        (return (value-entity lookup-e) true "")
+        (return data.v false "lookup ref not found"))))
+  (resolve-tx-value db data.a data.v))
+
+(defn tx-data-has-tempid? [tx-data: []Tx-Data, tempid: string] -> bool
+  (for [data tx-data]
+    (when (and data.has_tempid
+               (= data.tempid tempid))
+      (return true)))
+  false)
+
+(defn ref-string-value? [db: DB, attr: string, value: Value] -> bool
+  (when (not (= value.kind .String))
+    (return false))
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (and has-type
+         (= schema-type ":db.type/ref"))))
+
+(defn tempid-tuple-component-value [db: DB, tx-data: []Tx-Data, tempid: string, attr: string] -> [value: Value, ok: bool]
+  (for [data tx-data]
+    (when (and data.has_tempid
+               (= data.tempid tempid)
+               (= data.op ":db/add")
+               (= data.a attr))
+      (let [[value value-ok _] (resolve-tx-data-value db data)]
+        (return value value-ok))))
+  (return (Value {}) false))
+
+(defn tuple-schema-already-seen? [schemas: []string, attr: string] -> bool
+  (for [schema-attr schemas]
+    (when (= schema-attr attr)
+      (return true)))
+  false)
+
+(defn tempid-tuple-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
+  (let [found: u64 0
+        has-found false
+        seen (make [dynamic]string)]
+    (defer (delete seen))
+    (for [data tx-data]
+      (when (not (and data.has_tempid
+                      (= data.tempid tempid)
+                      (= data.op ":db/add")))
+        (continue))
+      (let [schemas (tuple-schemas-containing db data.a)]
+        (defer (delete schemas))
+        (for [schema schemas]
+          (defer (delete schema.attrs))
+          (when (not (schema-unique-identity? db schema.attr))
+            (continue))
+          (when (tuple-schema-already-seen? (slice seen 0) schema.attr)
+            (continue))
+          (arr.push! seen schema.attr)
+          (let [items (make [dynamic]Value 0 (count schema.attrs))
+                complete true]
+            (for [component schema.attrs]
+              (let [[value value-ok] (tempid-tuple-component-value db tx-data tempid component)]
+                (if value-ok
+                  (arr.push! items value)
+                  (set! complete false))))
+            (when complete
+              (let [tuple-value (value-vector (slice items 0))
+                    [entity entity-ok] (resolve-lookup-ref db schema.attr tuple-value)]
+                (when entity-ok
+                  (when (and has-found (not (= found entity)))
+                    (delete items)
+                    (return found false true))
+                  (set! found entity)
+                  (set! has-found true))))
+            (delete items)))))
+    (return found has-found false)))
+
+(defn tempid-upsert-entity [db: DB, tx-data: []Tx-Data, tempid: string] -> [e: u64, ok: bool, conflict: bool]
+  (let [found: u64 0
+        has-found false]
+    (for [data tx-data]
+      (when (and data.has_tempid
+                 (= data.tempid tempid)
+                 (= data.op ":db/add")
+                 (schema-unique-identity? db data.a))
+        (let [[value value-ok _] (resolve-tx-data-value db data)]
+          (when value-ok
+            (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
+              (when entity-ok
+                (when (and has-found (not (= found entity)))
+                  (return found false true))
+                (set! found entity)
+                (set! has-found true)))))))
+    (let [[tuple-e tuple-ok tuple-conflict] (tempid-tuple-upsert-entity db tx-data tempid)]
+      (when tuple-conflict
+        (return found false true))
+      (when tuple-ok
+        (when (and has-found (not (= found tuple-e)))
+          (return found false true))
+        (set! found tuple-e)
+        (set! has-found true)))
+    (return found has-found false)))
+
+(defn current-tx-upsert-conflict? [db: DB, data: Tx-Data, current-tx-e: u64] -> bool
+  (when (not (and (= data.op ":db/add")
+                  (schema-unique-identity? db data.a)))
+    (return false))
+  (let [[value value-ok _] (resolve-tx-data-value db data)]
+    (when (not value-ok)
+      (return false))
+    (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
+      (and entity-ok (not (= entity current-tx-e))))))
+
+(defn db-with-resolved-ops [db: DB, ops: []Tx-Op] -> DB
+  (let [datoms (clone-datoms db.datoms)]
+    (for [op ops]
+      (arr.push! datoms
+        (Datom {e: op.e
+                a: op.a
+                v: op.v
+                tx: 0
+                added: (= op.kind .Add)})))
+    (build-db datoms)))
+
+(defn latest-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        latest-index -1
+        latest (Value {})]
+    (for [datom-index (slice indexes low high)]
+      (when (and (datom-current-at? db datom-index)
+                 (> datom-index latest-index))
+        (set! latest-index datom-index)
+        (set! latest db.datoms[datom-index].v)))
+    (return latest (>= latest-index 0))))
+
+(defn tuple-value-for-entity [db: DB, entity: u64, attrs: []string] -> [value: Value, ok: bool]
+  (let [items (make [dynamic]Value 0 (count attrs))
+        any false]
+    (for [attr attrs]
+      (let [[value found] (latest-attr-value db entity attr)]
+        (if found
+          (do
+            (set! any true)
+            (arr.push! items value))
+          (arr.push! items (value-nil)))))
+    (when (not any)
+      (delete items)
+      (return (Value {}) false))
+    (let [out (value-vector (slice items 0))]
+      (delete items)
+      (return out true))))
+
+(defn remove-derived-tuple-adds! [ops: ^[dynamic]Tx-Op, entity: u64, attr: string]
+  (let [index (- (count ops^) 1)]
+    (while (>= index 0)
+      (let [op ops^[index]]
+        (when (and op.derived
+                   (= op.kind .Add)
+                   (= op.e entity)
+                   (= op.a attr))
+          (arr.remove-ordered-at! ops^ index))
+        (set! index (- index 1))))))
+
+(defn append-tuple-maintenance-ops! [out: ^[dynamic]Tx-Op, db: DB, op: Tx-Op]
+  (when (= op.a ":db/tupleAttrs")
+    (return))
+  (let [schemas (tuple-schemas-containing db op.a)]
+    (defer (delete schemas))
+    (for [schema schemas]
+      (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice schema.attrs 0))]
+        (if has-value
+          (do
+            (remove-derived-tuple-adds! out op.e schema.attr)
+            (arr.push! out^ (tx-add-derived op.e schema.attr tuple-value)))
+          (append-retract-attr-ops! out db op.e schema.attr)))
+      (delete schema.attrs))))
+
+(defn direct-tuple-add-matches? [db: DB, op: Tx-Op] -> bool
+  (when (not (= op.kind .Add))
+    (return false))
+  (let [tuple-attrs (schema-tuple-attrs db op.a)]
+    (defer (delete tuple-attrs))
+    (when (= (count tuple-attrs) 0)
+      (return false))
+    (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice tuple-attrs 0))]
+      (and has-value (value-equal? tuple-value op.v)))))
+
+(defn expand-tuple-ops [db: DB, ops: []Tx-Op] -> [dynamic]Tx-Op
+  (let [out (make [dynamic]Tx-Op 0 (count ops))]
+    (for [op ops]
+      (let [scratch-before (db-with-resolved-ops db (slice out 0))]
+        (when (direct-tuple-add-matches? scratch-before op)
+          (continue)))
+      (arr.push! out op)
+      (let [scratch (db-with-resolved-ops db (slice out 0))]
+        (append-tuple-maintenance-ops! (addr out) scratch op)))
+    out))
+
+(defn tx-data-op-known? [op: string] -> bool
+  (or (= op ":db/add")
+      (= op ":db/retract")
+      (= op ":db/retractAttr")
+      (= op ":db/retractEntity")
+      (= op ":db.fn/cas")
+      (= op ":db/cas")))
+
+(defn tx-data-op-needs-attr? [op: string] -> bool
+  (not (= op ":db/retractEntity")))
+
+(defn attr-name-valid? [attr: string] -> bool
+  (and (strings.has_prefix attr ":")
+       (> (count attr) 1)))
+
+(defn validate-tx-data-item [data: Tx-Data] -> [ok: bool, error: string]
+  (when (not (tx-data-op-known? data.op))
+    (return false "unknown tx op"))
+  (when (and data.has_tempid
+             (not (= data.op ":db/add")))
+    (return false "tempids not allowed outside add"))
+  (when (and (tx-data-op-needs-attr? data.op)
+             (not (attr-name-valid? data.a)))
+    (return false "bad entity attribute"))
+  (when (and data.has_lookup_ref
+             (not (attr-name-valid? data.lookup_attr)))
+    (return false "bad lookup attribute"))
+  (when (and data.has_expected_lookup_ref
+             (not (attr-name-valid? data.expected_lookup_attr)))
+    (return false "bad lookup attribute"))
+  (when (and data.has_value_lookup_ref
+             (not (attr-name-valid? data.value_lookup_attr)))
+    (return false "bad lookup attribute"))
+  (return true ""))
+
+(defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
+  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
+        resolved-meta (make [dynamic]Tx-Meta)
+        resolved-tempids (make [dynamic]Tempid)
+        next-e (next-entity-id (slice db.datoms 0))
+        current-tx-e next-e
+        current-tx-reserved false]
+    (for [data tx-data]
+      (when (and (not data.has_tempid)
+                 (not data.has_lookup_ref)
+                 (not data.has_ident)
+                 (>= data.e next-e))
+        (set! next-e (+ data.e 1))))
+    (for [data tx-data]
+      (let [e data.e
+            current-db (db-with-resolved-ops db (slice resolved-ops 0))
+            skip-data false]
+        (let [[shape-ok shape-error] (validate-tx-data-item data)]
+          (when (not shape-ok)
+            (return (Resolved-Tx {ok: false
+                                  error: shape-error
+                                  ops: resolved-ops
+                                  tx_meta: resolved-meta
+                                  tempids: resolved-tempids}))))
+        (when data.has_tempid
+          (if (current-tx-tempid? data.tempid)
+            (do
+              (when (not current-tx-reserved)
+                (set! current-tx-e next-e)
+                (set! next-e (+ next-e 1))
+                (set! current-tx-reserved true))
+              (set! e current-tx-e)
+              (ensure-tempid! (addr resolved-tempids) data.tempid current-tx-e)
+              (when (current-tx-upsert-conflict? current-db data current-tx-e)
+                (return (Resolved-Tx {ok: false
+                                      error: "conflicting upsert"
+                                      ops: resolved-ops
+                                      tx_meta: resolved-meta
+                                      tempids: resolved-tempids})))
+              (when (= data.op ":db/add")
+                (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v}))))
+          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
+            (if ok
+              (set! e existing)
+              (do
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data data.tempid)]
+                  (when upsert-conflict
+                    (return (Resolved-Tx {ok: false
+                                          error: "conflicting upsert"
+                                          ops: resolved-ops
+                                          tx_meta: resolved-meta
+                                          tempids: resolved-tempids})))
+                  (if upsert-ok
+                    (set! e upsert-e)
+                    (do
+                      (set! e next-e)
+                      (set! next-e (+ next-e 1)))))
+                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e})))))))
+        (when data.has_lookup_ref
+          (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.lookup_attr data.lookup_value)]
+            (if lookup-ok
+              (set! e lookup-e)
+              (if (= data.op ":db/add")
+                (return (Resolved-Tx {ok: false
+                                      error: "lookup ref not found"
+                                      ops: resolved-ops
+                                      tx_meta: resolved-meta
+                                      tempids: resolved-tempids}))
+                (set! skip-data true)))))
+        (when skip-data
+          (continue))
+        (when data.has_ident
+          (let [[ident-e ident-ok] (schema-entity-for-attr current-db data.ident)]
+            (if ident-ok
+              (set! e ident-e)
+              (if (= data.op ":db/add")
+                (return (Resolved-Tx {ok: false
+                                      error: "ident not found"
+                                      ops: resolved-ops
+                                      tx_meta: resolved-meta
+                                      tempids: resolved-tempids}))
+                (set! skip-data true)))))
+        (when skip-data
+          (continue))
+        (when (or (= data.op ":db/retract")
+                  (= data.op ":db/retractAttr"))
+          (let [tuple-attrs (schema-tuple-attrs current-db data.a) :defer]
+            (when (> (count tuple-attrs) 0)
+              (return (Resolved-Tx {ok: false
+                                    error: "cannot modify tuple attrs directly"
+                                    ops: resolved-ops
+                                    tx_meta: resolved-meta
+                                    tempids: resolved-tempids})))))
+        (when (= data.op ":db/retractEntity")
+          (append-retract-entity-ops! (addr resolved-ops) current-db e)
+          (continue))
+        (when (= data.op ":db/retractAttr")
+          (append-retract-attr-ops! (addr resolved-ops) current-db e data.a)
+          (continue))
+        (when (= data.op ":db.fn/cas")
+          (let [[expected expected-ok expected-error] (resolve-cas-expected current-db data)]
+            (when (not expected-ok)
+              (return (Resolved-Tx {ok: false
+                                    error: expected-error
+                                    ops: resolved-ops
+                                    tx_meta: resolved-meta
+                                    tempids: resolved-tempids})))
+            (when (not (cas-expected-matches? current-db e data.a expected))
+              (return (Resolved-Tx {ok: false
+                                    error: "cas failed"
+                                    ops: resolved-ops
+                                    tx_meta: resolved-meta
+                                    tempids: resolved-tempids})))))
+	        (let [v data.v
+                value-ok true
+                value-error ""]
+            (when (not (current-tx-value? v))
+              (let [[resolved resolved-ok resolved-error] (resolve-tx-value current-db data.a data.v)]
+                (set! v resolved)
+                (set! value-ok resolved-ok)
+                (set! value-error resolved-error)))
+	          (when data.has_value_lookup_ref
+	            (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value_lookup_attr data.value_lookup_value)]
+	              (if lookup-ok
+	                (set! v (value-entity lookup-e))
+	                (if (= data.op ":db/retract")
+	                  (set! skip-data true)
+	                  (return (Resolved-Tx {ok: false
+	                                        error: "lookup ref not found"
+	                                        ops: resolved-ops
+	                                        tx_meta: resolved-meta
+	                                        tempids: resolved-tempids}))))))
+	          (when skip-data
+	            (continue))
+            (when (current-tx-value? v)
+              (when (not current-tx-reserved)
+                (set! current-tx-e next-e)
+                (set! next-e (+ next-e 1))
+                (set! current-tx-reserved true))
+              (set! v (value-entity current-tx-e))
+              (ensure-tempid! (addr resolved-tempids) v.text current-tx-e))
+	          (when (or data.has_value_tempid
+                       (ref-string-value? current-db data.a v))
+	            (let [value-tempid data.value_tempid]
+              (when (not data.has_value_tempid)
+                (set! value-tempid v.text))
+              (if (current-tx-tempid? value-tempid)
+                (do
+                  (when (not current-tx-reserved)
+                    (set! current-tx-e next-e)
+                    (set! next-e (+ next-e 1))
+                    (set! current-tx-reserved true))
+                  (set! v (value-entity current-tx-e))
+                  (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
+              (if (not (tx-data-has-tempid? tx-data value-tempid))
+                (return (Resolved-Tx {ok: false
+                                      error: "tempid used only as value"
+                                      ops: resolved-ops
+                                      tx_meta: resolved-meta
+                                      tempids: resolved-tempids}))
+              (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
+              (if ok
+                (set! v (value-entity existing))
+                (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db tx-data value-tempid)]
+                  (when upsert-conflict
+                    (return (Resolved-Tx {ok: false
+                                          error: "conflicting upsert"
+                                          ops: resolved-ops
+                                          tx_meta: resolved-meta
+                                          tempids: resolved-tempids})))
+                  (if upsert-ok
+                    (do
+                      (set! v (value-entity upsert-e))
+                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: upsert-e})))
+                    (do
+                      (set! v (value-entity next-e))
+                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: next-e}))
+                      (set! next-e (+ next-e 1)))))))))))
+          (when (not value-ok)
+            (return (Resolved-Tx {ok: false
+                                  error: value-error
+                                  ops: resolved-ops
+                                  tx_meta: resolved-meta
+                                  tempids: resolved-tempids})))
+        (if (= data.op ":db/retract")
+          (arr.push! resolved-ops (tx-retract e data.a v))
+          (arr.push! resolved-ops (tx-add e data.a v))))))
+    (Resolved-Tx {ok: true error: "" ops: resolved-ops tx_meta: resolved-meta tempids: resolved-tempids})))
+
+(defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
+  (when (= op.v.kind .Nil)
+    (return false "cannot store nil"))
+  (when (and (= op.a ":db/tupleAttrs")
+             (not (and (valid-tuple-attr-target? db op.e)
+                       (valid-tuple-attrs-value? db op.v))))
+    (return false "invalid tuple schema"))
+  (when (not op.derived)
+    (let [tuple-attrs (schema-tuple-attrs db op.a)]
+      (defer (delete tuple-attrs))
+      (when (> (count tuple-attrs) 0)
+        (return false "cannot modify tuple attrs directly"))))
+  (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
+    (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
+      (return false "schema value type mismatch")))
+  (let [[unique has-unique] (schema-keyword db op.a ":db/unique")]
+    (when (and has-unique
+               (or (= unique ":db.unique/identity")
+                   (= unique ":db.unique/value"))
+               (unique-conflict? db op))
+      (return false "schema unique conflict")))
+  (return true ""))
+
+(defn validate-tuple-type-schema [db: DB] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword)
+                   (= datom.v.text ":db.type/tuple"))
+          (let [[attr attr-ok] (schema-ident-for-entity db datom.e)]
+            (when attr-ok
+              (let [tuple-attrs (schema-tuple-attrs db attr)]
+                (defer (delete tuple-attrs))
+                (when (= (count tuple-attrs) 0)
+                  (return false "invalid tuple schema")))))))))
+  (return true ""))
+
+(defn validate-schema-bool-values [db: DB, schema-attr: string] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 schema-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 schema-attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (= datom.v.kind .Bool)))
+          (return false "schema boolean value must be boolean")))))
+  (return true ""))
+
+(defn validate-ident-values [db: DB] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (= datom.v.kind .Keyword)))
+          (return false ":db/ident value must be keyword")))))
+  (return true ""))
+
+(defn valid-schema-keyword-value? [schema-attr: string, value: string] -> bool
+  (cond
+    (= schema-attr ":db/valueType")
+      (or (= value ":db.type/string")
+          (= value ":db.type/long")
+          (= value ":db.type/boolean")
+          (= value ":db.type/ref")
+          (= value ":db.type/keyword")
+          (= value ":db.type/tuple"))
+    (= schema-attr ":db/cardinality")
+      (or (= value ":db.cardinality/one")
+          (= value ":db.cardinality/many"))
+    (= schema-attr ":db/unique")
+      (or (= value ":db.unique/identity")
+          (= value ":db.unique/value"))
+    :else true))
+
+(defn validate-schema-keyword-values [db: DB, schema-attr: string] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 schema-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 schema-attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (or (not (= datom.v.kind .Keyword))
+                       (not (valid-schema-keyword-value? schema-attr datom.v.text))))
+          (return false "invalid schema keyword value")))))
+  (return true ""))
+
+(defn validate-component-schema [db: DB] -> [ok: bool, error: string]
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/isComponent" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/isComponent" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Bool)
+                   datom.v.bool_value)
+          (let [[attr attr-ok] (schema-ident-for-entity db datom.e)]
+            (when (and attr-ok (not (schema-ref? db attr)))
+              (return false "invalid component schema")))))))
+  (return true ""))
+
+(defn validate-ops [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
+  (let [scratch-datoms (clone-datoms before.datoms)]
+    (defer (delete scratch-datoms))
+    (for [op ops]
+      (when (= op.kind .Add)
+        (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+              scratch (build-db scratch-owned)
+              [ok error] (validate-add-op scratch op)]
+          (when (not ok)
+            (return false error))))
+      (arr.push! scratch-datoms
+        (Datom {e: op.e
+                a: op.a
+                v: op.v
+                tx: 0
+                added: (= op.kind .Add)})))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-tuple-type-schema scratch)]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-ident-values scratch)]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-keyword-values scratch ":db/valueType")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-keyword-values scratch ":db/cardinality")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-keyword-values scratch ":db/unique")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-bool-values scratch ":db/index")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-schema-bool-values scratch ":db/isComponent")]
+      (when (not ok)
+        (return false error)))
+    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
+          scratch (build-db scratch-owned)
+          [ok error] (validate-component-schema scratch)]
+      (when (not ok)
+        (return false error)))
+    (return true "")))
+
+(defn failed-tx-report [db: DB, error: string] -> Tx-Report
+  (Tx-Report {ok: false
+              error: error
+              db_before: db
+              db_after: db
+              tx_data: (make [dynamic]Datom)
+              tx: 0
+              tx_meta: (make [dynamic]Tx-Meta)
+              tempids: (make [dynamic]Tempid)}))
+
+(defn reset-conn-with-meta [conn: ^Conn, next-db: DB, tx-meta: []Tx-Meta] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        after (build-db (clone-datom-slice (slice next-db.datoms 0)))
+        diff (db-diff before after)
+        tx conn^.next_tx
+        tx-data (make [dynamic]Datom 0 (+ (count diff.only_left) (count diff.only_right)))]
+    (for [datom diff.only_left]
+      (arr.push! tx-data
+        (Datom {e: datom.e a: datom.a v: datom.v tx: tx added: false})))
+    (for [datom diff.only_right]
+      (arr.push! tx-data
+        (Datom {e: datom.e a: datom.a v: datom.v tx: tx added: true})))
+    (delete diff.only_left)
+    (delete diff.only_right)
+    (delete diff.both)
+    (set! conn^.db after)
+    (set! conn^.next_tx (+ conn^.next_tx 1))
+    (Tx-Report {ok: true
+                error: ""
+                db_before: before
+                db_after: after
+                tx_data: tx-data
+                tx: tx
+                tx_meta: (clone-tx-meta tx-meta)
+                tempids: (make [dynamic]Tempid)})))
+
+(defn reset-conn [conn: ^Conn, next-db: DB] -> Tx-Report
+  (reset-conn-with-meta conn next-db ([]Tx-Meta [])))
+
+(defn tx-fn-ok [tx-data: []Tx-Data] -> Tx-Fn-Result
+  (let [owned (arr.into [dynamic]Tx-Data tx-data)]
+    (Tx-Fn-Result {ok: true
+                   error: ""
+                   tx_data: owned})))
+
+(defn tx-fn-error [error: string] -> Tx-Fn-Result
+  (let [empty (make [dynamic]Tx-Data)]
+    (Tx-Fn-Result {ok: false
+                   error: error
+                   tx_data: empty})))
+
+(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
+  (when (not (= op.kind .Add))
+    (return))
+  (let [current (build-db (clone-datoms after-datoms^))]
+    (when (not (tx-op-cardinality-one? current op))
+      (return))
+    (let [indexes (slice current.eavt 0)
+          low (lower-bound-index current indexes "eavt-ea" op.e op.a (Value {}))
+          high (upper-bound-index current indexes "eavt-ea" op.e op.a (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom current.datoms[datom-index]]
+          (when (and (datom-current-at? current datom-index)
+                     (not (value-equal? datom.v op.v)))
+            (let [retract (Datom {e: datom.e
+                                  a: datom.a
+                                  v: datom.v
+                                  tx: tx
+                                  added: false})]
+              (arr.push! after-datoms^ retract)
+              (arr.push! tx-data^ retract))))))))
+
+(defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        expanded-ops (expand-tuple-ops before ops)
+        after-datoms (clone-datoms conn^.db.datoms)
+        tx-data (make [dynamic]Datom 0 (count expanded-ops))
+        tx conn^.next_tx]
+    (let [[valid error] (validate-ops before (slice expanded-ops 0))]
+      (when (not valid)
+        (delete expanded-ops)
+        (return (failed-tx-report before error))))
+    (for [op expanded-ops]
+      (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx)
+      (let [datom (Datom {e: op.e
+                          a: op.a
+                          v: op.v
+                          tx: tx
+                          added: (= op.kind .Add)})]
+        (arr.push! after-datoms datom)
+        (arr.push! tx-data datom)))
+    (delete expanded-ops)
+    (let [after (build-db after-datoms)]
+      (set! conn^.db after)
+      (set! conn^.next_tx (+ conn^.next_tx 1))
+      (Tx-Report {db_before: before
+                  db_after: after
+                  ok: true
+                  error: ""
+                  tx_data: tx-data
+                  tx: tx
+                  tx_meta: (clone-tx-meta tx-meta)
+                  tempids: tempids}))))
+
+(defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
+  (transact-ops-with-tempids conn ops tx-meta (make [dynamic]Tempid)))
+
+(defn transact-ops [conn: ^Conn, ops: []Tx-Op] -> Tx-Report
+  (transact-with-meta conn ops ([]Tx-Meta [])))
+
+(defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        resolved (resolve-tx-data before tx-data)]
+    (when (not resolved.ok)
+      (delete resolved.ops)
+      (delete resolved.tx_meta)
+      (delete resolved.tempids)
+      (return (failed-tx-report before resolved.error)))
+    (let [report (transact-ops-with-tempids conn (slice resolved.ops 0) (slice resolved.tx_meta 0) resolved.tempids)]
+      (delete resolved.ops)
+      (delete resolved.tx_meta)
+      report)))
+
+(defn transact-fn [conn: ^Conn, f: (fn [db: DB] -> Tx-Fn-Result)] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        result (f before)]
+    (defer (delete result.tx_data))
+    (when (not result.ok)
+      (return (failed-tx-report before result.error)))
+    (transact-tx-data conn (slice result.tx_data 0))))
+
+(defn transact-fn-string [conn: ^Conn, f: (fn [db: DB, arg: string] -> Tx-Fn-Result), arg: string] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        result (f before arg)]
+    (defer (delete result.tx_data))
+    (when (not result.ok)
+      (return (failed-tx-report before result.error)))
+    (transact-tx-data conn (slice result.tx_data 0))))
+
+(defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
+  (let [[resolved resolved-ok] (resolve-entity-term db term binding^)]
+    (when resolved-ok
+      (return (value-equal? resolved actual))))
+  (match-term? term actual binding))
+
+(defn ref-entity-literal [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool]
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (when (and has-type (= schema-type ":db.type/ref"))
+      (if (= value.kind .Int)
+        (return (value-entity (u64 value.int_value)) true)
+        (when (= value.kind .Keyword)
+          (let [[entity ok] (schema-entity-for-attr db value.text)]
+            (when ok
+              (return (value-entity entity) true)))))))
+  (return value false))
+
+(defn match-clause-value-term? [db: DB, attr: string, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (= term.kind .LookupRef)
+    (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup_attr term.lookup_value)]
+      (return (and lookup-ok (value-equal? (value-entity entity) actual)))))
+  (when (= term.kind .Value)
+    (let [[resolved ok] (ref-entity-literal db attr term.value)]
+      (when ok
+        (return (value-equal? resolved actual)))))
+  (match-term? term actual binding))
+
+(defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
+  (when (and (= clause.a.kind .Value)
+             (= clause.a.value.kind .Keyword)
+             (reverse-attr? clause.a.value.text))
+    (when (not (= datom.v.kind .Entity))
+      (return false))
+    (let [forward-attr (forward-attr-for-reverse clause.a.value.text) :defer]
+      (return
+        (and (= datom.a forward-attr)
+             (match-entity-term? db clause.e (value-entity datom.v.entity) binding)
+             (match-entity-term? db clause.v (value-entity datom.e) binding)))))
+  (and (match-entity-term? db clause.e (value-entity datom.e) binding)
+       (match-term? clause.a (value-keyword datom.a) binding)
+       (match-clause-value-term? db datom.a clause.v datom.v binding)))
+
+(defn candidate-index-matches? [datom: Datom,
+                                e-value: Value, e-ok: bool,
+                                a-value: Value, a-ok: bool,
+                                v-value: Value, v-ok: bool] -> bool
+  (when e-ok
+    (when (not (and (= e-value.kind .Entity)
+                    (= datom.e e-value.entity)))
+      (return false)))
+  (when a-ok
+    (when (not (and (= a-value.kind .Keyword)
+                    (= datom.a a-value.text)))
+      (return false)))
+  (when v-ok
+    (when (not (value-equal? datom.v v-value))
+      (return false)))
+  true)
+
+(defn clause-selectivity-score [clause: Clause, binding: Binding] -> int
+  (let [[ignored-e e-bound] (resolve-term clause.e binding)
+        e-ok (or (= clause.e.kind .LookupRef) e-bound)
+        [a-value a-ok] (resolve-term clause.a binding)
+        [_ v-ok] (resolve-term clause.v binding)]
+    (when (and a-ok (not (= a-value.kind .Keyword)))
+      (return 0))
+    (if (and e-ok a-ok)
+      1
+      (if (and a-ok v-ok)
+        2
+        (if e-ok
+          3
+          (if a-ok
+            4
+            (if v-ok 5 6)))))))
+
+(defn best-clause-index [clauses: []Clause, binding: Binding] -> int
+  (let [best 0
+        best-score (clause-selectivity-score clauses[0] binding)]
+    (for [i (arr.range 1 (count clauses))]
+      (let [score (clause-selectivity-score clauses[i] binding)]
+        (when (< score best-score)
+          (set! best i)
+          (set! best-score score))))
+    best))
+
+(defn relation-source-row-matches? [clause: Clause, row: Value, binding: ^Binding] -> bool
+  (when (not (= row.kind .Vector))
+    (return false))
+  (when (not (= (count row.items) clause.source_width))
+    (return false))
+  (when (= clause.source_width 2)
+    (return
+      (and (match-term? clause.e row.items[0] binding)
+           (match-term? clause.a row.items[1] binding))))
+  (when (not (and (match-term? clause.e row.items[0] binding)
+                  (match-term? clause.a row.items[1] binding)
+                  (match-term? clause.v row.items[2] binding)))
+    (return false))
+  (when (= clause.source_width 3)
+    (return true))
+  (when (not (match-term? clause.tx_term row.items[3] binding))
+    (return false))
+  (when (= clause.source_width 4)
+    (return true))
+  (match-term? clause.op_term row.items[4] binding))
+
+(defn bindings-after-relation-source-clause [clause: Clause, binding: Binding] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)
+        [source source-ok] (binding-lookup binding clause.source)]
+    (when (not (and source-ok (= source.kind .Vector)))
+      (return out))
+    (for [row source.items]
+      (let [next (clone-binding binding)]
+        (when (relation-source-row-matches? clause row (addr next))
+          (arr.push! out next))))
+    out))
+
+(defn source-db-lookup [db: DB, sources: []DB-Source, name: string] -> [source-db: DB, ok: bool]
+  (when (= name "$")
+    (return db true))
+  (for [source sources]
+    (when (= source.name name)
+      (return source.db true)))
+  (return db false))
+
+(defn unsourced-clause [clause: Clause] -> Clause
+  (Clause {e: clause.e
+           a: clause.a
+           v: clause.v
+           tx_term: (term-wildcard)
+           op_term: (term-wildcard)
+           source: ""
+           has_source: false
+           source_width: 0}))
+
+(defn append-bindings-after-clause! [out: ^[dynamic]Binding, db: DB, clause-value: Clause, binding: Binding]
+  (when clause-value.has_source
+    (let [source-bindings (bindings-after-relation-source-clause clause-value binding)]
+      (defer (delete source-bindings))
+      (for [source-binding source-bindings]
+        (arr.push! out^ source-binding)))
+    (return))
+  (let [candidates (clause-candidate-indexes db clause-value binding)]
+    (defer (delete candidates))
+    (for [datom-index candidates]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [next (clone-binding binding)]
+            (when (datom-clause-matches? db datom clause-value (addr next))
+              (arr.push! out^ next))))))))
+
+(defn append-bindings-after-clause-with-sources! [out: ^[dynamic]Binding, db: DB, sources: []DB-Source, clause-value: Clause, binding: Binding]
+  (when clause-value.has_source
+    (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+      (when source-ok
+        (append-bindings-after-clause! out source-db (unsourced-clause clause-value) binding)
+        (return))))
+  (append-bindings-after-clause! out db clause-value binding))
+
+(defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
+  (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
+        [a-value a-ok] (resolve-term clause.a binding)
+        [v-value v-ok] (resolve-term clause.v binding)
+        source: []int (slice db.eavt 0)
+        out (make [dynamic]int)]
+    (when (= clause.v.kind .LookupRef)
+      (let [[lookup-entity lookup-ok] (resolve-lookup-ref db clause.v.lookup_attr clause.v.lookup_value)]
+        (when lookup-ok
+          (set! v-value (value-entity lookup-entity))
+          (set! v-ok true))))
+    (when (and a-ok v-ok (= a-value.kind .Keyword))
+      (let [[resolved resolved-ok] (ref-entity-literal db a-value.text v-value)]
+        (when resolved-ok
+          (set! v-value resolved))))
+    (when (and a-ok
+               (= a-value.kind .Keyword)
+               (reverse-attr? a-value.text))
+      (let [forward-attr (forward-attr-for-reverse a-value.text) :defer]
+        (let [[source-entity source-ok] (resolve-entity-term db clause.v binding)]
+          (when source-ok
+            (set! v-value source-entity)
+            (set! v-ok true)))
+        (when (and e-ok (not (= e-value.kind .Entity)))
+          (return out))
+        (when (and v-ok (not (= v-value.kind .Entity)))
+          (return out))
+        (if e-ok
+          (let [indexes (slice db.vaet 0)
+                ref-value (value-entity e-value.entity)
+                low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+                high (upper-bound-index db indexes "vaet" 0 "" ref-value)]
+            (set! source (slice indexes low high)))
+          (if v-ok
+            (let [indexes (slice db.eavt 0)
+                  low (lower-bound-index db indexes "eavt-ea" v-value.entity forward-attr (Value {}))
+                  high (upper-bound-index db indexes "eavt-ea" v-value.entity forward-attr (Value {}))]
+              (set! source (slice indexes low high)))
+            (let [indexes (slice db.aevt 0)
+                  low (lower-bound-index db indexes "aevt" 0 forward-attr (Value {}))
+                  high (upper-bound-index db indexes "aevt" 0 forward-attr (Value {}))]
+              (set! source (slice indexes low high)))))
+        (for [datom-index source]
+          (let [datom db.datoms[datom-index]]
+            (when (and (= datom.a forward-attr)
+                       (= datom.v.kind .Entity))
+              (arr.push! out datom-index))))
+        (return out)))
+    (if (and e-ok a-ok)
+      (do
+        (when (not (and (= e-value.kind .Entity)
+                        (= a-value.kind .Keyword)))
+          (return out))
+        (let [indexes (slice db.eavt 0)
+              low (lower-bound-index db indexes "eavt-ea" e-value.entity a-value.text (Value {}))
+              high (upper-bound-index db indexes "eavt-ea" e-value.entity a-value.text (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (and a-ok v-ok))
+      (do
+        (when (not (= a-value.kind .Keyword))
+          (return out))
+        (let [indexes (slice db.avet 0)
+              low (lower-bound-index db indexes "avet" 0 a-value.text v-value)
+              high (upper-bound-index db indexes "avet" 0 a-value.text v-value)]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) e-ok)
+      (do
+        (when (not (= e-value.kind .Entity))
+          (return out))
+        (let [indexes (slice db.eavt 0)
+              low (lower-bound-index db indexes "eavt" e-value.entity "" (Value {}))
+              high (upper-bound-index db indexes "eavt" e-value.entity "" (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) a-ok)
+      (do
+        (when (not (= a-value.kind .Keyword))
+          (return out))
+        (let [indexes (slice db.aevt 0)
+              low (lower-bound-index db indexes "aevt" 0 a-value.text (Value {}))
+              high (upper-bound-index db indexes "aevt" 0 a-value.text (Value {}))]
+          (set! source (slice indexes low high)))))
+    (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) (not a-ok) v-ok)
+      (let [indexes (slice db.vaet 0)
+            low (lower-bound-index db indexes "vaet" 0 "" v-value)
+            high (upper-bound-index db indexes "vaet" 0 "" v-value)]
+        (set! source (slice indexes low high))))
+    (for [datom-index source]
+      (let [datom db.datoms[datom-index]]
+        (when (candidate-index-matches? datom e-value e-ok a-value a-ok v-value v-ok)
+          (arr.push! out datom-index))))
+    out))
+
+(defn binding-matches-clause? [db: DB, clause: Clause, binding: Binding] -> bool
+  (when clause.has_source
+    (let [source-bindings (bindings-after-relation-source-clause clause binding) :defer]
+      (return (> (count source-bindings) 0))))
+  (let [candidates (clause-candidate-indexes db clause binding) :defer]
+    (for [datom-index candidates]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [candidate (clone-binding binding)]
+            (when (datom-clause-matches? db datom clause (addr candidate))
+              (return true)))))))
+  false)
+
+(defn bindings-after-clause-group-with-sources [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> [dynamic]Binding
+  (let [bindings ([dynamic]Binding [binding])]
+    (for [clause group.clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause candidate-binding))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (return bindings))))
+    (for [not-group group.not_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (when (not (binding-matches-not-group-with-sources? db sources not-group candidate-binding))
+            (arr.push! next-bindings candidate-binding)))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (return bindings))))
+    bindings))
+
+(defn bindings-after-clause-group [db: DB, group: Not-Group, binding: Binding] -> [dynamic]Binding
+  (bindings-after-clause-group-with-sources db ([]DB-Source []) group binding))
+
+(defn project-binding [binding: Binding, names: []string] -> Binding
+  (let [out (Binding {})]
+    (for [name names]
+      (let [[value ok] (binding-lookup binding name)]
+        (when ok
+          (binding-store! (addr out) name value))))
+    out))
+
+(defn merge-binding [base: Binding, extra: Binding] -> [binding: Binding, ok: bool]
+  (let [out (clone-binding base)]
+    (for [item extra.items]
+      (let [[existing exists] (binding-lookup out item.name)]
+        (if exists
+          (when (not (value-equal? existing item.value))
+            (return out false))
+          (binding-store! (addr out) item.name item.value))))
+    (return out true)))
+
+(defn binding-with-value [binding: Binding, name: string, value: Value] -> [next: Binding, ok: bool]
+  (let [out (clone-binding binding)
+        [existing exists] (binding-lookup out name)]
+    (if exists
+      (return out (value-equal? existing value))
+      (do
+        (binding-store! (addr out) name value)
+        (return out true)))))
+
+(defn apply-get-else [db: DB, binding: Binding, clause: Get-Else] -> [next: Binding, ok: bool]
+  (let [[entity entity-ok] (resolve-entity-term db clause.e binding)]
+    (when (not (and entity-ok (= entity.kind .Entity)))
+      (return binding false))
+    (let [[value value-ok] (pull-attr-value db entity.entity clause.a)]
+      (if value-ok
+        (binding-with-value binding clause.out value)
+        (binding-with-value binding clause.out clause.default_value)))))
+
+(defn apply-get-some [db: DB, binding: Binding, clause: Get-Some] -> [next: Binding, ok: bool]
+  (let [[entity entity-ok] (resolve-entity-term db clause.e binding)]
+    (when (not (and entity-ok (= entity.kind .Entity)))
+      (return binding false))
+    (for [attr clause.attrs]
+      (let [[value value-ok] (pull-attr-value db entity.entity attr)]
+        (when value-ok
+          (let [[with-attr attr-ok] (binding-with-value binding clause.out_attr (value-keyword attr))]
+            (when (not attr-ok)
+              (return with-attr false))
+            (return (binding-with-value with-attr clause.out_value value))))))
+    (return binding false)))
+
+(defn ground-bind-values [binding: Binding, vars: []string, values: []Value] -> [next: Binding, ok: bool]
+  (when (not (= (count vars) (count values)))
+    (return binding false))
+  (let [bound-binding (clone-binding binding)]
+    (for [name index vars]
+      (when (not (= name ""))
+        (let [[bound bound-ok] (binding-with-value bound-binding name values[index])]
+          (when (not bound-ok)
+            (return binding false))
+          (set! bound-binding bound))))
+    (return bound-binding true)))
+
+(defn apply-ground [bindings: []Binding, ground: Ground] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (let [[source source-ok] (resolve-term ground.source binding)]
+        (when source-ok
+          (if ground.is_tuple
+            (when (= source.kind .Vector)
+              (let [[next ok] (ground-bind-values binding ground.tuple_vars (slice source.items 0))]
+                (when ok
+                  (arr.push! out next))))
+            (if ground.is_relation
+              (when (= source.kind .Vector)
+                (for [row source.items]
+                  (when (and (= row.kind .Vector)
+                             (= (count row.items) ground.width))
+                    (let [[next ok] (ground-bind-values binding ground.tuple_vars (slice row.items 0))]
+                      (when ok
+                        (arr.push! out next))))))
+              (if ground.is_collection
+                (when (= source.kind .Vector)
+                  (for [value source.items]
+                    (let [[next ok] (binding-with-value binding ground.out value)]
+                      (when ok
+                        (arr.push! out next)))))
+                (if (= ground.out "")
+                  (arr.push! out binding)
+                  (let [[next ok] (binding-with-value binding ground.out source)]
+                    (when ok
+                      (arr.push! out next))))))))))
+    out))
+
+(defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (let [[next ok] (apply-function-clause binding function)]
+        (when ok
+          (arr.push! out next))))
+    out))
+
+(defn bindings-after-predicate [bindings: []Binding, predicate: Predicate] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (when (predicate-matches? predicate binding)
+        (arr.push! out binding)))
+    out))
+
+(defn rule-clause-with-source [clause: Clause, source: string, has-source: bool] -> Clause
+  (when (or (not has-source) clause.has_source)
+    (return clause))
+  (Clause {e: clause.e
+           a: clause.a
+           v: clause.v
+           source: source
+           has_source: true
+           source_width: (if (= clause.v.kind .Wildcard) 2 3)}))
+
+(defn rule-clauses-with-source [clauses: []Clause, source: string, has-source: bool] -> [dynamic]Clause
+  (let [out (make [dynamic]Clause 0 (count clauses))]
+    (for [clause clauses]
+      (arr.push! out (rule-clause-with-source clause source has-source)))
+    out))
+
+(defn bind-rule-source [outer: Binding, initial: Binding, source: string, has-source: bool] -> [binding: Binding, ok: bool]
+  (when (not has-source)
+    (return initial true))
+  (let [[source-value source-ok] (binding-lookup outer source)]
+    (when (not source-ok)
+      (return initial false))
+    (let [next (clone-binding initial)]
+      (binding-store! (addr next) source source-value)
+      (return next true))))
+
+(defn binding-equal? [left: Binding, right: Binding] -> bool
+  (when (not (= (count left.items) (count right.items)))
+    (return false))
+  (for [item left.items]
+    (let [[right-value right-ok] (binding-lookup right item.name)]
+      (when (not (and right-ok (value-equal? item.value right-value)))
+        (return false))))
+  true)
+
+(defn binding-exists? [bindings: []Binding, binding: Binding] -> bool
+  (for [existing bindings]
+    (when (binding-equal? existing binding)
+      (return true)))
+  false)
+
+(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (let [clauses (rule-clauses-with-source rule.clauses source has-source)
+        group (not-group-simple (slice clauses 0))
+        bindings (bindings-after-clause-group db group initial)]
+    (delete clauses)
+    (for [call rule.rule_calls]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [next-source (if call.has_source call.source source)
+                next-has-source (or call.has_source has-source)
+                rule-bindings (bindings-after-rule-call-depth db rules call binding (- depth 1) next-source next-has-source)]
+            (for [rule-binding rule-bindings]
+              (arr.push! next-bindings rule-binding))
+            (delete rule-bindings)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [ground rule.grounds]
+      (let [next (apply-ground (slice bindings 0) ground)]
+        (delete bindings)
+        (set! bindings next)))
+    (for [function rule.function_clauses]
+      (let [next (bindings-after-function (slice bindings 0) function)]
+        (delete bindings)
+        (set! bindings next)))
+    (for [predicate rule.predicates]
+      (let [next (bindings-after-predicate (slice bindings 0) predicate)]
+        (delete bindings)
+        (set! bindings next)))
+    bindings))
+
+(defn bind-rule-args [outer: Binding, call: Rule-Call, rule: Rule] -> [binding: Binding, ok: bool]
+  (let [out (Binding {})]
+    (when (not (= (count call.args) (count rule.params)))
+      (return out false))
+    (for [param index rule.params]
+      (let [arg call.args[index]]
+        (case arg.kind
+          .Var (let [[value value-ok] (binding-lookup outer arg.name)]
+                 (when value-ok
+                   (let [[next bind-ok] (binding-with-value out param value)]
+                     (when (not bind-ok)
+                       (return next false))
+                     (set! out next))))
+          .Value (let [[next bind-ok] (binding-with-value out param arg.value)]
+                   (when (not bind-ok)
+                     (return next false))
+                   (set! out next))
+          :else (return out false))))
+    (return out true)))
+
+(defn merge-rule-output [outer: Binding, call: Rule-Call, rule: Rule, result: Binding] -> [binding: Binding, ok: bool]
+  (let [out (clone-binding outer)]
+    (for [param index rule.params]
+      (let [arg call.args[index]]
+        (when (= arg.kind .Var)
+          (let [[value value-ok] (binding-lookup result param)]
+            (when value-ok
+              (let [[next bind-ok] (binding-with-value out arg.name value)]
+                (when (not bind-ok)
+                  (return next false))
+                (set! out next)))))))
+    (return out true)))
+
+(defn bindings-after-rule-call-depth [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (<= depth 0)
+      (return out))
+    (for [rule rules]
+      (when (= rule.name call.name)
+        (let [[initial ok] (bind-rule-args binding call rule)]
+          (when ok
+            (let [[source-initial source-ok] (bind-rule-source binding initial source has-source)]
+              (when source-ok
+                (let [results (bindings-after-rule-body-depth db rules rule source-initial depth source has-source)]
+                  (for [result results]
+                    (let [[merged merged-ok] (merge-rule-output binding call rule result)]
+                      (when merged-ok
+                        (arr.push! out merged))))
+                  (delete results))))))))
+    out))
+
+(defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)
+        depth 1
+        min-depth (+ (count rules) 1)
+        changed true]
+    (while (or changed (<= depth min-depth))
+      (set! changed false)
+      (let [candidates (bindings-after-rule-call-depth db rules call binding depth call.source call.has_source)]
+        (defer (delete candidates))
+        (for [candidate candidates]
+          (when (not (binding-exists? (slice out 0) candidate))
+            (arr.push! out candidate)
+            (set! changed true))))
+      (set! depth (+ depth 1)))
+    out))
+
+(defn bindings-after-or-branch-with-sources [db: DB, sources: []DB-Source, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
+  (let [initial (clone-binding binding)]
+    (when group.has_join
+      (set! initial (project-binding binding group.join_vars))
+      (for [branch-clause branch.clauses]
+        (let [has-source branch-clause.has_source]
+          (when has-source
+          (let [[source source-ok] (binding-lookup binding branch-clause.source)]
+            (when source-ok
+              (binding-store! (addr initial) branch-clause.source source)))))))
+  (let [branch-bindings (bindings-after-clause-group-with-sources db sources branch initial) :defer
+        out (make [dynamic]Binding)]
+    (for [branch-binding branch-bindings]
+      (let [branch-output (if group.has_join (project-binding branch-binding group.join_vars) branch-binding)
+            [merged ok] (merge-binding binding branch-output)]
+        (when ok
+          (arr.push! out merged))))
+    out)))
+
+(defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
+  (bindings-after-or-branch-with-sources db ([]DB-Source []) group branch binding))
+
+(defn binding-matches-not-group-with-sources? [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> bool
+  (let [initial (clone-binding binding)]
+    (when group.has_join
+      (delete initial.items)
+      (set! initial (project-binding binding group.join_vars)))
+  (let [bindings ([dynamic]Binding [initial])]
+    (for [clause group.clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause candidate-binding))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (delete bindings)
+          (return false))))
+    (for [not-group group.not_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [candidate-binding bindings]
+          (when (not (binding-matches-not-group-with-sources? db sources not-group candidate-binding))
+            (arr.push! next-bindings candidate-binding)))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (when (= (count bindings) 0)
+          (delete bindings)
+          (return false))))
+    (let [matched (> (count bindings) 0)]
+      (delete bindings)
+      (return matched)))))
+
+(defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
+  (binding-matches-not-group-with-sources? db ([]DB-Source []) group binding))
+
+(defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
+  (if (or (= aggregate.op "count")
+          (= aggregate.op "count-distinct")
+          (= aggregate.op "sum")
+          (= aggregate.op "avg")
+          (= aggregate.op "median")
+          (= aggregate.op "variance")
+          (= aggregate.op "stddev"))
+    (value-int 0)
+    (Value {})))
+
+(defn sort-i64! [values: ^[dynamic]i64]
+  // ponytail: insertion sort is enough for current aggregate tests; replace if aggregate benches care.
+  (for [i (arr.range 1 (count values^))]
+    (let [current values^[i]
+          j i]
+      (while (and (> j 0)
+                  (< current values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] current))))
+
+(defn sort-values! [values: ^[dynamic]Value]
+  (for [i (arr.range 1 (count values^))]
+    (let [current values^[i]
+          j i]
+      (while (and (> j 0)
+                  (value-less? current values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] current))))
+
+(defn top-n-values [values: []Value, limit: int, max?: bool] -> Value
+  (let [sorted (arr.into [dynamic]Value values)
+        out (make [dynamic]Value)]
+    (defer (delete sorted))
+    (sort-values! (addr sorted))
+    (let [take-count (min limit (count sorted))
+          start (if max? (- (count sorted) take-count) 0)]
+      (for [index (arr.range start (+ start take-count))]
+        (arr.push! out sorted[index]))
+      (Value {kind: .Vector items: out}))))
+
+(defn median-int [values: []i64] -> Value
+  (when (= (count values) 0)
+    (return (value-int 0)))
+  (let [sorted (arr.into [dynamic]i64 values)]
+    (defer (delete sorted))
+    (sort-i64! (addr sorted))
+    (let [mid (/ (count sorted) 2)]
+      (if (= (% (count sorted) 2) 1)
+        (value-int sorted[mid])
+        (value-int (/ (+ sorted[(- mid 1)] sorted[mid]) 2))))))
+
+(defn variance-int [values: []i64] -> Value
+  (when (= (count values) 0)
+    (return (value-int 0)))
+  (let [sum: i64 0]
+    (for [value values]
+      (set! sum (+ sum value)))
+    (let [mean (/ sum (i64 (count values)))
+          squared: i64 0]
+      (for [value values]
+        (let [diff (- value mean)]
+          (set! squared (+ squared (* diff diff)))))
+      (value-int (/ squared (i64 (count values)))))))
+
+(defn stddev-float [values: []i64] -> Value
+  (let [variance (variance-int values)]
+    (value-float (math.sqrt (f64 variance.int_value)))))
+
+(defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
+  (when (or (= aggregate.op "count")
+            (= aggregate.op "count-distinct"))
+    (return (value-int (+ current.int_value 1))))
+  (when (or (= aggregate.op "sum")
+            (= aggregate.op "avg"))
+    (when (not (= value.kind .Int))
+      (return current))
+    (return (value-int (+ current.int_value value.int_value))))
+  (when (= current.kind .Nil)
+    (return value))
+  (if (= aggregate.op "min")
+    (if (value-less? value current) value current)
+    (if (= aggregate.op "max")
+      (if (value-less? current value) value current)
+      current)))
+
+(defn binding-values-for-vars [binding: Binding, names: []string] -> [values: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value 0 (count names))]
+    (for [name names]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (return out true)))
+
+(defn aggregate-key-values [binding: Binding, query: Query, aggregate: Aggregate-Find] -> [values: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value)]
+    (for [name query.find]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (for [name query.with]
+      (let [[value ok] (binding-lookup binding name)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
+    (let [[value ok] (binding-lookup binding aggregate.var)]
+      (if ok
+        (arr.push! out value)
+        (return out false)))
+    (return out true)))
+
+(defn aggregate-key-row [values: []Value] -> Result-Row
+  (let [stored (arr.into [dynamic]Value values)
+        pulls (make [dynamic]Pull-Result)]
+    (Result-Row {values: stored pulls: pulls})))
+
+(defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
+  (let [current (aggregate-initial-value aggregate)
+        avg-count: i64 0
+        resolved-limit aggregate.limit
+        aggregate-ints (make [dynamic]i64)
+        aggregate-values (make [dynamic]Value)
+        distinct-values (make [dynamic]Value)
+        seen-keys (make [dynamic]Result-Row)]
+    (defer (delete aggregate-ints))
+    (defer (delete aggregate-values))
+    (defer (delete distinct-values))
+    (defer (delete seen-keys))
+    (for [binding bindings]
+      (let [[binding-group ok] (binding-values-for-vars binding (slice query.find 0))]
+        (when (and ok (values-equal? (slice binding-group 0) group-values))
+          (when aggregate.has_limit_var
+            (let [[limit-value limit-ok] (binding-lookup binding aggregate.limit_var)]
+              (when (and limit-ok (= limit-value.kind .Int))
+                (set! resolved-limit (int limit-value.int_value)))))
+          (let [[key key-ok] (aggregate-key-values binding query aggregate)]
+            (when (and key-ok (not (row-values-exist? (slice seen-keys 0) (slice key 0))))
+              (arr.push! seen-keys (aggregate-key-row (slice key 0)))
+              (let [[value has-value] (binding-lookup binding aggregate.var)]
+                (when has-value
+                  (if (= aggregate.op "count")
+                    (set! current.int_value (+ current.int_value 1))
+                    (if (= aggregate.op "count-distinct")
+                      (when (not (value-exists? (slice distinct-values 0) value))
+                        (arr.push! distinct-values value))
+                      (do
+                        (when (and (or (= aggregate.op "median")
+                                       (= aggregate.op "variance")
+                                       (= aggregate.op "stddev"))
+                                   (= value.kind .Int))
+                          (arr.push! aggregate-ints value.int_value))
+                        (when (and (or aggregate.has_limit aggregate.has_limit_var)
+                                   (or (= aggregate.op "min")
+                                       (= aggregate.op "max")))
+                          (arr.push! aggregate-values value))
+                        (when (and (= aggregate.op "avg")
+                                   (= value.kind .Int))
+                          (set! avg-count (+ avg-count 1)))
+                        (set! current (apply-aggregate-value current aggregate value))))))))))))
+    (when (= aggregate.op "count-distinct")
+      (return (value-int (i64 (count distinct-values)))))
+    (when (and (or aggregate.has_limit aggregate.has_limit_var)
+               (or (= aggregate.op "min")
+                   (= aggregate.op "max")))
+      (return (top-n-values (slice aggregate-values 0) resolved-limit (= aggregate.op "max"))))
+    (when (and (= aggregate.op "avg") (> avg-count 0))
+      (set! current.int_value (/ current.int_value avg-count)))
+    (when (= aggregate.op "median")
+      (return (median-int (slice aggregate-ints 0))))
+    (when (= aggregate.op "variance")
+      (return (variance-int (slice aggregate-ints 0))))
+    (when (= aggregate.op "stddev")
+      (return (stddev-float (slice aggregate-ints 0))))
+    current))
+
+(defn pull-pattern-input [query: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]
+  (for [input-name index query.inputs]
+    (when (= input-name name)
+      (when (and (< index (count inputs))
+                 (= inputs[index].kind .PullPattern))
+        (return inputs[index].pattern true))
+      (return ([]Pull-Spec []) false)))
+  (return ([]Pull-Spec []) false))
+
+(defn pull-find-pattern [query: Query, inputs: []Query-Input, pull-find: Pull-Find] -> [pattern: []Pull-Spec, ok: bool]
+  (if pull-find.has_pattern_var
+    (pull-pattern-input query inputs pull-find.pattern_var)
+    (return pull-find.pattern true)))
+
+(defn pull-db-for-find [db: DB, sources: []DB-Source, pull-find: Pull-Find] -> [pull-db: DB, ok: bool]
+  (if pull-find.has_source
+    (source-db-lookup db sources pull-find.source)
+    (return db true)))
+
+(defn pulls-for-binding-with-sources [db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
+  (let [out (make [dynamic]Pull-Result 0 (count query.pulls))]
+    (for [pull-find query.pulls]
+      (let [[entity ok] (binding-lookup binding pull-find.var)]
+        (if (and ok (= entity.kind .Entity))
+          (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)
+                [pull-db pull-db-ok] (pull-db-for-find db sources pull-find)]
+            (if (and pattern-ok pull-db-ok)
+              (arr.push! out (pull-pattern-spec pull-db entity.entity pattern))
+              (return out false)))
+          (return out false))))
+    (return out true)))
+
+(defn pulls-for-binding [db: DB, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
+  (pulls-for-binding-with-sources db ([]DB-Source []) query inputs binding))
+
+(defn append-aggregate-rows-with-sources! [rows: ^[dynamic]Result-Row, db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, bindings: []Binding]
+  (for [binding bindings]
+    (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
+      (when ok
+        (when (not (row-value-prefix-exists? (slice rows^ 0) (slice group-values 0)))
+            (let [values (arr.into [dynamic]Value (slice group-values 0))
+                  [pulls pulls-ok] (pulls-for-binding-with-sources db sources query inputs binding)]
+            (when (not pulls-ok)
+              (delete pulls)
+              (return))
+            (for [aggregate query.aggregates]
+              (arr.push! values (aggregate-initial-value aggregate)))
+            (arr.push! rows^ (Result-Row {values: values pulls: pulls})))))))
+  (for [row rows^]
+    (for [aggregate index query.aggregates]
+      (set! row.values[(+ (count query.find) index)]
+        (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
+
+(defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, db: DB, query: Query, inputs: []Query-Input, bindings: []Binding]
+  (append-aggregate-rows-with-sources! rows db ([]DB-Source []) query inputs bindings))
+
+(defn q-query-with-sources [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
+  (let [bindings (bindings-from-inputs db query inputs)
+        remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
+    (defer (delete remaining))
+    (while (and (> (count bindings) 0) (> (count remaining) 0))
+      (let [clause-index (best-clause-index (slice remaining 0) bindings[0])
+            clause remaining[clause-index]
+            next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause binding))
+        (delete bindings)
+        (set! bindings next-bindings)
+        (arr.remove-ordered-at! remaining clause-index)))
+    (for [call query.rule_calls]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [rule-bindings (bindings-after-rule-call db (slice query.rules 0) call binding)]
+            (for [rule-binding rule-bindings]
+              (arr.push! next-bindings rule-binding))
+            (delete rule-bindings)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [ground query.grounds]
+      (let [next-bindings (apply-ground (slice bindings 0) ground)]
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [get-else query.get_elses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [[next ok] (apply-get-else db binding get-else)]
+            (when ok
+              (arr.push! next-bindings next))))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [get-some query.get_somes]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [[next ok] (apply-get-some db binding get-some)]
+            (when ok
+              (arr.push! next-bindings next))))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [function query.function_clauses]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (let [[next ok] (apply-function-clause binding function)]
+            (when ok
+              (arr.push! next-bindings next))))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [predicate query.predicates]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (when (predicate-matches? predicate binding)
+            (arr.push! next-bindings binding)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [group query.or_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (for [branch group.branches]
+            (let [branch-bindings (bindings-after-or-branch-with-sources db sources group branch binding)]
+              (for [branch-binding branch-bindings]
+                (arr.push! next-bindings branch-binding))
+              (delete branch-bindings))))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (for [not-group query.not_groups]
+      (let [next-bindings (make [dynamic]Binding)]
+        (for [binding bindings]
+          (when (not (binding-matches-not-group-with-sources? db sources not-group binding))
+            (arr.push! next-bindings binding)))
+        (delete bindings)
+        (set! bindings next-bindings)))
+    (when (> (count query.aggregates) 0)
+      (let [rows (make [dynamic]Result-Row)]
+        (if (= (count query.find) 0)
+          (let [values (make [dynamic]Value 0 (count query.aggregates))
+                pulls (make [dynamic]Pull-Result)]
+            (for [aggregate query.aggregates]
+              (arr.push! values (aggregate-value-for-group (slice bindings 0) query aggregate ([]Value []))))
+            (arr.push! rows (Result-Row {values: values pulls: pulls})))
+          (append-aggregate-rows-with-sources! (addr rows) db sources query inputs (slice bindings 0)))
+        (delete bindings)
+        (return (Result-Set {rows: rows}))))
+    (let [rows (make [dynamic]Result-Row 0 (count bindings))]
+      (for [binding bindings]
+        (let [values (make [dynamic]Value 0 (count query.find))
+              dedupe-values (make [dynamic]Value)
+              [pulls pulls-ok] (pulls-for-binding-with-sources db sources query inputs binding)
+              complete true]
+          (when (not pulls-ok)
+            (set! complete false))
+          (for [name query.find]
+            (let [[value ok] (binding-lookup binding name)]
+              (if ok
+                (do
+                  (arr.push! values value)
+                  (arr.push! dedupe-values value))
+                (set! complete false))))
+          (for [name query.with]
+            (let [[value ok] (binding-lookup binding name)]
+              (if ok
+                (arr.push! dedupe-values value)
+                (set! complete false))))
+          (when complete
+            (when (or (> (count pulls) 0)
+                      (not (row-values-exist? (slice rows 0) (slice dedupe-values 0))))
+              (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
+      (delete bindings)
+      (Result-Set {rows: rows}))))
+
+(defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
+  (q-query-with-sources db query inputs ([]DB-Source [])))
+
+(defn q-query [db: DB, query: Query] -> Result-Set
+  (q-query-with-inputs db query ([]Query-Input [])))
+
+(defn result-scalar [result: Result-Set] -> [value: Value, ok: bool]
+  (when (= (count result.rows) 0)
+    (return (Value {}) false))
+  (when (not (= (count result.rows[0].values) 1))
+    (return (Value {}) false))
+  (return result.rows[0].values[0] true))
+
+(defn result-collection [result: Result-Set] -> [dynamic]Value
+  (let [out (make [dynamic]Value 0 (count result.rows))]
+    (for [row result.rows]
+      (when (= (count row.values) 1)
+        (arr.push! out row.values[0])))
+    out))
+
+(defn result-tuple [result: Result-Set] -> [dynamic]Value
+  (if (> (count result.rows) 0)
+    (arr.into [dynamic]Value (slice result.rows[0].values 0))
+    (make [dynamic]Value)))
+
+(defn result-keys [result: Result-Set, kind: Key-Kind, keys: []string] -> [dynamic]Keyed-Row
+  (let [out (make [dynamic]Keyed-Row 0 (count result.rows))]
+    (for [row result.rows]
+      (when (= (count row.values) (count keys))
+        (let [items (make [dynamic]Keyed-Value 0 (count keys))]
+          (for [key index keys]
+            (arr.push! items (Keyed-Value {kind: kind key: key value: row.values[index]})))
+          (arr.push! out (Keyed-Row {items: items})))))
+    out))
+
+(defn q-strings [db: DB, query: Query] -> [dynamic]string
+  (let [result (q-query db query)
+        out (make [dynamic]string 0 (count result.rows))]
+    (for [row result.rows]
+      (when (and (= (count row.values) 1)
+                 (= row.values[0].kind .String))
+        (arr.push! out row.values[0].text)))
+    out))
+
+(defn reverse-attr? [attr: string] -> bool
+  (strings.has_prefix attr ":_"))
+
+(defn forward-attr-for-reverse [attr: string] -> string
+  (strings.concatenate ([]string [":" (slice attr 2)])))
+
+(defn pull-output-has-attr? [out: [dynamic]Pull-Attr, attr: string] -> bool
+  (for [pulled out]
+    (when (= pulled.a attr)
+      (return true)))
+  false)
+
+(defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (return datom.v true)))))
+  (return (Value {}) false))
+
+(defn pull-limit [spec: Pull-Spec] -> int
+  (if (= spec.limit -1)
+    2147483647
+    (if (> spec.limit 0) spec.limit 1000)))
+
+(defn pull-id-attrs [entity: u64] -> [dynamic]Pull-Attr
+  (let [out (make [dynamic]Pull-Attr)]
+    (arr.push! out (Pull-Attr {a: ":db/id"
+                               v: (value-entity entity)
+                               attrs: (make [dynamic]Pull-Attr)}))
+    out))
+
+(defn pull-child-pattern [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen: []u64] -> [dynamic]Pull-Attr
+  (let [child-seen (arr.into [dynamic]u64 seen)]
+    (defer (delete child-seen))
+    (arr.push! child-seen entity)
+    (let [pulled (pull-pattern-spec-seen db entity pattern root (slice child-seen 0))]
+      pulled.attrs)))
+
+(defn pull-child-recursion [db: DB, entity: u64, pattern: []Pull-Spec, seen: []u64] -> [dynamic]Pull-Attr
+  (if (u64-contains? seen entity)
+    (pull-id-attrs entity)
+    (pull-child-pattern db entity pattern pattern seen)))
+
+(defn pull-include-ref-result? [spec: Pull-Spec, children: []Pull-Attr] -> bool
+  (or (= (count spec.pattern) 0)
+      (> (count children) 0)))
+
+(defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> bool
+  (let [forward-attr (forward-attr-for-reverse spec.a) :defer
+        ref-value (value-entity entity)
+        indexes (slice db.vaet 0)
+        low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index db indexes "vaet" 0 "" ref-value)
+        limit (pull-limit spec)
+        seen 0
+        found false]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (= datom.a forward-attr)
+                   (datom-current-at? db datom-index))
+          (let [children (make [dynamic]Pull-Attr)]
+            (when (> (count spec.pattern) 0)
+              (set! children (pull-child-pattern db datom.e spec.pattern spec.pattern seen-entities)))
+            (when (and (= (count spec.pattern) 0)
+                       spec.has_recursion
+                       (not (= spec.recursion_depth 0)))
+              (let [pattern (pull-recursion-pattern root spec.a)]
+                (defer (delete pattern))
+                (set! children (pull-child-recursion db datom.e (slice pattern 0) seen-entities))))
+            (if (pull-include-ref-result? spec (slice children 0))
+              (do
+                (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                            v: (value-entity datom.e)
+                                            attrs: children}))
+                (set! found true)
+                (set! seen (+ seen 1))
+                (when (>= seen limit)
+                  (return found)))
+              (delete children))))))
+    found))
+
+(defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen: ^[dynamic]u64]
+  (when (not (pull-output-has-attr? out^ ":db/id"))
+    (arr.push! out^ (Pull-Attr {a: ":db/id"
+                                v: (value-entity entity)
+                                attrs: (make [dynamic]Pull-Attr)})))
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" entity "" (Value {}))
+        high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (when (not (pull-output-has-attr? out^ datom.a))
+            (let [children (make [dynamic]Pull-Attr)]
+              (when (and (= datom.v.kind .Entity)
+                         (schema-component? db datom.a))
+                (set! children (pull-component-attrs db datom.v.entity seen)))
+              (arr.push! out^ (Pull-Attr {a: datom.a
+                                          v: datom.v
+                                          attrs: children})))))))))
+
+(defn pull-component-attrs [db: DB, entity: u64, seen: ^[dynamic]u64] -> [dynamic]Pull-Attr
+  (let [out (make [dynamic]Pull-Attr)]
+    (if (u64-contains? (slice seen^ 0) entity)
+      (arr.push! out (Pull-Attr {a: ":db/id"
+                                 v: (value-entity entity)
+                                 attrs: (make [dynamic]Pull-Attr)}))
+      (do
+        (arr.push! seen^ entity)
+        (pull-wildcard-seen! (addr out) db entity seen)))
+    out))
+
+(defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (arr.push! seen entity)
+    (pull-wildcard-seen! out db entity (addr seen))))
+
+(defn pull-component-children [db: DB, parent: u64, child: u64] -> [dynamic]Pull-Attr
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (arr.push! seen parent)
+    (pull-component-attrs db child (addr seen))))
+
+(defn pull-output-attr [spec: Pull-Spec] -> string
+  (if spec.has_alias spec.alias spec.a))
+
+(defn pull-next-recursion-depth [depth: int] -> int
+  (- depth 1))
+
+(defn pull-spec-decrement-recursion [spec: Pull-Spec, attr: string] -> Pull-Spec
+  (if (and spec.has_recursion
+           (= spec.a attr)
+           (not (= spec.recursion_depth 0)))
+    (Pull-Spec {a: spec.a
+                pattern: spec.pattern
+                limit: spec.limit
+                has_default: spec.has_default
+                default_value: spec.default_value
+                has_alias: spec.has_alias
+                alias: spec.alias
+                has_recursion: true
+                recursion_depth: (pull-next-recursion-depth spec.recursion_depth)})
+    spec))
+
+(defn pull-recursion-pattern [root: []Pull-Spec, attr: string] -> [dynamic]Pull-Spec
+  (let [out (make [dynamic]Pull-Spec)]
+    (for [spec root]
+      (arr.push! out (pull-spec-decrement-recursion spec attr)))
+    out))
+
+(defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        limit (pull-limit spec)
+        seen 0
+        found false]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [children (make [dynamic]Pull-Attr)]
+            (when (= datom.v.kind .Entity)
+              (if (> (count spec.pattern) 0)
+                (set! children (pull-child-pattern db datom.v.entity spec.pattern spec.pattern seen-entities))
+                (if (and spec.has_recursion (not (= spec.recursion_depth 0)))
+                  (let [pattern (pull-recursion-pattern root spec.a)]
+                    (defer (delete pattern))
+                    (set! children (pull-child-recursion db datom.v.entity (slice pattern 0) seen-entities)))
+                  (when (schema-component? db datom.a)
+                    (set! children (pull-component-children db entity datom.v.entity))))))
+            (if (pull-include-ref-result? spec (slice children 0))
+              (do
+                (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                            v: datom.v
+                                            attrs: children}))
+                (set! found true)
+                (set! seen (+ seen 1))
+                (when (>= seen limit)
+                  (return found)))
+              (delete children))))))
+    found))
+
+(defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (when (and spec.has_recursion (<= spec.recursion_depth 0))
+    (return))
+  (when (= spec.a "*")
+    (pull-wildcard! out db entity)
+    (return))
+  (when (= spec.a ":db/id")
+    (when (not (pull-output-has-attr? out^ (pull-output-attr spec)))
+      (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                  v: (value-entity entity)
+                                  attrs: (make [dynamic]Pull-Attr)})))
+    (return))
+  (when (reverse-attr? spec.a)
+    (let [found (pull-reverse-attr! out db entity spec root seen-entities)]
+      (when (and (not found) spec.has_default)
+        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                    v: spec.default_value
+                                    attrs: (make [dynamic]Pull-Attr)}))))
+    (return))
+  (let [found (pull-forward-attr! out db entity spec root seen-entities)]
+    (when (and (not found) spec.has_default)
+      (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
+                                  v: spec.default_value
+                                  attrs: (make [dynamic]Pull-Attr)})))))
+
+(defn pull-pattern-spec-seen [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> Pull-Result
+  (let [out (make [dynamic]Pull-Attr)]
+    (for [spec pattern]
+      (pull-spec-attr! (addr out) db entity spec root seen-entities))
+    (Pull-Result {e: entity attrs: out})))
+
+(defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
+  (let [seen (make [dynamic]u64)]
+    (defer (delete seen))
+    (arr.push! seen entity)
+    (pull-pattern-spec-seen db entity pattern pattern (slice seen 0))))
+
+(defn pull-pattern-lookup-ref [db: DB, attr: string, value: Value, pattern: []Pull-Spec] -> Pull-Result
+  (let [[entity ok] (resolve-lookup-ref db attr value)]
+    (if ok
+      (pull-pattern-spec db entity pattern)
+      (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}))))
+
+(defn pull-pattern-ident [db: DB, ident: string, pattern: []Pull-Spec] -> Pull-Result
+  (let [[entity ok] (schema-entity-for-attr db ident)]
+    (if ok
+      (pull-pattern-spec db entity pattern)
+      (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}))))
+
+(defn entity-exists? [db: DB, e: u64] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" e "" (Value {}))
+        high (upper-bound-index db indexes "eavt" e "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn db-entity [db: DB, e: u64] -> Entity
+  (Entity {db: db e: e found: (entity-exists? db e)}))
+
+(defn entity-lookup-ref [db: DB, attr: string, value: Value] -> Entity
+  (let [[e ok] (resolve-lookup-ref db attr value)]
+    (if ok
+      (db-entity db e)
+      (Entity {db: db e: 0 found: false}))))
+
+(defn entity-ident [db: DB, ident: string] -> Entity
+  (let [[e ok] (schema-entity-for-attr db ident)]
+    (if ok
+      (db-entity db e)
+      (Entity {db: db e: 0 found: false}))))
+
+(defn entity-id [entity: Entity] -> u64
+  entity.e)
+
+(defn entity-db [entity: Entity] -> DB
+  entity.db)
+
+(defn entity-forward-values [entity: Entity, attr: string] -> [dynamic]Value
+  (let [out (make [dynamic]Value)]
+    (when (not entity.found)
+      (return out))
+    (let [indexes (slice entity.db.eavt 0)
+          low (lower-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))
+          high (upper-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))]
+      (for [datom-index (slice indexes low high)]
+        (let [datom entity.db.datoms[datom-index]]
+          (when (datom-current-at? entity.db datom-index)
+            (arr.push! out datom.v)))))
+    out))
+
+(defn entity-reverse-values [entity: Entity, attr: string] -> [dynamic]Value
+  (let [out (make [dynamic]Value)]
+    (when (not entity.found)
+      (return out))
+    (let [forward-attr (forward-attr-for-reverse attr)
+          ref-value (value-entity entity.e)
+          indexes (slice entity.db.vaet 0)
+          low (lower-bound-index entity.db indexes "vaet" 0 "" ref-value)
+          high (upper-bound-index entity.db indexes "vaet" 0 "" ref-value)]
+      (for [datom-index (slice indexes low high)]
+        (let [datom entity.db.datoms[datom-index]]
+          (when (and (= datom.a forward-attr)
+                     (datom-current-at? entity.db datom-index))
+            (arr.push! out (value-entity datom.e))))))
+    out))
+
+(defn entity-values [entity: Entity, attr: string] -> [dynamic]Value
+  (if (reverse-attr? attr)
+    (entity-reverse-values entity attr)
+    (entity-forward-values entity attr)))
+
+(defn entity-get [entity: Entity, attr: string] -> Value
+  (when (= attr ":db/id")
+    (when entity.found
+      (return (value-entity entity.e)))
+    (return (value-nil)))
+  (let [values (entity-values entity attr)]
+    (defer (delete values))
+    (if (> (count values) 0)
+      values[0]
+      (value-nil))))
+
+(defn entity-contains? [entity: Entity, attr: string] -> bool
+  (when (= attr ":db/id")
+    (return entity.found))
+  (let [values (entity-values entity attr)]
+    (defer (delete values))
+    (> (count values) 0)))
+
+(defn entity-refs [entity: Entity, attr: string] -> [dynamic]Entity
+  (let [out (make [dynamic]Entity)
+        values (entity-values entity attr)]
+    (defer (delete values))
+    (for [value values]
+      (when (= value.kind .Entity)
+        (let [ref (db-entity entity.db value.entity)]
+          (when ref.found
+            (arr.push! out ref)))))
+    out))
+
+(defn entity-ref [entity: Entity, attr: string] -> Entity
+  (let [refs (entity-refs entity attr)]
+    (defer (delete refs))
+    (if (> (count refs) 0)
+      refs[0]
+      (Entity {db: entity.db e: 0 found: false}))))
+
+(defn touch [entity: Entity] -> Pull-Result
+  (if entity.found
+    (pull-pattern-spec entity.db entity.e ([]Pull-Spec [(flat-pull-spec "*")]))
+    (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)})))
+
+(defn flat-pull-spec [attr: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: pattern}))
+
+(defn pull-spec-recursion [attr: string, depth: int] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: ([]Pull-Spec [])
+              has_recursion: true
+              recursion_depth: depth}))
+
+(defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: limit
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              pattern: pattern}))
+
+(defn pull-spec-limit-as [attr: string, pattern: []Pull-Spec, limit: int, alias: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: limit
+              has_default: false
+              default_value: (Value {})
+              has_alias: true
+              alias: alias
+              pattern: pattern}))
+
+(defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: true
+              default_value: default-value
+              has_alias: false
+              alias: ""
+              pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec-as [attr: string, alias: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: true
+              alias: alias
+              pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec-default-as [attr: string, default-value: Value, alias: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: true
+              default_value: default-value
+              has_alias: true
+              alias: alias
+              pattern: ([]Pull-Spec [])}))
+
+(defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
+  (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]
+    (for [attr attrs]
+      (arr.push! pattern (flat-pull-spec attr)))
+    (let [pulled (pull-pattern-spec db entity (slice pattern 0))]
+      (delete pattern)
+      pulled)))
+
+(defn pull-many-pattern-spec [db: DB, entities: []u64, pattern: []Pull-Spec] -> [dynamic]Pull-Result
+  (let [out (make [dynamic]Pull-Result 0 (count entities))]
+    (for [entity entities]
+      (arr.push! out (pull-pattern-spec db entity pattern)))
+    out))
+
+(defn pull-many-pattern-lookup-refs [db: DB, attrs: []string, values: []Value, pattern: []Pull-Spec] -> [dynamic]Pull-Result
+  (let [out (make [dynamic]Pull-Result 0 (count values))]
+    (for [value index values]
+      (let [[entity ok] (resolve-lookup-ref db attrs[index] value)]
+        (if ok
+          (arr.push! out (pull-pattern-spec db entity pattern))
+          (arr.push! out (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)})))))
+    out))
+
+(defn pull-many-pattern [db: DB, entities: []u64, attrs: []string] -> [dynamic]Pull-Result
+  (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]
+    (for [attr attrs]
+      (arr.push! pattern (flat-pull-spec attr)))
+    (let [pulled (pull-many-pattern-spec db entities (slice pattern 0))]
+      (delete pattern)
+      pulled)))
+
+(defn query-name-by-email [email: string] -> Query
+  (query ([]string ["name"])
+    ([]string [])
+    ([]string [])
+    ([]string [])
+    ([]Tuple-Input [])
+    ([]Relation-Input [])
+    ([]Clause
+      [(clause (term-var "e") ":user/email" (term-string email))
+       (clause (term-var "e") ":user/name" (term-var "name"))])
+    ([]Predicate [])
+    ([]Function-Clause [])
+    ([]Rule [])
+    ([]Rule-Call [])
+    ([]Get-Else [])
+    ([]Get-Some [])
+    ([]Ground [])
+    ([]Not-Group [])
+    ([]Or-Group [])
+    ([]Pull-Find [])
+    ([]Aggregate-Find [])))
+
+(defn seed-people [conn: ^Conn] -> Tx-Report
+  (transact conn
+    [[:db/add 1 :user/email "ada@example.com"]
+     [:db/add 1 :user/name "Ada"]
+     [:db/add 1 :user/age 37]
+     [:db/add 1 :user/active true]
+     [:db/add 1 :user/friend (value-entity 2)]
+     [:db/add 2 :user/email "grace@example.com"]
+     [:db/add 2 :user/name "Grace"]
+     [:db/add 2 :user/age 41]
+     [:db/add 2 :user/active false]]))

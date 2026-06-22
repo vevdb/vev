@@ -1,0 +1,2295 @@
+(package vev)
+
+(defmacro- emit-literal-value [form]
+  (if (nil? form)
+    (quasiquote (value-nil))
+    (if (string? form)
+    (quasiquote (value-string (unquote form)))
+    (if (int? form)
+      (quasiquote (value-int (unquote form)))
+      (if (bool? form)
+        (quasiquote (value-bool (unquote form)))
+        (if (keyword? form)
+          (quasiquote (value-keyword (unquote (source form))))
+          (if (vector? form)
+            (quasiquote (value-vector ([]Value [(splice (emit-literal-values form))])))
+            (quasiquote (unquote form)))))))))
+
+(defmacro- emit-literal-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-literal-value (first forms))
+      (emit-literal-values (rest forms)))))
+
+(defmacro- emit-attr [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (error "tx-data attributes must be keywords or strings"))))
+
+(defmacro- lookup-ref? [form]
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    :else (keyword? (first form))))
+
+(defmacro- query-input-lookup-ref? [form]
+  (and (lookup-ref? form)
+       (not (keyword? (nth form 1)))))
+
+(defmacro- current-tx-form? [form]
+  (cond
+    (keyword? form) (= (source form) ":db/current-tx")
+    (string? form) (or (= (text form) "datomic.tx")
+                       (= (text form) "datascript.tx"))
+    :else false))
+
+(defmacro- emit-index-arg [form]
+  (if (lookup-ref? form)
+    (quasiquote
+      (Index-Arg {has_lookup_ref: true
+                  lookup_attr: (unquote (emit-attr (nth form 0)))
+                  lookup_value: (unquote (emit-literal-value (nth form 1)))}))
+    (quasiquote
+      (Index-Arg {value: (unquote (emit-literal-value form))}))))
+
+(defmacro- emit-index-args [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-index-arg (first forms))
+      (emit-index-args (rest forms)))))
+
+(defmacro- emit-tx-data-call [op e a v]
+  (let [is-retract (= (source op) ":db/retract")]
+    (if (lookup-ref? e)
+      (quasiquote
+        ((unquote (if is-retract (quasiquote retract-lookup-ref) (quasiquote add-lookup-ref)))
+          (unquote (emit-attr (nth e 0)))
+          (unquote (emit-literal-value (nth e 1)))
+          (unquote (emit-attr a))
+          (unquote (emit-literal-value v))))
+      (if (string? e)
+        (if (lookup-ref? v)
+          (quasiquote
+            (add-tempid-value-lookup-ref
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-attr (nth v 0)))
+              (unquote (emit-literal-value (nth v 1)))))
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v)))))
+	    (if (keyword? e)
+        (if (current-tx-form? e)
+          (quasiquote
+            ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+              (unquote (source e))
+              (unquote (emit-attr a))
+              (unquote (emit-literal-value v))))
+	        (quasiquote
+	          ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
+	            (unquote (source e))
+	            (unquote (emit-attr a))
+	            (unquote (emit-literal-value v)))))
+	          (if (lookup-ref? v)
+	            (quasiquote
+	              ((unquote (if is-retract (quasiquote retract-value-lookup-ref) (quasiquote add-value-lookup-ref)))
+	                (unquote e)
+	                (unquote (emit-attr a))
+	                (unquote (emit-attr (nth v 0)))
+	                (unquote (emit-literal-value (nth v 1)))))
+	            (quasiquote
+	              ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
+	                (unquote e)
+	                (unquote (emit-attr a))
+	                (unquote (emit-literal-value v))))))))))
+
+(defmacro- emit-cas-call [e a expected v]
+  (if (lookup-ref? e)
+    (quasiquote
+      (cas-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (unquote (emit-attr a))
+        (unquote (emit-literal-value expected))
+        (unquote (emit-literal-value v))))
+    (if (string? e)
+      (quasiquote
+        (cas-tempid
+          (unquote e)
+          (unquote (emit-attr a))
+          (unquote (emit-literal-value expected))
+          (unquote (emit-literal-value v))))
+      (if (and (keyword? e) (current-tx-form? e))
+        (quasiquote
+          (cas-tempid
+            (unquote (source e))
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value expected))
+            (unquote (emit-literal-value v))))
+    (if (lookup-ref? expected)
+      (quasiquote
+        (cas-expected-lookup-ref
+          (unquote e)
+          (unquote (emit-attr a))
+          (unquote (emit-attr (nth expected 0)))
+          (unquote (emit-literal-value (nth expected 1)))
+          (unquote (emit-literal-value v))))
+      (if (lookup-ref? v)
+        (quasiquote
+          (cas-value-lookup-ref
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value expected))
+            (unquote (emit-attr (nth v 0)))
+            (unquote (emit-literal-value (nth v 1)))))
+        (quasiquote
+          (cas
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-literal-value expected))
+            (unquote (emit-literal-value v))))))))))
+
+(defmacro- tx-map-id [items]
+  (if (= (count items) 0)
+    (error "tx map forms require :db/id")
+    (if (= (count items) 1)
+      (error "tx map forms require key/value pairs")
+      (if (keyword? (nth items 0))
+        (if (= (source (nth items 0)) ":db/id")
+          (nth items 1)
+          (tx-map-id (rest (rest items))))
+        (tx-map-id (rest (rest items)))))))
+
+(defmacro- tx-map-has-id? [items]
+  (if (= (count items) 0)
+    false
+    (if (= (count items) 1)
+      false
+      (if (keyword? (nth items 0))
+        (if (= (source (nth items 0)) ":db/id")
+          true
+          (tx-map-has-id? (rest (rest items))))
+        (tx-map-has-id? (rest (rest items)))))))
+
+(defmacro- tx-map-string-id [form]
+  (if (brace? form)
+    (let [id (tx-map-id form)]
+      (if (string? id)
+        (text id)
+        (error "nested tx maps currently require string :db/id")))
+    (error "nested tx map expected")))
+
+(defmacro- tx-map-ref-tempid [form]
+  (if (brace? form)
+    (if (tx-map-has-id? form)
+      (tx-map-string-id form)
+      (source (gensym "vev_tx_map")))
+    (error "nested tx map expected")))
+
+(defmacro- tx-map-has-numeric-id? [form]
+  (if (brace? form)
+    (if (tx-map-has-id? form)
+      (int? (tx-map-id form))
+      false)
+    false))
+
+(defmacro- tx-map-has-keyword-id? [form]
+  (if (brace? form)
+    (if (tx-map-has-id? form)
+      (keyword? (tx-map-id form))
+      false)
+    false))
+
+(defmacro- tx-map-entity-id [form]
+  (if (tx-map-has-id? form)
+    (tx-map-id form)
+    (source (gensym "vev_tx_map"))))
+
+(defmacro- emit-tx-map-entity-ref-call [e a value-e]
+  (if (lookup-ref? e)
+    (quasiquote
+      (add-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (unquote (emit-attr a))
+        (value-entity (unquote value-e))))
+    (if (keyword? e)
+      (quasiquote
+        (add-ident
+          (unquote (source e))
+          (unquote (emit-attr a))
+          (value-entity (unquote value-e))))
+      (if (string? e)
+        (quasiquote
+          (add-tempid
+            (unquote e)
+            (unquote (emit-attr a))
+            (value-entity (unquote value-e))))
+        (if (int? e)
+          (quasiquote
+            (add
+              (unquote e)
+              (unquote (emit-attr a))
+              (value-entity (unquote value-e))))
+          (error "nested tx map parent currently supports numeric, string, lookup ref, or ident :db/id"))))))
+
+(defmacro- emit-tx-map-ref-call [e a value-tempid]
+  (if (lookup-ref? e)
+    (quasiquote
+      (add-lookup-ref-value-tempid
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (unquote (emit-attr a))
+        (unquote value-tempid)))
+    (if (keyword? e)
+      (quasiquote
+        (add-ident-value-tempid
+          (unquote (source e))
+          (unquote (emit-attr a))
+          (unquote value-tempid)))
+      (if (string? e)
+        (quasiquote
+          (add-tempid-value-tempid
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote value-tempid)))
+        (if (int? e)
+          (quasiquote
+            (add-value-tempid
+              (unquote e)
+              (unquote (emit-attr a))
+              (unquote value-tempid)))
+          (error "nested tx map parent currently supports numeric, string, lookup ref, or ident :db/id"))))))
+
+(defmacro- reverse-attr-form? [form]
+  (and (keyword? form)
+       (starts-with? (source form) ":_")))
+
+(defmacro- forward-attr-source [form]
+  (let [attr (source form)]
+    (str ":" (slice attr 2))))
+
+(defmacro- emit-tx-map-reverse-attr [e a v]
+  (if (int? e)
+    (if (lookup-ref? v)
+      (quasiquote
+        (add-lookup-ref
+          (unquote (emit-attr (nth v 0)))
+          (unquote (emit-literal-value (nth v 1)))
+          (unquote (forward-attr-source a))
+          (value-entity (unquote e))))
+      (if (int? v)
+        (quasiquote
+          (add
+            (unquote v)
+            (unquote (forward-attr-source a))
+            (value-entity (unquote e))))
+        (if (keyword? v)
+          (quasiquote
+            (add-ident
+              (unquote (source v))
+              (unquote (forward-attr-source a))
+              (value-entity (unquote e))))
+          (if (string? v)
+            (quasiquote
+              (add-tempid
+                (unquote v)
+                (unquote (forward-attr-source a))
+                (value-entity (unquote e))))
+            (error "reverse tx map attrs currently require id, tempid, ident, or lookup ref values")))))
+    (error "reverse tx map attrs currently require numeric :db/id on the map entity")))
+
+(defmacro- emit-tx-map-attr [e a v]
+  (if (reverse-attr-form? a)
+    (if (vector? v)
+      (if (lookup-ref? v)
+        (emit-tx-map-reverse-attr e a v)
+        (emit-tx-map-vector-attr e a v))
+      (emit-tx-map-reverse-attr e a v))
+  (if (brace? v)
+    (if (tx-map-has-numeric-id? v)
+      (let [value-e (tx-map-id v)]
+        (forms
+          (emit-tx-map-entity-ref-call e a value-e)
+          (emit-tx-map-attrs value-e v)))
+      (if (tx-map-has-keyword-id? v)
+        (let [value-ident (tx-map-id v)]
+          (forms
+            (emit-tx-data-call (keyword "db/add") e a value-ident)
+            (emit-tx-map-attrs value-ident v)))
+        (let [value-tempid (tx-map-ref-tempid v)]
+          (forms
+            (emit-tx-map-ref-call e a value-tempid)
+            (emit-tx-map-attrs value-tempid v)))))
+    (if (vector? v)
+      (if (lookup-ref? v)
+        (emit-tx-data-call (keyword "db/add") e a v)
+        (emit-tx-map-vector-attr e a v))
+      (forms
+        (emit-tx-data-call (keyword "db/add") e a v))))))
+
+(defmacro- emit-tx-map-vector-attr [e a values]
+  (if (= (count values) 0)
+    (forms)
+    (concat
+      (forms (emit-tx-map-attr e a (first values)))
+      (emit-tx-map-vector-attr e a (rest values)))))
+
+(defmacro- emit-retract-entity-call [e]
+  (if (lookup-ref? e)
+    (quasiquote
+      (retract-entity-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))))
+    (if (string? e)
+      (quasiquote (retract-entity-tempid (unquote e)))
+      (if (keyword? e)
+        (quasiquote (retract-entity-ident (unquote (source e))))
+        (quasiquote (retract-entity (unquote e)))))))
+
+(defmacro- emit-retract-attr-call [e a]
+  (if (lookup-ref? e)
+    (quasiquote
+      (retract-attr-lookup-ref
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (unquote (emit-attr a))))
+    (if (string? e)
+      (quasiquote
+        (retract-attr-tempid
+          (unquote e)
+          (unquote (emit-attr a))))
+      (if (keyword? e)
+        (quasiquote
+          (retract-attr-ident
+            (unquote (source e))
+            (unquote (emit-attr a))))
+        (quasiquote
+          (retract-attr
+            (unquote e)
+            (unquote (emit-attr a))))))))
+
+(defmacro- emit-tx-map-attrs [e items]
+  (if (= (count items) 0)
+    (forms)
+    (if (= (count items) 1)
+      (error "tx map forms require key/value pairs")
+      (if (keyword? (nth items 0))
+        (if (= (source (nth items 0)) ":db/id")
+          (emit-tx-map-attrs e (rest (rest items)))
+          (concat
+            (forms (emit-tx-map-attr e (nth items 0) (nth items 1)))
+            (emit-tx-map-attrs e (rest (rest items)))))
+        (concat
+          (forms (emit-tx-map-attr e (nth items 0) (nth items 1)))
+          (emit-tx-map-attrs e (rest (rest items))))))))
+
+(defmacro- emit-tx-map-items [form]
+  (let [e (tx-map-entity-id form)]
+    (emit-tx-map-attrs e form)))
+
+(defmacro- emit-tx-data-item [form]
+  (if (nil? form)
+    (forms)
+    (if (vector? form)
+    (if (= (count form) 5)
+      (let [op (nth form 0)
+            e (nth form 1)
+            a (nth form 2)
+            expected (nth form 3)
+            v (nth form 4)]
+        (if (keyword? op)
+          (if (or (= (source op) ":db.fn/cas") (= (source op) ":db/cas"))
+            (forms (emit-cas-call e a expected v))
+            (error "five-item tx-data vectors currently support :db.fn/cas or :db/cas"))
+          (error "five-item tx-data vectors currently support :db.fn/cas or :db/cas")))
+      (if (= (count form) 4)
+      (let [op (nth form 0)
+            e (nth form 1)
+            a (nth form 2)
+            v (nth form 3)]
+        (if (keyword? op)
+          (if (= (source op) ":db/retract")
+            (forms (emit-tx-data-call op e a v))
+            (if (= (source op) ":db/add")
+              (forms (emit-tx-data-call op e a v))
+              (error "tx-data operation must be :db/add or :db/retract")))
+          (error "tx-data operation must be :db/add or :db/retract")))
+      (if (= (count form) 2)
+        (let [op (nth form 0)
+              e (nth form 1)]
+          (if (keyword? op)
+            (if (= (source op) ":db/retractEntity")
+              (forms (emit-retract-entity-call e))
+              (if (= (source op) ":db.fn/retractEntity")
+                (forms (emit-retract-entity-call e))
+                (error "tx-data operation must be :db/add, :db/retract, :db/retractEntity, or :db.fn/retractEntity")))
+            (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity")))
+        (if (= (count form) 3)
+          (let [op (nth form 0)
+                e (nth form 1)
+                a (nth form 2)]
+            (if (keyword? op)
+              (if (= (source op) ":db/retract")
+                (forms (emit-retract-attr-call e a))
+                (if (= (source op) ":db.fn/retractAttribute")
+                  (forms (emit-retract-attr-call e a))
+                  (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
+              (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
+          (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], [:db.fn/retractAttribute e :attr], or [:db/retractEntity e]")))))
+    (if (brace? form)
+      (emit-tx-map-items form)
+      (error "tx-data expects vector forms like [:db/add e :attr value] or map forms")))))
+
+(defmacro- emit-tx-data-items [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (concat
+      (emit-tx-data-item (first forms))
+      (emit-tx-data-items (rest forms)))))
+
+(defmacro tx-data [& forms]
+  (quasiquote ([]Tx-Data [(splice (emit-tx-data-items forms))])))
+
+(defmacro- emit-find-var [form]
+  (if (symbol? form)
+    (quasiquote (unquote (source form)))
+    (error (str ":find entries must be variables, got " (source form)))))
+
+(defmacro- find-var? [form]
+  (symbol? form))
+
+(defmacro- aggregate-op? [op]
+  (contains? ["count" "count-distinct" "min" "max" "sum" "avg" "median" "variance" "stddev"] op))
+
+(defmacro- top-n-aggregate-op? [op]
+  (contains? ["min" "max"] op))
+
+(defmacro- find-scalar-marker? [form]
+  (if (symbol? form)
+    (= (source form) ".")
+    false))
+
+(defmacro- find-collection? [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (if (symbol? (nth form 1))
+        (= (source (nth form 1)) "...")
+        false)
+      false)
+    false))
+
+(defmacro- find-tuple? [form]
+  (if (vector? form)
+    (if (= (count form) 1)
+      (vector? (first form))
+      false)
+    false))
+
+(defmacro- find-direct-tuple? [form]
+  (if (vector? form)
+    (if (find-collection? form)
+      false
+      (if (= (count form) 1)
+        (not (vector? (first form)))
+        true))
+    false))
+
+(defmacro- find-return-map-marker? [form]
+  (if (keyword? form)
+    (contains? [":keys" ":strs" ":syms"] (source form))
+    false))
+
+(defmacro- emit-find-tuple-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (aggregate-find? (first forms))
+      (emit-find-tuple-vars (rest forms))
+      (forms
+        (emit-find-var (first forms))
+        (emit-find-tuple-vars (rest forms))))))
+
+(defmacro- pull-find? [form]
+  (cond
+    (not (list? form)) false
+    (not (or (= (count form) 3) (= (count form) 4))) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "pull")))
+
+(defmacro- aggregate-find? [form]
+  (cond
+    (not (list? form)) false
+    (not (or (= (count form) 2) (= (count form) 3))) false
+    (not (symbol? (first form))) false
+    :else (let [op (source (first form))]
+            (if (= (count form) 3)
+              (and (top-n-aggregate-op? op)
+                   (or (int? (nth form 1))
+                       (find-var? (nth form 1)))
+                   (find-var? (nth form 2)))
+              (and (find-var? (nth form 1))
+                   (aggregate-op? op))))))
+
+(defmacro- emit-find-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (find-return-map-marker? (first forms))
+      (forms)
+      (if (pull-find? (first forms))
+        (emit-find-vars (rest forms))
+        (if (aggregate-find? (first forms))
+          (emit-find-vars (rest forms))
+          (if (find-scalar-marker? (first forms))
+            (emit-find-vars (rest forms))
+            (if (find-collection? (first forms))
+              (if (aggregate-find? (nth (first forms) 0))
+                (emit-find-vars (rest forms))
+                (forms
+                  (emit-find-var (nth (first forms) 0))
+                  (emit-find-vars (rest forms))))
+              (if (find-tuple? (first forms))
+                (forms
+                  (emit-find-tuple-vars (first (first forms)))
+                  (emit-find-vars (rest forms)))
+                (forms
+                  (emit-find-var (first forms))
+                  (emit-find-vars (rest forms)))))))))))
+
+(defmacro- datalog-items-until-keyword [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (let [head (first forms)]
+      (if (keyword? head)
+        (forms)
+        (forms
+          head
+          (datalog-items-until-keyword (rest forms)))))))
+
+(defmacro- emit-result-key [form]
+  (if (symbol? form)
+    (quasiquote (unquote (source form)))
+    (if (keyword? form)
+      (quasiquote (unquote (source form)))
+      (if (string? form)
+        (quasiquote (unquote form))
+        (error ":keys entries must be symbols, keywords, or strings")))))
+
+(defmacro- emit-result-keys [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-result-key (first forms))
+      (emit-result-keys (rest forms)))))
+
+(defmacro- datalog-return-map-items [forms marker]
+  (if (datalog-has-marker-before? forms marker ":where")
+    (datalog-items-until-keyword (datalog-items-after forms marker))
+    (error (str "query expects " marker))))
+
+(defmacro- input-collection? [form]
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "...")))
+
+(defmacro- input-relation? [form]
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 1)) false
+    :else (vector? (first form))))
+
+(defmacro- input-tuple? [form]
+  (cond
+    (not (vector? form)) false
+    (input-collection? form) false
+    (input-relation? form) false
+    :else true))
+
+(defmacro- input-source? [form]
+  (if (symbol? form)
+    (contains? ["$" "%"] (source form))
+    false))
+
+(defmacro- input-db-source? [spec]
+  // ponytail: $1..$9 covers DataScript tests; replace with digit parsing if users need more sources.
+  (and (symbol? spec)
+       (contains? ["$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"] (source spec))))
+
+(defmacro- relation-source? [form]
+  (and (symbol? form)
+       (starts-with? (source form) "$")
+       (not (= (source form) "$"))))
+
+(defmacro- input-wildcard? [form]
+  (and (symbol? form)
+       (= (source form) "_")))
+
+(defmacro- emit-input-var [form]
+  (if (input-collection? form)
+    (emit-find-var (nth form 0))
+    (emit-find-var form)))
+
+(defmacro- emit-input-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (or (input-source? (first forms)) (input-db-source? (first forms)))
+      (emit-input-vars (rest forms))
+      (if (input-collection? (first forms))
+        (emit-input-vars (rest forms))
+        (if (input-relation? (first forms))
+          (emit-input-vars (rest forms))
+          (if (input-tuple? (first forms))
+            (emit-input-vars (rest forms))
+            (forms
+              (emit-input-var (first forms))
+              (emit-input-vars (rest forms)))))))))
+
+(defmacro- emit-collection-input-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (or (input-source? (first forms)) (input-db-source? (first forms)))
+      (emit-collection-input-vars (rest forms))
+      (if (input-collection? (first forms))
+        (forms
+          (emit-input-var (first forms))
+          (emit-collection-input-vars (rest forms)))
+        (emit-collection-input-vars (rest forms))))))
+
+(defmacro- emit-tuple-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (if (input-wildcard? (first forms))
+        (quasiquote "")
+        (emit-find-var (first forms)))
+      (emit-tuple-vars (rest forms)))))
+
+(defmacro- emit-tuple-input [form]
+  (if (input-tuple? form)
+    (quasiquote
+      (Tuple-Input {vars: ([]string [(splice (emit-tuple-vars form))])}))
+    (error "tuple inputs must have shape [?a ?b]")))
+
+(defmacro- emit-tuple-inputs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (or (input-source? (first forms)) (input-db-source? (first forms)))
+      (emit-tuple-inputs (rest forms))
+      (if (input-tuple? (first forms))
+        (forms
+          (emit-tuple-input (first forms))
+          (emit-tuple-inputs (rest forms)))
+        (emit-tuple-inputs (rest forms))))))
+
+(defmacro- emit-relation-input [form]
+  (if (input-relation? form)
+    (quasiquote
+      (Relation-Input {vars: ([]string [(splice (emit-tuple-vars (first form)))])}))
+    (error "relation inputs must have shape [[?a ?b]]")))
+
+(defmacro- emit-relation-inputs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (or (input-source? (first forms)) (input-db-source? (first forms)))
+      (emit-relation-inputs (rest forms))
+      (if (input-relation? (first forms))
+        (forms
+          (emit-relation-input (first forms))
+          (emit-relation-inputs (rest forms)))
+        (emit-relation-inputs (rest forms))))))
+
+(defmacro- datalog-items-before [forms marker]
+  (if (= (count forms) 0)
+    (error (str "datalog query expects " marker))
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) marker)
+          (forms)
+          (error (str "datalog query expects " marker)))
+        (forms
+          head
+          (datalog-items-before (rest forms) marker))))))
+
+(defmacro- datalog-items-after [forms marker]
+  (if (= (count forms) 0)
+    (error (str "datalog query expects " marker))
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) marker)
+          (rest forms)
+        (datalog-items-after (rest forms) marker))
+        (datalog-items-after (rest forms) marker)))))
+
+(defmacro- datalog-has-marker-before? [forms marker stop]
+  (if (= (count forms) 0)
+    false
+    (let [head (first forms)]
+      (if (keyword? head)
+        (if (= (source head) marker)
+          true
+          (if (= (source head) stop)
+            false
+            (datalog-has-marker-before? (rest forms) marker stop)))
+        (datalog-has-marker-before? (rest forms) marker stop)))))
+
+(defmacro- datalog-find-items [forms]
+  (if (datalog-has-marker-before? forms ":keys" ":where")
+    (datalog-items-before forms ":keys")
+    (if (datalog-has-marker-before? forms ":strs" ":where")
+      (datalog-items-before forms ":strs")
+      (if (datalog-has-marker-before? forms ":syms" ":where")
+        (datalog-items-before forms ":syms")
+        (if (datalog-has-marker-before? forms ":with" ":where")
+          (datalog-items-before forms ":with")
+          (if (datalog-has-marker-before? forms ":in" ":where")
+            (datalog-items-before forms ":in")
+            (datalog-items-before forms ":where")))))))
+
+(defmacro- datalog-with-items [forms]
+  (if (datalog-has-marker-before? forms ":with" ":where")
+    (let [after-with (datalog-items-after forms ":with")]
+      (if (datalog-has-marker-before? after-with ":in" ":where")
+        (datalog-items-before after-with ":in")
+        (datalog-items-before after-with ":where")))
+    (forms)))
+
+(defmacro- datalog-input-items [forms]
+  (if (datalog-has-marker-before? forms ":in" ":where")
+    (let [after-in (datalog-items-after forms ":in")]
+      (if (datalog-has-marker-before? after-in ":where" ":where")
+        (datalog-items-before after-in ":where")
+        after-in))
+    (forms)))
+
+(defmacro- datalog-where-items [forms]
+  (if (datalog-has-marker-before? forms ":where" ":where")
+    (datalog-items-after forms ":where")
+    (forms)))
+
+(defmacro- emit-entity-term [form]
+  (if (symbol? form)
+    (if (= (source form) "_")
+      (quasiquote (term-wildcard))
+      (quasiquote (term-var (unquote (source form)))))
+    (if (lookup-ref? form)
+      (quasiquote
+        (term-lookup-ref
+          (unquote (emit-attr (nth form 0)))
+          (unquote (emit-literal-value (nth form 1)))))
+      (if (int? form)
+        (quasiquote (term-entity (unquote form)))
+        (if (keyword? form)
+          (quasiquote (term-keyword (unquote (source form))))
+          (quasiquote (unquote form)))))))
+
+(defmacro- emit-attr-term [form]
+  (if (symbol? form)
+    (if (= (source form) "_")
+      (quasiquote (term-wildcard))
+      (quasiquote (term-var (unquote (source form)))))
+    (if (keyword? form)
+      (quasiquote (term-keyword (unquote (source form))))
+      (if (string? form)
+        (quasiquote (term-keyword (unquote form)))
+        (quasiquote (unquote form))))))
+
+(defmacro- emit-value-term [form]
+  (if (symbol? form)
+    (if (= (source form) "_")
+      (quasiquote (term-wildcard))
+      (quasiquote (term-var (unquote (source form)))))
+    (if (lookup-ref? form)
+      (quasiquote
+        (term-lookup-ref
+          (unquote (emit-attr (nth form 0)))
+          (unquote (emit-literal-value (nth form 1)))))
+      (if (string? form)
+        (quasiquote (term-string (unquote form)))
+        (if (int? form)
+          (quasiquote (term-int (unquote form)))
+          (if (bool? form)
+            (quasiquote (term-bool (unquote form)))
+            (if (keyword? form)
+              (quasiquote (term-keyword (unquote (source form))))
+              (if (vector? form)
+                (quasiquote (term-value (unquote (emit-literal-value form))))
+                (quasiquote (unquote form))))))))))
+
+(defmacro- emit-datalog-clause [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (quasiquote
+        (Clause {e: (unquote (emit-entity-term (nth form 0)))
+                 a: (unquote (emit-attr-term (nth form 1)))
+                 v: (term-wildcard)}))
+      (if (= (count form) 3)
+        (if (relation-source? (nth form 0))
+          (quasiquote
+            (Clause {e: (unquote (emit-value-term (nth form 1)))
+                     a: (unquote (emit-value-term (nth form 2)))
+                     v: (term-wildcard)
+                     tx_term: (term-wildcard)
+                     op_term: (term-wildcard)
+                     source: (unquote (source (nth form 0)))
+                     has_source: true
+                     source_width: 2}))
+          (if (input-source? (nth form 0))
+          (quasiquote
+            (Clause {e: (unquote (emit-entity-term (nth form 1)))
+                     a: (unquote (emit-attr-term (nth form 2)))
+                     v: (term-wildcard)}))
+          (quasiquote
+            (Clause {e: (unquote (emit-entity-term (nth form 0)))
+                     a: (unquote (emit-attr-term (nth form 1)))
+                     v: (unquote (emit-value-term (nth form 2)))}))))
+        (if (= (count form) 4)
+          (if (input-source? (nth form 0))
+            (quasiquote
+              (Clause {e: (unquote (emit-entity-term (nth form 1)))
+                       a: (unquote (emit-attr-term (nth form 2)))
+                       v: (unquote (emit-value-term (nth form 3)))}))
+            (quasiquote
+              (Clause {e: (unquote (emit-value-term (nth form 1)))
+                       a: (unquote (emit-value-term (nth form 2)))
+                       v: (unquote (emit-value-term (nth form 3)))
+                       tx_term: (term-wildcard)
+                       op_term: (term-wildcard)
+                       source: (unquote (source (nth form 0)))
+                       has_source: true
+                       source_width: 3})))
+          (if (= (count form) 5)
+            (if (relation-source? (nth form 0))
+              (quasiquote
+                (Clause {e: (unquote (emit-value-term (nth form 1)))
+                         a: (unquote (emit-value-term (nth form 2)))
+                         v: (unquote (emit-value-term (nth form 3)))
+                         tx_term: (unquote (emit-value-term (nth form 4)))
+                         op_term: (term-wildcard)
+                         source: (unquote (source (nth form 0)))
+                         has_source: true
+                         source_width: 4}))
+              (error "five-item datalog clauses require a relation source"))
+            (if (= (count form) 6)
+              (if (relation-source? (nth form 0))
+                (quasiquote
+                  (Clause {e: (unquote (emit-value-term (nth form 1)))
+                           a: (unquote (emit-value-term (nth form 2)))
+                           v: (unquote (emit-value-term (nth form 3)))
+                           tx_term: (unquote (emit-value-term (nth form 4)))
+                           op_term: (unquote (emit-value-term (nth form 5)))
+                           source: (unquote (source (nth form 0)))
+                           has_source: true
+                           source_width: 5}))
+                (error "six-item datalog clauses require a relation source"))
+              (error "datalog clauses must have shape [e a], [e a v], [src e a], [src e a v], [src e a v tx], or [src e a v tx op]"))))))
+    (error "datalog :where entries must be clauses")))
+
+(defmacro- missing-clause? [form]
+  (if (vector? form)
+    (if (= (count form) 1)
+      (let [expr (first form)]
+        (if (list? expr)
+          (if (= (count expr) 4)
+            (let [head (first expr)]
+              (if (symbol? head)
+                (= (source head) "missing?")
+                false))
+            false)
+          false))
+      false)
+    false))
+
+(defmacro- predicate-clause? [form]
+  (if (missing-clause? form)
+    false
+    (if (vector? form)
+      (if (= (count form) 1)
+        (list? (first form))
+        false)
+      false)))
+
+(defmacro- function-clause? [form]
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    (not (list? (first form))) false
+    (not (>= (count (first form)) 2)) false
+    (not (or (symbol? (nth form 1)) (vector? (nth form 1)))) false
+    (not (symbol? (first (first form)))) false
+    :else (let [op (source (first (first form)))]
+            (contains? ["count" "+" "-" "*" "inc" "identity" "vector" "tuple" "untuple" "hash-map" "get" "first" "second"] op))))
+
+(defmacro- get-else-clause? [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (let [expr (first form)]
+        (if (list? expr)
+          (if (= (count expr) 5)
+            (let [head (first expr)]
+              (if (symbol? head)
+                (= (source head) "get-else")
+                false))
+            false)
+          false))
+      false)
+    false))
+
+(defmacro- get-some-clause? [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (let [expr (first form)
+            out (nth form 1)]
+        (if (list? expr)
+          (if (>= (count expr) 4)
+            (let [head (first expr)]
+              (if (symbol? head)
+                (if (= (source head) "get-some")
+                  (if (vector? out)
+                    (= (count out) 2)
+                    false)
+                  false)
+                false))
+            false)
+          false))
+      false)
+    false))
+
+(defmacro- ground-clause? [form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (let [expr (first form)]
+        (if (list? expr)
+          (if (= (count expr) 2)
+            (let [head (first expr)]
+              (if (symbol? head)
+                (= (source head) "ground")
+                false))
+            false)
+          false))
+      false)
+    false))
+
+(defmacro- not-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 1) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "not")))
+
+(defmacro- sourced-not-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 2) false
+    (not (relation-source? (first form))) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "not")))
+
+(defmacro- not-join-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 2) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "not-join")))
+
+(defmacro- or-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 1) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "or")))
+
+(defmacro- sourced-or-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 2) false
+    (not (relation-source? (first form))) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "or")))
+
+(defmacro- or-join-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 2) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "or-join")))
+
+(defmacro- and-clause? [form]
+  (cond
+    (not (list? form)) false
+    (<= (count form) 1) false
+    (not (symbol? (first form))) false
+    :else (= (source (first form)) "and")))
+
+(defmacro- rule-call? [form]
+  (cond
+    (not (list? form)) false
+    (= (count form) 0) false
+    (not (symbol? (first form))) false
+    (relation-source? (first form)) (and (> (count form) 1)
+                                         (symbol? (nth form 1))
+                                         (not (contains? ["not" "or"] (source (nth form 1)))))
+    :else (let [name (source (first form))]
+            (not (contains? ["not" "not-join" "or" "or-join" "and"] name)))))
+
+(defmacro- emit-not-join-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-not-join-vars (rest forms)))))
+
+(defmacro- emit-datalog-source-clause [source-name form]
+  (if (vector? form)
+    (if (= (count form) 2)
+      (quasiquote
+        (Clause {e: (unquote (emit-value-term (nth form 0)))
+                 a: (unquote (emit-value-term (nth form 1)))
+                 v: (term-wildcard)
+                 tx_term: (term-wildcard)
+                 op_term: (term-wildcard)
+                 source: (unquote source-name)
+                 has_source: true
+                 source_width: 2}))
+      (if (= (count form) 3)
+        (if (relation-source? (nth form 0))
+          (emit-datalog-clause form)
+          (quasiquote
+            (Clause {e: (unquote (emit-value-term (nth form 0)))
+                     a: (unquote (emit-value-term (nth form 1)))
+                     v: (unquote (emit-value-term (nth form 2)))
+                     tx_term: (term-wildcard)
+                     op_term: (term-wildcard)
+                     source: (unquote source-name)
+                     has_source: true
+                     source_width: 3})))
+        (if (= (count form) 4)
+          (if (or (input-source? (nth form 0))
+                  (input-db-source? (nth form 0))
+                  (relation-source? (nth form 0)))
+            (emit-datalog-clause form)
+            (quasiquote
+              (Clause {e: (unquote (emit-value-term (nth form 0)))
+                       a: (unquote (emit-value-term (nth form 1)))
+                       v: (unquote (emit-value-term (nth form 2)))
+                       tx_term: (unquote (emit-value-term (nth form 3)))
+                       op_term: (term-wildcard)
+                       source: (unquote source-name)
+                       has_source: true
+                       source_width: 4})))
+          (if (= (count form) 5)
+            (if (or (input-source? (nth form 0))
+                    (input-db-source? (nth form 0))
+                    (relation-source? (nth form 0)))
+              (emit-datalog-clause form)
+              (quasiquote
+                (Clause {e: (unquote (emit-value-term (nth form 0)))
+                         a: (unquote (emit-value-term (nth form 1)))
+                         v: (unquote (emit-value-term (nth form 2)))
+                         tx_term: (unquote (emit-value-term (nth form 3)))
+                         op_term: (unquote (emit-value-term (nth form 4)))
+                         source: (unquote source-name)
+                         has_source: true
+                         source_width: 5})))
+            (emit-datalog-clause form)))))
+    (error "source-prefixed clauses currently support data clauses")))
+
+(defmacro- emit-datalog-source-clauses [source-name forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (vector? (first forms))
+      (forms
+        (emit-datalog-source-clause source-name (first forms))
+        (emit-datalog-source-clauses source-name (rest forms)))
+      (emit-datalog-source-clauses source-name (rest forms)))))
+
+(defmacro- emit-datalog-source-not-group [source-name form]
+  (if (sourced-not-clause? form)
+    (emit-datalog-not-group form)
+    (if (not-clause? form)
+      (quasiquote
+        (not-group
+          ([]Clause [(splice (emit-datalog-source-clauses source-name (rest form)))])
+          ([]Not-Group [(splice (emit-datalog-source-not-groups source-name (rest form)))])))
+      (error "source-prefixed nested not currently supports not data clauses"))))
+
+(defmacro- emit-datalog-source-not-groups [source-name forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (or (not-clause? (first forms))
+            (sourced-not-clause? (first forms)))
+      (forms
+        (emit-datalog-source-not-group source-name (first forms))
+        (emit-datalog-source-not-groups source-name (rest forms)))
+      (emit-datalog-source-not-groups source-name (rest forms)))))
+
+(defmacro- emit-datalog-not-group [form]
+  (if (not-join-clause? form)
+    (let [join-vars (nth form 1)]
+      (if (vector? join-vars)
+        (quasiquote
+          (not-join-group
+            ([]string [(splice (emit-not-join-vars join-vars))])
+            ([]Clause [(splice (emit-datalog-clauses (slice form 2)))])
+            ([]Not-Group [(splice (emit-datalog-not-groups (slice form 2)))])))
+        (error "not-join expects a vector of join vars")))
+    (if (not-clause? form)
+      (quasiquote
+        (not-group
+          ([]Clause [(splice (emit-datalog-clauses (rest form)))])
+          ([]Not-Group [(splice (emit-datalog-not-groups (rest form)))])))
+      (if (sourced-not-clause? form)
+        (quasiquote
+          (not-group
+            ([]Clause [(splice (emit-datalog-source-clauses (source (first form)) (slice form 2)))])
+            ([]Not-Group [(splice (emit-datalog-source-not-groups (source (first form)) (slice form 2)))])))
+        (error "not clauses must have shape (not [e a v] ...), ($src not [e a v] ...), or (not-join [?x] [e a v] ...)")))))
+
+(defmacro- emit-datalog-missing-group [form]
+  (if (missing-clause? form)
+    (let [expr (first form)]
+      (quasiquote
+        (not-group
+          ([]Clause
+            [(Clause {e: (unquote (emit-entity-term (nth expr 2)))
+                      a: (unquote (emit-attr-term (nth expr 3)))
+                      v: (term-wildcard)})])
+          ([]Not-Group []))))
+    (error "missing? clauses must have shape [(missing? $ ?e :attr)]")))
+
+(defmacro- emit-datalog-or-branch [form]
+  (if (vector? form)
+    (quasiquote
+      (not-group-simple ([]Clause [(unquote (emit-datalog-clause form))])))
+    (if (and-clause? form)
+      (quasiquote
+        (not-group-simple ([]Clause [(splice (emit-datalog-clauses (rest form)))])))
+      (error "or branches currently support data clauses or (and [e a v] ...)"))))
+
+(defmacro- emit-datalog-source-or-branch [source-name form]
+  (if (vector? form)
+    (quasiquote
+      (not-group-simple ([]Clause [(unquote (emit-datalog-source-clause source-name form))])))
+    (if (and-clause? form)
+      (quasiquote
+        (not-group-simple ([]Clause [(splice (emit-datalog-source-clauses source-name (rest form)))])))
+      (error "source-prefixed or branches currently support data clauses or (and [e a v] ...)"))))
+
+(defmacro- emit-datalog-or-branches [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-datalog-or-branch (first forms))
+      (emit-datalog-or-branches (rest forms)))))
+
+(defmacro- emit-datalog-source-or-branches [source-name forms]
+  (if (= (count forms) 0)
+    (forms)
+    (let [head (first forms)]
+      (if (sourced-or-clause? head)
+        (forms
+          (emit-datalog-source-or-branches (source (first head)) (slice head 2))
+          (emit-datalog-source-or-branches source-name (rest forms)))
+        (if (or-clause? head)
+          (forms
+            (emit-datalog-source-or-branches source-name (rest head))
+            (emit-datalog-source-or-branches source-name (rest forms)))
+          (forms
+            (emit-datalog-source-or-branch source-name head)
+            (emit-datalog-source-or-branches source-name (rest forms))))))))
+
+(defmacro- emit-datalog-or-group [form]
+  (if (or-join-clause? form)
+    (let [join-vars (nth form 1)]
+      (if (vector? join-vars)
+        (quasiquote
+          (or-join-group
+            ([]string [(splice (emit-not-join-vars join-vars))])
+            ([]Not-Group [(splice (emit-datalog-or-branches (slice form 2)))])))
+        (error "or-join expects a vector of join vars")))
+    (if (or-clause? form)
+      (quasiquote
+        (or-group ([]Not-Group [(splice (emit-datalog-or-branches (rest form)))])))
+      (if (sourced-or-clause? form)
+        (quasiquote
+          (or-group ([]Not-Group [(splice (emit-datalog-source-or-branches (source (first form)) (slice form 2)))])))
+        (error "or clauses must have shape (or [e a v] [e a v] ...), ($src or [e a v] ...), or (or-join [?x] ...)")))))
+
+(defmacro- emit-predicate-terms [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-value-term (first forms))
+      (emit-predicate-terms (rest forms)))))
+
+(defmacro- emit-datalog-predicate [form]
+  (if (predicate-clause? form)
+    (let [expr (first form)]
+      (if (>= (count expr) 2)
+        (quasiquote
+          (Predicate {op: (unquote (source (nth expr 0)))
+                      terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])}))
+        (error "predicate clauses must have shape [(op arg arg ...)]")))
+    (error "predicate clauses must have shape [(op arg arg ...)]")))
+
+(defmacro- emit-datalog-function-clause [form]
+  (if (function-clause? form)
+    (let [expr (first form)
+          out (nth form 1)]
+      (if (vector? out)
+        (quasiquote
+          (Function-Clause {op: (unquote (source (nth expr 0)))
+                            terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])
+                            out_vars: ([]string [(splice (emit-datalog-function-out-vars out))])
+                            is_tuple: true}))
+        (quasiquote
+          (Function-Clause {op: (unquote (source (nth expr 0)))
+                            terms: ([]Term [(splice (emit-predicate-terms (rest expr)))])
+                            out: (unquote (emit-find-var out))}))))
+    (error "function clauses must have shape [(op arg ...) ?out]")))
+
+(defmacro- emit-datalog-function-out-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-datalog-function-out-vars (rest forms)))))
+
+(defmacro- emit-datalog-get-else [form]
+  (if (get-else-clause? form)
+    (let [expr (first form)]
+      (quasiquote
+        (Get-Else {e: (unquote (emit-entity-term (nth expr 2)))
+                   a: (unquote (emit-attr (nth expr 3)))
+                   default_value: (unquote (emit-literal-value (nth expr 4)))
+                   out: (unquote (emit-find-var (nth form 1)))})))
+    (error "get-else clauses must have shape [(get-else $ ?e :attr default) ?out]")))
+
+(defmacro- emit-get-some-attrs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-attr (first forms))
+      (emit-get-some-attrs (rest forms)))))
+
+(defmacro- emit-datalog-get-some [form]
+  (if (get-some-clause? form)
+    (let [expr (first form)
+          out (nth form 1)]
+      (quasiquote
+        (Get-Some {e: (unquote (emit-entity-term (nth expr 2)))
+                   attrs: ([]string [(splice (emit-get-some-attrs (slice expr 3)))])
+                   out_attr: (unquote (emit-find-var (nth out 0)))
+                   out_value: (unquote (emit-find-var (nth out 1)))})))
+    (error "get-some clauses must have shape [(get-some $ ?e :attr ...) [?a ?v]]")))
+
+(defmacro- emit-ground-tuple-vars [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-input-var (first forms))
+      (emit-ground-tuple-vars (rest forms)))))
+
+(defmacro- ground-relation-output? [form]
+  (cond
+    (not (vector? form)) false
+    (not (= (count form) 2)) false
+    (not (vector? (nth form 0))) false
+    (not (symbol? (nth form 1))) false
+    :else (= (source (nth form 1)) "...")))
+
+(defmacro- emit-datalog-ground [form]
+  (if (ground-clause? form)
+    (let [expr (first form)
+          value (nth expr 1)
+          out (nth form 1)]
+      (if (ground-relation-output? out)
+        (quasiquote
+          (Ground {source: (unquote (emit-value-term value))
+                   out: ""
+                   tuple_vars: ([]string [(splice (emit-ground-tuple-vars (nth out 0)))])
+                   is_collection: false
+                   is_tuple: false
+                   is_relation: true
+                   width: (unquote (count (nth out 0)))}))
+        (if (input-collection? out)
+          (quasiquote
+            (Ground {source: (unquote (emit-value-term value))
+                     out: (unquote (emit-input-var out))
+                     tuple_vars: ([]string [])
+                     is_collection: true
+                     is_tuple: false
+                     is_relation: false}))
+        (if (vector? out)
+          (quasiquote
+            (Ground {source: (unquote (emit-value-term value))
+                     out: ""
+                     tuple_vars: ([]string [(splice (emit-ground-tuple-vars out))])
+                     is_collection: false
+                     is_tuple: true
+                     is_relation: false}))
+          (quasiquote
+            (Ground {source: (unquote (emit-value-term value))
+                     out: (unquote (if (input-wildcard? out) (quasiquote "") (emit-find-var out)))
+                     tuple_vars: ([]string [])
+                     is_collection: false
+                     is_tuple: false
+                     is_relation: false}))))))
+    (error "ground clauses must have shape [(ground value) ?out], [(ground [...]) [?out ...]], or [(ground [[...]]) [[?out ...]...]]")))
+
+(defmacro- datalog-non-data-clause? [form]
+  (cond
+    (predicate-clause? form) true
+    (function-clause? form) true
+    (get-else-clause? form) true
+    (get-some-clause? form) true
+    (ground-clause? form) true
+    (missing-clause? form) true
+    (not-clause? form) true
+    (sourced-not-clause? form) true
+    (not-join-clause? form) true
+    (or-clause? form) true
+    (sourced-or-clause? form) true
+    (or-join-clause? form) true
+    :else (rule-call? form)))
+
+(defmacro- emit-datalog-clauses [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (let [head (first forms)]
+      (if (datalog-non-data-clause? head)
+        (emit-datalog-clauses (rest forms))
+        (if (and-clause? head)
+          (forms
+            (emit-datalog-clauses (rest head))
+            (emit-datalog-clauses (rest forms)))
+          (forms
+            (emit-datalog-clause head)
+            (emit-datalog-clauses (rest forms))))))))
+
+(defmacro- emit-datalog-predicates [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (predicate-clause? (first forms))
+      (forms
+        (emit-datalog-predicate (first forms))
+        (emit-datalog-predicates (rest forms)))
+      (emit-datalog-predicates (rest forms)))))
+
+(defmacro- emit-rule-call-args [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-value-term (first forms))
+      (emit-rule-call-args (rest forms)))))
+
+(defmacro- emit-datalog-rule-call [form]
+  (if (rule-call? form)
+    (if (relation-source? (first form))
+      (quasiquote
+        (Rule-Call {name: (unquote (source (nth form 1)))
+                    source: (unquote (source (first form)))
+                    has_source: true
+                    args: ([dynamic]Term [(splice (emit-rule-call-args (slice form 2)))])}))
+      (quasiquote
+        (Rule-Call {name: (unquote (source (first form)))
+                    args: ([dynamic]Term [(splice (emit-rule-call-args (rest form)))])})))
+    (error "rule calls must have shape (rule ?arg ...)")))
+
+(defmacro- emit-datalog-rule-calls [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (rule-call? (first forms))
+      (forms
+        (emit-datalog-rule-call (first forms))
+        (emit-datalog-rule-calls (rest forms)))
+      (emit-datalog-rule-calls (rest forms)))))
+
+(defmacro- emit-datalog-function-clauses [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (function-clause? (first forms))
+      (forms
+        (emit-datalog-function-clause (first forms))
+        (emit-datalog-function-clauses (rest forms)))
+      (emit-datalog-function-clauses (rest forms)))))
+
+(defmacro- emit-datalog-get-elses [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (get-else-clause? (first forms))
+      (forms
+        (emit-datalog-get-else (first forms))
+        (emit-datalog-get-elses (rest forms)))
+      (emit-datalog-get-elses (rest forms)))))
+
+(defmacro- emit-datalog-get-somes [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (get-some-clause? (first forms))
+      (forms
+        (emit-datalog-get-some (first forms))
+        (emit-datalog-get-somes (rest forms)))
+      (emit-datalog-get-somes (rest forms)))))
+
+(defmacro- emit-datalog-grounds [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (ground-clause? (first forms))
+      (forms
+        (emit-datalog-ground (first forms))
+        (emit-datalog-grounds (rest forms)))
+      (emit-datalog-grounds (rest forms)))))
+
+(defmacro- emit-datalog-not-groups [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (not-clause? (first forms))
+      (forms
+        (emit-datalog-not-group (first forms))
+        (emit-datalog-not-groups (rest forms)))
+      (if (sourced-not-clause? (first forms))
+        (forms
+          (emit-datalog-not-group (first forms))
+          (emit-datalog-not-groups (rest forms)))
+        (if (not-join-clause? (first forms))
+          (forms
+            (emit-datalog-not-group (first forms))
+            (emit-datalog-not-groups (rest forms)))
+          (if (missing-clause? (first forms))
+            (forms
+              (emit-datalog-missing-group (first forms))
+              (emit-datalog-not-groups (rest forms)))
+            (emit-datalog-not-groups (rest forms))))))))
+
+(defmacro- emit-datalog-or-groups [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (or-clause? (first forms))
+      (forms
+        (emit-datalog-or-group (first forms))
+        (emit-datalog-or-groups (rest forms)))
+      (if (sourced-or-clause? (first forms))
+        (forms
+          (emit-datalog-or-group (first forms))
+          (emit-datalog-or-groups (rest forms)))
+        (if (or-join-clause? (first forms))
+          (forms
+            (emit-datalog-or-group (first forms))
+            (emit-datalog-or-groups (rest forms)))
+          (emit-datalog-or-groups (rest forms)))))))
+
+(defmacro- emit-pull-attrs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (brace? (first forms))
+      (emit-pull-attrs (rest forms))
+      (forms
+        (if (keyword? (first forms))
+          (source (first forms))
+          (if (string? (first forms))
+            (text (first forms))
+            (if (vector? (first forms))
+              (pull-attr-source (nth (first forms) 0))
+              (if (and (symbol? (first forms))
+                       (= (source (first forms)) "*"))
+                "*"
+                (error "pull patterns currently accept keyword, string, *, option vectors, or nested attrs")))))
+        (emit-pull-attrs (rest forms))))))
+
+(defmacro- pull-attr-source [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (if (and (symbol? form)
+               (= (source form) "*"))
+        "*"
+        (error "pull pattern attrs must be keywords, strings, or *")))))
+
+(defmacro- pull-alias-source [form]
+  (if (keyword? form)
+    (source form)
+    (if (string? form)
+      (text form)
+      (if (symbol? form)
+        (source form)
+        (error "pull :as expects keyword, string, or symbol alias")))))
+
+(defmacro- pull-pattern-has-trailing-limit? [pattern]
+  (if (= (count pattern) 3)
+    (if (keyword? (nth pattern 1))
+      (= (source (nth pattern 1)) ":limit")
+      false)
+    (if (= (count pattern) 4)
+      (if (keyword? (nth pattern 2))
+        (= (source (nth pattern 2)) ":limit")
+        false)
+      false)))
+
+(defmacro- emit-pull-limit [form]
+  (if (nil? form)
+    (quasiquote -1)
+    form))
+
+(defmacro- recursion-ellipsis? [form]
+  (if (symbol? form)
+    (= (source form) "...")
+    false))
+
+(defmacro- emit-pull-nested-spec [attr pattern]
+  (if (pull-pattern-has-trailing-limit? pattern)
+    (if (= (count pattern) 3)
+      (quasiquote
+        (pull-spec-limit
+          (unquote (pull-attr-source attr))
+          ([]Pull-Spec [(splice (emit-pull-specs (slice pattern 0 1)))])
+          (unquote (emit-pull-limit (nth pattern 2)))))
+      (quasiquote
+        (pull-spec-limit
+          (unquote (pull-attr-source attr))
+          ([]Pull-Spec [(splice (emit-pull-specs (slice pattern 0 2)))])
+          (unquote (emit-pull-limit (nth pattern 3))))))
+    (quasiquote
+      (pull-spec
+        (unquote (pull-attr-source attr))
+        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))))
+
+(defmacro- emit-pull-spec [form]
+  (if (vector? form)
+    (if (keyword? (nth form 1))
+      (if (= (count form) 3)
+        (if (= (source (nth form 1)) ":default")
+          (quasiquote
+            (pull-spec-default
+              (unquote (pull-attr-source (nth form 0)))
+              (unquote (emit-literal-value (nth form 2)))))
+          (if (= (source (nth form 1)) ":as")
+            (quasiquote
+              (pull-spec-as
+                (unquote (pull-attr-source (nth form 0)))
+                (unquote (pull-alias-source (nth form 2)))))
+            (if (= (source (nth form 1)) ":limit")
+              (quasiquote
+                (pull-spec-limit
+                  (unquote (pull-attr-source (nth form 0)))
+                  ([]Pull-Spec [])
+                  (unquote (emit-pull-limit (nth form 2)))))
+              (error "pull option vectors currently support :default, :as, and :limit"))))
+        (if (= (count form) 5)
+          (if (keyword? (nth form 3))
+            (if (= (source (nth form 1)) ":as")
+              (if (= (source (nth form 3)) ":default")
+                (quasiquote
+                  (pull-spec-default-as
+                    (unquote (pull-attr-source (nth form 0)))
+                    (unquote (emit-literal-value (nth form 4)))
+                    (unquote (pull-alias-source (nth form 2)))))
+                (if (= (source (nth form 3)) ":limit")
+                  (quasiquote
+                    (pull-spec-limit-as
+                      (unquote (pull-attr-source (nth form 0)))
+                      ([]Pull-Spec [])
+                      (unquote (emit-pull-limit (nth form 4)))
+                      (unquote (pull-alias-source (nth form 2)))))
+                  (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]")))
+              (if (= (source (nth form 1)) ":default")
+                (if (= (source (nth form 3)) ":as")
+                  (quasiquote
+                    (pull-spec-default-as
+                      (unquote (pull-attr-source (nth form 0)))
+                      (unquote (emit-literal-value (nth form 2)))
+                      (unquote (pull-alias-source (nth form 4)))))
+                  (error "combined pull option vectors currently support [:attr :default value :as alias] or [:attr :as alias :default value]"))
+                (if (= (source (nth form 1)) ":limit")
+                  (if (= (source (nth form 3)) ":as")
+                    (quasiquote
+                      (pull-spec-limit-as
+                        (unquote (pull-attr-source (nth form 0)))
+                        ([]Pull-Spec [])
+                        (unquote (emit-pull-limit (nth form 2)))
+                        (unquote (pull-alias-source (nth form 4)))))
+                    (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]"))
+                  (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]"))))
+            (error "combined pull option vectors expect keyword options"))
+          (error "pull option vectors currently have shape [:attr :default value], [:attr :as alias], [:attr :limit n], or [:attr :default value :as alias]")))
+      (error "pull option vectors expect a keyword option"))
+  (if (brace? form)
+    (if (= (count form) 2)
+      (let [attr (nth form 0)
+            pattern (nth form 1)]
+        (if (vector? pattern)
+          (emit-pull-nested-spec attr pattern)
+          (if (int? pattern)
+            (quasiquote
+              (pull-spec-recursion
+                (unquote (pull-attr-source attr))
+                (unquote pattern)))
+            (if (recursion-ellipsis? pattern)
+              (quasiquote
+                (pull-spec-recursion
+                  (unquote (pull-attr-source attr))
+                  32))
+              (error "nested pull attrs expect vector patterns or recursion depth")))))
+      (error "nested pull maps currently support one attr"))
+    (quasiquote
+      (pull-spec
+        (unquote (pull-attr-source form))
+        ([]Pull-Spec []))))))
+
+(defmacro- emit-pull-map-spec [attr pattern]
+  (if (vector? pattern)
+    (emit-pull-nested-spec attr pattern)
+    (if (int? pattern)
+      (quasiquote
+        (pull-spec-recursion
+          (unquote (pull-attr-source attr))
+          (unquote pattern)))
+      (if (recursion-ellipsis? pattern)
+        (quasiquote
+          (pull-spec-recursion
+            (unquote (pull-attr-source attr))
+            32))
+        (error "nested pull attrs expect vector patterns or recursion depth")))))
+
+(defmacro- emit-pull-map-specs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (> (count forms) 1)
+      (forms
+        (emit-pull-map-spec (nth forms 0) (nth forms 1))
+        (emit-pull-map-specs (slice forms 2)))
+      (error "nested pull maps expect attr/pattern pairs"))))
+
+(defmacro- emit-pull-specs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (brace? (first forms))
+      (concat
+        (emit-pull-map-specs (first forms))
+        (emit-pull-specs (rest forms)))
+      (forms
+        (emit-pull-spec (first forms))
+        (emit-pull-specs (rest forms))))))
+
+(defmacro- emit-pull-find [form]
+  (if (pull-find? form)
+    (let [source-name (if (= (count form) 4) (source (nth form 1)) "")
+          var (if (= (count form) 4) (nth form 2) (nth form 1))
+          pattern (if (= (count form) 4) (nth form 3) (nth form 2))]
+      (if (vector? pattern)
+        (quasiquote
+          (Pull-Find {var: (unquote (emit-find-var var))
+                      source: (unquote source-name)
+                      has_source: (unquote (= (count form) 4))
+                      has_pattern_var: false
+                      pattern_var: ""
+                      attrs: ([]string [(splice (emit-pull-attrs pattern))])
+                      pattern: ([]Pull-Spec [(splice (emit-pull-specs pattern))])}))
+        (if (symbol? pattern)
+          (quasiquote
+            (Pull-Find {var: (unquote (emit-find-var var))
+                        source: (unquote source-name)
+                        has_source: (unquote (= (count form) 4))
+                        has_pattern_var: true
+                        pattern_var: (unquote (emit-find-var pattern))
+                        attrs: ([]string [])
+                        pattern: ([]Pull-Spec [])}))
+          (error "find pull expects a literal vector pattern or an input pattern var"))))
+    (error ":find pull expressions must be (pull ?e pattern) or (pull $ ?e pattern)")))
+
+(defmacro- emit-pull-finds [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (find-return-map-marker? (first forms))
+      (forms)
+      (if (pull-find? (first forms))
+        (forms
+          (emit-pull-find (first forms))
+          (emit-pull-finds (rest forms)))
+        (emit-pull-finds (rest forms))))))
+
+(defmacro- emit-aggregate-find [form]
+  (if (aggregate-find? form)
+    (if (= (count form) 3)
+      (if (int? (nth form 1))
+        (quasiquote
+          (Aggregate-Find {op: (unquote (source (first form)))
+                           var: (unquote (emit-find-var (nth form 2)))
+                           limit: (unquote (nth form 1))
+                           has_limit: true}))
+        (quasiquote
+          (Aggregate-Find {op: (unquote (source (first form)))
+                           var: (unquote (emit-find-var (nth form 2)))
+                           limit_var: (unquote (emit-find-var (nth form 1)))
+                           has_limit_var: true})))
+      (quasiquote
+        (Aggregate-Find {op: (unquote (source (first form)))
+                         var: (unquote (emit-find-var (nth form 1)))})))
+    (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, variance, and stddev")))
+
+(defmacro- emit-aggregate-finds [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (find-return-map-marker? (first forms))
+      (forms)
+      (if (aggregate-find? (first forms))
+        (forms
+          (emit-aggregate-find (first forms))
+          (emit-aggregate-finds (rest forms)))
+        (if (find-collection? (first forms))
+          (if (aggregate-find? (nth (first forms) 0))
+            (forms
+              (emit-aggregate-find (nth (first forms) 0))
+              (emit-aggregate-finds (rest forms)))
+            (emit-aggregate-finds (rest forms)))
+          (if (find-tuple? (first forms))
+            (concat
+              (emit-aggregate-finds (first (first forms)))
+              (emit-aggregate-finds (rest forms)))
+            (emit-aggregate-finds (rest forms))))))))
+
+(defmacro datalog [form]
+  (if (vector? form)
+    (let [head (first form)]
+      (if (keyword? head)
+        (if (= (source head) ":find")
+          (let [tail (rest form)
+                find-items (datalog-find-items tail)
+                with-items (datalog-with-items tail)
+                input-items (datalog-input-items tail)
+                where-items (datalog-where-items tail)]
+            (if (find-direct-tuple? (first tail))
+              (quasiquote
+                (query
+                  ([]string [(splice (emit-find-tuple-vars (first tail)))])
+                  ([]string [(splice (emit-find-vars with-items))])
+                  ([]string [(splice (emit-input-vars input-items))])
+                  ([]string [(splice (emit-collection-input-vars input-items))])
+                  ([]Tuple-Input [(splice (emit-tuple-inputs input-items))])
+                  ([]Relation-Input [(splice (emit-relation-inputs input-items))])
+                  ([]Clause [(splice (emit-datalog-clauses where-items))])
+                  ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                  ([]Function-Clause [(splice (emit-datalog-function-clauses where-items))])
+                  ([]Rule [])
+                  ([]Rule-Call [(splice (emit-datalog-rule-calls where-items))])
+                  ([]Get-Else [(splice (emit-datalog-get-elses where-items))])
+                  ([]Get-Some [(splice (emit-datalog-get-somes where-items))])
+                  ([]Ground [(splice (emit-datalog-grounds where-items))])
+                  ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
+                  ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
+                  ([]Pull-Find [])
+                  ([]Aggregate-Find [(splice (emit-aggregate-finds (first tail)))])))
+              (quasiquote
+                (query
+                  ([]string [(splice (emit-find-vars find-items))])
+                  ([]string [(splice (emit-find-vars with-items))])
+                  ([]string [(splice (emit-input-vars input-items))])
+                  ([]string [(splice (emit-collection-input-vars input-items))])
+                  ([]Tuple-Input [(splice (emit-tuple-inputs input-items))])
+                  ([]Relation-Input [(splice (emit-relation-inputs input-items))])
+                  ([]Clause [(splice (emit-datalog-clauses where-items))])
+                  ([]Predicate [(splice (emit-datalog-predicates where-items))])
+                  ([]Function-Clause [(splice (emit-datalog-function-clauses where-items))])
+                  ([]Rule [])
+                  ([]Rule-Call [(splice (emit-datalog-rule-calls where-items))])
+                  ([]Get-Else [(splice (emit-datalog-get-elses where-items))])
+                  ([]Get-Some [(splice (emit-datalog-get-somes where-items))])
+                  ([]Ground [(splice (emit-datalog-grounds where-items))])
+                  ([]Not-Group [(splice (emit-datalog-not-groups where-items))])
+                  ([]Or-Group [(splice (emit-datalog-or-groups where-items))])
+                  ([]Pull-Find [(splice (emit-pull-finds find-items))])
+                  ([]Aggregate-Find [(splice (emit-aggregate-finds find-items))])))))
+          (error "datalog query must start with :find"))
+        (error "datalog query must start with :find")))
+    (error "datalog expects a vector query")))
+
+(defmacro- emit-query-inputs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (quasiquote
+        (Query-Input {kind: .Scalar
+                      value: (unquote (emit-literal-value (first forms)))}))
+      (emit-query-inputs (rest forms)))))
+
+(defmacro- emit-query-input-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-literal-value (first forms))
+      (emit-query-input-values (rest forms)))))
+
+(defmacro- emit-query-input-lookup-ref-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (lookup-ref? (first forms))
+      (forms
+        (emit-literal-value (nth (first forms) 1))
+        (emit-query-input-lookup-ref-values (rest forms)))
+      (error "lookup-ref collection inputs must contain lookup refs"))))
+
+(defmacro- emit-query-input-lookup-ref-attrs [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (lookup-ref? (first forms))
+      (if (keyword? (nth (first forms) 0))
+        (forms
+          (source (nth (first forms) 0))
+          (emit-query-input-lookup-ref-attrs (rest forms)))
+        (error "lookup-ref collection inputs require keyword attrs"))
+      (error "lookup-ref collection inputs must contain lookup refs"))))
+
+(defmacro- emit-query-relation-row-values [row]
+  (if (= (count row) 0)
+    (forms)
+    (forms
+      (emit-literal-value (first row))
+      (emit-query-relation-row-values (rest row)))))
+
+(defmacro- emit-query-relation-input-values [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (concat
+      (emit-query-relation-row-values (first forms))
+      (emit-query-relation-input-values (rest forms)))))
+
+(defmacro- emit-query-input [form]
+  (if (query-input-lookup-ref? form)
+    (quasiquote
+      (Query-Input {kind: .Scalar
+                    has_lookup_ref: true
+                    lookup_attr: (unquote (emit-attr (nth form 0)))
+                    lookup_value: (unquote (emit-literal-value (nth form 1)))}))
+    (if (vector? form)
+      (if (> (count form) 0)
+        (if (vector? (first form))
+          (quasiquote
+            (Query-Input {kind: .Relation
+                          values: ([]Value [(splice (emit-query-relation-input-values form))])
+                          width: (unquote (count (first form)))}))
+          (quasiquote
+            (Query-Input {kind: .Collection
+                          values: ([]Value [(splice (emit-query-input-values form))])})))
+        (quasiquote
+          (Query-Input {kind: .Collection
+                        values: ([]Value [])})))
+      (quasiquote
+        (Query-Input {kind: .Scalar
+                      value: (unquote (emit-literal-value form))})))))
+
+(defmacro- pull-find-pattern-var-name [form]
+  (if (pull-find? form)
+    (let [pattern (if (= (count form) 4) (nth form 3) (nth form 2))]
+      (if (symbol? pattern)
+        (emit-find-var pattern)
+        ""))
+    ""))
+
+(defmacro- pull-pattern-var-in-finds? [forms name]
+  (if (= (count forms) 0)
+    false
+    (if (= (pull-find-pattern-var-name (first forms)) name)
+      true
+      (pull-pattern-var-in-finds? (rest forms) name))))
+
+(defmacro- input-spec-var-name [form]
+  (if (or (input-source? form) (input-db-source? form))
+    ""
+    (if (input-collection? form)
+      (emit-find-var (nth form 0))
+      (if (input-relation? form)
+        ""
+        (if (input-tuple? form)
+          ""
+          (emit-find-var form))))))
+
+(defmacro- pull-pattern-input? [find-items spec]
+  (let [name (input-spec-var-name spec)]
+    (if (= name "")
+      false
+      (pull-pattern-var-in-finds? find-items name))))
+
+(defmacro- emit-query-collection-lookup-ref-input [value]
+  (quasiquote
+    (Query-Input {kind: .CollectionLookupRefs
+                  lookup_attrs: ([]string [(splice (emit-query-input-lookup-ref-attrs value))])
+                  lookup_values: ([]Value [(splice (emit-query-input-lookup-ref-values value))])})))
+
+(defmacro- collection-lookup-ref-input? [spec value]
+  (if (input-collection? spec)
+    (if (vector? value)
+      (if (> (count value) 0)
+        (lookup-ref? (first value))
+        false)
+      false)
+    false))
+
+(defmacro- scalar-lookup-ref-input? [spec value]
+  (if (or (input-source? spec) (input-db-source? spec))
+    false
+    (if (input-collection? spec)
+      false
+      (if (input-relation? spec)
+        false
+        (if (input-tuple? spec)
+          false
+          (lookup-ref? value))))))
+
+(defmacro- emit-query-scalar-lookup-ref-input [value]
+  (if (keyword? (nth value 0))
+    (quasiquote
+      (Query-Input {kind: .Scalar
+                    has_lookup_ref: true
+                    lookup_attr: (unquote (emit-attr (nth value 0)))
+                    lookup_value: (unquote (emit-literal-value (nth value 1)))}))
+    (error "lookup-ref scalar inputs require keyword attrs")))
+
+(defmacro- emit-query-scalar-input [value]
+  (quasiquote
+    (Query-Input {kind: .Scalar
+                  value: (unquote (emit-literal-value value))})))
+
+(defmacro- scalar-input-spec? [spec]
+  (not (or (input-source? spec)
+           (input-db-source? spec)
+           (input-collection? spec)
+           (input-relation? spec)
+           (input-tuple? spec))))
+
+(defmacro- emit-query-input-for-spec [find-items spec value]
+  (if (pull-pattern-input? find-items spec)
+    (if (vector? value)
+      (quasiquote
+        (Query-Input {kind: .PullPattern
+                      value: (unquote (emit-literal-value value))
+                      pattern: ([]Pull-Spec [(splice (emit-pull-specs value))])}))
+      (error "pull pattern inputs must be literal vectors"))
+    (if (scalar-lookup-ref-input? spec value)
+      (emit-query-scalar-lookup-ref-input value)
+      (if (collection-lookup-ref-input? spec value)
+        (emit-query-collection-lookup-ref-input value)
+        (if (scalar-input-spec? spec)
+          (emit-query-scalar-input value)
+          (emit-query-input value))))))
+
+(defmacro- input-kind? [spec kind]
+  (cond
+    (= kind "scalar") (scalar-input-spec? spec)
+    (= kind "collection") (input-collection? spec)
+    (= kind "tuple") (input-tuple? spec)
+    :else (input-relation? spec)))
+
+(defmacro- emit-query-input-list-for-kind [find-items specs values kind]
+  (if (= (count values) 0)
+    (forms)
+    (if (= (count specs) 0)
+      (forms)
+      (let [spec (first specs)]
+        (if (input-db-source? spec)
+          (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)
+          (if (input-source? spec)
+          (if (= (source spec) "%")
+            (if (rule-list? (first values))
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)
+              (emit-query-input-list-for-kind find-items (rest specs) values kind))
+            (if (= (source spec) "$")
+              (emit-query-input-list-for-kind find-items (rest specs) values kind)
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)))
+          (if (rule-list? (first values))
+            (emit-query-input-list-for-kind find-items specs (rest values) kind)
+            (if (input-kind? spec kind)
+              (forms
+                (emit-query-input-for-spec find-items spec (first values))
+                (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind))
+              (emit-query-input-list-for-kind find-items (rest specs) (rest values) kind)))))))))
+
+(defmacro- emit-query-input-list-for-query [find-items specs values]
+  (if (= (count values) 0)
+    (forms)
+    (if (= (count specs) 0)
+      (emit-query-input-list-without-rules values)
+      (forms
+        (emit-query-input-list-for-kind find-items specs values "scalar")
+        (emit-query-input-list-for-kind find-items specs values "collection")
+        (emit-query-input-list-for-kind find-items specs values "tuple")
+        (emit-query-input-list-for-kind find-items specs values "relation")))))
+
+(defmacro- emit-query-db-source-list [specs values]
+  (if (or (= (count specs) 0) (= (count values) 0))
+    (forms)
+    (let [spec (first specs)]
+      (if (input-db-source? spec)
+        (forms
+          (quasiquote (DB-Source {name: (unquote (source spec)) db: (unquote (first values))}))
+          (emit-query-db-source-list (rest specs) (rest values)))
+        (if (input-source? spec)
+          (if (= (source spec) "%")
+            (if (rule-list? (first values))
+              (emit-query-db-source-list (rest specs) (rest values))
+              (emit-query-db-source-list (rest specs) values))
+            (emit-query-db-source-list (rest specs) values))
+          (if (rule-list? (first values))
+            (emit-query-db-source-list specs (rest values))
+            (emit-query-db-source-list (rest specs) (rest values))))))))
+
+(defmacro- emit-query-input-list [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-query-input (first forms))
+      (emit-query-input-list (rest forms)))))
+
+(defmacro- rule-list? [form]
+  (if (vector? form)
+    (if (> (count form) 0)
+      (let [first-rule (first form)]
+        (if (vector? first-rule)
+          (if (> (count first-rule) 0)
+            (list? (first first-rule))
+            false)
+          false))
+      false)
+    false))
+
+(defmacro- emit-rule-params [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-find-var (first forms))
+      (emit-rule-params (rest forms)))))
+
+(defmacro- emit-rule [form]
+  (if (vector? form)
+    (let [head (first form)]
+      (if (list? head)
+        (quasiquote
+          (Rule {name: (unquote (source (first head)))
+                 params: ([dynamic]string [(splice (emit-rule-params (rest head)))])
+                 clauses: ([dynamic]Clause [(splice (emit-datalog-clauses (rest form)))])
+                 predicates: ([dynamic]Predicate [(splice (emit-datalog-predicates (rest form)))])
+                 function_clauses: ([dynamic]Function-Clause [(splice (emit-datalog-function-clauses (rest form)))])
+                 grounds: ([dynamic]Ground [(splice (emit-datalog-grounds (rest form)))])
+                 rule_calls: ([dynamic]Rule-Call [(splice (emit-datalog-rule-calls (rest form)))])}))
+        (error "rule definitions must start with a rule head")))
+    (error "rule definitions must be vectors")))
+
+(defmacro- emit-rules [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-rule (first forms))
+      (emit-rules (rest forms)))))
+
+(defmacro- emit-rule-input-rules [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (rule-list? (first forms))
+      (forms
+        (emit-rules (first forms))
+        (emit-rule-input-rules (rest forms)))
+      (emit-rule-input-rules (rest forms)))))
+
+(defmacro- emit-query-input-list-without-rules [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (if (rule-list? (first forms))
+      (emit-query-input-list-without-rules (rest forms))
+      (forms
+        (emit-query-input (first forms))
+        (emit-query-input-list-without-rules (rest forms))))))
+
+(defmacro q [db query-form & inputs]
+  (if (vector? query-form)
+    (let [tail (rest query-form)
+          find-items (datalog-find-items tail)
+          input-items (datalog-input-items tail)]
+      (quasiquote
+        (q-query-with-sources
+          (unquote db)
+          (query-with-rules
+            (unquote (datalog query-form))
+            ([]Rule [(splice (emit-rule-input-rules inputs))]))
+          ([]Query-Input [(splice (emit-query-input-list-for-query find-items input-items inputs))])
+          ([]DB-Source [(splice (emit-query-db-source-list input-items inputs))]))))
+    (quasiquote
+      (q-query-with-inputs
+        (unquote db)
+        (unquote query-form)
+        ([]Query-Input [(splice (emit-query-input-list-without-rules inputs))])))))
+
+(defmacro q-scalar [db query-form & inputs]
+  (quasiquote
+    (result-scalar (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-collection [db query-form & inputs]
+  (quasiquote
+    (result-collection (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-tuple [db query-form & inputs]
+  (quasiquote
+    (result-tuple (q (unquote db) (unquote query-form) (splice inputs)))))
+
+(defmacro q-keys [db query-form & inputs]
+  (if (vector? query-form)
+    (quasiquote
+      (result-keys
+        (q (unquote db) (unquote query-form) (splice inputs))
+        .Keyword
+        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":keys")))])))
+    (error "q-keys expects a literal datalog query")))
+
+(defmacro q-strs [db query-form & inputs]
+  (if (vector? query-form)
+    (quasiquote
+      (result-keys
+        (q (unquote db) (unquote query-form) (splice inputs))
+        .String
+        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":strs")))])))
+    (error "q-strs expects a literal datalog query")))
+
+(defmacro q-syms [db query-form & inputs]
+  (if (vector? query-form)
+    (quasiquote
+      (result-keys
+        (q (unquote db) (unquote query-form) (splice inputs))
+        .Symbol
+        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":syms")))])))
+    (error "q-syms expects a literal datalog query")))
+
+(defmacro datoms [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (datoms-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "datoms index order must be a keyword")))
+
+(defmacro datoms-checked [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (datoms-checked-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "datoms-checked index order must be a keyword")))
+
+(defmacro seek-datoms [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (seek-datoms-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "seek-datoms index order must be a keyword")))
+
+(defmacro seek-datoms-checked [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (seek-datoms-checked-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "seek-datoms-checked index order must be a keyword")))
+
+(defmacro rseek-datoms [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (rseek-datoms-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "rseek-datoms index order must be a keyword")))
+
+(defmacro rseek-datoms-checked [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (rseek-datoms-checked-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "rseek-datoms-checked index order must be a keyword")))
+
+(defmacro find-datom [db order & args]
+  (if (keyword? order)
+    (quasiquote
+      (find-datom-with-args
+        (unquote db)
+        (unquote (source order))
+        ([]Index-Arg [(splice (emit-index-args args))])))
+    (error "find-datom index order must be a keyword")))
+
+(defmacro index-range [db attr start end]
+  (quasiquote
+    (index-range-with-args
+      (unquote db)
+      (unquote (emit-attr attr))
+      (unquote (emit-index-arg start))
+      (unquote (if (nil? start) (quasiquote false) (quasiquote true)))
+      (unquote (emit-index-arg end))
+      (unquote (if (nil? end) (quasiquote false) (quasiquote true))))))
+
+(defmacro index-range-checked [db attr start end]
+  (quasiquote
+    (index-range-checked-with-args
+      (unquote db)
+      (unquote (emit-attr attr))
+      (unquote (emit-index-arg start))
+      (unquote (if (nil? start) (quasiquote false) (quasiquote true)))
+      (unquote (emit-index-arg end))
+      (unquote (if (nil? end) (quasiquote false) (quasiquote true))))))
+
+(defmacro transact [conn tx-form]
+  (if (vector? tx-form)
+    (quasiquote
+      (transact-tx-data
+        (unquote conn)
+        ([]Tx-Data [(splice (emit-tx-data-items tx-form))])))
+    (quasiquote (transact-tx-data (unquote conn) (unquote tx-form)))))
+
+(defmacro pull [db pattern entity]
+  (if (vector? pattern)
+    (if (lookup-ref? entity)
+      (quasiquote
+        (pull-pattern-lookup-ref
+          (unquote db)
+          (unquote (emit-attr (nth entity 0)))
+          (unquote (emit-literal-value (nth entity 1)))
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+      (if (keyword? entity)
+        (quasiquote
+          (pull-pattern-ident
+            (unquote db)
+            (unquote (source entity))
+            ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+        (quasiquote
+          (pull-pattern-spec
+            (unquote db)
+            (unquote entity)
+            ([]Pull-Spec [(splice (emit-pull-specs pattern))])))))
+    (quasiquote (pull-pattern (unquote db) (unquote entity) (unquote pattern)))))
+
+(defmacro pull-many [db pattern entities]
+  (if (vector? pattern)
+    (if (and (vector? entities)
+             (> (count entities) 0)
+             (lookup-ref? (first entities)))
+      (quasiquote
+        (pull-many-pattern-lookup-refs
+          (unquote db)
+          ([]string [(splice (emit-query-input-lookup-ref-attrs entities))])
+          ([]Value [(splice (emit-query-input-lookup-ref-values entities))])
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))])))
+      (quasiquote
+        (pull-many-pattern-spec
+          (unquote db)
+          (unquote entities)
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))
+    (quasiquote (pull-many-pattern (unquote db) (unquote entities) (unquote pattern)))))
