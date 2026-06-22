@@ -36,6 +36,7 @@ These are the main in-memory parity target before durable storage.
 | `components.cljc` | 2 | partial | exact schema validation and render/touch shapes |
 | `pull_api.cljc` | 17 | partial | xform/visitor options and exact collection/scalar shapes |
 | `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
+| `filter.cljc` | 1 | partial | materialized filtered DBs cover query/entity/index-visible semantics; exact hash/equality/runtime wrapper behavior remains |
 
 ## Parser And Interop
 
@@ -61,7 +62,6 @@ These are useful, but not the next engine-parity gate.
 | --- | ---: | --- | --- |
 | `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered; listeners remain |
 | `listen.cljc` | 1 | planned | listener API after connection surface |
-| `filter.cljc` | 1 | planned | filtered DB API later |
 | `serialize.cljc` | 5 | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |

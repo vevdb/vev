@@ -32,7 +32,8 @@ DataScript assertion or exact Clojure API shape.
 | `parser*.cljc` | 19 | missing | EDN/text parser |
 | `conn.cljc` | 2 | subset | conn-from-db/from-datoms and reset reports covered; listeners remain |
 | `serialize.cljc` | 5 | subset | init-db from datoms covered; text/EDN/JSON serialization format later |
-| `listen.cljc`, `filter.cljc`, `storage.clj`, `datafy.cljc` | 8 | later | app/runtime APIs after core parity |
+| `filter.cljc` | 1 | subset | materialized `filter-db` covers predicate filters, chaining, entity reads, and index-backed queries; exact hash/equality/runtime wrapper behavior remains |
+| `listen.cljc`, `storage.clj`, `datafy.cljc` | 7 | later | app/runtime APIs after core parity |
 
 Near-term rule: port one namespace at a time, and only mark `covered` when the
 remaining differences are intentional non-Clojure API shape differences.

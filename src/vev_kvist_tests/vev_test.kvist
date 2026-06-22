@@ -19,6 +19,29 @@
       (return true)))
   false)
 
+(defn keep-not-password [db: vev.DB, datom: vev.Datom] -> bool
+  (not (= datom.a ":password")))
+
+(defn keep-not-entity-2 [db: vev.DB, datom: vev.Datom] -> bool
+  (not (= datom.e 2)))
+
+(defn keep-long-akas [db: vev.DB, datom: vev.Datom] -> bool
+  (when (not (= datom.a ":aka"))
+    (return true))
+  (let [entity (vev.db-entity db datom.e)
+        akas (vev.entity-values entity ":aka")]
+    (defer (delete akas))
+    (or (<= (count akas) 1)
+        (>= (count datom.v.text) 4))))
+
+(defn keep-has-age [db: vev.DB, datom: vev.Datom] -> bool
+  (vev.entity-contains? (vev.db-entity db datom.e) ":age"))
+
+(defn keep-adult [db: vev.DB, datom: vev.Datom] -> bool
+  (let [age (vev.entity-get (vev.db-entity db datom.e) ":age")]
+    (and (= age.kind .Int)
+         (>= age.int_value 18))))
+
 (t.deftest transact-reports-snapshots-and-metadata
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -348,6 +371,82 @@
     (t.is (= diff.both[0].e 1))
     (t.is (= diff.both[0].a ":a"))
     (t.is (= diff.both[0].v.int_value 1))))
+
+(t.deftest datascript-filter-db-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 10 :db/ident :aka :db/cardinality :db.cardinality/many}
+             {:db/id 1 :name "Petr" :email "petya@spb.ru" :aka ["I" "Great"] :password "<SECRET>"}
+             {:db/id 2 :name "Ivan" :aka ["Terrible" "IV"] :password "<PROTECTED>"}
+             {:db/id 3 :name "Nikolai" :aka ["II"] :password "<UNKNOWN>"}])
+        db conn.db
+        no-passwords (vev.filter-db db keep-not-password)
+        no-ivan (vev.filter-db db keep-not-entity-2)
+        long-akas (vev.filter-db db keep-long-akas)
+        no-ivan-no-passwords (vev.filter-db no-ivan keep-not-password)
+        no-ivan-long-akas (vev.filter-db no-ivan keep-long-akas)
+        long-akas-no-ivan (vev.filter-db long-akas keep-not-entity-2)
+        passwords (vev.q-collection db [:find [?v ...] :where [_ :password ?v]])
+        passwords-filtered (vev.q-collection no-passwords [:find [?v ...] :where [_ :password ?v]])
+        passwords-no-ivan (vev.q-collection no-ivan [:find [?v ...] :where [_ :password ?v]])
+        passwords-chained (vev.q-collection no-ivan-no-passwords [:find [?v ...] :where [_ :password ?v]])
+        akas (vev.q-collection db [:find [?v ...] :where [_ :aka ?v]])
+        akas-no-passwords (vev.q-collection no-passwords [:find [?v ...] :where [_ :aka ?v]])
+        akas-no-ivan (vev.q-collection no-ivan [:find [?v ...] :where [_ :aka ?v]])
+        akas-long (vev.q-collection long-akas [:find [?v ...] :where [_ :aka ?v]])
+        akas-no-ivan-long (vev.q-collection no-ivan-long-akas [:find [?v ...] :where [_ :aka ?v]])
+        akas-long-no-ivan (vev.q-collection long-akas-no-ivan [:find [?v ...] :where [_ :aka ?v]])
+        petr-filtered (vev.db-entity no-passwords 1)
+        ivan-filtered (vev.db-entity long-akas 2)
+        ivan-akas (vev.entity-values ivan-filtered ":aka")]
+    (defer (delete ivan-akas))
+    (t.is (= (count passwords) 3))
+    (t.is (= (count passwords-filtered) 0))
+    (t.is (= (count passwords-no-ivan) 2))
+    (t.is (= passwords-no-ivan[0].text "<SECRET>"))
+    (t.is (= passwords-no-ivan[1].text "<UNKNOWN>"))
+    (t.is (= (count passwords-chained) 0))
+    (t.is (= (count akas) 5))
+    (t.is (= (count akas-no-passwords) 5))
+    (t.is (= (count akas-no-ivan) 3))
+    (t.is (= (count akas-long) 3))
+    (t.is (= akas-long[0].text "Great"))
+    (t.is (= akas-long[1].text "Terrible"))
+    (t.is (= akas-long[2].text "II"))
+    (t.is (= (count akas-no-ivan-long) 2))
+    (t.is (= akas-no-ivan-long[0].text "Great"))
+    (t.is (= akas-no-ivan-long[1].text "II"))
+    (t.is (= (count akas-long-no-ivan) 2))
+    (t.is (= akas-long-no-ivan[0].text "Great"))
+    (t.is (= akas-long-no-ivan[1].text "II"))
+    (t.is (not (vev.entity-contains? petr-filtered ":password")))
+    (t.is (= (count ivan-akas) 1))
+    (t.is (= ivan-akas[0].text "Terrible"))))
+
+(t.deftest datascript-filter-db-double-filtering-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Petr" :age 32}
+             {:db/id 2 :name "Oleg"}
+             {:db/id 3 :name "Ivan" :age 12}])
+        has-age (vev.filter-db conn.db keep-has-age)
+        adults (vev.filter-db has-age keep-adult)
+        names (vev.q-collection conn.db [:find [?name ...] :where [_ :name ?name]])
+        names-with-age (vev.q-collection has-age [:find [?name ...] :where [_ :name ?name]])
+        adult-names (vev.q-collection adults [:find [?name ...] :where [_ :name ?name]])]
+    (t.is (= (count names) 3))
+    (t.is (= names[0].text "Petr"))
+    (t.is (= names[1].text "Oleg"))
+    (t.is (= names[2].text "Ivan"))
+    (t.is (= (count names-with-age) 2))
+    (t.is (= names-with-age[0].text "Petr"))
+    (t.is (= names-with-age[1].text "Ivan"))
+    (t.is (= (count adult-names) 1))
+    (t.is (= adult-names[0].text "Petr"))))
 
 (t.deftest datascript-init-db-and-conn-from-datoms-subset
   (defer (free_all context.allocator))
