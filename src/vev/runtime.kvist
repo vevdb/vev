@@ -405,7 +405,8 @@
       (when (and input-ok (= input.kind .String))
         (return (value-int (i64 (count input.text))) true))
       (return (Value {}) false)))
-  (when (and (= function.op "identity")
+  (when (and (or (= function.op "identity")
+                 (= function.op "ground"))
              (= (count function.terms) 1))
     (return (resolve-term function.terms[0] binding)))
   (when (and (= function.op "inc")
@@ -579,6 +580,11 @@
   (let [[value value-ok] (apply-function-op function binding)]
     (when (not value-ok)
       (return binding false))
+    (when (not (= function.out_binding.kind .None))
+      (let [bound (bind-input-pattern binding function.out_binding value)]
+        (when (= (count bound) 1)
+          (return bound[0] true))
+        (return binding false)))
     (when function.is_tuple
       (when (not (= value.kind .Vector))
         (return binding false))
@@ -2261,7 +2267,12 @@
     (for [binding bindings]
       (let [[source source-ok] (resolve-term ground.source binding)]
         (when source-ok
-          (if ground.is_tuple
+          (if (not (= ground.binding.kind .None))
+            (do
+              (let [bound (bind-input-pattern binding ground.binding source)]
+                (for [item bound]
+                  (arr.push! out item))))
+            (if ground.is_tuple
             (when (= source.kind .Vector)
               (let [[next ok] (ground-bind-values binding ground.tuple_vars (slice source.items 0))]
                 (when ok
@@ -2284,15 +2295,21 @@
                   (arr.push! out binding)
                   (let [[next ok] (binding-with-value binding ground.out source)]
                     (when ok
-                      (arr.push! out next))))))))))
+                      (arr.push! out next)))))))))))
     out))
 
 (defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
-      (let [[next ok] (apply-function-clause binding function)]
-        (when ok
-          (arr.push! out next))))
+      (if (not (= function.out_binding.kind .None))
+        (let [[value value-ok] (apply-function-op function binding)]
+          (when value-ok
+            (let [bound (bind-input-pattern binding function.out_binding value)]
+              (for [item bound]
+                (arr.push! out item)))))
+        (let [[next ok] (apply-function-clause binding function)]
+          (when ok
+            (arr.push! out next)))))
     out))
 
 (defn bindings-after-predicate [bindings: []Binding, predicate: Predicate] -> [dynamic]Binding
@@ -2783,11 +2800,7 @@
         (delete bindings)
         (set! bindings next-bindings)))
     (for [function query.function_clauses]
-      (let [next-bindings (make [dynamic]Binding)]
-        (for [binding bindings]
-          (let [[next ok] (apply-function-clause binding function)]
-            (when ok
-              (arr.push! next-bindings next))))
+      (let [next-bindings (bindings-after-function (slice bindings 0) function)]
         (delete bindings)
         (set! bindings next-bindings)))
     (for [predicate query.predicates]
