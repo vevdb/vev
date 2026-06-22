@@ -19,7 +19,7 @@ These are the main in-memory parity target before durable storage.
 | --- | ---: | --- | --- |
 | `query.cljc` | 11 | partial | primary/named collection datom sources, map relation inputs, and nested map values covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
-| `query_fns.cljc` | 7 | partial | built-ins covered; decide host function surface and exact error behavior |
+| `query_fns.cljc` | 7 | partial | built-ins including regex covered; decide host function surface and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
 | `query_or.cljc` | 5 | partial | source semantics covered; validation/error cases remain |
 | `query_pull.cljc` | 8 | partial | multi-source pull covered; finish exact find-spec return shapes |
@@ -41,7 +41,8 @@ These are the main in-memory parity target before durable storage.
 ## Parser And Interop
 
 These matter for broad consumption. The first query and transaction text APIs
-now exist, but full parser parity still trails the native Kvist literal surface.
+now exist, and query text inputs are consumed in DataScript `:in` source order,
+but full parser parity still trails the native Kvist literal surface.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |

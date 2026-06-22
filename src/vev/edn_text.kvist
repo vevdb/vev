@@ -3,8 +3,11 @@
 (defn db-source [name: string, db: DB] -> DB-Source
   (DB-Source {name: name db: db}))
 
-(defn query-from-text-parts [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
-  (query find with inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls aggregates))
+(defn query-from-text-parts [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, input-specs: []Query-Input-Spec, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
+  (let [out (query find with inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls aggregates)]
+    (delete out.input_specs)
+    (set! out.input_specs (arr.into [dynamic]Query-Input-Spec input-specs))
+    out))
 
 (defn db-source-name? [sources: []DB-Source, name: string] -> bool
   (when (= name "$")
@@ -14,7 +17,7 @@
       (return true)))
   false)
 
-(defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
+(defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
   (let [node doc.nodes[node-index]]
     (cond
       (and (= node.kind .Symbol) (db-source-name? db-sources node.text))
@@ -24,10 +27,12 @@
       (and (= node.kind .Symbol) (strings.has_prefix node.text "$"))
         (do
           (arr.push! inputs^ node.text)
+          (arr.push! input-specs^ (Query-Input-Spec {kind: .Scalar name: node.text}))
           (return true ""))
       (edn-var? doc node-index)
         (do
           (arr.push! inputs^ node.text)
+          (arr.push! input-specs^ (Query-Input-Spec {kind: .Scalar name: node.text}))
           (return true ""))
       (= node.kind .Vector)
         (let [first-node node.first_child
@@ -38,16 +43,21 @@
             (= doc.nodes[first-node].kind .Vector)
               (do
                 (let [vars (edn-vars-from-vector doc first-node)]
-                  (arr.push! relation-inputs^ (Relation-Input {vars: (slice vars 0)})))
+                  (let [relation (Relation-Input {vars: (slice vars 0)})]
+                    (arr.push! relation-inputs^ relation)
+                    (arr.push! input-specs^ (Query-Input-Spec {kind: .Relation relation: relation}))))
                 (return true ""))
             (and (edn-var? doc first-node) (edn-symbol-text? doc second-node "..."))
               (do
                 (arr.push! collection-inputs^ doc.nodes[first-node].text)
+                (arr.push! input-specs^ (Query-Input-Spec {kind: .Collection name: doc.nodes[first-node].text}))
                 (return true ""))
             :else
               (do
                 (let [vars (edn-vars-from-vector doc node-index)]
-                  (arr.push! tuple-inputs^ (Tuple-Input {vars: (slice vars 0)})))
+                  (let [tuple (Tuple-Input {vars: (slice vars 0)})]
+                    (arr.push! tuple-inputs^ tuple)
+                    (arr.push! input-specs^ (Query-Input-Spec {kind: .Tuple tuple: tuple}))))
                 (return true ""))))
       :else (return false "query text :in currently supports vars, [?x ...], [?x ?y], and [[?x ?y]]"))))
 
@@ -588,6 +598,7 @@
         collection-inputs (make [dynamic]string) :defer
         tuple-inputs (make [dynamic]Tuple-Input) :defer
         relation-inputs (make [dynamic]Relation-Input) :defer
+        input-specs (make [dynamic]Query-Input-Spec) :defer
         clauses (make [dynamic]Clause) :defer
         predicates (make [dynamic]Predicate) :defer
         function-clauses (make [dynamic]Function-Clause) :defer
@@ -634,7 +645,7 @@
     (when (edn-keyword-text? doc cursor ":in")
       (set! cursor doc.nodes[cursor].next_sibling)
       (while (and (not (= cursor -1)) (not (edn-keyword-text? doc cursor ":where")))
-        (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) doc cursor db-sources)]
+        (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) doc cursor db-sources)]
           (when (not input-ok)
             (return false input-error)))
         (set! cursor doc.nodes[cursor].next_sibling)))
@@ -645,7 +656,7 @@
         (when (not item-ok)
           (return false item-error)))
       (set! cursor doc.nodes[cursor].next_sibling))
-    (let [query-value (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0))]
+    (let [query-value (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0))]
       (set! out^ query-value)
       (return true ""))))
 

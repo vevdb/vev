@@ -85,6 +85,18 @@
     (arr.push! out binding)
     out))
 
+(defn expand-scalar-input [db: DB, bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (or (= input.kind .Scalar)
+              (= input.kind .PullPattern))
+      (let [[value ok] (query-input-scalar-value db input)]
+        (when ok
+          (for [binding bindings]
+            (let [next (clone-binding binding)]
+              (binding-store! (addr next) name value)
+              (arr.push! out next))))))
+    out))
+
 (defn expand-collection-input [bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (when (= input.kind .Collection)
@@ -134,7 +146,31 @@
               (arr.push! out next))))))
     out))
 
+(defn bindings-from-inputs-in-order [db: DB, query: Query, inputs: []Query-Input] -> [dynamic]Binding
+  (let [binding (Binding {})
+        bindings (make [dynamic]Binding)]
+    (arr.push! bindings binding)
+    (for [spec index query.input_specs]
+      (when (< index (count inputs))
+        (let [next-bindings (make [dynamic]Binding)]
+          (cond
+            (= spec.kind .Scalar)
+              (set! next-bindings (expand-scalar-input db (slice bindings 0) spec.name inputs[index]))
+            (= spec.kind .Collection)
+              (if (= inputs[index].kind .CollectionLookupRefs)
+                (set! next-bindings (expand-collection-lookup-ref-input db (slice bindings 0) spec.name inputs[index]))
+                (set! next-bindings (expand-collection-input (slice bindings 0) spec.name inputs[index])))
+            (= spec.kind .Tuple)
+              (set! next-bindings (expand-tuple-input (slice bindings 0) spec.tuple inputs[index]))
+            (= spec.kind .Relation)
+              (set! next-bindings (expand-relation-input (slice bindings 0) spec.relation inputs[index])))
+          (delete bindings)
+          (set! bindings next-bindings))))
+    bindings))
+
 (defn bindings-from-inputs [db: DB, query: Query, inputs: []Query-Input] -> [dynamic]Binding
+  (when (> (count query.input_specs) 0)
+    (return (bindings-from-inputs-in-order db query inputs)))
   (let [bindings (binding-from-inputs db (slice query.inputs 0) inputs)
         collection-offset (count query.inputs)
         tuple-offset (+ collection-offset (count query.collection_inputs))
@@ -204,6 +240,17 @@
     (= op "<=") (not (value-less? right left))
     :else false))
 
+(defn re-find-matches? [pattern: Value, text: Value] -> bool
+  (when (not (and (= pattern.kind .String)
+                  (= text.kind .String)))
+    (return false))
+  (let [[iter err] (regex.create_iterator text.text pattern.text)]
+    (when (!= err nil)
+      (return false))
+    (defer (regex.destroy iter))
+    (let [[_ _ ok] (regex.match (addr iter))]
+      ok)))
+
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
   (when (and (or (= predicate.op "even?")
                  (= predicate.op "odd?")
@@ -229,6 +276,11 @@
           (= predicate.op "pos?") (return (> value.entity 0))
           (= predicate.op "neg?") (return false)))
       (return false)))
+  (when (and (= predicate.op "re-find")
+             (= (count predicate.terms) 2))
+    (let [[pattern pattern-ok] (resolve-term predicate.terms[0] binding)
+          [text text-ok] (resolve-term predicate.terms[1] binding)]
+      (return (and pattern-ok text-ok (re-find-matches? pattern text)))))
   (when (< (count predicate.terms) 2)
     (return false))
   (for [index (arr.range 0 (- (count predicate.terms) 1))]
@@ -265,6 +317,15 @@
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .Int))
         (return (value-int (+ input.int_value 1)) true))
+      (return (Value {}) false)))
+  (when (and (= function.op "re-pattern")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (and input-ok (= input.kind .String))
+        (let [[compiled err] (regex.create input.text)]
+          (when (= err nil)
+            (regex.destroy compiled)
+            (return input true))))
       (return (Value {}) false)))
   (when (and (or (= function.op "first")
                  (= function.op "second"))
