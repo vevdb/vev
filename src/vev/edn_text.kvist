@@ -975,6 +975,7 @@
         where-steps (make [dynamic]Query-Step) :defer
         pulls (make [dynamic]Pull-Find) :defer
         aggregates (make [dynamic]Aggregate-Find) :defer
+        return-map-allowed true
         cursor (edn-child-at doc doc.root 1)]
     (while (and (not (= cursor -1))
                 (not (edn-keyword-text? doc cursor ":in"))
@@ -983,6 +984,9 @@
                 (not (edn-keyword-text? doc cursor ":keys"))
                 (not (edn-keyword-text? doc cursor ":strs"))
                 (not (edn-keyword-text? doc cursor ":syms")))
+      (when (or (edn-symbol-text? doc cursor ".")
+                (edn-find-vector-collection? doc cursor))
+        (set! return-map-allowed false))
       (if (= doc.nodes[cursor].kind .Vector)
         (let [[find-ok find-error] (append-edn-find-vector! (addr find) (addr pulls) (addr aggregates) doc cursor)]
           (when (not find-ok)
@@ -994,11 +998,19 @@
     (when (or (edn-keyword-text? doc cursor ":keys")
               (edn-keyword-text? doc cursor ":strs")
               (edn-keyword-text? doc cursor ":syms"))
+      (when (> (edn-vector-return-marker-count doc) 1)
+        (return false "only one of :keys/:strs/:syms may be present"))
+      (when (not return-map-allowed)
+        (return false "return-map markers do not work with collection or scalar :find"))
+      (when (not (= (edn-vector-return-entry-count doc cursor)
+                    (+ (count find) (count pulls) (count aggregates))))
+        (return false "return-map marker count must match :find count"))
       (set! cursor doc.nodes[cursor].next-sibling)
       (while (and (not (= cursor -1))
                   (not (edn-keyword-text? doc cursor ":in"))
                   (not (edn-keyword-text? doc cursor ":with"))
-                  (not (edn-keyword-text? doc cursor ":where")))
+                  (not (edn-keyword-text? doc cursor ":where"))
+                  (not (edn-return-map-marker? doc cursor)))
         (set! cursor doc.nodes[cursor].next-sibling)
         (continue)))
     (when (edn-keyword-text? doc cursor ":with")
@@ -1040,6 +1052,76 @@
           (return value-node))
         (set! entry doc.nodes[value-node].next-sibling))))
   -1)
+
+(defn edn-return-map-marker? [doc: EDN-Doc, node-index: int] -> bool
+  (or (edn-keyword-text? doc node-index ":keys")
+      (edn-keyword-text? doc node-index ":strs")
+      (edn-keyword-text? doc node-index ":syms")))
+
+(defn edn-find-vector-collection? [doc: EDN-Doc, vector-node: int] -> bool
+  (when (or (= vector-node -1)
+            (not (= doc.nodes[vector-node].kind .Vector))
+            (not (= doc.nodes[vector-node].child-count 2)))
+    (return false))
+  (let [first-node doc.nodes[vector-node].first-child
+        second-node (if (= first-node -1) -1 doc.nodes[first-node].next-sibling)]
+    (edn-symbol-text? doc second-node "...")))
+
+(defn edn-find-vector-scalar? [doc: EDN-Doc, vector-node: int] -> bool
+  (when (or (= vector-node -1)
+            (not (= doc.nodes[vector-node].kind .Vector))
+            (not (= doc.nodes[vector-node].child-count 2)))
+    (return false))
+  (let [first-node doc.nodes[vector-node].first-child
+        second-node (if (= first-node -1) -1 doc.nodes[first-node].next-sibling)]
+    (edn-symbol-text? doc second-node ".")))
+
+(defn edn-map-return-marker-count [doc: EDN-Doc] -> int
+  (let [out 0]
+    (when (not (= (edn-map-value-node doc doc.root ":keys") -1))
+      (set! out (+ out 1)))
+    (when (not (= (edn-map-value-node doc doc.root ":strs") -1))
+      (set! out (+ out 1)))
+    (when (not (= (edn-map-value-node doc doc.root ":syms") -1))
+      (set! out (+ out 1)))
+    out))
+
+(defn edn-map-return-node [doc: EDN-Doc] -> int
+  (let [keys-node (edn-map-value-node doc doc.root ":keys")]
+    (when (not (= keys-node -1))
+      (return keys-node)))
+  (let [strs-node (edn-map-value-node doc doc.root ":strs")]
+    (when (not (= strs-node -1))
+      (return strs-node)))
+  (edn-map-value-node doc doc.root ":syms"))
+
+(defn edn-return-entry-count [doc: EDN-Doc, node-index: int] -> int
+  (when (= node-index -1)
+    (return 0))
+  (if (= doc.nodes[node-index].kind .Vector)
+    doc.nodes[node-index].child-count
+    1))
+
+(defn edn-vector-return-marker-count [doc: EDN-Doc] -> int
+  (let [out 0
+        cursor doc.nodes[doc.root].first-child]
+    (while (not (= cursor -1))
+      (when (edn-return-map-marker? doc cursor)
+        (set! out (+ out 1)))
+      (set! cursor doc.nodes[cursor].next-sibling))
+    out))
+
+(defn edn-vector-return-entry-count [doc: EDN-Doc, marker-node: int] -> int
+  (let [out 0
+        cursor (if (= marker-node -1) -1 doc.nodes[marker-node].next-sibling)]
+    (while (and (not (= cursor -1))
+                (not (edn-keyword-text? doc cursor ":in"))
+                (not (edn-keyword-text? doc cursor ":with"))
+                (not (edn-keyword-text? doc cursor ":where"))
+                (not (edn-return-map-marker? doc cursor)))
+      (set! out (+ out 1))
+      (set! cursor doc.nodes[cursor].next-sibling))
+    out))
 
 (defn append-edn-find-section! [find: ^[dynamic]string, pulls: ^[dynamic]Pull-Find, aggregates: ^[dynamic]Aggregate-Find, doc: EDN-Doc, section: int] -> [ok: bool, error: string]
   (when (= section -1)
@@ -1117,6 +1199,15 @@
         [find-ok find-error] (append-edn-find-section! (addr find) (addr pulls) (addr aggregates) doc find-node)]
     (when (not find-ok)
       (return false find-error))
+    (when (> (edn-map-return-marker-count doc) 1)
+      (return false "only one of :keys/:strs/:syms may be present"))
+    (when (> (edn-map-return-marker-count doc) 0)
+      (when (or (edn-find-vector-collection? doc find-node)
+                (edn-find-vector-scalar? doc find-node))
+        (return false "return-map markers do not work with collection or scalar :find"))
+      (when (not (= (edn-return-entry-count doc (edn-map-return-node doc))
+                    (+ (count find) (count pulls) (count aggregates))))
+        (return false "return-map marker count must match :find count")))
     (let [[with-ok with-error] (append-edn-with-section! (addr with) doc with-node)]
       (when (not with-ok)
         (return false with-error)))
