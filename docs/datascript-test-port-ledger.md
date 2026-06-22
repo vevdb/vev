@@ -16,7 +16,7 @@ DataScript assertion or exact Clojure API shape.
 | `query_or.cljc` | 5 | subset | relation and DB source-prefixed forms plus nested inherited/override source covered; exact validation errors remain |
 | `query_pull.cljc` | 8 | subset | basic, variable-pattern, aggregate, lookup-ref pull, and multi-source pull covered; exact find-spec return shapes remain |
 | `query_rules.cljc` | 3 | subset | source-qualified relation rule calls, repeated rule calls, and fixpoint/symmetric recursion covered; host predicate inputs, validation, and semi-naive performance remain |
-| `query_fns.cljc` | 7 | subset | built-in predicates/functions, regex `re-pattern`/`re-find`, result unification, lookup-ref inputs, and rule/function binding interaction covered; arbitrary host functions and exact errors remain |
+| `query_fns.cljc` | 7 | subset | built-in predicates/functions including boolean/nil predicates, string contains/prefix/suffix helpers, integer arithmetic helpers, `name`, `subs`, regex `re-pattern`/`re-find`, result unification, lookup-ref inputs, and rule/function binding interaction covered; arbitrary host functions, `keyword`/`str`, regex capture-return functions, and exact errors remain |
 | `query_return_map.cljc` | 1 | covered | Vev uses keyed rows with keyword/string/symbol key kinds instead of Clojure maps |
 | `lookup_refs.cljc` | 5 | subset | mixed entity-id collection inputs and multi-source lookup-ref inputs covered; exact invalid lookup-ref error messages remain |
 | `ident.cljc` | 4 | covered | Vev returns ref values as `Value.Entity`; behavior is otherwise covered |

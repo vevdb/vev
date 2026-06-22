@@ -252,6 +252,24 @@
       ok)))
 
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
+  (when (and (or (= predicate.op "true?")
+                 (= predicate.op "false?")
+                 (= predicate.op "nil?")
+                 (= predicate.op "some?")
+                 (= predicate.op "not")
+                 (= predicate.op "empty?"))
+             (= (count predicate.terms) 1))
+    (let [[value value-ok] (resolve-term predicate.terms[0] binding)]
+      (when (not value-ok)
+        (return false))
+      (cond
+        (= predicate.op "true?") (return (and (= value.kind .Bool) value.bool_value))
+        (= predicate.op "false?") (return (and (= value.kind .Bool) (not value.bool_value)))
+        (= predicate.op "nil?") (return (= value.kind .Nil))
+        (= predicate.op "some?") (return (not (= value.kind .Nil)))
+        (= predicate.op "not") (return (or (= value.kind .Nil)
+                                           (and (= value.kind .Bool) (not value.bool_value))))
+        (= predicate.op "empty?") (return (and (= value.kind .Vector) (= (count value.items) 0))))))
   (when (and (or (= predicate.op "even?")
                  (= predicate.op "odd?")
                  (= predicate.op "zero?")
@@ -281,6 +299,22 @@
     (let [[pattern pattern-ok] (resolve-term predicate.terms[0] binding)
           [text text-ok] (resolve-term predicate.terms[1] binding)]
       (return (and pattern-ok text-ok (re-find-matches? pattern text)))))
+  (when (and (or (= predicate.op "contains?")
+                 (= predicate.op "clojure.string/includes?")
+                 (= predicate.op "clojure.string/starts-with?")
+                 (= predicate.op "clojure.string/ends-with?"))
+             (= (count predicate.terms) 2))
+    (let [[left left-ok] (resolve-term predicate.terms[0] binding)
+          [right right-ok] (resolve-term predicate.terms[1] binding)]
+      (when (not (and left-ok right-ok (= left.kind .String) (= right.kind .String)))
+        (return false))
+      (cond
+        (or (= predicate.op "contains?") (= predicate.op "clojure.string/includes?"))
+          (return (strings.contains left.text right.text))
+        (= predicate.op "clojure.string/starts-with?")
+          (return (strings.has_prefix left.text right.text))
+        (= predicate.op "clojure.string/ends-with?")
+          (return (strings.has_suffix left.text right.text)))))
   (when (< (count predicate.terms) 2)
     (return false))
   (for [index (arr.range 0 (- (count predicate.terms) 1))]
@@ -317,6 +351,42 @@
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .Int))
         (return (value-int (+ input.int_value 1)) true))
+      (return (Value {}) false)))
+  (when (and (= function.op "dec")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (and input-ok (= input.kind .Int))
+        (return (value-int (- input.int_value 1)) true))
+      (return (Value {}) false)))
+  (when (and (= function.op "name")
+             (= (count function.terms) 1))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)]
+      (when (not input-ok)
+        (return (Value {}) false))
+      (when (= input.kind .String)
+        (return input true))
+      (when (= input.kind .Keyword)
+        (let [slash (slash-index input.text)]
+          (if (= slash -1)
+            (return (value-string (slice input.text 1)) true)
+            (return (value-string (slice input.text (+ slash 1))) true))))
+      (return (Value {}) false)))
+  (when (and (= function.op "subs")
+             (or (= (count function.terms) 2)
+                 (= (count function.terms) 3)))
+    (let [[input input-ok] (resolve-term function.terms[0] binding)
+          [start start-ok] (resolve-term function.terms[1] binding)]
+      (when (not (and input-ok start-ok (= input.kind .String) (= start.kind .Int)))
+        (return (Value {}) false))
+      (if (= (count function.terms) 2)
+        (let [[part ok] (strings.substring_from input.text (int start.int_value))]
+          (when ok
+            (return (value-string part) true)))
+        (let [[end end-ok] (resolve-term function.terms[2] binding)]
+          (when (and end-ok (= end.kind .Int))
+            (let [[part ok] (strings.substring input.text (int start.int_value) (int end.int_value))]
+              (when ok
+                (return (value-string part) true))))))
       (return (Value {}) false)))
   (when (and (= function.op "re-pattern")
              (= (count function.terms) 1))
@@ -369,9 +439,31 @@
       (when (and map-ok key-ok)
         (return (map-get-value map-value key)))
       (return (Value {}) false)))
+  (when (and (or (= function.op "contains?")
+                 (= function.op "clojure.string/includes?")
+                 (= function.op "clojure.string/starts-with?")
+                 (= function.op "clojure.string/ends-with?"))
+             (= (count function.terms) 2))
+    (let [[left left-ok] (resolve-term function.terms[0] binding)
+          [right right-ok] (resolve-term function.terms[1] binding)]
+      (when (not (and left-ok right-ok (= left.kind .String) (= right.kind .String)))
+        (return (Value {}) false))
+      (cond
+        (or (= function.op "contains?") (= function.op "clojure.string/includes?"))
+          (return (value-bool (strings.contains left.text right.text)) true)
+        (= function.op "clojure.string/starts-with?")
+          (return (value-bool (strings.has_prefix left.text right.text)) true)
+        (= function.op "clojure.string/ends-with?")
+          (return (value-bool (strings.has_suffix left.text right.text)) true))))
   (when (or (= function.op "+")
             (= function.op "-")
-            (= function.op "*"))
+            (= function.op "*")
+            (= function.op "/")
+            (= function.op "quot")
+            (= function.op "rem")
+            (= function.op "mod")
+            (= function.op "min")
+            (= function.op "max"))
     (when (= (count function.terms) 0)
       (return (Value {}) false))
     (let [[first-value first-ok] (resolve-term function.terms[0] binding)
@@ -382,12 +474,43 @@
         (let [[next next-ok] (resolve-term term binding)]
           (when (not (and next-ok (= next.kind .Int)))
             (return (Value {}) false))
-          (if (= function.op "+")
-            (set! result (+ result next.int_value))
-            (if (= function.op "-")
-              (set! result (- result next.int_value))
-              (set! result (* result next.int_value))))))
+          (cond
+            (= function.op "+") (set! result (+ result next.int_value))
+            (= function.op "-") (set! result (- result next.int_value))
+            (= function.op "*") (set! result (* result next.int_value))
+            (= function.op "/") (do
+              (when (= next.int_value 0)
+                (return (Value {}) false))
+              (set! result (/ result next.int_value)))
+            (= function.op "quot") (do
+              (when (= next.int_value 0)
+                (return (Value {}) false))
+              (set! result (/ result next.int_value)))
+            (= function.op "rem") (do
+              (when (= next.int_value 0)
+                (return (Value {}) false))
+              (set! result (% result next.int_value)))
+            (= function.op "mod") (do
+              (when (= next.int_value 0)
+                (return (Value {}) false))
+              (let [m (% result next.int_value)]
+                (if (and (not (= m 0))
+                         (or (and (< m 0) (> next.int_value 0))
+                             (and (> m 0) (< next.int_value 0))))
+                  (set! result (+ m next.int_value))
+                  (set! result m))))
+            (= function.op "min") (when (< next.int_value result)
+              (set! result next.int_value))
+            (= function.op "max") (when (> next.int_value result)
+              (set! result next.int_value)))))
       (return (value-int result) true)))
+  (when (and (= function.op "compare")
+             (= (count function.terms) 2))
+    (let [[left left-ok] (resolve-term function.terms[0] binding)
+          [right right-ok] (resolve-term function.terms[1] binding)]
+      (when (and left-ok right-ok)
+        (return (value-int (i64 (value-compare left right))) true))
+      (return (Value {}) false)))
   (return (Value {}) false))
 
 (defn apply-function-clause [binding: Binding, function: Function-Clause] -> [out: Binding, ok: bool]
