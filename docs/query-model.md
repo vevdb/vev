@@ -25,8 +25,10 @@ The project goal here is compatibility first:
 
 ## Native API stance
 
-Plain EDN strings are required at the portable boundary, but they should not be
-the only native shape.
+Plain EDN strings and prepared parsed handles are the primary portable surface.
+That is the main API compatibility target because Vev is intended to be used
+from C, Odin, Kvist, and other native environments. Kvist literal syntax should
+remain a convenience frontend, not the canonical compatibility path.
 
 Recommended split:
 
@@ -90,21 +92,21 @@ Start with a tight slice:
 Phase 1 should bias toward the subset most commonly shown in Datomic/DataScript
 examples so learning material transfers early.
 
-## Current Kvist proof
+## Current implementation
 
 The current in-memory implementation has two query frontends:
 
-- a Kvist query literal macro that lowers Datomic-shaped data to the typed
-  `Query` representation and evaluates that directly
-- a narrow text API, `q-text` / `q-text-with-inputs` / `q-text-with-sources` /
-  `parse-query-text!`, that parses a minimal `[:find ... :in ... :where ...]`
-  subset for early interop work
+- a text API, `q-text` / `q-text-with-inputs` / `q-text-with-sources` /
+  `parse-query-text!`, that parses a growing `[:find ... :in ... :where ...]`
+  EDN subset for portable callers
+- a Kvist query literal macro that lowers Datomic-shaped data to the same typed
+  `Query` representation
 
 The transaction side has the same split:
 
-- a Kvist tx-data literal macro used by `transact`
 - a text API, `transact-text` / `parse-tx-text!`, that parses common
   DataScript-shaped EDN tx-data strings into normal `Tx-Data` before execution
+- a Kvist tx-data literal macro used by `transact`
 
 Supported now:
 
@@ -474,5 +476,6 @@ The Kvist literal macro is useful for native Kvist callers and for exercising
 Kvist's macro system, but it should remain syntax sugar over the same typed
 query representation that text/EDN parsing will eventually produce.
 
-The project should treat the EDN parser as required for broad interop, not as a
-replacement for the Kvist literal API.
+The project should treat the EDN parser and prepared APIs as the primary
+compatibility surface. The Kvist literal API should stay aligned, but a feature
+that only works through the macro is not done for Vev's long-term goals.

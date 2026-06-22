@@ -3,6 +3,12 @@
 This is the working matrix for reaching DataScript compatibility without
 turning every Clojure runtime detail into an engine blocker.
 
+Vev's primary long-term consumers are non-Kvist native callers. A feature is
+therefore not considered compatibility-complete until it is available through
+the EDN/text or prepared-query/transaction surface. Kvist literal macros are
+valuable convenience coverage and macro-system exercise, but they are secondary
+frontends over the same typed query/tx/pull representations.
+
 Status:
 
 - `passing`: comparable Vev tests exist and pass
@@ -38,11 +44,13 @@ These are the main in-memory parity target before durable storage.
 | `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
 | `filter.cljc` | 1 | partial | materialized filtered DBs cover query/entity/index-visible semantics; exact hash/equality/runtime wrapper behavior remains |
 
-## Parser And Interop
+## Parser And Portable API
 
-These matter for broad consumption. The first query and transaction text APIs
-now exist, and query text inputs are consumed in DataScript `:in` source order,
-but full parser parity still trails the native Kvist literal surface.
+These are the primary compatibility gate for broad consumption. The first query
+and transaction text APIs now exist, and query text inputs are consumed in
+DataScript `:in` source order, but full parser parity still trails some native
+Kvist literal conveniences. New DataScript compatibility work should prefer
+EDN/text coverage first and add Kvist macro coverage as a convenience layer.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
@@ -76,10 +84,12 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Broaden parser/EDN APIs around pull options, return-map markers, source-qualified rules, and exact
-   validation now that the first query/tx text paths are active.
+1. Broaden parser/EDN APIs around pull options, return-map markers,
+   source-qualified rules, transactions, and exact validation. This is the
+   primary compatibility route because non-Kvist consumers depend on it.
 2. Port remaining `transact.cljc`, `upsert.cljc`, and `validation.cljc`
-   semantics that are not host-runtime-specific.
+   semantics that are not host-runtime-specific, with text/prepared API tests
+   where a portable representation exists.
 3. Finish tuple/index public API behavior as one schema/index batch.
-4. Continue EDN/interoperability API coverage; primary collection DB rows now
-   have a text API path, while Kvist native code can also use named sources.
+4. Keep Kvist macros aligned with the typed AST as ergonomic sugar, not as the
+   definition of compatibility.

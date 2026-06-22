@@ -7,6 +7,11 @@ namespace classification and batch order.
 `subset` means Vev has local tests for the main behavior, but not every
 DataScript assertion or exact Clojure API shape.
 
+Because Vev's primary long-term consumers are non-Kvist callers, a port should
+prefer EDN/text or prepared API coverage before Kvist literal-only coverage.
+Literal macro tests are useful, but they do not by themselves close a DataScript
+compatibility gap.
+
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
 | `query.cljc` | 11 | subset | basic joins, inputs, bindings, map-form text queries, nested `:in` binding patterns, relation source joins, primary/named collection datom sources including long `[e a v tx op]` rows, map relation inputs and nested map values, multi-DB source joins, constants including symbols, and placeholders covered; host functions and exact input errors remain |
