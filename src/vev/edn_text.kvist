@@ -724,15 +724,71 @@
                             v: (term-wildcard)})])))
     (return true "")))
 
+(defn append-clause-var-names! [vars: ^[dynamic]string, clause: Clause]
+  (when (= clause.e.kind .Var)
+    (append-var-once! vars clause.e.name))
+  (when (= clause.a.kind .Var)
+    (append-var-once! vars clause.a.name))
+  (when (= clause.v.kind .Var)
+    (append-var-once! vars clause.v.name))
+  (when (= clause.tx-term.kind .Var)
+    (append-var-once! vars clause.tx-term.name))
+  (when (= clause.op-term.kind .Var)
+    (append-var-once! vars clause.op-term.name)))
+
+(defn append-not-group-var-names! [vars: ^[dynamic]string, group: Not-Group]
+  (for [clause group.clauses]
+    (append-clause-var-names! vars clause))
+  (for [child group.not-groups]
+    (append-not-group-var-names! vars child)))
+
+(defn edn-node-has-var? [doc: EDN-Doc, node: int] -> bool
+  (when (= node -1)
+    (return false))
+  (when (edn-var? doc node)
+    (return true))
+  (let [child doc.nodes[node].first-child]
+    (while (not (= child -1))
+      (when (edn-node-has-var? doc child)
+        (return true))
+      (set! child doc.nodes[child].next-sibling)))
+  false)
+
+(defn not-group-has-vars? [group: Not-Group] -> bool
+  (let [vars (make [dynamic]string) :defer]
+    (append-not-group-var-names! (addr vars) group)
+    (> (count vars) 0)))
+
+(defn or-branches-have-vars? [branches: []Not-Group] -> bool
+  (let [vars (make [dynamic]string) :defer]
+    (for [branch branches]
+      (append-not-group-var-names! (addr vars) branch))
+    (> (count vars) 0)))
+
 (defn append-edn-not-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [clauses (make [dynamic]Clause) :defer
+        not-groups (make [dynamic]Not-Group) :defer
         cursor doc.nodes[doc.nodes[form].first-child].next-sibling]
+    (when (= cursor -1)
+      (return false "Cannot parse 'not' clause"))
     (while (not (= cursor -1))
-      (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
-        (when (not ok)
-          (return false error)))
+      (if (and (= doc.nodes[cursor].kind .List)
+               (= (edn-list-head-text doc cursor) "not"))
+        (let [[ok error] (append-edn-not-group! (addr not-groups) doc cursor)]
+          (when (not ok)
+            (return false error)))
+        (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
+          (when (and (not ok)
+                     (= error "query text clause is incomplete")
+                     (not (edn-node-has-var? doc cursor)))
+            (return false "Join variables should not be empty"))
+          (when (not ok)
+            (return false error))))
       (set! cursor doc.nodes[cursor].next-sibling))
-    (arr.push! out^ (not-group-simple (slice clauses 0)))
+    (let [group (not-group (slice clauses 0) (slice not-groups 0))]
+      (when (not (not-group-has-vars? group))
+        (return false "Join variables should not be empty"))
+      (arr.push! out^ group))
     (return true "")))
 
 (defn append-edn-not-join-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
@@ -743,6 +799,10 @@
           clauses (make [dynamic]Clause) :defer
           not-groups (make [dynamic]Not-Group) :defer
           cursor doc.nodes[join-node].next-sibling]
+      (when (= (count join-vars) 0)
+        (return false "Join variables should not be empty"))
+      (when (= cursor -1)
+        (return false "Cannot parse 'not-join' clause"))
       (while (not (= cursor -1))
         (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
           (when (not ok)
@@ -764,6 +824,10 @@
                 (return false error)))
             (set! cursor doc.nodes[cursor].next-sibling))))
       (let [[ok error] (append-edn-data-clause! (addr clauses) doc branch)]
+        (when (and (not ok)
+                   (= error "query text clause is incomplete")
+                   (not (edn-node-has-var? doc branch)))
+          (return false "Join variables should not be empty"))
         (when (not ok)
           (return false error))))
     (arr.push! out^ (not-group-simple (slice clauses 0)))
@@ -772,11 +836,15 @@
 (defn append-edn-or-group! [out: ^[dynamic]Or-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [branches (make [dynamic]Not-Group) :defer
         cursor doc.nodes[doc.nodes[form].first-child].next-sibling]
+    (when (= cursor -1)
+      (return false "Cannot parse 'or' clause"))
     (while (not (= cursor -1))
       (let [[ok error] (append-edn-or-branch! (addr branches) doc cursor)]
         (when (not ok)
           (return false error)))
       (set! cursor doc.nodes[cursor].next-sibling))
+    (when (not (or-branches-have-vars? (slice branches 0)))
+      (return false "Join variables should not be empty"))
     (arr.push! out^ (or-group (slice branches 0)))
     (return true "")))
 
@@ -787,6 +855,10 @@
     (let [join-vars (edn-vars-from-vector doc join-node) :defer
           branches (make [dynamic]Not-Group) :defer
           cursor doc.nodes[join-node].next-sibling]
+      (when (= (count join-vars) 0)
+        (return false "Cannot parse rule-vars"))
+      (when (= cursor -1)
+        (return false "Cannot parse 'or-join' clause"))
       (while (not (= cursor -1))
         (let [[ok error] (append-edn-or-branch! (addr branches) doc cursor)]
           (when (not ok)
@@ -814,6 +886,8 @@
           (return false "source-qualified rule calls must name a rule")))
     (let [args (make [dynamic]Term) :defer
           cursor doc.nodes[name-node].next-sibling]
+      (when (= cursor -1)
+        (return false "rule-expr requires at least one argument"))
       (while (not (= cursor -1))
         (arr.push! args (value-term-from-edn-node doc cursor))
         (set! cursor doc.nodes[cursor].next-sibling))
