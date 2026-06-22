@@ -302,6 +302,26 @@
     (= op "<=") (not (value-less? right left))
     :else false))
 
+(defn query-var-name? [name: string] -> bool
+  (strings.has_prefix name "?"))
+
+(defn query-op-value-name [value: Value] -> [name: string, ok: bool]
+  (when (= value.kind .Keyword)
+    (if (strings.has_prefix value.text ":")
+      (return (slice value.text 1) true)
+      (return value.text true)))
+  (when (= value.kind .String)
+    (return value.text true))
+  (return "" false))
+
+(defn query-op-name [op: string, binding: Binding] -> [name: string, ok: bool]
+  (when (not (query-var-name? op))
+    (return op true))
+  (let [[value value-ok] (binding-lookup binding op)]
+    (when (not value-ok)
+      (return "" false))
+    (query-op-value-name value)))
+
 (defn re-find-matches? [pattern: Value, text: Value] -> bool
   (when (not (and (= pattern.kind .String)
                   (= text.kind .String)))
@@ -340,68 +360,71 @@
     :else (return "" false)))
 
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
-  (when (and (or (= predicate.op "true?")
-                 (= predicate.op "false?")
-                 (= predicate.op "nil?")
-                 (= predicate.op "some?")
-                 (= predicate.op "not")
-                 (= predicate.op "empty?"))
+  (let [[op op-ok] (query-op-name predicate.op binding)]
+    (when (not op-ok)
+      (return false))
+  (when (and (or (= op "true?")
+                 (= op "false?")
+                 (= op "nil?")
+                 (= op "some?")
+                 (= op "not")
+                 (= op "empty?"))
              (= (count predicate.terms) 1))
     (let [[value value-ok] (resolve-term predicate.terms[0] binding)]
       (when (not value-ok)
         (return false))
       (cond
-        (= predicate.op "true?") (return (and (= value.kind .Bool) value.bool-value))
-        (= predicate.op "false?") (return (and (= value.kind .Bool) (not value.bool-value)))
-        (= predicate.op "nil?") (return (= value.kind .Nil))
-        (= predicate.op "some?") (return (not (= value.kind .Nil)))
-        (= predicate.op "not") (return (or (= value.kind .Nil)
+        (= op "true?") (return (and (= value.kind .Bool) value.bool-value))
+        (= op "false?") (return (and (= value.kind .Bool) (not value.bool-value)))
+        (= op "nil?") (return (= value.kind .Nil))
+        (= op "some?") (return (not (= value.kind .Nil)))
+        (= op "not") (return (or (= value.kind .Nil)
                                            (and (= value.kind .Bool) (not value.bool-value))))
-        (= predicate.op "empty?") (return (and (= value.kind .Vector) (= (count value.items) 0))))))
-  (when (and (or (= predicate.op "even?")
-                 (= predicate.op "odd?")
-                 (= predicate.op "zero?")
-                 (= predicate.op "pos?")
-                 (= predicate.op "neg?"))
+        (= op "empty?") (return (and (= value.kind .Vector) (= (count value.items) 0))))))
+  (when (and (or (= op "even?")
+                 (= op "odd?")
+                 (= op "zero?")
+                 (= op "pos?")
+                 (= op "neg?"))
              (= (count predicate.terms) 1))
     (let [[value value-ok] (resolve-term predicate.terms[0] binding)]
       (when (not value-ok)
         (return false))
       (when (= value.kind .Int)
         (cond
-          (= predicate.op "even?") (return (= (% value.int-value 2) 0))
-          (= predicate.op "odd?") (return (not (= (% value.int-value 2) 0)))
-          (= predicate.op "zero?") (return (= value.int-value 0))
-          (= predicate.op "pos?") (return (> value.int-value 0))
-          (= predicate.op "neg?") (return (< value.int-value 0))))
+          (= op "even?") (return (= (% value.int-value 2) 0))
+          (= op "odd?") (return (not (= (% value.int-value 2) 0)))
+          (= op "zero?") (return (= value.int-value 0))
+          (= op "pos?") (return (> value.int-value 0))
+          (= op "neg?") (return (< value.int-value 0))))
       (when (= value.kind .Entity)
         (cond
-          (= predicate.op "even?") (return (= (% value.entity 2) 0))
-          (= predicate.op "odd?") (return (not (= (% value.entity 2) 0)))
-          (= predicate.op "zero?") (return (= value.entity 0))
-          (= predicate.op "pos?") (return (> value.entity 0))
-          (= predicate.op "neg?") (return false)))
+          (= op "even?") (return (= (% value.entity 2) 0))
+          (= op "odd?") (return (not (= (% value.entity 2) 0)))
+          (= op "zero?") (return (= value.entity 0))
+          (= op "pos?") (return (> value.entity 0))
+          (= op "neg?") (return false)))
       (return false)))
-  (when (and (= predicate.op "re-find")
+  (when (and (= op "re-find")
              (= (count predicate.terms) 2))
     (let [[pattern pattern-ok] (resolve-term predicate.terms[0] binding)
           [text text-ok] (resolve-term predicate.terms[1] binding)]
       (return (and pattern-ok text-ok (re-find-matches? pattern text)))))
-  (when (and (or (= predicate.op "contains?")
-                 (= predicate.op "clojure.string/includes?")
-                 (= predicate.op "clojure.string/starts-with?")
-                 (= predicate.op "clojure.string/ends-with?"))
+  (when (and (or (= op "contains?")
+                 (= op "clojure.string/includes?")
+                 (= op "clojure.string/starts-with?")
+                 (= op "clojure.string/ends-with?"))
              (= (count predicate.terms) 2))
     (let [[left left-ok] (resolve-term predicate.terms[0] binding)
           [right right-ok] (resolve-term predicate.terms[1] binding)]
       (when (not (and left-ok right-ok (= left.kind .String) (= right.kind .String)))
         (return false))
       (cond
-        (or (= predicate.op "contains?") (= predicate.op "clojure.string/includes?"))
+        (or (= op "contains?") (= op "clojure.string/includes?"))
           (return (strings.contains left.text right.text))
-        (= predicate.op "clojure.string/starts-with?")
+        (= op "clojure.string/starts-with?")
           (return (strings.has_prefix left.text right.text))
-        (= predicate.op "clojure.string/ends-with?")
+        (= op "clojure.string/ends-with?")
           (return (strings.has_suffix left.text right.text)))))
   (when (< (count predicate.terms) 2)
     (return false))
@@ -410,9 +433,9 @@
           [right right-ok] (resolve-term predicate.terms[(+ index 1)] binding)]
       (when (not (and left-ok right-ok))
         (return false))
-      (when (not (predicate-pair-matches? predicate.op left right))
+      (when (not (predicate-pair-matches? op left right))
         (return false))))
-  true)
+  true))
 
 (defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
   (when (not (= map-value.kind .Map))
@@ -425,29 +448,32 @@
   (return (Value {}) false))
 
 (defn apply-function-op [function: Function-Clause, binding: Binding] -> [value: Value, ok: bool]
-  (when (and (= function.op "count")
+  (let [[op op-ok] (query-op-name function.op binding)]
+    (when (not op-ok)
+      (return (Value {}) false))
+  (when (and (= op "count")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .String))
         (return (value-int (i64 (count input.text))) true))
       (return (Value {}) false)))
-  (when (and (or (= function.op "identity")
-                 (= function.op "ground"))
+  (when (and (or (= op "identity")
+                 (= op "ground"))
              (= (count function.terms) 1))
     (return (resolve-term function.terms[0] binding)))
-  (when (and (= function.op "inc")
+  (when (and (= op "inc")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .Int))
         (return (value-int (+ input.int-value 1)) true))
       (return (Value {}) false)))
-  (when (and (= function.op "dec")
+  (when (and (= op "dec")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .Int))
         (return (value-int (- input.int-value 1)) true))
       (return (Value {}) false)))
-  (when (and (= function.op "name")
+  (when (and (= op "name")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (not input-ok)
@@ -460,7 +486,7 @@
             (return (value-string (slice input.text 1)) true)
             (return (value-string (slice input.text (+ slash 1))) true))))
       (return (Value {}) false)))
-  (when (and (= function.op "subs")
+  (when (and (= op "subs")
              (or (= (count function.terms) 2)
                  (= (count function.terms) 3)))
     (let [[input input-ok] (resolve-term function.terms[0] binding)
@@ -477,7 +503,7 @@
               (when ok
                 (return (value-string part) true))))))
       (return (Value {}) false)))
-  (when (and (= function.op "re-pattern")
+  (when (and (= op "re-pattern")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .String))
@@ -486,14 +512,14 @@
             (regex.destroy compiled)
             (return input true))))
       (return (Value {}) false)))
-  (when (and (= function.op "re-find")
+  (when (and (= op "re-find")
              (= (count function.terms) 2))
     (let [[pattern pattern-ok] (resolve-term function.terms[0] binding)
           [text text-ok] (resolve-term function.terms[1] binding)]
       (when (and pattern-ok text-ok)
         (return (re-find-value pattern text)))
       (return (Value {}) false)))
-  (when (= function.op "str")
+  (when (= op "str")
     (let [parts (make [dynamic]string 0 (count function.terms))]
       (defer (delete parts))
       (for [term function.terms]
@@ -505,7 +531,7 @@
               (return (Value {}) false))
             (arr.push! parts part))))
       (return (value-string (strings.concatenate (slice parts 0))) true)))
-  (when (and (= function.op "keyword")
+  (when (and (= op "keyword")
              (or (= (count function.terms) 1)
                  (= (count function.terms) 2)))
     (if (= (count function.terms) 1)
@@ -526,18 +552,18 @@
         (return
           (value-keyword (strings.concatenate ([]string [":" namespace.text "/" name.text])))
           true))))
-  (when (and (or (= function.op "first")
-                 (= function.op "second"))
+  (when (and (or (= op "first")
+                 (= op "second"))
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)
-          index (if (= function.op "first") 0 1)]
+          index (if (= op "first") 0 1)]
       (when (and input-ok
                  (= input.kind .Vector)
                  (< index (count input.items)))
         (return input.items[index] true))
       (return (Value {}) false)))
-  (when (or (= function.op "vector")
-            (= function.op "tuple"))
+  (when (or (= op "vector")
+            (= op "tuple"))
     (let [items (make [dynamic]Value 0 (count function.terms))]
       (for [term function.terms]
         (let [[value ok] (resolve-term term binding)]
@@ -545,13 +571,13 @@
             (return (Value {}) false))
           (arr.push! items value)))
       (return (value-vector (slice items 0)) true)))
-  (when (and (= function.op "untuple")
+  (when (and (= op "untuple")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .Vector))
         (return input true))
       (return (Value {}) false)))
-  (when (= function.op "hash-map")
+  (when (= op "hash-map")
     (when (not (= (% (count function.terms) 2) 0))
       (return (Value {}) false))
     (let [items (make [dynamic]Value 0 (count function.terms))]
@@ -561,38 +587,38 @@
             (return (Value {}) false))
           (arr.push! items value)))
       (return (value-map (slice items 0)) true)))
-  (when (and (= function.op "get")
+  (when (and (= op "get")
              (= (count function.terms) 2))
     (let [[map-value map-ok] (resolve-term function.terms[0] binding)
           [key key-ok] (resolve-term function.terms[1] binding)]
       (when (and map-ok key-ok)
         (return (map-get-value map-value key)))
       (return (Value {}) false)))
-  (when (and (or (= function.op "contains?")
-                 (= function.op "clojure.string/includes?")
-                 (= function.op "clojure.string/starts-with?")
-                 (= function.op "clojure.string/ends-with?"))
+  (when (and (or (= op "contains?")
+                 (= op "clojure.string/includes?")
+                 (= op "clojure.string/starts-with?")
+                 (= op "clojure.string/ends-with?"))
              (= (count function.terms) 2))
     (let [[left left-ok] (resolve-term function.terms[0] binding)
           [right right-ok] (resolve-term function.terms[1] binding)]
       (when (not (and left-ok right-ok (= left.kind .String) (= right.kind .String)))
         (return (Value {}) false))
       (cond
-        (or (= function.op "contains?") (= function.op "clojure.string/includes?"))
+        (or (= op "contains?") (= op "clojure.string/includes?"))
           (return (value-bool (strings.contains left.text right.text)) true)
-        (= function.op "clojure.string/starts-with?")
+        (= op "clojure.string/starts-with?")
           (return (value-bool (strings.has_prefix left.text right.text)) true)
-        (= function.op "clojure.string/ends-with?")
+        (= op "clojure.string/ends-with?")
           (return (value-bool (strings.has_suffix left.text right.text)) true))))
-  (when (or (= function.op "+")
-            (= function.op "-")
-            (= function.op "*")
-            (= function.op "/")
-            (= function.op "quot")
-            (= function.op "rem")
-            (= function.op "mod")
-            (= function.op "min")
-            (= function.op "max"))
+  (when (or (= op "+")
+            (= op "-")
+            (= op "*")
+            (= op "/")
+            (= op "quot")
+            (= op "rem")
+            (= op "mod")
+            (= op "min")
+            (= op "max"))
     (when (= (count function.terms) 0)
       (return (Value {}) false))
     (let [[first-value first-ok] (resolve-term function.terms[0] binding)
@@ -604,22 +630,22 @@
           (when (not (and next-ok (= next.kind .Int)))
             (return (Value {}) false))
           (cond
-            (= function.op "+") (set! result (+ result next.int-value))
-            (= function.op "-") (set! result (- result next.int-value))
-            (= function.op "*") (set! result (* result next.int-value))
-            (= function.op "/") (do
+            (= op "+") (set! result (+ result next.int-value))
+            (= op "-") (set! result (- result next.int-value))
+            (= op "*") (set! result (* result next.int-value))
+            (= op "/") (do
               (when (= next.int-value 0)
                 (return (Value {}) false))
               (set! result (/ result next.int-value)))
-            (= function.op "quot") (do
+            (= op "quot") (do
               (when (= next.int-value 0)
                 (return (Value {}) false))
               (set! result (/ result next.int-value)))
-            (= function.op "rem") (do
+            (= op "rem") (do
               (when (= next.int-value 0)
                 (return (Value {}) false))
               (set! result (% result next.int-value)))
-            (= function.op "mod") (do
+            (= op "mod") (do
               (when (= next.int-value 0)
                 (return (Value {}) false))
               (let [m (% result next.int-value)]
@@ -628,19 +654,19 @@
                              (and (> m 0) (< next.int-value 0))))
                   (set! result (+ m next.int-value))
                   (set! result m))))
-            (= function.op "min") (when (< next.int-value result)
+            (= op "min") (when (< next.int-value result)
               (set! result next.int-value))
-            (= function.op "max") (when (> next.int-value result)
+            (= op "max") (when (> next.int-value result)
               (set! result next.int-value)))))
       (return (value-int result) true)))
-  (when (and (= function.op "compare")
+  (when (and (= op "compare")
              (= (count function.terms) 2))
     (let [[left left-ok] (resolve-term function.terms[0] binding)
           [right right-ok] (resolve-term function.terms[1] binding)]
       (when (and left-ok right-ok)
         (return (value-int (i64 (value-compare left right))) true))
       (return (Value {}) false)))
-  (return (Value {}) false))
+  (return (Value {}) false)))
 
 (defn apply-function-clause [binding: Binding, function: Function-Clause] -> [out: Binding, ok: bool]
   (let [[value value-ok] (apply-function-op function binding)]
@@ -3350,10 +3376,14 @@
   (append-input-binding-vars! vars function.out-binding))
 
 (defn append-predicate-vars! [vars: ^[dynamic]string, predicate: Predicate]
+  (when (query-var-name? predicate.op)
+    (append-var-once! vars predicate.op))
   (for [term predicate.terms]
     (append-term-var! vars term)))
 
 (defn append-function-vars! [vars: ^[dynamic]string, function: Function-Clause]
+  (when (query-var-name? function.op)
+    (append-var-once! vars function.op))
   (for [term function.terms]
     (append-term-var! vars term))
   (append-function-output-vars! vars function))
@@ -3599,12 +3629,18 @@
     .Predicate (let [predicate query-value.predicates[step.index]]
                  (when (not (predicate-op-supported? predicate.op))
                    (return false (fmt.tprintf "unknown query predicate: %s" predicate.op)))
+                 (when (and (query-var-name? predicate.op)
+                            (not (string-slice-contains? (slice available^ 0) predicate.op)))
+                   (return false (fmt.tprintf "insufficient bindings for %s: %s" predicate.op predicate.op)))
                  (let [[ok error] (validate-term-vars-bound (slice available^ 0) predicate.terms predicate.op)]
                    (when (not ok)
                      (return false error))))
     .Function (let [function query-value.function-clauses[step.index]]
                 (when (not (function-op-supported? function.op))
                   (return false (fmt.tprintf "unknown query function: %s" function.op)))
+                (when (and (query-var-name? function.op)
+                           (not (string-slice-contains? (slice available^ 0) function.op)))
+                  (return false (fmt.tprintf "insufficient bindings for %s: %s" function.op function.op)))
                 (let [[ok error] (validate-term-vars-bound (slice available^ 0) function.terms function.op)]
                   (when (not ok)
                     (return false error))))
@@ -3632,7 +3668,8 @@
   (return true ""))
 
 (defn predicate-op-supported? [op: string] -> bool
-  (or (= op "=")
+  (or (query-var-name? op)
+      (= op "=")
       (= op "!=")
       (= op "not=")
       (= op ">")
@@ -3657,7 +3694,8 @@
       (= op "clojure.string/ends-with?")))
 
 (defn function-op-supported? [op: string] -> bool
-  (or (= op "count")
+  (or (query-var-name? op)
+      (= op "count")
       (= op "identity")
       (= op "ground")
       (= op "inc")
@@ -3703,6 +3741,9 @@
     (for [function query-value.function-clauses]
       (when (not (function-op-supported? function.op))
         (return false (fmt.tprintf "unknown query function: %s" function.op)))
+      (when (and (query-var-name? function.op)
+                 (not (string-slice-contains? (slice available 0) function.op)))
+        (return false (fmt.tprintf "insufficient bindings for %s: %s" function.op function.op)))
       (let [[ok error] (validate-term-vars-bound (slice available 0) function.terms function.op)]
         (when (not ok)
           (return false error)))
@@ -3710,6 +3751,9 @@
     (for [predicate query-value.predicates]
       (when (not (predicate-op-supported? predicate.op))
         (return false (fmt.tprintf "unknown query predicate: %s" predicate.op)))
+      (when (and (query-var-name? predicate.op)
+                 (not (string-slice-contains? (slice available 0) predicate.op)))
+        (return false (fmt.tprintf "insufficient bindings for %s: %s" predicate.op predicate.op)))
       (let [[ok error] (validate-term-vars-bound (slice available 0) predicate.terms predicate.op)]
         (when (not ok)
           (return false error)))))
