@@ -1312,8 +1312,13 @@
       (return (resolve-ref-component-value db value))))
   (resolve-tuple-value db attr value))
 
+(defn value-lookup-ref-vector [attr: string, value: Value] -> Value
+  (value-vector ([]Value [(value-keyword attr) value])))
+
 (defn resolve-cas-expected [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
   (when data.has_expected_lookup_ref
+    (when (not (schema-ref? db data.a))
+      (return (value-lookup-ref-vector data.expected_lookup_attr data.expected_lookup_value) true ""))
     (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.expected_lookup_attr data.expected_lookup_value)]
       (if lookup-ok
         (return (value-entity lookup-e) true "")
@@ -1322,6 +1327,8 @@
 
 (defn resolve-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
   (when data.has_value_lookup_ref
+    (when (not (schema-ref? db data.a))
+      (return (value-lookup-ref-vector data.value_lookup_attr data.value_lookup_value) true ""))
     (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value_lookup_attr data.value_lookup_value)]
       (if lookup-ok
         (return (value-entity lookup-e) true "")
@@ -1690,16 +1697,18 @@
                 (set! value-ok resolved-ok)
                 (set! value-error resolved-error)))
 	          (when data.has_value_lookup_ref
-	            (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value_lookup_attr data.value_lookup_value)]
-	              (if lookup-ok
-	                (set! v (value-entity lookup-e))
-	                (if (= data.op ":db/retract")
-	                  (set! skip-data true)
-	                  (return (Resolved-Tx {ok: false
-	                                        error: "lookup ref not found"
-	                                        ops: resolved-ops
-	                                        tx_meta: resolved-meta
-	                                        tempids: resolved-tempids}))))))
+              (if (not (schema-ref? current-db data.a))
+                (set! v (value-lookup-ref-vector data.value_lookup_attr data.value_lookup_value))
+	              (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value_lookup_attr data.value_lookup_value)]
+	                (if lookup-ok
+	                  (set! v (value-entity lookup-e))
+	                  (if (= data.op ":db/retract")
+	                    (set! skip-data true)
+	                    (return (Resolved-Tx {ok: false
+	                                          error: "lookup ref not found"
+	                                          ops: resolved-ops
+	                                          tx_meta: resolved-meta
+	                                          tempids: resolved-tempids})))))))
 	          (when skip-data
 	            (continue))
             (when (current-tx-value? v)
