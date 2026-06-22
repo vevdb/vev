@@ -9,6 +9,16 @@
     (set! out.input-specs (arr.into [dynamic]Query-Input-Spec input-specs))
     out))
 
+(defn edn-section-has-rules-input? [doc: EDN-Doc, section: int] -> bool
+  (when (= section -1)
+    (return false))
+  (let [cursor (if (= doc.nodes[section].kind .Vector) doc.nodes[section].first-child section)]
+    (while (not (= cursor -1))
+      (when (edn-symbol-text? doc cursor "%")
+        (return true))
+      (set! cursor doc.nodes[cursor].next-sibling)))
+  false)
+
 (defn db-source-name? [sources: []DB-Source, name: string] -> bool
   (when (= name "$")
     (return true))
@@ -409,7 +419,8 @@
       (= op "avg")
       (= op "median")
       (= op "variance")
-      (= op "stddev")))
+      (= op "stddev")
+      (= op "aggregate")))
 
 (defn edn-top-n-aggregate-op? [op: string] -> bool
   (or (= op "min") (= op "max")))
@@ -432,21 +443,32 @@
           (arr.push! out^ (Aggregate-Find {op: op var: doc.nodes[first-arg].text}))
           (return true ""))
         (do
-          (when (not (and (edn-top-n-aggregate-op? op)
-                          (= doc.nodes[second-arg].next-sibling -1)
-                          (edn-var? doc second-arg)))
-            (return false "top-n aggregate find expressions expect (min n ?x), (max n ?x), (min ?n ?x), or (max ?n ?x)"))
-          (if (= doc.nodes[first-arg].kind .Int)
-            (arr.push! out^ (Aggregate-Find {op: op
-                                             var: doc.nodes[second-arg].text
-                                             limit: (int doc.nodes[first-arg].int-value)
-                                             has-limit: true}))
-            (if (edn-var? doc first-arg)
+          (when (not (= doc.nodes[second-arg].next-sibling -1))
+            (return false "aggregate find expression has too many arguments"))
+          (if (= op "aggregate")
+            (do
+              (when (not (and (edn-var? doc first-arg)
+                              (edn-var? doc second-arg)))
+                (return false "custom aggregate expects (aggregate ?f ?x)"))
               (arr.push! out^ (Aggregate-Find {op: op
                                                var: doc.nodes[second-arg].text
-                                               limit-var: doc.nodes[first-arg].text
-                                               has-limit-var: true}))
-              (return false "top-n aggregate limit must be an int or variable")))
+                                               function-var: doc.nodes[first-arg].text
+                                               has-function-var: true})))
+            (do
+              (when (not (and (edn-top-n-aggregate-op? op)
+                              (edn-var? doc second-arg)))
+                (return false "top-n aggregate find expressions expect (min n ?x), (max n ?x), (min ?n ?x), or (max ?n ?x)"))
+              (if (= doc.nodes[first-arg].kind .Int)
+                (arr.push! out^ (Aggregate-Find {op: op
+                                                 var: doc.nodes[second-arg].text
+                                                 limit: (int doc.nodes[first-arg].int-value)
+                                                 has-limit: true}))
+                (if (edn-var? doc first-arg)
+                  (arr.push! out^ (Aggregate-Find {op: op
+                                                   var: doc.nodes[second-arg].text
+                                                   limit-var: doc.nodes[first-arg].text
+                                                   has-limit-var: true}))
+                  (return false "top-n aggregate limit must be an int or variable")))))
           (return true ""))))))
 
 (defn append-edn-find-item! [find: ^[dynamic]string, pulls: ^[dynamic]Pull-Find, aggregates: ^[dynamic]Aggregate-Find, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
@@ -714,15 +736,71 @@
                             v: (term-wildcard)})])))
     (return true "")))
 
+(defn append-clause-var-names! [vars: ^[dynamic]string, clause: Clause]
+  (when (= clause.e.kind .Var)
+    (append-var-once! vars clause.e.name))
+  (when (= clause.a.kind .Var)
+    (append-var-once! vars clause.a.name))
+  (when (= clause.v.kind .Var)
+    (append-var-once! vars clause.v.name))
+  (when (= clause.tx-term.kind .Var)
+    (append-var-once! vars clause.tx-term.name))
+  (when (= clause.op-term.kind .Var)
+    (append-var-once! vars clause.op-term.name)))
+
+(defn append-not-group-var-names! [vars: ^[dynamic]string, group: Not-Group]
+  (for [clause group.clauses]
+    (append-clause-var-names! vars clause))
+  (for [child group.not-groups]
+    (append-not-group-var-names! vars child)))
+
+(defn edn-node-has-var? [doc: EDN-Doc, node: int] -> bool
+  (when (= node -1)
+    (return false))
+  (when (edn-var? doc node)
+    (return true))
+  (let [child doc.nodes[node].first-child]
+    (while (not (= child -1))
+      (when (edn-node-has-var? doc child)
+        (return true))
+      (set! child doc.nodes[child].next-sibling)))
+  false)
+
+(defn not-group-has-vars? [group: Not-Group] -> bool
+  (let [vars (make [dynamic]string) :defer]
+    (append-not-group-var-names! (addr vars) group)
+    (> (count vars) 0)))
+
+(defn or-branches-have-vars? [branches: []Not-Group] -> bool
+  (let [vars (make [dynamic]string) :defer]
+    (for [branch branches]
+      (append-not-group-var-names! (addr vars) branch))
+    (> (count vars) 0)))
+
 (defn append-edn-not-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [clauses (make [dynamic]Clause) :defer
+        not-groups (make [dynamic]Not-Group) :defer
         cursor doc.nodes[doc.nodes[form].first-child].next-sibling]
+    (when (= cursor -1)
+      (return false "Cannot parse 'not' clause"))
     (while (not (= cursor -1))
-      (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
-        (when (not ok)
-          (return false error)))
+      (if (and (= doc.nodes[cursor].kind .List)
+               (= (edn-list-head-text doc cursor) "not"))
+        (let [[ok error] (append-edn-not-group! (addr not-groups) doc cursor)]
+          (when (not ok)
+            (return false error)))
+        (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
+          (when (and (not ok)
+                     (= error "query text clause is incomplete")
+                     (not (edn-node-has-var? doc cursor)))
+            (return false "Join variables should not be empty"))
+          (when (not ok)
+            (return false error))))
       (set! cursor doc.nodes[cursor].next-sibling))
-    (arr.push! out^ (not-group-simple (slice clauses 0)))
+    (let [group (not-group (slice clauses 0) (slice not-groups 0))]
+      (when (not (not-group-has-vars? group))
+        (return false "Join variables should not be empty"))
+      (arr.push! out^ group))
     (return true "")))
 
 (defn append-edn-not-join-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
@@ -733,6 +811,10 @@
           clauses (make [dynamic]Clause) :defer
           not-groups (make [dynamic]Not-Group) :defer
           cursor doc.nodes[join-node].next-sibling]
+      (when (= (count join-vars) 0)
+        (return false "Join variables should not be empty"))
+      (when (= cursor -1)
+        (return false "Cannot parse 'not-join' clause"))
       (while (not (= cursor -1))
         (let [[ok error] (append-edn-data-clause! (addr clauses) doc cursor)]
           (when (not ok)
@@ -754,6 +836,10 @@
                 (return false error)))
             (set! cursor doc.nodes[cursor].next-sibling))))
       (let [[ok error] (append-edn-data-clause! (addr clauses) doc branch)]
+        (when (and (not ok)
+                   (= error "query text clause is incomplete")
+                   (not (edn-node-has-var? doc branch)))
+          (return false "Join variables should not be empty"))
         (when (not ok)
           (return false error))))
     (arr.push! out^ (not-group-simple (slice clauses 0)))
@@ -762,11 +848,15 @@
 (defn append-edn-or-group! [out: ^[dynamic]Or-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [branches (make [dynamic]Not-Group) :defer
         cursor doc.nodes[doc.nodes[form].first-child].next-sibling]
+    (when (= cursor -1)
+      (return false "Cannot parse 'or' clause"))
     (while (not (= cursor -1))
       (let [[ok error] (append-edn-or-branch! (addr branches) doc cursor)]
         (when (not ok)
           (return false error)))
       (set! cursor doc.nodes[cursor].next-sibling))
+    (when (not (or-branches-have-vars? (slice branches 0)))
+      (return false "Join variables should not be empty"))
     (arr.push! out^ (or-group (slice branches 0)))
     (return true "")))
 
@@ -777,6 +867,10 @@
     (let [join-vars (edn-vars-from-vector doc join-node) :defer
           branches (make [dynamic]Not-Group) :defer
           cursor doc.nodes[join-node].next-sibling]
+      (when (= (count join-vars) 0)
+        (return false "Cannot parse rule-vars"))
+      (when (= cursor -1)
+        (return false "Cannot parse 'or-join' clause"))
       (while (not (= cursor -1))
         (let [[ok error] (append-edn-or-branch! (addr branches) doc cursor)]
           (when (not ok)
@@ -804,6 +898,8 @@
           (return false "source-qualified rule calls must name a rule")))
     (let [args (make [dynamic]Term) :defer
           cursor doc.nodes[name-node].next-sibling]
+      (when (= cursor -1)
+        (return false "rule-expr requires at least one argument"))
       (while (not (= cursor -1))
         (arr.push! args (value-term-from-edn-node doc cursor))
         (set! cursor doc.nodes[cursor].next-sibling))
@@ -998,6 +1094,7 @@
         pulls (make [dynamic]Pull-Find) :defer
         aggregates (make [dynamic]Aggregate-Find) :defer
         return-map-allowed true
+        has-rules-input false
         cursor (edn-child-at doc doc.root 1)]
     (while (and (not (= cursor -1))
                 (not (edn-keyword-text? doc cursor ":in"))
@@ -1047,6 +1144,8 @@
     (when (edn-keyword-text? doc cursor ":in")
       (set! cursor doc.nodes[cursor].next-sibling)
       (while (and (not (= cursor -1)) (not (edn-keyword-text? doc cursor ":where")))
+        (when (edn-symbol-text? doc cursor "%")
+          (set! has-rules-input true))
         (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) doc cursor db-sources)]
           (when (not input-ok)
             (return false input-error)))
@@ -1058,7 +1157,9 @@
         (when (not item-ok)
           (return false item-error)))
       (set! cursor doc.nodes[cursor].next-sibling))
-    (let [query-value (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))]
+    (let [query-value (query-with-rules-input
+                        (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
+                        has-rules-input)]
       (set! out^ query-value)
       (return true ""))))
 
@@ -1218,6 +1319,7 @@
         with-node (edn-map-value-node doc doc.root ":with")
         in-node (edn-map-value-node doc doc.root ":in")
         where-node (edn-map-value-node doc doc.root ":where")
+        has-rules-input (edn-section-has-rules-input? doc in-node)
         [find-ok find-error] (append-edn-find-section! (addr find) (addr pulls) (addr aggregates) doc find-node)]
     (when (not find-ok)
       (return false find-error))
@@ -1239,7 +1341,9 @@
     (let [[where-ok where-error] (append-edn-where-section! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc where-node)]
       (when (not where-ok)
         (return false where-error)))
-    (let [query-value (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))]
+    (let [query-value (query-with-rules-input
+                        (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
+                        has-rules-input)]
       (set! out^ query-value)
       (return true ""))))
 
@@ -1465,6 +1569,188 @@
                    (set! child doc.nodes[value-node].next-sibling))))
              (return (value-map (slice items 0)) true ""))
       :else (return (Value {}) false "unsupported EDN value"))))
+
+(defn edn-escaped-string-text [text: string] -> string
+  (let [parts (make [dynamic]string) :defer
+        index 0
+        n (kstr.count text)]
+    (arr.push! parts "\"")
+    (while (< index n)
+      (let [ch (kstr.get text index)]
+        (cond
+          (= ch 34) (arr.push! parts "\\\"")
+          (= ch 92) (arr.push! parts "\\\\")
+          :else (arr.push! parts (kstr.slice text index (+ index 1)))))
+      (set! index (+ index 1)))
+    (arr.push! parts "\"")
+    (strings.concatenate (slice parts 0))))
+
+(defn value-serializable-text [value: Value] -> string
+  (case value.kind
+    .Nil "nil"
+    .Bool (if value.bool-value "true" "false")
+    .Int (fmt.tprintf "%d" value.int-value)
+    .Float (fmt.tprintf "[:vev/float \"%v\"]" value.float-value)
+    .String (edn-escaped-string-text value.text)
+    .Keyword value.text
+    .Entity (fmt.tprintf "[:vev/entity %d]" value.entity)
+    .Vector
+      (let [parts (make [dynamic]string) :defer]
+        (arr.push! parts "[")
+        (for [item index value.items]
+          (when (> index 0)
+            (arr.push! parts " "))
+          (arr.push! parts (value-serializable-text item)))
+        (arr.push! parts "]")
+        (strings.concatenate (slice parts 0)))
+    .Map
+      (let [parts (make [dynamic]string) :defer]
+        (arr.push! parts "{")
+        (for [item index value.items]
+          (when (> index 0)
+            (arr.push! parts " "))
+          (arr.push! parts (value-serializable-text item)))
+        (arr.push! parts "}")
+        (strings.concatenate (slice parts 0)))
+    :else "nil"))
+
+(defn attr-serializable-text [attr: string] -> string
+  (if (strings.has_prefix attr ":")
+    attr
+    (edn-escaped-string-text attr)))
+
+(defn datom-serializable-text [datom: Datom] -> string
+  (fmt.tprintf "[%d %s %s %d %v]"
+               datom.e
+               (attr-serializable-text datom.a)
+               (value-serializable-text datom.v)
+               datom.tx
+               datom.added))
+
+(defn serializable-text [db: DB] -> string
+  (let [parts (make [dynamic]string) :defer]
+    (arr.push! parts "[")
+    (for [datom index db.datoms]
+      (when (> index 0)
+        (arr.push! parts " "))
+      (arr.push! parts (datom-serializable-text datom)))
+    (arr.push! parts "]")
+    (strings.concatenate (slice parts 0))))
+
+(defn edn-int-u64 [doc: EDN-Doc, node-index: int, label: string] -> [value: u64, ok: bool, error: string]
+  (when (= node-index -1)
+    (return 0 false (fmt.tprintf "expected %s" label)))
+  (let [node doc.nodes[node-index]]
+    (when (not (= node.kind .Int))
+      (return 0 false (fmt.tprintf "expected integer %s" label)))
+    (when (< node.int-value 0)
+      (return 0 false (fmt.tprintf "expected non-negative %s" label)))
+    (return (u64 node.int-value) true "")))
+
+(defn serial-value-from-edn-node [doc: EDN-Doc, node-index: int] -> [value: Value, ok: bool, error: string]
+  (when (= node-index -1)
+    (return (Value {}) false "expected serialized value"))
+  (let [node doc.nodes[node-index]]
+    (when (and (= node.kind .Vector) (= node.child-count 2))
+      (let [tag-node (edn-child-at doc node-index 0)
+            value-node (edn-child-at doc node-index 1)]
+        (when (and (not (= tag-node -1))
+                   (= doc.nodes[tag-node].kind .Keyword)
+                   (= doc.nodes[tag-node].text ":vev/entity"))
+          (let [[entity entity-ok entity-error] (edn-int-u64 doc value-node "entity id")]
+            (if entity-ok
+              (return (value-entity entity) true "")
+              (return (Value {}) false entity-error))))
+        (when (and (not (= tag-node -1))
+                   (= doc.nodes[tag-node].kind .Keyword)
+                   (= doc.nodes[tag-node].text ":vev/float"))
+          (when (not (= doc.nodes[value-node].kind .String))
+            (return (Value {}) false "expected serialized float string"))
+          (let [[parsed parsed-ok] (strconv.parse_f64 doc.nodes[value-node].text)]
+            (if parsed-ok
+              (return (value-float parsed) true "")
+              (return (Value {}) false "invalid serialized float"))))))
+    (case node.kind
+      .Nil (return (value-nil) true "")
+      .Bool (return (value-bool node.bool-value) true "")
+      .Int (return (value-int node.int-value) true "")
+      .String (return (value-string node.text) true "")
+      .Keyword (return (value-keyword node.text) true "")
+      .Vector (let [items (make [dynamic]Value) :defer
+                    child node.first-child]
+                (while (not (= child -1))
+                  (let [[item item-ok item-error] (serial-value-from-edn-node doc child)]
+                    (when (not item-ok)
+                      (return (Value {}) false item-error))
+                    (arr.push! items item))
+                  (set! child doc.nodes[child].next-sibling))
+                (return (value-vector (slice items 0)) true ""))
+      .Map (let [items (make [dynamic]Value) :defer
+                 child node.first-child]
+             (while (not (= child -1))
+               (let [value-node doc.nodes[child].next-sibling]
+                 (when (= value-node -1)
+                   (return (Value {}) false "serialized map value missing"))
+                 (let [[key key-ok key-error] (serial-value-from-edn-node doc child)
+                       [value value-ok value-error] (serial-value-from-edn-node doc value-node)]
+                   (when (not key-ok)
+                     (return (Value {}) false key-error))
+                   (when (not value-ok)
+                     (return (Value {}) false value-error))
+                   (arr.push! items key)
+                   (arr.push! items value)
+                   (set! child doc.nodes[value-node].next-sibling))))
+             (return (value-map (slice items 0)) true ""))
+      :else (return (Value {}) false "unsupported serialized value"))))
+
+(defn datom-from-edn-node [doc: EDN-Doc, node-index: int] -> [datom: Datom, ok: bool, error: string]
+  (when (or (= node-index -1)
+            (not (= doc.nodes[node-index].kind .Vector))
+            (not (= doc.nodes[node-index].child-count 5)))
+    (return (Datom {}) false "expected serialized datom vector [e a v tx added]"))
+  (let [e-node (edn-child-at doc node-index 0)
+        a-node (edn-child-at doc node-index 1)
+        v-node (edn-child-at doc node-index 2)
+        tx-node (edn-child-at doc node-index 3)
+        added-node (edn-child-at doc node-index 4)
+        [e e-ok e-error] (edn-int-u64 doc e-node "entity id")
+        [attr attr-ok] (edn-attr-text doc a-node)
+        [value value-ok value-error] (serial-value-from-edn-node doc v-node)
+        [tx tx-ok tx-error] (edn-int-u64 doc tx-node "tx")
+        added-doc-node doc.nodes[added-node]]
+    (when (not e-ok)
+      (return (Datom {}) false e-error))
+    (when (not attr-ok)
+      (return (Datom {}) false "expected datom attribute keyword or string"))
+    (when (not value-ok)
+      (return (Datom {}) false value-error))
+    (when (not tx-ok)
+      (return (Datom {}) false tx-error))
+    (when (not (= added-doc-node.kind .Bool))
+      (return (Datom {}) false "expected datom added boolean"))
+    (return (datom-tx e attr value tx added-doc-node.bool-value) true "")))
+
+(defn from-serializable-text [text: string] -> [db: DB, ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return (build-db (make [dynamic]Datom)) false read-error))
+    (when (not (= doc.nodes[doc.root].kind .Vector))
+      (delete doc.nodes)
+      (return (build-db (make [dynamic]Datom)) false "expected serialized DB vector"))
+    (let [datoms (make [dynamic]Datom)
+          child doc.nodes[doc.root].first-child]
+      (while (not (= child -1))
+        (let [[datom datom-ok datom-error] (datom-from-edn-node doc child)]
+          (when (not datom-ok)
+            (delete datoms)
+            (delete doc.nodes)
+            (return (build-db (make [dynamic]Datom)) false datom-error))
+          (arr.push! datoms datom))
+        (set! child doc.nodes[child].next-sibling))
+      (delete doc.nodes)
+      (return (build-db datoms) true ""))))
 
 (defn edn-lookup-ref-node? [doc: EDN-Doc, node-index: int] -> bool
   (when (or (= node-index -1)

@@ -789,7 +789,7 @@
     (when (not attr-ok)
       (return false "invalid index attr"))
     (when (not (public-avet-attr? db attr))
-      (return false "attribute should be marked as :db/index true")))
+      (return false (fmt.tprintf "Attribute %s should be marked as :db/index true" attr))))
   (return true ""))
 
 (defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
@@ -935,7 +935,9 @@
 
 (defn index-range-checked-with-args [db: DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> Datoms-Result
   (when (not (public-avet-attr? db attr))
-    (return (Datoms-Result {ok: false error: "attribute should be marked as :db/index true" datoms: (make [dynamic]Datom)})))
+    (return (Datoms-Result {ok: false
+                            error: (fmt.tprintf "Attribute %s should be marked as :db/index true" attr)
+                            datoms: (make [dynamic]Datom)})))
   (Datoms-Result {ok: true error: "" datoms: (index-range-with-args db attr start has-start end has-end)}))
 
 (defn u64-contains? [items: []u64, value: u64] -> bool
@@ -1471,6 +1473,43 @@
     (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
       (and entity-ok (not (= entity current-tx-e))))))
 
+(defn remap-resolved-tempids! [tempids: ^[dynamic]Tempid, from: u64, to: u64]
+  (when (= from to)
+    (return))
+  (for [entry index tempids^]
+    (when (= entry.e from)
+      (set! tempids^[index] (Tempid {tempid: entry.tempid e: to})))))
+
+(defn remap-resolved-ops! [ops: ^[dynamic]Tx-Op, from: u64, to: u64]
+  (when (= from to)
+    (return))
+  (for [op index ops^]
+    (let [next op]
+      (when (= next.e from)
+        (set! next.e to))
+      (when (and (= next.v.kind .Entity)
+                 (= next.v.entity from))
+        (set! next.v (value-entity to)))
+      (set! ops^[index] next))))
+
+(defn remap-resolved-tempid-entity! [ops: ^[dynamic]Tx-Op, tempids: ^[dynamic]Tempid, from: u64, to: u64]
+  (remap-resolved-ops! ops from to)
+  (remap-resolved-tempids! tempids from to))
+
+(defn tempid-existing-upsert-target [db: DB, data: Tx-Data, existing: u64] -> [target: u64, ok: bool, conflict: bool]
+  (when (not (and (= data.op ":db/add")
+                  (schema-unique-identity? db data.a)))
+    (return existing false false))
+  (let [[value value-ok _] (resolve-tx-data-value db data)]
+    (when (not value-ok)
+      (return existing false false))
+    (let [[entity entity-ok] (resolve-lookup-ref db data.a value)]
+      (when (not entity-ok)
+        (return existing false false))
+      (when (= entity existing)
+        (return existing false false))
+      (return entity true false))))
+
 (defn db-with-resolved-ops [db: DB, ops: []Tx-Op] -> DB
   (let [datoms (clone-datoms db.datoms)]
     (for [op ops]
@@ -1739,7 +1778,18 @@
                 (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v}))))
           (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
             (if ok
-              (set! e existing)
+              (let [[target target-ok _] (tempid-existing-upsert-target current-db data existing)]
+                (if target-ok
+                  (if (entity-exists? db existing)
+                    (return (Resolved-Tx {ok: false
+                                          error: "conflicting upsert"
+                                          ops: resolved-ops
+                                          tx-meta: resolved-meta
+                                          tempids: resolved-tempids}))
+                    (do
+                      (remap-resolved-tempid-entity! (addr resolved-ops) (addr resolved-tempids) existing target)
+                      (set! e target)))
+                  (set! e existing)))
               (do
                 (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db (slice pending 0) data.tempid)]
                   (when upsert-conflict
@@ -3299,6 +3349,38 @@
     (append-var-once! vars name))
   (append-input-binding-vars! vars function.out-binding))
 
+(defn append-predicate-vars! [vars: ^[dynamic]string, predicate: Predicate]
+  (for [term predicate.terms]
+    (append-term-var! vars term)))
+
+(defn append-function-vars! [vars: ^[dynamic]string, function: Function-Clause]
+  (for [term function.terms]
+    (append-term-var! vars term))
+  (append-function-output-vars! vars function))
+
+(defn append-get-else-vars! [vars: ^[dynamic]string, clause: Get-Else]
+  (append-term-var! vars clause.e)
+  (append-var-once! vars clause.out))
+
+(defn append-get-some-vars! [vars: ^[dynamic]string, clause: Get-Some]
+  (append-term-var! vars clause.e)
+  (append-var-once! vars clause.out-attr)
+  (append-var-once! vars clause.out-value))
+
+(defn append-find-vars! [vars: ^[dynamic]string, query-value: Query]
+  (for [name query-value.find]
+    (append-var-once! vars name))
+  (for [pull-find query-value.pulls]
+    (append-var-once! vars pull-find.var)
+    (when pull-find.has-pattern-var
+      (append-var-once! vars pull-find.pattern-var)))
+  (for [aggregate query-value.aggregates]
+    (append-var-once! vars aggregate.var)
+    (when aggregate.has-function-var
+      (append-var-once! vars aggregate.function-var))
+    (when aggregate.has-limit-var
+      (append-var-once! vars aggregate.limit-var))))
+
 (defn query-potential-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)]
     (append-query-input-vars! (addr vars) query-value)
@@ -3306,6 +3388,14 @@
       (append-clause-vars! (addr vars) clause))
     (for [call query-value.rule-calls]
       (append-rule-call-vars! (addr vars) call))
+    (for [predicate query-value.predicates]
+      (append-predicate-vars! (addr vars) predicate))
+    (for [function query-value.function-clauses]
+      (append-function-vars! (addr vars) function))
+    (for [get-else query-value.get-elses]
+      (append-get-else-vars! (addr vars) get-else))
+    (for [get-some query-value.get-somes]
+      (append-get-some-vars! (addr vars) get-some))
     (for [ground query-value.grounds]
       (append-ground-output-vars! (addr vars) ground))
     (for [group query-value.not-groups]
@@ -3323,6 +3413,10 @@
       (append-rule-call-vars! (addr vars) call))
     (for [ground query-value.grounds]
       (append-ground-output-vars! (addr vars) ground))
+    (for [get-else query-value.get-elses]
+      (append-get-else-vars! (addr vars) get-else))
+    (for [get-some query-value.get-somes]
+      (append-get-some-vars! (addr vars) get-some))
     (for [function query-value.function-clauses]
       (append-function-output-vars! (addr vars) function))
     vars))
@@ -3331,6 +3425,69 @@
   (let [vars (make [dynamic]string)]
     (append-query-input-vars! (addr vars) query-value)
     vars))
+
+(defn append-query-input-vars-raw! [vars: ^[dynamic]string, query-value: Query]
+  (when (> (count query-value.input-specs) 0)
+    (for [spec query-value.input-specs]
+      (case spec.kind
+        .Scalar (when (not (= spec.name ""))
+                  (arr.push! vars^ spec.name))
+        .Collection (when (not (= spec.name ""))
+                      (arr.push! vars^ spec.name))
+        .Tuple (for [name spec.tuple.vars]
+                 (when (not (= name ""))
+                   (arr.push! vars^ name)))
+        .Relation (for [name spec.relation.vars]
+                    (when (not (= name ""))
+                      (arr.push! vars^ name)))))
+    (return))
+  (for [name query-value.inputs]
+    (when (not (= name ""))
+      (arr.push! vars^ name)))
+  (for [name query-value.collection-inputs]
+    (when (not (= name ""))
+      (arr.push! vars^ name)))
+  (for [tuple query-value.tuple-inputs]
+    (for [name tuple.vars]
+      (when (not (= name ""))
+        (arr.push! vars^ name))))
+  (for [relation query-value.relation-inputs]
+    (for [name relation.vars]
+      (when (not (= name ""))
+        (arr.push! vars^ name))))
+  (do))
+
+(defn query-input-vars-raw [query-value: Query] -> [dynamic]string
+  (let [vars (make [dynamic]string)]
+    (append-query-input-vars-raw! (addr vars) query-value)
+    vars))
+
+(defn query-find-vars [query-value: Query] -> [dynamic]string
+  (let [vars (make [dynamic]string)]
+    (append-find-vars! (addr vars) query-value)
+    vars))
+
+(defn validate-query-parser-vars [query-value: Query] -> [ok: bool, error: string]
+  (let [find-vars (query-find-vars query-value) :defer
+        available (query-potential-vars query-value) :defer]
+    (for [name find-vars]
+      (when (not (string-slice-contains? (slice available 0) name))
+        (return false (fmt.tprintf "Query for unknown vars: %s" name))))
+    (for [name query-value.with]
+      (when (not (string-slice-contains? (slice available 0) name))
+        (return false (fmt.tprintf "Query for unknown vars: %s" name))))
+    (for [name find-vars]
+      (when (string-slice-contains? (slice query-value.with 0) name)
+        (return false (fmt.tprintf ":find and :with should not use same variables: %s" name)))))
+  (let [input-vars (query-input-vars-raw query-value) :defer]
+    (when (string-slice-has-duplicate? (slice input-vars 0))
+      (return false "Vars used in :in should be distinct")))
+  (when (string-slice-has-duplicate? (slice query-value.with 0))
+    (return false "Vars used in :with should be distinct"))
+  (when (and (> (count query-value.rule-calls) 0)
+             (not query-value.has-rules-input))
+    (return false "Missing rules var '%' in :in"))
+  (return true ""))
 
 (defn string-slices-intersect? [left: []string, right: []string] -> bool
   (for [item left]
@@ -3660,6 +3817,9 @@
         provided (count inputs)]
     (when (not (= expected provided))
       (return false (fmt.tprintf "wrong number of query inputs: expected %d, got %d" expected provided))))
+  (let [[parser-ok parser-error] (validate-query-parser-vars query-value)]
+    (when (not parser-ok)
+      (return false parser-error)))
   (let [[source-ok source-error] (validate-query-sources query-value sources)]
     (when (not source-ok)
       (return false source-error)))
@@ -3727,6 +3887,20 @@
         (arr.push! out sorted[index]))
       (Value {kind: .Vector items: out}))))
 
+(defn sorted-values-vector [values: []Value, descending?: bool] -> Value
+  (let [sorted (arr.into [dynamic]Value values)
+        out (make [dynamic]Value)]
+    (defer (delete sorted))
+    (sort-values! (addr sorted))
+    (if descending?
+      (let [index (count sorted)]
+        (while (> index 0)
+          (set! index (- index 1))
+          (arr.push! out sorted[index])))
+      (for [value sorted]
+        (arr.push! out value)))
+    (Value {kind: .Vector items: out})))
+
 (defn median-int [values: []i64] -> Value
   (when (= (count values) 0)
     (return (value-int 0)))
@@ -3754,6 +3928,25 @@
 (defn stddev-float [values: []i64] -> Value
   (let [variance (variance-int values)]
     (value-float (math.sqrt (f64 variance.int-value)))))
+
+(defn aggregate-function-name [binding: Binding, aggregate: Aggregate-Find] -> [name: string, ok: bool]
+  (when (not aggregate.has-function-var)
+    (return "" false))
+  (let [[value ok] (binding-lookup binding aggregate.function-var)]
+    (when (not ok)
+      (return "" false))
+    (when (or (= value.kind .Keyword)
+              (= value.kind .String))
+      (return value.text true)))
+  (return "" false))
+
+(defn apply-named-aggregate [name: string, values: []Value] -> [value: Value, ok: bool]
+  (cond
+    (or (= name "sort-reverse")
+        (= name ":sort-reverse")) (return (sorted-values-vector values true) true)
+    (or (= name "sort")
+        (= name ":sort")) (return (sorted-values-vector values false) true)
+    :else (return (Value {}) false)))
 
 (defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
   (when (or (= aggregate.op "count")
@@ -3811,7 +4004,9 @@
         aggregate-ints (make [dynamic]i64)
         aggregate-values (make [dynamic]Value)
         distinct-values (make [dynamic]Value)
-        seen-keys (make [dynamic]Result-Row)]
+        seen-keys (make [dynamic]Result-Row)
+        custom-name ""
+        custom-name-ok false]
     (defer (delete aggregate-ints))
     (defer (delete aggregate-values))
     (defer (delete distinct-values))
@@ -3843,6 +4038,13 @@
                                    (or (= aggregate.op "min")
                                        (= aggregate.op "max")))
                           (arr.push! aggregate-values value))
+                        (when (= aggregate.op "aggregate")
+                          (arr.push! aggregate-values value)
+                          (when (not custom-name-ok)
+                            (let [[name name-ok] (aggregate-function-name binding aggregate)]
+                              (when name-ok
+                                (set! custom-name name)
+                                (set! custom-name-ok true)))))
                         (when (and (= aggregate.op "avg")
                                    (= value.kind .Int))
                           (set! avg-count (+ avg-count 1)))
@@ -3861,6 +4063,10 @@
       (return (variance-int (slice aggregate-ints 0))))
     (when (= aggregate.op "stddev")
       (return (stddev-float (slice aggregate-ints 0))))
+    (when (= aggregate.op "aggregate")
+      (let [[value ok] (apply-named-aggregate custom-name (slice aggregate-values 0))]
+        (when ok
+          (return value))))
     current))
 
 (defn pull-pattern-input [query: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]
@@ -4225,24 +4431,26 @@
       (arr.push! not-groups (relation-db-not-group group source)))
     (for [group query-value.or-groups]
       (arr.push! or-groups (relation-db-or-group group source)))
-    (query (slice query-value.find 0)
-           (slice query-value.with 0)
-           (slice inputs 0)
-           (slice query-value.collection-inputs 0)
-           (slice query-value.tuple-inputs 0)
-           (slice query-value.relation-inputs 0)
-           (slice clauses 0)
-           (slice query-value.predicates 0)
-           (slice query-value.function-clauses 0)
-           (slice rules 0)
-           (slice query-value.rule-calls 0)
-           (slice query-value.get-elses 0)
-           (slice query-value.get-somes 0)
-           (slice query-value.grounds 0)
-           (slice not-groups 0)
-           (slice or-groups 0)
-           (slice query-value.pulls 0)
-           (slice query-value.aggregates 0))))
+    (query-with-rules-input
+      (query (slice query-value.find 0)
+             (slice query-value.with 0)
+             (slice inputs 0)
+             (slice query-value.collection-inputs 0)
+             (slice query-value.tuple-inputs 0)
+             (slice query-value.relation-inputs 0)
+             (slice clauses 0)
+             (slice query-value.predicates 0)
+             (slice query-value.function-clauses 0)
+             (slice rules 0)
+             (slice query-value.rule-calls 0)
+             (slice query-value.get-elses 0)
+             (slice query-value.get-somes 0)
+             (slice query-value.grounds 0)
+             (slice not-groups 0)
+             (slice or-groups 0)
+             (slice query-value.pulls 0)
+             (slice query-value.aggregates 0))
+      query-value.has-rules-input)))
 
 (defn q-query-relation-db [rows: Value, query-value: Query, inputs: []Query-Input] -> Result-Set
   (let [source "__vev_primary_relation_db"

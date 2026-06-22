@@ -112,7 +112,9 @@ Supported now:
 - `:with`
 - scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [?x ?y]`
 - return-map find markers: `:keys`, `:strs`, and `:syms`
-- standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, and `avg` aggregates
+- standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, `avg`,
+  `median`, `variance`, `stddev`, and named custom aggregates through
+  `(aggregate ?f ?x)`
 - text queries with simple data clauses, relation find, collection find,
   strings, booleans, ints, keywords, wildcards, and source vars
 - text query inputs for scalar vars, collections, tuples, relations, and
@@ -441,8 +443,10 @@ keyed rows:
 Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
 predicates remain later work. Results are deduped by returned values, with
 `:with` vars included in the dedupe key but not returned.
-Aggregates currently support `count`, `count-distinct`, `min`, `max`, `sum`, and `avg`.
-`sum` and `avg` are currently integer-only; `avg` uses integer division.
+Aggregates currently support `count`, `count-distinct`, `min`, `max`, `sum`,
+`avg`, `median`, `variance`, `stddev`, and named custom aggregate functions
+through `(aggregate ?f ?x)`. `sum` and `avg` are currently integer-only; `avg`
+uses integer division.
 
 ## Pull model
 
