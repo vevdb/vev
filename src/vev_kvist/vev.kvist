@@ -1,8 +1,10 @@
 (package vev)
 
 (import arr "kvist:arr")
+(import kstr "kvist:str")
 (import math "core:math")
 (import strings "core:strings")
+(import strconv "core:strconv")
 
 (defenum Value-Kind [
   Nil
@@ -298,6 +300,12 @@
 
 (defstruct Result-Set {
   rows: [dynamic]Result-Row
+})
+
+(defstruct Query-Parse-Result {
+  ok: bool
+  error: string
+  query: Query
 })
 
 (defenum Key-Kind [
@@ -3332,6 +3340,184 @@
             or_groups: owned-or-groups
             pulls: owned-pulls
             aggregates: owned-aggregates})))
+
+(defn empty-query [] -> Query
+  (query ([]string []) ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) ([]Clause []) ([]Predicate []) ([]Function-Clause []) ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) ([]Not-Group []) ([]Or-Group []) ([]Pull-Find []) ([]Aggregate-Find [])))
+
+(defn parse-query-error [error: string] -> Query-Parse-Result
+  (Query-Parse-Result {ok: false error: error query: (empty-query)}))
+
+(defn parse-query-ok [query-value: Query] -> Query-Parse-Result
+  (Query-Parse-Result {ok: true error: "" query: query-value}))
+
+(defn edn-token-boundary? [ch: u8] -> bool
+  (or (= ch 32)
+      (= ch 10)
+      (= ch 13)
+      (= ch 9)
+      (= ch 44)
+      (= ch 91)
+      (= ch 93)))
+
+(defn tokenize-edn-query [text: string] -> [dynamic]string
+  // ponytail: query text parser is intentionally small; replace with a real EDN reader when strings need maps/rules/pull.
+  (let [tokens (make [dynamic]string)
+        i 0
+        n (kstr.count text)]
+    (while (< i n)
+      (let [ch (kstr.get text i)]
+        (cond
+          (or (= ch 32) (= ch 10) (= ch 13) (= ch 9) (= ch 44))
+            (set! i (+ i 1))
+          (or (= ch 91) (= ch 93))
+            (do
+              (arr.push! tokens (kstr.slice text i (+ i 1)))
+              (set! i (+ i 1)))
+          (= ch 34)
+            (do
+              (let [start i]
+                (set! i (+ i 1))
+                (while (and (< i n) (not (= (kstr.get text i) 34)))
+                  (set! i (+ i 1)))
+                (if (< i n)
+                  (do
+                    (set! i (+ i 1))
+                    (arr.push! tokens (kstr.slice text start i)))
+                  (do
+                    (arr.push! tokens (kstr.slice text start n))
+                    (set! i n)))))
+          :else
+            (let [start i]
+              (while (and (< i n) (not (edn-token-boundary? (kstr.get text i))))
+                (set! i (+ i 1)))
+              (arr.push! tokens (kstr.slice text start i))))))
+    tokens))
+
+(defn token-source-var? [token: string] -> bool
+  (strings.has_prefix token "$"))
+
+(defn token-var? [token: string] -> bool
+  (strings.has_prefix token "?"))
+
+(defn token-string? [token: string] -> bool
+  (and (>= (kstr.count token) 2)
+       (= (kstr.get token 0) 34)
+       (= (kstr.get token (- (kstr.count token) 1)) 34)))
+
+(defn token-keyword? [token: string] -> bool
+  (strings.has_prefix token ":"))
+
+(defn token-bool? [token: string] -> bool
+  (or (= token "true") (= token "false")))
+
+(defn term-from-token [token: string, attr-position: bool] -> Term
+  (cond
+    (= token "_") (term-wildcard)
+    (token-var? token) (term-var token)
+    (token-string? token) (term-string (kstr.slice token 1 (- (kstr.count token) 1)))
+    (token-keyword? token) (if attr-position (term-keyword token) (term-value (value-keyword token)))
+    (token-bool? token) (term-value (value-bool (= token "true")))
+    :else
+      (let [[parsed ok] (strconv.parse_int token)]
+        (if ok
+          (if attr-position
+            (term-value (value-int (i64 parsed)))
+            (term-entity (u64 parsed)))
+          (term-string token)))))
+
+(defn value-term-from-token [token: string] -> Term
+  (when (= token "_")
+    (return (term-wildcard)))
+  (when (token-var? token)
+    (return (term-var token)))
+  (when (token-string? token)
+    (return (term-string (kstr.slice token 1 (- (kstr.count token) 1)))))
+  (when (token-keyword? token)
+    (return (term-value (value-keyword token))))
+  (when (token-bool? token)
+    (return (term-value (value-bool (= token "true")))))
+  (let [[parsed ok] (strconv.parse_int token)]
+    (if ok
+      (term-value (value-int (i64 parsed)))
+      (term-string token))))
+
+(defn query-from-text-parts [find: []string, clauses: []Clause, collection-find: bool] -> Query
+  (query find ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) clauses ([]Predicate []) ([]Function-Clause []) ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) ([]Not-Group []) ([]Or-Group []) ([]Pull-Find []) ([]Aggregate-Find [])))
+
+(defn parse-query-tokens [tokens: []string] -> Query-Parse-Result
+  (when (or (< (count tokens) 5)
+            (not (= tokens[0] "["))
+            (not (= tokens[1] ":find")))
+    (return (parse-query-error "query text must start with [:find")))
+  (let [find (make [dynamic]string)
+        clauses (make [dynamic]Clause)
+        collection-find false
+        i 2]
+    (when (= tokens[i] "[")
+      (set! collection-find true)
+      (set! i (+ i 1)))
+    (while (and (< i (count tokens)) (not (= tokens[i] ":where")))
+      (when (and collection-find (= tokens[i] "..."))
+        (set! i (+ i 1))
+        (continue))
+      (when (= tokens[i] "]")
+        (set! i (+ i 1))
+        (continue))
+      (when (not (token-var? tokens[i]))
+        (delete find)
+        (delete clauses)
+        (return (parse-query-error "query text :find currently supports vars")))
+      (arr.push! find tokens[i])
+      (set! i (+ i 1)))
+    (when (or (>= i (count tokens)) (not (= tokens[i] ":where")))
+      (delete find)
+      (delete clauses)
+      (return (parse-query-error "query text missing :where")))
+    (set! i (+ i 1))
+    (while (< i (count tokens))
+      (when (= tokens[i] "]")
+        (set! i (+ i 1))
+        (continue))
+      (when (not (= tokens[i] "["))
+        (delete find)
+        (delete clauses)
+        (return (parse-query-error "query text where clauses must be vectors")))
+      (set! i (+ i 1))
+      (let [source ""
+            has-source false]
+        (when (and (< i (count tokens)) (token-source-var? tokens[i]))
+          (set! source tokens[i])
+          (set! has-source true)
+          (set! i (+ i 1)))
+        (when (> (+ i 2) (count tokens))
+          (delete find)
+          (delete clauses)
+          (return (parse-query-error "query text clause is incomplete")))
+        (let [e (term-from-token tokens[i] false)
+              a (term-from-token tokens[(+ i 1)] true)
+              v (value-term-from-token tokens[(+ i 2)])]
+          (set! i (+ i 3))
+          (when (or (>= i (count tokens)) (not (= tokens[i] "]")))
+            (delete find)
+            (delete clauses)
+            (return (parse-query-error "query text clauses currently need three terms")))
+          (arr.push! clauses (Clause {e: e a: a v: v source: source has_source: has-source}))
+          (set! i (+ i 1)))))
+    (let [query-value (query-from-text-parts (slice find 0) (slice clauses 0) collection-find)]
+      (delete find)
+      (delete clauses)
+      (parse-query-ok query-value))))
+
+(defn parse-query-text [text: string] -> Query-Parse-Result
+  (let [tokens (tokenize-edn-query text)]
+    // ponytail: token headers are kept alive for parsed-query strings; replace with an owning EDN AST when parser grows.
+    (parse-query-tokens (slice tokens 0))))
+
+(defn q-text [db: DB, text: string] -> Result-Set
+  (let [parsed (parse-query-text text)]
+    (if parsed.ok
+      (q-query db parsed.query)
+      (Result-Set {rows: (make [dynamic]Result-Row)}))))
 
 (defn query-with-rules [query: Query, rules: []Rule] -> Query
   (let [out query]

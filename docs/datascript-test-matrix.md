@@ -46,12 +46,12 @@ exist.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `parser.cljc` | 3 | interop | EDN reader/parser frontend |
+| `parser.cljc` | 3 | partial | minimal query text tokenization started; full EDN reader remains |
 | `parser_find.cljc` | 4 | interop | query parser |
-| `parser_query.cljc` | 1 | interop | query parser |
+| `parser_query.cljc` | 1 | partial | `[:find ... :where ...]` text query subset covered; validation remains |
 | `parser_return_map.cljc` | 1 | interop | query parser |
 | `parser_rules.cljc` | 3 | interop | query parser plus rules |
-| `parser_where.cljc` | 6 | interop | query parser |
+| `parser_where.cljc` | 6 | partial | simple data pattern clauses covered; predicates/functions/not/or/rules remain |
 | `pull_parser.cljc` | 1 | interop | pull parser |
 
 ## Host Or Later Runtime APIs
