@@ -3157,15 +3157,35 @@
     (source-db-lookup db sources pull-find.source)
     (return db true)))
 
+(defn pull-entity-from-value [db: DB, value: Value] -> [entity: u64, ok: bool]
+  (cond
+    (= value.kind .Entity) (return value.entity true)
+    (= value.kind .Int) (return (u64 value.int_value) true)
+    (= value.kind .Keyword)
+      (schema-entity-for-attr db value.text)
+    (and (= value.kind .Vector)
+         (= (count value.items) 2)
+         (= value.items[0].kind .Keyword))
+      (resolve-lookup-ref db value.items[0].text value.items[1])
+    :else (return 0 false)))
+
 (defn pulls-for-binding-with-sources [db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
   (let [out (make [dynamic]Pull-Result 0 (count query.pulls))]
     (for [pull-find query.pulls]
-      (let [[entity ok] (binding-lookup binding pull-find.var)]
-        (if (and ok (= entity.kind .Entity))
+      (let [[entity-value ok] (binding-lookup binding pull-find.var)]
+        (if ok
           (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)
-                [pull-db pull-db-ok] (pull-db-for-find db sources pull-find)]
+                [pull-db pull-db-ok] (pull-db-for-find db sources pull-find)
+                entity: u64 0
+                entity-ok false]
+            (when pull-db-ok
+              (let [[resolved resolved-ok] (pull-entity-from-value pull-db entity-value)]
+                (set! entity resolved)
+                (set! entity-ok resolved-ok)))
             (if (and pattern-ok pull-db-ok)
-              (arr.push! out (pull-pattern-spec pull-db entity.entity pattern))
+              (if entity-ok
+                (arr.push! out (pull-pattern-spec pull-db entity pattern))
+                (return out false))
               (return out false)))
           (return out false))))
     (return out true)))
@@ -3407,6 +3427,28 @@
   (if (> (count result.rows) 0)
     (arr.into [dynamic]Value (slice result.rows[0].values 0))
     (make [dynamic]Value)))
+
+(defn result-pull-scalar [result: Result-Set] -> [pull: Pull-Result, ok: bool]
+  (when (= (count result.rows) 0)
+    (return (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}) false))
+  (when (not (= (count result.rows[0].pulls) 1))
+    (return (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)}) false))
+  (return result.rows[0].pulls[0] true))
+
+(defn result-pull-collection [result: Result-Set] -> [dynamic]Pull-Result
+  (let [out (make [dynamic]Pull-Result 0 (count result.rows))]
+    (for [row result.rows]
+      (when (= (count row.pulls) 1)
+        (arr.push! out row.pulls[0])))
+    out))
+
+(defn result-row-tuple [result: Result-Set] -> Result-Row
+  (if (> (count result.rows) 0)
+    (let [values (arr.into [dynamic]Value (slice result.rows[0].values 0))
+          pulls (arr.into [dynamic]Pull-Result (slice result.rows[0].pulls 0))]
+      (Result-Row {values: values pulls: pulls}))
+    (Result-Row {values: (make [dynamic]Value)
+                 pulls: (make [dynamic]Pull-Result)})))
 
 (defn result-keys [result: Result-Set, kind: Key-Kind, keys: []string] -> [dynamic]Keyed-Row
   (let [out (make [dynamic]Keyed-Row 0 (count result.rows))]
