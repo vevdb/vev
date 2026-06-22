@@ -1,4 +1,8 @@
-# vev
+<div align="center">
+  <img src="vev-logo-fuller.png" alt="Vev logo" width="216">
+</div>
+
+# Vev
 
 An embeddable Datalog database.
 
