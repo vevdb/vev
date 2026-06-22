@@ -42,6 +42,26 @@
     (and (= age.kind .Int)
          (>= age.int_value 18))))
 
+(defn birthday-by-name [db: vev.DB, name: string] -> vev.Tx-Fn-Result
+  (for [datom-index db.eavt]
+    (let [datom db.datoms[datom-index]]
+      (when (and (vev.datom-current-at? db datom-index)
+                 (= datom.a ":name")
+                 (= datom.v.kind .String)
+                 (= datom.v.text name))
+        (let [age (vev.entity-get (vev.db-entity db datom.e) ":age")]
+          (return
+            (vev.tx-fn-ok
+              ([]vev.Tx-Data
+                [(vev.add datom.e ":age" (vev.value-int (+ age.int_value 1)))
+                 (vev.add datom.e ":had-birthday" (vev.value-bool true))])))))))
+  (vev.tx-fn-error "No entity with name"))
+
+(defn create-oleg [db: vev.DB] -> vev.Tx-Fn-Result
+  (vev.tx-fn-ok
+    ([]vev.Tx-Data
+      [(vev.add-tempid "new-person" ":name" (vev.value-string "Oleg"))])))
+
 (t.deftest transact-reports-snapshots-and-metadata
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -3611,6 +3631,29 @@
     (t.is (= result.rows[0].values[1].int_value 2))
     (t.is (= result.rows[1].values[0].entity 3))
     (t.is (= result.rows[1].values[1].int_value 4))))
+
+(t.deftest datascript-transaction-functions-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ivan" :age 31}
+             [:db/add 1 :name "Petr"]])
+        missing (vev.transact-fn-string (addr conn) birthday-by-name "Bob")
+        report (vev.transact-fn-string (addr conn) birthday-by-name "Petr")
+        petr (vev.db-entity report.db_after 1)
+        created (vev.transact-fn (addr conn) create-oleg)
+        new-e created.tempids[0].e
+        oleg (vev.db-entity created.db_after new-e)]
+    (t.is (not missing.ok))
+    (t.is (= missing.error "No entity with name"))
+    (t.is report.ok)
+    (t.is (= (vev.entity-get petr ":age").int_value 32))
+    (t.is (vev.entity-get petr ":had-birthday").bool_value)
+    (t.is created.ok)
+    (t.is (= (count created.tempids) 1))
+    (t.is (= created.tempids[0].tempid "new-person"))
+    (t.is (= (vev.entity-get oleg ":name").text "Oleg"))))
 
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))

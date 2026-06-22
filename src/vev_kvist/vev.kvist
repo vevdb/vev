@@ -145,6 +145,12 @@
   tempids: [dynamic]Tempid
 })
 
+(defstruct Tx-Fn-Result {
+  ok: bool
+  error: string
+  tx_data: [dynamic]Tx-Data
+})
+
 (defstruct Tuple-Schema {
   attr: string
   attrs: [dynamic]string
@@ -4784,6 +4790,18 @@
 (defn reset-conn [conn: ^Conn, next-db: DB] -> Tx-Report
   (reset-conn-with-meta conn next-db ([]Tx-Meta [])))
 
+(defn tx-fn-ok [tx-data: []Tx-Data] -> Tx-Fn-Result
+  (let [owned (arr.into [dynamic]Tx-Data tx-data)]
+    (Tx-Fn-Result {ok: true
+                   error: ""
+                   tx_data: owned})))
+
+(defn tx-fn-error [error: string] -> Tx-Fn-Result
+  (let [empty (make [dynamic]Tx-Data)]
+    (Tx-Fn-Result {ok: false
+                   error: error
+                   tx_data: empty})))
+
 (defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
@@ -4855,6 +4873,22 @@
       (delete resolved.ops)
       (delete resolved.tx_meta)
       report)))
+
+(defn transact-fn [conn: ^Conn, f: (fn [db: DB] -> Tx-Fn-Result)] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        result (f before)]
+    (defer (delete result.tx_data))
+    (when (not result.ok)
+      (return (failed-tx-report before result.error)))
+    (transact-tx-data conn (slice result.tx_data 0))))
+
+(defn transact-fn-string [conn: ^Conn, f: (fn [db: DB, arg: string] -> Tx-Fn-Result), arg: string] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        result (f before arg)]
+    (defer (delete result.tx_data))
+    (when (not result.ok)
+      (return (failed-tx-report before result.error)))
+    (transact-tx-data conn (slice result.tx_data 0))))
 
 (defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
   (let [[resolved resolved-ok] (resolve-entity-term db term binding^)]
