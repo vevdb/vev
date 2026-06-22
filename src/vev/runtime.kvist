@@ -3299,6 +3299,36 @@
     (append-var-once! vars name))
   (append-input-binding-vars! vars function.out-binding))
 
+(defn append-predicate-vars! [vars: ^[dynamic]string, predicate: Predicate]
+  (for [term predicate.terms]
+    (append-term-var! vars term)))
+
+(defn append-function-vars! [vars: ^[dynamic]string, function: Function-Clause]
+  (for [term function.terms]
+    (append-term-var! vars term))
+  (append-function-output-vars! vars function))
+
+(defn append-get-else-vars! [vars: ^[dynamic]string, clause: Get-Else]
+  (append-term-var! vars clause.e)
+  (append-var-once! vars clause.out))
+
+(defn append-get-some-vars! [vars: ^[dynamic]string, clause: Get-Some]
+  (append-term-var! vars clause.e)
+  (append-var-once! vars clause.out-attr)
+  (append-var-once! vars clause.out-value))
+
+(defn append-find-vars! [vars: ^[dynamic]string, query-value: Query]
+  (for [name query-value.find]
+    (append-var-once! vars name))
+  (for [pull-find query-value.pulls]
+    (append-var-once! vars pull-find.var)
+    (when pull-find.has-pattern-var
+      (append-var-once! vars pull-find.pattern-var)))
+  (for [aggregate query-value.aggregates]
+    (append-var-once! vars aggregate.var)
+    (when aggregate.has-limit-var
+      (append-var-once! vars aggregate.limit-var))))
+
 (defn query-potential-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)]
     (append-query-input-vars! (addr vars) query-value)
@@ -3306,6 +3336,14 @@
       (append-clause-vars! (addr vars) clause))
     (for [call query-value.rule-calls]
       (append-rule-call-vars! (addr vars) call))
+    (for [predicate query-value.predicates]
+      (append-predicate-vars! (addr vars) predicate))
+    (for [function query-value.function-clauses]
+      (append-function-vars! (addr vars) function))
+    (for [get-else query-value.get-elses]
+      (append-get-else-vars! (addr vars) get-else))
+    (for [get-some query-value.get-somes]
+      (append-get-some-vars! (addr vars) get-some))
     (for [ground query-value.grounds]
       (append-ground-output-vars! (addr vars) ground))
     (for [group query-value.not-groups]
@@ -3323,6 +3361,10 @@
       (append-rule-call-vars! (addr vars) call))
     (for [ground query-value.grounds]
       (append-ground-output-vars! (addr vars) ground))
+    (for [get-else query-value.get-elses]
+      (append-get-else-vars! (addr vars) get-else))
+    (for [get-some query-value.get-somes]
+      (append-get-some-vars! (addr vars) get-some))
     (for [function query-value.function-clauses]
       (append-function-output-vars! (addr vars) function))
     vars))
@@ -3331,6 +3373,66 @@
   (let [vars (make [dynamic]string)]
     (append-query-input-vars! (addr vars) query-value)
     vars))
+
+(defn append-query-input-vars-raw! [vars: ^[dynamic]string, query-value: Query]
+  (when (> (count query-value.input-specs) 0)
+    (for [spec query-value.input-specs]
+      (case spec.kind
+        .Scalar (when (not (= spec.name ""))
+                  (arr.push! vars^ spec.name))
+        .Collection (when (not (= spec.name ""))
+                      (arr.push! vars^ spec.name))
+        .Tuple (for [name spec.tuple.vars]
+                 (when (not (= name ""))
+                   (arr.push! vars^ name)))
+        .Relation (for [name spec.relation.vars]
+                    (when (not (= name ""))
+                      (arr.push! vars^ name)))))
+    (return))
+  (for [name query-value.inputs]
+    (when (not (= name ""))
+      (arr.push! vars^ name)))
+  (for [name query-value.collection-inputs]
+    (when (not (= name ""))
+      (arr.push! vars^ name)))
+  (for [tuple query-value.tuple-inputs]
+    (for [name tuple.vars]
+      (when (not (= name ""))
+        (arr.push! vars^ name))))
+  (for [relation query-value.relation-inputs]
+    (for [name relation.vars]
+      (when (not (= name ""))
+        (arr.push! vars^ name))))
+  (do))
+
+(defn query-input-vars-raw [query-value: Query] -> [dynamic]string
+  (let [vars (make [dynamic]string)]
+    (append-query-input-vars-raw! (addr vars) query-value)
+    vars))
+
+(defn query-find-vars [query-value: Query] -> [dynamic]string
+  (let [vars (make [dynamic]string)]
+    (append-find-vars! (addr vars) query-value)
+    vars))
+
+(defn validate-query-parser-vars [query-value: Query] -> [ok: bool, error: string]
+  (let [find-vars (query-find-vars query-value) :defer
+        available (query-potential-vars query-value) :defer]
+    (for [name find-vars]
+      (when (not (string-slice-contains? (slice available 0) name))
+        (return false (fmt.tprintf "Query for unknown vars: %s" name))))
+    (for [name query-value.with]
+      (when (not (string-slice-contains? (slice available 0) name))
+        (return false (fmt.tprintf "Query for unknown vars: %s" name))))
+    (for [name find-vars]
+      (when (string-slice-contains? (slice query-value.with 0) name)
+        (return false (fmt.tprintf ":find and :with should not use same variables: %s" name)))))
+  (let [input-vars (query-input-vars-raw query-value) :defer]
+    (when (string-slice-has-duplicate? (slice input-vars 0))
+      (return false "Vars used in :in should be distinct")))
+  (when (string-slice-has-duplicate? (slice query-value.with 0))
+    (return false "Vars used in :with should be distinct"))
+  (return true ""))
 
 (defn string-slices-intersect? [left: []string, right: []string] -> bool
   (for [item left]
@@ -3660,6 +3762,9 @@
         provided (count inputs)]
     (when (not (= expected provided))
       (return false (fmt.tprintf "wrong number of query inputs: expected %d, got %d" expected provided))))
+  (let [[parser-ok parser-error] (validate-query-parser-vars query-value)]
+    (when (not parser-ok)
+      (return false parser-error)))
   (let [[source-ok source-error] (validate-query-sources query-value sources)]
     (when (not source-ok)
       (return false source-error)))
