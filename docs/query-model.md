@@ -92,9 +92,12 @@ examples so learning material transfers early.
 
 ## Current Kvist proof
 
-The current in-memory implementation does not parse query text yet. It has a
-Kvist query literal macro that lowers Datomic-shaped data to the typed `Query`
-representation and evaluates that directly.
+The current in-memory implementation has two query frontends:
+
+- a Kvist query literal macro that lowers Datomic-shaped data to the typed
+  `Query` representation and evaluates that directly
+- a narrow text API, `q-text` / `parse-query-text!`, that parses a minimal
+  `[:find ... :where ...]` subset for early interop work
 
 Supported now:
 
@@ -103,6 +106,8 @@ Supported now:
 - scalar, collection, and tuple find syntax: `:find ?x .`, `:find [?x ...]`, `:find [?x ?y]`
 - return-map find markers: `:keys`, `:strs`, and `:syms`
 - standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, and `avg` aggregates
+- text queries with simple data clauses, relation find, collection find,
+  strings, booleans, ints, keywords, wildcards, and source vars
 - datom clauses shaped like `[e a]` or `[e a v]`
 - source-var datom clauses shaped like `[$ e a]` or `[$ e a v]` with single-source semantics
 - reverse attrs in datom clauses, such as `:_user/friend`

@@ -34,7 +34,8 @@ Neither should be treated as the current commitment.
 
 - a native engine
 - a serious Kvist workload for building a real data-intensive application
-- a local-first database
+- an embedded immutable information database
+- a database for facts, relationships, history, and snapshots
 - a graph/query-oriented alternative to writing ad hoc SQL by hand
 - something that should be consumable from Kvist, Clojure, and other hosts
 - a native library first, with a thin CLI binary for operations and inspection
@@ -47,11 +48,16 @@ Neither should be treated as the current commitment.
 - a PostgreSQL replacement
 - a distributed system
 - a search engine
+- a vector database
+- a BI/SQL analytics database
+- a hosted sync product
 - a custom storage engine project for its own sake
 - a CLI-only database product
 
 Not being a network database at first does not mean the core should become so
 process-specific that a server wrapper later becomes awkward or unnatural.
+Search, vectors, SQL analytics, and hosted sync may become adjacent integrations
+or products later, but they should not shape the in-memory semantic core.
 
 ## Why DataScript still matters
 
@@ -120,8 +126,12 @@ It means avoiding phase-1 decisions that depend on:
 
 - local CLI/TUI applications
 - tooling metadata stores
+- business/domain applications
+- workflow and project-management systems
 - note/graph/personal information apps
-- small single-node web apps later
+- AI memory/provenance stores
+- small single-node web apps
+- local-first applications
 
 ## First backend choice
 

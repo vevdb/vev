@@ -17,7 +17,7 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | collection DB behavior, host functions, and exact input errors remain |
+| `query.cljc` | 11 | partial | named collection datom sources covered; primary collection DB syntax, host functions, and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | built-ins covered; decide host function surface and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
@@ -26,9 +26,9 @@ These are the main in-memory parity target before durable storage.
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, and repeated calls covered; validation and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | remaining built-ins and exact edge cases; custom aggregates later |
-| `transact.cljc` | 19 | partial | broad tx semantics and retract not-found/idempotency covered; tx functions, bad forms, and exact errors remain |
+| `transact.cljc` | 19 | partial | native tx functions and tempids-outside-add validation covered; ident-stored tx functions and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, and main conflict matrix covered; exact messages remain |
-| `validation.cljc` | 2 | partial | bad transaction forms and schema validation errors |
+| `validation.cljc` | 2 | partial | runtime bad tx-data validation covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface covered; exact indexed-attribute errors remain |
 | `tuples.cljc` | 11 | partial | remaining schema validation and tuple upsert/conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
@@ -36,6 +36,7 @@ These are the main in-memory parity target before durable storage.
 | `components.cljc` | 2 | partial | exact schema validation and render/touch shapes |
 | `pull_api.cljc` | 17 | partial | xform/visitor options and exact collection/scalar shapes |
 | `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
+| `filter.cljc` | 1 | partial | materialized filtered DBs cover query/entity/index-visible semantics; exact hash/equality/runtime wrapper behavior remains |
 
 ## Parser And Interop
 
@@ -45,12 +46,12 @@ exist.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `parser.cljc` | 3 | interop | EDN reader/parser frontend |
+| `parser.cljc` | 3 | partial | flat EDN node reader started for nested vectors/lists/maps; full EDN lowering remains |
 | `parser_find.cljc` | 4 | interop | query parser |
-| `parser_query.cljc` | 1 | interop | query parser |
+| `parser_query.cljc` | 1 | partial | `[:find ... :where ...]` text query subset covered; validation remains |
 | `parser_return_map.cljc` | 1 | interop | query parser |
 | `parser_rules.cljc` | 3 | interop | query parser plus rules |
-| `parser_where.cljc` | 6 | interop | query parser |
+| `parser_where.cljc` | 6 | partial | simple data pattern clauses covered; predicates/functions/not/or/rules remain |
 | `pull_parser.cljc` | 1 | interop | pull parser |
 
 ## Host Or Later Runtime APIs
@@ -59,13 +60,12 @@ These are useful, but not the next engine-parity gate.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `conn.cljc` | 2 | planned | connection API after semantic core |
+| `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered; listeners remain |
 | `listen.cljc` | 1 | planned | listener API after connection surface |
-| `filter.cljc` | 1 | planned | filtered DB API later |
-| `serialize.cljc` | 5 | planned | serialization format decision later |
+| `serialize.cljc` | 5 | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
-| `db.cljc` | 4 | partial | diff/index pieces are semantic; hash/cache record behavior is host |
+| `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
 | `issues.cljc` | 5 | planned | triage individually; some may already be covered elsewhere |
 | `query_v3.cljc` | 2 | planned | triage after query parity pass |
 | `explode.cljc` | 4 | host | likely implementation/debug tooling specific |
@@ -78,6 +78,6 @@ These are useful, but not the next engine-parity gate.
 1. Port `transact.cljc`, `upsert.cljc`, and `validation.cljc` as one tx/schema
    batch, focusing on real semantics before exact message text.
 2. Finish tuple/index public API behavior as one schema/index batch.
-3. Decide whether collection DB inputs are part of Vev's native API or only EDN
-   interop compatibility.
+3. Keep primary collection DB syntax for EDN/interoperability APIs; Kvist native
+   code uses named collection sources for raw datom rows.
 4. Start parser/EDN API work once semantic query/tx behavior is less volatile.

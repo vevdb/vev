@@ -76,6 +76,16 @@ vev_query_text(db, "[:find ?e :where [?e :name \"Ivan\"]]", inputs) -> result
 Direct host-side AST builders should wait until a real caller proves they are
 needed. A large struct-building ABI is more surface area than Vev needs now.
 
+## SQL stance
+
+SQL should not be a phase-1 query surface. Vev's broader story is not
+"local-first instead of SQLite"; it is SQLite-like embedding for immutable
+facts, relationships, and Datalog-as-data.
+
+A later SQL layer may be useful for inspection, BI tools, or simple interop, but
+it should start as a view over datoms, schema, and transactions rather than a
+second primary semantic model.
+
 ## Native library and CLI
 
 The native library should be the primary binary artifact for non-Kvist

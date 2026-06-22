@@ -1,8 +1,10 @@
 (package vev)
 
 (import arr "kvist:arr")
+(import kstr "kvist:str")
 (import math "core:math")
 (import strings "core:strings")
+(import strconv "core:strconv")
 
 (defenum Value-Kind [
   Nil
@@ -58,6 +60,12 @@
   ok: bool
   error: string
   datoms: [dynamic]Datom
+})
+
+(defstruct DB-Diff {
+  only_left: [dynamic]Datom
+  only_right: [dynamic]Datom
+  both: [dynamic]Datom
 })
 
 (defstruct DB {
@@ -139,6 +147,12 @@
   tempids: [dynamic]Tempid
 })
 
+(defstruct Tx-Fn-Result {
+  ok: bool
+  error: string
+  tx_data: [dynamic]Tx-Data
+})
+
 (defstruct Tuple-Schema {
   attr: string
   attrs: [dynamic]string
@@ -148,6 +162,8 @@
   e: Term
   a: Term
   v: Term
+  tx_term: Term
+  op_term: Term
   source: string
   has_source: bool
   source_width: int
@@ -284,6 +300,33 @@
 
 (defstruct Result-Set {
   rows: [dynamic]Result-Row
+})
+
+(defenum EDN-Kind [
+  Nil
+  Bool
+  Int
+  String
+  Symbol
+  Keyword
+  Vector
+  List
+  Map
+])
+
+(defstruct EDN-Node {
+  kind: EDN-Kind
+  text: string
+  int_value: i64
+  bool_value: bool
+  first_child: int
+  next_sibling: int
+  child_count: int
+})
+
+(defstruct EDN-Doc {
+  nodes: [dynamic]EDN-Node
+  root: int
 })
 
 (defenum Key-Kind [
@@ -517,6 +560,8 @@
   (Clause {e: e
            a: (attr a)
            v: v
+           tx_term: (term-wildcard)
+           op_term: (term-wildcard)
            source: ""
            has_source: false
            source_width: 0}))
@@ -797,6 +842,33 @@
        (= left.a right.a)
        (value-equal? left.v right.v)))
 
+(defn current-fact-exists? [db: DB, target: Datom] -> bool
+  (for [datom-index db.eavt]
+    (when (datom-current-at? db datom-index)
+      (when (same-fact? db.datoms[datom-index] target)
+        (return true))))
+  false)
+
+(defn append-db-diff-side! [only-side: ^[dynamic]Datom, both: ^[dynamic]Datom, left: DB, right: DB]
+  (for [datom-index left.eavt]
+    (when (datom-current-at? left datom-index)
+      (let [datom left.datoms[datom-index]]
+        (if (current-fact-exists? right datom)
+          (arr.push! both^ datom)
+          (arr.push! only-side^ datom))))))
+
+(defn db-diff [left: DB, right: DB] -> DB-Diff
+  (let [only-left (make [dynamic]Datom)
+        only-right (make [dynamic]Datom)
+        both (make [dynamic]Datom)]
+    (append-db-diff-side! (addr only-left) (addr both) left right)
+    (for [datom-index right.eavt]
+      (when (datom-current-at? right datom-index)
+        (let [datom right.datoms[datom-index]]
+          (when (not (current-fact-exists? left datom))
+            (arr.push! only-right datom)))))
+    (DB-Diff {only_left: only-left only_right: only-right both: both})))
+
 (defn datom-current-in-log? [datoms: []Datom, index: int] -> bool
   (let [datom datoms[index]]
     (when (not datom.added)
@@ -832,6 +904,42 @@
          aevt: (build-index slice-datoms "aevt")
          avet: (build-index slice-datoms "avet")
          vaet: (build-index slice-datoms "vaet")})))
+
+(defn clone-datom-slice [datoms: []Datom] -> [dynamic]Datom
+  (arr.into [dynamic]Datom datoms))
+
+(defn make-datom [e: u64, a: string, v: Value] -> Datom
+  (Datom {e: e a: a v: v tx: 0 added: true}))
+
+(defn datom-tx [e: u64, a: string, v: Value, tx: u64, added: bool] -> Datom
+  (Datom {e: e a: a v: v tx: tx added: added}))
+
+(defn init-db [datoms: []Datom] -> DB
+  (build-db (clone-datom-slice datoms)))
+
+(defn filter-db [db: DB, pred: (fn [db: DB, datom: Datom] -> bool)] -> DB
+  // ponytail: materialize filtered DBs for now; replace with predicate-wrapped indexes only if benchmarks require it.
+  (let [datoms (make [dynamic]Datom)]
+    (for [datom-index db.eavt]
+      (when (datom-current-at? db datom-index)
+        (let [datom db.datoms[datom-index]]
+          (when (pred db datom)
+            (arr.push! datoms datom)))))
+    (build-db datoms)))
+
+(defn max-tx [datoms: []Datom] -> u64
+  (let [tx: u64 0]
+    (for [datom datoms]
+      (when (> datom.tx tx)
+        (set! tx datom.tx)))
+    tx))
+
+(defn conn-from-db [db: DB] -> Conn
+  (Conn {db: (build-db (clone-datom-slice (slice db.datoms 0)))
+         next_tx: (+ (max-tx (slice db.datoms 0)) 1)}))
+
+(defn conn-from-datoms [datoms: []Datom] -> Conn
+  (conn-from-db (init-db datoms)))
 
 (defn compare-eavt-prefix [datom: Datom, e: u64] -> int
   (if (< datom.e e)
@@ -1729,6 +1837,8 @@
             (Clause {e: (unquote (emit-value-term (nth form 1)))
                      a: (unquote (emit-value-term (nth form 2)))
                      v: (term-wildcard)
+                     tx_term: (term-wildcard)
+                     op_term: (term-wildcard)
                      source: (unquote (source (nth form 0)))
                      has_source: true
                      source_width: 2}))
@@ -1751,10 +1861,36 @@
               (Clause {e: (unquote (emit-value-term (nth form 1)))
                        a: (unquote (emit-value-term (nth form 2)))
                        v: (unquote (emit-value-term (nth form 3)))
+                       tx_term: (term-wildcard)
+                       op_term: (term-wildcard)
                        source: (unquote (source (nth form 0)))
                        has_source: true
                        source_width: 3})))
-          (error "datalog clauses must have shape [e a], [e a v], [src e a], or [src e a v]"))))
+          (if (= (count form) 5)
+            (if (relation-source? (nth form 0))
+              (quasiquote
+                (Clause {e: (unquote (emit-value-term (nth form 1)))
+                         a: (unquote (emit-value-term (nth form 2)))
+                         v: (unquote (emit-value-term (nth form 3)))
+                         tx_term: (unquote (emit-value-term (nth form 4)))
+                         op_term: (term-wildcard)
+                         source: (unquote (source (nth form 0)))
+                         has_source: true
+                         source_width: 4}))
+              (error "five-item datalog clauses require a relation source"))
+            (if (= (count form) 6)
+              (if (relation-source? (nth form 0))
+                (quasiquote
+                  (Clause {e: (unquote (emit-value-term (nth form 1)))
+                           a: (unquote (emit-value-term (nth form 2)))
+                           v: (unquote (emit-value-term (nth form 3)))
+                           tx_term: (unquote (emit-value-term (nth form 4)))
+                           op_term: (unquote (emit-value-term (nth form 5)))
+                           source: (unquote (source (nth form 0)))
+                           has_source: true
+                           source_width: 5}))
+                (error "six-item datalog clauses require a relation source"))
+              (error "datalog clauses must have shape [e a], [e a v], [src e a], [src e a v], [src e a v tx], or [src e a v tx op]"))))))
     (error "datalog :where entries must be clauses")))
 
 (defmacro- missing-clause? [form]
@@ -1918,6 +2054,8 @@
         (Clause {e: (unquote (emit-value-term (nth form 0)))
                  a: (unquote (emit-value-term (nth form 1)))
                  v: (term-wildcard)
+                 tx_term: (term-wildcard)
+                 op_term: (term-wildcard)
                  source: (unquote source-name)
                  has_source: true
                  source_width: 2}))
@@ -1928,10 +2066,40 @@
             (Clause {e: (unquote (emit-value-term (nth form 0)))
                      a: (unquote (emit-value-term (nth form 1)))
                      v: (unquote (emit-value-term (nth form 2)))
+                     tx_term: (term-wildcard)
+                     op_term: (term-wildcard)
                      source: (unquote source-name)
                      has_source: true
                      source_width: 3})))
-        (emit-datalog-clause form)))
+        (if (= (count form) 4)
+          (if (or (input-source? (nth form 0))
+                  (input-db-source? (nth form 0))
+                  (relation-source? (nth form 0)))
+            (emit-datalog-clause form)
+            (quasiquote
+              (Clause {e: (unquote (emit-value-term (nth form 0)))
+                       a: (unquote (emit-value-term (nth form 1)))
+                       v: (unquote (emit-value-term (nth form 2)))
+                       tx_term: (unquote (emit-value-term (nth form 3)))
+                       op_term: (term-wildcard)
+                       source: (unquote source-name)
+                       has_source: true
+                       source_width: 4})))
+          (if (= (count form) 5)
+            (if (or (input-source? (nth form 0))
+                    (input-db-source? (nth form 0))
+                    (relation-source? (nth form 0)))
+              (emit-datalog-clause form)
+              (quasiquote
+                (Clause {e: (unquote (emit-value-term (nth form 0)))
+                         a: (unquote (emit-value-term (nth form 1)))
+                         v: (unquote (emit-value-term (nth form 2)))
+                         tx_term: (unquote (emit-value-term (nth form 3)))
+                         op_term: (unquote (emit-value-term (nth form 4)))
+                         source: (unquote source-name)
+                         has_source: true
+                         source_width: 5})))
+            (emit-datalog-clause form)))))
     (error "source-prefixed clauses currently support data clauses")))
 
 (defmacro- emit-datalog-source-clauses [source-name forms]
@@ -3194,6 +3362,327 @@
             pulls: owned-pulls
             aggregates: owned-aggregates})))
 
+(defn empty-query [] -> Query
+  (query ([]string []) ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) ([]Clause []) ([]Predicate []) ([]Function-Clause []) ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) ([]Not-Group []) ([]Or-Group []) ([]Pull-Find []) ([]Aggregate-Find [])))
+
+(defn empty-edn-doc [] -> EDN-Doc
+  (EDN-Doc {nodes: (make [dynamic]EDN-Node) root: -1}))
+
+(defn edn-node [kind: EDN-Kind, text: string] -> EDN-Node
+  (EDN-Node {kind: kind text: text first_child: -1 next_sibling: -1 child_count: 0}))
+
+(defn edn-add-node! [doc: ^EDN-Doc, node: EDN-Node] -> int
+  (let [index (count doc^.nodes)]
+    (arr.push! doc^.nodes node)
+    index))
+
+(defn edn-set-root! [doc: ^EDN-Doc, index: int]
+  (set! doc^.root index))
+
+(defn edn-set-first-child! [doc: ^EDN-Doc, index: int, child: int]
+  (let [node doc^.nodes[index]]
+    (set! node.first_child child)
+    (set! doc^.nodes[index] node)))
+
+(defn edn-set-next-sibling! [doc: ^EDN-Doc, index: int, sibling: int]
+  (let [node doc^.nodes[index]]
+    (set! node.next_sibling sibling)
+    (set! doc^.nodes[index] node)))
+
+(defn edn-inc-child-count! [doc: ^EDN-Doc, index: int]
+  (let [node doc^.nodes[index]]
+    (set! node.child_count (+ node.child_count 1))
+    (set! doc^.nodes[index] node)))
+
+(defn edn-whitespace? [ch: u8] -> bool
+  (or (= ch 32)
+      (= ch 10)
+      (= ch 13)
+      (= ch 9)
+      (= ch 44)))
+
+(defn edn-delimiter? [ch: u8] -> bool
+  (or (edn-whitespace? ch)
+      (= ch 40)
+      (= ch 41)
+      (= ch 91)
+      (= ch 93)
+      (= ch 123)
+      (= ch 125)
+      (= ch 34)))
+
+(defn edn-skip-ws [text: string, i: int] -> int
+  (let [out i
+        n (kstr.count text)]
+    (while (and (< out n) (edn-whitespace? (kstr.get text out)))
+      (set! out (+ out 1)))
+    out))
+
+(defn read-edn-string! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
+  (let [start (+ i 1)
+        cursor start
+        n (kstr.count text)]
+    (while (and (< cursor n) (not (= (kstr.get text cursor) 34)))
+      (if (= (kstr.get text cursor) 92)
+        (set! cursor (+ cursor 2))
+        (set! cursor (+ cursor 1))))
+    (when (>= cursor n)
+      (return cursor -1 false "unterminated EDN string"))
+    (let [node-index (edn-add-node! doc (edn-node .String (kstr.slice text start cursor)))]
+      (return (+ cursor 1) node-index true ""))))
+
+(defn read-edn-atom! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
+  (let [cursor i
+        n (kstr.count text)]
+    (while (and (< cursor n) (not (edn-delimiter? (kstr.get text cursor))))
+      (set! cursor (+ cursor 1)))
+    (when (= cursor i)
+      (return cursor -1 false "expected EDN token"))
+    (let [token (kstr.slice text i cursor)]
+      (cond
+        (= token "nil")
+          (return cursor (edn-add-node! doc (edn-node .Nil token)) true "")
+        (= token "true")
+          (let [node (edn-node .Bool token)]
+            (set! node.bool_value true)
+            (return cursor (edn-add-node! doc node) true ""))
+        (= token "false")
+          (let [node (edn-node .Bool token)]
+            (set! node.bool_value false)
+            (return cursor (edn-add-node! doc node) true ""))
+        (strings.has_prefix token ":")
+          (return cursor (edn-add-node! doc (edn-node .Keyword token)) true "")
+        :else
+          (let [[parsed parsed-ok] (strconv.parse_int token)]
+            (if parsed-ok
+              (let [node (edn-node .Int token)]
+                (set! node.int_value (i64 parsed))
+                (return cursor (edn-add-node! doc node) true ""))
+              (return cursor (edn-add-node! doc (edn-node .Symbol token)) true "")))))))
+
+(defn read-edn-form! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
+  (let [cursor (edn-skip-ws text i)
+        n (kstr.count text)]
+    (when (>= cursor n)
+      (return cursor -1 false "expected EDN form"))
+    (let [ch (kstr.get text cursor)]
+      (cond
+        (= ch 91) (read-edn-container! doc text cursor .Vector 93)
+        (= ch 40) (read-edn-container! doc text cursor .List 41)
+        (= ch 123) (read-edn-container! doc text cursor .Map 125)
+        (= ch 34) (read-edn-string! doc text cursor)
+        (or (= ch 93) (= ch 41) (= ch 125))
+          (return cursor -1 false "unexpected EDN closing delimiter")
+        :else (read-edn-atom! doc text cursor)))))
+
+(defn read-edn-container! [doc: ^EDN-Doc, text: string, i: int, kind: EDN-Kind, close: u8] -> [next: int, node: int, ok: bool, error: string]
+  (let [container (edn-add-node! doc (edn-node kind ""))
+        cursor (+ i 1)
+        previous -1
+        n (kstr.count text)]
+    (while true
+      (set! cursor (edn-skip-ws text cursor))
+      (when (>= cursor n)
+        (return cursor -1 false "unterminated EDN container"))
+      (when (= (kstr.get text cursor) close)
+        (return (+ cursor 1) container true ""))
+      (let [[next child child-ok child-error] (read-edn-form! doc text cursor)]
+        (when (not child-ok)
+          (return next -1 false child-error))
+        (if (= previous -1)
+          (edn-set-first-child! doc container child)
+          (edn-set-next-sibling! doc previous child))
+        (edn-inc-child-count! doc container)
+        (set! previous child)
+        (set! cursor next)))
+    (return cursor -1 false "unreachable EDN container state")))
+
+(defn read-edn-text! [out: ^EDN-Doc, text: string] -> [ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [next root parsed-ok parsed-error] (read-edn-form! (addr doc) text 0)]
+    (when (not parsed-ok)
+      (delete doc.nodes)
+      (return false parsed-error))
+    (let [end (edn-skip-ws text next)]
+      (when (not (= end (kstr.count text)))
+        (delete doc.nodes)
+        (return false "trailing EDN input")))
+    (edn-set-root! (addr doc) root)
+    (set! out^ doc)
+    (return true "")))
+
+(defn edn-token-boundary? [ch: u8] -> bool
+  (or (= ch 32)
+      (= ch 10)
+      (= ch 13)
+      (= ch 9)
+      (= ch 44)
+      (= ch 91)
+      (= ch 93)))
+
+(defn tokenize-edn-query [text: string] -> [dynamic]string
+  // Current text entrypoint is a narrow query subset; replace this tokenizer with a real EDN reader as the string API grows.
+  (let [tokens (make [dynamic]string)
+        i 0
+        n (kstr.count text)]
+    (while (< i n)
+      (let [ch (kstr.get text i)]
+        (cond
+          (or (= ch 32) (= ch 10) (= ch 13) (= ch 9) (= ch 44))
+            (set! i (+ i 1))
+          (or (= ch 91) (= ch 93))
+            (do
+              (arr.push! tokens (kstr.slice text i (+ i 1)))
+              (set! i (+ i 1)))
+          (= ch 34)
+            (do
+              (let [start i]
+                (set! i (+ i 1))
+                (while (and (< i n) (not (= (kstr.get text i) 34)))
+                  (set! i (+ i 1)))
+                (if (< i n)
+                  (do
+                    (set! i (+ i 1))
+                    (arr.push! tokens (kstr.slice text start i)))
+                  (do
+                    (arr.push! tokens (kstr.slice text start n))
+                    (set! i n)))))
+          :else
+            (let [start i]
+              (while (and (< i n) (not (edn-token-boundary? (kstr.get text i))))
+                (set! i (+ i 1)))
+              (arr.push! tokens (kstr.slice text start i))))))
+    tokens))
+
+(defn token-source-var? [token: string] -> bool
+  (strings.has_prefix token "$"))
+
+(defn token-var? [token: string] -> bool
+  (strings.has_prefix token "?"))
+
+(defn token-string? [token: string] -> bool
+  (and (>= (kstr.count token) 2)
+       (= (kstr.get token 0) 34)
+       (= (kstr.get token (- (kstr.count token) 1)) 34)))
+
+(defn token-keyword? [token: string] -> bool
+  (strings.has_prefix token ":"))
+
+(defn token-bool? [token: string] -> bool
+  (or (= token "true") (= token "false")))
+
+(defn term-from-token [token: string, attr-position: bool] -> Term
+  (cond
+    (= token "_") (term-wildcard)
+    (token-var? token) (term-var token)
+    (token-string? token) (term-string (kstr.slice token 1 (- (kstr.count token) 1)))
+    (token-keyword? token) (if attr-position (term-keyword token) (term-value (value-keyword token)))
+    (token-bool? token) (term-value (value-bool (= token "true")))
+    :else
+      (let [[parsed ok] (strconv.parse_int token)]
+        (if ok
+          (if attr-position
+            (term-value (value-int (i64 parsed)))
+            (term-entity (u64 parsed)))
+          (term-string token)))))
+
+(defn value-term-from-token [token: string] -> Term
+  (when (= token "_")
+    (return (term-wildcard)))
+  (when (token-var? token)
+    (return (term-var token)))
+  (when (token-string? token)
+    (return (term-string (kstr.slice token 1 (- (kstr.count token) 1)))))
+  (when (token-keyword? token)
+    (return (term-value (value-keyword token))))
+  (when (token-bool? token)
+    (return (term-value (value-bool (= token "true")))))
+  (let [[parsed ok] (strconv.parse_int token)]
+    (if ok
+      (term-value (value-int (i64 parsed)))
+      (term-string token))))
+
+(defn query-from-text-parts [find: []string, clauses: []Clause, collection-find: bool] -> Query
+  (query find ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) clauses ([]Predicate []) ([]Function-Clause []) ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) ([]Not-Group []) ([]Or-Group []) ([]Pull-Find []) ([]Aggregate-Find [])))
+
+(defn parse-query-tokens! [out: ^Query, tokens: []string] -> [ok: bool, error: string]
+  (when (or (< (count tokens) 5)
+            (not (= tokens[0] "["))
+            (not (= tokens[1] ":find")))
+    (return false "query text must start with [:find"))
+  (let [find (make [dynamic]string)
+        clauses (make [dynamic]Clause)
+        collection-find false
+        i 2]
+    (when (= tokens[i] "[")
+      (set! collection-find true)
+      (set! i (+ i 1)))
+    (while (and (< i (count tokens)) (not (= tokens[i] ":where")))
+      (when (and collection-find (= tokens[i] "..."))
+        (set! i (+ i 1))
+        (continue))
+      (when (= tokens[i] "]")
+        (set! i (+ i 1))
+        (continue))
+      (when (not (token-var? tokens[i]))
+        (delete find)
+        (delete clauses)
+        (return false "query text :find currently supports vars"))
+      (arr.push! find tokens[i])
+      (set! i (+ i 1)))
+    (when (or (>= i (count tokens)) (not (= tokens[i] ":where")))
+      (delete find)
+      (delete clauses)
+      (return false "query text missing :where"))
+    (set! i (+ i 1))
+    (while (< i (count tokens))
+      (when (= tokens[i] "]")
+        (set! i (+ i 1))
+        (continue))
+      (when (not (= tokens[i] "["))
+        (delete find)
+        (delete clauses)
+        (return false "query text where clauses must be vectors"))
+      (set! i (+ i 1))
+      (let [source ""
+            has-source false]
+        (when (and (< i (count tokens)) (token-source-var? tokens[i]))
+          (set! source tokens[i])
+          (set! has-source true)
+          (set! i (+ i 1)))
+        (when (> (+ i 2) (count tokens))
+          (delete find)
+          (delete clauses)
+          (return false "query text clause is incomplete"))
+        (let [e (term-from-token tokens[i] false)
+              a (term-from-token tokens[(+ i 1)] true)
+              v (value-term-from-token tokens[(+ i 2)])]
+          (set! i (+ i 3))
+          (when (or (>= i (count tokens)) (not (= tokens[i] "]")))
+            (delete find)
+            (delete clauses)
+            (return false "query text clauses currently need three terms"))
+          (arr.push! clauses (Clause {e: e a: a v: v source: source has_source: has-source}))
+          (set! i (+ i 1)))))
+    (let [query-value (query-from-text-parts (slice find 0) (slice clauses 0) collection-find)]
+      (set! out^ query-value)
+      (delete find)
+      (delete clauses)
+      (return true ""))))
+
+(defn parse-query-text! [out: ^Query, text: string] -> [ok: bool, error: string]
+  (let [tokens (tokenize-edn-query text)]
+    (let [[parsed-ok parsed-error] (parse-query-tokens! out (slice tokens 0))]
+      (delete tokens)
+      (return parsed-ok parsed-error))))
+
+(defn q-text [db: DB, text: string] -> Result-Set
+  (let [query-value (empty-query)
+        [ok _] (parse-query-text! (addr query-value) text)]
+    (if ok
+      (q-query db query-value)
+      (Result-Set {rows: (make [dynamic]Result-Row)}))))
+
 (defn query-with-rules [query: Query, rules: []Rule] -> Query
   (let [out query]
     (delete out.rules)
@@ -3598,11 +4087,13 @@
 (defn public-avet-attr? [db: DB, attr: string] -> bool
   (when (not (db-has-schema? db))
     (return true))
-  (let [tuple-attrs (schema-tuple-attrs db attr) :defer]
-    (or (schema-indexed? db attr)
-        (schema-unique? db attr)
-        (schema-ref? db attr)
-        (> (count tuple-attrs) 0))))
+  (let [tuple-attrs (schema-tuple-attrs db attr)
+        visible (or (schema-indexed? db attr)
+                    (schema-unique? db attr)
+                    (schema-ref? db attr)
+                    (> (count tuple-attrs) 0))]
+    (delete tuple-attrs)
+    visible))
 
 (defn public-index-datom-visible? [db: DB, order: string, datom: Datom] -> bool
   (if (= order ":avet")
@@ -4261,6 +4752,41 @@
         (append-tuple-maintenance-ops! (addr out) scratch op)))
     out))
 
+(defn tx-data-op-known? [op: string] -> bool
+  (or (= op ":db/add")
+      (= op ":db/retract")
+      (= op ":db/retractAttr")
+      (= op ":db/retractEntity")
+      (= op ":db.fn/cas")
+      (= op ":db/cas")))
+
+(defn tx-data-op-needs-attr? [op: string] -> bool
+  (not (= op ":db/retractEntity")))
+
+(defn attr-name-valid? [attr: string] -> bool
+  (and (strings.has_prefix attr ":")
+       (> (count attr) 1)))
+
+(defn validate-tx-data-item [data: Tx-Data] -> [ok: bool, error: string]
+  (when (not (tx-data-op-known? data.op))
+    (return false "unknown tx op"))
+  (when (and data.has_tempid
+             (not (= data.op ":db/add")))
+    (return false "tempids not allowed outside add"))
+  (when (and (tx-data-op-needs-attr? data.op)
+             (not (attr-name-valid? data.a)))
+    (return false "bad entity attribute"))
+  (when (and data.has_lookup_ref
+             (not (attr-name-valid? data.lookup_attr)))
+    (return false "bad lookup attribute"))
+  (when (and data.has_expected_lookup_ref
+             (not (attr-name-valid? data.expected_lookup_attr)))
+    (return false "bad lookup attribute"))
+  (when (and data.has_value_lookup_ref
+             (not (attr-name-valid? data.value_lookup_attr)))
+    (return false "bad lookup attribute"))
+  (return true ""))
+
 (defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
@@ -4278,12 +4804,13 @@
       (let [e data.e
             current-db (db-with-resolved-ops db (slice resolved-ops 0))
             skip-data false]
-        (when (and (= data.op ":db.fn/cas") data.has_tempid)
-          (return (Resolved-Tx {ok: false
-                                error: "tempids not allowed in cas"
-                                ops: resolved-ops
-                                tx_meta: resolved-meta
-                                tempids: resolved-tempids})))
+        (let [[shape-ok shape-error] (validate-tx-data-item data)]
+          (when (not shape-ok)
+            (return (Resolved-Tx {ok: false
+                                  error: shape-error
+                                  ops: resolved-ops
+                                  tx_meta: resolved-meta
+                                  tempids: resolved-tempids}))))
         (when data.has_tempid
           (if (current-tx-tempid? data.tempid)
             (do
@@ -4622,6 +5149,47 @@
               tx_meta: (make [dynamic]Tx-Meta)
               tempids: (make [dynamic]Tempid)}))
 
+(defn reset-conn-with-meta [conn: ^Conn, next-db: DB, tx-meta: []Tx-Meta] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        after (build-db (clone-datom-slice (slice next-db.datoms 0)))
+        diff (db-diff before after)
+        tx conn^.next_tx
+        tx-data (make [dynamic]Datom 0 (+ (count diff.only_left) (count diff.only_right)))]
+    (for [datom diff.only_left]
+      (arr.push! tx-data
+        (Datom {e: datom.e a: datom.a v: datom.v tx: tx added: false})))
+    (for [datom diff.only_right]
+      (arr.push! tx-data
+        (Datom {e: datom.e a: datom.a v: datom.v tx: tx added: true})))
+    (delete diff.only_left)
+    (delete diff.only_right)
+    (delete diff.both)
+    (set! conn^.db after)
+    (set! conn^.next_tx (+ conn^.next_tx 1))
+    (Tx-Report {ok: true
+                error: ""
+                db_before: before
+                db_after: after
+                tx_data: tx-data
+                tx: tx
+                tx_meta: (clone-tx-meta tx-meta)
+                tempids: (make [dynamic]Tempid)})))
+
+(defn reset-conn [conn: ^Conn, next-db: DB] -> Tx-Report
+  (reset-conn-with-meta conn next-db ([]Tx-Meta [])))
+
+(defn tx-fn-ok [tx-data: []Tx-Data] -> Tx-Fn-Result
+  (let [owned (arr.into [dynamic]Tx-Data tx-data)]
+    (Tx-Fn-Result {ok: true
+                   error: ""
+                   tx_data: owned})))
+
+(defn tx-fn-error [error: string] -> Tx-Fn-Result
+  (let [empty (make [dynamic]Tx-Data)]
+    (Tx-Fn-Result {ok: false
+                   error: error
+                   tx_data: empty})))
+
 (defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
@@ -4693,6 +5261,22 @@
       (delete resolved.ops)
       (delete resolved.tx_meta)
       report)))
+
+(defn transact-fn [conn: ^Conn, f: (fn [db: DB] -> Tx-Fn-Result)] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        result (f before)]
+    (defer (delete result.tx_data))
+    (when (not result.ok)
+      (return (failed-tx-report before result.error)))
+    (transact-tx-data conn (slice result.tx_data 0))))
+
+(defn transact-fn-string [conn: ^Conn, f: (fn [db: DB, arg: string] -> Tx-Fn-Result), arg: string] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        result (f before arg)]
+    (defer (delete result.tx_data))
+    (when (not result.ok)
+      (return (failed-tx-report before result.error)))
+    (transact-tx-data conn (slice result.tx_data 0))))
 
 (defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
   (let [[resolved resolved-ok] (resolve-entity-term db term binding^)]
@@ -4789,9 +5373,17 @@
     (return
       (and (match-term? clause.e row.items[0] binding)
            (match-term? clause.a row.items[1] binding))))
-  (and (match-term? clause.e row.items[0] binding)
-       (match-term? clause.a row.items[1] binding)
-       (match-term? clause.v row.items[2] binding)))
+  (when (not (and (match-term? clause.e row.items[0] binding)
+                  (match-term? clause.a row.items[1] binding)
+                  (match-term? clause.v row.items[2] binding)))
+    (return false))
+  (when (= clause.source_width 3)
+    (return true))
+  (when (not (match-term? clause.tx_term row.items[3] binding))
+    (return false))
+  (when (= clause.source_width 4)
+    (return true))
+  (match-term? clause.op_term row.items[4] binding))
 
 (defn bindings-after-relation-source-clause [clause: Clause, binding: Binding] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)
@@ -4816,6 +5408,8 @@
   (Clause {e: clause.e
            a: clause.a
            v: clause.v
+           tx_term: (term-wildcard)
+           op_term: (term-wildcard)
            source: ""
            has_source: false
            source_width: 0}))
@@ -5245,8 +5839,9 @@
 (defn binding-matches-not-group-with-sources? [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> bool
   (let [initial (clone-binding binding)]
     (when group.has_join
+      (delete initial.items)
       (set! initial (project-binding binding group.join_vars)))
-  (let [bindings ([dynamic]Binding [initial]) :defer]
+  (let [bindings ([dynamic]Binding [initial])]
     (for [clause group.clauses]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
@@ -5254,6 +5849,7 @@
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
+          (delete bindings)
           (return false))))
     (for [not-group group.not_groups]
       (let [next-bindings (make [dynamic]Binding)]
@@ -5263,8 +5859,11 @@
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
+          (delete bindings)
           (return false))))
-    (return (> (count bindings) 0)))))
+    (let [matched (> (count bindings) 0)]
+      (delete bindings)
+      (return matched)))))
 
 (defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
   (binding-matches-not-group-with-sources? db ([]DB-Source []) group binding))

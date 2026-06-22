@@ -24,6 +24,21 @@ Examples:
 - `db + query -> results`
 - `db + pull_pattern + eid -> pulled_data`
 
+## Database values are the product
+
+Vev's primary bet is not local-first sync or graph queries. The core programming
+model is that a database snapshot is an immutable value.
+
+Applications should be able to:
+
+- obtain a DB snapshot
+- pass it through pure domain logic
+- produce transaction data
+- commit at the edge
+
+This keeps Vev useful anywhere facts, relationships, history, and application
+logic benefit from value semantics.
+
 ## What this does not mean
 
 This is not a requirement for purely functional implementation style.
