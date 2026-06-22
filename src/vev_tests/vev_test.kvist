@@ -194,11 +194,17 @@
         akas (vev.q-collection report.db-after
                [:find [?aka ...]
                 :where
-                [1 :aka ?aka]])]
+                [1 :aka ?aka]])
+        schema-view (vev.db-schema report.db-after)]
+    (defer (vev.delete-schema schema-view))
     (t.is report.ok)
     (t.is (= (count akas) 2))
     (t.is (= akas[0].text "X"))
-    (t.is (= akas[1].text "Y"))))
+    (t.is (= akas[1].text "Y"))
+    (t.is (= (count schema-view) 1))
+    (t.is (= schema-view[0].attr ":aka"))
+    (t.is schema-view[0].has-cardinality)
+    (t.is (= schema-view[0].cardinality ":db.cardinality/many"))))
 
 (t.deftest query-joins-and-returns-multiple-columns
   (defer (free_all context.allocator))
@@ -1184,6 +1190,37 @@
     (t.is (= diff.both[0].e 1))
     (t.is (= diff.both[0].a ":a"))
     (t.is (= diff.both[0].v.int-value 1))))
+
+(t.deftest datascript-issues-regressions-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact (addr conn) [{:attr "A"} {:attr "B"}])
+        vector-result (vev.q conn.db
+                        [:find ?a ?b
+                         :where
+                         [_ :attr ?a]
+                         [(vector ?a) ?b]])
+        left-conn (vev.create-conn)
+        _ (vev.transact (addr left-conn) [[:db/add 1 :attr :aa]])
+        right-conn (vev.create-conn)
+        _ (vev.transact (addr right-conn) [[:db/add 1 :attr "aa"]])
+        diff (vev.db-diff left-conn.db right-conn.db)]
+    (t.is (= (count vector-result.rows) 2))
+    (t.is (= vector-result.rows[0].values[0].text "A"))
+    (t.is (= vector-result.rows[0].values[1].kind .Vector))
+    (t.is (= vector-result.rows[0].values[1].items[0].text "A"))
+    (t.is (= vector-result.rows[1].values[0].text "B"))
+    (t.is (= vector-result.rows[1].values[1].kind .Vector))
+    (t.is (= vector-result.rows[1].values[1].items[0].text "B"))
+    (t.is (= (count diff.only-left) 1))
+    (t.is (= diff.only-left[0].a ":attr"))
+    (t.is (= diff.only-left[0].v.kind .Keyword))
+    (t.is (= diff.only-left[0].v.text ":aa"))
+    (t.is (= (count diff.only-right) 1))
+    (t.is (= diff.only-right[0].a ":attr"))
+    (t.is (= diff.only-right[0].v.kind .String))
+    (t.is (= diff.only-right[0].v.text "aa"))
+    (t.is (= (count diff.both) 0))))
 
 (t.deftest datascript-filter-db-subset
   (defer (free_all context.allocator))

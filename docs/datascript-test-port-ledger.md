@@ -35,6 +35,7 @@ DataScript assertion or exact Clojure API shape.
 | `serialize.cljc` | 5 | subset | init-db from datoms covered; text/EDN/JSON serialization format later |
 | `filter.cljc` | 1 | subset | materialized `filter-db` covers predicate filters, chaining, entity reads, and index-backed queries; exact hash/equality/runtime wrapper behavior remains |
 | `listen.cljc` | 1 | subset | named report-sink listeners covered; arbitrary callback/closure API remains |
+| `issues.cljc` | 5 | subset | issue-262 vector result isolation, issue-369 mixed-type DB diff, and issue-381 schema inspection covered; issue-330/331 are Clojure pprint/meta host behavior |
 | `storage.clj`, `datafy.cljc` | 6 | later | app/runtime APIs after core parity |
 
 Near-term rule: port one namespace at a time, and only mark `covered` when the

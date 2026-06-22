@@ -42,7 +42,7 @@ Status key:
 | `conn` | partial | `conn-from-db`, `conn-from-datoms`, reset reports, and named report-sink listeners covered; arbitrary callback/closure API remains |
 | `filter` | partial | Materialized `filter-db` covers DataScript-style predicate filtering, chained filters, filtered entity reads, and index-backed queries; exact hash/equality/runtime wrapper behavior remains |
 | `serialize` | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
-| `issues` | partial | Need namespace-by-namespace triage |
+| `issues` | partial | Engine-relevant regressions from `issues.cljc` are triaged: vector result isolation, mixed-type DB diff, and schema inspection covered; Clojure metadata/pprint cases are host-specific |
 | `listen`, `storage`, `datafy` | later | API/package features after semantic core |
 | `tuples` | partial | Tuple attr schema, derived multi-tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, query lookup refs over tuple attrs, component-based tuple upsert, direct tuple-value tempid upsert, tuple unique conflict and multi-component update shapes, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation including invalid `:db/tupleAttrs` shapes, nested tuple dependency rejection, and cardinality-many tuple/component rejection subsets started; remaining exact errors and edge conflict matrix missing |
 
