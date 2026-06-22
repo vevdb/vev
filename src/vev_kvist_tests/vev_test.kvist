@@ -312,6 +312,40 @@
     (t.is (= destructured.rows[0].values[0].text "Ada Lovelace"))
     (t.is (= destructured.rows[0].values[1].int_value 37))))
 
+(t.deftest datascript-parser-query-text-inputs
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ada" :age 37 :email "ada@example.com"}
+             {:db/id 2 :name "Grace" :age 85 :email "grace@example.com"}])
+        scalar (vev.q-text-with-inputs
+                 conn.db
+                 "[:find ?name :in ?email :where [?e :email ?email] [?e :name ?name]]"
+                 ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "ada@example.com"))]))
+        collection (vev.q-text-with-inputs
+                     conn.db
+                     "[:find ?name :in [?email ...] :where [?e :email ?email] [?e :name ?name]]"
+                     ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "ada@example.com") (vev.value-string "grace@example.com")]))]))
+        tuple (vev.q-text-with-inputs
+                conn.db
+                "[:find ?e :in [?name ?age] :where [?e :name ?name] [?e :age ?age]]"
+                ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "Ada") (vev.value-int 37)]))]))
+        relation (vev.q-text-with-inputs
+                   conn.db
+                   "[:find ?e :in [[?name ?age]] :where [?e :name ?name] [?e :age ?age]]"
+                   ([]vev.Query-Input [(vev.query-input-relation ([]vev.Value [(vev.value-string "Ada") (vev.value-int 37) (vev.value-string "Nope") (vev.value-int 0)]) 2)]))
+        no-where (vev.q-text-with-inputs
+                   conn.db
+                   "[:find ?x :in ?x]"
+                   ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":ok"))]))]
+    (t.is (= (count scalar.rows) 1))
+    (t.is (= scalar.rows[0].values[0].text "Ada"))
+    (t.is (= (count collection.rows) 2))
+    (t.is (= tuple.rows[0].values[0].entity 1))
+    (t.is (= relation.rows[0].values[0].entity 1))
+    (t.is (= no-where.rows[0].values[0].text ":ok"))))
+
 (t.deftest datascript-parser-query-text-not-or-and-missing
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

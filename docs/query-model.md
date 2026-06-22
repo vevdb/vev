@@ -96,8 +96,9 @@ The current in-memory implementation has two query frontends:
 
 - a Kvist query literal macro that lowers Datomic-shaped data to the typed
   `Query` representation and evaluates that directly
-- a narrow text API, `q-text` / `parse-query-text!`, that parses a minimal
-  `[:find ... :where ...]` subset for early interop work
+- a narrow text API, `q-text` / `q-text-with-inputs` / `parse-query-text!`,
+  that parses a minimal `[:find ... :in ... :where ...]` subset for early
+  interop work
 
 The transaction side has the same split:
 
@@ -114,6 +115,8 @@ Supported now:
 - standalone and grouped `count`, `count-distinct`, `min`, `max`, `sum`, and `avg` aggregates
 - text queries with simple data clauses, relation find, collection find,
   strings, booleans, ints, keywords, wildcards, and source vars
+- text query inputs for scalar vars, collections, tuples, relations, and
+  no-`:where` input-only queries
 - text transactions with `:db/add`, `:db/retract`, `:db/retractEntity`,
   `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, tempids,
   idents, generated map ids, and nested maps through ref attributes
