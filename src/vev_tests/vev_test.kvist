@@ -314,6 +314,27 @@
         collection (vev.result-collection (vev.q-query conn.db collection-query))
         constant (vev.q-text conn.db "[:find ?e :where [?e :name \"Grace Hopper\"]]")
         numeric (vev.q-text conn.db "[:find ?name :where [1 :age 37] [1 :name ?name]]")
+        map-query (vev.q-text-with-inputs
+                    conn.db
+                    "{:find [?e] :in [$ ?attr ?value] :where [[?e ?attr ?value]]}"
+                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":name"))
+                                         (vev.query-input-scalar (vev.value-string "Ada Lovelace"))]))
+        map-relation (vev.q-text-with-inputs
+                       conn.db
+                       "{:find [?e ?email] :in [$ [[?name ?email]]] :where [[?e :name ?name]]}"
+                       ([]vev.Query-Input [(vev.query-input-relation
+                                             ([]vev.Value [(vev.value-string "Ada Lovelace")
+                                                           (vev.value-string "ada@example.com")
+                                                           (vev.value-string "Grace Hopper")
+                                                           (vev.value-string "grace@example.com")])
+                                             2)]))
+        map-no-where (vev.q-text-with-inputs
+                       conn.db
+                       "{:find [?x] :in [?x]}"
+                       ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":ok"))]))
+        map-keys (vev.q-text-keys
+                   conn.db
+                   "{:find [?name ?age] :keys [name age] :where [[?e :name ?name] [?e :age ?age]]}")
         bad (vev.q-text conn.db "[:where [?e :name ?name]]")]
     (defer (delete collection))
     (t.is (= (count relation.rows) 1))
@@ -328,6 +349,20 @@
     (t.is (= constant.rows[0].values[0].entity 2))
     (t.is (= (count numeric.rows) 1))
     (t.is (= numeric.rows[0].values[0].text "Ada Lovelace"))
+    (t.is (= (count map-query.rows) 1))
+    (t.is (= map-query.rows[0].values[0].entity 1))
+    (t.is (= (count map-relation.rows) 2))
+    (t.is (= map-relation.rows[0].values[0].entity 1))
+    (t.is (= map-relation.rows[0].values[1].text "ada@example.com"))
+    (t.is (= map-relation.rows[1].values[0].entity 2))
+    (t.is (= map-relation.rows[1].values[1].text "grace@example.com"))
+    (t.is (= (count map-no-where.rows) 1))
+    (t.is (= map-no-where.rows[0].values[0].text ":ok"))
+    (t.is (= (count map-keys) 2))
+    (t.is (= map-keys[0].items[0].key "name"))
+    (t.is (= map-keys[0].items[0].value.text "Ada Lovelace"))
+    (t.is (= map-keys[0].items[1].key "age"))
+    (t.is (= map-keys[0].items[1].value.int_value 37))
     (t.is (= (count bad.rows) 0))))
 
 (t.deftest datascript-parser-query-text-predicates-and-functions
@@ -503,6 +538,11 @@
                       "[:find ?e ?id1 ?id2 :in $1 $2 [?e ...] :where [$1 ?e :id ?id1] [$2 ?e :id ?id2]]"
                       ([]vev.Query-Input [(vev.query-input-collection-lookup-refs ([]string [":name" ":name" ":name"]) ([]vev.Value [(vev.value-string "Ivan") (vev.value-string "Petr") (vev.value-string "Oleg")]))])
                       ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        map-sources (vev.q-text-with-sources
+                      left.db
+                      "{:find [?e ?id1 ?id2] :in [$1 $2 [?e ...]] :where [[$1 ?e :id ?id1] [$2 ?e :id ?id2]]}"
+                      ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-int 1) (vev.value-int 2) (vev.value-int 3)]))])
+                      ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
         pulled (vev.q-text-with-sources
                  left.db
                  "[:find ?e (pull $2 ?e [:name]) :in $1 $2 :where [$1 ?e :id 1]]"
@@ -516,6 +556,13 @@
     (t.is (= lookup-refs.rows[0].values[0].entity 1))
     (t.is (= lookup-refs.rows[1].values[0].entity 2))
     (t.is (= lookup-refs.rows[2].values[0].entity 3))
+    (t.is (= (count map-sources.rows) 3))
+    (t.is (= map-sources.rows[0].values[0].int_value 1))
+    (t.is (= map-sources.rows[0].values[1].int_value 1))
+    (t.is (= map-sources.rows[0].values[2].int_value 1))
+    (t.is (= map-sources.rows[2].values[0].int_value 3))
+    (t.is (= map-sources.rows[2].values[1].int_value 3))
+    (t.is (= map-sources.rows[2].values[2].int_value 3))
     (t.is (= (count pulled.rows) 1))
     (t.is (= pulled.rows[0].pulls[0].attrs[0].v.text "Petr"))))
 

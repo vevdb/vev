@@ -753,7 +753,7 @@
       (delete doc.nodes)
       (return parsed-ok parsed-error))))
 
-(defn parse-query-edn-with-sources! [out: ^Query, doc: EDN-Doc, db-sources: []DB-Source] -> [ok: bool, error: string]
+(defn parse-query-vector-edn-with-sources! [out: ^Query, doc: EDN-Doc, db-sources: []DB-Source] -> [ok: bool, error: string]
   (when (or (= doc.root -1)
             (not (= doc.nodes[doc.root].kind .Vector)))
     (return false "query text must be an EDN vector"))
@@ -827,6 +827,112 @@
     (let [query-value (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0))]
       (set! out^ query-value)
       (return true ""))))
+
+(defn edn-map-value-node [doc: EDN-Doc, map-node: int, key: string] -> int
+  (when (or (= map-node -1) (not (= doc.nodes[map-node].kind .Map)))
+    (return -1))
+  (let [entry doc.nodes[map-node].first_child]
+    (while (not (= entry -1))
+      (let [value-node doc.nodes[entry].next_sibling]
+        (when (= value-node -1)
+          (return -1))
+        (when (edn-keyword-text? doc entry key)
+          (return value-node))
+        (set! entry doc.nodes[value-node].next_sibling))))
+  -1)
+
+(defn append-edn-find-section! [find: ^[dynamic]string, pulls: ^[dynamic]Pull-Find, aggregates: ^[dynamic]Aggregate-Find, doc: EDN-Doc, section: int] -> [ok: bool, error: string]
+  (when (= section -1)
+    (return false "query map requires :find"))
+  (if (= doc.nodes[section].kind .Vector)
+    (append-edn-find-vector! find pulls aggregates doc section)
+    (append-edn-find-item! find pulls aggregates doc section)))
+
+(defn append-edn-with-section! [with: ^[dynamic]string, doc: EDN-Doc, section: int] -> [ok: bool, error: string]
+  (when (= section -1)
+    (return true ""))
+  (when (not (= doc.nodes[section].kind .Vector))
+    (return false "query map :with must be a vector"))
+  (let [cursor doc.nodes[section].first_child]
+    (while (not (= cursor -1))
+      (when (not (edn-var? doc cursor))
+        (return false "query text :with currently supports vars"))
+      (arr.push! with^ doc.nodes[cursor].text)
+      (set! cursor doc.nodes[cursor].next_sibling)))
+  (return true ""))
+
+(defn append-edn-in-section! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, doc: EDN-Doc, section: int, db-sources: []DB-Source] -> [ok: bool, error: string]
+  (when (= section -1)
+    (return true ""))
+  (when (not (= doc.nodes[section].kind .Vector))
+    (return false "query map :in must be a vector"))
+  (let [cursor doc.nodes[section].first_child]
+    (while (not (= cursor -1))
+      (let [[input-ok input-error] (append-edn-input-spec! inputs collection-inputs tuple-inputs relation-inputs input-specs doc cursor db-sources)]
+        (when (not input-ok)
+          (return false input-error)))
+      (set! cursor doc.nodes[cursor].next_sibling)))
+  (return true ""))
+
+(defn append-edn-where-section! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, rule-calls: ^[dynamic]Rule-Call, doc: EDN-Doc, section: int] -> [ok: bool, error: string]
+  (when (= section -1)
+    (return true ""))
+  (when (not (= doc.nodes[section].kind .Vector))
+    (return false "query map :where must be a vector"))
+  (let [cursor doc.nodes[section].first_child]
+    (while (not (= cursor -1))
+      (let [[item-ok item-error] (append-edn-where-or-rule-item! clauses predicates function-clauses not-groups or-groups rule-calls doc cursor)]
+        (when (not item-ok)
+          (return false item-error)))
+      (set! cursor doc.nodes[cursor].next_sibling)))
+  (return true ""))
+
+(defn parse-query-map-edn-with-sources! [out: ^Query, doc: EDN-Doc, db-sources: []DB-Source] -> [ok: bool, error: string]
+  (when (or (= doc.root -1)
+            (not (= doc.nodes[doc.root].kind .Map)))
+    (return false "query text map must be an EDN map"))
+  (let [find (make [dynamic]string) :defer
+        with (make [dynamic]string) :defer
+        inputs (make [dynamic]string) :defer
+        collection-inputs (make [dynamic]string) :defer
+        tuple-inputs (make [dynamic]Tuple-Input) :defer
+        relation-inputs (make [dynamic]Relation-Input) :defer
+        input-specs (make [dynamic]Query-Input-Spec) :defer
+        clauses (make [dynamic]Clause) :defer
+        predicates (make [dynamic]Predicate) :defer
+        function-clauses (make [dynamic]Function-Clause) :defer
+        rule-calls (make [dynamic]Rule-Call) :defer
+        not-groups (make [dynamic]Not-Group) :defer
+        or-groups (make [dynamic]Or-Group) :defer
+        pulls (make [dynamic]Pull-Find) :defer
+        aggregates (make [dynamic]Aggregate-Find) :defer
+        find-node (edn-map-value-node doc doc.root ":find")
+        with-node (edn-map-value-node doc doc.root ":with")
+        in-node (edn-map-value-node doc doc.root ":in")
+        where-node (edn-map-value-node doc doc.root ":where")
+        [find-ok find-error] (append-edn-find-section! (addr find) (addr pulls) (addr aggregates) doc find-node)]
+    (when (not find-ok)
+      (return false find-error))
+    (let [[with-ok with-error] (append-edn-with-section! (addr with) doc with-node)]
+      (when (not with-ok)
+        (return false with-error)))
+    (let [[in-ok in-error] (append-edn-in-section! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) doc in-node db-sources)]
+      (when (not in-ok)
+        (return false in-error)))
+    (let [[where-ok where-error] (append-edn-where-section! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr or-groups) (addr rule-calls) doc where-node)]
+      (when (not where-ok)
+        (return false where-error)))
+    (let [query-value (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0))]
+      (set! out^ query-value)
+      (return true ""))))
+
+(defn parse-query-edn-with-sources! [out: ^Query, doc: EDN-Doc, db-sources: []DB-Source] -> [ok: bool, error: string]
+  (when (= doc.root -1)
+    (return false "query text is empty"))
+  (case doc.nodes[doc.root].kind
+    .Vector (parse-query-vector-edn-with-sources! out doc db-sources)
+    .Map (parse-query-map-edn-with-sources! out doc db-sources)
+    :else (return false "query text must be an EDN vector or map")))
 
 (defn parse-query-edn! [out: ^Query, doc: EDN-Doc] -> [ok: bool, error: string]
   (parse-query-edn-with-sources! out doc ([]DB-Source [])))
@@ -934,6 +1040,28 @@
   (result-row-tuple (q-text-with-inputs db text inputs)))
 
 (defn append-edn-return-keys! [out: ^[dynamic]string, doc: EDN-Doc, marker: string] -> bool
+  (when (and (not (= doc.root -1)) (= doc.nodes[doc.root].kind .Map))
+    (let [section (edn-map-value-node doc doc.root marker)]
+      (when (= section -1)
+        (return false))
+      (if (= doc.nodes[section].kind .Vector)
+        (let [cursor doc.nodes[section].first_child]
+          (while (not (= cursor -1))
+            (let [node doc.nodes[cursor]]
+              (case node.kind
+                .Symbol (arr.push! out^ node.text)
+                .Keyword (arr.push! out^ node.text)
+                .String (arr.push! out^ node.text)
+                :else (return false)))
+            (set! cursor doc.nodes[cursor].next_sibling))
+          (return true))
+        (let [node doc.nodes[section]]
+          (case node.kind
+            .Symbol (arr.push! out^ node.text)
+            .Keyword (arr.push! out^ node.text)
+            .String (arr.push! out^ node.text)
+            :else (return false))
+          (return true)))))
   (let [cursor (edn-child-at doc doc.root 1)]
     (while (not (= cursor -1))
       (when (edn-keyword-text? doc cursor marker)
