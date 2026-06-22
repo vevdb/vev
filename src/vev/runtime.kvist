@@ -119,8 +119,59 @@
                 (arr.push! out next)))))))
     out))
 
+(defn bind-input-pattern [binding: Binding, pattern: Input-Binding, value: Value] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (case pattern.kind
+      .Ignore (arr.push! out (clone-binding binding))
+      .Var (let [[next ok] (binding-with-value binding pattern.name value)]
+             (when ok
+               (arr.push! out next)))
+      .Tuple (when (and (= value.kind .Vector)
+                        (= (count pattern.items) (count value.items)))
+               (let [current (make [dynamic]Binding)]
+                 (arr.push! current (clone-binding binding))
+                 (for [item index pattern.items]
+                   (let [next-current (make [dynamic]Binding)]
+                     (for [candidate current]
+                       (let [bound (bind-input-pattern candidate item value.items[index])]
+                         (for [bound-item bound]
+                           (arr.push! next-current bound-item))))
+                     (delete current)
+                     (set! current next-current)))
+                 (for [candidate current]
+                   (arr.push! out candidate))))
+      .Collection (when (and (= value.kind .Vector)
+                             (= (count pattern.items) 1))
+                    (for [item value.items]
+                      (let [bound (bind-input-pattern binding pattern.items[0] item)]
+                        (for [bound-item bound]
+                          (arr.push! out bound-item)))))
+      :else (do))
+    out))
+
+(defn query-input-relation-as-vector [input: Query-Input, width: int] -> Value
+  (let [rows (make [dynamic]Value)]
+    (when (and (= input.kind .Relation)
+               (= input.width width)
+               (> width 0))
+      (let [row_count (/ (count input.values) width)]
+        (for [row 0..<row_count]
+          (let [items (make [dynamic]Value)
+                offset (* row width)]
+            (for [index 0..<width]
+              (arr.push! items input.values[(+ offset index)]))
+            (arr.push! rows (value-vector (slice items 0)))))))
+    (value-vector (slice rows 0))))
+
 (defn expand-tuple-input [bindings: []Binding, tuple: Tuple-Input, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
+    (when (not (= tuple.binding.kind .None))
+      (let [tuple-value (value-vector (slice input.values 0))]
+        (for [binding bindings]
+          (let [bound (bind-input-pattern binding tuple.binding tuple-value)]
+            (for [item bound]
+              (arr.push! out item)))))
+      (return out))
     (when (= (count tuple.vars) (count input.values))
       (for [binding bindings]
         (let [next (clone-binding binding)]
@@ -133,6 +184,17 @@
 (defn expand-relation-input [bindings: []Binding, relation: Relation-Input, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)
         width (count relation.vars)]
+    (when (not (= relation.binding.kind .None))
+      (let [relation-value (cond
+                             (= input.kind .Collection) (value-vector (slice input.values 0))
+                             (= input.kind .Relation) (query-input-relation-as-vector input width)
+                             :else (Value {}))]
+        (when (= relation-value.kind .Vector)
+          (for [binding bindings]
+            (let [bound (bind-input-pattern binding relation.binding relation-value)]
+              (for [item bound]
+                (arr.push! out item))))))
+      (return out))
     (when (and (= input.kind .Relation)
                (= input.width width))
       (let [row_count (/ (count input.values) width)]

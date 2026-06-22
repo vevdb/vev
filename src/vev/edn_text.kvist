@@ -17,6 +17,38 @@
       (return true)))
   false)
 
+(defn edn-input-binding-from-node [doc: EDN-Doc, node-index: int] -> [binding: Input-Binding, ok: bool, error: string]
+  (when (= node-index -1)
+    (return (input-binding-none) false "missing :in binding"))
+  (let [node doc.nodes[node-index]]
+    (cond
+      (edn-var? doc node-index)
+        (return (input-binding-var node.text) true "")
+      (and (= node.kind .Symbol) (= node.text "_"))
+        (return (input-binding-ignore) true "")
+      (= node.kind .Vector)
+        (let [first-node node.first_child
+              second-node (if (= first-node -1) -1 doc.nodes[first-node].next_sibling)]
+          (when (= first-node -1)
+            (return (input-binding-none) false "empty :in binding vector"))
+          (when (and (not (= second-node -1))
+                     (= doc.nodes[second-node].next_sibling -1)
+                     (edn-symbol-text? doc second-node "..."))
+            (let [[item item-ok item-error] (edn-input-binding-from-node doc first-node)]
+              (if item-ok
+                (return (input-binding-collection item) true "")
+                (return item false item-error))))
+          (let [items (make [dynamic]Input-Binding) :defer
+                child first-node]
+            (while (not (= child -1))
+              (let [[item item-ok item-error] (edn-input-binding-from-node doc child)]
+                (when (not item-ok)
+                  (return item false item-error))
+                (arr.push! items item))
+              (set! child doc.nodes[child].next_sibling))
+            (return (input-binding-tuple (slice items 0)) true "")))
+      :else (return (input-binding-none) false "unsupported :in binding form"))))
+
 (defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
   (let [node doc.nodes[node-index]]
     (cond
@@ -40,22 +72,36 @@
           (cond
             (= first-node -1)
               (return false "empty :in vector spec")
-            (= doc.nodes[first-node].kind .Vector)
-              (do
-                (let [vars (edn-vars-from-vector doc first-node)]
-                  (let [relation (Relation-Input {vars: (slice vars 0)})]
-                    (arr.push! relation-inputs^ relation)
-                    (arr.push! input-specs^ (Query-Input-Spec {kind: .Relation relation: relation}))))
-                (return true ""))
             (and (edn-var? doc first-node) (edn-symbol-text? doc second-node "..."))
               (do
                 (arr.push! collection-inputs^ doc.nodes[first-node].text)
                 (arr.push! input-specs^ (Query-Input-Spec {kind: .Collection name: doc.nodes[first-node].text}))
                 (return true ""))
+            (= doc.nodes[first-node].kind .Vector)
+              (do
+                (let [[parsed parsed-ok parsed-error] (edn-input-binding-from-node doc node-index)]
+                  (when (not parsed-ok)
+                    (return false parsed-error))
+                  (let [row-binding (if (= parsed.kind .Collection)
+                                      parsed.items[0]
+                                      (if (and (= parsed.kind .Tuple) (= (count parsed.items) 1))
+                                        parsed.items[0]
+                                        parsed))
+                        vars (input-binding-relation-vars row-binding)
+                        relation-binding (if (= parsed.kind .Collection)
+                                           parsed
+                                           (input-binding-collection row-binding))
+                        relation (Relation-Input {vars: (slice vars 0) binding: relation-binding})]
+                    (arr.push! relation-inputs^ relation)
+                    (arr.push! input-specs^ (Query-Input-Spec {kind: .Relation relation: relation}))))
+                (return true ""))
             :else
               (do
-                (let [vars (edn-vars-from-vector doc node-index)]
-                  (let [tuple (Tuple-Input {vars: (slice vars 0)})]
+                (let [[binding binding-ok binding-error] (edn-input-binding-from-node doc node-index)]
+                  (when (not binding-ok)
+                    (return false binding-error))
+                  (let [vars (input-binding-vars binding)
+                        tuple (Tuple-Input {vars: (slice vars 0) binding: binding})]
                     (arr.push! tuple-inputs^ tuple)
                     (arr.push! input-specs^ (Query-Input-Spec {kind: .Tuple tuple: tuple}))))
                 (return true ""))))

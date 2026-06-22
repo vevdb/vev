@@ -17,7 +17,7 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | primary/named collection datom sources, map relation inputs, and nested map values covered; host functions and exact input errors remain |
+| `query.cljc` | 11 | partial | primary/named collection datom sources, map relation inputs, nested `:in` binding patterns, and nested map values covered; host functions and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | broader native built-ins including regex predicate surface covered; decide host function surface, `keyword`/`str`, regex capture-return functions, and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
@@ -48,7 +48,7 @@ but full parser parity still trails the native Kvist literal surface.
 | --- | ---: | --- | --- |
 | `parser.cljc` | 3 | partial | flat EDN node reader supports nested vectors/lists/maps and now feeds query/tx text subsets; full EDN lowering remains |
 | `parser_find.cljc` | 4 | partial | text query parser covers scalar, collection, tuple, pull, aggregate, and top-n aggregate find specs; exact validation remains |
-| `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers `:find`, `:with`, `:in`, named DB sources, optional `:where`, map relation inputs via helper, and execution through normal query inputs/sources; validation remains |
+| `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers `:find`, `:with`, `:in`, named DB sources, optional `:where`, map relation inputs via helper, nested input destructuring, and execution through normal query inputs/sources; validation remains |
 | `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls and rule definitions covered; validation remains |
 | `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, and ordinary rule clauses covered; exact validation remains |
