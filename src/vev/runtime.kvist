@@ -3036,6 +3036,189 @@
         (return false error))))
   (return true ""))
 
+(defn string-slice-contains? [items: []string, value: string] -> bool
+  (for [item items]
+    (when (= item value)
+      (return true)))
+  false)
+
+(defn append-var-once! [vars: ^[dynamic]string, name: string]
+  (when (= name "")
+    (return))
+  (when (not (string-slice-contains? (slice vars^ 0) name))
+    (arr.push! vars^ name)))
+
+(defn append-term-var! [vars: ^[dynamic]string, term: Term]
+  (when (= term.kind .Var)
+    (append-var-once! vars term.name)))
+
+(defn append-input-binding-vars! [vars: ^[dynamic]string, binding: Input-Binding]
+  (let [names (input-binding-vars binding) :defer]
+    (for [name names]
+      (append-var-once! vars name))))
+
+(defn append-query-input-vars! [vars: ^[dynamic]string, query-value: Query]
+  (for [name query-value.inputs]
+    (append-var-once! vars name))
+  (for [name query-value.collection-inputs]
+    (append-var-once! vars name))
+  (for [tuple query-value.tuple-inputs]
+    (for [name tuple.vars]
+      (append-var-once! vars name))
+    (append-input-binding-vars! vars tuple.binding))
+  (for [relation query-value.relation-inputs]
+    (for [name relation.vars]
+      (append-var-once! vars name))
+    (append-input-binding-vars! vars relation.binding))
+  (for [spec query-value.input-specs]
+    (case spec.kind
+      .Scalar (append-var-once! vars spec.name)
+      .Collection (append-var-once! vars spec.name)
+      .Tuple (do
+        (for [name spec.tuple.vars]
+          (append-var-once! vars name))
+        (append-input-binding-vars! vars spec.tuple.binding))
+      .Relation (do
+        (for [name spec.relation.vars]
+          (append-var-once! vars name))
+        (append-input-binding-vars! vars spec.relation.binding)))))
+
+(defn append-clause-vars! [vars: ^[dynamic]string, clause: Clause]
+  (append-term-var! vars clause.e)
+  (append-term-var! vars clause.a)
+  (append-term-var! vars clause.v)
+  (append-term-var! vars clause.tx-term)
+  (append-term-var! vars clause.op-term))
+
+(defn append-not-group-vars! [vars: ^[dynamic]string, group: Not-Group]
+  (for [clause group.clauses]
+    (append-clause-vars! vars clause))
+  (for [child group.not-groups]
+    (append-not-group-vars! vars child))
+  (for [name group.join-vars]
+    (append-var-once! vars name)))
+
+(defn append-or-group-vars! [vars: ^[dynamic]string, group: Or-Group]
+  (for [branch group.branches]
+    (append-not-group-vars! vars branch))
+  (for [name group.join-vars]
+    (append-var-once! vars name)))
+
+(defn append-rule-call-vars! [vars: ^[dynamic]string, call: Rule-Call]
+  (for [arg call.args]
+    (append-term-var! vars arg)))
+
+(defn append-ground-output-vars! [vars: ^[dynamic]string, ground: Ground]
+  (append-var-once! vars ground.out)
+  (for [name ground.tuple-vars]
+    (append-var-once! vars name))
+  (append-input-binding-vars! vars ground.binding))
+
+(defn append-function-output-vars! [vars: ^[dynamic]string, function: Function-Clause]
+  (append-var-once! vars function.out)
+  (for [name function.out-vars]
+    (append-var-once! vars name))
+  (append-input-binding-vars! vars function.out-binding))
+
+(defn query-potential-vars [query-value: Query] -> [dynamic]string
+  (let [vars (make [dynamic]string)]
+    (append-query-input-vars! (addr vars) query-value)
+    (for [clause query-value.clauses]
+      (append-clause-vars! (addr vars) clause))
+    (for [call query-value.rule-calls]
+      (append-rule-call-vars! (addr vars) call))
+    (for [ground query-value.grounds]
+      (append-ground-output-vars! (addr vars) ground))
+    (for [group query-value.not-groups]
+      (append-not-group-vars! (addr vars) group))
+    (for [group query-value.or-groups]
+      (append-or-group-vars! (addr vars) group))
+    vars))
+
+(defn predicate-op-supported? [op: string] -> bool
+  (or (= op "=")
+      (= op "!=")
+      (= op "not=")
+      (= op ">")
+      (= op "<")
+      (= op ">=")
+      (= op "<=")
+      (= op "true?")
+      (= op "false?")
+      (= op "nil?")
+      (= op "some?")
+      (= op "not")
+      (= op "empty?")
+      (= op "even?")
+      (= op "odd?")
+      (= op "zero?")
+      (= op "pos?")
+      (= op "neg?")
+      (= op "re-find")
+      (= op "contains?")
+      (= op "clojure.string/includes?")
+      (= op "clojure.string/starts-with?")
+      (= op "clojure.string/ends-with?")))
+
+(defn function-op-supported? [op: string] -> bool
+  (or (= op "count")
+      (= op "identity")
+      (= op "ground")
+      (= op "inc")
+      (= op "dec")
+      (= op "name")
+      (= op "subs")
+      (= op "re-pattern")
+      (= op "re-find")
+      (= op "str")
+      (= op "keyword")
+      (= op "first")
+      (= op "second")
+      (= op "vector")
+      (= op "tuple")
+      (= op "untuple")
+      (= op "hash-map")
+      (= op "get")
+      (= op "contains?")
+      (= op "clojure.string/includes?")
+      (= op "clojure.string/starts-with?")
+      (= op "clojure.string/ends-with?")
+      (= op "+")
+      (= op "-")
+      (= op "*")
+      (= op "/")
+      (= op "quot")
+      (= op "rem")
+      (= op "mod")
+      (= op "min")
+      (= op "max")
+      (= op "compare")))
+
+(defn validate-term-vars-bound [available: []string, terms: []Term, ctx: string] -> [ok: bool, error: string]
+  (for [term terms]
+    (when (and (= term.kind .Var)
+               (not (string-slice-contains? available term.name)))
+      (return false (fmt.tprintf "insufficient bindings for %s: %s" ctx term.name))))
+  (return true ""))
+
+(defn validate-query-predicates-and-functions [query-value: Query] -> [ok: bool, error: string]
+  (let [available (query-potential-vars query-value)]
+    (defer (delete available))
+    (for [function query-value.function-clauses]
+      (when (not (function-op-supported? function.op))
+        (return false (fmt.tprintf "unknown query function: %s" function.op)))
+      (let [[ok error] (validate-term-vars-bound (slice available 0) function.terms function.op)]
+        (when (not ok)
+          (return false error)))
+      (append-function-output-vars! (addr available) function))
+    (for [predicate query-value.predicates]
+      (when (not (predicate-op-supported? predicate.op))
+        (return false (fmt.tprintf "unknown query predicate: %s" predicate.op)))
+      (let [[ok error] (validate-term-vars-bound (slice available 0) predicate.terms predicate.op)]
+        (when (not ok)
+          (return false error)))))
+  (return true ""))
+
 (defn validate-query-sources [query-value: Query, sources: []DB-Source] -> [ok: bool, error: string]
   (for [item query-value.clauses]
     (if item.has-source
@@ -3067,7 +3250,10 @@
         provided (count inputs)]
     (when (not (= expected provided))
       (return false (fmt.tprintf "wrong number of query inputs: expected %d, got %d" expected provided))))
-  (validate-query-sources query-value sources))
+  (let [[source-ok source-error] (validate-query-sources query-value sources)]
+    (when (not source-ok)
+      (return false source-error)))
+  (validate-query-predicates-and-functions query-value))
 
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
   (if (or (= aggregate.op "count")
