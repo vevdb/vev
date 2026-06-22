@@ -28,7 +28,7 @@ These are the main in-memory parity target before durable storage.
 | `query_aggregates.cljc` | 1 | partial | built-in aggregates including top-n, median, variance, stddev, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
 | `transact.cljc` | 19 | partial | native tx functions, registry-backed ident tx functions, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
-| `validation.cljc` | 2 | partial | runtime bad tx-data validation covered; reader/macro bad forms and exact errors remain |
+| `validation.cljc` | 2 | partial | runtime bad tx-data validation plus `transact-text` bad-shape rollback covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface and indexed-attribute errors covered; exact lazy sequence/API rendering details remain |
 | `tuples.cljc` | 11 | partial | direct/component tuple upsert and lookup-ref tuple values covered; remaining exact errors and edge conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
@@ -53,7 +53,7 @@ but full parser parity still trails the native Kvist literal surface.
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls, rule definitions, and ordered text rule bodies covered; validation remains |
 | `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, ordinary rule clauses, nested text `not`, and ordered top-level execution/validation covered; parser validation now rejects empty rule calls, empty `not`/`or`, empty `not-join`/`or-join` bodies, and empty join-var sets; exact diagnostics remain |
 | `pull_parser.cljc` | 1 | partial | query text pull finds, pull pattern variables, and direct pull text APIs cover attrs, wildcard, nested maps, recursive map values, flat/nested `:default`/`:as`/`:limit`/`:xform` option forms, and option-wrapped map keys; exact validation remains |
-| transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, and nested maps through the normal transaction engine |
+| transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, nested maps, and bad-shape/no-mutation validation through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
 
