@@ -154,6 +154,8 @@
   e: Term
   a: Term
   v: Term
+  tx_term: Term
+  op_term: Term
   source: string
   has_source: bool
   source_width: int
@@ -523,6 +525,8 @@
   (Clause {e: e
            a: (attr a)
            v: v
+           tx_term: (term-wildcard)
+           op_term: (term-wildcard)
            source: ""
            has_source: false
            source_width: 0}))
@@ -1762,6 +1766,8 @@
             (Clause {e: (unquote (emit-value-term (nth form 1)))
                      a: (unquote (emit-value-term (nth form 2)))
                      v: (term-wildcard)
+                     tx_term: (term-wildcard)
+                     op_term: (term-wildcard)
                      source: (unquote (source (nth form 0)))
                      has_source: true
                      source_width: 2}))
@@ -1784,10 +1790,36 @@
               (Clause {e: (unquote (emit-value-term (nth form 1)))
                        a: (unquote (emit-value-term (nth form 2)))
                        v: (unquote (emit-value-term (nth form 3)))
+                       tx_term: (term-wildcard)
+                       op_term: (term-wildcard)
                        source: (unquote (source (nth form 0)))
                        has_source: true
                        source_width: 3})))
-          (error "datalog clauses must have shape [e a], [e a v], [src e a], or [src e a v]"))))
+          (if (= (count form) 5)
+            (if (relation-source? (nth form 0))
+              (quasiquote
+                (Clause {e: (unquote (emit-value-term (nth form 1)))
+                         a: (unquote (emit-value-term (nth form 2)))
+                         v: (unquote (emit-value-term (nth form 3)))
+                         tx_term: (unquote (emit-value-term (nth form 4)))
+                         op_term: (term-wildcard)
+                         source: (unquote (source (nth form 0)))
+                         has_source: true
+                         source_width: 4}))
+              (error "five-item datalog clauses require a relation source"))
+            (if (= (count form) 6)
+              (if (relation-source? (nth form 0))
+                (quasiquote
+                  (Clause {e: (unquote (emit-value-term (nth form 1)))
+                           a: (unquote (emit-value-term (nth form 2)))
+                           v: (unquote (emit-value-term (nth form 3)))
+                           tx_term: (unquote (emit-value-term (nth form 4)))
+                           op_term: (unquote (emit-value-term (nth form 5)))
+                           source: (unquote (source (nth form 0)))
+                           has_source: true
+                           source_width: 5}))
+                (error "six-item datalog clauses require a relation source"))
+              (error "datalog clauses must have shape [e a], [e a v], [src e a], [src e a v], [src e a v tx], or [src e a v tx op]"))))))
     (error "datalog :where entries must be clauses")))
 
 (defmacro- missing-clause? [form]
@@ -1951,6 +1983,8 @@
         (Clause {e: (unquote (emit-value-term (nth form 0)))
                  a: (unquote (emit-value-term (nth form 1)))
                  v: (term-wildcard)
+                 tx_term: (term-wildcard)
+                 op_term: (term-wildcard)
                  source: (unquote source-name)
                  has_source: true
                  source_width: 2}))
@@ -1961,10 +1995,40 @@
             (Clause {e: (unquote (emit-value-term (nth form 0)))
                      a: (unquote (emit-value-term (nth form 1)))
                      v: (unquote (emit-value-term (nth form 2)))
+                     tx_term: (term-wildcard)
+                     op_term: (term-wildcard)
                      source: (unquote source-name)
                      has_source: true
                      source_width: 3})))
-        (emit-datalog-clause form)))
+        (if (= (count form) 4)
+          (if (or (input-source? (nth form 0))
+                  (input-db-source? (nth form 0))
+                  (relation-source? (nth form 0)))
+            (emit-datalog-clause form)
+            (quasiquote
+              (Clause {e: (unquote (emit-value-term (nth form 0)))
+                       a: (unquote (emit-value-term (nth form 1)))
+                       v: (unquote (emit-value-term (nth form 2)))
+                       tx_term: (unquote (emit-value-term (nth form 3)))
+                       op_term: (term-wildcard)
+                       source: (unquote source-name)
+                       has_source: true
+                       source_width: 4})))
+          (if (= (count form) 5)
+            (if (or (input-source? (nth form 0))
+                    (input-db-source? (nth form 0))
+                    (relation-source? (nth form 0)))
+              (emit-datalog-clause form)
+              (quasiquote
+                (Clause {e: (unquote (emit-value-term (nth form 0)))
+                         a: (unquote (emit-value-term (nth form 1)))
+                         v: (unquote (emit-value-term (nth form 2)))
+                         tx_term: (unquote (emit-value-term (nth form 3)))
+                         op_term: (unquote (emit-value-term (nth form 4)))
+                         source: (unquote source-name)
+                         has_source: true
+                         source_width: 5})))
+            (emit-datalog-clause form)))))
     (error "source-prefixed clauses currently support data clauses")))
 
 (defmacro- emit-datalog-source-clauses [source-name forms]
@@ -4822,9 +4886,17 @@
     (return
       (and (match-term? clause.e row.items[0] binding)
            (match-term? clause.a row.items[1] binding))))
-  (and (match-term? clause.e row.items[0] binding)
-       (match-term? clause.a row.items[1] binding)
-       (match-term? clause.v row.items[2] binding)))
+  (when (not (and (match-term? clause.e row.items[0] binding)
+                  (match-term? clause.a row.items[1] binding)
+                  (match-term? clause.v row.items[2] binding)))
+    (return false))
+  (when (= clause.source_width 3)
+    (return true))
+  (when (not (match-term? clause.tx_term row.items[3] binding))
+    (return false))
+  (when (= clause.source_width 4)
+    (return true))
+  (match-term? clause.op_term row.items[4] binding))
 
 (defn bindings-after-relation-source-clause [clause: Clause, binding: Binding] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)
@@ -4849,6 +4921,8 @@
   (Clause {e: clause.e
            a: clause.a
            v: clause.v
+           tx_term: (term-wildcard)
+           op_term: (term-wildcard)
            source: ""
            has_source: false
            source_width: 0}))

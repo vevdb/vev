@@ -17,7 +17,7 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | collection DB behavior, host functions, and exact input errors remain |
+| `query.cljc` | 11 | partial | named collection datom sources covered; primary collection DB syntax, host functions, and exact input errors remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | built-ins covered; decide host function surface and exact error behavior |
 | `query_not.cljc` | 5 | partial | source semantics covered; insufficient-binding/error cases remain |
@@ -78,6 +78,6 @@ These are useful, but not the next engine-parity gate.
 1. Port `transact.cljc`, `upsert.cljc`, and `validation.cljc` as one tx/schema
    batch, focusing on real semantics before exact message text.
 2. Finish tuple/index public API behavior as one schema/index batch.
-3. Decide whether collection DB inputs are part of Vev's native API or only EDN
-   interop compatibility.
+3. Keep primary collection DB syntax for EDN/interoperability APIs; Kvist native
+   code uses named collection sources for raw datom rows.
 4. Start parser/EDN API work once semantic query/tx behavior is less volatile.
