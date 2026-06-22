@@ -3145,9 +3145,12 @@
                 (set! children (pull-child-recursion db datom.e (slice pattern 0) seen-entities))))
             (if (pull-include-ref-result? spec (slice children 0))
               (do
-                (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                            v: (value-entity datom.e)
-                                            attrs: children}))
+                (arr.push! out^
+                  (pull-spec-transform-attr
+                    spec
+                    (Pull-Attr {a: (pull-output-attr spec)
+                                v: (value-entity datom.e)
+                                attrs: children})))
                 (set! found true)
                 (set! seen (+ seen 1))
                 (when (>= seen limit)
@@ -3215,6 +3218,8 @@
                 default_value: spec.default_value
                 has_alias: spec.has_alias
                 alias: spec.alias
+                has_xform: spec.has_xform
+                xform: spec.xform
                 has_recursion: true
                 recursion_depth: (pull-next-recursion-depth spec.recursion_depth)})
     spec))
@@ -3224,6 +3229,39 @@
     (for [spec root]
       (arr.push! out (pull-spec-decrement-recursion spec attr)))
     out))
+
+(defn pull-attr-child-value [children: []Pull-Attr, attr: string] -> [value: Value, ok: bool]
+  (for [child children]
+    (when (= child.a attr)
+      (return child.v true)))
+  (return (Value {}) false))
+
+(defn pull-spec-transform-attr [spec: Pull-Spec, attr: Pull-Attr] -> Pull-Attr
+  (when (not spec.has_xform)
+    (return attr))
+  (when (= spec.xform "vector")
+    (return (Pull-Attr {a: attr.a
+                        v: (value-vector ([]Value [attr.v]))
+                        attrs: (make [dynamic]Pull-Attr)})))
+  (when (= spec.xform "name")
+    (let [[name name-ok] (pull-attr-child-value (slice attr.attrs 0) ":name")]
+      (when name-ok
+        (delete attr.attrs)
+        (return (Pull-Attr {a: attr.a
+                            v: name
+                            attrs: (make [dynamic]Pull-Attr)})))))
+  attr)
+
+(defn pull-spec-missing-attr [spec: Pull-Spec] -> Pull-Attr
+  (if spec.has_default
+    (Pull-Attr {a: (pull-output-attr spec)
+                v: spec.default_value
+                attrs: (make [dynamic]Pull-Attr)})
+    (pull-spec-transform-attr
+      spec
+      (Pull-Attr {a: (pull-output-attr spec)
+                  v: (value-nil)
+                  attrs: (make [dynamic]Pull-Attr)}))))
 
 (defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> bool
   (let [indexes (slice db.eavt 0)
@@ -3247,9 +3285,12 @@
                     (set! children (pull-component-children db entity datom.v.entity))))))
             (if (pull-include-ref-result? spec (slice children 0))
               (do
-                (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                            v: datom.v
-                                            attrs: children}))
+                (arr.push! out^
+                  (pull-spec-transform-attr
+                    spec
+                    (Pull-Attr {a: (pull-output-attr spec)
+                                v: datom.v
+                                attrs: children})))
                 (set! found true)
                 (set! seen (+ seen 1))
                 (when (>= seen limit)
@@ -3265,22 +3306,21 @@
     (return))
   (when (= spec.a ":db/id")
     (when (not (pull-output-has-attr? out^ (pull-output-attr spec)))
-      (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                  v: (value-entity entity)
-                                  attrs: (make [dynamic]Pull-Attr)})))
+      (arr.push! out^
+        (pull-spec-transform-attr
+          spec
+          (Pull-Attr {a: (pull-output-attr spec)
+                      v: (value-entity entity)
+                      attrs: (make [dynamic]Pull-Attr)}))))
     (return))
   (when (reverse-attr? spec.a)
     (let [found (pull-reverse-attr! out db entity spec root seen-entities)]
-      (when (and (not found) spec.has_default)
-        (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                    v: spec.default_value
-                                    attrs: (make [dynamic]Pull-Attr)}))))
+      (when (and (not found) (or spec.has_default spec.has_xform))
+        (arr.push! out^ (pull-spec-missing-attr spec))))
     (return))
   (let [found (pull-forward-attr! out db entity spec root seen-entities)]
-    (when (and (not found) spec.has_default)
-      (arr.push! out^ (Pull-Attr {a: (pull-output-attr spec)
-                                  v: spec.default_value
-                                  attrs: (make [dynamic]Pull-Attr)})))))
+    (when (and (not found) (or spec.has_default spec.has_xform))
+      (arr.push! out^ (pull-spec-missing-attr spec)))))
 
 (defn pull-pattern-spec-seen [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
@@ -3418,6 +3458,8 @@
               default_value: (Value {})
               has_alias: false
               alias: ""
+              has_xform: false
+              xform: ""
               pattern: ([]Pull-Spec [])}))
 
 (defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
@@ -3427,6 +3469,8 @@
               default_value: (Value {})
               has_alias: false
               alias: ""
+              has_xform: false
+              xform: ""
               pattern: pattern}))
 
 (defn pull-spec-recursion [attr: string, depth: int] -> Pull-Spec
@@ -3436,6 +3480,8 @@
               default_value: (Value {})
               has_alias: false
               alias: ""
+              has_xform: false
+              xform: ""
               pattern: ([]Pull-Spec [])
               has_recursion: true
               recursion_depth: depth}))
@@ -3447,6 +3493,8 @@
               default_value: (Value {})
               has_alias: false
               alias: ""
+              has_xform: false
+              xform: ""
               pattern: pattern}))
 
 (defn pull-spec-limit-as [attr: string, pattern: []Pull-Spec, limit: int, alias: string] -> Pull-Spec
@@ -3456,6 +3504,8 @@
               default_value: (Value {})
               has_alias: true
               alias: alias
+              has_xform: false
+              xform: ""
               pattern: pattern}))
 
 (defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
@@ -3465,6 +3515,8 @@
               default_value: default-value
               has_alias: false
               alias: ""
+              has_xform: false
+              xform: ""
               pattern: ([]Pull-Spec [])}))
 
 (defn pull-spec-as [attr: string, alias: string] -> Pull-Spec
@@ -3474,6 +3526,8 @@
               default_value: (Value {})
               has_alias: true
               alias: alias
+              has_xform: false
+              xform: ""
               pattern: ([]Pull-Spec [])}))
 
 (defn pull-spec-default-as [attr: string, default-value: Value, alias: string] -> Pull-Spec
@@ -3483,6 +3537,30 @@
               default_value: default-value
               has_alias: true
               alias: alias
+              has_xform: false
+              xform: ""
+              pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec-xform [attr: string, pattern: []Pull-Spec, xform: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: false
+              default_value: (Value {})
+              has_alias: false
+              alias: ""
+              has_xform: true
+              xform: xform
+              pattern: pattern}))
+
+(defn pull-spec-default-xform [attr: string, default-value: Value, xform: string] -> Pull-Spec
+  (Pull-Spec {a: attr
+              limit: 0
+              has_default: true
+              default_value: default-value
+              has_alias: false
+              alias: ""
+              has_xform: true
+              xform: xform
               pattern: ([]Pull-Spec [])}))
 
 (defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result

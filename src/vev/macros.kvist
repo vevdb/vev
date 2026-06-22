@@ -1555,6 +1555,15 @@
         (source form)
         (error "pull :as expects keyword, string, or symbol alias")))))
 
+(defmacro- pull-xform-source [form]
+  (if (keyword? form)
+    (name form)
+    (if (string? form)
+      (text form)
+      (if (symbol? form)
+        (source form)
+        (error "pull :xform expects keyword, string, or symbol transform")))))
+
 (defmacro- pull-pattern-has-trailing-limit? [pattern]
   (if (= (count pattern) 3)
     (if (keyword? (nth pattern 1))
@@ -1589,10 +1598,19 @@
           (unquote (pull-attr-source attr))
           ([]Pull-Spec [(splice (emit-pull-specs (slice pattern 0 2)))])
           (unquote (emit-pull-limit (nth pattern 3))))))
-    (quasiquote
-      (pull-spec
-        (unquote (pull-attr-source attr))
-        ([]Pull-Spec [(splice (emit-pull-specs pattern))])))))
+    (if (and (vector? attr)
+             (= (count attr) 3)
+             (keyword? (nth attr 1))
+             (= (source (nth attr 1)) ":xform"))
+      (quasiquote
+        (pull-spec-xform
+          (unquote (pull-attr-source (nth attr 0)))
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))])
+          (unquote (pull-xform-source (nth attr 2)))))
+      (quasiquote
+        (pull-spec
+          (unquote (pull-attr-source attr))
+          ([]Pull-Spec [(splice (emit-pull-specs pattern))]))))))
 
 (defmacro- emit-pull-spec [form]
   (if (vector? form)
@@ -1614,7 +1632,13 @@
                   (unquote (pull-attr-source (nth form 0)))
                   ([]Pull-Spec [])
                   (unquote (emit-pull-limit (nth form 2)))))
-              (error "pull option vectors currently support :default, :as, and :limit"))))
+              (if (= (source (nth form 1)) ":xform")
+                (quasiquote
+                  (pull-spec-xform
+                    (unquote (pull-attr-source (nth form 0)))
+                    ([]Pull-Spec [])
+                    (unquote (pull-xform-source (nth form 2)))))
+                (error "pull option vectors currently support :default, :as, :limit, and :xform")))))
         (if (= (count form) 5)
           (if (keyword? (nth form 3))
             (if (= (source (nth form 1)) ":as")
@@ -1639,7 +1663,13 @@
                       (unquote (pull-attr-source (nth form 0)))
                       (unquote (emit-literal-value (nth form 2)))
                       (unquote (pull-alias-source (nth form 4)))))
-                  (error "combined pull option vectors currently support [:attr :default value :as alias] or [:attr :as alias :default value]"))
+                  (if (= (source (nth form 3)) ":xform")
+                    (quasiquote
+                      (pull-spec-default-xform
+                        (unquote (pull-attr-source (nth form 0)))
+                        (unquote (emit-literal-value (nth form 2)))
+                        (unquote (pull-xform-source (nth form 4)))))
+                    (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :default value :xform transform], or [:attr :xform transform :default value]")))
                 (if (= (source (nth form 1)) ":limit")
                   (if (= (source (nth form 3)) ":as")
                     (quasiquote
@@ -1649,7 +1679,15 @@
                         (unquote (emit-pull-limit (nth form 2)))
                         (unquote (pull-alias-source (nth form 4)))))
                     (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]"))
-                  (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], or [:attr :as alias :limit n]"))))
+                  (if (= (source (nth form 1)) ":xform")
+                    (if (= (source (nth form 3)) ":default")
+                      (quasiquote
+                        (pull-spec-default-xform
+                          (unquote (pull-attr-source (nth form 0)))
+                          (unquote (emit-literal-value (nth form 4)))
+                          (unquote (pull-xform-source (nth form 2)))))
+                      (error "combined pull option vectors currently support [:attr :default value :xform transform] or [:attr :xform transform :default value]"))
+                    (error "combined pull option vectors currently support [:attr :default value :as alias], [:attr :as alias :default value], [:attr :limit n :as alias], [:attr :as alias :limit n], [:attr :default value :xform transform], or [:attr :xform transform :default value]")))))
             (error "combined pull option vectors expect keyword options"))
           (error "pull option vectors currently have shape [:attr :default value], [:attr :as alias], [:attr :limit n], or [:attr :default value :as alias]")))
       (error "pull option vectors expect a keyword option"))
