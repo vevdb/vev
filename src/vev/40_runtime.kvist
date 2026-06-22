@@ -1992,15 +1992,26 @@
         (arr.push! out binding)))
     out))
 
+(defn relation-source-width-for-clause [clause: Clause] -> int
+  (if (= clause.v.kind .Wildcard)
+    2
+    (if (not (= clause.op_term.kind .Wildcard))
+      5
+      (if (not (= clause.tx_term.kind .Wildcard))
+        4
+        3))))
+
 (defn rule-clause-with-source [clause: Clause, source: string, has-source: bool] -> Clause
   (when (or (not has-source) clause.has_source)
     (return clause))
   (Clause {e: clause.e
            a: clause.a
            v: clause.v
+           tx_term: clause.tx_term
+           op_term: clause.op_term
            source: source
            has_source: true
-           source_width: (if (= clause.v.kind .Wildcard) 2 3)}))
+           source_width: (relation-source-width-for-clause clause)}))
 
 (defn rule-clauses-with-source [clauses: []Clause, source: string, has-source: bool] -> [dynamic]Clause
   (let [out (make [dynamic]Clause 0 (count clauses))]
@@ -2530,6 +2541,87 @@
               (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
       (delete bindings)
       (Result-Set {rows: rows}))))
+
+(defn relation-db-not-group [group: Not-Group, source: string] -> Not-Group
+  (let [clauses (rule-clauses-with-source (slice group.clauses 0) source true) :defer
+        child-groups (make [dynamic]Not-Group) :defer]
+    (for [child group.not_groups]
+      (arr.push! child-groups (relation-db-not-group child source)))
+    (if group.has_join
+      (not-join-group (slice group.join_vars 0) (slice clauses 0) (slice child-groups 0))
+      (not-group (slice clauses 0) (slice child-groups 0)))))
+
+(defn relation-db-or-group [group: Or-Group, source: string] -> Or-Group
+  (let [branches (make [dynamic]Not-Group) :defer]
+    (for [branch group.branches]
+      (arr.push! branches (relation-db-not-group branch source)))
+    (if group.has_join
+      (or-join-group (slice group.join_vars 0) (slice branches 0))
+      (or-group (slice branches 0)))))
+
+(defn relation-db-rule [rule: Rule, source: string] -> Rule
+  (let [clauses (rule-clauses-with-source (slice rule.clauses 0) source true) :defer
+        params (arr.into [dynamic]string (slice rule.params 0))
+        owned-clauses (arr.into [dynamic]Clause (slice clauses 0))
+        predicates (arr.into [dynamic]Predicate (slice rule.predicates 0))
+        function-clauses (arr.into [dynamic]Function-Clause (slice rule.function_clauses 0))
+        grounds (arr.into [dynamic]Ground (slice rule.grounds 0))
+        rule-calls (arr.into [dynamic]Rule-Call (slice rule.rule_calls 0))]
+    (Rule {name: rule.name
+           params: params
+           clauses: owned-clauses
+           predicates: predicates
+           function_clauses: function-clauses
+           grounds: grounds
+           rule_calls: rule-calls})))
+
+(defn relation-db-query [query-value: Query, source: string] -> Query
+  (let [inputs (arr.into [dynamic]string (slice query-value.inputs 0)) :defer
+        clauses (rule-clauses-with-source (slice query-value.clauses 0) source true) :defer
+        rules (make [dynamic]Rule) :defer
+        not-groups (make [dynamic]Not-Group) :defer
+        or-groups (make [dynamic]Or-Group) :defer]
+    (arr.push! inputs source)
+    (for [rule query-value.rules]
+      (arr.push! rules (relation-db-rule rule source)))
+    (for [group query-value.not_groups]
+      (arr.push! not-groups (relation-db-not-group group source)))
+    (for [group query-value.or_groups]
+      (arr.push! or-groups (relation-db-or-group group source)))
+    (query (slice query-value.find 0)
+           (slice query-value.with 0)
+           (slice inputs 0)
+           (slice query-value.collection_inputs 0)
+           (slice query-value.tuple_inputs 0)
+           (slice query-value.relation_inputs 0)
+           (slice clauses 0)
+           (slice query-value.predicates 0)
+           (slice query-value.function_clauses 0)
+           (slice rules 0)
+           (slice query-value.rule_calls 0)
+           (slice query-value.get_elses 0)
+           (slice query-value.get_somes 0)
+           (slice query-value.grounds 0)
+           (slice not-groups 0)
+           (slice or-groups 0)
+           (slice query-value.pulls 0)
+           (slice query-value.aggregates 0))))
+
+(defn q-query-relation-db [rows: Value, query-value: Query, inputs: []Query-Input] -> Result-Set
+  (let [source "__vev_primary_relation_db"
+        relation-query (relation-db-query query-value source)
+        relation-inputs (arr.into [dynamic]Query-Input inputs) :defer
+        empty-datoms (make [dynamic]Datom)
+        empty (build-db empty-datoms)]
+    (arr.push! relation-inputs (query-input-scalar rows))
+    (let [result (q-query-with-sources empty relation-query (slice relation-inputs 0) ([]DB-Source []))]
+      (delete empty-datoms)
+      (delete empty.current)
+      (delete empty.eavt)
+      (delete empty.aevt)
+      (delete empty.avet)
+      (delete empty.vaet)
+      result)))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (q-query-with-sources db query inputs ([]DB-Source [])))
