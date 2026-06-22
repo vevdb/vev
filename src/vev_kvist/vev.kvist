@@ -3575,8 +3575,120 @@
       (= node.kind .Nil) (term-value (value-nil))
       :else (term-string node.text))))
 
-(defn query-from-text-parts [find: []string, clauses: []Clause, collection-find: bool] -> Query
-  (query find ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) clauses ([]Predicate []) ([]Function-Clause []) ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) ([]Not-Group []) ([]Or-Group []) ([]Pull-Find []) ([]Aggregate-Find [])))
+(defn edn-node-text [doc: EDN-Doc, node-index: int] -> string
+  (if (= node-index -1)
+    ""
+    doc.nodes[node-index].text))
+
+(defn edn-list-head-text [doc: EDN-Doc, node-index: int] -> string
+  (if (or (= node-index -1)
+          (not (= doc.nodes[node-index].kind .List)))
+    ""
+    (edn-node-text doc doc.nodes[node-index].first_child)))
+
+(defn edn-terms-from-list-tail [doc: EDN-Doc, list-node: int] -> [dynamic]Term
+  (let [out (make [dynamic]Term)
+        child doc.nodes[doc.nodes[list-node].first_child].next_sibling]
+    (while (not (= child -1))
+      (arr.push! out (value-term-from-edn-node doc child))
+      (set! child doc.nodes[child].next_sibling))
+    out))
+
+(defn edn-vars-from-vector [doc: EDN-Doc, vector-node: int] -> [dynamic]string
+  (let [out (make [dynamic]string)
+        child doc.nodes[vector-node].first_child]
+    (while (not (= child -1))
+      (if (edn-var? doc child)
+        (arr.push! out doc.nodes[child].text)
+        (arr.push! out ""))
+      (set! child doc.nodes[child].next_sibling))
+    out))
+
+(defn query-from-text-parts [find: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, not-groups: []Not-Group, or-groups: []Or-Group, collection-find: bool] -> Query
+  (query find ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) clauses predicates function-clauses ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups ([]Pull-Find []) ([]Aggregate-Find [])))
+
+(defn append-edn-data-clause! [out: ^[dynamic]Clause, doc: EDN-Doc, node-index: int] -> [ok: bool, error: string]
+  (when (not (= doc.nodes[node-index].kind .Vector))
+    (return false "query text where clauses must be vectors"))
+  (let [source ""
+        has-source false
+        term-node (edn-child-at doc node-index 0)]
+    (when (edn-source-var? doc term-node)
+      (set! source doc.nodes[term-node].text)
+      (set! has-source true)
+      (set! term-node doc.nodes[term-node].next_sibling))
+    (when (or (= term-node -1)
+              (= doc.nodes[term-node].next_sibling -1))
+      (return false "query text clause is incomplete"))
+    (let [e-node term-node
+          a-node doc.nodes[e-node].next_sibling
+          v-node doc.nodes[a-node].next_sibling]
+      (when (= v-node -1)
+        (arr.push! out^
+          (Clause {e: (term-from-edn-node doc e-node false)
+                   a: (term-from-edn-node doc a-node true)
+                   v: (term-wildcard)
+                   source: source
+                   has_source: has-source}))
+        (return true ""))
+      (when (not (= doc.nodes[v-node].next_sibling -1))
+        (return false "query text clauses currently need two or three terms"))
+      (arr.push! out^
+        (Clause {e: (term-from-edn-node doc e-node false)
+                 a: (term-from-edn-node doc a-node true)
+                 v: (value-term-from-edn-node doc v-node)
+                 source: source
+                 has_source: has-source}))
+      (return true ""))))
+
+(defn append-edn-predicate! [out: ^[dynamic]Predicate, doc: EDN-Doc, expr: int] -> [ok: bool, error: string]
+  (let [op-node doc.nodes[expr].first_child]
+    (when (or (= op-node -1) (= doc.nodes[op-node].next_sibling -1))
+      (return false "predicate clauses must have shape [(op arg ...)]"))
+    (let [terms (edn-terms-from-list-tail doc expr)]
+      (arr.push! out^ (Predicate {op: (edn-node-text doc op-node)
+                                  terms: (slice terms 0)}))
+      (return true ""))))
+
+(defn append-edn-function-clause! [out: ^[dynamic]Function-Clause, doc: EDN-Doc, expr: int, output: int] -> [ok: bool, error: string]
+  (let [op-node doc.nodes[expr].first_child]
+    (when (or (= op-node -1) (= doc.nodes[op-node].next_sibling -1))
+      (return false "function clauses must have shape [(op arg ...) ?out]"))
+    (let [terms (edn-terms-from-list-tail doc expr)]
+      (if (= doc.nodes[output].kind .Vector)
+        (let [out-vars (edn-vars-from-vector doc output)]
+          (arr.push! out^
+            (Function-Clause {op: (edn-node-text doc op-node)
+                              terms: (slice terms 0)
+                              out_vars: (slice out-vars 0)
+                              is_tuple: true})))
+        (if (edn-var? doc output)
+          (arr.push! out^
+            (Function-Clause {op: (edn-node-text doc op-node)
+                              terms: (slice terms 0)
+                              out: doc.nodes[output].text}))
+          (return false "function output must be a variable or vector of variables")))
+      (return true ""))))
+
+(defn append-edn-where-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
+  (if (= doc.nodes[item].kind .List)
+    (let [head (edn-list-head-text doc item)]
+      (cond
+        (= head "not") (return false "query text not clauses need owned query groups")
+        (= head "or") (return false "query text or clauses need owned query groups")
+        :else (return false "query text list where clauses currently support not and or")))
+    (if (= doc.nodes[item].kind .Vector)
+      (let [first-item (edn-child-at doc item 0)]
+        (if (and (not (= first-item -1)) (= doc.nodes[first-item].kind .List))
+          (let [expr first-item
+                output doc.nodes[expr].next_sibling
+                op (edn-list-head-text doc expr)]
+            (cond
+              (= op "missing?") (return false "query text missing? clauses need owned query groups")
+              (not (= output -1)) (append-edn-function-clause! function-clauses doc expr output)
+              :else (append-edn-predicate! predicates doc expr)))
+          (append-edn-data-clause! clauses doc item)))
+      (return false "query text where clauses must be vectors or lists"))))
 
 (defn parse-query-edn! [out: ^Query, doc: EDN-Doc] -> [ok: bool, error: string]
   (when (or (= doc.root -1)
@@ -3587,6 +3699,10 @@
       (return false "query text must start with [:find")))
   (let [find (make [dynamic]string) :defer
         clauses (make [dynamic]Clause) :defer
+        predicates (make [dynamic]Predicate) :defer
+        function-clauses (make [dynamic]Function-Clause) :defer
+        not-groups (make [dynamic]Not-Group) :defer
+        or-groups (make [dynamic]Or-Group) :defer
         collection-find false
         cursor (edn-child-at doc doc.root 1)]
     (when (and (not (= cursor -1))
@@ -3607,32 +3723,11 @@
       (return false "query text missing :where"))
     (set! cursor doc.nodes[cursor].next_sibling)
     (while (not (= cursor -1))
-      (when (not (= doc.nodes[cursor].kind .Vector))
-        (return false "query text where clauses must be vectors"))
-      (let [source ""
-            has-source false
-            term-node (edn-child-at doc cursor 0)]
-        (when (edn-source-var? doc term-node)
-          (set! source doc.nodes[term-node].text)
-          (set! has-source true)
-          (set! term-node doc.nodes[term-node].next_sibling))
-        (when (or (= term-node -1)
-                  (= doc.nodes[term-node].next_sibling -1)
-                  (= doc.nodes[doc.nodes[term-node].next_sibling].next_sibling -1))
-          (return false "query text clause is incomplete"))
-        (let [e-node term-node
-              a-node doc.nodes[e-node].next_sibling
-              v-node doc.nodes[a-node].next_sibling]
-          (when (not (= doc.nodes[v-node].next_sibling -1))
-            (return false "query text clauses currently need three terms"))
-          (arr.push! clauses
-            (Clause {e: (term-from-edn-node doc e-node false)
-                     a: (term-from-edn-node doc a-node true)
-                     v: (value-term-from-edn-node doc v-node)
-                     source: source
-                     has_source: has-source}))))
+      (let [[item-ok item-error] (append-edn-where-item! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr or-groups) doc cursor)]
+        (when (not item-ok)
+          (return false item-error)))
       (set! cursor doc.nodes[cursor].next_sibling))
-    (let [query-value (query-from-text-parts (slice find 0) (slice clauses 0) collection-find)]
+    (let [query-value (query-from-text-parts (slice find 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice not-groups 0) (slice or-groups 0) collection-find)]
       (set! out^ query-value)
       (return true ""))))
 
