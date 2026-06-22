@@ -383,6 +383,48 @@
     (t.is (= filtered.rows[0].values[0].entity 4))
     (t.is (= filtered.rows[0].values[1].entity 6))))
 
+(t.deftest datascript-parser-query-text-sources
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        right (vev.create-conn)
+        _ (vev.transact
+            (addr left)
+            [{:db/id 100 :db/ident :name :db/unique :db.unique/identity}
+             {:db/id 1 :name "Ivan" :id 1}
+             {:db/id 2 :name "Petr" :id 2}
+             {:db/id 3 :name "Oleg" :id 3}])
+        _ (vev.transact
+            (addr right)
+            [{:db/id 100 :db/ident :name :db/unique :db.unique/identity}
+             {:db/id 3 :name "Ivan" :id 3}
+             {:db/id 1 :name "Petr" :id 1}
+             {:db/id 2 :name "Oleg" :id 2}])
+        numeric (vev.q-text-with-sources
+                  left.db
+                  "[:find ?e ?id1 ?id2 :in $1 $2 [?e ...] :where [$1 ?e :id ?id1] [$2 ?e :id ?id2]]"
+                  ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-int 1) (vev.value-int 2) (vev.value-int 3)]))])
+                  ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        lookup-refs (vev.q-text-with-sources
+                      left.db
+                      "[:find ?e ?id1 ?id2 :in $1 $2 [?e ...] :where [$1 ?e :id ?id1] [$2 ?e :id ?id2]]"
+                      ([]vev.Query-Input [(vev.query-input-collection-lookup-refs ([]string [":name" ":name" ":name"]) ([]vev.Value [(vev.value-string "Ivan") (vev.value-string "Petr") (vev.value-string "Oleg")]))])
+                      ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        pulled (vev.q-text-with-sources
+                 left.db
+                 "[:find ?e (pull $2 ?e [:name]) :in $1 $2 :where [$1 ?e :id 1]]"
+                 ([]vev.Query-Input [])
+                 ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))]
+    (t.is (= (count numeric.rows) 3))
+    (t.is (= numeric.rows[0].values[0].int_value 1))
+    (t.is (= numeric.rows[0].values[1].int_value 1))
+    (t.is (= numeric.rows[0].values[2].int_value 1))
+    (t.is (= (count lookup-refs.rows) 3))
+    (t.is (= lookup-refs.rows[0].values[0].entity 1))
+    (t.is (= lookup-refs.rows[1].values[0].entity 2))
+    (t.is (= lookup-refs.rows[2].values[0].entity 3))
+    (t.is (= (count pulled.rows) 1))
+    (t.is (= pulled.rows[0].pulls[0].attrs[0].v.text "Petr"))))
+
 (t.deftest datascript-parser-query-text-not-or-and-missing
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

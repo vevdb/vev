@@ -96,9 +96,9 @@ The current in-memory implementation has two query frontends:
 
 - a Kvist query literal macro that lowers Datomic-shaped data to the typed
   `Query` representation and evaluates that directly
-- a narrow text API, `q-text` / `q-text-with-inputs` / `parse-query-text!`,
-  that parses a minimal `[:find ... :in ... :where ...]` subset for early
-  interop work
+- a narrow text API, `q-text` / `q-text-with-inputs` / `q-text-with-sources` /
+  `parse-query-text!`, that parses a minimal `[:find ... :in ... :where ...]`
+  subset for early interop work
 
 The transaction side has the same split:
 
@@ -117,6 +117,7 @@ Supported now:
   strings, booleans, ints, keywords, wildcards, and source vars
 - text query inputs for scalar vars, collections, tuples, relations, and
   no-`:where` input-only queries
+- text query named DB sources for multi-source joins and source-specific pull
 - text query rules through `q-text-with-rules`, covering ordinary rule calls,
   recursion, predicates, and function clauses
 - text transactions with `:db/add`, `:db/retract`, `:db/retractEntity`,
