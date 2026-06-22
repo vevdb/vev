@@ -172,7 +172,7 @@ This should be the default transaction-context model for Vev instead of
 inventing a different metadata syntax.
 
 Current Vev supports this shape: facts targeting `"datomic.tx"` are returned
-as `tx_meta` entries instead of ordinary datoms.
+as `tx-meta` entries instead of ordinary datoms.
 
 ## Query data
 

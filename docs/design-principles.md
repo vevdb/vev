@@ -20,7 +20,7 @@ That means the public-facing model should look like:
 
 Examples:
 
-- `db_before + tx_input -> tx_report`
+- `db-before + tx_input -> tx_report`
 - `db + query -> results`
 - `db + pull_pattern + eid -> pulled_data`
 

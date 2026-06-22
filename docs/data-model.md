@@ -116,7 +116,7 @@ First schema features worth supporting:
 
 - `cardinality/one`
 - `cardinality/many`
-- `value_type/ref`
+- `value-type/ref`
 - uniqueness
 - maybe component refs later
 
@@ -187,7 +187,7 @@ In the embedded use case, the intended application flow is:
 
 1. transact
 2. receive `Tx_Report`
-3. inspect `tx_data` and `tx_meta`
+3. inspect `tx-data` and `tx-meta`
 4. do follow-up work in application code
 
 That means Vev does not need a built-in listener mechanism in the first
