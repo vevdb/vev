@@ -12,6 +12,14 @@
       (return true)))
   false)
 
+(defn result-has-entity? [result: vev.Result-Set, entity: u64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .Entity)
+               (= row.values[0].entity entity))
+      (return true)))
+  false)
+
 (defn values-has-entity? [values: []vev.Value, entity: u64] -> bool
   (for [value values]
     (when (and (= value.kind .Entity)
@@ -562,6 +570,11 @@
                    conn.db
                    "[:find ?x ?y :in $ % :where (match ?x ?y)]"
                    "[[(match ?e ?e2) [?e :follow ?e2] [(even? ?e)] [(even? ?e2)]]]"
+                   ([]vev.Query-Input []))
+        grouped (vev.q-text-with-rules
+                   conn.db
+                   "[:find ?x ?y :in $ % :where (grouped-match ?x ?y)]"
+                   "[[(grouped-match ?e ?e2) (and [?e :follow ?e2] [(even? ?e)] [(even? ?e2)])]]"
                    ([]vev.Query-Input []))]
     (t.is (= (count direct.rows) 4))
     (t.is (= direct.rows[0].values[0].entity 1))
@@ -571,7 +584,10 @@
     (t.is (= recursive.rows[3].values[0].entity 6))
     (t.is (= (count filtered.rows) 1))
     (t.is (= filtered.rows[0].values[0].entity 4))
-    (t.is (= filtered.rows[0].values[1].entity 6))))
+    (t.is (= filtered.rows[0].values[1].entity 6))
+    (t.is (= (count grouped.rows) 1))
+    (t.is (= grouped.rows[0].values[0].entity 4))
+    (t.is (= grouped.rows[0].values[1].entity 6))))
 
 (t.deftest datascript-parser-query-text-sources
   (defer (free_all context.allocator))
@@ -680,6 +696,34 @@
     (t.is (= long.rows[0].values[2].int-value 39))
     (t.is (= long.rows[0].values[3].int-value 999))))
 
+(t.deftest datascript-query-rejects-non-collection-sources-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        primary (vev.q-text-relation-db
+                  (vev.value-keyword ":not-a-source")
+                  "[:find ?e :where [?e :name]]")
+        named (vev.q-text-with-inputs
+                conn.db
+                "[:find ?e :in $rows :where [$rows ?e :name]]"
+                ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":not-a-source"))]))
+        named-ok (vev.q-text-with-inputs
+                   conn.db
+                   "[:find ?e :in $rows :where [$rows ?e :name]]"
+                   ([]vev.Query-Input
+                     [(vev.query-input-scalar
+                        (vev.value-vector
+                          ([]vev.Value
+                            [(vev.value-vector
+                               ([]vev.Value [(vev.value-int 1)
+                                             (vev.value-keyword ":name")]))])))]))]
+    (t.is (not primary.ok))
+    (t.is (= primary.error "query source is not a collection: __vev_primary_relation_db"))
+    (t.is (not named.ok))
+    (t.is (= named.error "query source is not a collection: $rows"))
+    (t.is named-ok.ok)
+    (t.is (= (count named-ok.rows) 1))
+    (t.is (= named-ok.rows[0].values[0].int-value 1))))
+
 (t.deftest datascript-parser-query-text-source-qualified-rules
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -729,7 +773,9 @@
              {:db/id 3 :name "Alan Turing" :active true}])
         missing-email (vev.q-text conn.db "[:find ?name :where [?e :name ?name] [(missing? $ ?e :email)]]")
         inactive-or-ada (vev.q-text conn.db "[:find ?name :where [?e :name ?name] (or [?e :active false] [?e :name \"Ada Lovelace\"])]")
-        active-no-email (vev.q-text conn.db "[:find ?name :where [?e :active true] [?e :name ?name] (not [?e :email _])]")]
+        active-no-email (vev.q-text conn.db "[:find ?name :where [?e :active true] [?e :name ?name] (not [?e :email _])]")
+        top-level-and (vev.q-text conn.db "[:find ?name :where (and [?e :active true] [?e :name ?name] [(not= ?name \"Alan Turing\")])]")
+        nested-and (vev.q-text conn.db "[:find ?name :where (and [?e :active true] (and [?e :name ?name] [(not= ?name \"Alan Turing\")]))]")]
     (t.is (= (count missing-email.rows) 2))
     (t.is (= missing-email.rows[0].values[0].text "Grace Hopper"))
     (t.is (= missing-email.rows[1].values[0].text "Alan Turing"))
@@ -737,7 +783,11 @@
     (t.is (= inactive-or-ada.rows[0].values[0].text "Ada Lovelace"))
     (t.is (= inactive-or-ada.rows[1].values[0].text "Grace Hopper"))
     (t.is (= (count active-no-email.rows) 1))
-    (t.is (= active-no-email.rows[0].values[0].text "Alan Turing"))))
+    (t.is (= active-no-email.rows[0].values[0].text "Alan Turing"))
+    (t.is (= (count top-level-and.rows) 1))
+    (t.is (= top-level-and.rows[0].values[0].text "Ada Lovelace"))
+    (t.is (= (count nested-and.rows) 1))
+    (t.is (= nested-and.rows[0].values[0].text "Ada Lovelace"))))
 
 (t.deftest datascript-parser-query-text-not-join-or-join
   (defer (free_all context.allocator))
@@ -817,7 +867,13 @@
         count-coll (vev.q-text-collection conn.db "[:find [(count ?name) ...] :where [?e :name ?name]]")
         [count-scalar count-scalar-ok] (vev.q-text-scalar conn.db "[:find (count ?name) . :where [?e :name ?name]]")
         top (vev.q-text conn.db "[:find (min 2 ?age) :where [?e :age ?age]]")
-        keys (vev.q-text-keys conn.db "[:find ?name ?age :keys name age :where [?e :name ?name] [?e :age ?age]]")]
+        keys (vev.q-text-keys conn.db "[:find ?name ?age :keys name age :where [?e :name ?name] [?e :age ?age]]")
+        duplicate-return-map (vev.q-text conn.db "[:find ?name ?age :keys name age :strs n a :where [?e :name ?name] [?e :age ?age]]")
+        short-return-map (vev.q-text conn.db "[:find ?name ?age :keys name :where [?e :name ?name] [?e :age ?age]]")
+        collection-return-map (vev.q-text conn.db "[:find [?name ...] :keys name :where [?e :name ?name]]")
+        scalar-return-map (vev.q-text conn.db "[:find ?name . :keys name :where [?e :name ?name]]")
+        map-short-return-map (vev.q-text conn.db "{:find [?name ?age] :keys [name] :where [[?e :name ?name] [?e :age ?age]]}")
+        map-collection-return-map (vev.q-text conn.db "{:find [?name ...] :keys [name] :where [[?e :name ?name]]}")]
     (t.is (= (count names) 3))
     (t.is (= names[0].text "Petr"))
     (t.is (= names[1].text "Ivan"))
@@ -840,7 +896,19 @@
     (t.is (= keys[0].items[0].key "name"))
     (t.is (= keys[0].items[0].value.text "Petr"))
     (t.is (= keys[0].items[1].key "age"))
-    (t.is (= keys[0].items[1].value.int-value 44))))
+    (t.is (= keys[0].items[1].value.int-value 44))
+    (t.is (not duplicate-return-map.ok))
+    (t.is (= duplicate-return-map.error "only one of :keys/:strs/:syms may be present"))
+    (t.is (not short-return-map.ok))
+    (t.is (= short-return-map.error "return-map marker count must match :find count"))
+    (t.is (not collection-return-map.ok))
+    (t.is (= collection-return-map.error "return-map markers do not work with collection or scalar :find"))
+    (t.is (not scalar-return-map.ok))
+    (t.is (= scalar-return-map.error "return-map markers do not work with collection or scalar :find"))
+    (t.is (not map-short-return-map.ok))
+    (t.is (= map-short-return-map.error "return-map marker count must match :find count"))
+    (t.is (not map-collection-return-map.ok))
+    (t.is (= map-collection-return-map.error "return-map markers do not work with collection or scalar :find"))))
 
 (t.deftest datascript-parser-tx-text-subset
   (defer (free_all context.allocator))
@@ -2539,11 +2607,28 @@
                     :where
                     [?e :age ?age]
                     [(get-else $ ?e :height 300) ?height]])
+        get-else-text (vev.q-text
+                        conn.db
+                        "[:find ?e ?age ?height :where [?e :age ?age] [(get-else $ ?e :height 300) ?height]]")
+        get-else-nil-default (vev.q conn.db
+                               [:find ?e ?height
+                                :where
+                                [?e :age]
+                                [(get-else $ ?e :height nil) ?height]])
+        get-else-nil-default-text (vev.q-text
+                                    conn.db
+                                    "[:find ?e ?height :where [?e :age] [(get-else $ ?e :height nil) ?height]]")
         get-some (vev.q conn.db
                    [:find ?e ?a ?v
                     :where
                     [?e :name _]
                     [(get-some $ ?e :height :age) [?a ?v]]])
+        get-some-text (vev.q-text
+                        conn.db
+                        "[:find ?e ?a ?v :where [?e :name _] [(get-some $ ?e :height :age) [?a ?v]]]")
+        get-some-map-text (vev.q-text
+                            conn.db
+                            "{:find [?e ?a ?v] :where [[?e :name _] [(get-some $ ?e :height :age) [?a ?v]]]}")
         missing (vev.q conn.db
                   [:find ?e ?age
                    :where
@@ -2636,10 +2721,23 @@
     (t.is (= get-else.rows[0].values[2].int-value 300))
     (t.is (= get-else.rows[1].values[2].int-value 240))
     (t.is (= get-else.rows[2].values[2].int-value 300))
+    (t.is get-else-text.ok)
+    (t.is (= (count get-else-text.rows) 3))
+    (t.is (= get-else-text.rows[1].values[2].int-value 240))
+    (t.is (not get-else-nil-default.ok))
+    (t.is (= get-else-nil-default.error "get-else: nil default value is not supported"))
+    (t.is (not get-else-nil-default-text.ok))
+    (t.is (= get-else-nil-default-text.error "get-else: nil default value is not supported"))
     (t.is (= (count get-some.rows) 3))
     (t.is (= get-some.rows[0].values[1].text ":age"))
     (t.is (= get-some.rows[1].values[1].text ":height"))
     (t.is (= get-some.rows[2].values[1].text ":age"))
+    (t.is get-some-text.ok)
+    (t.is (= (count get-some-text.rows) 3))
+    (t.is (= get-some-text.rows[1].values[1].text ":height"))
+    (t.is get-some-map-text.ok)
+    (t.is (= (count get-some-map-text.rows) 3))
+    (t.is (= get-some-map-text.rows[2].values[1].text ":age"))
     (t.is (= (count missing.rows) 2))
     (t.is (= missing.rows[0].values[0].entity 1))
     (t.is (= missing.rows[1].values[0].entity 3))
@@ -3420,6 +3518,37 @@
                      (named ?e)]
                     [[(named $e)
                       [$e :name]]])
+        duplicate-param (vev.q conn.db
+                          [:find ?e
+                           :in $ %
+                           :where
+                           (named ?e)]
+                          [[(named ?e ?e)
+                            [?e :name]]])
+        arity-mismatch (vev.q conn.db
+                         [:find ?e
+                          :in $ %
+                          :where
+                          (named ?e)]
+                         [[(named [?e])
+                           [?e :name]]
+                          [(named ?e)
+                           [?e :name]]])
+        required-bound (vev.q conn.db
+                         [:find ?name
+                          :in $ %
+                          :where
+                          [?e :name]
+                          (named ?e ?name)]
+                         [[(named [?entity] ?name)
+                           [?entity :name ?name]]])
+        required-unbound (vev.q conn.db
+                           [:find ?name
+                            :in $ %
+                            :where
+                            (named ?e ?name)]
+                           [[(named [?entity] ?name)
+                             [?entity :name ?name]]])
         unknown-nested (vev.q conn.db
                          [:find ?e
                           :in $ %
@@ -3432,19 +3561,49 @@
                        "[]")
         bad-param-text (vev.q-text-with-rules conn.db
                          "[:find ?e :in $ % :where (named ?e)]"
-                         "[[(named $e) [$e :name]]]")]
+                         "[[(named $e) [$e :name]]]")
+        required-text (vev.q-text-with-rules conn.db
+                        "[:find ?name :in $ % :where [?e :name] (named ?e ?name)]"
+                        "[[(named [?entity] ?name) [?entity :name ?name]]]")
+        required-text-unbound (vev.q-text-with-rules conn.db
+                                "[:find ?name :in $ % :where (named ?e ?name)]"
+                                "[[(named [?entity] ?name) [?entity :name ?name]]]")
+        duplicate-text (vev.q-text-with-rules conn.db
+                         "[:find ?e :in $ % :where (named ?e)]"
+                         "[[(named [?e] ?e) [?e :name]]]")
+        mismatch-text (vev.q-text-with-rules conn.db
+                        "[:find ?e :in $ % :where (named ?e)]"
+                        "[[(named [?e]) [?e :name]] [(named ?e) [?e :name]]]")]
     (t.is (not unknown-rule.ok))
     (t.is (= unknown-rule.error "unknown rule: wat"))
     (t.is (not wrong-arity.ok))
     (t.is (= wrong-arity.error "wrong arity for rule: named"))
     (t.is (not bad-param.ok))
     (t.is (= bad-param.error "rule params must be variables: $e"))
+    (t.is (not duplicate-param.ok))
+    (t.is (= duplicate-param.error "Rule variables should be distinct"))
+    (t.is (not arity-mismatch.ok))
+    (t.is (= arity-mismatch.error "Arity mismatch for rule: named"))
+    (t.is required-bound.ok)
+    (t.is (= (count required-bound.rows) 1))
+    (t.is (= required-bound.rows[0].values[0].text "Ada"))
+    (t.is (not required-unbound.ok))
+    (t.is (= required-unbound.error "insufficient bindings for rule: ?e"))
     (t.is (not unknown-nested.ok))
     (t.is (= unknown-nested.error "unknown rule: inner"))
     (t.is (not unknown-text.ok))
     (t.is (= unknown-text.error "unknown rule: wat"))
     (t.is (not bad-param-text.ok))
-    (t.is (= bad-param-text.error "rule params must be variables"))))
+    (t.is (= bad-param-text.error "rule params must be variables"))
+    (t.is required-text.ok)
+    (t.is (= (count required-text.rows) 1))
+    (t.is (= required-text.rows[0].values[0].text "Ada"))
+    (t.is (not required-text-unbound.ok))
+    (t.is (= required-text-unbound.error "insufficient bindings for rule: ?e"))
+    (t.is (not duplicate-text.ok))
+    (t.is (= duplicate-text.error "Rule variables should be distinct"))
+    (t.is (not mismatch-text.ok))
+    (t.is (= mismatch-text.error "Arity mismatch for rule: named"))))
 
 (t.deftest datalog-macro-supports-or-join
   (defer (free_all context.allocator))
@@ -3548,7 +3707,19 @@
                          (or-join [?e ?age]
                            [?e :age ?age]
                            [?e :name "Oleg"])]
-                        10)]
+                        10)
+        nested-input-or-join (vev.q-collection report.db-after
+                               [:find [?e ...]
+                                :in ?age
+                                :where
+                                (or-join [[?age] ?e]
+                                  [?e :age ?age]
+                                  [?e :name "Oleg"])]
+                               10)
+        nested-text-or-join (vev.q-text-with-inputs
+                              report.db-after
+                              "[:find ?e :in ?age :where (or-join [[?age] ?e] [?e :age ?age] [?e :name \"Oleg\"])]"
+                              ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 10))]))]
     (t.is (= (count intersecting) 4))
     (t.is (= intersecting[0].entity 3))
     (t.is (= intersecting[1].entity 4))
@@ -3588,7 +3759,17 @@
     (t.is (= input-or-join[0].entity 1))
     (t.is (= input-or-join[1].entity 3))
     (t.is (= input-or-join[2].entity 5))
-    (t.is (= input-or-join[3].entity 4))))
+    (t.is (= input-or-join[3].entity 4))
+    (t.is (= (count nested-input-or-join) 4))
+    (t.is (values-has-entity? (slice nested-input-or-join 0) 1))
+    (t.is (values-has-entity? (slice nested-input-or-join 0) 3))
+    (t.is (values-has-entity? (slice nested-input-or-join 0) 4))
+    (t.is (values-has-entity? (slice nested-input-or-join 0) 5))
+    (t.is (= (count nested-text-or-join.rows) 4))
+    (t.is (result-has-entity? nested-text-or-join 1))
+    (t.is (result-has-entity? nested-text-or-join 3))
+    (t.is (result-has-entity? nested-text-or-join 4))
+    (t.is (result-has-entity? nested-text-or-join 5))))
 
 (t.deftest datascript-query-relation-source-or-join-subset
   (defer (free_all context.allocator))
@@ -3983,6 +4164,12 @@
                                           :where
                                           [(ground 2) ?e]]
                                          [:name])
+        [named-input-scalar named-input-scalar-ok] (vev.q-pull-scalar conn.db
+                                                     [:find (pull ?e p) .
+                                                      :in $ p
+                                                      :where
+                                                      [(ground 2) ?e]]
+                                                     [:name])
         text-collection (vev.q-text-pull-collection
                           conn.db
                           "[:find [(pull ?e [:name]) ...] :where [?e :age ?a]]")
@@ -3998,6 +4185,12 @@
                                                      ([]vev.Query-Input
                                                        [(vev.query-input-pull-pattern
                                                           ([]vev.Pull-Spec [(vev.pull-spec ":name" ([]vev.Pull-Spec []))]))]))
+        [text-named-input-pattern text-named-input-pattern-ok] (vev.q-text-pull-scalar-with-inputs
+                                                                 conn.db
+                                                                 "[:find (pull ?e p) . :in $ p :where [(ground 2) ?e]]"
+                                                                 ([]vev.Query-Input
+                                                                   [(vev.query-input-pull-pattern
+                                                                      ([]vev.Pull-Spec [(vev.pull-spec ":name" ([]vev.Pull-Spec []))]))]))
         [text-map-input-pattern text-map-input-pattern-ok] (vev.q-text-pull-scalar-with-inputs
                                                              conn.db
                                                              "{:find [(pull ?e ?pattern) .] :in [$ ?pattern] :where [[(ground 2) ?e]]}"
@@ -4017,6 +4210,8 @@
     (t.is (= tuple.pulls[0].attrs[0].v.text "Ivan"))
     (t.is input-scalar-ok)
     (t.is (= input-scalar.attrs[0].v.text "Ivan"))
+    (t.is named-input-scalar-ok)
+    (t.is (= named-input-scalar.attrs[0].v.text "Ivan"))
     (t.is (= (count text-collection) 3))
     (t.is (= text-collection[0].attrs[0].v.text "Petr"))
     (t.is (= text-collection[1].attrs[0].v.text "Ivan"))
@@ -4028,6 +4223,8 @@
     (t.is (= text-scalar.attrs[0].v.text "Ivan"))
     (t.is text-input-pattern-ok)
     (t.is (= text-input-pattern.attrs[0].v.text "Ivan"))
+    (t.is text-named-input-pattern-ok)
+    (t.is (= text-named-input-pattern.attrs[0].v.text "Ivan"))
     (t.is text-map-input-pattern-ok)
     (t.is (= text-map-input-pattern.attrs[0].v.text "Ivan"))))
 

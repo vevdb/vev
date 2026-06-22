@@ -737,7 +737,8 @@
       (if (< actual.entity right)
         -1
         (if (> actual.entity right) 1 0)))
-    (if (and (= actual.kind .Keyword) (= expected.kind .String))
+    (if (and (= actual.kind .Keyword)
+             (or (= expected.kind .Keyword) (= expected.kind .String)))
       (strings.compare actual.text expected.text)
       (value-compare actual expected))))
 
@@ -792,12 +793,58 @@
   (return true ""))
 
 (defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (for [datom-index indexes]
-    (when (datom-current-at? db datom-index)
-      (let [datom db.datoms[datom-index]]
-        (when (and (public-index-datom-visible? db order datom)
-                   (datom-matches-index-values? datom order values))
-          (arr.push! out^ datom))))))
+  (let [low (lower-bound-index-values db indexes order values)
+        high (upper-bound-index-values db indexes order values)]
+    (for [i (arr.range low high)]
+      (let [datom-index indexes[i]]
+        (when (datom-current-at? db datom-index)
+          (let [datom db.datoms[datom-index]]
+            (when (and (public-index-datom-visible? db order datom)
+                       (datom-matches-index-values? datom order values))
+              (arr.push! out^ datom))))))))
+
+(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (let [low (lower-bound-index-values db indexes order values)]
+    (for [i (arr.range low (count indexes))]
+      (let [datom-index indexes[i]]
+        (when (datom-current-at? db datom-index)
+          (let [datom db.datoms[datom-index]]
+            (when (public-index-datom-visible? db order datom)
+              (arr.push! out^ datom))))))))
+
+(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
+  (let [i (upper-bound-index-values db indexes order values)]
+    (while (> i 0)
+      (set! i (- i 1))
+      (let [datom-index indexes[i]]
+        (when (datom-current-at? db datom-index)
+          (let [datom db.datoms[datom-index]]
+            (when (public-index-datom-visible? db order datom)
+              (arr.push! out^ datom))))))))
+
+(defn append-index-range-datoms! [out: ^[dynamic]Datom, db: DB, attr: string, start-value: Value, has-start: bool, end-value: Value, has-end: bool]
+  (let [indexes (slice db.avet 0)
+        lower-values (make [dynamic]Value)
+        upper-values (make [dynamic]Value)]
+    (defer (delete lower-values))
+    (defer (delete upper-values))
+    (arr.push! lower-values (value-keyword attr))
+    (arr.push! upper-values (value-keyword attr))
+    (when has-start
+      (arr.push! lower-values start-value))
+    (when has-end
+      (arr.push! upper-values end-value))
+    (let [low (lower-bound-index-values db indexes ":avet" (slice lower-values 0))
+          high (if has-end
+                 (upper-bound-index-values db indexes ":avet" (slice upper-values 0))
+                 (upper-bound-index-values db indexes ":avet" ([]Value [(value-keyword attr)])))]
+      (for [i (arr.range low high)]
+        (let [datom-index indexes[i]]
+          (when (datom-current-at? db datom-index)
+            (let [datom db.datoms[datom-index]]
+              (when (and (= datom.a attr)
+                         (public-index-datom-visible? db ":avet" datom))
+                (arr.push! out^ datom)))))))))
 
 (defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
@@ -820,14 +867,6 @@
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (datoms-with-args db order args)})))
 
-(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (for [datom-index indexes]
-    (when (datom-current-at? db datom-index)
-      (let [datom db.datoms[datom-index]]
-        (when (and (public-index-datom-visible? db order datom)
-                   (>= (datom-index-compare-values datom order values) 0))
-          (arr.push! out^ datom))))))
-
 (defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
         [values ok] (resolve-index-args db args)]
@@ -848,17 +887,6 @@
     (when (not valid)
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (seek-datoms-with-args db order args)})))
-
-(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (let [i (count indexes)]
-    (while (> i 0)
-      (set! i (- i 1))
-      (let [datom-index indexes[i]]
-        (when (datom-current-at? db datom-index)
-          (let [datom db.datoms[datom-index]]
-            (when (and (public-index-datom-visible? db order datom)
-                       (<= (datom-index-compare-values datom order values) 0))
-              (arr.push! out^ datom))))))))
 
 (defn rseek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
@@ -902,14 +930,7 @@
         (when (not ok)
           (return out))
         (set! end-value value)))
-    (for [datom-index db.avet]
-      (when (datom-current-at? db datom-index)
-        (let [datom db.datoms[datom-index]]
-          (when (and (= datom.a attr)
-                     (public-index-datom-visible? db ":avet" datom))
-            (when (or (not has-start) (>= (index-position-compare datom.v start-value) 0))
-              (when (or (not has-end) (<= (index-position-compare datom.v end-value) 0))
-                (arr.push! out datom)))))))
+    (append-index-range-datoms! (addr out) db attr start-value has-start end-value has-end)
     out))
 
 (defn index-range-checked-with-args [db: DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> Datoms-Result
@@ -2934,6 +2955,9 @@
       (let [arg call.args[index]]
         (case arg.kind
           .Var (let [[value value-ok] (binding-lookup outer arg.name)]
+                 (when (and (< index rule.required-param-count)
+                            (not value-ok))
+                   (return out false))
                  (when value-ok
                    (let [[next bind-ok] (binding-with-value out param value)]
                      (when (not bind-ok)
@@ -3096,6 +3120,97 @@
 (defn validate-query-or-group-sources [query-value: Query, sources: []DB-Source, group: Or-Group] -> [ok: bool, error: string]
   (for [branch group.branches]
     (let [[ok error] (validate-query-not-group-sources query-value sources branch)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn query-input-index-for-source [query-value: Query, source: string] -> [index: int, ok: bool]
+  (when (> (count query-value.input-specs) 0)
+    (for [spec index query-value.input-specs]
+      (when (and (= spec.kind .Scalar)
+                 (= spec.name source))
+        (return index true)))
+    (return -1 false))
+  (for [name index query-value.inputs]
+    (when (= name source)
+      (return index true)))
+  (return -1 false))
+
+(defn validate-source-input-value [query-value: Query, inputs: []Query-Input, sources: []DB-Source, source: string] -> [ok: bool, error: string]
+  (when (or (= source "$") (query-source-db? sources source))
+    (return true ""))
+  (let [[index found] (query-input-index-for-source query-value source)]
+    (when (not found)
+      (return true ""))
+    (when (>= index (count inputs))
+      (return true ""))
+    (let [input inputs[index]]
+      (if (and (= input.kind .Scalar)
+               (= input.value.kind .Vector))
+        (return true "")
+        (return false (fmt.tprintf "query source is not a collection: %s" source))))))
+
+(defn validate-not-group-source-input-values [query-value: Query, inputs: []Query-Input, sources: []DB-Source, group: Not-Group] -> [ok: bool, error: string]
+  (for [item group.clauses]
+    (when item.has-source
+      (let [[ok error] (validate-source-input-value query-value inputs sources item.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [child group.not-groups]
+    (let [[ok error] (validate-not-group-source-input-values query-value inputs sources child)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-or-group-source-input-values [query-value: Query, inputs: []Query-Input, sources: []DB-Source, group: Or-Group] -> [ok: bool, error: string]
+  (for [branch group.branches]
+    (let [[ok error] (validate-not-group-source-input-values query-value inputs sources branch)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-rule-source-input-values [query-value: Query, inputs: []Query-Input, sources: []DB-Source, rule: Rule] -> [ok: bool, error: string]
+  (for [item rule.clauses]
+    (when item.has-source
+      (let [[ok error] (validate-source-input-value query-value inputs sources item.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [call rule.rule-calls]
+    (when call.has-source
+      (let [[ok error] (validate-source-input-value query-value inputs sources call.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [group rule.not-groups]
+    (let [[ok error] (validate-not-group-source-input-values query-value inputs sources group)]
+      (when (not ok)
+        (return false error))))
+  (for [group rule.or-groups]
+    (let [[ok error] (validate-or-group-source-input-values query-value inputs sources group)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-query-source-input-values [query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
+  (for [item query-value.clauses]
+    (when item.has-source
+      (let [[ok error] (validate-source-input-value query-value inputs sources item.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [call query-value.rule-calls]
+    (when call.has-source
+      (let [[ok error] (validate-source-input-value query-value inputs sources call.source)]
+        (when (not ok)
+          (return false error)))))
+  (for [group query-value.not-groups]
+    (let [[ok error] (validate-not-group-source-input-values query-value inputs sources group)]
+      (when (not ok)
+        (return false error))))
+  (for [group query-value.or-groups]
+    (let [[ok error] (validate-or-group-source-input-values query-value inputs sources group)]
+      (when (not ok)
+        (return false error))))
+  (for [rule query-value.rules]
+    (let [[ok error] (validate-rule-source-input-values query-value inputs sources rule)]
       (when (not ok)
         (return false error))))
   (return true ""))
@@ -3342,6 +3457,10 @@
     .Or (let [[ok error] (validate-or-group-bindings (slice available^ 0) query-value.or-groups[step.index])]
           (when (not ok)
             (return false error)))
+    .RuleCall (let [call query-value.rule-calls[step.index]
+                    [ok error] (validate-rule-call-required-bindings (slice available^ 0) (slice query-value.rules 0) call)]
+                (when (not ok)
+                  (return false error)))
     :else (do))
   (append-query-step-output-vars! available query-value step)
   (return true ""))
@@ -3439,6 +3558,12 @@
           (return false error)))))
   (return true ""))
 
+(defn validate-query-get-elses [query-value: Query] -> [ok: bool, error: string]
+  (for [get-else query-value.get-elses]
+    (when (= get-else.default-value.kind .Nil)
+      (return false "get-else: nil default value is not supported")))
+  (return true ""))
+
 (defn validate-query-sources [query-value: Query, sources: []DB-Source] -> [ok: bool, error: string]
   (for [item query-value.clauses]
     (if item.has-source
@@ -3472,6 +3597,13 @@
   (and (= call.name rule.name)
        (= (count call.args) (count rule.params))))
 
+(defn string-slice-has-duplicate? [items: []string] -> bool
+  (for [item index items]
+    (for [other-index (arr.range (+ index 1) (count items))]
+      (when (= item items[other-index])
+        (return true))))
+  false)
+
 (defn validate-rule-call-known [rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
   (let [name-found false]
     (for [rule rules]
@@ -3484,6 +3616,13 @@
       (return false (fmt.tprintf "unknown rule: %s" call.name)))))
 
 (defn validate-rule-definition [rules: []Rule, rule: Rule] -> [ok: bool, error: string]
+  (when (string-slice-has-duplicate? (slice rule.params 0))
+    (return false "Rule variables should be distinct"))
+  (for [other rules]
+    (when (= other.name rule.name)
+      (when (or (not (= other.required-param-count rule.required-param-count))
+                (not (= (count other.params) (count rule.params))))
+        (return false (fmt.tprintf "Arity mismatch for rule: %s" rule.name)))))
   (for [param rule.params]
     (when (not (rule-param-valid? param))
       (return false (fmt.tprintf "rule params must be variables: %s" param))))
@@ -3491,6 +3630,18 @@
     (let [[ok error] (validate-rule-call-known rules call)]
       (when (not ok)
         (return false error))))
+  (return true ""))
+
+(defn validate-rule-call-required-bindings [available: []string, rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
+  (for [rule rules]
+    (when (rule-call-matches-rule? call rule)
+      (for [index (arr.range 0 rule.required-param-count)]
+        (let [arg call.args[index]]
+          (when (= arg.kind .Wildcard)
+            (return false (fmt.tprintf "insufficient bindings for rule: %s" call.name)))
+          (when (and (= arg.kind .Var)
+                     (not (string-slice-contains? available arg.name)))
+            (return false (fmt.tprintf "insufficient bindings for rule: %s" arg.name)))))))
   (return true ""))
 
 (defn validate-query-rules [query-value: Query] -> [ok: bool, error: string]
@@ -3512,12 +3663,22 @@
   (let [[source-ok source-error] (validate-query-sources query-value sources)]
     (when (not source-ok)
       (return false source-error)))
+  (let [[source-input-ok source-input-error] (validate-query-source-input-values query-value inputs sources)]
+    (when (not source-input-ok)
+      (return false source-input-error)))
   (let [[rules-ok rules-error] (validate-query-rules query-value)]
     (when (not rules-ok)
       (return false rules-error)))
   (if (> (count query-value.where-steps) 0)
-    (validate-query-ordered-bindings query-value)
     (do
+      (let [[get-else-ok get-else-error] (validate-query-get-elses query-value)]
+        (when (not get-else-ok)
+          (return false get-else-error)))
+      (validate-query-ordered-bindings query-value))
+    (do
+      (let [[get-else-ok get-else-error] (validate-query-get-elses query-value)]
+        (when (not get-else-ok)
+          (return false get-else-error)))
       (let [[binding-ok binding-error] (validate-query-not-or-bindings query-value)]
         (when (not binding-ok)
           (return false binding-error)))
@@ -4040,6 +4201,7 @@
           owned-or-groups (arr.into [dynamic]Or-Group (slice or-groups 0))
           body-steps (arr.into [dynamic]Query-Step (slice rule.body-steps 0))]
       (Rule {name: rule.name
+             required-param-count: rule.required-param-count
              params: params
              clauses: owned-clauses
              predicates: predicates

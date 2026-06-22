@@ -3,8 +3,8 @@
 (defn db-source [name: string, db: DB] -> DB-Source
   (DB-Source {name: name db: db}))
 
-(defn query-from-text-parts [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, input-specs: []Query-Input-Spec, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
-  (let [out (query find with inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls ([]Get-Else []) ([]Get-Some []) ([]Ground []) not-groups or-groups pulls aggregates)]
+(defn query-from-text-parts [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, input-specs: []Query-Input-Spec, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
+  (let [out (query find with inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls get-elses get-somes grounds not-groups or-groups pulls aggregates)]
     (delete out.input-specs)
     (set! out.input-specs (arr.into [dynamic]Query-Input-Spec input-specs))
     out))
@@ -61,7 +61,8 @@
           (arr.push! inputs^ node.text)
           (arr.push! input-specs^ (Query-Input-Spec {kind: .Scalar name: node.text}))
           (return true ""))
-      (edn-var? doc node-index)
+      (or (edn-var? doc node-index)
+          (edn-named-input-symbol? doc node-index))
         (do
           (arr.push! inputs^ node.text)
           (arr.push! input-specs^ (Query-Input-Spec {kind: .Scalar name: node.text}))
@@ -335,7 +336,8 @@
         (set! pattern-node doc.nodes[var-node].next-sibling))
       (when (or (= var-node -1) (not (edn-var? doc var-node)))
         (return false "pull find expects an entity variable"))
-      (when (edn-var? doc pattern-node)
+      (when (or (edn-var? doc pattern-node)
+                (edn-named-input-symbol? doc pattern-node))
         (arr.push! out^
           (Pull-Find {var: doc.nodes[var-node].text
                       source: source
@@ -554,6 +556,151 @@
           (return false "function output must be a variable or vector of variables")))
       (return true ""))))
 
+(defn edn-ground-source-term [doc: EDN-Doc, node-index: int] -> [term: Term, ok: bool, error: string]
+  (when (= node-index -1)
+    (return (term-wildcard) false "ground clauses must have shape [(ground value) binding]"))
+  (if (edn-var? doc node-index)
+    (return (term-var doc.nodes[node-index].text) true "")
+    (let [[value value-ok value-error] (edn-value-from-node doc node-index)]
+      (if value-ok
+        (return (term-value value) true "")
+        (return (term-wildcard) false value-error)))))
+
+(defn edn-ground-relation-output? [doc: EDN-Doc, output: int] -> bool
+  (when (or (= output -1)
+            (not (= doc.nodes[output].kind .Vector))
+            (not (= doc.nodes[output].child-count 2)))
+    (return false))
+  (let [row (edn-child-at doc output 0)
+        marker (edn-child-at doc output 1)]
+    (and (not (= row -1))
+         (= doc.nodes[row].kind .Vector)
+         (edn-symbol-text? doc marker "..."))))
+
+(defn edn-ground-collection-output? [doc: EDN-Doc, output: int] -> bool
+  (when (or (= output -1)
+            (not (= doc.nodes[output].kind .Vector))
+            (not (= doc.nodes[output].child-count 2)))
+    (return false))
+  (let [item (edn-child-at doc output 0)
+        marker (edn-child-at doc output 1)]
+    (and (not (= item -1))
+         (not (= doc.nodes[item].kind .Vector))
+         (edn-symbol-text? doc marker "..."))))
+
+(defn append-edn-ground! [out: ^[dynamic]Ground, doc: EDN-Doc, expr: int, output: int] -> [ok: bool, error: string]
+  (when (not (= doc.nodes[expr].child-count 2))
+    (return false "ground clauses must have shape [(ground value) binding]"))
+  (when (= output -1)
+    (return false "ground clauses must have shape [(ground value) binding]"))
+  (let [value-node doc.nodes[doc.nodes[expr].first-child].next-sibling
+        [source source-ok source-error] (edn-ground-source-term doc value-node)]
+    (when (not source-ok)
+      (return false source-error))
+    (cond
+      (edn-symbol-text? doc output "_")
+        (do
+          (arr.push! out^
+            (Ground {source: source
+                     out: ""
+                     tuple-vars: ([]string [])
+                     binding: (input-binding-none)}))
+          (return true ""))
+      (edn-var? doc output)
+        (do
+          (arr.push! out^
+            (Ground {source: source
+                     out: doc.nodes[output].text
+                     tuple-vars: ([]string [])
+                     binding: (input-binding-none)}))
+          (return true ""))
+      (= doc.nodes[output].kind .Vector)
+        (let [[binding binding-ok binding-error] (edn-input-binding-from-node doc output)]
+          (when (not binding-ok)
+            (return false binding-error))
+          (let [vars (input-binding-vars binding)]
+            (cond
+              (edn-ground-relation-output? doc output)
+                (let [row (edn-child-at doc output 0)]
+                  (arr.push! out^
+                    (Ground {source: source
+                             out: ""
+                             tuple-vars: (slice vars 0)
+                             binding: binding
+                             is-relation: true
+                             width: doc.nodes[row].child-count}))
+                  (return true ""))
+              (edn-ground-collection-output? doc output)
+                (do
+                  (arr.push! out^
+                    (Ground {source: source
+                             out: (if (> (count vars) 0) vars[0] "")
+                             tuple-vars: (slice vars 0)
+                             binding: binding
+                             is-collection: true}))
+                  (return true ""))
+              :else
+                (do
+                  (arr.push! out^
+                    (Ground {source: source
+                             out: ""
+                             tuple-vars: (slice vars 0)
+                             binding: binding
+                             is-tuple: true}))
+                  (return true "")))))
+      :else (return false "ground output must be a variable, _, or binding vector"))))
+
+(defn append-edn-get-else! [out: ^[dynamic]Get-Else, doc: EDN-Doc, expr: int, output: int] -> [ok: bool, error: string]
+  (when (not (= doc.nodes[expr].child-count 5))
+    (return false "get-else clauses must have shape [(get-else $ ?e :attr default) ?out]"))
+  (when (not (edn-var? doc output))
+    (return false "get-else output must be a variable"))
+  (let [db-node doc.nodes[doc.nodes[expr].first-child].next-sibling
+        entity-node doc.nodes[db-node].next-sibling
+        attr-node doc.nodes[entity-node].next-sibling
+        default-node doc.nodes[attr-node].next-sibling
+        [attr attr-ok] (edn-pull-attr-source doc attr-node)
+        [default-value default-ok default-error] (edn-value-from-node doc default-node)]
+    (when (not attr-ok)
+      (return false "get-else attr must be a keyword or string"))
+    (when (not default-ok)
+      (return false default-error))
+    (arr.push! out^
+      (Get-Else {e: (term-from-edn-node doc entity-node false)
+                 a: attr
+                 default-value: default-value
+                 out: doc.nodes[output].text}))
+    (return true "")))
+
+(defn append-edn-get-some! [out: ^[dynamic]Get-Some, doc: EDN-Doc, expr: int, output: int] -> [ok: bool, error: string]
+  (when (< doc.nodes[expr].child-count 4)
+    (return false "get-some clauses must have shape [(get-some $ ?e :attr ...) [?a ?v]]"))
+  (when (or (= output -1)
+            (not (= doc.nodes[output].kind .Vector))
+            (not (= doc.nodes[output].child-count 2)))
+    (return false "get-some output must be [?attr ?value]"))
+  (let [first-out doc.nodes[output].first-child
+        second-out doc.nodes[first-out].next-sibling]
+    (when (or (not (edn-var? doc first-out))
+              (not (edn-var? doc second-out)))
+      (return false "get-some output must be [?attr ?value]"))
+    (let [db-node doc.nodes[doc.nodes[expr].first-child].next-sibling
+          entity-node doc.nodes[db-node].next-sibling
+          attr-node doc.nodes[entity-node].next-sibling
+          attrs (make [dynamic]string) :defer]
+      (while (not (= attr-node -1))
+        (let [[attr attr-ok] (edn-pull-attr-source doc attr-node)]
+          (when (not attr-ok)
+            (return false "get-some attrs must be keywords or strings"))
+          (arr.push! attrs attr))
+        (set! attr-node doc.nodes[attr-node].next-sibling))
+      (arr.push! out^
+        (Get-Some {e: (term-from-edn-node doc entity-node false)
+                   attrs: (slice attrs 0)
+                   out-attr: doc.nodes[first-out].text
+                   out-value: doc.nodes[second-out].text}))
+      (return true ""))))
+
 (defn append-edn-missing-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, expr: int] -> [ok: bool, error: string]
   (when (not (= doc.nodes[expr].child-count 4))
     (return false "missing? clauses must have shape [(missing? $ ?e :attr)]"))
@@ -663,7 +810,7 @@
       (arr.push! out^ (rule-call-from-text-parts doc.nodes[name-node].text source has-source (slice args 0)))
       (return true "")))))
 
-(defn append-edn-where-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
+(defn append-edn-where-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, get-elses: ^[dynamic]Get-Else, get-somes: ^[dynamic]Get-Some, grounds: ^[dynamic]Ground, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
   (if (= doc.nodes[item].kind .List)
     (let [head (edn-list-head-text doc item)]
       (cond
@@ -680,12 +827,15 @@
                 op (edn-list-head-text doc expr)]
             (cond
               (= op "missing?") (append-edn-missing-group! not-groups doc expr)
+              (= op "get-else") (append-edn-get-else! get-elses doc expr output)
+              (= op "get-some") (append-edn-get-some! get-somes doc expr output)
+              (= op "ground") (append-edn-ground! grounds doc expr output)
               (not (= output -1)) (append-edn-function-clause! function-clauses doc expr output)
               :else (append-edn-predicate! predicates doc expr)))
           (append-edn-data-clause! clauses doc item)))
       (return false "query text where clauses must be vectors or lists"))))
 
-(defn append-edn-where-or-rule-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, rule-calls: ^[dynamic]Rule-Call, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
+(defn append-edn-where-or-rule-item! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, get-elses: ^[dynamic]Get-Else, get-somes: ^[dynamic]Get-Some, grounds: ^[dynamic]Ground, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, rule-calls: ^[dynamic]Rule-Call, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
   (if (= doc.nodes[item].kind .List)
     (let [head (edn-list-head-text doc item)]
       (cond
@@ -694,36 +844,57 @@
         (= head "or") (append-edn-or-group! or-groups doc item)
         (= head "or-join") (append-edn-or-join-group! or-groups doc item)
         :else (append-edn-rule-call! rule-calls doc item)))
-    (append-edn-where-item! clauses predicates function-clauses not-groups or-groups doc item)))
+    (append-edn-where-item! clauses predicates function-clauses get-elses get-somes grounds not-groups or-groups doc item)))
 
 (defn append-edn-where-step! [steps: ^[dynamic]Query-Step, kind: Query-Step-Kind, index: int]
   (arr.push! steps^ (Query-Step {kind: kind index: index})))
 
-(defn append-edn-where-or-rule-step! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, rule-calls: ^[dynamic]Rule-Call, steps: ^[dynamic]Query-Step, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
+(defn append-edn-where-or-rule-step! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, get-elses: ^[dynamic]Get-Else, get-somes: ^[dynamic]Get-Some, grounds: ^[dynamic]Ground, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, rule-calls: ^[dynamic]Rule-Call, steps: ^[dynamic]Query-Step, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
+  (when (and (= doc.nodes[item].kind .List)
+             (= (edn-list-head-text doc item) "and"))
+    (let [cursor doc.nodes[doc.nodes[item].first-child].next-sibling]
+      (while (not (= cursor -1))
+        (let [[child-ok child-error] (append-edn-where-or-rule-step! clauses predicates function-clauses get-elses get-somes grounds not-groups or-groups rule-calls steps doc cursor)]
+          (when (not child-ok)
+            (return false child-error)))
+        (set! cursor doc.nodes[cursor].next-sibling))
+      (return true "")))
   (let [clause-index (count clauses^)
         predicate-index (count predicates^)
         function-index (count function-clauses^)
+        get-else-index (count get-elses^)
+        get-some-index (count get-somes^)
+        ground-index (count grounds^)
         rule-call-index (count rule-calls^)
         not-index (count not-groups^)
         or-index (count or-groups^)
-        [item-ok item-error] (append-edn-where-or-rule-item! clauses predicates function-clauses not-groups or-groups rule-calls doc item)]
+        [item-ok item-error] (append-edn-where-or-rule-item! clauses predicates function-clauses get-elses get-somes grounds not-groups or-groups rule-calls doc item)]
     (when (not item-ok)
       (return false item-error))
     (cond
       (> (count clauses^) clause-index) (append-edn-where-step! steps .Clause clause-index)
       (> (count predicates^) predicate-index) (append-edn-where-step! steps .Predicate predicate-index)
       (> (count function-clauses^) function-index) (append-edn-where-step! steps .Function function-index)
+      (> (count get-elses^) get-else-index) (append-edn-where-step! steps .GetElse get-else-index)
+      (> (count get-somes^) get-some-index) (append-edn-where-step! steps .GetSome get-some-index)
+      (> (count grounds^) ground-index) (append-edn-where-step! steps .Ground ground-index)
       (> (count rule-calls^) rule-call-index) (append-edn-where-step! steps .RuleCall rule-call-index)
       (> (count not-groups^) not-index) (append-edn-where-step! steps .Not not-index)
       (> (count or-groups^) or-index) (append-edn-where-step! steps .Or or-index)
       :else (do))
     (return true "")))
 
-(defn rule-from-text-parts [name: string, params: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, steps: []Query-Step] -> Rule
+(defn rule-from-text-parts [name: string, required-param-count: int, params: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, steps: []Query-Step] -> Rule
   (let [step-kinds (make [dynamic]Query-Step-Kind) :defer]
     (for [step steps]
       (arr.push! step-kinds step.kind))
-    (make-rule name params clauses predicates function-clauses ([]Ground []) rule-calls not-groups or-groups (slice step-kinds 0))))
+    (make-rule-with-required name required-param-count params clauses predicates function-clauses grounds rule-calls not-groups or-groups (slice step-kinds 0))))
+
+(defn append-edn-rule-param! [params: ^[dynamic]string, doc: EDN-Doc, node: int] -> [ok: bool, error: string]
+  (when (not (edn-var? doc node))
+    (return false "rule params must be variables"))
+  (arr.push! params^ doc.nodes[node].text)
+  (return true ""))
 
 (defn append-edn-rule! [out: ^[dynamic]Rule, doc: EDN-Doc, rule-node: int] -> [ok: bool, error: string]
   (when (or (= rule-node -1) (not (= doc.nodes[rule-node].kind .Vector)))
@@ -735,26 +906,48 @@
       (when (or (= name-node -1) (not (= doc.nodes[name-node].kind .Symbol)))
         (return false "rule head must start with a symbol"))
         (let [params (make [dynamic]string) :defer
+            required-param-count 0
             clauses (make [dynamic]Clause) :defer
             predicates (make [dynamic]Predicate) :defer
             function-clauses (make [dynamic]Function-Clause) :defer
+            get-elses (make [dynamic]Get-Else) :defer
+            get-somes (make [dynamic]Get-Some) :defer
+            grounds (make [dynamic]Ground) :defer
             not-groups (make [dynamic]Not-Group) :defer
             or-groups (make [dynamic]Or-Group) :defer
             rule-calls (make [dynamic]Rule-Call) :defer
             steps (make [dynamic]Query-Step) :defer
             param doc.nodes[name-node].next-sibling
             body doc.nodes[head].next-sibling]
-        (while (not (= param -1))
-          (when (not (edn-var? doc param))
-            (return false "rule params must be variables"))
-          (arr.push! params doc.nodes[param].text)
+        (when (= param -1)
+          (return false "Cannot parse rule-vars"))
+        (when (= doc.nodes[param].kind .Vector)
+          (let [required doc.nodes[param].first-child]
+            (when (= required -1)
+              (return false "Cannot parse rule-vars"))
+            (while (not (= required -1))
+              (let [[param-ok param-error] (append-edn-rule-param! (addr params) doc required)]
+                (when (not param-ok)
+                  (return false param-error)))
+              (set! required-param-count (+ required-param-count 1))
+              (set! required doc.nodes[required].next-sibling)))
           (set! param doc.nodes[param].next-sibling))
+        (while (not (= param -1))
+          (let [[param-ok param-error] (append-edn-rule-param! (addr params) doc param)]
+            (when (not param-ok)
+              (return false param-error)))
+          (set! param doc.nodes[param].next-sibling))
+        (when (= (count params) 0)
+          (return false "Cannot parse rule-vars"))
         (while (not (= body -1))
-          (let [[body-ok body-error] (append-edn-where-or-rule-step! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr or-groups) (addr rule-calls) (addr steps) doc body)]
+          (let [[body-ok body-error] (append-edn-where-or-rule-step! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr steps) doc body)]
             (when (not body-ok)
               (return false body-error)))
+          (when (or (> (count get-elses) 0)
+                    (> (count get-somes) 0))
+            (return false "rules text currently does not support get-else or get-some"))
           (set! body doc.nodes[body].next-sibling))
-        (arr.push! out^ (rule-from-text-parts doc.nodes[name-node].text (slice params 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice steps 0)))
+        (arr.push! out^ (rule-from-text-parts doc.nodes[name-node].text required-param-count (slice params 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice grounds 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice steps 0)))
         (return true "")))))
 
 (defn parse-rules-edn! [out: ^[dynamic]Rule, doc: EDN-Doc] -> [ok: bool, error: string]
@@ -795,12 +988,16 @@
         clauses (make [dynamic]Clause) :defer
         predicates (make [dynamic]Predicate) :defer
         function-clauses (make [dynamic]Function-Clause) :defer
+        get-elses (make [dynamic]Get-Else) :defer
+        get-somes (make [dynamic]Get-Some) :defer
+        grounds (make [dynamic]Ground) :defer
         rule-calls (make [dynamic]Rule-Call) :defer
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer
         where-steps (make [dynamic]Query-Step) :defer
         pulls (make [dynamic]Pull-Find) :defer
         aggregates (make [dynamic]Aggregate-Find) :defer
+        return-map-allowed true
         cursor (edn-child-at doc doc.root 1)]
     (while (and (not (= cursor -1))
                 (not (edn-keyword-text? doc cursor ":in"))
@@ -809,6 +1006,9 @@
                 (not (edn-keyword-text? doc cursor ":keys"))
                 (not (edn-keyword-text? doc cursor ":strs"))
                 (not (edn-keyword-text? doc cursor ":syms")))
+      (when (or (edn-symbol-text? doc cursor ".")
+                (edn-find-vector-collection? doc cursor))
+        (set! return-map-allowed false))
       (if (= doc.nodes[cursor].kind .Vector)
         (let [[find-ok find-error] (append-edn-find-vector! (addr find) (addr pulls) (addr aggregates) doc cursor)]
           (when (not find-ok)
@@ -820,11 +1020,19 @@
     (when (or (edn-keyword-text? doc cursor ":keys")
               (edn-keyword-text? doc cursor ":strs")
               (edn-keyword-text? doc cursor ":syms"))
+      (when (> (edn-vector-return-marker-count doc) 1)
+        (return false "only one of :keys/:strs/:syms may be present"))
+      (when (not return-map-allowed)
+        (return false "return-map markers do not work with collection or scalar :find"))
+      (when (not (= (edn-vector-return-entry-count doc cursor)
+                    (+ (count find) (count pulls) (count aggregates))))
+        (return false "return-map marker count must match :find count"))
       (set! cursor doc.nodes[cursor].next-sibling)
       (while (and (not (= cursor -1))
                   (not (edn-keyword-text? doc cursor ":in"))
                   (not (edn-keyword-text? doc cursor ":with"))
-                  (not (edn-keyword-text? doc cursor ":where")))
+                  (not (edn-keyword-text? doc cursor ":where"))
+                  (not (edn-return-map-marker? doc cursor)))
         (set! cursor doc.nodes[cursor].next-sibling)
         (continue)))
     (when (edn-keyword-text? doc cursor ":with")
@@ -846,11 +1054,11 @@
     (when (edn-keyword-text? doc cursor ":where")
       (set! cursor doc.nodes[cursor].next-sibling))
     (while (not (= cursor -1))
-      (let [[item-ok item-error] (append-edn-where-or-rule-step! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc cursor)]
+      (let [[item-ok item-error] (append-edn-where-or-rule-step! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc cursor)]
         (when (not item-ok)
           (return false item-error)))
       (set! cursor doc.nodes[cursor].next-sibling))
-    (let [query-value (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))]
+    (let [query-value (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))]
       (set! out^ query-value)
       (return true ""))))
 
@@ -866,6 +1074,76 @@
           (return value-node))
         (set! entry doc.nodes[value-node].next-sibling))))
   -1)
+
+(defn edn-return-map-marker? [doc: EDN-Doc, node-index: int] -> bool
+  (or (edn-keyword-text? doc node-index ":keys")
+      (edn-keyword-text? doc node-index ":strs")
+      (edn-keyword-text? doc node-index ":syms")))
+
+(defn edn-find-vector-collection? [doc: EDN-Doc, vector-node: int] -> bool
+  (when (or (= vector-node -1)
+            (not (= doc.nodes[vector-node].kind .Vector))
+            (not (= doc.nodes[vector-node].child-count 2)))
+    (return false))
+  (let [first-node doc.nodes[vector-node].first-child
+        second-node (if (= first-node -1) -1 doc.nodes[first-node].next-sibling)]
+    (edn-symbol-text? doc second-node "...")))
+
+(defn edn-find-vector-scalar? [doc: EDN-Doc, vector-node: int] -> bool
+  (when (or (= vector-node -1)
+            (not (= doc.nodes[vector-node].kind .Vector))
+            (not (= doc.nodes[vector-node].child-count 2)))
+    (return false))
+  (let [first-node doc.nodes[vector-node].first-child
+        second-node (if (= first-node -1) -1 doc.nodes[first-node].next-sibling)]
+    (edn-symbol-text? doc second-node ".")))
+
+(defn edn-map-return-marker-count [doc: EDN-Doc] -> int
+  (let [out 0]
+    (when (not (= (edn-map-value-node doc doc.root ":keys") -1))
+      (set! out (+ out 1)))
+    (when (not (= (edn-map-value-node doc doc.root ":strs") -1))
+      (set! out (+ out 1)))
+    (when (not (= (edn-map-value-node doc doc.root ":syms") -1))
+      (set! out (+ out 1)))
+    out))
+
+(defn edn-map-return-node [doc: EDN-Doc] -> int
+  (let [keys-node (edn-map-value-node doc doc.root ":keys")]
+    (when (not (= keys-node -1))
+      (return keys-node)))
+  (let [strs-node (edn-map-value-node doc doc.root ":strs")]
+    (when (not (= strs-node -1))
+      (return strs-node)))
+  (edn-map-value-node doc doc.root ":syms"))
+
+(defn edn-return-entry-count [doc: EDN-Doc, node-index: int] -> int
+  (when (= node-index -1)
+    (return 0))
+  (if (= doc.nodes[node-index].kind .Vector)
+    doc.nodes[node-index].child-count
+    1))
+
+(defn edn-vector-return-marker-count [doc: EDN-Doc] -> int
+  (let [out 0
+        cursor doc.nodes[doc.root].first-child]
+    (while (not (= cursor -1))
+      (when (edn-return-map-marker? doc cursor)
+        (set! out (+ out 1)))
+      (set! cursor doc.nodes[cursor].next-sibling))
+    out))
+
+(defn edn-vector-return-entry-count [doc: EDN-Doc, marker-node: int] -> int
+  (let [out 0
+        cursor (if (= marker-node -1) -1 doc.nodes[marker-node].next-sibling)]
+    (while (and (not (= cursor -1))
+                (not (edn-keyword-text? doc cursor ":in"))
+                (not (edn-keyword-text? doc cursor ":with"))
+                (not (edn-keyword-text? doc cursor ":where"))
+                (not (edn-return-map-marker? doc cursor)))
+      (set! out (+ out 1))
+      (set! cursor doc.nodes[cursor].next-sibling))
+    out))
 
 (defn append-edn-find-section! [find: ^[dynamic]string, pulls: ^[dynamic]Pull-Find, aggregates: ^[dynamic]Aggregate-Find, doc: EDN-Doc, section: int] -> [ok: bool, error: string]
   (when (= section -1)
@@ -900,14 +1178,14 @@
       (set! cursor doc.nodes[cursor].next-sibling)))
   (return true ""))
 
-(defn append-edn-where-section! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, rule-calls: ^[dynamic]Rule-Call, steps: ^[dynamic]Query-Step, doc: EDN-Doc, section: int] -> [ok: bool, error: string]
+(defn append-edn-where-section! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, get-elses: ^[dynamic]Get-Else, get-somes: ^[dynamic]Get-Some, grounds: ^[dynamic]Ground, not-groups: ^[dynamic]Not-Group, or-groups: ^[dynamic]Or-Group, rule-calls: ^[dynamic]Rule-Call, steps: ^[dynamic]Query-Step, doc: EDN-Doc, section: int] -> [ok: bool, error: string]
   (when (= section -1)
     (return true ""))
   (when (not (= doc.nodes[section].kind .Vector))
     (return false "query map :where must be a vector"))
   (let [cursor doc.nodes[section].first-child]
     (while (not (= cursor -1))
-      (let [[item-ok item-error] (append-edn-where-or-rule-step! clauses predicates function-clauses not-groups or-groups rule-calls steps doc cursor)]
+      (let [[item-ok item-error] (append-edn-where-or-rule-step! clauses predicates function-clauses get-elses get-somes grounds not-groups or-groups rule-calls steps doc cursor)]
         (when (not item-ok)
           (return false item-error)))
       (set! cursor doc.nodes[cursor].next-sibling)))
@@ -927,6 +1205,9 @@
         clauses (make [dynamic]Clause) :defer
         predicates (make [dynamic]Predicate) :defer
         function-clauses (make [dynamic]Function-Clause) :defer
+        get-elses (make [dynamic]Get-Else) :defer
+        get-somes (make [dynamic]Get-Some) :defer
+        grounds (make [dynamic]Ground) :defer
         rule-calls (make [dynamic]Rule-Call) :defer
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer
@@ -940,16 +1221,25 @@
         [find-ok find-error] (append-edn-find-section! (addr find) (addr pulls) (addr aggregates) doc find-node)]
     (when (not find-ok)
       (return false find-error))
+    (when (> (edn-map-return-marker-count doc) 1)
+      (return false "only one of :keys/:strs/:syms may be present"))
+    (when (> (edn-map-return-marker-count doc) 0)
+      (when (or (edn-find-vector-collection? doc find-node)
+                (edn-find-vector-scalar? doc find-node))
+        (return false "return-map markers do not work with collection or scalar :find"))
+      (when (not (= (edn-return-entry-count doc (edn-map-return-node doc))
+                    (+ (count find) (count pulls) (count aggregates))))
+        (return false "return-map marker count must match :find count")))
     (let [[with-ok with-error] (append-edn-with-section! (addr with) doc with-node)]
       (when (not with-ok)
         (return false with-error)))
     (let [[in-ok in-error] (append-edn-in-section! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) doc in-node db-sources)]
       (when (not in-ok)
         (return false in-error)))
-    (let [[where-ok where-error] (append-edn-where-section! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc where-node)]
+    (let [[where-ok where-error] (append-edn-where-section! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc where-node)]
       (when (not where-ok)
         (return false where-error)))
-    (let [query-value (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))]
+    (let [query-value (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))]
       (set! out^ query-value)
       (return true ""))))
 

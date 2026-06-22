@@ -176,7 +176,7 @@
 (defn rule-body-steps [kinds: []Query-Step-Kind] -> [dynamic]Query-Step
   (steps-from-kinds kinds))
 
-(defn make-rule [name: string, params: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, body-step-kinds: []Query-Step-Kind] -> Rule
+(defn make-rule-with-required [name: string, required-param-count: int, params: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, body-step-kinds: []Query-Step-Kind] -> Rule
   (let [owned-params (arr.into [dynamic]string params)
         owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
@@ -187,6 +187,7 @@
         owned-or-groups (arr.into [dynamic]Or-Group or-groups)
         owned-steps (steps-from-kinds body-step-kinds)]
     (Rule {name: name
+           required-param-count: required-param-count
            params: owned-params
            clauses: owned-clauses
            predicates: owned-predicates
@@ -196,6 +197,9 @@
            not-groups: owned-not-groups
            or-groups: owned-or-groups
            body-steps: owned-steps})))
+
+(defn make-rule [name: string, params: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, or-groups: []Or-Group, body-step-kinds: []Query-Step-Kind] -> Rule
+  (make-rule-with-required name 0 params clauses predicates function-clauses grounds rule-calls not-groups or-groups body-step-kinds))
 
 (defn empty-query [] -> Query
   (query ([]string []) ([]string []) ([]string []) ([]string []) ([]Tuple-Input []) ([]Relation-Input []) ([]Clause []) ([]Predicate []) ([]Function-Clause []) ([]Rule []) ([]Rule-Call []) ([]Get-Else []) ([]Get-Some []) ([]Ground []) ([]Not-Group []) ([]Or-Group []) ([]Pull-Find []) ([]Aggregate-Find [])))
@@ -387,6 +391,14 @@
        (= doc.nodes[node-index].kind .Symbol)
        (strings.has_prefix doc.nodes[node-index].text "?")))
 
+(defn edn-named-input-symbol? [doc: EDN-Doc, node-index: int] -> bool
+  (and (not (= node-index -1))
+       (= doc.nodes[node-index].kind .Symbol)
+       (not (strings.has_prefix doc.nodes[node-index].text "$"))
+       (not (= doc.nodes[node-index].text "%"))
+       (not (= doc.nodes[node-index].text "."))
+       (not (= doc.nodes[node-index].text "..."))))
+
 (defn term-from-edn-node [doc: EDN-Doc, node-index: int, attr-position: bool] -> Term
   (let [node doc.nodes[node-index]]
     (cond
@@ -433,9 +445,15 @@
   (let [out (make [dynamic]string)
         child doc.nodes[vector-node].first-child]
     (while (not (= child -1))
-      (if (edn-var? doc child)
-        (arr.push! out doc.nodes[child].text)
-        (arr.push! out ""))
+      (cond
+        (edn-var? doc child)
+          (arr.push! out doc.nodes[child].text)
+        (= doc.nodes[child].kind .Vector)
+          (let [nested (edn-vars-from-vector doc child) :defer]
+            (for [name nested]
+              (arr.push! out name)))
+        :else
+          (arr.push! out ""))
       (set! child doc.nodes[child].next-sibling))
     out))
 
