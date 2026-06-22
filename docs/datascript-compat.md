@@ -44,7 +44,7 @@ Status key:
 | `serialize` | partial | `init-db` from datoms covered; text/EDN/JSON serialization format later |
 | `issues` | partial | Need namespace-by-namespace triage |
 | `listen`, `storage`, `datafy` | later | API/package features after semantic core |
-| `tuples` | partial | Tuple attr schema, derived multi-tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, query lookup refs over tuple attrs, component-based tuple upsert, tuple unique conflict and multi-component update shapes, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation including invalid `:db/tupleAttrs` shapes, nested tuple dependency rejection, and cardinality-many tuple/component rejection subsets started; remaining upsert conflict matrix missing |
+| `tuples` | partial | Tuple attr schema, derived multi-tuple transaction maintenance, direct tuple attr rejection, unique tuple lookup refs including ref-component nested lookup refs, query lookup refs over tuple attrs, component-based tuple upsert, direct tuple-value tempid upsert, tuple unique conflict and multi-component update shapes, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation including invalid `:db/tupleAttrs` shapes, nested tuple dependency rejection, and cardinality-many tuple/component rejection subsets started; remaining exact errors and edge conflict matrix missing |
 
 ## Next Porting Order
 

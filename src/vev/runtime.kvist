@@ -1078,39 +1078,60 @@
       (return false))
     true))
 
+(defn resolve-ref-component-value [db: DB, value: Value] -> [resolved: Value, ok: bool, error: string]
+  (cond
+    (= value.kind .Entity) (return value true "")
+    (= value.kind .Int) (return (value-entity (u64 value.int_value)) true "")
+    (= value.kind .Keyword)
+      (let [[entity ident-ok] (schema-entity-for-attr db value.text)]
+        (if ident-ok
+          (return (value-entity entity) true "")
+          (return value false "ident not found")))
+    (and (= value.kind .Vector)
+         (= (count value.items) 2)
+         (= value.items[0].kind .Keyword))
+      (let [[entity entity-ok] (resolve-lookup-ref db value.items[0].text value.items[1])]
+        (if entity-ok
+          (return (value-entity entity) true "")
+          (return value false "lookup ref not found")))
+    :else (return value true "")))
+
+(defn resolve-tuple-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
+  (when (not (= value.kind .Vector))
+    (return value true ""))
+  (let [tuple-attrs (schema-tuple-attrs db attr)]
+    (defer (delete tuple-attrs))
+    (when (= (count tuple-attrs) 0)
+      (return value true ""))
+    (when (not (= (count tuple-attrs) (count value.items)))
+      (return value true ""))
+    (let [items (make [dynamic]Value 0 (count value.items))]
+      (defer (delete items))
+      (for [item index value.items]
+        (let [component-attr tuple-attrs[index]]
+          (if (schema-ref? db component-attr)
+            (let [[resolved resolved-ok resolved-error] (resolve-ref-component-value db item)]
+              (when (not resolved-ok)
+                (return value false resolved-error))
+              (arr.push! items resolved))
+            (arr.push! items item))))
+      (return (value-vector (slice items 0)) true ""))))
+
 (defn resolve-lookup-ref [db: DB, attr: string, value: Value] -> [e: u64, ok: bool]
   (when (not (schema-unique? db attr))
     (return 0 false))
   (let [lookup-value value
-        tuple-attrs (schema-tuple-attrs db attr)]
-    (defer (delete tuple-attrs))
-    (when (and (= value.kind .Vector)
-               (= (count tuple-attrs) (count value.items)))
-      (let [items (make [dynamic]Value 0 (count value.items))]
-        (defer (delete items))
-        (for [item index value.items]
-          (let [component-attr tuple-attrs[index]]
-            (if (schema-ref? db component-attr)
-              (cond
-                (= item.kind .Entity) (arr.push! items item)
-                (= item.kind .Int) (arr.push! items (value-entity (u64 item.int_value)))
-                (and (= item.kind .Vector)
-                     (= (count item.items) 2)
-                     (= item.items[0].kind .Keyword))
-                  (let [[entity entity-ok] (resolve-lookup-ref db item.items[0].text item.items[1])]
-                    (when (not entity-ok)
-                      (return 0 false))
-                    (arr.push! items (value-entity entity)))
-                :else (arr.push! items item))
-              (arr.push! items item))))
-        (set! lookup-value (value-vector (slice items 0)))))
-  (let [indexes (slice db.avet 0)
-        low (lower-bound-index db indexes "avet" 0 attr lookup-value)
-        high (upper-bound-index db indexes "avet" 0 attr lookup-value)]
-    (for [datom-index (slice indexes low high)]
-      (when (datom-current-at? db datom-index)
-        (return db.datoms[datom-index].e true))))
-  (return 0 false)))
+        [resolved resolved-ok _] (resolve-tuple-value db attr value)]
+    (when (not resolved-ok)
+      (return 0 false))
+    (set! lookup-value resolved)
+    (let [indexes (slice db.avet 0)
+          low (lower-bound-index db indexes "avet" 0 attr lookup-value)
+          high (upper-bound-index db indexes "avet" 0 attr lookup-value)]
+      (for [datom-index (slice indexes low high)]
+        (when (datom-current-at? db datom-index)
+          (return db.datoms[datom-index].e true)))))
+  (return 0 false))
 
 (defn current-value-exists? [db: DB, entity: u64, attr: string, value: Value] -> bool
   (let [indexes (slice db.eavt 0)
@@ -1140,14 +1161,8 @@
 (defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
   (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
     (when (and has-type (= schema-type ":db.type/ref"))
-      (when (= value.kind .Int)
-        (return (value-entity (u64 value.int_value)) true ""))
-      (when (= value.kind .Keyword)
-        (let [[entity ident-ok] (schema-entity-for-attr db value.text)]
-          (if ident-ok
-            (return (value-entity entity) true "")
-            (return value false "ident not found"))))))
-  (return value true ""))
+      (return (resolve-ref-component-value db value))))
+  (resolve-tuple-value db attr value))
 
 (defn resolve-cas-expected [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
   (when data.has_expected_lookup_ref
