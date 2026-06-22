@@ -2832,7 +2832,66 @@
       (return true)))
   false)
 
-(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+(defn bindings-after-rule-step-depth [db: DB, rules: []Rule, rule: Rule, bindings: []Binding, step: Query-Step, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (case step.kind
+    .Clause
+      (let [out (make [dynamic]Binding)
+            clause (rule-clause-with-source rule.clauses[step.index] source has-source)]
+        (for [binding bindings]
+          (append-bindings-after-clause! (addr out) db clause binding))
+        out)
+    .RuleCall
+      (let [out (make [dynamic]Binding)
+            call rule.rule-calls[step.index]]
+        (for [binding bindings]
+          (let [next-source (if call.has-source call.source source)
+                next-has-source (or call.has-source has-source)
+                rule-bindings (bindings-after-rule-call-depth db rules call binding (- depth 1) next-source next-has-source)]
+            (for [rule-binding rule-bindings]
+              (arr.push! out rule-binding))
+            (delete rule-bindings)))
+        out)
+    .Ground
+      (apply-ground bindings rule.grounds[step.index])
+    .Function
+      (bindings-after-function bindings rule.function-clauses[step.index])
+    .Predicate
+      (bindings-after-predicate bindings rule.predicates[step.index])
+    .Or
+      (let [out (make [dynamic]Binding)
+            group (if has-source (relation-db-or-group rule.or-groups[step.index] source) rule.or-groups[step.index])]
+        (defer (when has-source (delete group.branches)))
+        (for [binding bindings]
+          (for [branch group.branches]
+            (let [branch-bindings (bindings-after-or-branch-with-sources db ([]DB-Source []) group branch binding)]
+              (for [branch-binding branch-bindings]
+                (arr.push! out branch-binding))
+              (delete branch-bindings))))
+        out)
+    :else
+      (let [out (make [dynamic]Binding)
+            group (if has-source (relation-db-not-group rule.not-groups[step.index] source) rule.not-groups[step.index])]
+        (defer (when has-source
+          (delete group.clauses)
+          (delete group.not-groups)
+          (delete group.join-vars)))
+        (for [binding bindings]
+          (when (not (binding-matches-not-group-with-sources? db ([]DB-Source []) group binding))
+            (arr.push! out binding)))
+        out)))
+
+(defn bindings-after-rule-body-ordered-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (let [bindings (make [dynamic]Binding)]
+    (arr.push! bindings initial)
+    (for [step rule.body-steps]
+      (let [next (bindings-after-rule-step-depth db rules rule (slice bindings 0) step depth source has-source)]
+        (delete bindings)
+        (set! bindings next)
+        (when (= (count bindings) 0)
+          (return bindings))))
+    bindings))
+
+(defn bindings-after-rule-body-grouped-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
   (let [clauses (rule-clauses-with-source rule.clauses source has-source)
         group (not-group-simple (slice clauses 0))
         bindings (bindings-after-clause-group db group initial)]
@@ -2861,6 +2920,11 @@
         (delete bindings)
         (set! bindings next)))
     bindings))
+
+(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (if (> (count rule.body-steps) 0)
+    (bindings-after-rule-body-ordered-depth db rules rule initial depth source has-source)
+    (bindings-after-rule-body-grouped-depth db rules rule initial depth source has-source)))
 
 (defn bind-rule-args [outer: Binding, call: Rule-Call, rule: Rule] -> [binding: Binding, ok: bool]
   (let [out (Binding {})]
@@ -3918,19 +3982,31 @@
 
 (defn relation-db-rule [rule: Rule, source: string] -> Rule
   (let [clauses (rule-clauses-with-source (slice rule.clauses 0) source true) :defer
-        params (arr.into [dynamic]string (slice rule.params 0))
-        owned-clauses (arr.into [dynamic]Clause (slice clauses 0))
-        predicates (arr.into [dynamic]Predicate (slice rule.predicates 0))
-        function-clauses (arr.into [dynamic]Function-Clause (slice rule.function-clauses 0))
-        grounds (arr.into [dynamic]Ground (slice rule.grounds 0))
-        rule-calls (arr.into [dynamic]Rule-Call (slice rule.rule-calls 0))]
-    (Rule {name: rule.name
-           params: params
-           clauses: owned-clauses
-           predicates: predicates
-           function-clauses: function-clauses
-           grounds: grounds
-           rule-calls: rule-calls})))
+        not-groups (make [dynamic]Not-Group) :defer
+        or-groups (make [dynamic]Or-Group) :defer]
+    (for [group rule.not-groups]
+      (arr.push! not-groups (relation-db-not-group group source)))
+    (for [group rule.or-groups]
+      (arr.push! or-groups (relation-db-or-group group source)))
+    (let [params (arr.into [dynamic]string (slice rule.params 0))
+          owned-clauses (arr.into [dynamic]Clause (slice clauses 0))
+          predicates (arr.into [dynamic]Predicate (slice rule.predicates 0))
+          function-clauses (arr.into [dynamic]Function-Clause (slice rule.function-clauses 0))
+          grounds (arr.into [dynamic]Ground (slice rule.grounds 0))
+          rule-calls (arr.into [dynamic]Rule-Call (slice rule.rule-calls 0))
+          owned-not-groups (arr.into [dynamic]Not-Group (slice not-groups 0))
+          owned-or-groups (arr.into [dynamic]Or-Group (slice or-groups 0))
+          body-steps (arr.into [dynamic]Query-Step (slice rule.body-steps 0))]
+      (Rule {name: rule.name
+             params: params
+             clauses: owned-clauses
+             predicates: predicates
+             function-clauses: function-clauses
+             grounds: grounds
+             rule-calls: rule-calls
+             not-groups: owned-not-groups
+             or-groups: owned-or-groups
+             body-steps: body-steps}))))
 
 (defn relation-db-query [query-value: Query, source: string] -> Query
   (let [inputs (arr.into [dynamic]string (slice query-value.inputs 0)) :defer
