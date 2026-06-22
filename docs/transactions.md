@@ -141,11 +141,11 @@ The transaction result should expose a shape close to:
 
 - `ok`
 - `error`
-- `db_before`
-- `db_after`
-- `tx_data`
+- `db-before`
+- `db-after`
+- `tx-data`
 - `tempids`
-- `tx_meta`
+- `tx-meta`
 
 This gives callers:
 
@@ -164,14 +164,14 @@ Missing lookup refs fail the report with `ok=false`.
 
 The reserved tempids `:db/current-tx`, `"datomic.tx"`, and `"datascript.tx"`
 name the current transaction entity. Facts targeting that entity are written
-as datoms and are also mirrored into `tx_meta` for convenient transaction
+as datoms and are also mirrored into `tx-meta` for convenient transaction
 report inspection.
 
 In the embedded single-process case, this is usually enough:
 
 1. transact
 2. receive `Tx_Report`
-3. inspect `tx_data` and `tx_meta`
+3. inspect `tx-data` and `tx-meta`
 4. perform application work such as SSE push, cache updates, or projection refresh
 
 That keeps reaction logic in application code rather than introducing a
