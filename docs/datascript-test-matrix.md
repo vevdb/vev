@@ -27,7 +27,7 @@ These are the main in-memory parity target before durable storage.
 | `query_rules.cljc` | 3 | partial | source args, recursion, and repeated calls covered; validation and semi-naive performance remain |
 | `query_aggregates.cljc` | 1 | partial | remaining built-ins and exact edge cases; custom aggregates later |
 | `transact.cljc` | 19 | partial | native tx functions and tempids-outside-add validation covered; ident-stored tx functions and exact errors remain |
-| `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, and main conflict matrix covered; exact messages remain |
+| `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface covered; exact indexed-attribute errors remain |
 | `tuples.cljc` | 11 | partial | remaining schema validation and tuple upsert/conflict matrix |
@@ -51,7 +51,7 @@ now exist, but full parser parity still trails the native Kvist literal surface.
 | `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls and rule definitions covered; validation remains |
 | `parser_where.cljc` | 6 | partial | data pattern, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, and ordinary rule clauses covered; exact validation remains |
-| `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, nested maps, and flat `:default`/`:as`/`:limit` option vectors; nested option forms remain |
+| `pull_parser.cljc` | 1 | partial | query text pull finds cover attrs, wildcard, nested maps, flat and nested `:default`/`:as`/`:limit` option forms; validation and xform remain |
 | transaction EDN text | n/a | partial | `transact-text` covers `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, tempids, generated map ids, and nested maps through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
