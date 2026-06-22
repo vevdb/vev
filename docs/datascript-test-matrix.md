@@ -29,7 +29,7 @@ These are the main in-memory parity target before durable storage.
 | `transact.cljc` | 19 | partial | native tx functions, registry-backed ident tx functions, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, and main conflict matrix covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation covered; reader/macro bad forms and exact errors remain |
-| `index.cljc` | 5 | partial | main index surface covered; exact indexed-attribute errors remain |
+| `index.cljc` | 5 | partial | main index surface and indexed-attribute errors covered; exact lazy sequence/API rendering details remain |
 | `tuples.cljc` | 11 | partial | direct/component tuple upsert and lookup-ref tuple values covered; remaining exact errors and edge conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
