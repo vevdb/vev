@@ -36,14 +36,14 @@ The comparison script accepts `KVIST_ROOT`, `KVIST_BIN`,
 Current sample output on June 23, 2026:
 
 ```text
-engine=vev workload=chain-root-text n=3 ok=true rows=2 min_us=23 median_us=25 p90_us=26 max_us=27 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
-engine=vev workload=chain-root-prepared n=3 ok=true rows=2 min_us=8 median_us=10 p90_us=11 max_us=12 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
-engine=vev workload=chain-root-text n=10 ok=true rows=9 min_us=45 median_us=48 p90_us=50 max_us=51 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
-engine=vev workload=chain-root-prepared n=10 ok=true rows=9 min_us=29 median_us=32 p90_us=33 max_us=35 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
-engine=vev workload=chain-root-text n=30 ok=true rows=29 min_us=111 median_us=115 p90_us=119 max_us=122 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
-engine=vev workload=chain-root-prepared n=30 ok=true rows=29 min_us=99 median_us=103 p90_us=114 max_us=127 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
-engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=396 median_us=400 p90_us=419 max_us=423 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
-engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=389 median_us=395 p90_us=405 max_us=438 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-root-text n=3 ok=true rows=2 min_us=23 median_us=24 p90_us=25 max_us=26 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
+engine=vev workload=chain-root-prepared n=3 ok=true rows=2 min_us=8 median_us=9 p90_us=9 max_us=10 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
+engine=vev workload=chain-root-text n=10 ok=true rows=9 min_us=39 median_us=41 p90_us=43 max_us=43 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
+engine=vev workload=chain-root-prepared n=10 ok=true rows=9 min_us=24 median_us=26 p90_us=28 max_us=29 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
+engine=vev workload=chain-root-text n=30 ok=true rows=29 min_us=91 median_us=94 p90_us=96 max_us=109 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
+engine=vev workload=chain-root-prepared n=30 ok=true rows=29 min_us=75 median_us=77 p90_us=80 max_us=91 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
+engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=349 median_us=354 p90_us=367 max_us=378 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=332 median_us=341 p90_us=350 max_us=358 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
 engine=vev workload=chain-leaf-text n=10 ok=true rows=9 min_us=64 median_us=65 p90_us=67 max_us=68 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
 engine=vev workload=chain-leaf-prepared n=10 ok=true rows=9 min_us=47 median_us=49 p90_us=54 max_us=55 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
 engine=vev workload=chain-leaf-text n=30 ok=true rows=29 min_us=173 median_us=176 p90_us=182 max_us=189 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
@@ -54,12 +54,12 @@ engine=vev workload=chain-all-text n=10 ok=true rows=45 min_us=142 median_us=146
 engine=vev workload=chain-all-prepared n=10 ok=true rows=45 min_us=127 median_us=132 p90_us=139 max_us=150 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
 engine=vev workload=chain-all-text n=30 ok=true rows=435 min_us=2488 median_us=2599 p90_us=2696 max_us=2737 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
 engine=vev workload=chain-all-prepared n=30 ok=true rows=435 min_us=2511 median_us=2661 p90_us=2796 max_us=2812 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
-engine=vev workload=tree-root-text n=4 ok=true rows=3 min_us=26 median_us=28 p90_us=32 max_us=35 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
-engine=vev workload=tree-root-prepared n=4 ok=true rows=3 min_us=11 median_us=12 p90_us=13 max_us=15 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
-engine=vev workload=tree-root-text n=13 ok=true rows=12 min_us=54 median_us=56 p90_us=61 max_us=65 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
-engine=vev workload=tree-root-prepared n=13 ok=true rows=12 min_us=38 median_us=40 p90_us=43 max_us=45 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
-engine=vev workload=tree-root-text n=40 ok=true rows=39 min_us=139 median_us=142 p90_us=146 max_us=154 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
-engine=vev workload=tree-root-prepared n=40 ok=true rows=39 min_us=121 median_us=126 p90_us=133 max_us=140 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
+engine=vev workload=tree-root-text n=4 ok=true rows=3 min_us=25 median_us=27 p90_us=31 max_us=34 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
+engine=vev workload=tree-root-prepared n=4 ok=true rows=3 min_us=9 median_us=11 p90_us=12 max_us=15 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
+engine=vev workload=tree-root-text n=13 ok=true rows=12 min_us=45 median_us=49 p90_us=53 max_us=56 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
+engine=vev workload=tree-root-prepared n=13 ok=true rows=12 min_us=30 median_us=31 p90_us=34 max_us=46 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
+engine=vev workload=tree-root-text n=40 ok=true rows=39 min_us=118 median_us=123 p90_us=127 max_us=137 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
+engine=vev workload=tree-root-prepared n=40 ok=true rows=39 min_us=99 median_us=104 p90_us=112 max_us=122 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
 engine=vev workload=bad-order-join-text n=1000 ok=true rows=1 min_us=20 median_us=21 p90_us=22 max_us=23 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
 engine=vev workload=bad-order-join-prepared n=1000 ok=true rows=1 min_us=11 median_us=12 p90_us=13 max_us=14 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
 
@@ -95,24 +95,24 @@ measurements.
 
 ## DataScript Comparison
 
-Speedups below use median timings from the sample output above. They are
-DataScript median divided by Vev median, so larger is better for Vev.
+Speedups below use median timings from the latest `compare_query_rules.sh` run.
+They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 18.0x | 46.8x |
-| `chain-root n=10` | 19.3x | 29.2x |
-| `chain-root n=30` | 33.1x | 38.5x |
-| `chain-root n=100` | 120.4x | 126.8x |
-| `chain-leaf n=10` | 11.1x | 14.5x |
-| `chain-leaf n=30` | 33.1x | 36.6x |
-| `chain-leaf n=100` | 177.9x | 178.4x |
-| `chain-all n=10` | 4.0x | 4.5x |
-| `chain-all n=30` | 2.0x | 2.0x |
-| `tree-root n=4` | 2.8x | 6.8x |
-| `tree-root n=13` | 2.3x | 3.2x |
-| `tree-root n=40` | 1.5x | 1.6x |
-| `bad-order-join n=1000` | 7.8x | 13.2x |
+| `chain-root n=3` | 18.4x | 49.0x |
+| `chain-root n=10` | 22.7x | 36.3x |
+| `chain-root n=30` | 38.4x | 46.3x |
+| `chain-root n=100` | 140.0x | 144.9x |
+| `chain-leaf n=10` | 10.7x | 13.5x |
+| `chain-leaf n=30` | 34.4x | 35.4x |
+| `chain-leaf n=100` | 172.3x | 174.9x |
+| `chain-all n=10` | 3.9x | 4.5x |
+| `chain-all n=30` | 2.0x | 1.9x |
+| `tree-root n=4` | 3.0x | 7.4x |
+| `tree-root n=13` | 2.7x | 4.3x |
+| `tree-root n=40` | 1.8x | 2.2x |
+| `bad-order-join n=1000` | 8.2x | 14.4x |
 
 ## Current Findings
 
@@ -128,12 +128,12 @@ recognizes the common DataScript/Datomic reachability rule shape:
  [(reachable ?x ?y) [?x :follows ?t] (reachable ?t ?y)]]
 ```
 
-When the source argument is bound, Vev walks forward over matching candidates
-with a queue and a hash-backed seen set. When only the target is bound, Vev walks
-the same relation in reverse to find all sources that can reach it. Both avoid
-recursively re-running the rule body to a fixed depth. That turns the benchmarked
-chain-root and chain-leaf workloads into a single rule iteration with one output
-binding per reached entity.
+When the source argument is bound, Vev builds one adjacency view of the relation
+and walks it with a queue and a hash-backed seen set. When only the target is
+bound, Vev walks the same relation in reverse to find all sources that can reach
+it. Both avoid recursively re-running the rule body to a fixed depth. That turns
+the benchmarked chain-root and chain-leaf workloads into a single rule iteration
+with one output binding per reached entity.
 
 The large chain-root gap should be read narrowly: it compares Vev's specialized
 root-bound transitive closure path against DataScript's general recursive rule
