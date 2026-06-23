@@ -466,6 +466,9 @@
 (defn query-predicate-fn [name: string, f: fn [args: []Value] -> bool] -> Native-Query-Fn
   (Native-Query-Fn {name: name has-predicate-callback: true predicate-callback: f}))
 
+(defn query-db-predicate-fn [name: string, f: fn [db: DB, args: []Value] -> bool] -> Native-Query-Fn
+  (Native-Query-Fn {name: name has-db-predicate-callback: true db-predicate-callback: f}))
+
 (defn native-query-function-result [value: Value] -> Native-Query-Function-Result
   (Native-Query-Function-Result {ok: true value: value}))
 
@@ -623,7 +626,7 @@
         (return false))))
   true))
 
-(defn predicate-matches-with-fns? [predicate: Predicate, binding: Binding, registry: []Native-Query-Fn] -> bool
+(defn predicate-matches-with-db-and-fns? [db: DB, predicate: Predicate, binding: Binding, registry: []Native-Query-Fn] -> bool
   (when (predicate-matches? predicate binding)
     (return true))
   (let [[op op-ok] (query-op-name predicate.op binding)]
@@ -639,9 +642,18 @@
             (when (not args-ok)
               (return false))
             (return (entry.predicate-callback (slice args 0)))))
+        (when entry.has-db-predicate-callback
+          (let [[args args-ok] (resolve-query-call-args predicate.terms binding)]
+            (defer (delete args))
+            (when (not args-ok)
+              (return false))
+            (return (entry.db-predicate-callback db (slice args 0)))))
         (when (> (count entry.target) 0)
           (return (predicate-matches? (Predicate {op: entry.target terms: predicate.terms}) binding)))
         (return false)))))
+
+(defn predicate-matches-with-fns? [predicate: Predicate, binding: Binding, registry: []Native-Query-Fn] -> bool
+  (predicate-matches-with-db-and-fns? (DB {}) predicate binding registry))
 
 (defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
   (when (not (= map-value.kind .Map))
@@ -1939,14 +1951,16 @@
       (delete items)
       (return out true))))
 
-(defn remove-derived-tuple-adds! [ops: ^[dynamic]Tx-Op, entity: u64, attr: string]
+(defn remove-derived-tuple-adds! [ops: ^[dynamic]Tx-Op, entity: u64, attr: string, map-group: string]
   (let [index (- (count ops^) 1)]
     (while (>= index 0)
       (let [op ops^[index]]
         (when (and op.derived
                    (= op.kind .Add)
                    (= op.e entity)
-                   (= op.a attr))
+                   (= op.a attr)
+                   (not (= op.map-group ""))
+                   (= op.map-group map-group))
           (arr.remove-ordered-at! ops^ index))
         (set! index (- index 1))))))
 
@@ -1959,8 +1973,10 @@
       (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice schema.attrs 0))]
         (if has-value
           (do
-            (remove-derived-tuple-adds! out op.e schema.attr)
-            (arr.push! out^ (tx-add-derived op.e schema.attr tuple-value)))
+            (remove-derived-tuple-adds! out op.e schema.attr op.map-group)
+            (let [derived (tx-add-derived op.e schema.attr tuple-value)]
+              (set! derived.map-group op.map-group)
+              (arr.push! out^ derived)))
           (append-retract-attr-ops! out db op.e schema.attr)))
       (delete schema.attrs))))
 
@@ -2066,15 +2082,20 @@
     entity.has-ident (add-ident-nested-map entity.ident attr nested-map nested-tempid)
     :else (add-nested-map entity.e attr nested-map nested-tempid)))
 
+(defn tx-op-with-map-group [op: Tx-Op, map-group: string] -> Tx-Op
+  (let [out op]
+    (set! out.map-group map-group)
+    out))
+
 (defn append-nested-map-value-tx! [pending: ^[dynamic]Tx-Data, entity: Tx-Data, attr: string, value: Value, seed: string]
   (if (= value.kind .Vector)
     (if (lookup-ref-vector-value? value)
-      (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity attr value.items[0].text value.items[1]))
+      (arr.push! pending^ (tx-data-with-map-group (tx-add-value-lookup-from-entity-data entity attr value.items[0].text value.items[1]) entity.map-group))
       (for [item value.items]
         (append-nested-map-value-tx! pending entity attr item seed)))
     (if (= value.kind .Map)
-      (arr.push! pending^ (tx-add-nested-map-from-entity-data entity attr value (fmt.tprintf "%s_%d" seed (count pending^))))
-      (arr.push! pending^ (tx-add-from-entity-data entity attr value)))))
+      (arr.push! pending^ (tx-data-with-map-group (tx-add-nested-map-from-entity-data entity attr value (fmt.tprintf "%s_%d" seed (count pending^))) entity.map-group))
+      (arr.push! pending^ (tx-data-with-map-group (tx-add-from-entity-data entity attr value) entity.map-group)))))
 
 (defn append-nested-map-tx! [pending: ^[dynamic]Tx-Data, entity: Tx-Data, map-value: Value, seed: string] -> [ok: bool, error: string]
   (when (not (= map-value.kind .Map))
@@ -2098,7 +2119,8 @@
             lookup-value: data.lookup-value
             has-lookup-ref: data.has-lookup-ref
             ident: data.ident
-            has-ident: data.has-ident}))
+            has-ident: data.has-ident
+            map-group: data.map-group}))
 
 (defn append-map-collection-items! [pending: ^[dynamic]Tx-Data, data: Tx-Data, db: DB]
   (when (not (= data.v.kind .Vector))
@@ -2107,10 +2129,10 @@
         ref-attr (schema-ref-target? db data.a)]
     (for [item index data.v.items]
       (if (and ref-attr (lookup-ref-vector-value? item))
-        (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]))
+        (arr.push! pending^ (tx-data-with-map-group (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]) data.map-group))
         (if (and ref-attr (= item.kind .Map))
-          (arr.push! pending^ (tx-add-nested-map-from-entity-data entity data.a item (fmt.tprintf "vev_tx_map_%d" (+ (count pending^) index))))
-          (arr.push! pending^ (tx-add-from-entity-data entity data.a item)))))))
+          (arr.push! pending^ (tx-data-with-map-group (tx-add-nested-map-from-entity-data entity data.a item (fmt.tprintf "vev_tx_map_%d" (+ (count pending^) index))) data.map-group))
+          (arr.push! pending^ (tx-data-with-map-group (tx-add-from-entity-data entity data.a item) data.map-group)))))))
 
 (defn should-split-map-collection? [db: DB, data: Tx-Data] -> bool
   (when (not (and data.from-map-collection
@@ -2440,18 +2462,19 @@
           (if (= v.kind .Entity)
             (let [forward-attr (forward-attr-for-reverse data.a)]
               (if (= data.op ":db/retract")
-                (arr.push! resolved-ops (tx-retract v.entity forward-attr (value-entity e)))
-                (arr.push! resolved-ops (tx-add v.entity forward-attr (value-entity e)))))
+                (arr.push! resolved-ops (tx-op-with-map-group (tx-retract v.entity forward-attr (value-entity e)) data.map-group))
+                (arr.push! resolved-ops (tx-op-with-map-group (tx-add v.entity forward-attr (value-entity e)) data.map-group))))
             (return (Resolved-Tx {ok: false
                                   error: "reverse ref value must resolve to entity"
                                   ops: resolved-ops
                                   tx-meta: resolved-meta
                                   tempids: resolved-tempids})))
           (if (= data.op ":db/retract")
-            (arr.push! resolved-ops (tx-retract e data.a v))
+            (arr.push! resolved-ops (tx-op-with-map-group (tx-retract e data.a v) data.map-group))
             (let [op (tx-add e data.a v)]
               (when data.has-tempid
                 (set! op.tuple-identity true))
+              (set! op.map-group data.map-group)
               (arr.push! resolved-ops op)))))))
     (Resolved-Tx {ok: true error: "" ops: resolved-ops tx-meta: resolved-meta tempids: resolved-tempids})))
 
@@ -2703,6 +2726,9 @@
 (defn tx-fn-string [ident: string, f: fn [db: DB, arg: string] -> Tx-Fn-Result] -> Tx-Fn-String
   (Tx-Fn-String {ident: ident f: f}))
 
+(defn tx-fn-values [ident: string, f: fn [db: DB, args: []Value] -> Tx-Fn-Result] -> Tx-Fn-String
+  (Tx-Fn-String {ident: ident has-values-fn: true values-f: f}))
+
 (defn tx-fn-string-index [registry: []Tx-Fn-String, ident: string] -> [index: int, ok: bool]
   (for [entry index registry]
     (when (= entry.ident ident)
@@ -2878,6 +2904,20 @@
   (delete segment)
   (failed-tx-report before error))
 
+(defn call-registered-tx-fn [entry: Tx-Fn-String, db: DB, data: Tx-Data] -> Tx-Fn-Result
+  (when (= data.v.kind .Vector)
+    (when entry.has-values-fn
+      (return (entry.values-f db (slice data.v.items 0))))
+    (when (and (= (count data.v.items) 1)
+               (= data.v.items[0].kind .String))
+      (return (entry.f db data.v.items[0].text)))
+    (return (tx-fn-error "transaction fn expects one string argument")))
+  (when entry.has-values-fn
+    (return (entry.values-f db ([]Value [data.v]))))
+  (when (= data.v.kind .String)
+    (return (entry.f db data.v.text)))
+  (tx-fn-error "transaction fn expects one string argument"))
+
 (defn transact-tx-data-with-string-fns [conn: ^Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
         ops (make [dynamic]Tx-Op)
@@ -2899,8 +2939,7 @@
             (when (not fn-ok)
               (delete-owned-db current-db)
               (return (failed-registered-tx before ops tx-meta tempids segment "transaction fn not registered")))
-            (let [f registry[fn-index].f
-                  result (f current-db data.v.text)]
+            (let [result (call-registered-tx-fn registry[fn-index] current-db data)]
               (delete-owned-db current-db)
               (when (not result.ok)
                 (delete result.tx-data)
@@ -3387,12 +3426,15 @@
 (defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
   (bindings-after-function-with-fns bindings function ([]Native-Query-Fn [])))
 
-(defn bindings-after-predicate-with-fns [bindings: []Binding, predicate: Predicate, registry: []Native-Query-Fn] -> [dynamic]Binding
+(defn bindings-after-predicate-with-db-and-fns [db: DB, bindings: []Binding, predicate: Predicate, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
-      (when (predicate-matches-with-fns? predicate binding registry)
+      (when (predicate-matches-with-db-and-fns? db predicate binding registry)
         (arr.push! out binding)))
     out))
+
+(defn bindings-after-predicate-with-fns [bindings: []Binding, predicate: Predicate, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (bindings-after-predicate-with-db-and-fns (DB {}) bindings predicate registry))
 
 (defn bindings-after-predicate [bindings: []Binding, predicate: Predicate] -> [dynamic]Binding
   (bindings-after-predicate-with-fns bindings predicate ([]Native-Query-Fn [])))
@@ -3486,7 +3528,7 @@
     .Function
       (bindings-after-function-with-fns bindings rule.function-clauses[step.index] registry)
     .Predicate
-      (bindings-after-predicate-with-fns bindings rule.predicates[step.index] registry)
+      (bindings-after-predicate-with-db-and-fns db bindings rule.predicates[step.index] registry)
     .Or
       (let [out (make [dynamic]Binding)
             group (if has-source (relation-db-or-group rule.or-groups[step.index] source) rule.or-groups[step.index])]
@@ -3574,7 +3616,7 @@
         (delete bindings)
         (set! bindings next)))
     (for [predicate rule.predicates]
-      (let [next-raw (bindings-after-predicate-with-fns (slice bindings 0) predicate registry)
+      (let [next-raw (bindings-after-predicate-with-db-and-fns db (slice bindings 0) predicate registry)
             next (unique-bindings (slice next-raw 0))]
         (delete next-raw)
         (delete bindings)
@@ -5064,7 +5106,7 @@
     .Function
       (bindings-after-function-with-fns bindings query^.function-clauses[step.index] registry)
     .Predicate
-      (bindings-after-predicate-with-fns bindings query^.predicates[step.index] registry)
+      (bindings-after-predicate-with-db-and-fns db bindings query^.predicates[step.index] registry)
     .Or
       (bindings-after-or-group-step-with-fns db sources bindings query^.or-groups[step.index] registry)
     :else
@@ -5176,7 +5218,7 @@
         (delete bindings)
         (set! bindings next-bindings)))
     (for [predicate query.predicates]
-      (let [next-bindings (bindings-after-predicate-with-fns (slice bindings 0) predicate registry)]
+      (let [next-bindings (bindings-after-predicate-with-db-and-fns db (slice bindings 0) predicate registry)]
         (delete bindings)
         (set! bindings next-bindings)))
     (for [group query.or-groups]
@@ -5829,6 +5871,132 @@
 
 (defn pull-pattern-ident [db: DB, ident: string, pattern: []Pull-Spec] -> Pull-Result
   (pull-pattern-ident-with-fns db ident pattern ([]Native-Query-Fn [])))
+
+(defn pull-visit-attr [entity: u64, attr: string] -> Pull-Visit
+  (Pull-Visit {kind: ":db.pull/attr"
+               has-e: true
+               e: entity
+               a: attr
+               has-v: false}))
+
+(defn pull-visit-wildcard [entity: u64] -> Pull-Visit
+  (Pull-Visit {kind: ":db.pull/wildcard"
+               has-e: true
+               e: entity
+               a: ""
+               has-v: false}))
+
+(defn pull-visit-reverse [attr: string, entity: u64] -> Pull-Visit
+  (Pull-Visit {kind: ":db.pull/reverse"
+               has-e: false
+               e: 0
+               a: attr
+               has-v: true
+               v-entity: entity}))
+
+(defn string-seen? [items: []string, value: string] -> bool
+  (for [item items]
+    (when (= item value)
+      (return true)))
+  false)
+
+(defn trace-pull-wildcard! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64]
+  (arr.push! visits^ (pull-visit-wildcard entity))
+  (let [seen-attrs (make [dynamic]string) :defer
+        indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" entity "" (Value {}))
+        high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (string-seen? (slice seen-attrs 0) datom.a)))
+          (arr.push! seen-attrs datom.a)
+          (arr.push! visits^ (pull-visit-attr entity datom.a)))))))
+
+(defn trace-pull-reverse-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (arr.push! visits^ (pull-visit-reverse (forward-attr-for-reverse spec.a) entity))
+  (when (and (= (count spec.pattern) 0)
+             (not spec.has-recursion))
+    (return))
+  (when (and spec.has-recursion (<= spec.recursion-depth 0))
+    (return))
+  (let [forward-attr (forward-attr-for-reverse spec.a) :defer
+        ref-value (value-entity entity)
+        indexes (slice db.vaet 0)
+        low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index db indexes "vaet" 0 "" ref-value)
+        limit (pull-limit spec)
+        seen 0]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (= datom.a forward-attr)
+                   (datom-current-at? db datom-index)
+                   (< seen limit))
+          (if (> (count spec.pattern) 0)
+            (trace-pull-pattern! visits db datom.e spec.pattern spec.pattern seen-entities)
+            (when spec.has-recursion
+              (let [pattern (pull-recursion-pattern root spec.a)]
+                (defer (delete pattern))
+                (trace-pull-pattern! visits db datom.e (slice pattern 0) (slice pattern 0) seen-entities))))
+          (set! seen (+ seen 1)))))))
+
+(defn trace-pull-forward-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (arr.push! visits^ (pull-visit-attr entity spec.a))
+  (when (and (= (count spec.pattern) 0)
+             (not spec.has-recursion))
+    (return))
+  (when (and spec.has-recursion (<= spec.recursion-depth 0))
+    (return))
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        limit (pull-limit spec)
+        seen 0]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Entity)
+                   (< seen limit))
+          (if (> (count spec.pattern) 0)
+            (trace-pull-pattern! visits db datom.v.entity spec.pattern spec.pattern seen-entities)
+            (when spec.has-recursion
+              (let [pattern (pull-recursion-pattern root spec.a)]
+                (defer (delete pattern))
+                (trace-pull-pattern! visits db datom.v.entity (slice pattern 0) (slice pattern 0) seen-entities))))
+          (set! seen (+ seen 1)))))))
+
+(defn trace-pull-spec! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (when (and spec.has-recursion (<= spec.recursion-depth 0))
+    (return))
+  (when (= spec.a "*")
+    (trace-pull-wildcard! visits db entity)
+    (return))
+  (when (= spec.a ":db/id")
+    (return))
+  (if (reverse-attr? spec.a)
+    (trace-pull-reverse-refs! visits db entity spec root seen-entities)
+    (trace-pull-forward-refs! visits db entity spec root seen-entities)))
+
+(defn trace-pull-pattern! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (when (u64-contains? seen-entities entity)
+    (return))
+  (let [child-seen (arr.into [dynamic]u64 seen-entities) :defer]
+    (arr.push! child-seen entity)
+    (let [normalized (normalize-pull-pattern pattern) :defer]
+      (for [spec normalized]
+        (trace-pull-spec! visits db entity spec root (slice child-seen 0))))))
+
+(defn pull-visits-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> [dynamic]Pull-Visit
+  (let [visits (make [dynamic]Pull-Visit)
+        seen (make [dynamic]u64) :defer
+        normalized (normalize-pull-pattern pattern) :defer]
+    (trace-pull-pattern! (addr visits) db entity (slice normalized 0) (slice normalized 0) (slice seen 0))
+    visits))
+
+(defn pull-pattern-spec-traced [db: DB, entity: u64, pattern: []Pull-Spec] -> [result: Pull-Result, visits: [dynamic]Pull-Visit]
+  (let [pulled (pull-pattern-spec db entity pattern)
+        trace (pull-visits-pattern-spec db entity pattern)]
+    (return pulled trace)))
 
 (defn entity-exists? [db: DB, e: u64] -> bool
   (let [indexes (slice db.eavt 0)

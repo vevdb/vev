@@ -96,11 +96,51 @@
                  (vev.add datom.e ":had-birthday" (vev.value-bool true))])))))))
   (vev.tx-fn-error "No entity with name"))
 
+(defn birthday-by-name-and-delta [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result
+  (when (not (and (= (count args) 2)
+                  (= args[0].kind .String)
+                  (= args[1].kind .Int)))
+    (return (vev.tx-fn-error "Expected name and delta")))
+  (for [datom-index db.eavt]
+    (let [datom db.datoms[datom-index]]
+      (when (and (vev.datom-current-at? db datom-index)
+                 (= datom.a ":name")
+                 (= datom.v.kind .String)
+                 (= datom.v.text args[0].text))
+        (let [age (vev.entity-get (vev.db-entity db datom.e) ":age")]
+          (return
+            (vev.tx-fn-ok
+              ([]vev.Tx-Data
+                [(vev.add datom.e ":age" (vev.value-int (+ age.int-value args[1].int-value)))
+                 (vev.add datom.e ":birthday-delta" args[1])])))))))
+  (vev.tx-fn-error "No entity with name"))
+
+(defn create-vera-value-fn [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result
+  (when (not (= (count args) 0))
+    (return (vev.tx-fn-error "Expected no args")))
+  (vev.tx-fn-ok
+    ([]vev.Tx-Data
+      [(vev.add-tempid "vera" ":name" (vev.value-string "Vera"))])))
+
 (defn native-adult-age? [args: []vev.Value] -> bool
   (and (= (count args) 2)
        (= args[0].kind .Int)
        (= args[1].kind .Int)
        (>= args[0].int-value args[1].int-value)))
+
+(defn native-always? [args: []vev.Value] -> bool
+  true)
+
+(defn native-db-age-equals? [db: vev.DB, args: []vev.Value] -> bool
+  (when (not (and (= (count args) 3)
+                  (= args[0].kind .Symbol)
+                  (= args[0].text "$")
+                  (= args[1].kind .Entity)
+                  (= args[2].kind .Int)))
+    (return false))
+  (let [age (vev.entity-get (vev.db-entity db args[1].entity) ":age")]
+    (and (= age.kind .Int)
+         (= age.int-value args[2].int-value))))
 
 (defn native-even-identity [args: []vev.Value] -> vev.Native-Query-Function-Result
   (when (not (and (= (count args) 1)
@@ -117,6 +157,30 @@
   (vev.native-query-function-result
     (vev.value-keyword
       (strings.concatenate ([]string [":" args[0].text "/" args[1].text])))))
+
+(defn native-constant-five [args: []vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (= (count args) 0))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result (vev.value-int 5)))
+
+(defn native-minmax [args: []vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (and (= (count args) 1)
+                  (= args[0].kind .Vector)
+                  (> (count args[0].items) 0)))
+    (return (vev.native-query-function-none)))
+  (let [min-value args[0].items[0]
+        max-value args[0].items[0]]
+    (when (not (= min-value.kind .Int))
+      (return (vev.native-query-function-none)))
+    (for [item args[0].items]
+      (when (not (= item.kind .Int))
+        (return (vev.native-query-function-none)))
+      (when (< item.int-value min-value.int-value)
+        (set! min-value item))
+      (when (> item.int-value max-value.int-value)
+        (set! max-value item)))
+    (vev.native-query-function-result
+      (vev.value-vector ([]vev.Value [min-value max-value])))))
 
 (defn native-tag-value [value: vev.Value] -> vev.Native-Query-Function-Result
   (when (not (= value.kind .String))
@@ -565,6 +629,8 @@
         zero-function-query (vev.empty-query)
         [zero-predicate-ok zero-predicate-error] (vev.parse-query-text! (addr zero-predicate-query) "[:find ?e :where [?e :name] [(custom-pred)]]")
         [zero-function-ok zero-function-error] (vev.parse-query-text! (addr zero-function-query) "[:find ?e ?x :where [?e :name] [(custom-fn) ?x]]")
+        aggregate-extra-query (vev.empty-query)
+        [aggregate-extra-ok aggregate-extra-error] (vev.parse-query-text! (addr aggregate-extra-query) "[:find (count ?name 1 $x) :in $x :where [?e :name ?name]]")
         zero-predicate-runtime (vev.q-text conn.db "[:find ?e :where [?e :name] [(custom-pred)]]")
         zero-function-runtime (vev.q-text conn.db "[:find ?e ?x :where [?e :name] [(custom-fn) ?x]]")
         unknown-predicate (vev.q-text-with-inputs
@@ -581,17 +647,45 @@
         not-before-binding (vev.q-text conn.db "[:find ?e :where (not [?e :name \"Ada Lovelace\"]) [?e :name]]")
         predicate-before-binding (vev.q-text conn.db "[:find ?name :where [(= ?name \"Ada Lovelace\")] [?e :name ?name]]")
         mismatched-or (vev.q-text conn.db "[:find ?e :where (or [?e :name _] [?e :age ?a])]")
+        symbol-constant (vev.q-text conn.db "[:find ?e :where [?e :name sym]]")
+        dollar-symbol-constant (vev.q-text conn.db "[:find ?e :where [?e :name $src-sym]]")
         relation-source (vev.q-text-with-inputs
                           conn.db
                           "[:find ?name :in $rows :where [$rows ?e :name ?name]]"
                           ([]vev.Query-Input
                             [(vev.query-input-scalar
                                (vev.value-vector
-                                 ([]vev.Value
-                                   [(vev.value-vector
-                                      ([]vev.Value [(vev.value-int 1)
-                                                    (vev.value-keyword ":name")
-                                                    (vev.value-string "Ada Lovelace")]))])))]))]
+                                    ([]vev.Value
+                                      [(vev.value-vector
+                                         ([]vev.Value [(vev.value-int 1)
+                                                       (vev.value-keyword ":name")
+                                                       (vev.value-string "Ada Lovelace")]))])))]))
+        source-one-wide (vev.q-text-with-inputs
+                          conn.db
+                          "[:find ?e :in $ids :where [$ids ?e]]"
+                          ([]vev.Query-Input
+                            [(vev.query-input-collection
+                               ([]vev.Value [(vev.value-entity 1)
+                                             (vev.value-entity 2)]))]))
+        source-two-wide (vev.q-text-with-inputs
+                          conn.db
+                          "[:find ?e :in $pairs :where [$pairs ?e :name]]"
+                          ([]vev.Query-Input
+                            [(vev.query-input-relation
+                               ([]vev.Value [(vev.value-entity 1) (vev.value-keyword ":name")
+                                             (vev.value-entity 2) (vev.value-keyword ":age")])
+                               2)]))
+        source-symbol-value (vev.q-text-with-inputs
+                              conn.db
+                              "[:find ?e :in $rows :where [$rows ?e :status $src-sym]]"
+                              ([]vev.Query-Input
+                                [(vev.query-input-scalar
+                                   (vev.value-vector
+                                     ([]vev.Value
+                                       [(vev.value-vector
+                                          ([]vev.Value [(vev.value-entity 1)
+                                                        (vev.value-keyword ":status")
+                                                        (vev.value-symbol "$src-sym")]))])))]))]
     (defer (delete collection))
     (t.is (= (count relation.rows) 1))
     (t.is (= relation.rows[0].values[0].entity 1))
@@ -664,6 +758,16 @@
     (t.is (= empty-pattern.error "Pattern could not be empty"))
     (t.is zero-predicate-ok zero-predicate-error)
     (t.is zero-function-ok zero-function-error)
+    (t.is aggregate-extra-ok aggregate-extra-error)
+    (t.is (= (count aggregate-extra-query.aggregates) 1))
+    (t.is (= aggregate-extra-query.aggregates[0].op "count"))
+    (t.is (= aggregate-extra-query.aggregates[0].var "?name"))
+    (t.is (= (count aggregate-extra-query.aggregates[0].args) 3))
+    (t.is (= aggregate-extra-query.aggregates[0].args[0].kind .Var))
+    (t.is (= aggregate-extra-query.aggregates[0].args[1].value.kind .Int))
+    (t.is (= aggregate-extra-query.aggregates[0].args[1].value.int-value 1))
+    (t.is (= aggregate-extra-query.aggregates[0].args[2].value.kind .Symbol))
+    (t.is (= aggregate-extra-query.aggregates[0].args[2].value.text "$x"))
     (t.is (not zero-predicate-runtime.ok))
     (t.is (= zero-predicate-runtime.error "unknown query predicate: custom-pred"))
     (t.is (not zero-function-runtime.ok))
@@ -684,9 +788,18 @@
     (t.is (= predicate-before-binding.error "insufficient bindings for =: ?name"))
     (t.is (not mismatched-or.ok))
     (t.is (= mismatched-or.error "or branches must use same vars"))
+    (t.is (= (count symbol-constant.rows) 0))
+    (t.is (= (count dollar-symbol-constant.rows) 0))
     (t.is relation-source.ok)
     (t.is (= (count relation-source.rows) 1))
-    (t.is (= relation-source.rows[0].values[0].text "Ada Lovelace"))))
+    (t.is (= relation-source.rows[0].values[0].text "Ada Lovelace"))
+    (t.is (= (count source-one-wide.rows) 2))
+    (t.is (= source-one-wide.rows[0].values[0].entity 1))
+    (t.is (= source-one-wide.rows[1].values[0].entity 2))
+    (t.is (= (count source-two-wide.rows) 1))
+    (t.is (= source-two-wide.rows[0].values[0].entity 1))
+    (t.is (= (count source-symbol-value.rows) 1))
+    (t.is (= source-symbol-value.rows[0].values[0].entity 1))))
 
 (t.deftest datascript-parser-query-text-predicates-and-functions
   (defer (free_all context.allocator))
@@ -2812,7 +2925,28 @@
                     [:find [?e ...]
                      :where
                      [?e :name "Oleg"]
-                     (not [?e :age 10])])]
+                     (not [?e :age 10])])
+        two-rels-two-rels (vev.q report.db-after
+                            [:find ?e ?e2
+                             :where
+                             [?e :name "Ivan"]
+                             [?e2 :name "Ivan"]
+                             (not [?e :age 10]
+                                  [?e2 :age 20])])
+        two-rels-rel-const (vev.q report.db-after
+                             [:find ?e ?e2
+                              :where
+                              [?e :name "Ivan"]
+                              [?e2 :name "Oleg"]
+                              (not [?e :age 10]
+                                   [?e2 :age 20])])
+        two-rels-two-consts (vev.q report.db-after
+                              [:find ?e ?e2
+                               :where
+                               [?e :name "Oleg"]
+                               [?e2 :name "Oleg"]
+                               (not [?e :age 10]
+                                    [?e2 :age 20])])]
     (t.is (= (count not-ivan) 2))
     (t.is (= not-ivan[0].entity 3))
     (t.is (= not-ivan[1].entity 4))
@@ -2854,7 +2988,31 @@
     (t.is (= const-empty[0].entity 3))
     (t.is (= (count const-const) 0))
     (t.is (= (count rel-const) 1))
-    (t.is (= rel-const[0].entity 4))))
+    (t.is (= rel-const[0].entity 4))
+    (t.is (= (count two-rels-two-rels.rows) 12))
+    (t.is (result-has-entity-pair? two-rels-two-rels 2 1))
+    (t.is (result-has-entity-pair? two-rels-two-rels 6 5))
+    (t.is (result-has-entity-pair? two-rels-two-rels 1 1))
+    (t.is (result-has-entity-pair? two-rels-two-rels 2 2))
+    (t.is (result-has-entity-pair? two-rels-two-rels 5 5))
+    (t.is (result-has-entity-pair? two-rels-two-rels 6 6))
+    (t.is (result-has-entity-pair? two-rels-two-rels 2 5))
+    (t.is (result-has-entity-pair? two-rels-two-rels 1 5))
+    (t.is (result-has-entity-pair? two-rels-two-rels 2 6))
+    (t.is (result-has-entity-pair? two-rels-two-rels 6 1))
+    (t.is (result-has-entity-pair? two-rels-two-rels 5 1))
+    (t.is (result-has-entity-pair? two-rels-two-rels 6 2))
+    (t.is (= (count two-rels-rel-const.rows) 6))
+    (t.is (result-has-entity-pair? two-rels-rel-const 2 3))
+    (t.is (result-has-entity-pair? two-rels-rel-const 1 3))
+    (t.is (result-has-entity-pair? two-rels-rel-const 2 4))
+    (t.is (result-has-entity-pair? two-rels-rel-const 6 3))
+    (t.is (result-has-entity-pair? two-rels-rel-const 5 3))
+    (t.is (result-has-entity-pair? two-rels-rel-const 6 4))
+    (t.is (= (count two-rels-two-consts.rows) 3))
+    (t.is (result-has-entity-pair? two-rels-two-consts 4 3))
+    (t.is (result-has-entity-pair? two-rels-two-consts 3 3))
+    (t.is (result-has-entity-pair? two-rels-two-consts 4 4))))
 
 (t.deftest datalog-macro-supports-missing
   (defer (free_all context.allocator))
@@ -4261,17 +4419,28 @@
   (let [conn (vev.create-conn)
         registry ([]vev.Native-Query-Fn
                    [(vev.query-predicate-fn "adult-age?" native-adult-age?)
+                    (vev.query-db-predicate-fn "db-age-equals?" native-db-age-equals?)
                     (vev.query-value-fn "even-identity" native-even-identity)
                     (vev.query-value-fn "person-label" native-person-label)])
         _ (vev.transact
             (addr conn)
             [{:db/id 1 :name "Ivan" :age 15}
              {:db/id 2 :name "Petr" :age 22}
-             {:db/id 3 :name "Oleg" :age 37}])
+             {:db/id 3 :name "Oleg" :age 37}
+             {:db/id 10 :pred "missing-predicate"}])
         predicate (vev.q-text-with-fns
                     conn.db
                     "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]"
                     registry)
+        db-predicate (vev.q-text-with-inputs-and-fns
+                       conn.db
+                       "[:find ?e :in ?pred :where [?e :age ?a] [(?pred $ ?e 15)]]"
+                       ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "db-age-equals?"))])
+                       registry)
+        missing-predicate-from-data (vev.q-text-with-fns
+                                      conn.db
+                                      "[:find ?e ?a :where [_ :pred ?pred] [?e :age ?a] [(?pred ?a)]]"
+                                      registry)
         fn-filter (vev.q-text-with-fns
                     conn.db
                     "[:find ?age ?same :where [?e :age ?age] [(even-identity ?age) ?same]]"
@@ -4286,6 +4455,11 @@
     (t.is (= (count predicate.rows) 2))
     (t.is (= predicate.rows[0].values[0].text "Petr"))
     (t.is (= predicate.rows[1].values[0].text "Oleg"))
+    (t.is db-predicate.ok)
+    (t.is (= (count db-predicate.rows) 1))
+    (t.is (= db-predicate.rows[0].values[0].entity 1))
+    (t.is missing-predicate-from-data.ok)
+    (t.is (= (count missing-predicate-from-data.rows) 0))
     (t.is (= (count fn-filter.rows) 1))
     (t.is (= fn-filter.rows[0].values[0].int-value 22))
     (t.is (= fn-filter.rows[0].values[1].int-value 22))
@@ -4499,7 +4673,8 @@
                   [:db/add 2 :follow (vev.value-entity 3)]
                   [:db/add 3 :follow (vev.value-entity 4)]
                   [:db/add 4 :follow (vev.value-entity 6)]
-                  [:db/add 2 :follow (vev.value-entity 4)]])
+                  [:db/add 2 :follow (vev.value-entity 4)]
+                  [:db/add 2 :age 15]])
         follows (vev.q report.db-after
                   [:find ?e1 ?e2
                    :in $ %
@@ -4579,6 +4754,26 @@
                                     "[:find ?x ?y :in $ % ?even :where (match ?even ?x ?y)]"
                                     "[[(match ?pred ?e ?e2) [?e :follow ?e2] [(?pred ?e)] [(?pred ?e2)]]]"
                                     ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":even?"))]))
+        native-rule-registry ([]vev.Native-Query-Fn
+                               [(vev.query-predicate-fn "always?" native-always?)
+                                (vev.query-db-predicate-fn "db-age-equals?" native-db-age-equals?)])
+        native-rule-rows (vev.value-vector
+                           ([]vev.Value
+                             [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":attr") (vev.value-string "a")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":attr") (vev.value-string "b")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":attr") (vev.value-string "a")]))]))
+        native-rule-predicate (vev.q-text-relation-db-with-rules-and-fns
+                                native-rule-rows
+                                "[:find ?p :in $ % ?fn :where (rule ?p ?fn \"a\") (rule ?p ?fn \"b\")]"
+                                "[[(rule ?p ?fn ?x) [?p :attr ?x] [(?fn ?x)]]]"
+                                ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "always?"))])
+                                native-rule-registry)
+        db-rule-predicate (vev.q-text-with-rules-and-fns
+                            report.db-after
+                            "[:find ?x :in $ % ?pred :where (match ?pred ?x)]"
+                            "[[(match ?pred ?e) [?e :follow ?next] [(?pred $ ?e 15)]]]"
+                            ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "db-age-equals?"))])
+                            native-rule-registry)
         rule-wildcard (vev.q-collection
                         report.db-after
                         [:find [?x ...]
@@ -4648,6 +4843,12 @@
     (t.is (= rule-predicate-input-text.rows[0].values[1].entity 4))
     (t.is (= rule-predicate-input-text.rows[1].values[0].entity 4))
     (t.is (= rule-predicate-input-text.rows[1].values[1].entity 6))
+    (t.is native-rule-predicate.ok)
+    (t.is (= (count native-rule-predicate.rows) 1))
+    (t.is (= native-rule-predicate.rows[0].values[0].int-value 1))
+    (t.is db-rule-predicate.ok)
+    (t.is (= (count db-rule-predicate.rows) 1))
+    (t.is (= db-rule-predicate.rows[0].values[0].entity 2))
     (t.is (= (count rule-wildcard) 5))
     (t.is (= rule-wildcard[0].entity 1))
     (t.is (= rule-wildcard[1].entity 2))
@@ -5140,7 +5341,36 @@
         nested-text-or-join (vev.q-text-with-inputs
                               report.db-after
                               "[:find ?e :in ?age :where (or-join [[?age] ?e] [?e :age ?age] [?e :name \"Oleg\"])]"
-                              ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 10))]))]
+                              ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 10))]))
+        const-conn (vev.create-conn)
+        _ (vev.transact
+            (addr const-conn)
+            [{:db/id 100 :db/ident :parent :db/valueType :db.type/ref}
+             {:db/id "Ivan" :name "Ivan"}
+             {:db/id "Oleg" :name "Oleg" :parent "Ivan"}
+             {:db/id "Petr" :name "Petr" :parent "Oleg"}])
+        constant-substitution (vev.q const-conn.db
+                                [:find ?name ?x ?y
+                                 :in ?name
+                                 :where
+                                 [?x :name ?name]
+                                 (or-join [?x ?y]
+                                   (and
+                                     [?x :parent ?z]
+                                     [?z :parent ?y])
+                                   [?y :parent ?x])]
+                                "Ivan")
+        constant-substitution-empty (vev.q const-conn.db
+                                      [:find ?name ?x ?y
+                                       :in ?name
+                                       :where
+                                       [?x :name ?name]
+                                       (or-join [?x ?y]
+                                         (and
+                                           [?x :parent ?z]
+                                           [?z :parent ?y])
+                                         [?x :parent ?y])]
+                                      "Ivan")]
     (t.is (= (count intersecting) 4))
     (t.is (= intersecting[0].entity 3))
     (t.is (= intersecting[1].entity 4))
@@ -5190,7 +5420,12 @@
     (t.is (result-has-entity? nested-text-or-join 1))
     (t.is (result-has-entity? nested-text-or-join 3))
     (t.is (result-has-entity? nested-text-or-join 4))
-    (t.is (result-has-entity? nested-text-or-join 5))))
+    (t.is (result-has-entity? nested-text-or-join 5))
+    (t.is (= (count constant-substitution.rows) 1))
+    (t.is (= constant-substitution.rows[0].values[0].text "Ivan"))
+    (t.is (= constant-substitution.rows[0].values[1].entity 101))
+    (t.is (= constant-substitution.rows[0].values[2].entity 102))
+    (t.is (= (count constant-substitution-empty.rows) 0))))
 
 (t.deftest datascript-query-relation-source-or-join-subset
   (defer (free_all context.allocator))
@@ -5920,6 +6155,45 @@
     (t.is (= nested.rows[0].values[0].kind .Map))
     (t.is (= nested.rows[0].values[1].int-value 2))))
 
+(t.deftest datascript-query-native-function-input-binding-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :person/name "Joe"}])
+        registry ([]vev.Native-Query-Fn
+                   [(vev.query-value-fn "constant-five" native-constant-five)
+                    (vev.query-value-fn "minmax" native-minmax)])
+        nested-source (vev.value-map
+                        ([]vev.Value
+                          [(vev.value-keyword ":a")
+                           (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-int 2) (vev.value-int 3) (vev.value-int 4)]))
+                           (vev.value-keyword ":b")
+                           (vev.value-vector ([]vev.Value [(vev.value-int 5) (vev.value-int 6) (vev.value-int 7)]))
+                           (vev.value-keyword ":c")
+                           (vev.value-vector ([]vev.Value [(vev.value-int 3)]))]))
+        nested (vev.q-text-with-inputs-and-fns
+                 conn.db
+                 "[:find ?k ?min ?max :in [[?k ?v] ...] ?minmax :where [(?minmax ?v) [?min ?max]] [(> ?max ?min)]]"
+                 ([]vev.Query-Input
+                   [(vev.query-input-scalar nested-source)
+                    (vev.query-input-scalar (vev.value-string "minmax"))])
+                 registry)
+        unrelated (vev.q-text-with-fns
+                    conn.db
+                    "[:find ?name :where [?e :person/name ?name] [(constant-five) ?result] [(< ?result 3)]]"
+                    registry)]
+    (t.is nested.ok)
+    (t.is (= (count nested.rows) 2))
+    (t.is (= nested.rows[0].values[0].text ":a"))
+    (t.is (= nested.rows[0].values[1].int-value 1))
+    (t.is (= nested.rows[0].values[2].int-value 4))
+    (t.is (= nested.rows[1].values[0].text ":b"))
+    (t.is (= nested.rows[1].values[1].int-value 5))
+    (t.is (= nested.rows[1].values[2].int-value 7))
+    (t.is unrelated.ok)
+    (t.is (= (count unrelated.rows) 0))))
+
 (t.deftest datascript-query-constant-substitution-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -6613,10 +6887,14 @@
 (t.deftest datascript-ident-transaction-functions-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
-        registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" birthday-by-name)])
+        registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" birthday-by-name)
+                                       (vev.tx-fn-values ":inc-age-by" birthday-by-name-and-delta)
+                                       (vev.tx-fn-values ":create-vera" create-vera-value-fn)])
         _ (vev.transact
             (addr conn)
             [{:db/id 10 :db/ident :inc-age}
+             {:db/id 12 :db/ident :inc-age-by}
+             {:db/id 13 :db/ident :create-vera}
              {:db/id 11 :db/ident :Petr}])
         unknown (vev.transact-tx-data-with-string-fns
                   (addr conn)
@@ -6646,9 +6924,23 @@
                     (addr conn)
                     "[[:db/add 2 :name \"Ada\"] [:db/add 2 :age 40] [:db.fn/call :inc-age \"Ada\"] [:db/add 2 :label \"after-text-call\"]]"
                     registry)
+        text-value-call (vev.transact-text-with-string-fns
+                          (addr conn)
+                          "[[:db/add 4 :name \"Lin\"] [:db/add 4 :age 20] [:db.fn/call :inc-age-by \"Lin\" 5] [:db/add 4 :label \"after-value-call\"]]"
+                          registry)
         prepared (vev.prepare-tx-text
                    "[[:db/add 3 :name \"Grace\"] [:db/add 3 :age 50] [:inc-age \"Grace\"] [:db/add 3 :label \"after-prepared-call\"]]")
         prepared-call (vev.transact-prepared-with-string-fns (addr conn) prepared registry)
+        prepared-values (vev.prepare-tx-text
+                          "[[:db/add 5 :name \"Mina\"] [:db/add 5 :age 30] [:inc-age-by \"Mina\" 7] [:create-vera]]")
+        prepared-value-call (vev.transact-prepared-with-string-fns (addr conn) prepared-values registry)
+        literal-value-call (vev.transact-tx-data-with-string-fns
+                             (addr conn)
+                             (vev.tx-data
+                               [:db/add 6 :name "Nia"]
+                               [:db/add 6 :age 60]
+                               [:inc-age-by "Nia" 4])
+                             registry)
         no-registry (vev.transact-text-with-string-fns
                       (addr conn)
                       "[[:inc-age \"Petr\"]]"
@@ -6663,7 +6955,12 @@
                          registry)
         petr (vev.db-entity report.db-after 1)
         ada (vev.db-entity text-call.db-after 2)
-        grace (vev.db-entity prepared-call.db-after 3)]
+        lin (vev.db-entity text-value-call.db-after 4)
+        grace (vev.db-entity prepared-call.db-after 3)
+        mina (vev.db-entity prepared-value-call.db-after 5)
+        nia (vev.db-entity literal-value-call.db-after 6)
+        [vera-e vera-ok] (tempid-e (slice prepared-value-call.tempids 0) "vera")
+        vera (vev.db-entity prepared-value-call.db-after vera-e)]
     (t.is (not unknown.ok))
     (t.is (= unknown.error "transaction fn not found"))
     (t.is (not non-fn.ok))
@@ -6680,17 +6977,30 @@
     (t.is (= (vev.entity-get ada ":age").int-value 41))
     (t.is (vev.entity-get ada ":had-birthday").bool-value)
     (t.is (= (vev.entity-get ada ":label").text "after-text-call"))
+    (t.is text-value-call.ok)
+    (t.is (= (vev.entity-get lin ":age").int-value 25))
+    (t.is (= (vev.entity-get lin ":birthday-delta").int-value 5))
+    (t.is (= (vev.entity-get lin ":label").text "after-value-call"))
     (t.is prepared.ok)
     (t.is prepared-call.ok)
     (t.is (= (vev.entity-get grace ":age").int-value 51))
     (t.is (vev.entity-get grace ":had-birthday").bool-value)
     (t.is (= (vev.entity-get grace ":label").text "after-prepared-call"))
+    (t.is prepared-values.ok)
+    (t.is prepared-value-call.ok)
+    (t.is (= (vev.entity-get mina ":age").int-value 37))
+    (t.is (= (vev.entity-get mina ":birthday-delta").int-value 7))
+    (t.is vera-ok)
+    (t.is (= (vev.entity-get vera ":name").text "Vera"))
+    (t.is literal-value-call.ok)
+    (t.is (= (vev.entity-get nia ":age").int-value 64))
+    (t.is (= (vev.entity-get nia ":birthday-delta").int-value 4))
     (t.is (not no-registry.ok))
     (t.is (= no-registry.error "transaction fn not registered"))
     (t.is (not unknown-text.ok))
     (t.is (= unknown-text.error "transaction fn not found"))
     (t.is (not bad-call-shape.ok))
-    (t.is (= bad-call-shape.error ":db.fn/call text form currently expects one string argument"))))
+    (t.is (= bad-call-shape.error "transaction fn expects one string argument"))))
 
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))
@@ -8105,6 +8415,12 @@
         seed (vev.transact (addr conn) [[:db/add 1 :b "b"]
                                         [:db/add 2 :b "b"]
                                         {:db/id 3 :a "a" :b "B"}])
+        before-full-conflict-count (count conn.db.datoms)
+        conflict-a-full (vev.transact (addr conn) [[:db/add 1 :a "A"]])
+        conflict-b-full (vev.transact (addr conn) [[:db/add 1 :b "B"]])
+        conflict-both-full (vev.transact (addr conn) [[:db/add 1 :a "A"]
+                                                      [:db/add 1 :b "B"]])
+        after-full-conflict-count (count conn.db.datoms)
         change-both (vev.transact (addr conn) [{:db/id 1 :a "A" :b "B"}])
         add-final-free (vev.transact (addr conn) [{:db/id 4 :a "a" :b "b"}])
         result (vev.q conn.db
@@ -8114,6 +8430,13 @@
     (t.is (not partial-conflict.ok))
     (t.is (= partial-conflict.error "schema unique conflict"))
     (t.is seed.ok)
+    (t.is (not conflict-a-full.ok))
+    (t.is (= conflict-a-full.error "schema unique conflict"))
+    (t.is (not conflict-b-full.ok))
+    (t.is (= conflict-b-full.error "schema unique conflict"))
+    (t.is (not conflict-both-full.ok))
+    (t.is (= conflict-both-full.error "schema unique conflict"))
+    (t.is (= before-full-conflict-count after-full-conflict-count))
     (t.is change-both.ok)
     (t.is add-final-free.ok)
     (t.is (= (count result.rows) 4))
@@ -9033,12 +9356,18 @@
         no-id (vev.transact-text
                 (addr conn)
                 "[{:name \"Ivan\" :age 35}]")
+        no-id-two-attrs (vev.transact-text
+                          (addr conn)
+                          "[{:name \"Ivan\" :email \"@1\" :age 34}]")
         with-tempid (vev.transact-text
                       (addr conn)
                       "[{:db/id \"ivan\" :name \"Ivan\" :age 36}]")
         list-tempid (vev.transact-text
                       (addr conn)
                       "[[:db/add \"ivan-list\" :age 37] [:db/add \"ivan-list\" :name \"Ivan\"]]")
+        second-tempid (vev.transact-text
+                        (addr conn)
+                        "[[:db/add \"oleg\" :name \"Oleg\"] [:db/add \"oleg\" :email \"@2\"]]")
         by-lookup-ref (vev.transact-text
                         (addr conn)
                         "[{:ref [:name \"Dima\"] :age 38}]")
@@ -9047,7 +9376,10 @@
         intermediate (vev.transact-prepared (addr conn) prepared)
         forward-refs (vev.transact-text
                        (addr conn)
-                       "[{:db/id 10 :friend \"alice\"} {:db/id 11 :friend \"petr\"} {:db/id \"alice\" :name \"Ivan\"} {:db/id \"petr\" :name \"Petr\"}]")
+                       "[{:db/id 10 :friend \"alice\"} {:db/id 11 :friend \"petr\"} {:db/id \"alice\" :name \"Ivan\"} {:db/id \"petr\" :email \"@2\"}]")
+        negative-ref (vev.transact-text
+                       (addr conn)
+                       "[{:db/id -1 :name \"Nina\"} {:age 39 :friend -1}]")
         before-conflict-count (count conn.db.datoms)
         conflict (vev.transact-text
                    (addr conn)
@@ -9068,22 +9400,34 @@
         [second-ref second-ref-ok] (vev.q-text-scalar
                                      conn.db
                                      "[:find ?ref . :where [11 :friend ?ref]]")
+        [nina-ref nina-ref-ok] (vev.q-text-scalar
+                                 conn.db
+                                 "[:find ?ref . :where [?e :age 39] [?e :friend ?ref]]")
+        [nina nina-ok] (vev.q-text-scalar
+                         conn.db
+                         "[:find ?e . :where [?e :name \"Nina\"]]")
         [ivan-e ivan-ok] (tempid-e (slice with-tempid.tempids 0) "ivan")
         [list-e list-ok] (tempid-e (slice list-tempid.tempids 0) "ivan-list")
+        [oleg-e oleg-ok] (tempid-e (slice second-tempid.tempids 0) "oleg")
         [igor-1 igor-1-ok] (tempid-e (slice intermediate.tempids 0) "igor-1")
         [igor-2 igor-2-ok] (tempid-e (slice intermediate.tempids 0) "igor-2")
         [alice alice-ok] (tempid-e (slice forward-refs.tempids 0) "alice")
         [petr petr-ok] (tempid-e (slice forward-refs.tempids 0) "petr")]
     (t.is no-id.ok)
+    (t.is no-id-two-attrs.ok)
     (t.is with-tempid.ok)
     (t.is list-tempid.ok)
+    (t.is second-tempid.ok)
     (t.is by-lookup-ref.ok)
     (t.is intermediate.ok)
     (t.is forward-refs.ok)
+    (t.is negative-ref.ok)
     (t.is ivan-ok)
     (t.is (= ivan-e 1))
     (t.is list-ok)
     (t.is (= list-e 1))
+    (t.is oleg-ok)
+    (t.is (= oleg-e 2))
     (t.is igor-1-ok)
     (t.is igor-2-ok)
     (t.is (= igor-1 igor-2))
@@ -9101,6 +9445,9 @@
     (t.is (= first-ref.entity 1))
     (t.is second-ref-ok)
     (t.is (= second-ref.entity 2))
+    (t.is nina-ref-ok)
+    (t.is nina-ok)
+    (t.is (= nina-ref.entity nina.entity))
     (t.is (not conflict.ok))
     (t.is (= conflict.error "conflicting upsert"))
     (t.is (= before-conflict-count after-conflict-count))))
@@ -10493,6 +10840,79 @@
     (t.is (= (count callback-query.rows) 1))
     (t.is (= callback-query.rows[0].pulls[0].attrs[0].v.text "tag:Petr"))))
 
+(t.deftest datascript-pull-visitor-trace-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :name}
+             {:db/id 101 :db/ident :aka :db/cardinality :db.cardinality/many}
+             {:db/id 102 :db/ident :child :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+             {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"] :child [2 3]}
+             {:db/id 2 :name "David"}
+             {:db/id 3 :name "Thomas"}])
+        simple (vev.pull-visits-pattern-spec
+                 conn.db
+                 1
+                 ([]vev.Pull-Spec [(vev.flat-pull-spec ":name")
+                                    (vev.flat-pull-spec ":aka")]))
+        with-id (vev.pull-visits-pattern-spec
+                  conn.db
+                  1
+                  ([]vev.Pull-Spec [(vev.flat-pull-spec ":db/id")
+                                     (vev.flat-pull-spec ":name")]))
+        wildcard (vev.pull-visits-pattern-spec
+                   conn.db
+                   1
+                   ([]vev.Pull-Spec [(vev.flat-pull-spec "*")
+                                      (vev.flat-pull-spec ":missing")]))
+        nested (vev.pull-visits-pattern-spec
+                 conn.db
+                 1
+                 ([]vev.Pull-Spec [(vev.pull-spec
+                                      ":child"
+                                      ([]vev.Pull-Spec [(vev.flat-pull-spec ":name")]))]))
+        reverse (vev.pull-visits-pattern-spec
+                  conn.db
+                  2
+                  ([]vev.Pull-Spec [(vev.flat-pull-spec ":name")
+                                     (vev.flat-pull-spec ":_child")]))
+        [pulled traced] (vev.pull-pattern-spec-traced
+                          conn.db
+                          1
+                          ([]vev.Pull-Spec [(vev.flat-pull-spec ":name")]))]
+    (t.is (= (count simple) 2))
+    (t.is (= simple[0].kind ":db.pull/attr"))
+    (t.is simple[0].has-e)
+    (t.is (= simple[0].e 1))
+    (t.is (= simple[0].a ":name"))
+    (t.is (= simple[1].a ":aka"))
+    (t.is (= (count with-id) 1))
+    (t.is (= with-id[0].a ":name"))
+    (t.is (= (count wildcard) 5))
+    (t.is (= wildcard[0].kind ":db.pull/wildcard"))
+    (t.is (= wildcard[0].e 1))
+    (t.is (= wildcard[1].a ":aka"))
+    (t.is (= wildcard[2].a ":child"))
+    (t.is (= wildcard[3].a ":name"))
+    (t.is (= wildcard[4].a ":missing"))
+    (t.is (= (count nested) 3))
+    (t.is (= nested[0].a ":child"))
+    (t.is (= nested[1].e 2))
+    (t.is (= nested[1].a ":name"))
+    (t.is (= nested[2].e 3))
+    (t.is (= nested[2].a ":name"))
+    (t.is (= (count reverse) 2))
+    (t.is (= reverse[0].a ":name"))
+    (t.is (= reverse[1].kind ":db.pull/reverse"))
+    (t.is (not reverse[1].has-e))
+    (t.is (= reverse[1].a ":child"))
+    (t.is reverse[1].has-v)
+    (t.is (= reverse[1].v-entity 2))
+    (t.is (= pulled.attrs[0].v.text "Petr"))
+    (t.is (= (count traced) 1))
+    (t.is (= traced[0].a ":name"))))
+
 (t.deftest pull-supports-as-attr-option
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -10940,13 +11360,17 @@
              [:db/add 102 :db/ident :friend]
              [:db/add 102 :db/valueType :db.type/ref]
              {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"] :friend 2}
-             {:db/id 2 :name "David"}])
+             {:db/id 2 :name "David" :friend 1}])
         string-limit (vev.prepare-pull-pattern-text "[((\"limit\" :aka 1) :as :first-aka)]")
         vector-limit (vev.prepare-pull-pattern-text "[[\"limit\" :aka 1]]")
         nested-default (vev.prepare-pull-pattern-text "[(default (limit :missing 1) \"Unknown\")]")
+        string-wildcard (vev.prepare-pull-pattern-text "[\"*\" :name]")
+        string-recursion (vev.prepare-pull-pattern-text "[{:friend \"...\"}]")
         pulled-string-limit (vev.pull-prepared conn.db string-limit 1)
         pulled-vector-limit (vev.pull-prepared conn.db vector-limit 1)
         pulled-default (vev.pull-prepared conn.db nested-default 1)
+        pulled-wildcard (vev.pull-prepared conn.db string-wildcard 1)
+        pulled-recursion (vev.pull-prepared conn.db string-recursion 1)
         bad-option (vev.prepare-pull-pattern-text "[[:aka :limit]]")
         bad-limit-call (vev.prepare-pull-pattern-text "[(limit :aka)]")
         bad-map-key (vev.prepare-pull-pattern-text "[{[:friend :limit] [:name]}]")
@@ -10955,10 +11379,17 @@
     (t.is string-limit.ok)
     (t.is vector-limit.ok)
     (t.is nested-default.ok)
+    (t.is string-wildcard.ok)
+    (t.is string-recursion.ok)
     (t.is (= pulled-string-limit.attrs[0].a ":first-aka"))
     (t.is (= pulled-string-limit.attrs[0].v.text "Devil"))
     (t.is (= pulled-vector-limit.attrs[0].v.text "Devil"))
     (t.is (= pulled-default.attrs[0].v.text "Unknown"))
+    (t.is (= pulled-wildcard.attrs[0].a ":db/id"))
+    (t.is (= pulled-wildcard.attrs[1].a ":aka"))
+    (t.is (= pulled-wildcard.attrs[2].a ":friend"))
+    (t.is (= pulled-wildcard.attrs[3].a ":name"))
+    (t.is (= pulled-recursion.attrs[0].attrs[0].a ":friend"))
     (t.is (not bad-option.ok))
     (t.is (not bad-limit-call.ok))
     (t.is (not bad-map-key.ok))

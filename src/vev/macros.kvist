@@ -367,58 +367,66 @@
           attr
           (str (slice attr 0 (+ index 1)) (slice attr (+ index 2))))))))
 
-(defmacro- emit-tx-map-reverse-attr [e a v]
+(defmacro- emit-tx-map-reverse-attr [group e a v]
   (if (int? e)
     (if (lookup-ref? v)
       (quasiquote
-        (add-lookup-ref
-          (unquote (emit-attr (nth v 0)))
-          (unquote (emit-literal-value (nth v 1)))
-          (unquote (forward-attr-source a))
-          (value-entity (unquote e))))
+        (tx-data-with-map-group
+          (add-lookup-ref
+            (unquote (emit-attr (nth v 0)))
+            (unquote (emit-literal-value (nth v 1)))
+            (unquote (forward-attr-source a))
+            (value-entity (unquote e)))
+          (unquote group)))
       (if (int? v)
         (quasiquote
-          (add
-            (unquote v)
-            (unquote (forward-attr-source a))
-            (value-entity (unquote e))))
+          (tx-data-with-map-group
+            (add
+              (unquote v)
+              (unquote (forward-attr-source a))
+              (value-entity (unquote e)))
+            (unquote group)))
         (if (keyword? v)
           (quasiquote
-            (add-ident
-              (unquote (source v))
-              (unquote (forward-attr-source a))
-              (value-entity (unquote e))))
+            (tx-data-with-map-group
+              (add-ident
+                (unquote (source v))
+                (unquote (forward-attr-source a))
+                (value-entity (unquote e)))
+              (unquote group)))
           (if (string? v)
             (quasiquote
-              (add-tempid
-                (unquote v)
-                (unquote (forward-attr-source a))
-                (value-entity (unquote e))))
+              (tx-data-with-map-group
+                (add-tempid
+                  (unquote v)
+                  (unquote (forward-attr-source a))
+                  (value-entity (unquote e)))
+                (unquote group)))
             (error "reverse tx map attrs currently require id, tempid, ident, or lookup ref values")))))
     (error "reverse tx map attrs currently require numeric :db/id on the map entity")))
 
-(defmacro- emit-tx-map-attr [e a v]
+(defmacro- emit-tx-map-attr [group e a v]
   (if (reverse-attr-form? a)
     (if (vector? v)
       (if (lookup-ref? v)
-        (emit-tx-map-reverse-attr e a v)
-        (emit-tx-map-vector-attr e a v))
-      (emit-tx-map-reverse-attr e a v))
+        (emit-tx-map-reverse-attr group e a v)
+        (emit-tx-map-vector-attr group e a v))
+      (emit-tx-map-reverse-attr group e a v))
   (if (brace? v)
-    (forms (emit-tx-map-nested-call e a v))
+    (forms (quasiquote (tx-data-with-map-group (unquote (emit-tx-map-nested-call e a v)) (unquote group))))
     (if (vector? v)
       (if (lookup-ref? v)
-        (emit-tx-data-call (keyword "db/add") e a v)
-        (forms (emit-tx-map-collection-call e a v)))
+        (forms (quasiquote (tx-data-with-map-group (unquote (emit-tx-data-call (keyword "db/add") e a v)) (unquote group))))
+        (forms (quasiquote (tx-data-with-map-group (unquote (emit-tx-map-collection-call e a v)) (unquote group)))))
       (forms
-        (emit-tx-data-call (keyword "db/add") e a v))))))
+        (quasiquote (tx-data-with-map-group (unquote (emit-tx-data-call (keyword "db/add") e a v)) (unquote group))))))))
 
-(defmacro- emit-tx-map-vector-attr [e a values]
+(defmacro- emit-tx-map-vector-attr [group e a values]
   (if (= (count values) 0)
     (forms)
     (concat
-      (forms (emit-tx-map-attr e a (first values)))
-      (emit-tx-map-vector-attr e a (rest values)))))
+      (forms (emit-tx-map-attr group e a (first values)))
+      (emit-tx-map-vector-attr group e a (rest values)))))
 
 (defmacro- emit-retract-entity-call [e]
   (if (lookup-ref? e)
@@ -454,92 +462,63 @@
             (unquote e)
             (unquote (emit-attr a))))))))
 
-(defmacro- emit-tx-map-attrs [e items]
+(defmacro- emit-tx-map-attrs [group e items]
   (if (= (count items) 0)
     (forms)
     (if (= (count items) 1)
       (error "tx map forms require key/value pairs")
       (if (keyword? (nth items 0))
         (if (= (source (nth items 0)) ":db/id")
-          (emit-tx-map-attrs e (rest (rest items)))
+          (emit-tx-map-attrs group e (rest (rest items)))
           (concat
-            (forms (emit-tx-map-attr e (nth items 0) (nth items 1)))
-            (emit-tx-map-attrs e (rest (rest items)))))
+            (forms (emit-tx-map-attr group e (nth items 0) (nth items 1)))
+            (emit-tx-map-attrs group e (rest (rest items)))))
         (concat
-          (forms (emit-tx-map-attr e (nth items 0) (nth items 1)))
-          (emit-tx-map-attrs e (rest (rest items))))))))
+          (forms (emit-tx-map-attr group e (nth items 0) (nth items 1)))
+          (emit-tx-map-attrs group e (rest (rest items))))))))
 
 (defmacro- emit-tx-map-items [form]
-  (let [e (tx-map-entity-id form)]
-    (emit-tx-map-attrs e form)))
+  (let [e (tx-map-entity-id form)
+        group (source (gensym "vev_tx_map_group"))]
+    (emit-tx-map-attrs group e form)))
+
+(defmacro- emit-tx-fn-call-values [op args]
+  (quasiquote
+    (call-ident-values
+      (unquote (source op))
+      ([]Value [(splice (emit-literal-values args))]))))
 
 (defmacro- emit-tx-data-item [form]
   (if (nil? form)
     (forms)
-    (if (vector? form)
-    (if (= (count form) 5)
-      (let [op (nth form 0)
-            e (nth form 1)
-            a (nth form 2)
-            expected (nth form 3)
-            v (nth form 4)]
-        (if (keyword? op)
-          (if (or (= (source op) ":db.fn/cas") (= (source op) ":db/cas"))
-            (forms (emit-cas-call e a expected v))
-            (error "five-item tx-data vectors currently support :db.fn/cas or :db/cas"))
-          (error "five-item tx-data vectors currently support :db.fn/cas or :db/cas")))
-      (if (= (count form) 4)
-      (let [op (nth form 0)
-            e (nth form 1)
-            a (nth form 2)
-            v (nth form 3)]
-        (if (keyword? op)
-          (if (= (source op) ":db/retract")
-            (forms (emit-tx-data-call op e a v))
-            (if (= (source op) ":db/add")
-              (forms (emit-tx-data-call op e a v))
-              (error "tx-data operation must be :db/add or :db/retract")))
-          (error "tx-data operation must be :db/add or :db/retract")))
-      (if (= (count form) 2)
-        (let [op (nth form 0)
-              e (nth form 1)]
-          (if (keyword? op)
-            (if (= (source op) ":db/retractEntity")
-              (forms (emit-retract-entity-call e))
-              (if (= (source op) ":db.fn/retractEntity")
-                (forms (emit-retract-entity-call e))
-                (if (string? e)
-                  (forms
-                    (quasiquote
-                      (call-ident-string
-                        (unquote (source op))
-                        (unquote (text e)))))
-                  (error "two-item transaction function calls currently expect a string argument"))))
-            (error "tx-data operation must be :db/add, :db/retract, or :db/retractEntity")))
-        (if (= (count form) 3)
-          (let [op (nth form 0)
-                e (nth form 1)
-                a (nth form 2)]
-            (if (keyword? op)
-              (if (= (source op) ":db/retract")
-                (forms (emit-retract-attr-call e a))
-                (if (= (source op) ":db.fn/retractAttribute")
-                  (forms (emit-retract-attr-call e a))
-                  (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
-              (error "three-item tx-data vectors currently support :db/retract or :db.fn/retractAttribute")))
-          (if (= (count form) 1)
-            (let [op (nth form 0)]
-              (if (keyword? op)
-                (forms
-                  (quasiquote
-                    (call-ident-string
-                      (unquote (source op))
-                      "")))
-                (error "one-item transaction function calls must start with a keyword ident")))
-            (error "tx-data vectors must have shape [:db/add e :attr value], [:db/retract e :attr], [:db.fn/retractAttribute e :attr], [:db/retractEntity e], or [:tx-fn-ident arg]"))))))
-    (if (brace? form)
-      (emit-tx-map-items form)
-      (error "tx-data expects vector forms like [:db/add e :attr value] or map forms")))))
+    (cond
+      (vector? form)
+        (let [op (nth form 0)]
+          (if (not (keyword? op))
+            (error "tx-data vectors must start with a keyword op")
+            (cond
+              (= (count form) 5)
+                (if (or (= (source op) ":db.fn/cas") (= (source op) ":db/cas"))
+                  (forms (emit-cas-call (nth form 1) (nth form 2) (nth form 3) (nth form 4)))
+                  (forms (emit-tx-fn-call-values op (slice form 1))))
+              (= (count form) 4)
+                (if (or (= (source op) ":db/add") (= (source op) ":db/retract"))
+                  (forms (emit-tx-data-call op (nth form 1) (nth form 2) (nth form 3)))
+                  (forms (emit-tx-fn-call-values op (slice form 1))))
+              (= (count form) 3)
+                (if (or (= (source op) ":db/retract") (= (source op) ":db.fn/retractAttribute"))
+                  (forms (emit-retract-attr-call (nth form 1) (nth form 2)))
+                  (forms (emit-tx-fn-call-values op (slice form 1))))
+              (= (count form) 2)
+                (if (or (= (source op) ":db/retractEntity") (= (source op) ":db.fn/retractEntity"))
+                  (forms (emit-retract-entity-call (nth form 1)))
+                  (forms (emit-tx-fn-call-values op (slice form 1))))
+              (= (count form) 1)
+                (forms (emit-tx-fn-call-values op (rest form)))
+              :else
+                (forms (emit-tx-fn-call-values op (slice form 1))))))
+      (brace? form) (emit-tx-map-items form)
+      :else (error "tx-data expects vector forms like [:db/add e :attr value] or map forms"))))
 
 (defmacro- emit-tx-data-items [forms]
   (if (= (count forms) 0)
