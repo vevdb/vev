@@ -1,94 +1,72 @@
-# vev
+# Vev
 
-An embeddable Datalog database.
+**A native, embedded Datalog database for immutable database values.**
 
-Vev weaves immutable facts into a durable fabric of attributed entities and
-values, with append-only growth and declarative, time-aware querying.
+Vev weaves immutable facts into a durable fabric of attributed entities and values. Facts accumulate through append-only transactions, producing immutable database snapshots that applications can query declaratively and pass around as ordinary values.
 
-It follows Datomic/DataScript semantics end-to-end, and Datomic/DataScript
-syntax tutorials should be followed for the most direct path to learning its
-query and transaction model.
+The project follows Datomic/DataScript semantics as a practical compatibility target. If you are familiar with Datomic or DataScript, their query, transaction, and pull tutorials provide the most direct path to understanding Vev's programming model.
 
-The intended identity is:
+Vev is not trying to be a Datomic clone, a SQL database, or a database server first. Its central bet is that immutable database values, flexible facts, and Datalog-as-data are useful well beyond the Clojure ecosystem when packaged as a small, embedded native library.
 
-- native
-- embedded
-- embedded-first, not embedded-only
-- Kvist-first implementation, with readable Odin output
-- immutable snapshot reads
-- Datomic-flavored Datalog query syntax
-- Datomic/DataScript transaction and pull syntax where practical
-- usable as a Kvist source package where that fits
-- distributed as a native library for other host languages
-- CLI binary for inspection, import/export, and operational tooling
-- durable storage behind a narrow adapter boundary
-- future multi-language consumption through a stable native ABI
+## Identity
 
-Vev follows Datomic/DataScript semantics as a practical compatibility target.
+Vev is designed around a few core principles:
 
-Vev is not trying to be a Datomic clone or a SQL database. The core bet is that
-immutable database values, flexible facts, and Datalog-as-data are useful well
-outside Clojure when packaged as a small embedded native library.
+* Native and embedded by default.
+* Embedded-first, not embedded-only.
+* Immutable snapshot reads.
+* Datomic-flavored Datalog queries.
+* Datomic/DataScript transaction and pull syntax where practical.
+* Durable storage behind a narrow adapter boundary.
+* Distributed as a native library for consumption from multiple host languages.
+* Supported by a CLI for inspection, import/export, and operational tooling.
+* Future-friendly through a stable native ABI.
+* Kvist-first implementation with readable Odin output.
 
-## Initial direction
+The goal is to make the database feel like an ordinary part of the host program rather than an external service that everything revolves around.
 
-The first credible target is:
+## Thesis
 
-- open or create a local database
-- transact facts
-- query with Datomic-flavored Datalog
-- pull entities
-- close and reopen with state intact
+Vev exists to make immutable database values a normal programming model outside the Clojure ecosystem.
 
-The first implementation should optimize for:
+The core idea is simple:
 
-- clear semantics
-- simple local deployment
-- boring failure modes
-- inspectable internals
+* Information is represented as facts.
+* Facts accumulate over time.
+* Reads happen against immutable database values.
+* Writes produce new database values.
+* Application logic can treat the database as ordinary data.
 
-## Design stance
+The irreducible core is:
 
-- engine core in Kvist, lowering to readable Odin
-- no separate Odin prototype; Kvist is the source of truth
-- Datomic/DataScript-compatible syntax at the API boundary wherever practical
-- parsed query AST inside the engine
-- functional semantics at the boundary, local mutation allowed in implementation
-- semantic boundaries should stay transportable as plain data
-- SQLite first for durable storage
-- native library as the primary non-Kvist integration artifact
-- C ABI later as the stable packaging boundary for other languages
-- CLI binary as a thin tool over the same engine/library
-- Clojure/JVM wrapper later on top of the native boundary
+* Datoms
+* Transactions
+* Immutable database snapshots
+* Datalog-as-data
 
-## Compatibility rule
+Everything else is optional, replaceable, or can arrive later:
 
-Vev should preserve Datomic/DataScript syntax and mental model wherever
-practical.
+* Durable storage engines
+* File formats
+* SQL views
+* Full-text search
+* Vector indexes
+* Synchronization
+* Server packaging
+* Hosted services
 
-If you are learning Vev's Datalog/query model, start with Datomic/DataScript
-syntax tutorials and apply that model directly.
+Vev should compromise on implementation technique before compromising on the database-as-value model.
 
-That means:
+## Design Filter
 
-- transaction input should look like Datomic/DataScript transaction data
-- query input should look like Datomic/DataScript Datalog data
-- pull input should stay close to Datomic/DataScript pull syntax
-- transaction metadata should follow the Datomic transaction-context model
+The target experience is Datomic's ideas with SQLite's accessibility.
 
-Divergence should only happen when native embedding constraints or implementation
-clarity require it, not because a new syntax looks nicer in Kvist.
+That means preserving facts, time, and immutable snapshots as the semantic center while keeping deployment simple and unsurprising. The embedded path should remain small, portable, and easy to adopt. Kvist should be an implementation advantage, not an adoption requirement.
 
-## Documents
+Examples and documentation should make the programming model obvious as quickly as possible. Features that obscure the core abstraction, expand the surface area unnecessarily, or turn the project into a kitchen sink should be treated with skepticism.
 
-- [docs/thesis.md](docs/thesis.md)
-- [docs/scope.md](docs/scope.md)
-- [docs/architecture.md](docs/architecture.md)
-- [docs/data-model.md](docs/data-model.md)
-- [docs/indexes.md](docs/indexes.md)
-- [docs/datomic-syntax.md](docs/datomic-syntax.md)
-- [docs/transactions.md](docs/transactions.md)
-- [docs/query-model.md](docs/query-model.md)
-- [docs/pull-model.md](docs/pull-model.md)
-- [docs/interop.md](docs/interop.md)
-- [docs/roadmap.md](docs/roadmap.md)
+When evaluating a feature, ask:
+
+> Does this make immutable database values easier to understand, use, preserve, or distribute?
+
+If not, it probably belongs outside the core.
