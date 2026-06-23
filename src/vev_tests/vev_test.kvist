@@ -1170,6 +1170,7 @@
 (t.deftest datascript-parser-tx-text-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
+        set-conn (vev.create-conn)
         prepared (vev.prepare-tx-text "[{:db/id 10 :user/name \"Prepared\"}]")
         prepared-report (vev.transact-prepared (addr conn) prepared)
         prepared-name (vev.q-text
@@ -1183,6 +1184,9 @@
         initial (vev.transact-text
                   (addr conn)
                   "[[:db/add 1 :user/email \"ada@example.com\"] [:db/add 1 :user/name \"Ada\"] [:db/add 1 :user/score 42.5] [:db/add 1 :user/friend [:user/email \"ada@example.com\"]] {:db/id \"grace\" :user/name \"Grace\" :user/friend 1} {:user/name \"Generated\"} {:db/id [:user/email \"ada@example.com\"] :user/age 37} {:db/id 3 :user/name \"Parent\" :user/address {:user/city \"London\"}}]")
+        set-values (vev.transact-text
+                     (addr set-conn)
+                     "[[:db/add 101 :db/ident :user/friend] [:db/add 101 :db/valueType :db.type/ref] [:db/add 101 :db/cardinality :db.cardinality/many] {:db/id 4 :user/name \"Set User\" :user/friend #{1 3}}]")
         names (vev.q-text
                 initial.db-after
                 "[:find ?name :where [?e :user/name ?name]]")
@@ -1204,6 +1208,12 @@
         friend (vev.q-text
                  cas.db-after
                  "[:find ?friend :where [1 :user/friend ?friend]]")
+        set-friends (vev.q-text-collection
+                      set-values.db-after
+                      "[:find [?friend ...] :where [4 :user/friend ?friend]]")
+        set-ground (vev.q-text-collection
+                     set-values.db-after
+                     "[:find [?x ...] :where [(ground #{:a :b}) [?x ...]]]")
         retract (vev.transact-text
                   (addr conn)
                   "[[:db/retract 1 :user/name \"Ada\"] [:db.fn/retractAttribute 3 :user/address] [:db.fn/retractEntity [:user/email \"ada@example.com\"]]]")
@@ -1226,6 +1236,13 @@
     (t.is (= nested.rows[0].values[0].text "London"))
     (t.is cas.ok)
     (t.is (= friend.rows[0].values[0].entity 3))
+    (t.is set-values.ok)
+    (t.is (= (count set-friends) 2))
+    (t.is (= set-friends[0].entity 1))
+    (t.is (= set-friends[1].entity 3))
+    (t.is (= (count set-ground) 2))
+    (t.is (= set-ground[0].text ":a"))
+    (t.is (= set-ground[1].text ":b"))
     (t.is retract.ok)
     (t.is (= (count remaining.rows) 0))))
 
@@ -1233,9 +1250,12 @@
   (defer (free_all context.allocator))
   (let [doc (vev.empty-edn-doc)
         [ok error] (vev.read-edn-text! (addr doc) "[:find (pull ?e [:name {:friend [:name]}]) :where [?e :active true] [?e :score 42.5]]")
+        set-doc (vev.empty-edn-doc)
+        [set-ok set-error] (vev.read-edn-text! (addr set-doc) "#{:a :b}")
         bad (vev.empty-edn-doc)
         [bad-ok bad-error] (vev.read-edn-text! (addr bad) "[:find ?e] trailing")]
     (defer (delete doc.nodes))
+    (defer (delete set-doc.nodes))
     (defer (delete bad.nodes))
     (t.is ok)
     (t.is (= error ""))
@@ -1262,6 +1282,12 @@
         (t.is (= nested-map.child-count 2))
         (t.is (= doc.nodes[score-value].kind .Float))
         (t.is (= doc.nodes[score-value].float-value 42.5))))
+    (t.is set-ok)
+    (t.is (= set-error ""))
+    (when set-ok
+      (let [root set-doc.nodes[set-doc.root]]
+        (t.is (= root.kind .Set))
+        (t.is (= root.child-count 2))))
     (t.is (not bad-ok))
     (t.is (= bad-error "trailing EDN input"))))
 
@@ -7352,7 +7378,26 @@
         by-lookup-ref (vev.q conn.db
                         [:find ?tuple
                          :where
-                         [[:a-and-b ["a" "B"]] :a-and-b ?tuple]])]
+                         [[:a-and-b ["a" "B"]] :a-and-b ?tuple]])
+        by-text-lookup-ref (vev.q-text
+                             conn.db
+                             "[:find ?tuple :where [[:a-and-b [\"a\" \"B\"]] :a-and-b ?tuple]]")
+        pulled (vev.pull conn.db [:a :b :a-and-b] [:a-and-b ["a" "B"]])
+        text-pulled (vev.pull-text-lookup-ref
+                      conn.db
+                      "[:a :b :a-and-b]"
+                      ":a-and-b"
+                      (vev.value-vector2
+                        (vev.value-string "a")
+                        (vev.value-string "B")))
+        prepared-pattern (vev.prepare-pull-pattern-text "[:a :b :a-and-b]")
+        prepared-pulled (vev.pull-prepared-lookup-ref
+                          conn.db
+                          prepared-pattern
+                          ":a-and-b"
+                          (vev.value-vector2
+                            (vev.value-string "a")
+                            (vev.value-string "B")))]
     (t.is seed.ok)
     (t.is (= (count exact) 1))
     (t.is (= exact[0].e 3))
@@ -7361,7 +7406,28 @@
     (t.is (= (count by-lookup-ref.rows) 1))
     (t.is (= by-lookup-ref.rows[0].values[0].kind .Vector))
     (t.is (= by-lookup-ref.rows[0].values[0].items[0].text "a"))
-    (t.is (= by-lookup-ref.rows[0].values[0].items[1].text "B"))))
+    (t.is (= by-lookup-ref.rows[0].values[0].items[1].text "B"))
+    (t.is (= (count by-text-lookup-ref.rows) 1))
+    (t.is (= by-text-lookup-ref.rows[0].values[0].kind .Vector))
+    (t.is (= by-text-lookup-ref.rows[0].values[0].items[0].text "a"))
+    (t.is (= by-text-lookup-ref.rows[0].values[0].items[1].text "B"))
+    (t.is (= (count pulled.attrs) 3))
+    (t.is (= pulled.attrs[0].v.text "a"))
+    (t.is (= pulled.attrs[1].v.text "B"))
+    (t.is (= pulled.attrs[2].v.kind .Vector))
+    (t.is (= pulled.attrs[2].v.items[0].text "a"))
+    (t.is (= pulled.attrs[2].v.items[1].text "B"))
+    (t.is (= (count text-pulled.attrs) 3))
+    (t.is (= text-pulled.attrs[0].v.text "a"))
+    (t.is (= text-pulled.attrs[1].v.text "B"))
+    (t.is (= text-pulled.attrs[2].v.items[0].text "a"))
+    (t.is (= text-pulled.attrs[2].v.items[1].text "B"))
+    (t.is prepared-pattern.ok)
+    (t.is (= (count prepared-pulled.attrs) 3))
+    (t.is (= prepared-pulled.attrs[0].v.text "a"))
+    (t.is (= prepared-pulled.attrs[1].v.text "B"))
+    (t.is (= prepared-pulled.attrs[2].v.items[0].text "a"))
+    (t.is (= prepared-pulled.attrs[2].v.items[1].text "B"))))
 
 (t.deftest datascript-tuple-attrs-rejects-invalid-values-subset
   (defer (free_all context.allocator))
