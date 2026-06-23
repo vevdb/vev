@@ -45,9 +45,9 @@ These are the main in-memory parity target before durable storage.
 | `lookup_refs.cljc` | 5 | partial | entity/query/tx/index lookup refs, mixed entity-id inputs, scalar and collection lookup-ref query inputs with DataScript-style projection of the original lookup-ref value, multi-source lookup-ref inputs, unresolved inline query lookup-ref errors, and checked index unresolved lookup-ref errors covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
 | `explode.cljc` | 4 | partial | cardinality-many tx-map collection expansion, ref collections, reverse ref tx-map values, nested maps, multi-valued nested maps including EDN sets, reverse nested maps, and circular/nested ref shapes covered through EDN/text and Kvist tx-data; host list/array inputs and exact reverse-attr schema errors remain |
-| `components.cljc` | 2 | partial | reverse component pull id/pattern/recursion behavior covered; exact schema validation and render/touch shapes remain |
+| `components.cljc` | 2 | passing | component schema validation, forward pull/touch expansion, `retractEntity`, `retractAttribute`, multival components, and reverse navigation are covered; exact Clojure render/protocol shapes are host |
 | `pull_api.cljc` | 17 | partial | repeated attr-spec normalization, DataScript namespaced reverse attrs, reverse component pull id/pattern/recursion shapes, ABI-friendly named `:xform` transforms for `vector`/`name`, and typed native pull xform callbacks through text/prepared/query pull APIs covered; visitor options, final C ABI registration shape, and exact collection/scalar shapes remain |
-| `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
+| `entity.cljc` | 6 | passing | entity id/db access, scalar/many attr reads, contains, lookup-ref and ident construction, missing/dangling refs, forward/reverse ref navigation, nested reverse navigation, and touch are covered; Clojure protocol equality/hash/print/cache behavior is host |
 | `filter.cljc` | 1 | passing | materialized filtered DBs cover query, entity, index access, chaining, and semantic DB equivalence; Clojure hash/equality/runtime wrapper behavior is host |
 
 ## Parser And Portable API
@@ -75,13 +75,13 @@ These are useful, but not the next engine-parity gate.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `conn.cljc` | 2 | partial | conn-from-db/from-datoms and reset reports covered |
-| `listen.cljc` | 1 | partial | named report-sink listeners covered; arbitrary callback/closure API remains |
+| `conn.cljc` | 2 | passing | create/conn-from-db/conn-from-datoms and reset reports with tx-data, before/after snapshots, metadata, and listener delivery are covered; Clojure schema-map storage shape is host |
+| `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; arbitrary closure callbacks are host/ABI design work |
 | `serialize.cljc` | 5 | partial | `init-db` from datoms and typed EDN-ish datom snapshot text roundtrip covered, including schema, retractions, refs, symbol/map/vector values, and next-tx recovery; JSON/transit-style formats later |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
-| `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
-| `issues.cljc` | 5 | partial | engine-relevant regressions for vector result isolation, mixed-type DB diff, and schema inspection covered; metadata/pprint cases are Clojure host behavior |
+| `db.cljc` | 4 | passing | semantic DB diff is covered; record-updatable, hash-cache, and UUID helpers are Clojure/DataScript runtime details |
+| `issues.cljc` | 5 | passing | issue-262 vector result isolation, issue-369 mixed-type DB diff, and issue-381 schema inspection are covered; issue-330/331 are Clojure pprint/meta host behavior |
 | `query_v3.cljc` | 2 | passing | active validation cases plus the disabled relation-query example are covered through Vev relation DB APIs, including arity, non-collection sources, explicit `$`, prepared queries, and scalar/tuple/map primary sources |
 | `lru.cljc` | 2 | host | DataScript implementation detail |
 | `core.cljc` | 1 | host | test harness/runtime behavior |
