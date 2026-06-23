@@ -1,6 +1,7 @@
 (package vev)
 
 (import core-strings "core:strings")
+(import mmap "kvist:map")
 
 
 (defn query-with-rules [query: Query, rules: []Rule] -> Query
@@ -5698,6 +5699,22 @@
           (return datom.v true)))))
   (return (Value {}) false))
 
+(defn pull-attr-entity-target [db: DB, entity: u64, attr: string] -> [target: u64, ok: bool, many: bool]
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        found-target: u64 0
+        found false]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Entity))
+          (when found
+            (return found-target true true))
+          (set! found-target datom.v.entity)
+          (set! found true))))
+    (return found-target found false)))
+
 (defn pull-limit [spec: Pull-Spec] -> int
   (if (= spec.limit -1)
     2147483647
@@ -5710,31 +5727,66 @@
                                attrs: (make [dynamic]Pull-Attr)}))
     out))
 
-(defn pull-child-pattern-mut-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen: ^[dynamic]u64, registry: []Native-Query-Fn] -> [dynamic]Pull-Attr
-  (let [seen-count (count seen^)
-        normalized (normalize-pull-pattern pattern) :defer]
+(defn pull-seen-counts [seen: []u64] -> map[u64]int
+  (let [out (make (map u64 int) (count seen))]
+    (for [entity seen]
+      (let [[count found] (mmap.get out entity)]
+        (if found
+          (mmap.assoc! out entity (+ count 1))
+          (mmap.assoc! out entity 1))))
+    out))
+
+(defn pull-seen-count [counts: (ptr (map u64 int)), entity: u64] -> int
+  (let [[count found] (mmap.get counts^ entity)]
+    (if found count 0)))
+
+(defn pull-seen-contains? [counts: (ptr (map u64 int)), entity: u64] -> bool
+  (> (pull-seen-count counts entity) 0))
+
+(defn pull-seen-push! [counts: (ptr (map u64 int)), entity: u64]
+  (mmap.assoc! counts^ entity (+ (pull-seen-count counts entity) 1)))
+
+(defn pull-seen-pop! [counts: (ptr (map u64 int)), entity: u64]
+  (let [count (pull-seen-count counts entity)]
+    (when (<= count 1)
+      (mmap.dissoc! counts^ entity)
+      (return))
+    (mmap.assoc! counts^ entity (- count 1))))
+
+(defn pull-child-pattern-normalized-mut-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn] -> [dynamic]Pull-Attr
+  (let [seen-count (count seen^)]
     (arr.push! seen^ entity)
-    (let [pulled (pull-pattern-spec-seen-with-fns db entity (slice normalized 0) (slice normalized 0) seen registry)]
+    (pull-seen-push! seen-counts entity)
+    (let [pulled (pull-pattern-spec-seen-with-fns db entity pattern root seen seen-counts registry)]
+      (pull-seen-pop! seen-counts entity)
       (arr.remove-unordered-at! seen^ seen-count)
       pulled.attrs)))
 
+(defn pull-child-pattern-mut-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn] -> [dynamic]Pull-Attr
+  (let [normalized (normalize-pull-pattern pattern) :defer]
+    (pull-child-pattern-normalized-mut-with-fns db entity (slice normalized 0) (slice normalized 0) seen seen-counts registry)))
+
 (defn pull-child-pattern-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen: []u64, registry: []Native-Query-Fn] -> [dynamic]Pull-Attr
-  (let [child-seen (arr.into [dynamic]u64 seen)]
+  (let [child-seen (arr.into [dynamic]u64 seen)
+        seen-counts (pull-seen-counts seen)]
     (defer (delete child-seen))
-    (pull-child-pattern-mut-with-fns db entity pattern root (addr child-seen) registry)))
+    (defer (delete seen-counts))
+    (pull-child-pattern-mut-with-fns db entity pattern root (addr child-seen) (addr seen-counts) registry)))
 
 (defn pull-child-pattern [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen: []u64] -> [dynamic]Pull-Attr
   (pull-child-pattern-with-fns db entity pattern root seen ([]Native-Query-Fn [])))
 
-(defn pull-child-recursion-mut-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, seen: ^[dynamic]u64, registry: []Native-Query-Fn] -> [dynamic]Pull-Attr
-  (if (u64-contains? (slice seen^ 0) entity)
+(defn pull-child-recursion-mut-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, seen: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn] -> [dynamic]Pull-Attr
+  (if (pull-seen-contains? seen-counts entity)
     (pull-id-attrs entity)
-    (pull-child-pattern-mut-with-fns db entity pattern pattern seen registry)))
+    (pull-child-pattern-normalized-mut-with-fns db entity pattern pattern seen seen-counts registry)))
 
 (defn pull-child-recursion-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, seen: []u64, registry: []Native-Query-Fn] -> [dynamic]Pull-Attr
-  (let [child-seen (arr.into [dynamic]u64 seen)]
+  (let [child-seen (arr.into [dynamic]u64 seen)
+        seen-counts (pull-seen-counts seen)]
     (defer (delete child-seen))
-    (pull-child-recursion-mut-with-fns db entity pattern (addr child-seen) registry)))
+    (defer (delete seen-counts))
+    (pull-child-recursion-mut-with-fns db entity pattern (addr child-seen) (addr seen-counts) registry)))
 
 (defn pull-child-recursion [db: DB, entity: u64, pattern: []Pull-Spec, seen: []u64] -> [dynamic]Pull-Attr
   (pull-child-recursion-with-fns db entity pattern seen ([]Native-Query-Fn [])))
@@ -5743,7 +5795,7 @@
   (or (= (count spec.pattern) 0)
       (> (count children) 0)))
 
-(defn pull-reverse-attr-with-fns! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, registry: []Native-Query-Fn] -> bool
+(defn pull-reverse-attr-with-fns! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn] -> bool
   (let [forward-attr (forward-attr-for-reverse spec.a) :defer
         ref-value (value-entity entity)
         indexes (slice db.vaet 0)
@@ -5758,13 +5810,15 @@
                    (datom-current-at? db datom-index))
           (let [children (make [dynamic]Pull-Attr)]
             (when (> (count spec.pattern) 0)
-              (set! children (pull-child-pattern-mut-with-fns db datom.e spec.pattern spec.pattern seen-entities registry)))
+              (set! children (pull-child-pattern-mut-with-fns db datom.e spec.pattern spec.pattern seen-entities seen-counts registry)))
             (when (and (= (count spec.pattern) 0)
                        spec.has-recursion
                        (not (= spec.recursion-depth 0)))
-              (let [pattern (pull-recursion-pattern root spec.a)]
-                (defer (delete pattern))
-                (set! children (pull-child-recursion-mut-with-fns db datom.e (slice pattern 0) seen-entities registry))))
+              (if (pull-unbounded-recursion-depth? spec.recursion-depth)
+                (set! children (pull-child-recursion-mut-with-fns db datom.e root seen-entities seen-counts registry))
+                (let [pattern (pull-recursion-pattern root spec.a)]
+                  (defer (delete pattern))
+                  (set! children (pull-child-recursion-mut-with-fns db datom.e (slice pattern 0) seen-entities seen-counts registry)))))
             (if (pull-include-ref-result? spec (slice children 0))
               (do
                 (arr.push! out^
@@ -5780,9 +5834,11 @@
     found))
 
 (defn pull-reverse-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> bool
-  (let [seen (arr.into [dynamic]u64 seen-entities)]
+  (let [seen (arr.into [dynamic]u64 seen-entities)
+        seen-counts (pull-seen-counts seen-entities)]
     (defer (delete seen))
-    (pull-reverse-attr-with-fns! out db entity spec root (addr seen) ([]Native-Query-Fn []))))
+    (defer (delete seen-counts))
+    (pull-reverse-attr-with-fns! out db entity spec root (addr seen) (addr seen-counts) ([]Native-Query-Fn []))))
 
 (defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen: ^[dynamic]u64]
   (when (not (pull-output-has-attr? out^ ":db/id"))
@@ -5841,6 +5897,80 @@
 
 (defn pull-next-recursion-depth [depth: int] -> int
   (- depth 1))
+
+(defn pull-unbounded-recursion-depth? [depth: int] -> bool
+  (= depth 2147483647))
+
+(defn pull-simple-unbounded-forward-recursion-spec [pattern: []Pull-Spec] -> [spec: Pull-Spec, ok: bool]
+  (let [candidate (Pull-Spec {})
+        found false]
+    (for [spec index pattern]
+      (if (and spec.has-recursion
+               (pull-unbounded-recursion-depth? spec.recursion-depth)
+               (= (count spec.pattern) 0)
+               (not (reverse-attr? spec.a)))
+        (do
+          (when (or found (not (= index (- (count pattern) 1))))
+            (return (Pull-Spec {}) false))
+          (set! candidate spec)
+          (set! found true))
+        (when (or spec.has-recursion
+                  (> (count spec.pattern) 0)
+                  (= spec.a "*"))
+          (return (Pull-Spec {}) false))))
+    (return candidate found)))
+
+(defn pull-flat-pattern-except-attr-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, attr: string, seen: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn] -> [dynamic]Pull-Attr
+  (let [out (make [dynamic]Pull-Attr)]
+    (for [spec pattern]
+      (when (not (= spec.a attr))
+        (pull-spec-attr-with-fns! (addr out) db entity spec pattern seen seen-counts registry)))
+    out))
+
+(defn pull-pattern-simple-unbounded-forward-chain-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, spec: Pull-Spec, registry: []Native-Query-Fn] -> [result: Pull-Result, ok: bool]
+  (let [path (make [dynamic]u64)
+        seen-counts (make (map u64 int))
+        cycle false]
+    (arr.push! path entity)
+    (pull-seen-push! (addr seen-counts) entity)
+    (while true
+      (let [current path[(- (count path) 1)]
+            [target found many] (pull-attr-entity-target db current spec.a)]
+        (when many
+          (delete path)
+          (delete seen-counts)
+          (return (Pull-Result {e: entity attrs: (make [dynamic]Pull-Attr)}) false))
+        (when (not found)
+          (break))
+        (arr.push! path target)
+        (when (pull-seen-contains? (addr seen-counts) target)
+          (set! cycle true)
+          (break))
+        (pull-seen-push! (addr seen-counts) target)))
+    (let [build-seen (make [dynamic]u64)
+          build-counts (make (map u64 int))
+          last-entity path[(- (count path) 1)]
+          child-attrs (if cycle
+                        (pull-id-attrs last-entity)
+                        (pull-flat-pattern-except-attr-with-fns db last-entity pattern spec.a (addr build-seen) (addr build-counts) registry))
+          i (- (count path) 2)]
+      (while (>= i 0)
+        (let [parent path[i]
+              child path[(+ i 1)]
+              attrs (pull-flat-pattern-except-attr-with-fns db parent pattern spec.a (addr build-seen) (addr build-counts) registry)]
+          (arr.push! attrs
+            (pull-spec-transform-attr-with-fns
+              spec
+              (pull-attr-from-spec spec (value-entity child) child-attrs)
+              registry))
+          (set! child-attrs attrs)
+          (set! i (- i 1))))
+      (let [built-result (Pull-Result {e: entity attrs: child-attrs})]
+        (delete build-seen)
+        (delete build-counts)
+        (delete path)
+        (delete seen-counts)
+        (return built-result true)))))
 
 (defn pull-spec-decrement-recursion [spec: Pull-Spec, attr: string] -> Pull-Spec
   (if (and spec.has-recursion
@@ -5916,7 +6046,7 @@
 (defn pull-spec-missing-attr [spec: Pull-Spec] -> Pull-Attr
   (pull-spec-missing-attr-with-fns spec ([]Native-Query-Fn [])))
 
-(defn pull-forward-attr-with-fns! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, registry: []Native-Query-Fn] -> bool
+(defn pull-forward-attr-with-fns! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn] -> bool
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
         high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
@@ -5929,11 +6059,13 @@
           (let [children (make [dynamic]Pull-Attr)]
             (when (= datom.v.kind .Entity)
               (if (> (count spec.pattern) 0)
-                (set! children (pull-child-pattern-mut-with-fns db datom.v.entity spec.pattern spec.pattern seen-entities registry))
+                (set! children (pull-child-pattern-mut-with-fns db datom.v.entity spec.pattern spec.pattern seen-entities seen-counts registry))
                 (if (and spec.has-recursion (not (= spec.recursion-depth 0)))
-                  (let [pattern (pull-recursion-pattern root spec.a)]
-                    (defer (delete pattern))
-                    (set! children (pull-child-recursion-mut-with-fns db datom.v.entity (slice pattern 0) seen-entities registry)))
+                  (if (pull-unbounded-recursion-depth? spec.recursion-depth)
+                    (set! children (pull-child-recursion-mut-with-fns db datom.v.entity root seen-entities seen-counts registry))
+                    (let [pattern (pull-recursion-pattern root spec.a)]
+                      (defer (delete pattern))
+                      (set! children (pull-child-recursion-mut-with-fns db datom.v.entity (slice pattern 0) seen-entities seen-counts registry))))
                   (when (schema-component? db datom.a)
                     (set! children (pull-component-children db entity datom.v.entity))))))
             (if (pull-include-ref-result? spec (slice children 0))
@@ -5951,11 +6083,13 @@
     found))
 
 (defn pull-forward-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> bool
-  (let [seen (arr.into [dynamic]u64 seen-entities)]
+  (let [seen (arr.into [dynamic]u64 seen-entities)
+        seen-counts (pull-seen-counts seen-entities)]
     (defer (delete seen))
-    (pull-forward-attr-with-fns! out db entity spec root (addr seen) ([]Native-Query-Fn []))))
+    (defer (delete seen-counts))
+    (pull-forward-attr-with-fns! out db entity spec root (addr seen) (addr seen-counts) ([]Native-Query-Fn []))))
 
-(defn pull-spec-attr-with-fns! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, registry: []Native-Query-Fn]
+(defn pull-spec-attr-with-fns! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn]
   (when (and spec.has-recursion (<= spec.recursion-depth 0))
     (return))
   (when (= spec.a "*")
@@ -5970,37 +6104,49 @@
           registry)))
     (return))
   (when (reverse-attr? spec.a)
-    (let [found (pull-reverse-attr-with-fns! out db entity spec root seen-entities registry)]
+    (let [found (pull-reverse-attr-with-fns! out db entity spec root seen-entities seen-counts registry)]
       (when (and (not found) (or spec.has-default spec.has-xform))
         (arr.push! out^ (pull-spec-missing-attr-with-fns spec registry))))
     (return))
-  (let [found (pull-forward-attr-with-fns! out db entity spec root seen-entities registry)]
+  (let [found (pull-forward-attr-with-fns! out db entity spec root seen-entities seen-counts registry)]
     (when (and (not found) (or spec.has-default spec.has-xform))
       (arr.push! out^ (pull-spec-missing-attr-with-fns spec registry)))))
 
 (defn pull-spec-attr! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
-  (let [seen (arr.into [dynamic]u64 seen-entities)]
+  (let [seen (arr.into [dynamic]u64 seen-entities)
+        seen-counts (pull-seen-counts seen-entities)]
     (defer (delete seen))
-    (pull-spec-attr-with-fns! out db entity spec root (addr seen) ([]Native-Query-Fn []))))
+    (defer (delete seen-counts))
+    (pull-spec-attr-with-fns! out db entity spec root (addr seen) (addr seen-counts) ([]Native-Query-Fn []))))
 
-(defn pull-pattern-spec-seen-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, registry: []Native-Query-Fn] -> Pull-Result
+(defn pull-pattern-spec-seen-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn] -> Pull-Result
   (let [out (make [dynamic]Pull-Attr)]
     (for [spec pattern]
-      (pull-spec-attr-with-fns! (addr out) db entity spec root seen-entities registry))
+      (pull-spec-attr-with-fns! (addr out) db entity spec root seen-entities seen-counts registry))
     (Pull-Result {e: entity attrs: out})))
 
 (defn pull-pattern-spec-seen [db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: []u64] -> Pull-Result
-  (let [seen (arr.into [dynamic]u64 seen-entities)]
+  (let [seen (arr.into [dynamic]u64 seen-entities)
+        seen-counts (pull-seen-counts seen-entities)]
     (defer (delete seen))
-    (pull-pattern-spec-seen-with-fns db entity pattern root (addr seen) ([]Native-Query-Fn []))))
+    (defer (delete seen-counts))
+    (pull-pattern-spec-seen-with-fns db entity pattern root (addr seen) (addr seen-counts) ([]Native-Query-Fn []))))
 
 (defn pull-pattern-spec-with-fns [db: DB, entity: u64, pattern: []Pull-Spec, registry: []Native-Query-Fn] -> Pull-Result
   (let [seen (make [dynamic]u64)
+        seen-counts (make (map u64 int))
         normalized (normalize-pull-pattern pattern)]
     (defer (delete seen))
+    (defer (delete seen-counts))
     (defer (delete normalized))
+    (let [[chain-spec chain-ok] (pull-simple-unbounded-forward-recursion-spec (slice normalized 0))]
+      (when chain-ok
+        (let [[chain chain-built] (pull-pattern-simple-unbounded-forward-chain-with-fns db entity (slice normalized 0) chain-spec registry)]
+          (when chain-built
+            (return chain)))))
     (arr.push! seen entity)
-    (pull-pattern-spec-seen-with-fns db entity (slice normalized 0) (slice normalized 0) (addr seen) registry)))
+    (pull-seen-push! (addr seen-counts) entity)
+    (pull-pattern-spec-seen-with-fns db entity (slice normalized 0) (slice normalized 0) (addr seen) (addr seen-counts) registry)))
 
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
   (pull-pattern-spec-with-fns db entity pattern ([]Native-Query-Fn [])))
