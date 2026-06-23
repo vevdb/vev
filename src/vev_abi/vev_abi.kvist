@@ -1,6 +1,6 @@
 (package vev-abi)
 
-(import kvist-slice "core:slice")
+(import arr "kvist:arr")
 (import runtime "base:runtime")
 (import strings "core:strings")
 (import vev "../vev")
@@ -14,6 +14,10 @@ ABI_Conn :: struct {
 ABI_Prepared_Query :: struct {
     source: string,
     query: vev__Prepared_Query,
+}
+
+ABI_DB :: struct {
+    db: vev__DB,
 }
 
 ABI_Result :: struct {
@@ -59,6 +63,18 @@ abi_free_prepared_query :: proc(query: rawptr) {
     free(wrapper)
 }
 
+abi_alloc_db :: proc() -> rawptr {
+    return rawptr(new(ABI_DB))
+}
+
+abi_db_ptr :: proc(db: rawptr) -> ^vev__DB {
+    return &((^ABI_DB)(db))^.db
+}
+
+abi_free_db :: proc(db: rawptr) {
+    free((^ABI_DB)(db))
+}
+
 abi_alloc_result :: proc() -> rawptr {
     return rawptr(new(ABI_Result))
 }
@@ -73,6 +89,7 @@ abi_free_result :: proc(result: rawptr) {
 ")
 
 (def Vev-Conn (distinct rawptr))
+(def Vev-DB (distinct rawptr))
 (def Vev-Prepared-Query (distinct rawptr))
 (def Vev-Result (distinct rawptr))
 
@@ -81,6 +98,9 @@ abi_free_result :: proc(result: rawptr) {
 
 (defn- prepared-query-ptr [query: Vev-Prepared-Query] -> ^vev.Prepared-Query
   (abi-prepared-query-ptr (rawptr query)))
+
+(defn- db-ptr [db: Vev-DB] -> ^vev.DB
+  (abi-db-ptr (rawptr db)))
 
 (defn- result-ptr [result: Vev-Result] -> ^vev.Result-Set
   (abi-result-ptr (rawptr result)))
@@ -96,6 +116,65 @@ abi_free_result :: proc(result: rawptr) {
     (if (= err nil)
       out
       (cstring ""))))
+
+(defn- string-owned [text: string] -> string
+  (let [[out err] (strings.clone text)]
+    (if (= err nil)
+      out
+      "")))
+
+(defn- value-owned [value: vev.Value] -> vev.Value
+  (case value.kind
+    .String (vev.value-string (string-owned value.text))
+    .Keyword (vev.value-keyword (string-owned value.text))
+    .Symbol (vev.value-symbol (string-owned value.text))
+    .Vector
+      (let [items (make [dynamic]vev.Value 0 (count value.items))]
+        (for [item value.items]
+          (arr.push! items (value-owned item)))
+        (vev.Value {kind: .Vector items: items}))
+    .Map
+      (let [items (make [dynamic]vev.Value 0 (count value.items))]
+        (for [item value.items]
+          (arr.push! items (value-owned item)))
+        (vev.Value {kind: .Map items: items}))
+    :else value))
+
+(defn- delete-owned-value [value: vev.Value]
+  (case value.kind
+    .String (delete value.text)
+    .Keyword (delete value.text)
+    .Symbol (delete value.text)
+    .Vector
+      (do
+        (for [item value.items]
+          (delete-owned-value item))
+        (delete value.items))
+    .Map
+      (do
+        (for [item value.items]
+          (delete-owned-value item))
+        (delete value.items))
+    :else (do)))
+
+(defn- datom-owned [datom: vev.Datom] -> vev.Datom
+  (vev.Datom {e: datom.e
+              a: (string-owned datom.a)
+              v: (value-owned datom.v)
+              tx: datom.tx
+              added: datom.added}))
+
+(defn- db-owned [db: vev.DB] -> vev.DB
+  (let [datoms (make [dynamic]vev.Datom 0 (count db.datoms))]
+    (for [datom db.datoms]
+      (arr.push! datoms (datom-owned datom)))
+    (vev.build-db datoms)))
+
+(defn- delete-db-owned [db: vev.DB]
+  (for [datom db.datoms]
+    (delete datom.a)
+    (delete-owned-value datom.v))
+  (vev.delete-owned-db db))
 
 (defn- delete-query-shallow [query: vev.Query]
   (delete query.find)
@@ -157,6 +236,26 @@ abi_free_result :: proc(result: rawptr) {
     (vev.delete-owned-db ptr^.db)
     (delete ptr^.listeners)
     (abi-free-conn (rawptr conn))))
+
+@export
+(defn vev_conn_db :abi "c" [conn: Vev-Conn] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr conn) nil)
+    (return (Vev-DB nil)))
+  (let [db (abi-alloc-db)
+        ptr (db-ptr (Vev-DB db))
+        conn-ptr-value (conn-ptr conn)]
+    (set! ptr^ (db-owned conn-ptr-value^.db))
+    (Vev-DB db)))
+
+@export
+(defn vev_db_release :abi "c" [db: Vev-DB]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return))
+  (let [ptr (db-ptr db)]
+    (delete-db-owned ptr^)
+    (abi-free-db (rawptr db))))
 
 @export
 (defn vev_string_free :abi "c" [text: cstring]
@@ -262,6 +361,34 @@ abi_free_result :: proc(result: rawptr) {
         result (abi-alloc-result)
         result-ptr-value (result-ptr (Vev-Result result))]
     (set! result-ptr-value^ (vev.q-prepared-with-input-text conn-ptr-value^.db query-ptr-value^ inputs))
+    (delete inputs)
+    (Vev-Result result)))
+
+@export
+(defn vev_query_db_prepared_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
+    (return (c-string-owned "[:vev/error \"null db, prepared query, or inputs\"]")))
+  (let [inputs (text-from-c inputs-text)
+        db-ptr-value (db-ptr db)
+        query-ptr-value (prepared-query-ptr query)
+        value (vev.q-prepared-value-with-input-text db-ptr-value^ query-ptr-value^ inputs)
+        text (vev.value-serializable-text value)
+        out (c-string-owned text)]
+    (delete inputs)
+    out))
+
+@export
+(defn vev_query_db_prepared_result_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-Result
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
+    (return (Vev-Result nil)))
+  (let [inputs (text-from-c inputs-text)
+        db-ptr-value (db-ptr db)
+        query-ptr-value (prepared-query-ptr query)
+        result (abi-alloc-result)
+        result-ptr-value (result-ptr (Vev-Result result))]
+    (set! result-ptr-value^ (vev.q-prepared-with-input-text db-ptr-value^ query-ptr-value^ inputs))
     (delete inputs)
     (Vev-Result result)))
 

@@ -37,6 +37,20 @@ static void print_result_rows(vev_result_t result) {
     }
 }
 
+static int result_row_count_or_error(const char *label, vev_result_t result) {
+    if (result == NULL) {
+        fprintf(stderr, "%s: null result\n", label);
+        return -1;
+    }
+    if (!vev_result_ok(result)) {
+        const char *error = vev_result_error(result);
+        fprintf(stderr, "%s: %s\n", label, error);
+        vev_string_free(error);
+        return -1;
+    }
+    return vev_result_row_count(result);
+}
+
 int main(void) {
     printf("version: %s\n", vev_version());
 
@@ -107,7 +121,57 @@ int main(void) {
     print_result_rows(result);
     vev_result_free(result);
 
-    vev_prepared_query_free(query);
+    vev_prepared_query_t all_emails =
+        vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");
+    if (all_emails == NULL) {
+        fprintf(stderr, "failed to prepare snapshot query\n");
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+
+    vev_db_t snapshot = vev_conn_db(conn);
+    if (snapshot == NULL) {
+        fprintf(stderr, "failed to retain DB snapshot\n");
+        vev_prepared_query_free(all_emails);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+
+    print_and_free(
+        "tx-after-snapshot",
+        vev_transact_edn(
+            conn,
+            "[{:db/id 3 :user/name \"Alan\" :user/email \"alan@example.com\"}]"));
+
+    vev_result_t current = vev_query_prepared_result_with_inputs(conn, all_emails, "[]");
+    int current_rows = result_row_count_or_error("current-db", current);
+    printf("current-db rows: %d\n", current_rows);
+    vev_result_free(current);
+
     vev_conn_close(conn);
+    conn = NULL;
+
+    vev_result_t old = vev_query_db_prepared_result_with_inputs(snapshot, all_emails, "[]");
+    int old_rows = result_row_count_or_error("snapshot-db", old);
+    printf("snapshot-db rows: %d\n", old_rows);
+    vev_result_free(old);
+
+    if (current_rows != 3 || old_rows != 2) {
+        fprintf(stderr, "unexpected snapshot row counts\n");
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    vev_db_release(snapshot);
+    vev_prepared_query_free(all_emails);
+
+    vev_prepared_query_free(query);
+    if (conn != NULL) {
+        vev_conn_close(conn);
+    }
     return 0;
 }

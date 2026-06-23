@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 typedef void *vev_conn_t;
+typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
 
@@ -28,6 +29,8 @@ const char *vev_version(void);
 
 vev_conn_t vev_conn_open_memory(void);
 void vev_conn_close(vev_conn_t conn);
+vev_db_t vev_conn_db(vev_conn_t conn);
+void vev_db_release(vev_db_t db);
 
 void vev_string_free(const char *text);
 
@@ -48,6 +51,14 @@ const char *vev_query_prepared_with_inputs(
 
 vev_result_t vev_query_prepared_result_with_inputs(
     vev_conn_t conn,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+const char *vev_query_db_prepared_with_inputs(
+    vev_db_t db,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+vev_result_t vev_query_db_prepared_result_with_inputs(
+    vev_db_t db,
     vev_prepared_query_t query,
     const char *inputs_text);
 void vev_result_free(vev_result_t result);

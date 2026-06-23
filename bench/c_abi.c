@@ -134,6 +134,60 @@ int main(void) {
         samples[sample_count / 2],
         sample_count);
 
+    for (int i = 0; i < sample_count; i++) {
+        double start = now_us();
+        vev_db_t snapshot = vev_conn_db(conn);
+        double elapsed = now_us() - start;
+        vev_db_release(snapshot);
+        samples[i] = elapsed;
+    }
+
+    qsort(samples, (size_t)sample_count, sizeof(double), compare_double);
+    printf(
+        "engine=c-abi workload=db-snapshot n=%d median_us=%.0f samples=%d\n",
+        n,
+        samples[sample_count / 2],
+        sample_count);
+
+    vev_db_t snapshot = vev_conn_db(conn);
+    if (snapshot == NULL) {
+        fprintf(stderr, "failed to retain DB snapshot\n");
+        free(samples);
+        vev_prepared_query_free(prepared);
+        vev_conn_close(conn);
+        return 1;
+    }
+
+    for (int i = 0; i < warmups; i++) {
+        vev_result_t result = vev_query_db_prepared_result_with_inputs(snapshot, prepared, inputs);
+        vev_result_free(result);
+    }
+
+    for (int i = 0; i < sample_count; i++) {
+        double start = now_us();
+        vev_result_t result = vev_query_db_prepared_result_with_inputs(snapshot, prepared, inputs);
+        double elapsed = now_us() - start;
+        if (!vev_result_ok(result) || vev_result_row_count(result) != 1) {
+            fprintf(stderr, "unexpected DB result handle output\n");
+            vev_result_free(result);
+            vev_db_release(snapshot);
+            free(samples);
+            vev_prepared_query_free(prepared);
+            vev_conn_close(conn);
+            return 1;
+        }
+        vev_result_free(result);
+        samples[i] = elapsed;
+    }
+
+    qsort(samples, (size_t)sample_count, sizeof(double), compare_double);
+    printf(
+        "engine=c-abi workload=prepared-email-db-result n=%d median_us=%.0f samples=%d\n",
+        n,
+        samples[sample_count / 2],
+        sample_count);
+
+    vev_db_release(snapshot);
     free(samples);
     vev_prepared_query_free(prepared);
     vev_conn_close(conn);

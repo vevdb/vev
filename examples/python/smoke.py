@@ -30,6 +30,9 @@ def main() -> int:
 
     lib.vev_conn_open_memory.restype = ctypes.c_void_p
     lib.vev_conn_close.argtypes = [ctypes.c_void_p]
+    lib.vev_conn_db.argtypes = [ctypes.c_void_p]
+    lib.vev_conn_db.restype = ctypes.c_void_p
+    lib.vev_db_release.argtypes = [ctypes.c_void_p]
 
     lib.vev_string_free.argtypes = [ctypes.c_void_p]
 
@@ -62,6 +65,12 @@ def main() -> int:
         ctypes.c_char_p,
     ]
     lib.vev_query_prepared_result_with_inputs.restype = ctypes.c_void_p
+    lib.vev_query_db_prepared_result_with_inputs.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+    ]
+    lib.vev_query_db_prepared_result_with_inputs.restype = ctypes.c_void_p
     lib.vev_result_free.argtypes = [ctypes.c_void_p]
     lib.vev_result_ok.argtypes = [ctypes.c_void_p]
     lib.vev_result_ok.restype = ctypes.c_bool
@@ -85,6 +94,9 @@ def main() -> int:
         raise RuntimeError("failed to open Vev connection")
 
     prepared = None
+    all_emails = None
+    snapshot = None
+    conn_open = True
     try:
         tx = owned_text(
             lib,
@@ -152,10 +164,54 @@ def main() -> int:
                 raise RuntimeError("unexpected typed result rows")
         finally:
             lib.vev_result_free(handle)
+
+        all_emails = lib.vev_prepare_query_edn(
+            b"[:find ?e ?email :where [?e :user/email ?email]]"
+        )
+        if not all_emails:
+            raise RuntimeError("failed to prepare snapshot query")
+
+        snapshot = lib.vev_conn_db(conn)
+        if not snapshot:
+            raise RuntimeError("failed to retain DB snapshot")
+
+        tx_after_snapshot = owned_text(
+            lib,
+            lib.vev_transact_edn(
+                conn,
+                b"[{:db/id 3 :user/name \"Alan\" :user/email \"alan@example.com\"}]",
+            ),
+        )
+        print(f"tx-after-snapshot: {tx_after_snapshot}")
+
+        current = lib.vev_query_prepared_result_with_inputs(conn, all_emails, b"[]")
+        try:
+            current_rows = lib.vev_result_row_count(current)
+        finally:
+            lib.vev_result_free(current)
+
+        lib.vev_conn_close(conn)
+        conn_open = False
+
+        old = lib.vev_query_db_prepared_result_with_inputs(snapshot, all_emails, b"[]")
+        try:
+            old_rows = lib.vev_result_row_count(old)
+        finally:
+            lib.vev_result_free(old)
+
+        print(f"current-db rows: {current_rows}")
+        print(f"snapshot-db rows: {old_rows}")
+        if current_rows != 3 or old_rows != 2:
+            raise RuntimeError("unexpected snapshot row counts")
     finally:
+        if snapshot:
+            lib.vev_db_release(snapshot)
+        if all_emails:
+            lib.vev_prepared_query_free(all_emails)
         if prepared:
             lib.vev_prepared_query_free(prepared)
-        lib.vev_conn_close(conn)
+        if conn_open:
+            lib.vev_conn_close(conn)
 
     return 0
 

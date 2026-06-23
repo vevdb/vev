@@ -5,6 +5,7 @@ Vev now has an initial C ABI surface for non-Kvist consumers.
 The current shape is intentionally narrow:
 
 - opaque in-memory connection handles
+- immutable DB snapshot handles
 - EDN transaction strings
 - EDN query strings
 - EDN input vectors for `:in` values
@@ -62,6 +63,17 @@ result handle instead of rendering the whole result as text. On the same
 machine, that path measured around `1.00x` native for the initial prepared email
 lookup workload.
 
+It also measures DB snapshot creation and querying through `vev_db_t`:
+
+- `db-snapshot`
+- `prepared-email-db-result`
+
+On the initial 1000-entity benchmark, snapshot creation measured around `1.03x`
+native and prepared snapshot querying measured around `1.00x` native. Snapshot
+creation is much more expensive than querying because the current ABI snapshot
+deep-copies datoms and owned strings to make the handle independent of the
+connection lifetime.
+
 ## Current C Surface
 
 See [vev.h](../include/vev.h).
@@ -103,6 +115,14 @@ for (int row = 0; row < vev_result_row_count(rows); row++) {
 }
 vev_result_free(rows);
 
+vev_db_t snapshot = vev_conn_db(conn);
+vev_transact_edn(conn, "[{:db/id 2 :user/name \"Grace\"}]");
+
+vev_result_t old_rows =
+    vev_query_db_prepared_result_with_inputs(snapshot, query, "[\"ada@example.com\"]");
+vev_result_free(old_rows);
+vev_db_release(snapshot);
+
 vev_prepared_query_free(query);
 
 vev_conn_close(conn);
@@ -114,8 +134,8 @@ Returned strings from `vev_transact_edn`, `vev_query_edn`, and
 `vev_query_prepared` must be released with `vev_string_free`. The same is true
 for strings returned by the input-bearing query functions.
 
-Connections are released with `vev_conn_close`. Prepared queries are released
-with `vev_prepared_query_free`.
+Connections are released with `vev_conn_close`. DB snapshots are released with
+`vev_db_release`. Prepared queries are released with `vev_prepared_query_free`.
 
 Result handles from `vev_query_prepared_result_with_inputs` are released with
 `vev_result_free`. Strings returned from result accessors such as
@@ -128,6 +148,10 @@ strings alive on the connection and prepared-query source strings alive on the
 prepared-query handle. This should eventually be replaced by explicit engine
 copying or interned immutable values, but the ABI boundary already has the right
 handle ownership shape.
+
+DB snapshots returned by `vev_conn_db` deep-copy the current DB into an owned
+handle. They can be queried after later transactions on the connection, and they
+can outlive the connection that produced them.
 
 ## Query Inputs
 
@@ -183,6 +207,36 @@ Current result-handle accessors:
 The first handle API intentionally starts with row values only. Pull results,
 aggregates that produce nested values, and efficient vector/map traversal should
 grow out of the same handle shape rather than adding a parallel API.
+
+## DB Snapshots
+
+`vev_conn_t` is the mutable root. `vev_db_t` is an immutable retained database
+value.
+
+The intended pattern is:
+
+```c
+vev_conn_t conn = vev_conn_open_memory();
+vev_transact_edn(conn, "[{:db/id 1 :user/name \"Ada\"}]");
+
+vev_db_t db1 = vev_conn_db(conn);
+
+vev_transact_edn(conn, "[{:db/id 2 :user/name \"Grace\"}]");
+vev_db_t db2 = vev_conn_db(conn);
+
+// db1 sees only Ada; db2 sees Ada and Grace.
+vev_result_t r1 = vev_query_db_prepared_result_with_inputs(db1, query, "[]");
+vev_result_t r2 = vev_query_db_prepared_result_with_inputs(db2, query, "[]");
+
+vev_result_free(r1);
+vev_result_free(r2);
+vev_db_release(db1);
+vev_db_release(db2);
+vev_conn_close(conn);
+```
+
+This is the C ABI version of Vev's Datomic/DataScript-style DB-as-a-value
+model.
 
 ## Next ABI Work
 
