@@ -3320,6 +3320,50 @@
     (t.is (= text-result.rows[0].values[0].items[0].text ":a"))
     (t.is (= text-result.rows[0].values[1].text ":a"))))
 
+(t.deftest datascript-query-registered-native-functions-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        registry ([]vev.Native-Query-Fn
+                   [(vev.query-fn "adult-age?" ">=")
+                    (vev.query-fn "mk-keyword" "keyword")])
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ivan" :age 15}
+             {:db/id 2 :name "Petr" :age 22}
+             {:db/id 3 :name "Oleg" :age 37}])
+        text-predicate (vev.q-text-with-fns
+                         conn.db
+                         "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]"
+                         registry)
+        text-function (vev.q-text-with-fns
+                        conn.db
+                        "[:find ?name ?label :where [?e :name ?name] [(mk-keyword \"person\" ?name) ?label]]"
+                        registry)
+        prepared (vev.prepare-query-text
+                   "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]")
+        prepared-result (vev.q-prepared-with-fns conn.db prepared registry)
+        rule-result (vev.q-text-with-rules-and-fns
+                      conn.db
+                      "[:find ?name :in $ % :where (adult-person ?e) [?e :name ?name]]"
+                      "[[(adult-person ?e) [?e :age ?a] [(adult-age? ?a 18)]]]"
+                      ([]vev.Query-Input [])
+                      registry)
+        unknown (vev.q-text
+                  conn.db
+                  "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]")]
+    (t.is (= (count text-predicate.rows) 2))
+    (t.is (= text-predicate.rows[0].values[0].text "Petr"))
+    (t.is (= text-predicate.rows[1].values[0].text "Oleg"))
+    (t.is (= (count text-function.rows) 3))
+    (t.is (= text-function.rows[0].values[1].text ":person/Ivan"))
+    (t.is (= text-function.rows[1].values[1].text ":person/Petr"))
+    (t.is (= (count prepared-result.rows) 2))
+    (t.is (= prepared-result.rows[0].values[0].text "Petr"))
+    (t.is (= (count rule-result.rows) 2))
+    (t.is (= rule-result.rows[1].values[0].text "Oleg"))
+    (t.is (not unknown.ok))
+    (t.is (= unknown.error "unknown query predicate: adult-age?"))))
+
 (t.deftest datascript-query-built-in-regex-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -6345,13 +6389,29 @@
                 [(vev.add 1 ":a-and-b"
                    (vev.value-vector2
                      (vev.value-string "A")
-                     (vev.value-string "wrong")))]))]
+                     (vev.value-string "wrong")))]))
+        wrong-arity (vev.transact
+                      (addr conn)
+                      ([]vev.Tx-Data
+                        [(vev.add 1 ":a-and-b"
+                           (vev.value-vector ([]vev.Value [(vev.value-string "A")])))]))
+        nil-component (vev.transact
+                        (addr conn)
+                        ([]vev.Tx-Data
+                          [(vev.add 1 ":a-and-b"
+                             (vev.value-vector2
+                               (vev.value-string "A")
+                               (vev.value-nil)))]))]
     (t.is insert-ok.ok)
     (t.is (= (count insert-ok.tx-data) 3))
     (t.is ok.ok)
     (t.is (= (count ok.tx-data) 0))
     (t.is (not bad.ok))
-    (t.is (= bad.error "cannot modify tuple attrs directly"))))
+    (t.is (= bad.error "cannot modify tuple attrs directly"))
+    (t.is (not wrong-arity.ok))
+    (t.is (= wrong-arity.error "cannot modify tuple attrs directly"))
+    (t.is (not nil-component.ok))
+    (t.is (= nil-component.error "cannot modify tuple attrs directly"))))
 
 (t.deftest datascript-text-tuple-attrs-ignore-correct-direct-value-subset
   (defer (free_all context.allocator))
@@ -6366,13 +6426,23 @@
              "[[:db/add 1 :a-and-b [\"A\" \"B\"]]]")
         bad (vev.transact-text
               (addr conn)
-              "[[:db/add 1 :a-and-b [\"A\" \"wrong\"]]]")]
+              "[[:db/add 1 :a-and-b [\"A\" \"wrong\"]]]")
+        wrong-arity (vev.transact-text
+                      (addr conn)
+                      "[[:db/add 1 :a-and-b [\"A\"]]]")
+        nil-component (vev.transact-text
+                        (addr conn)
+                        "[[:db/add 1 :a-and-b [\"A\" nil]]]")]
     (t.is insert-ok.ok)
     (t.is (= (count insert-ok.tx-data) 3))
     (t.is ok.ok)
     (t.is (= (count ok.tx-data) 0))
     (t.is (not bad.ok))
-    (t.is (= bad.error "cannot modify tuple attrs directly"))))
+    (t.is (= bad.error "cannot modify tuple attrs directly"))
+    (t.is (not wrong-arity.ok))
+    (t.is (= wrong-arity.error "cannot modify tuple attrs directly"))
+    (t.is (not nil-component.ok))
+    (t.is (= nil-component.error "cannot modify tuple attrs directly"))))
 
 (t.deftest datascript-tuple-attrs-rejects-direct-retract-subset
   (defer (free_all context.allocator))
@@ -6389,6 +6459,13 @@
                         (vev.value-string "A")
                         (vev.value-string "B")))]))
         attr (vev.transact (addr conn) [[:db.fn/retractAttribute 1 :a-and-b]])
+        nil-direct (vev.transact
+                     (addr conn)
+                     ([]vev.Tx-Data
+                       [(vev.retract 1 ":a-and-b"
+                          (vev.value-vector2
+                            (vev.value-string "A")
+                            (vev.value-nil)))]))
         still-there (vev.q conn.db
                       [:find ?tuple
                        :where
@@ -6397,6 +6474,8 @@
     (t.is (= direct.error "cannot modify tuple attrs directly"))
     (t.is (not attr.ok))
     (t.is (= attr.error "cannot modify tuple attrs directly"))
+    (t.is (not nil-direct.ok))
+    (t.is (= nil-direct.error "cannot modify tuple attrs directly"))
     (t.is (= (count still-there.rows) 1))))
 
 (t.deftest datascript-tuple-attrs-lookup-ref-subset
