@@ -1210,6 +1210,63 @@
     (t.is bad-rows-ok)
     (t.is (= (count bad-rows.items) 0))))
 
+(t.deftest datascript-query-profiled-text-and-prepared-values-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ada" :status "pending"}
+             {:db/id 2 :name "Grace" :status "started"}
+             {:db/id 3 :name "Barbara" :status "pending"}])
+        text-profiled (vev.q-text-profiled
+                        conn.db
+                        "[:find ?e :where [?e :status \"pending\"] [?e :name ?name]]")
+        prepared (vev.prepare-query-text "[:find ?name :in $ ?status :where [?e :status ?status] [?e :name ?name]]")
+        prepared-profiled (vev.q-prepared-profiled-with-inputs
+                             conn.db
+                             prepared
+                             ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "pending"))]))
+        rendered (vev.q-text-profiled-value
+                   conn.db
+                   "[:find ?e :where [?e :status \"pending\"] [?e :name ?name]]")
+        [rendered-result rendered-result-ok] (map-value rendered ":result")
+        [rendered-stats rendered-stats-ok] (map-value rendered ":stats")
+        [rendered-rows rendered-rows-ok] (map-value rendered-result ":rows")
+        [rendered-candidates rendered-candidates-ok] (map-value rendered-stats ":clause-candidates")
+        [rendered-steps rendered-steps-ok] (map-value rendered-stats ":steps")
+        [rendered-output rendered-output-ok] (map-value rendered-stats ":output-rows")
+        bad-rendered (vev.q-text-profiled-value conn.db "[:where [?e :name ?name]]")
+        [bad-result bad-result-ok] (map-value bad-rendered ":result")
+        [bad-stats bad-stats-ok] (map-value bad-rendered ":stats")
+        [bad-ok bad-ok-ok] (map-value bad-result ":ok")
+        [bad-output bad-output-ok] (map-value bad-stats ":output-rows")]
+    (t.is text-profiled.result.ok)
+    (t.is (= (count text-profiled.result.rows) 2))
+    (t.is (= text-profiled.stats.input-bindings 1))
+    (t.is (= text-profiled.stats.steps 2))
+    (t.is (= text-profiled.stats.output-rows 2))
+    (t.is (> text-profiled.stats.clause-candidates 0))
+    (t.is prepared-profiled.result.ok)
+    (t.is (= (count prepared-profiled.result.rows) 2))
+    (t.is (= prepared-profiled.stats.steps 2))
+    (t.is (= prepared-profiled.stats.output-rows 2))
+    (t.is rendered-result-ok)
+    (t.is rendered-stats-ok)
+    (t.is rendered-rows-ok)
+    (t.is (= (count rendered-rows.items) 2))
+    (t.is rendered-candidates-ok)
+    (t.is (> rendered-candidates.int-value 0))
+    (t.is rendered-steps-ok)
+    (t.is (= rendered-steps.int-value 2))
+    (t.is rendered-output-ok)
+    (t.is (= rendered-output.int-value 2))
+    (t.is bad-result-ok)
+    (t.is bad-stats-ok)
+    (t.is bad-ok-ok)
+    (t.is (not bad-ok.bool-value))
+    (t.is bad-output-ok)
+    (t.is (= bad-output.int-value 0))))
+
 (t.deftest datascript-query-rendered-rules-and-sources-values-subset
   (defer (free_all context.allocator))
   (let [left (vev.create-conn)
@@ -5521,12 +5578,29 @@
                report.db-after
                "[:find ?e :in $ % :where [?e :item/status ?status] (pending? ?status)]"
                "[[(pending? ?status) [(ground \"pending\") ?status]]]"
-               ([]vev.Query-Input []))]
+               ([]vev.Query-Input []))
+        profiled-query (vev.prepare-query-text "[:find ?e :where [?e :item/status ?status] [(ground \"pending\") ?status]]")
+        profiled (vev.q-prepared-profiled report.db-after profiled-query)
+        rule-profiled (vev.q-text-profiled-with-rules
+                         report.db-after
+                         "[:find ?e :in $ % :where [?e :item/status ?status] (pending? ?status)]"
+                         "[[(pending? ?status) [(ground \"pending\") ?status]]]"
+                         ([]vev.Query-Input []))]
     (t.is report.ok)
     (t.is inline.ok)
     (t.is rule.ok)
+    (t.is profiled.result.ok)
+    (t.is rule-profiled.result.ok)
     (t.is (= (count inline.rows) 300))
     (t.is (= (count rule.rows) (count inline.rows)))
+    (t.is (= (count profiled.result.rows) (count inline.rows)))
+    (t.is (= (count rule-profiled.result.rows) (count inline.rows)))
+    (t.is (= profiled.stats.steps 2))
+    (t.is (= profiled.stats.output-rows 300))
+    (t.is (> profiled.stats.clause-candidates 0))
+    (t.is (= rule-profiled.stats.output-rows 300))
+    (t.is (> rule-profiled.stats.rule-calls 0))
+    (t.is (> rule-profiled.stats.rule-iterations 0))
     (t.is (= rule.rows[0].values[0].entity 3))
     (t.is (= rule.rows[299].values[0].entity 900))))
 

@@ -3347,6 +3347,25 @@
             (when (datom-clause-matches? db datom clause-value (addr next))
               (arr.push! out^ next))))))))
 
+(defn append-bindings-after-clause-profiled! [out: ^[dynamic]Binding, db: DB, clause-value: Clause, binding: Binding, stats: ^Query-Stats]
+  (set! stats^.clauses (+ stats^.clauses 1))
+  (when clause-value.has-source
+    (let [source-bindings (bindings-after-relation-source-clause clause-value binding)]
+      (defer (delete source-bindings))
+      (set! stats^.clause-candidates (+ stats^.clause-candidates (count source-bindings)))
+      (for [source-binding source-bindings]
+        (arr.push! out^ source-binding)))
+    (return))
+  (let [candidates (clause-candidate-indexes db clause-value binding)]
+    (defer (delete candidates))
+    (set! stats^.clause-candidates (+ stats^.clause-candidates (count candidates)))
+    (for [datom-index candidates]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [next (clone-binding binding)]
+            (when (datom-clause-matches? db datom clause-value (addr next))
+              (arr.push! out^ next))))))))
+
 (defn append-bindings-after-clause-with-sources! [out: ^[dynamic]Binding, db: DB, sources: []DB-Source, clause-value: Clause, binding: Binding]
   (when clause-value.has-source
     (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
@@ -3354,6 +3373,14 @@
         (append-bindings-after-clause! out source-db (unsourced-clause clause-value) binding)
         (return))))
   (append-bindings-after-clause! out db clause-value binding))
+
+(defn append-bindings-after-clause-with-sources-profiled! [out: ^[dynamic]Binding, db: DB, sources: []DB-Source, clause-value: Clause, binding: Binding, stats: ^Query-Stats]
+  (when clause-value.has-source
+    (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+      (when source-ok
+        (append-bindings-after-clause-profiled! out source-db (unsourced-clause clause-value) binding stats)
+        (return))))
+  (append-bindings-after-clause-profiled! out db clause-value binding stats))
 
 (defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
   (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
@@ -3679,6 +3706,10 @@
         (arr.push! out binding)))
     out))
 
+(defn query-stats-observe-bindings! [stats: ^Query-Stats, count-value: int]
+  (when (> count-value stats^.max-intermediate-bindings)
+    (set! stats^.max-intermediate-bindings count-value)))
+
 (defn bindings-after-rule-step-depth-with-fns [db: DB, rules: []Rule, rule: Rule, bindings: []Binding, step: Query-Step, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (case step.kind
     .Clause
@@ -3898,6 +3929,30 @@
           (when (not (binding-exists? (slice out 0) candidate))
             (arr.push! out candidate)
             (set! changed true))))
+      (set! depth (+ depth 1)))
+    out))
+
+(defn bindings-after-rule-call-profiled-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (set! stats^.rule-calls (+ stats^.rule-calls 1))
+  (when (matching-rules-are-leaves? rules call)
+    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+    (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
+      (query-stats-observe-bindings! stats (count out))
+      (return out)))
+  (let [out (make [dynamic]Binding)
+        depth 1
+        min-depth (+ (count rules) 1)
+        changed true]
+    (while (or changed (<= depth min-depth))
+      (set! changed false)
+      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+      (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
+        (defer (delete candidates))
+        (for [candidate candidates]
+          (when (not (binding-exists? (slice out 0) candidate))
+            (arr.push! out candidate)
+            (set! changed true))))
+      (query-stats-observe-bindings! stats (count out))
       (set! depth (+ depth 1)))
     out))
 
@@ -5308,6 +5363,38 @@
 (defn bindings-after-query-step [db: DB, sources: []DB-Source, query: ^Query, bindings: []Binding, step: Query-Step] -> [dynamic]Binding
   (bindings-after-query-step-with-fns db sources query bindings step ([]Native-Query-Fn [])))
 
+(defn bindings-after-query-step-profiled-with-fns [db: DB, sources: []DB-Source, query: ^Query, bindings: []Binding, step: Query-Step, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (set! stats^.steps (+ stats^.steps 1))
+  (case step.kind
+    .Clause
+      (let [out (make [dynamic]Binding)]
+        (for [binding bindings]
+          (append-bindings-after-clause-with-sources-profiled! (addr out) db sources query^.clauses[step.index] binding stats))
+        out)
+    .RuleCall
+      (let [out (make [dynamic]Binding)
+            call query^.rule-calls[step.index]]
+        (for [binding bindings]
+          (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db (slice query^.rules 0) call binding registry stats)]
+            (for [rule-binding rule-bindings]
+              (arr.push! out rule-binding))
+            (delete rule-bindings)))
+        out)
+    .Ground
+      (apply-ground bindings query^.grounds[step.index])
+    .GetElse
+      (bindings-after-get-else-step db bindings query^.get-elses[step.index])
+    .GetSome
+      (bindings-after-get-some-step db bindings query^.get-somes[step.index])
+    .Function
+      (bindings-after-function-with-fns bindings query^.function-clauses[step.index] registry)
+    .Predicate
+      (bindings-after-predicate-with-db-and-fns db bindings query^.predicates[step.index] registry)
+    .Or
+      (bindings-after-or-group-step-with-fns db sources bindings query^.or-groups[step.index] registry)
+    :else
+      (bindings-after-not-group-step-with-fns db sources bindings query^.not-groups[step.index] registry)))
+
 (defn bindings-after-ordered-where-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (bindings-from-inputs db query^ inputs)]
     (for [step query^.where-steps]
@@ -5321,13 +5408,30 @@
 (defn bindings-after-ordered-where [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input] -> [dynamic]Binding
   (bindings-after-ordered-where-with-fns db sources query inputs ([]Native-Query-Fn [])))
 
-(defn q-query-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Result-Set
-  (let [[valid error] (validate-query-call-with-fns db query inputs sources registry)]
+(defn bindings-after-ordered-where-profiled-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (let [bindings (bindings-from-inputs db query^ inputs)]
+    (set! stats^.input-bindings (count bindings))
+    (query-stats-observe-bindings! stats (count bindings))
+    (for [step query^.where-steps]
+      (let [next-bindings (bindings-after-query-step-profiled-with-fns db sources query (slice bindings 0) step registry stats)]
+        (delete bindings)
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! stats (count bindings))
+        (when (= (count bindings) 0)
+          (return bindings))))
+    (return bindings)))
+
+(defn profiled-result-set [result: Result-Set, stats: Query-Stats] -> Profiled-Result-Set
+  (Profiled-Result-Set {result: result stats: stats}))
+
+(defn q-query-profiled-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Profiled-Result-Set
+  (let [stats (query-stats-empty)
+        [valid error] (validate-query-call-with-fns db query inputs sources registry)]
     (when (not valid)
-      (return (result-set-error error))))
+      (return (profiled-result-set (result-set-error error) stats)))
   (when (> (count query.where-steps) 0)
     (let [ordered-query query
-          bindings (bindings-after-ordered-where-with-fns db sources (addr ordered-query) inputs registry)]
+          bindings (bindings-after-ordered-where-profiled-with-fns db sources (addr ordered-query) inputs registry (addr stats))]
       (when (> (count query.aggregates) 0)
         (let [rows (make [dynamic]Result-Row)]
           (if (= (count query.find) 0)
@@ -5338,7 +5442,8 @@
               (arr.push! rows (Result-Row {values: values pulls: pulls})))
             (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice bindings 0) registry))
           (delete bindings)
-          (return (result-set-ok rows))))
+          (set! stats.output-rows (count rows))
+          (return (profiled-result-set (result-set-ok rows) stats))))
       (let [rows (make [dynamic]Result-Row 0 (count bindings))]
         (for [binding bindings]
           (let [values (make [dynamic]Value 0 (count query.find))
@@ -5360,62 +5465,80 @@
                   (arr.push! dedupe-values value)
                   (set! complete false))))
             (when complete
-              (when (or (> (count pulls) 0)
+            (when (or (> (count pulls) 0)
                         (not (row-values-exist? (slice rows 0) (slice dedupe-values 0))))
                 (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
         (delete bindings)
-        (return (result-set-ok rows)))))
+        (set! stats.output-rows (count rows))
+        (return (profiled-result-set (result-set-ok rows) stats)))))
   (let [bindings (bindings-from-inputs db query inputs)
         remaining (arr.into [dynamic]Clause (slice query.clauses 0))]
+    (set! stats.input-bindings (count bindings))
+    (query-stats-observe-bindings! (addr stats) (count bindings))
     (defer (delete remaining))
     (while (and (> (count bindings) 0) (> (count remaining) 0))
       (let [clause-index (best-clause-index (slice remaining 0) bindings[0])
             clause remaining[clause-index]
             next-bindings (make [dynamic]Binding)]
+        (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
-          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause binding))
+          (append-bindings-after-clause-with-sources-profiled! (addr next-bindings) db sources clause binding (addr stats)))
         (delete bindings)
         (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))
         (arr.remove-ordered-at! remaining clause-index)))
     (for [call query.rule-calls]
       (let [next-bindings (make [dynamic]Binding)]
+        (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
-          (let [rule-bindings (bindings-after-rule-call-with-fns db (slice query.rules 0) call binding registry)]
+          (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db (slice query.rules 0) call binding registry (addr stats))]
             (for [rule-binding rule-bindings]
               (arr.push! next-bindings rule-binding))
             (delete rule-bindings)))
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))))
     (for [ground query.grounds]
+      (set! stats.steps (+ stats.steps 1))
       (let [next-bindings (apply-ground (slice bindings 0) ground)]
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))))
     (for [get-else query.get-elses]
       (let [next-bindings (make [dynamic]Binding)]
+        (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
           (let [[next ok] (apply-get-else db binding get-else)]
             (when ok
               (arr.push! next-bindings next))))
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))))
     (for [get-some query.get-somes]
       (let [next-bindings (make [dynamic]Binding)]
+        (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
           (let [[next ok] (apply-get-some db binding get-some)]
             (when ok
               (arr.push! next-bindings next))))
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))))
     (for [function query.function-clauses]
+      (set! stats.steps (+ stats.steps 1))
       (let [next-bindings (bindings-after-function-with-fns (slice bindings 0) function registry)]
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))))
     (for [predicate query.predicates]
+      (set! stats.steps (+ stats.steps 1))
       (let [next-bindings (bindings-after-predicate-with-db-and-fns db (slice bindings 0) predicate registry)]
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))))
     (for [group query.or-groups]
       (let [next-bindings (make [dynamic]Binding)]
+        (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
           (for [branch group.branches]
             (let [branch-bindings (bindings-after-or-branch-with-sources-and-fns db sources group branch binding registry)]
@@ -5423,14 +5546,17 @@
                 (arr.push! next-bindings branch-binding))
               (delete branch-bindings))))
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))))
     (for [not-group query.not-groups]
       (let [next-bindings (make [dynamic]Binding)]
+        (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
           (when (not (binding-matches-not-group-with-sources-and-fns? db sources not-group binding registry))
             (arr.push! next-bindings binding)))
         (delete bindings)
-        (set! bindings next-bindings)))
+        (set! bindings next-bindings)
+        (query-stats-observe-bindings! (addr stats) (count bindings))))
     (when (> (count query.aggregates) 0)
       (let [rows (make [dynamic]Result-Row)]
         (if (= (count query.find) 0)
@@ -5441,7 +5567,8 @@
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
           (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice bindings 0) registry))
         (delete bindings)
-        (return (result-set-ok rows))))
+        (set! stats.output-rows (count rows))
+        (return (profiled-result-set (result-set-ok rows) stats))))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]
       (for [binding bindings]
         (let [values (make [dynamic]Value 0 (count query.find))
@@ -5467,7 +5594,11 @@
                       (not (row-values-exist? (slice rows 0) (slice dedupe-values 0))))
               (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
       (delete bindings)
-      (result-set-ok rows))))
+      (set! stats.output-rows (count rows))
+      (profiled-result-set (result-set-ok rows) stats)))))
+
+(defn q-query-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Result-Set
+  (q-query-profiled-with-sources-and-fns db query inputs sources registry).result)
 
 (defn q-query-with-sources [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
   (q-query-with-sources-and-fns db query inputs sources ([]Native-Query-Fn [])))
@@ -5745,6 +5876,22 @@
     ([]Value [(value-keyword ":ok") (value-bool result.ok)
               (value-keyword ":error") (value-string result.error)
               (value-keyword ":rows") (result-rows-value db (slice result.rows 0))])))
+
+(defn query-stats-value [stats: Query-Stats] -> Value
+  (value-map
+    ([]Value [(value-keyword ":input-bindings") (value-int (i64 stats.input-bindings))
+              (value-keyword ":steps") (value-int (i64 stats.steps))
+              (value-keyword ":clauses") (value-int (i64 stats.clauses))
+              (value-keyword ":clause-candidates") (value-int (i64 stats.clause-candidates))
+              (value-keyword ":rule-calls") (value-int (i64 stats.rule-calls))
+              (value-keyword ":rule-iterations") (value-int (i64 stats.rule-iterations))
+              (value-keyword ":max-intermediate-bindings") (value-int (i64 stats.max-intermediate-bindings))
+              (value-keyword ":output-rows") (value-int (i64 stats.output-rows))])))
+
+(defn profiled-result-set-value [db: DB, profiled: Profiled-Result-Set] -> Value
+  (value-map
+    ([]Value [(value-keyword ":result") (result-set-value db profiled.result)
+              (value-keyword ":stats") (query-stats-value profiled.stats)])))
 
 (defn result-row-tuple [result: Result-Set] -> Result-Row
   (if (> (count result.rows) 0)
