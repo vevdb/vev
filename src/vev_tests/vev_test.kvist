@@ -1125,6 +1125,8 @@
             [[:db/add 100 :db/ident :friend]
              [:db/add 100 :db/valueType :db.type/ref]
              [:db/add 100 :db/cardinality :db.cardinality/many]
+             [:db/add 101 :db/ident :missing]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
              {:db/id 1 :name "Ada Lovelace" :friend (vev.value-entity 2)}
              {:db/id 2 :name "Grace Hopper"}
              {:db/id 3 :name "Alan Turing"}
@@ -10074,6 +10076,61 @@
     (t.is (not bad-map-key.ok))
     (t.is (not bad-map-value.ok))
     (t.is (not partial-query.ok))))
+
+(t.deftest datascript-pull-schema-validation-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :normal]
+             [:db/add 101 :db/ident :multival]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             [:db/add 102 :db/ident :ref]
+             [:db/add 102 :db/valueType :db.type/ref]
+             {:db/id 1 :normal "root" :multival ["a" "b"] :ref 2}
+             {:db/id 2 :normal "child"}])
+        valid (vev.q-text
+                conn.db
+                "[:find (pull ?e [{:ref [:normal]} [:multival :limit 1]]) . :where [(ground 1) ?e]]")
+        invalid-reverse (vev.q-text
+                          conn.db
+                          "[:find (pull ?e [:_normal]) . :where [(ground 1) ?e]]")
+        invalid-nested (vev.q-text
+                         conn.db
+                         "[:find (pull ?e [{:normal [:normal]}]) . :where [(ground 1) ?e]]")
+        invalid-recursion (vev.q-text
+                            conn.db
+                            "[:find (pull ?e [{:normal 1}]) . :where [(ground 1) ?e]]")
+        invalid-limit (vev.q-text
+                        conn.db
+                        "[:find (pull ?e [[:normal :limit 1]]) . :where [(ground 1) ?e]]")
+        invalid-input (vev.q-text-with-inputs
+                        conn.db
+                        "[:find (pull ?e ?pattern) . :in $ ?pattern :where [(ground 1) ?e]]"
+                        ([]vev.Query-Input
+                          [(vev.query-input-pull-pattern
+                             ([]vev.Pull-Spec [(vev.pull-spec-limit ":normal" ([]vev.Pull-Spec []) 1)]))]))
+        [direct-ok direct-error] (vev.validate-pull-pattern
+                                   conn.db
+                                   ([]vev.Pull-Spec
+                                     [(vev.pull-spec
+                                        ":ref"
+                                        ([]vev.Pull-Spec [(vev.pull-spec ":normal" ([]vev.Pull-Spec []))]))
+                                      (vev.pull-spec-limit ":multival" ([]vev.Pull-Spec []) 1)]))
+        [direct-bad-ok direct-bad-error] (vev.validate-pull-pattern
+                                           conn.db
+                                           ([]vev.Pull-Spec [(vev.pull-spec-limit ":normal" ([]vev.Pull-Spec []) 1)]))]
+    (t.is valid.ok)
+    (t.is (= (count valid.rows) 1))
+    (t.is direct-ok)
+    (t.is (= direct-error ""))
+    (t.is (not invalid-reverse.ok))
+    (t.is (not invalid-nested.ok))
+    (t.is (not invalid-recursion.ok))
+    (t.is (not invalid-limit.ok))
+    (t.is (not invalid-input.ok))
+    (t.is (not direct-bad-ok))
+    (t.is (= direct-bad-error "pull limit attr must be cardinality many: :normal"))))
 
 (t.deftest datascript-pull-lookup-ref-subset
   (defer (free_all context.allocator))

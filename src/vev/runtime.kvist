@@ -1402,6 +1402,11 @@
       false
       true)))
 
+(defn schema-cardinality-many? [db: DB, attr: string] -> bool
+  (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
+    (and has-cardinality
+         (= cardinality ":db.cardinality/many"))))
+
 (defn tx-op-cardinality-one? [db: DB, op: Tx-Op] -> bool
   (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
     (when (and has-cardinality
@@ -4282,6 +4287,19 @@
         (return false error))))
   (return true ""))
 
+(defn validate-query-pull-patterns [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
+  (for [pull-find query-value.pulls]
+    (let [[pull-db pull-db-ok] (pull-db-for-find db sources pull-find)]
+      (when (not pull-db-ok)
+        (return false "unknown pull source"))
+      (let [[pattern pattern-ok] (pull-find-pattern query-value inputs pull-find)]
+        (when (not pattern-ok)
+          (return false "pull pattern input must be a pull pattern"))
+        (let [[pattern-valid pattern-error] (validate-pull-pattern pull-db pattern)]
+          (when (not pattern-valid)
+            (return false pattern-error))))))
+  (return true ""))
+
 (defn validate-query-call-with-fns [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> [ok: bool, error: string]
   (let [expected (query-expected-input-count query-value)
         provided (count inputs)]
@@ -4299,6 +4317,9 @@
   (let [[input-ok input-error] (validate-query-input-values query-value inputs)]
     (when (not input-ok)
       (return false input-error)))
+  (let [[pull-ok pull-error] (validate-query-pull-patterns db query-value inputs sources)]
+    (when (not pull-ok)
+      (return false pull-error)))
   (let [[lookup-ok lookup-error] (validate-query-inline-lookup-refs db query-value sources)]
     (when (not lookup-ok)
       (return false lookup-error)))
@@ -5067,6 +5088,42 @@
                                               (slice attr (+ index 2))])))))
   attr)
 
+(defn validate-pull-spec-schema [db: DB, spec: Pull-Spec] -> [ok: bool, error: string]
+  (when (or (= spec.a "*")
+            (= spec.a ":db/id"))
+    (return true ""))
+  (let [has-schema (db-has-schema? db)
+        reverse? (reverse-attr? spec.a)
+        attr (if reverse?
+               (forward-attr-for-reverse spec.a)
+               spec.a)]
+    (defer (when reverse? (delete attr)))
+    (when (and has-schema
+               reverse?
+               (not (schema-ref? db attr)))
+      (return false (fmt.tprintf "pull reverse attr must be ref: %s" spec.a)))
+    (when (and has-schema
+               spec.has-limit
+               (not (schema-cardinality-many? db attr)))
+      (return false (fmt.tprintf "pull limit attr must be cardinality many: %s" spec.a)))
+    (when (and has-schema
+               (or (> (count spec.pattern) 0)
+                   spec.has-recursion)
+               (not (schema-ref? db attr)))
+      (return false (fmt.tprintf "pull nested attr must be ref: %s" spec.a)))
+    (for [child spec.pattern]
+      (let [[child-ok child-error] (validate-pull-spec-schema db child)]
+        (when (not child-ok)
+          (return false child-error)))))
+  (return true ""))
+
+(defn validate-pull-pattern [db: DB, pattern: []Pull-Spec] -> [ok: bool, error: string]
+  (for [spec pattern]
+    (let [[spec-ok spec-error] (validate-pull-spec-schema db spec)]
+      (when (not spec-ok)
+        (return false spec-error))))
+  (return true ""))
+
 (defn pull-output-has-attr? [out: [dynamic]Pull-Attr, attr: string] -> bool
   (for [pulled out]
     (when (= pulled.a attr)
@@ -5224,6 +5281,7 @@
     (Pull-Spec {a: spec.a
                 pattern: spec.pattern
                 limit: spec.limit
+                has-limit: spec.has-limit
                 has-default: spec.has-default
                 default-value: spec.default-value
                 has-alias: spec.has-alias
@@ -5466,6 +5524,7 @@
 (defn flat-pull-spec [attr: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5477,6 +5536,7 @@
 (defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5491,6 +5551,7 @@
 (defn pull-spec-recursion [attr: string, depth: int] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5504,6 +5565,7 @@
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: limit
+              has-limit: true
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5515,6 +5577,7 @@
 (defn pull-spec-limit-as [attr: string, pattern: []Pull-Spec, limit: int, alias: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: limit
+              has-limit: true
               has-default: false
               default-value: (Value {})
               has-alias: true
@@ -5526,6 +5589,7 @@
 (defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: true
               default-value: default-value
               has-alias: false
@@ -5537,6 +5601,7 @@
 (defn pull-spec-as [attr: string, alias: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: true
@@ -5548,6 +5613,7 @@
 (defn pull-spec-default-as [attr: string, default-value: Value, alias: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: true
               default-value: default-value
               has-alias: true
@@ -5559,6 +5625,7 @@
 (defn pull-spec-xform [attr: string, pattern: []Pull-Spec, xform: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5570,6 +5637,7 @@
 (defn pull-spec-default-xform [attr: string, default-value: Value, xform: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: true
               default-value: default-value
               has-alias: false
