@@ -37,6 +37,13 @@
       (return true)))
   false)
 
+(defn append-status-rule-performance-tx! [tx: ^[dynamic]vev.Tx-Data] -> bool
+  (let [ids (arr.range 1 91) :defer]
+    (for [i ids]
+      (let [status (if (= (% i 3) 0) "pending" (if (= (% i 3) 1) "started" "stopped"))]
+        (arr.push! tx^ (vev.add (u64 i) ":item/status" (vev.value-string status))))))
+  true)
+
 (defn tempid-e [tempids: []vev.Tempid, tempid: string] -> [e: u64, ok: bool]
   (for [item tempids]
     (when (= item.tempid tempid)
@@ -4187,6 +4194,28 @@
     (t.is (= rule-predicate-input-text.rows[1].values[0].entity 4))
     (t.is (= rule-predicate-input-text.rows[1].values[1].entity 6))))
 
+(t.deftest datascript-query-rule-performance-dedup-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        tx (make [dynamic]vev.Tx-Data) :defer
+        _ (append-status-rule-performance-tx! (addr tx))
+        report (vev.transact-tx-data (addr conn) (slice tx 0))
+        inline (vev.q-text
+                 report.db-after
+                 "[:find ?e :where [?e :item/status ?status] [(ground \"pending\") ?status]]")
+        rule (vev.q-text-with-rules
+               report.db-after
+               "[:find ?e :in $ % :where [?e :item/status ?status] (pending? ?status)]"
+               "[[(pending? ?status) [(ground \"pending\") ?status]]]"
+               ([]vev.Query-Input []))]
+    (t.is report.ok)
+    (t.is inline.ok)
+    (t.is rule.ok)
+    (t.is (= (count inline.rows) 30))
+    (t.is (= (count rule.rows) (count inline.rows)))
+    (t.is (= rule.rows[0].values[0].entity 3))
+    (t.is (= rule.rows[29].values[0].entity 90))))
+
 (t.deftest datascript-query-mutual-recursive-rules-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -7387,6 +7416,53 @@
     (t.is (= (count lookup-result.rows) 1))
     (t.is (= lookup-result.rows[0].values[0].entity 2))
     (t.is (= lookup-result.rows[0].values[1].text "Petr"))))
+
+(t.deftest datascript-tuple-attrs-lookup-ref-upsert-conflict-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 100 :db/unique :db.unique/identity] [:db/add 101 :db/ident :c] [:db/add 101 :db/unique :db.unique/identity]]")
+        seed (vev.transact-text
+               (addr conn)
+               "[{:db/id 1 :a \"A\" :b \"B\" :c \"C\"} {:db/id 2 :a \"a\" :b \"b\" :c \"c\"}]")
+        vector-conflict (vev.transact-text
+                          (addr conn)
+                          "[[:db/add [:a-and-b [\"A\" \"B\"]] :c \"c\"]]")
+        map-conflict (vev.transact-text
+                       (addr conn)
+                       "[{:db/id [:a-and-b [\"A\" \"B\"]] :c \"c\"}]")
+        before-update-count (count conn.db.datoms)
+        update (vev.transact-text
+                 (addr conn)
+                 "[{:db/id [:a-and-b [\"A\" \"B\"]] :b \"b\" :d \"D\"}]")
+        after-update-count (count conn.db.datoms)
+        changed (vev.q-text
+                  conn.db
+                  "[:find ?e ?b ?c ?d :where [?e :a \"A\"] [?e :b ?b] [?e :c ?c] [?e :d ?d]]")
+        lookup (vev.pull-text-lookup-ref
+                 conn.db
+                 "[:a :b :c]"
+                 ":a-and-b"
+                 (vev.value-vector2 (vev.value-string "a") (vev.value-string "b")))]
+    (t.is seed.ok)
+    (t.is (not vector-conflict.ok))
+    (t.is (= vector-conflict.error "schema unique conflict"))
+    (t.is (not map-conflict.ok))
+    (t.is (= map-conflict.error "schema unique conflict"))
+    (t.is update.ok)
+    (t.is (> after-update-count before-update-count))
+    (t.is (= (count changed.rows) 1))
+    (t.is (= changed.rows[0].values[0].entity 1))
+    (t.is (= changed.rows[0].values[1].text "b"))
+    (t.is (= changed.rows[0].values[2].text "C"))
+    (t.is (= changed.rows[0].values[3].text "D"))
+    (t.is (= (count lookup.attrs) 3))
+    (t.is (= lookup.attrs[0].v.text "a"))
+    (t.is (= lookup.attrs[1].v.text "b"))
+    (t.is (= lookup.attrs[2].v.text "c"))))
 
 (t.deftest datascript-tuple-attrs-unique-conflict-subset
   (defer (free_all context.allocator))
