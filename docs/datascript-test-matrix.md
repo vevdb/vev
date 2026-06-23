@@ -48,7 +48,7 @@ These are the main in-memory parity target before durable storage.
 | `components.cljc` | 2 | partial | reverse component pull id/pattern/recursion behavior covered; exact schema validation and render/touch shapes remain |
 | `pull_api.cljc` | 17 | partial | repeated attr-spec normalization, DataScript namespaced reverse attrs, reverse component pull id/pattern/recursion shapes, ABI-friendly named `:xform` transforms for `vector`/`name`, and typed native pull xform callbacks through text/prepared/query pull APIs covered; visitor options, final C ABI registration shape, and exact collection/scalar shapes remain |
 | `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
-| `filter.cljc` | 1 | partial | materialized filtered DBs cover query/entity/index-visible semantics; exact hash/equality/runtime wrapper behavior remains |
+| `filter.cljc` | 1 | passing | materialized filtered DBs cover query, entity, index access, chaining, and semantic DB equivalence; Clojure hash/equality/runtime wrapper behavior is host |
 
 ## Parser And Portable API
 
@@ -82,7 +82,7 @@ These are useful, but not the next engine-parity gate.
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
 | `issues.cljc` | 5 | partial | engine-relevant regressions for vector result isolation, mixed-type DB diff, and schema inspection covered; metadata/pprint cases are Clojure host behavior |
-| `query_v3.cljc` | 2 | partial | input arity, non-collection source validation, explicit `$` primary relation input handling, prepared primary relation queries, and primary collection query execution over scalar, tuple, and map rows covered through current query APIs; remaining query-v3 engine surface later |
+| `query_v3.cljc` | 2 | passing | active validation cases plus the disabled relation-query example are covered through Vev relation DB APIs, including arity, non-collection sources, explicit `$`, prepared queries, and scalar/tuple/map primary sources |
 | `lru.cljc` | 2 | host | DataScript implementation detail |
 | `core.cljc` | 1 | host | test harness/runtime behavior |
 | `cljs.cljc` | 0 | host | ClojureScript environment behavior |

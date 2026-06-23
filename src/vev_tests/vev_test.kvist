@@ -74,6 +74,12 @@
     (and (= age.kind .Int)
          (>= age.int-value 18))))
 
+(defn keep-all [db: vev.DB, datom: vev.Datom] -> bool
+  true)
+
+(defn keep-none [db: vev.DB, datom: vev.Datom] -> bool
+  false)
+
 (defn birthday-by-name [db: vev.DB, name: string] -> vev.Tx-Fn-Result
   (for [datom-index db.eavt]
     (let [datom db.datoms[datom-index]]
@@ -1871,6 +1877,14 @@
         no-ivan-no-passwords (vev.filter-db no-ivan keep-not-password)
         no-ivan-long-akas (vev.filter-db no-ivan keep-long-akas)
         long-akas-no-ivan (vev.filter-db long-akas keep-not-entity-2)
+        empty-conn (vev.create-conn)
+        empty-filtered (vev.filter-db empty-conn.db keep-all)
+        all-filtered-out (vev.filter-db db keep-none)
+        retracted-ivan-conn (vev.conn-from-db db)
+        retracted-ivan (vev.transact (addr retracted-ivan-conn) [[:db.fn/retractEntity 2]])
+        no-ivan-diff (vev.db-diff no-ivan retracted-ivan.db-after)
+        empty-diff (vev.db-diff empty-conn.db empty-filtered)
+        none-diff (vev.db-diff empty-conn.db all-filtered-out)
         passwords (vev.q-collection db [:find [?v ...] :where [_ :password ?v]])
         passwords-filtered (vev.q-collection no-passwords [:find [?v ...] :where [_ :password ?v]])
         passwords-no-ivan (vev.q-collection no-ivan [:find [?v ...] :where [_ :password ?v]])
@@ -1883,7 +1897,9 @@
         akas-long-no-ivan (vev.q-collection long-akas-no-ivan [:find [?v ...] :where [_ :aka ?v]])
         petr-filtered (vev.db-entity no-passwords 1)
         ivan-filtered (vev.db-entity long-akas 2)
-        ivan-akas (vev.entity-values ivan-filtered ":aka")]
+        ivan-akas (vev.entity-values ivan-filtered ":aka")
+        password-index (vev.datoms db :aevt :password)
+        password-index-filtered (vev.datoms no-passwords :aevt :password)]
     (defer (delete ivan-akas))
     (t.is (= (count passwords) 3))
     (t.is (= (count passwords-filtered) 0))
@@ -1906,7 +1922,19 @@
     (t.is (= akas-long-no-ivan[1].text "II"))
     (t.is (not (vev.entity-contains? petr-filtered ":password")))
     (t.is (= (count ivan-akas) 1))
-    (t.is (= ivan-akas[0].text "Terrible"))))
+    (t.is (= ivan-akas[0].text "Terrible"))
+    (t.is (= (count password-index) 3))
+    (t.is (= password-index[0].v.text "<SECRET>"))
+    (t.is (= password-index[1].v.text "<PROTECTED>"))
+    (t.is (= password-index[2].v.text "<UNKNOWN>"))
+    (t.is (= (count password-index-filtered) 0))
+    (t.is retracted-ivan.ok)
+    (t.is (= (count no-ivan-diff.only-left) 0))
+    (t.is (= (count no-ivan-diff.only-right) 0))
+    (t.is (= (count empty-diff.only-left) 0))
+    (t.is (= (count empty-diff.only-right) 0))
+    (t.is (= (count none-diff.only-left) 0))
+    (t.is (= (count none-diff.only-right) 0))))
 
 (t.deftest datascript-filter-db-double-filtering-subset
   (defer (free_all context.allocator))

@@ -41,7 +41,7 @@ Status key:
 | `validation` | partial | Nil value rejection plus value type including `:db.type/symbol`, uniqueness, component schema, ident values, schema boolean attrs, schema keyword enum attrs, cardinality, unknown tx op, bad attrs, bad lookup attrs, tempids-outside-add, and `transact-text` bad-shape rollback subsets covered; remaining reader/macro bad forms and exact validation errors incomplete |
 | `db` | partial | Immutable DB values, current datom indexes, public datom access, and semantic DB diff covered; Clojure hash/cache/record/uuid helpers are host/runtime-specific |
 | `conn` | partial | `conn-from-db`, `conn-from-datoms`, reset reports, and named report-sink listeners covered; arbitrary callback/closure API remains |
-| `filter` | partial | Materialized `filter-db` covers DataScript-style predicate filtering, chained filters, filtered entity reads, and index-backed queries; exact hash/equality/runtime wrapper behavior remains |
+| `filter` | covered | Materialized `filter-db` covers DataScript-style predicate filtering, chained filters, filtered entity reads, index-backed queries, and semantic DB equivalence; Clojure hash/equality/runtime wrapper behavior is host |
 | `serialize` | partial | `init-db` from datoms and typed EDN-ish datom snapshot text roundtrip covered, including schema, retractions, refs, symbol/map/vector values, and next-tx recovery; JSON/transit-style formats later |
 | `issues` | partial | Engine-relevant regressions from `issues.cljc` are triaged: vector result isolation, mixed-type DB diff, and schema inspection covered; Clojure metadata/pprint cases are host-specific |
 | `listen`, `storage`, `datafy` | later | API/package features after semantic core |
