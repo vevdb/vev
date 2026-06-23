@@ -1079,6 +1079,19 @@
       (set! cursor doc.nodes[cursor].next-sibling))
     (return true "")))
 
+(defn append-edn-rules-section! [out: ^[dynamic]Rule, doc: EDN-Doc, rules-node: int] -> [ok: bool, error: string]
+  (when (= rules-node -1)
+    (return true ""))
+  (when (not (= doc.nodes[rules-node].kind .Vector))
+    (return false "rules text must be an EDN vector"))
+  (let [cursor doc.nodes[rules-node].first-child]
+    (while (not (= cursor -1))
+      (let [[rule-ok rule-error] (append-edn-rule! out doc cursor)]
+        (when (not rule-ok)
+          (return false rule-error)))
+      (set! cursor doc.nodes[cursor].next-sibling))
+    (return true "")))
+
 (defn parse-rules-text! [out: ^[dynamic]Rule, text: string] -> [ok: bool, error: string]
   (let [doc (empty-edn-doc)
         [read-ok read-error] (read-edn-text! (addr doc) text)]
@@ -1332,6 +1345,7 @@
         get-somes (make [dynamic]Get-Some) :defer
         grounds (make [dynamic]Ground) :defer
         rule-calls (make [dynamic]Rule-Call) :defer
+        inline-rules (make [dynamic]Rule) :defer
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer
         where-steps (make [dynamic]Query-Step) :defer
@@ -1341,6 +1355,7 @@
         with-node (edn-map-value-node doc doc.root ":with")
         in-node (edn-map-value-node doc doc.root ":in")
         where-node (edn-map-value-node doc doc.root ":where")
+        rules-node (edn-map-value-node doc doc.root ":rules")
         has-rules-input (edn-section-has-rules-input? doc in-node)
         [find-ok find-error] (append-edn-find-section! (addr find) (addr pulls) (addr aggregates) doc find-node)]
     (when (not find-ok)
@@ -1363,9 +1378,14 @@
     (let [[where-ok where-error] (append-edn-where-section! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc where-node)]
       (when (not where-ok)
         (return false where-error)))
+    (let [[rules-ok rules-error] (append-edn-rules-section! (addr inline-rules) doc rules-node)]
+      (when (not rules-ok)
+        (return false rules-error)))
     (let [query-value (query-with-rules-input
                         (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
-                        has-rules-input)]
+                        (or has-rules-input (> (count inline-rules) 0)))]
+      (delete query-value.rules)
+      (set! query-value.rules (arr.into [dynamic]Rule (slice inline-rules 0)))
       (set! out^ query-value)
       (return true ""))))
 

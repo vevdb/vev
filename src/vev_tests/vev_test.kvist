@@ -998,6 +998,51 @@
     (t.is (= (count direct.rows) 1))
     (t.is (= direct.rows[0].values[0].text "Ivan"))))
 
+(t.deftest datascript-parser-map-query-inline-rules-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ivan" :age 19}
+             {:db/id 2 :name "Petr" :age 17}])
+        rows (vev.value-vector
+               ([]vev.Value [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ada")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 20)]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Grace")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":age") (vev.value-int 16)]))]))
+        parsed (vev.empty-query)
+        [parse-ok parse-error] (vev.parse-query-text!
+                                 (addr parsed)
+                                 "{:find [?name] :where [(adult-name ?e ?name)] :rules [[(adult ?e) [?e :age ?age] [(>= ?age 18)]] [(adult-name ?e ?name) (adult ?e) [?e :name ?name]]]}")
+        result (vev.q-text
+                 conn.db
+                 "{:find [?name] :where [(adult-name ?e ?name)] :rules [[(adult ?e) [?e :age ?age] [(>= ?age 18)]] [(adult-name ?e ?name) (adult ?e) [?e :name ?name]]]}")
+        prepared (vev.prepare-query-text
+                   "{:find [?name] :where [(adult-name ?e ?name)] :rules [[(adult ?e) [?e :age ?age] [(>= ?age 18)]] [(adult-name ?e ?name) (adult ?e) [?e :name ?name]]]}")
+        prepared-result (vev.q-prepared conn.db prepared)
+        source-result (vev.q-text-with-inputs
+                        conn.db
+                        "{:find [?name] :in [$rows] :where [($rows adult-name ?e ?name)] :rules [[(adult ?e) [?e :age ?age] [(>= ?age 18)]] [(adult-name ?e ?name) ($rows adult ?e) [?e :name ?name]]]}"
+                        ([]vev.Query-Input [(vev.query-input-scalar rows)]))
+        malformed (vev.q-text
+                    conn.db
+                    "{:find [?name] :where [(named ?e ?name)] :rules [(named ?e ?name)]}")]
+    (t.is parse-ok parse-error)
+    (t.is (= (count parsed.rules) 2))
+    (t.is (= (count parsed.rule-calls) 1))
+    (t.is (= parsed.rule-calls[0].name "adult-name"))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].text "Ivan"))
+    (t.is prepared.ok)
+    (t.is (= (count prepared-result.rows) 1))
+    (t.is (= prepared-result.rows[0].values[0].text "Ivan"))
+    (t.is source-result.ok)
+    (t.is (= (count source-result.rows) 1))
+    (t.is (= source-result.rows[0].values[0].text "Ada"))
+    (t.is (not malformed.ok))
+    (t.is (= malformed.error "rule definitions must be vectors"))))
+
 (t.deftest datascript-parser-query-text-not-or-and-missing
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
