@@ -3816,6 +3816,34 @@
               (mmap.assoc! seen datom.e true)
               (arr.push! out^ datom.e))))))))
 
+(defn append-transitive-sources! [out: ^[dynamic]u64, db: DB, attr: string, target: u64]
+  (let [expanded (make (map u64 bool))
+        emitted (make (map u64 bool))
+        frontier (make [dynamic]u64)
+        frontier-index 0]
+    (defer (delete expanded))
+    (defer (delete emitted))
+    (defer (delete frontier))
+    (arr.push! frontier target)
+    (while (< frontier-index (count frontier))
+      (let [current frontier[frontier-index]
+            edge-clause (clause (term-wildcard) attr (term-value (value-entity current)))
+            candidates (clause-candidate-indexes db edge-clause (Binding {})) :defer]
+        (set! frontier-index (+ frontier-index 1))
+        (let [[_ already-expanded] (mmap.get expanded current)]
+          (when (not already-expanded)
+            (mmap.assoc! expanded current true)
+            (for [datom-index candidates]
+              (let [datom db.datoms[datom-index]]
+                (when (datom-current-at? db datom-index)
+                  (let [[_ already-emitted] (mmap.get emitted datom.e)
+                        [_ source-expanded] (mmap.get expanded datom.e)]
+                    (when (not already-emitted)
+                      (mmap.assoc! emitted datom.e true)
+                      (arr.push! out^ datom.e))
+                    (when (not source-expanded)
+                      (arr.push! frontier datom.e))))))))))))
+
 (defn transitive-target-matches? [db: DB, target: Value, target-ok: bool, entity: u64] -> bool
   (when (not target-ok)
     (return true))
@@ -3862,6 +3890,14 @@
     (for [start-entity starts]
       (append-linear-transitive-from-start! out db attr call binding rule initial start-entity))))
 
+(defn append-linear-transitive-to-target! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding, target-entity: u64]
+  (let [starts (make [dynamic]u64)
+        target-value (value-entity target-entity)]
+    (defer (delete starts))
+    (append-transitive-sources! (addr starts) db attr target-entity)
+    (for [start-entity starts]
+      (append-linear-transitive-target-result! out db call binding rule initial start-entity target-value true target-entity))))
+
 (defn append-linear-transitive-results! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule]
   (let [[initial initial-ok] (bind-rule-args binding call rule)]
     (when (not initial-ok)
@@ -3872,7 +3908,12 @@
           (when (not start-entity-ok)
             (return))
           (append-linear-transitive-from-start! out db attr call binding rule initial start-entity.entity))
-        (append-linear-transitive-from-all-starts! out db attr call binding rule initial)))))
+        (let [[target target-ok] (binding-lookup initial rule.params[1])]
+          (if target-ok
+            (let [[target-entity target-entity-ok] (value-as-entity db target)]
+              (when target-entity-ok
+                (append-linear-transitive-to-target! out db attr call binding rule initial target-entity.entity)))
+            (append-linear-transitive-from-all-starts! out db attr call binding rule initial)))))))
 
 (defn bindings-after-linear-transitive-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
   (let [result-bindings (make [dynamic]Binding)

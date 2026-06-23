@@ -44,6 +44,12 @@ engine=vev workload=chain-root-text n=30 ok=true rows=29 min_us=112 median_us=11
 engine=vev workload=chain-root-prepared n=30 ok=true rows=29 min_us=97 median_us=99 p90_us=104 max_us=111 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
 engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=402 median_us=411 p90_us=445 max_us=456 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
 engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=378 median_us=385 p90_us=394 max_us=412 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-leaf-text n=10 ok=true rows=9 min_us=63 median_us=67 p90_us=74 max_us=85 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
+engine=vev workload=chain-leaf-prepared n=10 ok=true rows=9 min_us=49 median_us=52 p90_us=54 max_us=55 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
+engine=vev workload=chain-leaf-text n=30 ok=true rows=29 min_us=174 median_us=181 p90_us=185 max_us=192 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
+engine=vev workload=chain-leaf-prepared n=30 ok=true rows=29 min_us=160 median_us=167 p90_us=171 max_us=182 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
+engine=vev workload=chain-leaf-text n=100 ok=true rows=99 min_us=647 median_us=658 p90_us=664 max_us=670 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-leaf-prepared n=100 ok=true rows=99 min_us=640 median_us=650 p90_us=672 max_us=695 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
 engine=vev workload=chain-all-text n=10 ok=true rows=45 min_us=185 median_us=193 p90_us=201 max_us=210 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
 engine=vev workload=chain-all-prepared n=10 ok=true rows=45 min_us=174 median_us=177 p90_us=183 max_us=191 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
 engine=vev workload=chain-all-text n=30 ok=true rows=435 min_us=2939 median_us=3033 p90_us=3138 max_us=3313 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
@@ -61,6 +67,9 @@ engine=datascript workload=chain-root n=3 ok=true rows=2 min_us=339 median_us=48
 engine=datascript workload=chain-root n=10 ok=true rows=9 min_us=743 median_us=880 p90_us=1023 max_us=2598 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
 engine=datascript workload=chain-root n=30 ok=true rows=29 min_us=3643 median_us=3800 p90_us=4352 max_us=5409 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
 engine=datascript workload=chain-root n=100 ok=true rows=99 min_us=47910 median_us=49737 p90_us=51453 max_us=53906 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-leaf n=10 ok=true rows=9 min_us=712 median_us=749 p90_us=807 max_us=1967 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-leaf n=30 ok=true rows=29 min_us=6137 median_us=6329 p90_us=6837 max_us=7387 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-leaf n=100 ok=true rows=99 min_us=126396 median_us=130124 p90_us=134992 max_us=137338 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
 engine=datascript workload=chain-all n=10 ok=true rows=45 min_us=589 median_us=618 p90_us=648 max_us=1637 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
 engine=datascript workload=chain-all n=30 ok=true rows=435 min_us=5056 median_us=5216 p90_us=5491 max_us=6383 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
 engine=datascript workload=tree-root n=4 ok=true rows=3 min_us=81 median_us=83 p90_us=86 max_us=103 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
@@ -95,6 +104,9 @@ DataScript median divided by Vev median, so larger is better for Vev.
 | `chain-root n=10` | 18.7x | 27.5x |
 | `chain-root n=30` | 32.5x | 38.4x |
 | `chain-root n=100` | 121.0x | 129.2x |
+| `chain-leaf n=10` | 11.0x | 14.6x |
+| `chain-leaf n=30` | 33.3x | 36.5x |
+| `chain-leaf n=100` | 186.0x | 191.0x |
 | `chain-all n=10` | 3.2x | 3.5x |
 | `chain-all n=30` | 1.7x | 1.7x |
 | `tree-root n=4` | 3.0x | 6.9x |
@@ -108,7 +120,7 @@ Ordered text queries now plan contiguous data-pattern runs. The initial
 `bad-order-join` shape materialized 1000 intermediate bindings; after planning
 the same query materializes 1 and inspects 3 candidates.
 
-Root-bound binary transitive closure now has a specialized rule path. It
+Binary transitive closure now has a specialized rule path. It
 recognizes the common DataScript/Datomic reachability rule shape:
 
 ```clojure
@@ -116,10 +128,12 @@ recognizes the common DataScript/Datomic reachability rule shape:
  [(reachable ?x ?y) [?x :follows ?t] (reachable ?t ?y)]]
 ```
 
-When the source argument is bound, Vev walks the matching AVET/EAVT candidates
-with a queue and a hash-backed seen set instead of recursively re-running the
-rule body to a fixed depth. That turns the benchmarked chain-root workload into
-a single rule iteration with one output binding per reached entity.
+When the source argument is bound, Vev walks forward over matching candidates
+with a queue and a hash-backed seen set. When only the target is bound, Vev walks
+the same relation in reverse to find all sources that can reach it. Both avoid
+recursively re-running the rule body to a fixed depth. That turns the benchmarked
+chain-root and chain-leaf workloads into a single rule iteration with one output
+binding per reached entity.
 
 The large chain-root gap should be read narrowly: it compares Vev's specialized
 root-bound transitive closure path against DataScript's general recursive rule
