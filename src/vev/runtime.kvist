@@ -1719,6 +1719,35 @@
     (not (current-attr-exists? db entity attr))
     (current-value-exists? db entity attr expected)))
 
+(defn value-debug-str [value: Value] -> string
+  (when (= value.kind .Nil)
+    (return "nil"))
+  (let [[text ok] (value-str value)]
+    (if ok text "<value>")))
+
+(defn current-cas-value-str [db: DB, entity: u64, attr: string] -> string
+  (let [parts (make [dynamic]string) :defer
+        indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (arr.push! parts (value-debug-str datom.v)))))
+    (when (= (count parts) 0)
+      (return "nil"))
+    (when (= (count parts) 1)
+      (return parts[0]))
+    (let [[joined _] (core-strings.join (slice parts 0) " ")]
+      (core-strings.concatenate ([]string ["(" joined ")"])))))
+
+(defn cas-failed-error [db: DB, entity: u64, attr: string, expected: Value] -> string
+  (fmt.tprintf ":db.fn/cas failed on datom [%d %s %s], expected %s"
+               entity
+               attr
+               (current-cas-value-str db entity attr)
+               (value-debug-str expected)))
+
 (defn max-entity-id [] -> u64
   (u64 2147483647))
 
@@ -2377,7 +2406,7 @@
                                     tempids: resolved-tempids})))
             (when (not (cas-expected-matches? current-db e data.a expected))
               (return (Resolved-Tx {ok: false
-                                    error: "cas failed"
+                                    error: (cas-failed-error current-db e data.a expected)
                                     ops: resolved-ops
                                     tx-meta: resolved-meta
                                     tempids: resolved-tempids})))))
