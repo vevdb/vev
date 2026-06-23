@@ -17,6 +17,11 @@
 (defn median [xs]
   (nth (sort xs) (quot (count xs) 2)))
 
+(defn percentile [sorted-xs numerator denominator]
+  (let [last-index (dec (count sorted-xs))
+        index (min last-index (quot (* (count sorted-xs) numerator) denominator))]
+    (nth sorted-xs index)))
+
 (defn seed-chain [n]
   (vec
     (concat
@@ -53,27 +58,34 @@
   (d/db-with (d/empty-db schema) tx))
 
 (defn time-query [f]
-  (dotimes [_ 2]
+  (dotimes [_ 100]
     (count (f)))
   (let [samples
         (doall
-          (for [_ (range 5)]
+          (for [_ (range 100)]
             (let [start (System/nanoTime)
                   result (f)
                   rows (count result)]
               {:elapsed-us (elapsed-us start)
-               :rows rows})))]
-    {:elapsed-us (median (map :elapsed-us samples))
+               :rows rows})))
+        sorted-times (sort (map :elapsed-us samples))]
+    {:min-us (first sorted-times)
+     :median-us (median sorted-times)
+     :p90-us (percentile sorted-times 9 10)
+     :max-us (last sorted-times)
      :rows (:rows (first samples))}))
 
 (defn print-result [workload n measured]
   (println
     (format
-      "engine=datascript workload=%s n=%d ok=true rows=%d elapsed_us=%.0f steps= clauses= candidates= rule_calls= rule_iterations= max_bindings="
+      "engine=datascript workload=%s n=%d ok=true rows=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps= clauses= candidates= rule_calls= rule_iterations= max_bindings="
       workload
       n
       (:rows measured)
-      (:elapsed-us measured))))
+      (:min-us measured)
+      (:median-us measured)
+      (:p90-us measured)
+      (:max-us measured))))
 
 (defn run-chain-from-root [n]
   (let [db (db-with (seed-chain n))

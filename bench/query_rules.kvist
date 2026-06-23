@@ -8,20 +8,86 @@
 (defn elapsed-us [start: time.Time] -> f64
   (time.duration_microseconds (time.since start)))
 
-(defn print-profile [workload: string, n: int, elapsed: f64, profiled: vev.Profiled-Result-Set]
+(defstruct Timing {
+  min-us: f64
+  median-us: f64
+  p90-us: f64
+  max-us: f64
+})
+
+(defstruct Query-Run-Result {
+  profiled: vev.Profiled-Result-Set
+  timing: Timing
+})
+
+(defn query-run-result [profiled: vev.Profiled-Result-Set, timing: Timing] -> Query-Run-Result
+  (Query-Run-Result {profiled: profiled, timing: timing}))
+
+(defn timing-from-samples [samples: []f64] -> Timing
+  (let [sorted (arr.into [dynamic]f64 samples)]
+    (defer (delete sorted))
+    (arr.sort! sorted)
+    (let [last-index (- (count sorted) 1)
+          median-index (/ (count sorted) 2)
+          p90-index (min last-index (/ (* (count sorted) 9) 10))]
+      (Timing {min-us: sorted[0]
+               median-us: sorted[median-index]
+               p90-us: sorted[p90-index]
+               max-us: sorted[last-index]}))))
+
+(defn print-profile [workload: string, n: int, timing: Timing, profiled: vev.Profiled-Result-Set]
   (fmt.printf
-    "engine=vev workload=%s n=%d ok=%v rows=%d elapsed_us=%.0f steps=%d clauses=%d candidates=%d rule_calls=%d rule_iterations=%d max_bindings=%d\n"
+    "engine=vev workload=%s n=%d ok=%v rows=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d rule_calls=%d rule_iterations=%d max_bindings=%d\n"
     workload
     n
     profiled.result.ok
     (count profiled.result.rows)
-    elapsed
+    timing.min-us
+    timing.median-us
+    timing.p90-us
+    timing.max-us
     profiled.stats.steps
     profiled.stats.clauses
     profiled.stats.clause-candidates
     profiled.stats.rule-calls
     profiled.stats.rule-iterations
     profiled.stats.max-intermediate-bindings))
+
+(defn time-profiled-rules-query [db: vev.DB, query: string, rules: string, inputs: []vev.Query-Input, warmups: int, samples-count: int] -> Query-Run-Result
+  (for [_ (arr.range 0 warmups)]
+    (let [warmup (vev.q-text-profiled-with-rules db query rules inputs)]
+      (delete warmup.result.rows)))
+  (let [samples (make [dynamic]f64 0 samples-count)
+        last (vev.q-text-profiled-with-rules db query rules inputs)]
+    (defer (delete samples))
+    (delete last.result.rows)
+    (for [_ (arr.range 0 samples-count)]
+      (let [start (time.now)
+            profiled (vev.q-text-profiled-with-rules db query rules inputs)
+            elapsed (elapsed-us start)]
+        (arr.push! samples elapsed)
+        (delete last.result.rows)
+        (set! last profiled)))
+    (let [timing (timing-from-samples (slice samples 0))]
+      (query-run-result last timing))))
+
+(defn time-profiled-input-query [db: vev.DB, query: string, inputs: []vev.Query-Input, warmups: int, samples-count: int] -> Query-Run-Result
+  (for [_ (arr.range 0 warmups)]
+    (let [warmup (vev.q-text-profiled-with-inputs db query inputs)]
+      (delete warmup.result.rows)))
+  (let [samples (make [dynamic]f64 0 samples-count)
+        last (vev.q-text-profiled-with-inputs db query inputs)]
+    (defer (delete samples))
+    (delete last.result.rows)
+    (for [_ (arr.range 0 samples-count)]
+      (let [start (time.now)
+            profiled (vev.q-text-profiled-with-inputs db query inputs)
+            elapsed (elapsed-us start)]
+        (arr.push! samples elapsed)
+        (delete last.result.rows)
+        (set! last profiled)))
+    (let [timing (timing-from-samples (slice samples 0))]
+      (query-run-result last timing))))
 
 (defn seed-chain [conn: ^vev.Conn, n: int]
   (let [tx (make [dynamic]vev.Tx-Data 0 (+ (* n 2) 4))]
@@ -63,10 +129,8 @@
     (seed-chain (addr conn) n)
     (let [query "[:find ?x ?y :in $ % :where (reachable ?x ?y)]"
           rules "[[(reachable ?x ?y) [?x :follows ?y]] [(reachable ?x ?y) [?x :follows ?t] (reachable ?t ?y)]]"
-          start (time.now)
-          profiled (vev.q-text-profiled-with-rules conn.db query rules ([]vev.Query-Input []))
-          elapsed (elapsed-us start)]
-      (print-profile "chain-all" n elapsed profiled))))
+          measured (time-profiled-rules-query conn.db query rules ([]vev.Query-Input []) 10 25)]
+      (print-profile "chain-all" n measured.timing measured.profiled))))
 
 (defn run-chain-from-root [n: int]
   (let [conn (vev.create-conn)]
@@ -74,10 +138,8 @@
     (let [query "[:find ?y :in $ % ?x :where (reachable ?x ?y)]"
           rules "[[(reachable ?x ?y) [?x :follows ?y]] [(reachable ?x ?y) [?x :follows ?t] (reachable ?t ?y)]]"
           inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))])
-          start (time.now)
-          profiled (vev.q-text-profiled-with-rules conn.db query rules inputs)
-          elapsed (elapsed-us start)]
-      (print-profile "chain-root" n elapsed profiled))))
+          measured (time-profiled-rules-query conn.db query rules inputs 10 25)]
+      (print-profile "chain-root" n measured.timing measured.profiled))))
 
 (defn run-tree-from-root [n: int]
   (let [conn (vev.create-conn)]
@@ -85,10 +147,8 @@
     (let [query "[:find ?y :in $ % ?x :where (reachable ?x ?y)]"
           rules "[[(reachable ?x ?y) [?x :follows ?y]] [(reachable ?x ?y) [?x :follows ?t] (reachable ?t ?y)]]"
           inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))])
-          start (time.now)
-          profiled (vev.q-text-profiled-with-rules conn.db query rules inputs)
-          elapsed (elapsed-us start)]
-      (print-profile "tree-root" n elapsed profiled))))
+          measured (time-profiled-rules-query conn.db query rules inputs 10 25)]
+      (print-profile "tree-root" n measured.timing measured.profiled))))
 
 (defn run-bad-order-join [n: int]
   (let [conn (vev.create-conn)]
@@ -96,10 +156,8 @@
     (let [email (fmt.tprintf "user-%d@example.com" (/ n 2))
           query "[:find ?name ?age :in $ ?email :where [?e :age ?age] [?e :email ?email] [?e :name ?name]]"
           inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string email))])
-          start (time.now)
-          profiled (vev.q-text-profiled-with-inputs conn.db query inputs)
-          elapsed (elapsed-us start)]
-      (print-profile "bad-order-join" n elapsed profiled))))
+          measured (time-profiled-input-query conn.db query inputs 10 25)]
+      (print-profile "bad-order-join" n measured.timing measured.profiled))))
 
 (defn main []
   (defer (free_all context.allocator))
