@@ -1,5 +1,7 @@
 (package vev)
 
+(import core-strings "core:strings")
+
 
 (defn query-with-rules [query: Query, rules: []Rule] -> Query
   (let [out query]
@@ -4077,6 +4079,13 @@
     (when aggregate.has-limit-var
       (append-var-once! vars aggregate.limit-var))))
 
+(defn query-var-list-text [vars: []string] -> string
+  (let [inner (make [dynamic]string) :defer]
+    (for [name vars]
+      (arr.push! inner name))
+    (let [[joined _] (core-strings.join (slice inner 0) " ")]
+      (core-strings.concatenate ([]string ["[" joined "]"])))))
+
 (defn query-potential-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)]
     (append-query-input-vars! (addr vars) query-value)
@@ -4165,13 +4174,17 @@
 
 (defn validate-query-parser-vars [query-value: Query] -> [ok: bool, error: string]
   (let [find-vars (query-find-vars query-value) :defer
-        available (query-potential-vars query-value) :defer]
+        available (query-potential-vars query-value) :defer
+        unknown (make [dynamic]string) :defer]
     (for [name find-vars]
       (when (not (string-slice-contains? (slice available 0) name))
-        (return false (fmt.tprintf "Query for unknown vars: %s" name))))
+        (append-var-once! (addr unknown) name)))
     (for [name query-value.with]
       (when (not (string-slice-contains? (slice available 0) name))
-        (return false (fmt.tprintf "Query for unknown vars: %s" name))))
+        (append-var-once! (addr unknown) name)))
+    (when (> (count unknown) 0)
+      (let [vars-text (query-var-list-text (slice unknown 0)) :defer]
+        (return false (fmt.tprintf "Query for unknown vars: %s" vars-text))))
     (for [name find-vars]
       (when (string-slice-contains? (slice query-value.with 0) name)
         (return false (fmt.tprintf ":find and :with should not use same variables: %s" name)))))
