@@ -305,7 +305,11 @@
           (return spec true)))))
   (return (Pull-Spec {}) false))
 
-(defn edn-pull-specs [doc: EDN-Doc, vector-node: int] -> [dynamic]Pull-Spec
+(defn edn-pull-specs [doc: EDN-Doc, vector-node: int] -> [pattern: [dynamic]Pull-Spec, ok: bool, error: string]
+  (when (or (= vector-node -1)
+            (and (not (= doc.nodes[vector-node].kind .Vector))
+                 (not (= doc.nodes[vector-node].kind .List))))
+    (return (make [dynamic]Pull-Spec) false "pull pattern must be a vector or list"))
   (let [out (make [dynamic]Pull-Spec)
         child doc.nodes[vector-node].first-child]
     (while (not (= child -1))
@@ -314,21 +318,27 @@
           (while (not (= entry -1))
             (let [pattern-node doc.nodes[entry].next-sibling
                   [base base-ok] (edn-pull-spec-node doc entry)]
-              (when (and base-ok (not (= pattern-node -1)))
-                (if (= doc.nodes[pattern-node].kind .Vector)
-                  (let [nested (edn-pull-specs doc pattern-node)]
-                    (arr.push! out (edn-pull-spec-with-pattern base (slice nested 0))))
-                  (let [[depth depth-ok] (edn-pull-recursion-depth doc pattern-node)]
-                    (when depth-ok
-                      (arr.push! out (edn-pull-spec-with-recursion base depth))))))
-              (if (= pattern-node -1)
-                (set! entry -1)
-                (set! entry doc.nodes[pattern-node].next-sibling)))))
+              (when (not base-ok)
+                (return out false "invalid pull map key"))
+              (when (= pattern-node -1)
+                (return out false "pull map entry expects a nested pattern or recursion depth"))
+              (if (or (= doc.nodes[pattern-node].kind .Vector)
+                      (= doc.nodes[pattern-node].kind .List))
+                (let [[nested nested-ok nested-error] (edn-pull-specs doc pattern-node)]
+                  (when (not nested-ok)
+                    (return out false nested-error))
+                  (arr.push! out (edn-pull-spec-with-pattern base (slice nested 0))))
+                (let [[depth depth-ok] (edn-pull-recursion-depth doc pattern-node)]
+                  (when (not depth-ok)
+                    (return out false "pull map value must be a pattern vector/list or recursion depth"))
+                  (arr.push! out (edn-pull-spec-with-recursion base depth))))
+              (set! entry doc.nodes[pattern-node].next-sibling))))
         (let [[spec spec-ok] (edn-pull-spec-node doc child)]
-          (when spec-ok
-            (arr.push! out spec))))
+          (when (not spec-ok)
+            (return out false "invalid pull pattern spec"))
+          (arr.push! out spec)))
       (set! child doc.nodes[child].next-sibling))
-    out))
+    (return out true "")))
 
 (defn append-edn-pull-find! [out: ^[dynamic]Pull-Find, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [head doc.nodes[form].first-child
@@ -359,7 +369,9 @@
         (return true ""))
       (when (or (= pattern-node -1) (not (= doc.nodes[pattern-node].kind .Vector)))
         (return false "pull find expects a literal vector pattern or pattern variable"))
-      (let [pattern (edn-pull-specs doc pattern-node)]
+      (let [[pattern pattern-ok pattern-error] (edn-pull-specs doc pattern-node)]
+        (when (not pattern-ok)
+          (return false pattern-error))
         (arr.push! out^
           (Pull-Find {var: doc.nodes[var-node].text
                       source: source
@@ -379,8 +391,8 @@
     (when (or (= doc.root -1)
               (not (= doc.nodes[doc.root].kind .Vector)))
       (return (make [dynamic]Pull-Spec) false "pull text pattern must be an EDN vector"))
-    (let [out (edn-pull-specs doc doc.root)]
-      (return out true ""))))
+    (let [[out out-ok out-error] (edn-pull-specs doc doc.root)]
+      (return out out-ok out-error))))
 
 (defn prepare-pull-pattern-text [text: string] -> Prepared-Pull-Pattern
   (let [[pattern ok error] (parse-pull-pattern-text text)]
@@ -1078,6 +1090,19 @@
       (set! cursor doc.nodes[cursor].next-sibling))
     (return true "")))
 
+(defn append-edn-rules-section! [out: ^[dynamic]Rule, doc: EDN-Doc, rules-node: int] -> [ok: bool, error: string]
+  (when (= rules-node -1)
+    (return true ""))
+  (when (not (= doc.nodes[rules-node].kind .Vector))
+    (return false "rules text must be an EDN vector"))
+  (let [cursor doc.nodes[rules-node].first-child]
+    (while (not (= cursor -1))
+      (let [[rule-ok rule-error] (append-edn-rule! out doc cursor)]
+        (when (not rule-ok)
+          (return false rule-error)))
+      (set! cursor doc.nodes[cursor].next-sibling))
+    (return true "")))
+
 (defn parse-rules-text! [out: ^[dynamic]Rule, text: string] -> [ok: bool, error: string]
   (let [doc (empty-edn-doc)
         [read-ok read-error] (read-edn-text! (addr doc) text)]
@@ -1331,6 +1356,7 @@
         get-somes (make [dynamic]Get-Some) :defer
         grounds (make [dynamic]Ground) :defer
         rule-calls (make [dynamic]Rule-Call) :defer
+        inline-rules (make [dynamic]Rule) :defer
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer
         where-steps (make [dynamic]Query-Step) :defer
@@ -1340,6 +1366,7 @@
         with-node (edn-map-value-node doc doc.root ":with")
         in-node (edn-map-value-node doc doc.root ":in")
         where-node (edn-map-value-node doc doc.root ":where")
+        rules-node (edn-map-value-node doc doc.root ":rules")
         has-rules-input (edn-section-has-rules-input? doc in-node)
         [find-ok find-error] (append-edn-find-section! (addr find) (addr pulls) (addr aggregates) doc find-node)]
     (when (not find-ok)
@@ -1362,9 +1389,14 @@
     (let [[where-ok where-error] (append-edn-where-section! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc where-node)]
       (when (not where-ok)
         (return false where-error)))
+    (let [[rules-ok rules-error] (append-edn-rules-section! (addr inline-rules) doc rules-node)]
+      (when (not rules-ok)
+        (return false rules-error)))
     (let [query-value (query-with-rules-input
                         (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
-                        has-rules-input)]
+                        (or has-rules-input (> (count inline-rules) 0)))]
+      (delete query-value.rules)
+      (set! query-value.rules (arr.into [dynamic]Rule (slice inline-rules 0)))
       (set! out^ query-value)
       (return true ""))))
 
@@ -1631,6 +1663,7 @@
       .Nil (return (value-nil) true "")
       .Bool (return (value-bool node.bool-value) true "")
       .Int (return (value-int node.int-value) true "")
+      .Float (return (value-float node.float-value) true "")
       .String (return (value-string node.text) true "")
       .Symbol (return (value-symbol node.text) true "")
       .Keyword (return (value-keyword node.text) true "")
@@ -1643,6 +1676,15 @@
                     (arr.push! items item))
                   (set! child doc.nodes[child].next-sibling))
                 (return (value-vector (slice items 0)) true ""))
+      .Set (let [items (make [dynamic]Value) :defer
+                 child node.first-child]
+             (while (not (= child -1))
+               (let [[item item-ok item-error] (edn-value-from-node doc child)]
+                 (when (not item-ok)
+                   (return (Value {}) false item-error))
+                 (arr.push! items item))
+               (set! child doc.nodes[child].next-sibling))
+             (return (value-vector (slice items 0)) true ""))
       .Map (let [items (make [dynamic]Value) :defer
                  child node.first-child]
              (while (not (= child -1))
@@ -1766,6 +1808,7 @@
       .Nil (return (value-nil) true "")
       .Bool (return (value-bool node.bool-value) true "")
       .Int (return (value-int node.int-value) true "")
+      .Float (return (value-float node.float-value) true "")
       .String (return (value-string node.text) true "")
       .Keyword (return (value-keyword node.text) true "")
       .Symbol (return (value-symbol node.text) true "")
@@ -1778,6 +1821,15 @@
                     (arr.push! items item))
                   (set! child doc.nodes[child].next-sibling))
                 (return (value-vector (slice items 0)) true ""))
+      .Set (let [items (make [dynamic]Value) :defer
+                 child node.first-child]
+             (while (not (= child -1))
+               (let [[item item-ok item-error] (serial-value-from-edn-node doc child)]
+                 (when (not item-ok)
+                   (return (Value {}) false item-error))
+                 (arr.push! items item))
+               (set! child doc.nodes[child].next-sibling))
+             (return (value-vector (slice items 0)) true ""))
       .Map (let [items (make [dynamic]Value) :defer
                  child node.first-child]
              (while (not (= child -1))
@@ -2047,7 +2099,8 @@
       (return false "tx map attributes must be keywords or strings"))
     (when (= attr ":db/id")
       (return true ""))
-    (if (= doc.nodes[value-node].kind .Vector)
+    (if (or (= doc.nodes[value-node].kind .Vector)
+            (= doc.nodes[value-node].kind .Set))
       (if (edn-lookup-ref-node? doc value-node)
         (append-edn-tx-add-value! out doc ref attr value-node)
         (let [[value value-ok value-error] (edn-value-from-node doc value-node)]
@@ -2258,6 +2311,12 @@
     (when (or (= doc.root -1) (not (= doc.nodes[doc.root].kind .Vector)))
       (delete doc.nodes)
       (return false "tx text must be an EDN vector"))
+    (let [root-child doc.nodes[doc.root].first-child]
+      (when (and (not (= root-child -1))
+                 (= doc.nodes[root-child].kind .Keyword))
+        (let [[item-ok item-error] (append-edn-tx-vector! out doc doc.root)]
+          (delete doc.nodes)
+          (return item-ok item-error))))
     (let [child doc.nodes[doc.root].first-child]
       (while (not (= child -1))
         (let [[item-ok item-error] (append-edn-tx-item! out doc child)]

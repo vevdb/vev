@@ -163,6 +163,19 @@
             (arr.push! rows (value-vector (slice items 0)))))))
     (value-vector (slice rows 0))))
 
+(defn query-input-map-as-relation-vector [input: Query-Input] -> Value
+  (let [rows (make [dynamic]Value)]
+    (when (and (= input.kind .Scalar)
+               (= input.value.kind .Map))
+      (let [row_count (/ (count input.value.items) 2)]
+        (for [row 0..<row_count]
+          (let [offset (* row 2)]
+            (arr.push! rows
+              (value-vector
+                ([]Value [input.value.items[offset]
+                          input.value.items[(+ offset 1)]])))))))
+    (value-vector (slice rows 0))))
+
 (defn expand-tuple-input [bindings: []Binding, tuple: Tuple-Input, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (when (not (= tuple.binding.kind .None))
@@ -188,6 +201,7 @@
       (let [relation-value (cond
                              (= input.kind .Collection) (value-vector (slice input.values 0))
                              (= input.kind .Relation) (query-input-relation-as-vector input width)
+                             (and (= input.kind .Scalar) (= input.value.kind .Map)) (query-input-map-as-relation-vector input)
                              :else (Value {}))]
         (when (= relation-value.kind .Vector)
           (for [binding bindings]
@@ -205,6 +219,19 @@
               (for [name index relation.vars]
                 (when (not (= name ""))
                   (binding-store! (addr next) name input.values[(+ offset index)])))
+              (arr.push! out next))))))
+    (when (and (= input.kind .Scalar)
+               (= input.value.kind .Map)
+               (= width 2))
+      (let [row_count (/ (count input.value.items) 2)]
+        (for [binding bindings]
+          (for [row 0..<row_count]
+            (let [next (clone-binding binding)
+                  offset (* row 2)]
+              (when (not (= relation.vars[0] ""))
+                (binding-store! (addr next) relation.vars[0] input.value.items[offset]))
+              (when (not (= relation.vars[1] ""))
+                (binding-store! (addr next) relation.vars[1] input.value.items[(+ offset 1)]))
               (arr.push! out next))))))
     out))
 
@@ -1304,6 +1331,13 @@
   (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
     (and has-type (= schema-type ":db.type/ref"))))
 
+(defn schema-ref-target? [db: DB, attr: string] -> bool
+  (if (reverse-attr? attr)
+    (let [forward (forward-attr-for-reverse attr)]
+      (defer (delete forward))
+      (schema-ref? db forward))
+    (schema-ref? db attr)))
+
 (defn schema-component? [db: DB, attr: string] -> bool
   (schema-bool? db attr ":db/isComponent"))
 
@@ -1467,9 +1501,8 @@
     (return false "entity id exceeds supported range")))
 
 (defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
-  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-    (when (and has-type (= schema-type ":db.type/ref"))
-      (return (resolve-ref-component-value db value))))
+  (when (schema-ref-target? db attr)
+    (return (resolve-ref-component-value db value)))
   (resolve-tuple-value db attr value))
 
 (defn value-lookup-ref-vector [attr: string, value: Value] -> Value
@@ -1487,7 +1520,7 @@
 
 (defn resolve-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
   (when data.has-value-lookup-ref
-    (when (not (schema-ref? db data.a))
+    (when (not (schema-ref-target? db data.a))
       (return (value-lookup-ref-vector data.value-lookup-attr data.value-lookup-value) true ""))
     (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value-lookup-attr data.value-lookup-value)]
       (if lookup-ok
@@ -1507,17 +1540,13 @@
 (defn ref-string-value? [db: DB, attr: string, value: Value] -> bool
   (when (not (= value.kind .String))
     (return false))
-  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-    (and has-type
-         (= schema-type ":db.type/ref"))))
+  (schema-ref-target? db attr))
 
 (defn ref-negative-int-value? [db: DB, attr: string, value: Value] -> bool
   (when (not (= value.kind .Int))
     (return false))
-  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-    (and has-type
-         (= schema-type ":db.type/ref")
-         (< value.int-value 0))))
+  (and (schema-ref-target? db attr)
+       (< value.int-value 0)))
 
 (defn ref-tempid-value-text [value: Value] -> string
   (case value.kind
@@ -1859,7 +1888,7 @@
   (when (not (= data.v.kind .Vector))
     (return))
   (let [entity (tx-entity-ref-from-data data)
-        ref-attr (schema-ref? db data.a)]
+        ref-attr (schema-ref-target? db data.a)]
     (for [item index data.v.items]
       (if (and ref-attr (lookup-ref-vector-value? item))
         (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]))
@@ -2025,7 +2054,7 @@
         (when skip-data
           (continue))
         (when data.has-nested-map
-          (if (schema-ref? current-db data.a)
+          (if (schema-ref-target? current-db data.a)
             (let [[nested-entity nested-ok nested-error] (nested-entity-ref-data data.nested-map data.nested-tempid)]
               (when (not nested-ok)
                 (return (Resolved-Tx {ok: false
@@ -2112,7 +2141,7 @@
                 (set! value-ok resolved-ok)
                 (set! value-error resolved-error)))
 	          (when data.has-value-lookup-ref
-              (if (not (schema-ref? current-db data.a))
+              (if (not (schema-ref-target? current-db data.a))
                 (set! v (value-lookup-ref-vector data.value-lookup-attr data.value-lookup-value))
 	              (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value-lookup-attr data.value-lookup-value)]
 	                (if lookup-ok
@@ -2177,9 +2206,20 @@
                                   ops: resolved-ops
                                   tx-meta: resolved-meta
                                   tempids: resolved-tempids})))
-        (if (= data.op ":db/retract")
-          (arr.push! resolved-ops (tx-retract e data.a v))
-          (arr.push! resolved-ops (tx-add e data.a v))))))
+        (if (reverse-attr? data.a)
+          (if (= v.kind .Entity)
+            (let [forward-attr (forward-attr-for-reverse data.a)]
+              (if (= data.op ":db/retract")
+                (arr.push! resolved-ops (tx-retract v.entity forward-attr (value-entity e)))
+                (arr.push! resolved-ops (tx-add v.entity forward-attr (value-entity e)))))
+            (return (Resolved-Tx {ok: false
+                                  error: "reverse ref value must resolve to entity"
+                                  ops: resolved-ops
+                                  tx-meta: resolved-meta
+                                  tempids: resolved-tempids})))
+          (if (= data.op ":db/retract")
+            (arr.push! resolved-ops (tx-retract e data.a v))
+            (arr.push! resolved-ops (tx-add e data.a v)))))))
     (Resolved-Tx {ok: true error: "" ops: resolved-ops tx-meta: resolved-meta tempids: resolved-tempids})))
 
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
@@ -2674,6 +2714,27 @@
         (return (value-equal? resolved actual)))))
   (match-term? term actual binding))
 
+(defn datom-tx-value [datom: Datom] -> Value
+  (value-entity datom.tx))
+
+(defn datom-op-value [datom: Datom] -> Value
+  (if datom.added
+    (value-keyword ":db/add")
+    (value-keyword ":db/retract")))
+
+(defn omitted-term? [term: Term] -> bool
+  (and (= term.kind .Value)
+       (= term.value.kind .Nil)))
+
+(defn match-optional-datom-term? [term: Term, actual: Value, binding: ^Binding] -> bool
+  (if (omitted-term? term)
+    true
+    (match-term? term actual binding)))
+
+(defn datom-tx-op-terms-match? [datom: Datom, clause: Clause, binding: ^Binding] -> bool
+  (and (match-optional-datom-term? clause.tx-term (datom-tx-value datom) binding)
+       (match-optional-datom-term? clause.op-term (datom-op-value datom) binding)))
+
 (defn datom-clause-matches? [db: DB, datom: Datom, clause: Clause, binding: ^Binding] -> bool
   (when (and (= clause.a.kind .Value)
              (= clause.a.value.kind .Keyword)
@@ -2684,10 +2745,12 @@
       (return
         (and (= datom.a forward-attr)
              (match-entity-term? db clause.e (value-entity datom.v.entity) binding)
-             (match-entity-term? db clause.v (value-entity datom.e) binding)))))
+             (match-entity-term? db clause.v (value-entity datom.e) binding)
+             (datom-tx-op-terms-match? datom clause binding)))))
   (and (match-entity-term? db clause.e (value-entity datom.e) binding)
        (match-term? clause.a (value-keyword datom.a) binding)
-       (match-clause-value-term? db datom.a clause.v datom.v binding)))
+       (match-clause-value-term? db datom.a clause.v datom.v binding)
+       (datom-tx-op-terms-match? datom clause binding)))
 
 (defn candidate-index-matches? [datom: Datom,
                                 e-value: Value, e-ok: bool,
@@ -3529,6 +3592,11 @@
 (defn validate-query-relation-input [input: Query-Input, relation: Relation-Input] -> [ok: bool, error: string]
   (when (= input.kind .Collection)
     (return true ""))
+  (when (and (= input.kind .Scalar)
+             (= input.value.kind .Map)
+             (or (not (= relation.binding.kind .None))
+                 (= (count relation.vars) 2)))
+    (return true ""))
   (when (not (= input.kind .Relation))
     (return false "cannot bind query input to relation"))
   (when (not (= input.width (count relation.vars)))
@@ -4365,9 +4433,14 @@
     (return (value-int (+ current.int-value 1))))
   (when (or (= aggregate.op "sum")
             (= aggregate.op "avg"))
-    (when (not (= value.kind .Int))
-      (return current))
-    (return (value-int (+ current.int-value value.int-value))))
+    (when (= value.kind .Int)
+      (if (= current.kind .Float)
+        (return (value-float (+ current.float-value (f64 value.int-value))))
+        (return (value-int (+ current.int-value value.int-value)))))
+    (when (= value.kind .Float)
+      (if (= current.kind .Float)
+        (return (value-float (+ current.float-value value.float-value)))
+        (return (value-float (+ (f64 current.int-value) value.float-value))))))
   (when (= current.kind .Nil)
     (return value))
   (if (= aggregate.op "min")
@@ -4457,7 +4530,8 @@
                                 (set! custom-name name)
                                 (set! custom-name-ok true)))))
                         (when (and (= aggregate.op "avg")
-                                   (= value.kind .Int))
+                                   (or (= value.kind .Int)
+                                       (= value.kind .Float)))
                           (set! avg-count (+ avg-count 1)))
                         (set! current (apply-aggregate-value current aggregate value))))))))))))
     (when (= aggregate.op "count-distinct")
@@ -4467,7 +4541,11 @@
                    (= aggregate.op "max")))
       (return (top-n-values (slice aggregate-values 0) resolved-limit (= aggregate.op "max"))))
     (when (and (= aggregate.op "avg") (> avg-count 0))
-      (set! current.int-value (/ current.int-value avg-count)))
+      (if (= current.kind .Float)
+        (return (value-float (/ current.float-value (f64 avg-count))))
+        (if (= (% current.int-value avg-count) 0)
+          (return (value-int (/ current.int-value avg-count)))
+          (return (value-float (/ (f64 current.int-value) (f64 avg-count)))))))
     (when (= aggregate.op "median")
       (return (median-int (slice aggregate-ints 0))))
     (when (= aggregate.op "variance")
@@ -4971,10 +5049,23 @@
     out))
 
 (defn reverse-attr? [attr: string] -> bool
-  (strings.has_prefix attr ":_"))
+  (when (strings.has_prefix attr ":_")
+    (return true))
+  (for [_ index attr]
+    (when (and (< (+ index 2) (count attr))
+               (= (slice attr index (+ index 2)) "/_"))
+      (return true)))
+  false)
 
 (defn forward-attr-for-reverse [attr: string] -> string
-  (strings.concatenate ([]string [":" (slice attr 2)])))
+  (when (strings.has_prefix attr ":_")
+    (return (strings.concatenate ([]string [":" (slice attr 2)]))))
+  (for [_ index attr]
+    (when (and (< (+ index 2) (count attr))
+               (= (slice attr index (+ index 2)) "/_"))
+      (return (strings.concatenate ([]string [(slice attr 0 (+ index 1))
+                                              (slice attr (+ index 2))])))))
+  attr)
 
 (defn pull-output-has-attr? [out: [dynamic]Pull-Attr, attr: string] -> bool
   (for [pulled out]
