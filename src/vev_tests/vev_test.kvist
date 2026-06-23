@@ -1074,6 +1074,65 @@
     (t.is (= (count source-symbol-value.rows) 1))
     (t.is (= source-symbol-value.rows[0].values[0].entity 1))))
 
+(t.deftest datascript-query-rendered-text-and-prepared-values-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :name}
+             {:db/id 101 :db/ident :friend :db/valueType :db.type/ref}
+             {:db/id 1 :name "Petr" :friend 2}
+             {:db/id 2 :name "David"}])
+        prepared (vev.prepare-query-text "[:find ?name :where [?e :name ?name]]")
+        text-value (vev.q-text-value conn.db "[:find ?name :where [?e :name ?name]]")
+        prepared-value (vev.q-prepared-value conn.db prepared)
+        input-value (vev.q-text-value-with-inputs
+                      conn.db
+                      "[:find ?name :in $ ?needle :where [?e :name ?needle] [?e :name ?name]]"
+                      ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Petr"))]))
+        pull-value (vev.q-text-value conn.db "[:find (pull ?e [:name]) :where [?e :name \"Petr\"]]")
+        bad-value (vev.q-text-value conn.db "[:where [?e :name ?name]]")
+        [text-ok text-ok-ok] (map-value text-value ":ok")
+        [text-rows text-rows-ok] (map-value text-value ":rows")
+        [text-first-values text-first-values-ok] (map-value text-rows.items[0] ":values")
+        [prepared-rows prepared-rows-ok] (map-value prepared-value ":rows")
+        [prepared-first-values prepared-first-values-ok] (map-value prepared-rows.items[0] ":values")
+        [input-rows input-rows-ok] (map-value input-value ":rows")
+        [input-first-values input-first-values-ok] (map-value input-rows.items[0] ":values")
+        [pull-rows pull-rows-ok] (map-value pull-value ":rows")
+        [pull-first-pulls pull-first-pulls-ok] (map-value pull-rows.items[0] ":pulls")
+        [pulled-name pulled-name-ok] (map-value pull-first-pulls.items[0] ":name")
+        [bad-ok bad-ok-ok] (map-value bad-value ":ok")
+        [bad-error bad-error-ok] (map-value bad-value ":error")
+        [bad-rows bad-rows-ok] (map-value bad-value ":rows")]
+    (t.is text-ok-ok)
+    (t.is text-ok.bool-value)
+    (t.is text-rows-ok)
+    (t.is (= text-rows.kind .Vector))
+    (t.is (= (count text-rows.items) 2))
+    (t.is text-first-values-ok)
+    (t.is (= text-first-values.kind .Vector))
+    (t.is (= text-first-values.items[0].text "Petr"))
+    (t.is prepared-rows-ok)
+    (t.is prepared-first-values-ok)
+    (t.is (= prepared-first-values.items[0].text "Petr"))
+    (t.is input-rows-ok)
+    (t.is (= (count input-rows.items) 1))
+    (t.is input-first-values-ok)
+    (t.is (= input-first-values.items[0].text "Petr"))
+    (t.is pull-rows-ok)
+    (t.is pull-first-pulls-ok)
+    (t.is (= pull-first-pulls.kind .Vector))
+    (t.is (= (count pull-first-pulls.items) 1))
+    (t.is pulled-name-ok)
+    (t.is (= pulled-name.text "Petr"))
+    (t.is bad-ok-ok)
+    (t.is (not bad-ok.bool-value))
+    (t.is bad-error-ok)
+    (t.is (= bad-error.text "query text must start with [:find"))
+    (t.is bad-rows-ok)
+    (t.is (= (count bad-rows.items) 0))))
+
 (t.deftest datascript-parser-query-text-predicates-and-functions
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
