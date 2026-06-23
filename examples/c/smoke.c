@@ -121,10 +121,49 @@ int main(void) {
     print_result_rows(result);
     vev_result_free(result);
 
+    vev_stmt_t stmt = vev_stmt_create(query);
+    if (stmt == NULL) {
+        fprintf(stderr, "failed to create statement\n");
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (!vev_stmt_bind_string(stmt, "ada@example.com")) {
+        fprintf(stderr, "failed to bind statement string\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t stmt_result = vev_query_stmt_result(conn, stmt);
+    int stmt_rows = result_row_count_or_error("stmt", stmt_result);
+    printf("stmt rows: %d\n", stmt_rows);
+    vev_result_free(stmt_result);
+    vev_stmt_clear(stmt);
+    if (!vev_stmt_bind_string(stmt, "grace@example.com")) {
+        fprintf(stderr, "failed to rebind statement string\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t rebound = vev_query_stmt_result(conn, stmt);
+    int rebound_rows = result_row_count_or_error("stmt-rebound", rebound);
+    printf("stmt-rebound rows: %d\n", rebound_rows);
+    vev_result_free(rebound);
+    if (stmt_rows != 1 || rebound_rows != 1) {
+        fprintf(stderr, "unexpected statement row counts\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+
     vev_prepared_query_t all_emails =
         vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");
     if (all_emails == NULL) {
         fprintf(stderr, "failed to prepare snapshot query\n");
+        vev_stmt_free(stmt);
         vev_prepared_query_free(query);
         vev_conn_close(conn);
         return 1;
@@ -134,6 +173,7 @@ int main(void) {
     if (snapshot == NULL) {
         fprintf(stderr, "failed to retain DB snapshot\n");
         vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
         vev_prepared_query_free(query);
         vev_conn_close(conn);
         return 1;
@@ -162,6 +202,7 @@ int main(void) {
         fprintf(stderr, "unexpected snapshot row counts\n");
         vev_db_release(snapshot);
         vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
         vev_prepared_query_free(query);
         return 1;
     }
@@ -169,6 +210,7 @@ int main(void) {
     vev_db_release(snapshot);
     vev_prepared_query_free(all_emails);
 
+    vev_stmt_free(stmt);
     vev_prepared_query_free(query);
     if (conn != NULL) {
         vev_conn_close(conn);

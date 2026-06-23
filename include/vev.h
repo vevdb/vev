@@ -11,6 +11,7 @@ typedef void *vev_conn_t;
 typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
+typedef void *vev_stmt_t;
 
 enum {
     VEV_VALUE_NIL = 0,
@@ -43,12 +44,23 @@ const char *vev_query_edn_with_inputs(
 
 vev_prepared_query_t vev_prepare_query_edn(const char *query_text);
 void vev_prepared_query_free(vev_prepared_query_t query);
+vev_stmt_t vev_stmt_create(vev_prepared_query_t query);
+void vev_stmt_clear(vev_stmt_t stmt);
+void vev_stmt_free(vev_stmt_t stmt);
+bool vev_stmt_bind_string(vev_stmt_t stmt, const char *value);
+bool vev_stmt_bind_keyword(vev_stmt_t stmt, const char *value);
+bool vev_stmt_bind_symbol(vev_stmt_t stmt, const char *value);
+bool vev_stmt_bind_entity(vev_stmt_t stmt, unsigned long long value);
+bool vev_stmt_bind_int(vev_stmt_t stmt, long long value);
+bool vev_stmt_bind_bool(vev_stmt_t stmt, bool value);
 const char *vev_query_prepared(vev_conn_t conn, vev_prepared_query_t query);
 const char *vev_query_prepared_with_inputs(
     vev_conn_t conn,
     vev_prepared_query_t query,
     const char *inputs_text);
 
+vev_result_t vev_query_stmt_result(vev_conn_t conn, vev_stmt_t stmt);
+vev_result_t vev_query_db_stmt_result(vev_db_t db, vev_stmt_t stmt);
 vev_result_t vev_query_prepared_result_with_inputs(
     vev_conn_t conn,
     vev_prepared_query_t query,

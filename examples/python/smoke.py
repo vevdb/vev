@@ -52,6 +52,22 @@ def main() -> int:
     lib.vev_prepare_query_edn.argtypes = [ctypes.c_char_p]
     lib.vev_prepare_query_edn.restype = ctypes.c_void_p
     lib.vev_prepared_query_free.argtypes = [ctypes.c_void_p]
+    lib.vev_stmt_create.argtypes = [ctypes.c_void_p]
+    lib.vev_stmt_create.restype = ctypes.c_void_p
+    lib.vev_stmt_clear.argtypes = [ctypes.c_void_p]
+    lib.vev_stmt_free.argtypes = [ctypes.c_void_p]
+    lib.vev_stmt_bind_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.vev_stmt_bind_string.restype = ctypes.c_bool
+    lib.vev_stmt_bind_keyword.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.vev_stmt_bind_keyword.restype = ctypes.c_bool
+    lib.vev_stmt_bind_symbol.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.vev_stmt_bind_symbol.restype = ctypes.c_bool
+    lib.vev_stmt_bind_entity.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+    lib.vev_stmt_bind_entity.restype = ctypes.c_bool
+    lib.vev_stmt_bind_int.argtypes = [ctypes.c_void_p, ctypes.c_longlong]
+    lib.vev_stmt_bind_int.restype = ctypes.c_bool
+    lib.vev_stmt_bind_bool.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+    lib.vev_stmt_bind_bool.restype = ctypes.c_bool
     lib.vev_query_prepared_with_inputs.argtypes = [
         ctypes.c_void_p,
         ctypes.c_void_p,
@@ -65,6 +81,10 @@ def main() -> int:
         ctypes.c_char_p,
     ]
     lib.vev_query_prepared_result_with_inputs.restype = ctypes.c_void_p
+    lib.vev_query_stmt_result.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    lib.vev_query_stmt_result.restype = ctypes.c_void_p
+    lib.vev_query_db_stmt_result.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    lib.vev_query_db_stmt_result.restype = ctypes.c_void_p
     lib.vev_query_db_prepared_result_with_inputs.argtypes = [
         ctypes.c_void_p,
         ctypes.c_void_p,
@@ -94,6 +114,7 @@ def main() -> int:
         raise RuntimeError("failed to open Vev connection")
 
     prepared = None
+    stmt = None
     all_emails = None
     snapshot = None
     conn_open = True
@@ -165,6 +186,33 @@ def main() -> int:
         finally:
             lib.vev_result_free(handle)
 
+        stmt = lib.vev_stmt_create(prepared)
+        if not stmt:
+            raise RuntimeError("failed to create statement")
+        if not lib.vev_stmt_bind_string(stmt, b"ada@example.com"):
+            raise RuntimeError("failed to bind statement")
+        stmt_handle = lib.vev_query_stmt_result(conn, stmt)
+        try:
+            if not lib.vev_result_ok(stmt_handle):
+                raise RuntimeError("statement result returned an error")
+            stmt_rows = lib.vev_result_row_count(stmt_handle)
+        finally:
+            lib.vev_result_free(stmt_handle)
+        lib.vev_stmt_clear(stmt)
+        if not lib.vev_stmt_bind_string(stmt, b"grace@example.com"):
+            raise RuntimeError("failed to rebind statement")
+        rebound_handle = lib.vev_query_stmt_result(conn, stmt)
+        try:
+            if not lib.vev_result_ok(rebound_handle):
+                raise RuntimeError("rebound statement result returned an error")
+            rebound_rows = lib.vev_result_row_count(rebound_handle)
+        finally:
+            lib.vev_result_free(rebound_handle)
+        print(f"stmt rows: {stmt_rows}")
+        print(f"stmt-rebound rows: {rebound_rows}")
+        if stmt_rows != 1 or rebound_rows != 1:
+            raise RuntimeError("unexpected statement row counts")
+
         all_emails = lib.vev_prepare_query_edn(
             b"[:find ?e ?email :where [?e :user/email ?email]]"
         )
@@ -208,6 +256,8 @@ def main() -> int:
             lib.vev_db_release(snapshot)
         if all_emails:
             lib.vev_prepared_query_free(all_emails)
+        if stmt:
+            lib.vev_stmt_free(stmt)
         if prepared:
             lib.vev_prepared_query_free(prepared)
         if conn_open:

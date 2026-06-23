@@ -10,6 +10,7 @@ The current shape is intentionally narrow:
 - EDN query strings
 - EDN input vectors for `:in` values
 - prepared query handles
+- reusable statement handles with typed scalar bindings
 - rendered result strings owned by the caller
 - opaque result handles for typed row/value access
 
@@ -46,33 +47,46 @@ program, and runs the Python ctypes smoke program.
 
 ## ABI Benchmark
 
-The ABI benchmark compares a native Kvist prepared query using EDN input text
-against the C ABI prepared query using the same EDN input text:
+The ABI benchmark compares native Kvist prepared queries against equivalent C
+ABI calls:
 
 ```sh
 bench/compare_abi.sh
 ```
 
 The output includes both medians and a `c_abi_over_native` ratio for the
-boundary overhead. On the initial prepared email lookup workload, the C ABI path
-has been around `1.13x` the native Kvist path on this machine when rendering
-text results. Treat that as a smoke signal, not a stable performance claim.
+boundary overhead. Treat these as smoke signals, not stable performance claims.
 
-The benchmark also measures `prepared-email-result`, which returns an opaque
-result handle instead of rendering the whole result as text. On the same
-machine, that path measured around `1.00x` native for the initial prepared email
-lookup workload.
+Current workloads:
 
-It also measures DB snapshot creation and querying through `vev_db_t`:
+- `prepared-email-input-text`: prepared query plus EDN input text, rendered text
+  result
+- `prepared-email-result`: prepared query plus EDN input text, typed result
+  handle
+- `prepared-email-bound-result`: prepared query plus typed statement binding,
+  typed result handle
+- `db-snapshot`: retaining a DB value through `vev_conn_db`
+- `prepared-email-db-result`: immutable DB value plus EDN input text, typed
+  result handle
+- `prepared-email-db-bound-result`: immutable DB value plus typed statement
+  binding, typed result handle
 
-- `db-snapshot`
-- `prepared-email-db-result`
+Latest local run:
 
-On the initial 1000-entity benchmark, snapshot creation measured around `1.03x`
-native and prepared snapshot querying measured around `1.00x` native. Snapshot
-creation is much more expensive than querying because the current ABI snapshot
-deep-copies datoms and owned strings to make the handle independent of the
-connection lifetime.
+```text
+comparison workload=prepared-email-input-text c_abi_over_native=1.13x
+comparison workload=prepared-email-result c_abi_over_native=1.00x
+comparison workload=prepared-email-bound-result c_abi_over_native=1.00x
+comparison workload=db-snapshot c_abi_over_native=1.06x
+comparison workload=prepared-email-db-result c_abi_over_native=1.00x
+comparison workload=prepared-email-db-bound-result c_abi_over_native=1.00x
+```
+
+Statement bindings avoid parsing EDN input text on each call and currently
+measure at native parity in this small lookup benchmark. Snapshot creation is
+much more expensive than querying because the current ABI snapshot deep-copies
+datoms and owned strings to make the handle independent of the connection
+lifetime.
 
 ## Current C Surface
 
@@ -103,6 +117,16 @@ const char *prepared_result =
     vev_query_prepared_with_inputs(conn, query, "[\"ada@example.com\"]");
 vev_string_free(prepared_result);
 
+vev_stmt_t stmt = vev_stmt_create(query);
+vev_stmt_bind_string(stmt, "ada@example.com");
+vev_result_t stmt_rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(stmt_rows);
+vev_stmt_clear(stmt);
+
+vev_stmt_bind_string(stmt, "grace@example.com");
+vev_result_t rebound_rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(rebound_rows);
+
 vev_result_t rows =
     vev_query_prepared_result_with_inputs(conn, query, "[\"ada@example.com\"]");
 for (int row = 0; row < vev_result_row_count(rows); row++) {
@@ -121,8 +145,13 @@ vev_transact_edn(conn, "[{:db/id 2 :user/name \"Grace\"}]");
 vev_result_t old_rows =
     vev_query_db_prepared_result_with_inputs(snapshot, query, "[\"ada@example.com\"]");
 vev_result_free(old_rows);
+
+vev_result_t old_stmt_rows = vev_query_db_stmt_result(snapshot, stmt);
+vev_result_free(old_stmt_rows);
+
 vev_db_release(snapshot);
 
+vev_stmt_free(stmt);
 vev_prepared_query_free(query);
 
 vev_conn_close(conn);
@@ -136,6 +165,12 @@ for strings returned by the input-bearing query functions.
 
 Connections are released with `vev_conn_close`. DB snapshots are released with
 `vev_db_release`. Prepared queries are released with `vev_prepared_query_free`.
+Statement handles are released with `vev_stmt_free`.
+
+Statement handles borrow their prepared query. Free statements before freeing
+the prepared query they were created from. Bound string, keyword, and symbol
+values are copied into the statement and released by `vev_stmt_clear` or
+`vev_stmt_free`.
 
 Result handles from `vev_query_prepared_result_with_inputs` are released with
 `vev_result_free`. Strings returned from result accessors such as
@@ -185,6 +220,43 @@ vev_query_edn_with_inputs(
 The wrapper parses the query first and uses the query's `:in` shape to coerce
 each EDN input value into Vev's internal scalar, collection, tuple, or relation
 input representation.
+
+## Statement Bindings
+
+`vev_stmt_t` is the SQLite-like path for repeated scalar inputs:
+
+```c
+vev_prepared_query_t query =
+    vev_prepare_query_edn("[:find ?name :in ?email :where [?e :user/email ?email] [?e :user/name ?name]]");
+
+vev_stmt_t stmt = vev_stmt_create(query);
+vev_stmt_bind_string(stmt, "ada@example.com");
+
+vev_result_t rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(rows);
+
+vev_stmt_clear(stmt);
+vev_stmt_bind_string(stmt, "grace@example.com");
+rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(rows);
+
+vev_stmt_free(stmt);
+vev_prepared_query_free(query);
+```
+
+Current bind functions:
+
+- `vev_stmt_bind_string`
+- `vev_stmt_bind_keyword`
+- `vev_stmt_bind_symbol`
+- `vev_stmt_bind_entity`
+- `vev_stmt_bind_int`
+- `vev_stmt_bind_bool`
+
+The first statement API intentionally covers scalar bindings. EDN input text
+still handles collection, tuple, relation, lookup-ref, source, and pull-pattern
+inputs. Those should be added to statement bindings as typed APIs instead of
+forcing host wrappers to construct EDN strings.
 
 ## Result Handles
 
@@ -245,6 +317,8 @@ The next useful steps are:
 - add nested value traversal and streaming callbacks so callers do not have to
   render large or nested results as text
 - add explicit error/result status APIs
+- add typed statement bindings for collection, tuple, relation, lookup-ref,
+  source, and pull-pattern inputs
 - add pull-specific entry points
 - add Rust smoke wrapper
 - add broader result-shape benchmarks for nested values, pull results, and

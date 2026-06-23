@@ -24,6 +24,11 @@ ABI_Result :: struct {
     result: vev__Result_Set,
 }
 
+ABI_Stmt :: struct {
+    query: rawptr,
+    inputs: [dynamic]vev__Query_Input,
+}
+
 abi_alloc_conn :: proc() -> rawptr {
     wrapper := new(ABI_Conn)
     wrapper.tx_sources = make([dynamic]string)
@@ -86,12 +91,38 @@ abi_result_ptr :: proc(result: rawptr) -> ^vev__Result_Set {
 abi_free_result :: proc(result: rawptr) {
     free((^ABI_Result)(result))
 }
+
+abi_alloc_stmt :: proc(query: rawptr) -> rawptr {
+    wrapper := new(ABI_Stmt)
+    wrapper.query = query
+    wrapper.inputs = make([dynamic]vev__Query_Input)
+    return rawptr(wrapper)
+}
+
+abi_stmt_query :: proc(stmt: rawptr) -> rawptr {
+    return (^ABI_Stmt)(stmt)^.query
+}
+
+abi_stmt_inputs_ptr :: proc(stmt: rawptr) -> ^[dynamic]vev__Query_Input {
+    return &((^ABI_Stmt)(stmt))^.inputs
+}
+
+abi_stmt_push_input :: proc(stmt: rawptr, input: vev__Query_Input) {
+    append(&((^ABI_Stmt)(stmt))^.inputs, input)
+}
+
+abi_free_stmt :: proc(stmt: rawptr) {
+    wrapper := (^ABI_Stmt)(stmt)
+    delete(wrapper.inputs)
+    free(wrapper)
+}
 ")
 
 (def Vev-Conn (distinct rawptr))
 (def Vev-DB (distinct rawptr))
 (def Vev-Prepared-Query (distinct rawptr))
 (def Vev-Result (distinct rawptr))
+(def Vev-Stmt (distinct rawptr))
 
 (defn- conn-ptr [conn: Vev-Conn] -> ^vev.Conn
   (abi-conn-ptr (rawptr conn)))
@@ -104,6 +135,12 @@ abi_free_result :: proc(result: rawptr) {
 
 (defn- result-ptr [result: Vev-Result] -> ^vev.Result-Set
   (abi-result-ptr (rawptr result)))
+
+(defn- stmt-query [stmt: Vev-Stmt] -> Vev-Prepared-Query
+  (Vev-Prepared-Query (abi-stmt-query (rawptr stmt))))
+
+(defn- stmt-inputs-ptr [stmt: Vev-Stmt] -> ^[dynamic]vev.Query-Input
+  (abi-stmt-inputs-ptr (rawptr stmt)))
 
 (defn- text-from-c [text: cstring] -> string
   (let [[out err] (strings.clone_from_cstring text)]
@@ -156,6 +193,38 @@ abi_free_result :: proc(result: rawptr) {
           (delete-owned-value item))
         (delete value.items))
     :else (do)))
+
+(defn- delete-query-input-owned [input: vev.Query-Input]
+  (case input.kind
+    .Scalar
+      (do
+        (delete-owned-value input.value)
+        (when input.has-lookup-ref
+          (delete input.lookup-attr)
+          (delete-owned-value input.lookup-value)))
+    .Collection
+      (do
+        (for [value input.values]
+          (delete-owned-value value))
+        (delete input.values))
+    .CollectionLookupRefs
+      (do
+        (for [attr input.lookup-attrs]
+          (delete attr))
+        (for [value input.lookup-values]
+          (delete-owned-value value))
+        (delete input.lookup-attrs)
+        (delete input.lookup-values))
+    :else (do)))
+
+(defn- stmt-clear-owned [stmt: Vev-Stmt]
+  (let [inputs (stmt-inputs-ptr stmt)]
+    (for [input inputs^]
+      (delete-query-input-owned input))
+    (resize inputs 0)))
+
+(defn- stmt-push-scalar! [stmt: Vev-Stmt, value: vev.Value]
+  (abi-stmt-push-input (rawptr stmt) (vev.query-input-scalar value)))
 
 (defn- datom-owned [datom: vev.Datom] -> vev.Datom
   (vev.Datom {e: datom.e
@@ -323,6 +392,102 @@ abi_free_result :: proc(result: rawptr) {
   (let [ptr (prepared-query-ptr query)]
     (delete-query-shallow ptr^.query)
     (abi-free-prepared-query (rawptr query))))
+
+@export
+(defn vev_stmt_create :abi "c" [query: Vev-Prepared-Query] -> Vev-Stmt
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr query) nil)
+    (return (Vev-Stmt nil)))
+  (Vev-Stmt (abi-alloc-stmt (rawptr query))))
+
+@export
+(defn vev_stmt_clear :abi "c" [stmt: Vev-Stmt]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr stmt) nil)
+    (return))
+  (stmt-clear-owned stmt))
+
+@export
+(defn vev_stmt_free :abi "c" [stmt: Vev-Stmt]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr stmt) nil)
+    (return))
+  (stmt-clear-owned stmt)
+  (abi-free-stmt (rawptr stmt)))
+
+@export
+(defn vev_stmt_bind_string :abi "c" [stmt: Vev-Stmt, value: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= value nil))
+    (return false))
+  (stmt-push-scalar! stmt (vev.value-string (text-from-c value)))
+  true)
+
+@export
+(defn vev_stmt_bind_keyword :abi "c" [stmt: Vev-Stmt, value: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= value nil))
+    (return false))
+  (stmt-push-scalar! stmt (vev.value-keyword (text-from-c value)))
+  true)
+
+@export
+(defn vev_stmt_bind_symbol :abi "c" [stmt: Vev-Stmt, value: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= value nil))
+    (return false))
+  (stmt-push-scalar! stmt (vev.value-symbol (text-from-c value)))
+  true)
+
+@export
+(defn vev_stmt_bind_entity :abi "c" [stmt: Vev-Stmt, value: u64] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr stmt) nil)
+    (return false))
+  (stmt-push-scalar! stmt (vev.value-entity value))
+  true)
+
+@export
+(defn vev_stmt_bind_int :abi "c" [stmt: Vev-Stmt, value: i64] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr stmt) nil)
+    (return false))
+  (stmt-push-scalar! stmt (vev.value-int value))
+  true)
+
+@export
+(defn vev_stmt_bind_bool :abi "c" [stmt: Vev-Stmt, value: bool] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr stmt) nil)
+    (return false))
+  (stmt-push-scalar! stmt (vev.value-bool value))
+  true)
+
+@export
+(defn vev_query_stmt_result :abi "c" [conn: Vev-Conn, stmt: Vev-Stmt] -> Vev-Result
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= (rawptr stmt) nil))
+    (return (Vev-Result nil)))
+  (let [conn-ptr-value (conn-ptr conn)
+        query-ptr-value (prepared-query-ptr (stmt-query stmt))
+        inputs (stmt-inputs-ptr stmt)
+        result (abi-alloc-result)
+        result-ptr-value (result-ptr (Vev-Result result))]
+    (set! result-ptr-value^ (vev.q-prepared-with-inputs conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0)))
+    (Vev-Result result)))
+
+@export
+(defn vev_query_db_stmt_result :abi "c" [db: Vev-DB, stmt: Vev-Stmt] -> Vev-Result
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr stmt) nil))
+    (return (Vev-Result nil)))
+  (let [db-ptr-value (db-ptr db)
+        query-ptr-value (prepared-query-ptr (stmt-query stmt))
+        inputs (stmt-inputs-ptr stmt)
+        result (abi-alloc-result)
+        result-ptr-value (result-ptr (Vev-Result result))]
+    (set! result-ptr-value^ (vev.q-prepared-with-inputs db-ptr-value^ query-ptr-value^ (slice inputs^ 0)))
+    (Vev-Result result)))
 
 @export
 (defn vev_query_prepared :abi "c" [conn: Vev-Conn, query: Vev-Prepared-Query] -> cstring
