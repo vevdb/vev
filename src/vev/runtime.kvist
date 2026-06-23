@@ -163,6 +163,19 @@
             (arr.push! rows (value-vector (slice items 0)))))))
     (value-vector (slice rows 0))))
 
+(defn query-input-map-as-relation-vector [input: Query-Input] -> Value
+  (let [rows (make [dynamic]Value)]
+    (when (and (= input.kind .Scalar)
+               (= input.value.kind .Map))
+      (let [row_count (/ (count input.value.items) 2)]
+        (for [row 0..<row_count]
+          (let [offset (* row 2)]
+            (arr.push! rows
+              (value-vector
+                ([]Value [input.value.items[offset]
+                          input.value.items[(+ offset 1)]])))))))
+    (value-vector (slice rows 0))))
+
 (defn expand-tuple-input [bindings: []Binding, tuple: Tuple-Input, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (when (not (= tuple.binding.kind .None))
@@ -188,6 +201,7 @@
       (let [relation-value (cond
                              (= input.kind .Collection) (value-vector (slice input.values 0))
                              (= input.kind .Relation) (query-input-relation-as-vector input width)
+                             (and (= input.kind .Scalar) (= input.value.kind .Map)) (query-input-map-as-relation-vector input)
                              :else (Value {}))]
         (when (= relation-value.kind .Vector)
           (for [binding bindings]
@@ -205,6 +219,19 @@
               (for [name index relation.vars]
                 (when (not (= name ""))
                   (binding-store! (addr next) name input.values[(+ offset index)])))
+              (arr.push! out next))))))
+    (when (and (= input.kind .Scalar)
+               (= input.value.kind .Map)
+               (= width 2))
+      (let [row_count (/ (count input.value.items) 2)]
+        (for [binding bindings]
+          (for [row 0..<row_count]
+            (let [next (clone-binding binding)
+                  offset (* row 2)]
+              (when (not (= relation.vars[0] ""))
+                (binding-store! (addr next) relation.vars[0] input.value.items[offset]))
+              (when (not (= relation.vars[1] ""))
+                (binding-store! (addr next) relation.vars[1] input.value.items[(+ offset 1)]))
               (arr.push! out next))))))
     out))
 
@@ -3551,6 +3578,11 @@
 
 (defn validate-query-relation-input [input: Query-Input, relation: Relation-Input] -> [ok: bool, error: string]
   (when (= input.kind .Collection)
+    (return true ""))
+  (when (and (= input.kind .Scalar)
+             (= input.value.kind .Map)
+             (or (not (= relation.binding.kind .None))
+                 (= (count relation.vars) 2)))
     (return true ""))
   (when (not (= input.kind .Relation))
     (return false "cannot bind query input to relation"))
