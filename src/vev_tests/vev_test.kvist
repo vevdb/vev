@@ -7833,6 +7833,90 @@
     (t.is (= (count names) 1))
     (t.is (= names[0].text "Ivan"))))
 
+(t.deftest datascript-text-upsert-unique-identity-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 100 :db/ident :name] [:db/add 100 :db/valueType :db.type/string] [:db/add 100 :db/unique :db.unique/identity] [:db/add 101 :db/ident :email] [:db/add 101 :db/valueType :db.type/string] [:db/add 101 :db/unique :db.unique/identity] [:db/add 102 :db/ident :ref] [:db/add 102 :db/valueType :db.type/ref] [:db/add 102 :db/unique :db.unique/identity] [:db/add 103 :db/ident :age] [:db/add 103 :db/valueType :db.type/long] [:db/add 103 :db/cardinality :db.cardinality/one] [:db/add 104 :db/ident :friend] [:db/add 104 :db/valueType :db.type/ref]]")
+        _ (vev.transact-text
+            (addr conn)
+            "[{:db/id 1 :name \"Ivan\" :email \"@1\"} {:db/id 2 :name \"Petr\" :email \"@2\" :ref 3} {:db/id 3 :name \"Dima\" :email \"@3\" :ref 4} {:db/id 4 :name \"Olga\" :email \"@4\" :ref 1}]")
+        no-id (vev.transact-text
+                (addr conn)
+                "[{:name \"Ivan\" :age 35}]")
+        with-tempid (vev.transact-text
+                      (addr conn)
+                      "[{:db/id \"ivan\" :name \"Ivan\" :age 36}]")
+        list-tempid (vev.transact-text
+                      (addr conn)
+                      "[[:db/add \"ivan-list\" :age 37] [:db/add \"ivan-list\" :name \"Ivan\"]]")
+        by-lookup-ref (vev.transact-text
+                        (addr conn)
+                        "[{:ref [:name \"Dima\"] :age 38}]")
+        prepared (vev.prepare-tx-text
+                   "[{:db/id \"igor-1\" :name \"Igor\" :age 35} {:db/id \"igor-2\" :name \"Igor\" :age 36}]")
+        intermediate (vev.transact-prepared (addr conn) prepared)
+        forward-refs (vev.transact-text
+                       (addr conn)
+                       "[{:db/id 10 :friend \"alice\"} {:db/id 11 :friend \"petr\"} {:db/id \"alice\" :name \"Ivan\"} {:db/id \"petr\" :name \"Petr\"}]")
+        before-conflict-count (count conn.db.datoms)
+        conflict (vev.transact-text
+                   (addr conn)
+                   "[{:name \"Ivan\" :email \"@2\" :age 50}]")
+        after-conflict-count (count conn.db.datoms)
+        [ivan-age ivan-age-ok] (vev.q-text-scalar
+                                 conn.db
+                                 "[:find ?age . :where [1 :age ?age]]")
+        [petr-age petr-age-ok] (vev.q-text-scalar
+                                 conn.db
+                                 "[:find ?age . :where [2 :age ?age]]")
+        [igor-age igor-age-ok] (vev.q-text-scalar
+                                 conn.db
+                                 "[:find ?age . :where [?e :name \"Igor\"] [?e :age ?age]]")
+        [first-ref first-ref-ok] (vev.q-text-scalar
+                                   conn.db
+                                   "[:find ?ref . :where [10 :friend ?ref]]")
+        [second-ref second-ref-ok] (vev.q-text-scalar
+                                     conn.db
+                                     "[:find ?ref . :where [11 :friend ?ref]]")
+        [ivan-e ivan-ok] (tempid-e (slice with-tempid.tempids 0) "ivan")
+        [list-e list-ok] (tempid-e (slice list-tempid.tempids 0) "ivan-list")
+        [igor-1 igor-1-ok] (tempid-e (slice intermediate.tempids 0) "igor-1")
+        [igor-2 igor-2-ok] (tempid-e (slice intermediate.tempids 0) "igor-2")
+        [alice alice-ok] (tempid-e (slice forward-refs.tempids 0) "alice")
+        [petr petr-ok] (tempid-e (slice forward-refs.tempids 0) "petr")]
+    (t.is no-id.ok)
+    (t.is with-tempid.ok)
+    (t.is list-tempid.ok)
+    (t.is by-lookup-ref.ok)
+    (t.is intermediate.ok)
+    (t.is forward-refs.ok)
+    (t.is ivan-ok)
+    (t.is (= ivan-e 1))
+    (t.is list-ok)
+    (t.is (= list-e 1))
+    (t.is igor-1-ok)
+    (t.is igor-2-ok)
+    (t.is (= igor-1 igor-2))
+    (t.is alice-ok)
+    (t.is (= alice 1))
+    (t.is petr-ok)
+    (t.is (= petr 2))
+    (t.is ivan-age-ok)
+    (t.is (= ivan-age.int-value 37))
+    (t.is petr-age-ok)
+    (t.is (= petr-age.int-value 38))
+    (t.is igor-age-ok)
+    (t.is (= igor-age.int-value 36))
+    (t.is first-ref-ok)
+    (t.is (= first-ref.entity 1))
+    (t.is second-ref-ok)
+    (t.is (= second-ref.entity 2))
+    (t.is (not conflict.ok))
+    (t.is (= conflict.error "conflicting upsert"))
+    (t.is (= before-conflict-count after-conflict-count))))
+
 (t.deftest transact-data-resolves-lookup-refs
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
