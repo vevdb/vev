@@ -1234,6 +1234,63 @@
     (t.is (not bad-get-else.ok))
     (t.is (= bad-get-else.error "get-else: nil default value is not supported"))))
 
+(t.deftest datascript-prepared-query-and-rules-text-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :follow]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 1 :follow (vev.value-entity 2)]
+             [:db/add 2 :follow (vev.value-entity 3)]
+             [:db/add 3 :follow (vev.value-entity 4)]
+             [:db/add 1 :age 10]
+             [:db/add 2 :age 20]
+             [:db/add 3 :age 30]
+             [:db/add 4 :age 40]])
+        prepared (vev.prepare-query-text "[:find [?e2 ...] :in $ ?e1 % :where (reachable ?e1 ?e2)]")
+        rules (vev.parse-rules-text "[[(reachable ?e1 ?e2) [?e1 :follow ?e2]] [(reachable ?e1 ?e2) [?e1 :follow ?t] (reachable ?t ?e2)]]")
+        result (vev.q-prepared-with-rules
+                 conn.db
+                 prepared
+                 rules
+                 ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))]))
+        repeated (vev.q-prepared-with-rules
+                   conn.db
+                   prepared
+                   rules
+                   ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 2))]))
+        fn-query (vev.prepare-query-text "[:find [?e ...] :in $ ?min % :where (adult ?e ?min)]")
+        fn-rules (vev.parse-rules-text "[[(adult ?e ?min) [?e :age ?age] [(>= ?age ?min)]]]")
+        fn-result (vev.q-prepared-with-rules-and-fns
+                    conn.db
+                    fn-query
+                    fn-rules
+                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 30))])
+                    ([]vev.Native-Query-Fn []))
+        bad-rules (vev.parse-rules-text "[[(broken) [_]]]")
+        bad-result (vev.q-prepared-with-rules conn.db prepared bad-rules ([]vev.Query-Input []))]
+    (t.is prepared.ok)
+    (t.is rules.ok)
+    (t.is result.ok)
+    (t.is (= (count result.rows) 3))
+    (t.is (= result.rows[0].values[0].entity 2))
+    (t.is (= result.rows[1].values[0].entity 3))
+    (t.is (= result.rows[2].values[0].entity 4))
+    (t.is repeated.ok)
+    (t.is (= (count repeated.rows) 2))
+    (t.is (= repeated.rows[0].values[0].entity 3))
+    (t.is (= repeated.rows[1].values[0].entity 4))
+    (t.is fn-query.ok)
+    (t.is fn-rules.ok)
+    (t.is fn-result.ok)
+    (t.is (= (count fn-result.rows) 2))
+    (t.is (= fn-result.rows[0].values[0].entity 3))
+    (t.is (= fn-result.rows[1].values[0].entity 4))
+    (t.is (not bad-rules.ok))
+    (t.is (not bad-result.ok))
+    (t.is (= bad-result.error bad-rules.error))))
+
 (t.deftest datascript-parser-query-text-sources
   (defer (free_all context.allocator))
   (let [left (vev.create-conn)
@@ -1455,12 +1512,27 @@
                       "[:find ?name :in % :where (adult ?e) [?e :name ?name]]"
                       "[[(adult ?e) [?e :age ?age] [(>= ?age 18)]]]"
                       ([]vev.Query-Input []))
+        prepared-rule-query (vev.prepare-query-text "[:find ?name :in % :where (adult ?e) [?e :name ?name]]")
+        prepared-rules (vev.parse-rules-text "[[(adult ?e) [?e :age ?age] [(>= ?age 18)]]]")
+        prepared-rule-result (vev.q-prepared-relation-db-with-rules
+                               rows
+                               prepared-rule-query
+                               prepared-rules
+                               ([]vev.Query-Input []))
         rule-fn-result (vev.q-text-relation-db-with-rules-and-fns
                          rows
                          "[:find ?name :in % :where (adult ?e) [?e :name ?name]]"
                          "[[(adult ?e) [?e :age ?age] [(adult-age? ?age 18)]]]"
                          ([]vev.Query-Input [])
-                         registry)]
+                         registry)
+        prepared-rule-fn-query (vev.prepare-query-text "[:find ?name :in % :where (adult ?e) [?e :name ?name]]")
+        prepared-fn-rules (vev.parse-rules-text "[[(adult ?e) [?e :age ?age] [(adult-age? ?age 18)]]]")
+        prepared-rule-fn-result (vev.q-prepared-relation-db-with-rules-and-fns
+                                  rows
+                                  prepared-rule-fn-query
+                                  prepared-fn-rules
+                                  ([]vev.Query-Input [])
+                                  registry)]
     (t.is prepared.ok)
     (t.is prepared-result.ok)
     (t.is (= (count prepared-result.rows) 1))
@@ -1475,9 +1547,19 @@
     (t.is rule-result.ok)
     (t.is (= (count rule-result.rows) 1))
     (t.is (= rule-result.rows[0].values[0].text "Ivan"))
+    (t.is prepared-rule-query.ok)
+    (t.is prepared-rules.ok)
+    (t.is prepared-rule-result.ok)
+    (t.is (= (count prepared-rule-result.rows) 1))
+    (t.is (= prepared-rule-result.rows[0].values[0].text "Ivan"))
     (t.is rule-fn-result.ok)
     (t.is (= (count rule-fn-result.rows) 1))
-    (t.is (= rule-fn-result.rows[0].values[0].text "Ivan"))))
+    (t.is (= rule-fn-result.rows[0].values[0].text "Ivan"))
+    (t.is prepared-rule-fn-query.ok)
+    (t.is prepared-fn-rules.ok)
+    (t.is prepared-rule-fn-result.ok)
+    (t.is (= (count prepared-rule-fn-result.rows) 1))
+    (t.is (= prepared-rule-fn-result.rows[0].values[0].text "Ivan"))))
 
 (t.deftest datascript-query-v3-primary-collection-patterns-subset
   (defer (free_all context.allocator))
