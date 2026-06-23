@@ -2853,6 +2853,53 @@
       (arr.push! out datom))
     (build-db out)))
 
+(defn next-tx-after-datoms [current-next-tx: u64, datoms: []Datom] -> u64
+  (let [candidate (+ (max-tx datoms) 1)]
+    (if (> candidate current-next-tx)
+      candidate
+      current-next-tx)))
+
+(defn report-tx-for-datoms [fallback: u64, datoms: []Datom] -> u64
+  (let [tx (max-tx datoms)]
+    (if (> tx 0) tx fallback)))
+
+(defn with-datoms [db: DB, datoms: []Datom] -> Tx-Report
+  (let [before (build-db (clone-datoms db.datoms))
+        out (clone-datoms db.datoms)]
+    (for [datom datoms]
+      (arr.push! out datom))
+    (let [after (build-db out)
+          tx-data (arr.into [dynamic]Datom datoms)]
+      (Tx-Report {ok: true
+                  error: ""
+                  db-before: before
+                  db-after: after
+                  tx-data: tx-data
+                  tx: (report-tx-for-datoms (+ (max-tx (slice db.datoms 0)) 1) datoms)
+                  tx-meta: (make [dynamic]Tx-Meta)
+                  tempids: (make [dynamic]Tempid)}))))
+
+(defn transact-datoms [conn: ^Conn, datoms: []Datom] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        out (clone-datoms conn^.db.datoms)]
+    (for [datom datoms]
+      (arr.push! out datom))
+    (let [after (build-db out)
+          tx-data (arr.into [dynamic]Datom datoms)
+          tx (report-tx-for-datoms conn^.next-tx datoms)]
+      (set! conn^.db after)
+      (set! conn^.next-tx (next-tx-after-datoms conn^.next-tx (slice conn^.db.datoms 0)))
+      (let [report (Tx-Report {ok: true
+                               error: ""
+                               db-before: before
+                               db-after: after
+                               tx-data: tx-data
+                               tx: tx
+                               tx-meta: (make [dynamic]Tx-Meta)
+                               tempids: (make [dynamic]Tempid)})]
+        (notify-listeners! conn report)
+        report))))
+
 (defn delete-owned-db [db: DB]
   (delete db.current)
   (delete db.eavt)
