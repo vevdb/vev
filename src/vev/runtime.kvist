@@ -1511,6 +1511,20 @@
     (and has-type
          (= schema-type ":db.type/ref"))))
 
+(defn ref-negative-int-value? [db: DB, attr: string, value: Value] -> bool
+  (when (not (= value.kind .Int))
+    (return false))
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (and has-type
+         (= schema-type ":db.type/ref")
+         (< value.int-value 0))))
+
+(defn ref-tempid-value-text [value: Value] -> string
+  (case value.kind
+    .String value.text
+    .Int (fmt.tprintf "%d" value.int-value)
+    :else ""))
+
 (defn tempid-tuple-component-value [db: DB, tx-data: []Tx-Data, tempid: string, attr: string] -> [value: Value, ok: bool]
   (for [data tx-data]
     (when (and data.has-tempid
@@ -1753,7 +1767,9 @@
       (return (Tx-Data {tempid: generated-tempid has-tempid: true}) true ""))
     (case id-value.kind
       .Entity (return (Tx-Data {e: id-value.entity}) true "")
-      .Int (return (Tx-Data {e: (u64 id-value.int-value)}) true "")
+      .Int (if (< id-value.int-value 0)
+             (return (Tx-Data {tempid: (fmt.tprintf "%d" id-value.int-value) has-tempid: true}) true "")
+             (return (Tx-Data {e: (u64 id-value.int-value)}) true ""))
       .String (return (Tx-Data {tempid: id-value.text has-tempid: true}) true "")
       .Keyword (return (Tx-Data {ident: id-value.text has-ident: true}) true "")
       .Vector
@@ -2089,7 +2105,8 @@
 	        (let [v data.v
                 value-ok true
                 value-error ""]
-            (when (not (current-tx-value? v))
+            (when (and (not (current-tx-value? v))
+                       (not (ref-negative-int-value? current-db data.a v)))
               (let [[resolved resolved-ok resolved-error] (resolve-tx-value current-db data.a data.v)]
                 (set! v resolved)
                 (set! value-ok resolved-ok)
@@ -2117,10 +2134,11 @@
               (set! v (value-entity current-tx-e))
               (ensure-tempid! (addr resolved-tempids) v.text current-tx-e))
 	          (when (or data.has-value-tempid
-                       (ref-string-value? current-db data.a v))
+                       (ref-string-value? current-db data.a v)
+                       (ref-negative-int-value? current-db data.a v))
 	            (let [value-tempid data.value-tempid]
               (when (not data.has-value-tempid)
-                (set! value-tempid v.text))
+                (set! value-tempid (ref-tempid-value-text v)))
               (if (current-tx-tempid? value-tempid)
                 (do
                   (when (not current-tx-reserved)
@@ -2442,6 +2460,7 @@
     (let [[valid error] (validate-ops before (slice expanded-ops 0))]
       (when (not valid)
         (delete expanded-ops)
+        (delete tempids)
         (return (failed-tx-report before error))))
     (for [op expanded-ops]
       (let [apply-op (or (= op.kind .Add)
@@ -2459,16 +2478,21 @@
     (let [after (build-db after-datoms)]
       (set! conn^.db after)
       (set! conn^.next-tx (+ conn^.next-tx 1))
-      (let [report (Tx-Report {db-before: before
-                               db-after: after
-                               ok: true
-                               error: ""
-                               tx-data: tx-data
-                               tx: tx
-                               tx-meta: (clone-tx-meta tx-meta)
-                               tempids: tempids})]
-        (notify-listeners! conn report)
-        report))))
+      (let [report-tempids (arr.into [dynamic]Tempid (slice tempids 0))]
+        (delete tempids)
+        (let [[_ has-current-tx] (tempid-lookup (slice report-tempids 0) ":db/current-tx")]
+        (when (not has-current-tx)
+          (arr.push! report-tempids (Tempid {tempid: ":db/current-tx" e: tx}))))
+        (let [report (Tx-Report {db-before: before
+                                 db-after: after
+                                 ok: true
+                                 error: ""
+                                 tx-data: tx-data
+                                 tx: tx
+                                 tx-meta: (clone-tx-meta tx-meta)
+                                 tempids: report-tempids})]
+          (notify-listeners! conn report)
+          report)))))
 
 (defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
   (transact-ops-with-tempids conn ops tx-meta (make [dynamic]Tempid)))
@@ -3112,6 +3136,10 @@
         out)
     .Ground
       (apply-ground bindings rule.grounds[step.index])
+    .GetElse
+      (bindings-after-get-else-step db bindings rule.get-elses[step.index])
+    .GetSome
+      (bindings-after-get-some-step db bindings rule.get-somes[step.index])
     .Function
       (bindings-after-function-with-fns bindings rule.function-clauses[step.index] registry)
     .Predicate
@@ -3174,6 +3202,14 @@
         (set! bindings next-bindings)))
     (for [ground rule.grounds]
       (let [next (apply-ground (slice bindings 0) ground)]
+        (delete bindings)
+        (set! bindings next)))
+    (for [get-else rule.get-elses]
+      (let [next (bindings-after-get-else-step db (slice bindings 0) get-else)]
+        (delete bindings)
+        (set! bindings next)))
+    (for [get-some rule.get-somes]
+      (let [next (bindings-after-get-some-step db (slice bindings 0) get-some)]
         (delete bindings)
         (set! bindings next)))
     (for [function rule.function-clauses]
@@ -3476,6 +3512,62 @@
       (when (not ok)
         (return false error))))
   (return true ""))
+
+(defn validate-query-collection-input [input: Query-Input, name: string] -> [ok: bool, error: string]
+  (if (or (= input.kind .Collection)
+          (= input.kind .CollectionLookupRefs))
+    (return true "")
+    (return false (fmt.tprintf "cannot bind query input to collection %s" name))))
+
+(defn validate-query-tuple-input [input: Query-Input, tuple: Tuple-Input] -> [ok: bool, error: string]
+  (when (not (= input.kind .Collection))
+    (return false "cannot bind query input to tuple"))
+  (when (< (count input.values) (count tuple.vars))
+    (return false "not enough values to bind tuple input"))
+  (return true ""))
+
+(defn validate-query-relation-input [input: Query-Input, relation: Relation-Input] -> [ok: bool, error: string]
+  (when (= input.kind .Collection)
+    (return true ""))
+  (when (not (= input.kind .Relation))
+    (return false "cannot bind query input to relation"))
+  (when (not (= input.width (count relation.vars)))
+    (return false "query relation input width mismatch"))
+  (return true ""))
+
+(defn validate-query-input-spec-value [spec: Query-Input-Spec, input: Query-Input] -> [ok: bool, error: string]
+  (case spec.kind
+    .Scalar (if (or (= input.kind .Scalar)
+                    (= input.kind .PullPattern))
+              (return true "")
+              (return false (fmt.tprintf "cannot bind query input to scalar %s" spec.name)))
+    .Collection (validate-query-collection-input input spec.name)
+    .Tuple (validate-query-tuple-input input spec.tuple)
+    .Relation (validate-query-relation-input input spec.relation)
+    :else (return true "")))
+
+(defn append-legacy-query-input-specs! [out: ^[dynamic]Query-Input-Spec, query-value: Query]
+  (for [name query-value.inputs]
+    (arr.push! out^ (Query-Input-Spec {kind: .Scalar name: name})))
+  (for [name query-value.collection-inputs]
+    (arr.push! out^ (Query-Input-Spec {kind: .Collection name: name})))
+  (for [tuple query-value.tuple-inputs]
+    (arr.push! out^ (Query-Input-Spec {kind: .Tuple tuple: tuple})))
+  (for [relation query-value.relation-inputs]
+    (arr.push! out^ (Query-Input-Spec {kind: .Relation relation: relation}))))
+
+(defn validate-query-input-values [query-value: Query, inputs: []Query-Input] -> [ok: bool, error: string]
+  (let [specs (make [dynamic]Query-Input-Spec) :defer]
+    (if (> (count query-value.input-specs) 0)
+      (for [spec query-value.input-specs]
+        (arr.push! specs spec))
+      (append-legacy-query-input-specs! (addr specs) query-value))
+    (for [spec index specs]
+      (when (< index (count inputs))
+        (let [[ok error] (validate-query-input-spec-value spec inputs[index])]
+          (when (not ok)
+            (return false error)))))
+    (return true "")))
 
 (defn query-clause-db [db: DB, sources: []DB-Source, clause-value: Clause] -> [clause-db: DB, ok: bool]
   (if clause-value.has-source
@@ -4023,6 +4115,10 @@
   (for [get-else query-value.get-elses]
     (when (= get-else.default-value.kind .Nil)
       (return false "get-else: nil default value is not supported")))
+  (for [rule query-value.rules]
+    (for [get-else rule.get-elses]
+      (when (= get-else.default-value.kind .Nil)
+        (return false "get-else: nil default value is not supported"))))
   (return true ""))
 
 (defn validate-query-sources [query-value: Query, sources: []DB-Source] -> [ok: bool, error: string]
@@ -4077,6 +4173,8 @@
       (return false (fmt.tprintf "unknown rule: %s" call.name)))))
 
 (defn validate-rule-definition [rules: []Rule, rule: Rule] -> [ok: bool, error: string]
+  (when (= (count rule.body-steps) 0)
+    (return false "Rule branch should have clauses"))
   (when (string-slice-has-duplicate? (slice rule.params 0))
     (return false "Rule variables should be distinct"))
   (for [other rules]
@@ -4130,6 +4228,9 @@
   (let [[source-input-ok source-input-error] (validate-query-source-input-values query-value inputs sources)]
     (when (not source-input-ok)
       (return false source-input-error)))
+  (let [[input-ok input-error] (validate-query-input-values query-value inputs)]
+    (when (not input-ok)
+      (return false input-error)))
   (let [[lookup-ok lookup-error] (validate-query-inline-lookup-refs db query-value sources)]
     (when (not lookup-ok)
       (return false lookup-error)))
@@ -4732,6 +4833,8 @@
           owned-clauses (arr.into [dynamic]Clause (slice clauses 0))
           predicates (arr.into [dynamic]Predicate (slice rule.predicates 0))
           function-clauses (arr.into [dynamic]Function-Clause (slice rule.function-clauses 0))
+          get-elses (arr.into [dynamic]Get-Else (slice rule.get-elses 0))
+          get-somes (arr.into [dynamic]Get-Some (slice rule.get-somes 0))
           grounds (arr.into [dynamic]Ground (slice rule.grounds 0))
           rule-calls (arr.into [dynamic]Rule-Call (slice rule.rule-calls 0))
           owned-not-groups (arr.into [dynamic]Not-Group (slice not-groups 0))
@@ -4743,6 +4846,8 @@
              clauses: owned-clauses
              predicates: predicates
              function-clauses: function-clauses
+             get-elses: get-elses
+             get-somes: get-somes
              grounds: grounds
              rule-calls: rule-calls
              not-groups: owned-not-groups
@@ -4877,6 +4982,25 @@
       (return true)))
   false)
 
+(defn pull-spec-output-index [pattern: []Pull-Spec, spec: Pull-Spec] -> [index: int, ok: bool]
+  (let [attr (pull-output-attr spec)]
+    (for [existing index pattern]
+      (when (and (not (= existing.a "*"))
+                 (= (pull-output-attr existing) attr))
+        (return index true))))
+  (return 0 false))
+
+(defn normalize-pull-pattern [pattern: []Pull-Spec] -> [dynamic]Pull-Spec
+  (let [out (make [dynamic]Pull-Spec 0 (count pattern))]
+    (for [spec pattern]
+      (if (= spec.a "*")
+        (arr.push! out spec)
+        (let [[index exists] (pull-spec-output-index (slice out 0) spec)]
+          (if exists
+            (set! out[index] spec)
+            (arr.push! out spec)))))
+    out))
+
 (defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
@@ -4903,7 +5027,8 @@
   (let [child-seen (arr.into [dynamic]u64 seen)]
     (defer (delete child-seen))
     (arr.push! child-seen entity)
-    (let [pulled (pull-pattern-spec-seen db entity pattern root (slice child-seen 0))]
+    (let [normalized (normalize-pull-pattern pattern) :defer
+          pulled (pull-pattern-spec-seen db entity (slice normalized 0) (slice normalized 0) (slice child-seen 0))]
       pulled.attrs)))
 
 (defn pull-child-recursion [db: DB, entity: u64, pattern: []Pull-Spec, seen: []u64] -> [dynamic]Pull-Attr
@@ -5123,10 +5248,12 @@
     (Pull-Result {e: entity attrs: out})))
 
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
-  (let [seen (make [dynamic]u64)]
+  (let [seen (make [dynamic]u64)
+        normalized (normalize-pull-pattern pattern)]
     (defer (delete seen))
+    (defer (delete normalized))
     (arr.push! seen entity)
-    (pull-pattern-spec-seen db entity pattern pattern (slice seen 0))))
+    (pull-pattern-spec-seen db entity (slice normalized 0) (slice normalized 0) (slice seen 0))))
 
 (defn pull-pattern-lookup-ref [db: DB, attr: string, value: Value, pattern: []Pull-Spec] -> Pull-Result
   (let [[entity ok] (resolve-lookup-ref db attr value)]

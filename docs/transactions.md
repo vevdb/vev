@@ -159,6 +159,11 @@ This gives callers:
 String tempids in list-form tx data are resolved during transact and returned
 through `tempids`.
 
+Successful transaction reports always include `:db/current-tx` in `tempids`,
+mapped to the report `tx`, even when the transaction did not explicitly use
+the reserved tempid. Explicit tempids keep their transaction-local names in
+the same report map.
+
 Lookup refs in list-form entity positions resolve through `:db/unique` attrs.
 Missing lookup refs fail the report with `ok=false`.
 
