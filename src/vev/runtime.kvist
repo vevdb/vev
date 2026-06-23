@@ -3495,6 +3495,62 @@
         (return false error))))
   (return true ""))
 
+(defn validate-query-collection-input [input: Query-Input, name: string] -> [ok: bool, error: string]
+  (if (or (= input.kind .Collection)
+          (= input.kind .CollectionLookupRefs))
+    (return true "")
+    (return false (fmt.tprintf "cannot bind query input to collection %s" name))))
+
+(defn validate-query-tuple-input [input: Query-Input, tuple: Tuple-Input] -> [ok: bool, error: string]
+  (when (not (= input.kind .Collection))
+    (return false "cannot bind query input to tuple"))
+  (when (< (count input.values) (count tuple.vars))
+    (return false "not enough values to bind tuple input"))
+  (return true ""))
+
+(defn validate-query-relation-input [input: Query-Input, relation: Relation-Input] -> [ok: bool, error: string]
+  (when (= input.kind .Collection)
+    (return true ""))
+  (when (not (= input.kind .Relation))
+    (return false "cannot bind query input to relation"))
+  (when (not (= input.width (count relation.vars)))
+    (return false "query relation input width mismatch"))
+  (return true ""))
+
+(defn validate-query-input-spec-value [spec: Query-Input-Spec, input: Query-Input] -> [ok: bool, error: string]
+  (case spec.kind
+    .Scalar (if (or (= input.kind .Scalar)
+                    (= input.kind .PullPattern))
+              (return true "")
+              (return false (fmt.tprintf "cannot bind query input to scalar %s" spec.name)))
+    .Collection (validate-query-collection-input input spec.name)
+    .Tuple (validate-query-tuple-input input spec.tuple)
+    .Relation (validate-query-relation-input input spec.relation)
+    :else (return true "")))
+
+(defn append-legacy-query-input-specs! [out: ^[dynamic]Query-Input-Spec, query-value: Query]
+  (for [name query-value.inputs]
+    (arr.push! out^ (Query-Input-Spec {kind: .Scalar name: name})))
+  (for [name query-value.collection-inputs]
+    (arr.push! out^ (Query-Input-Spec {kind: .Collection name: name})))
+  (for [tuple query-value.tuple-inputs]
+    (arr.push! out^ (Query-Input-Spec {kind: .Tuple tuple: tuple})))
+  (for [relation query-value.relation-inputs]
+    (arr.push! out^ (Query-Input-Spec {kind: .Relation relation: relation}))))
+
+(defn validate-query-input-values [query-value: Query, inputs: []Query-Input] -> [ok: bool, error: string]
+  (let [specs (make [dynamic]Query-Input-Spec) :defer]
+    (if (> (count query-value.input-specs) 0)
+      (for [spec query-value.input-specs]
+        (arr.push! specs spec))
+      (append-legacy-query-input-specs! (addr specs) query-value))
+    (for [spec index specs]
+      (when (< index (count inputs))
+        (let [[ok error] (validate-query-input-spec-value spec inputs[index])]
+          (when (not ok)
+            (return false error)))))
+    (return true "")))
+
 (defn query-clause-db [db: DB, sources: []DB-Source, clause-value: Clause] -> [clause-db: DB, ok: bool]
   (if clause-value.has-source
     (source-db-lookup db sources clause-value.source)
@@ -4154,6 +4210,9 @@
   (let [[source-input-ok source-input-error] (validate-query-source-input-values query-value inputs sources)]
     (when (not source-input-ok)
       (return false source-input-error)))
+  (let [[input-ok input-error] (validate-query-input-values query-value inputs)]
+    (when (not input-ok)
+      (return false input-error)))
   (let [[lookup-ok lookup-error] (validate-query-inline-lookup-refs db query-value sources)]
     (when (not lookup-ok)
       (return false lookup-error)))

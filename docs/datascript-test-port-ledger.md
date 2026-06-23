@@ -14,7 +14,7 @@ compatibility gap.
 
 | Namespace | Upstream deftests | Vev status | Next gap |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | subset | basic joins, inputs, bindings, map-form text queries, nested `:in` binding patterns, relation source joins, primary/named collection datom sources including long `[e a v tx op]` rows, map relation inputs and nested map values, multi-DB source joins, constants including symbols, and placeholders covered; host functions and exact input errors remain |
+| `query.cljc` | 11 | subset | basic joins, inputs, bindings, map-form text queries, nested `:in` binding patterns, relation source joins, primary/named collection datom sources including long `[e a v tx op]` rows, map relation inputs and nested map values, checked scalar/collection/tuple/relation input shape errors, multi-DB source joins, constants including symbols, and placeholders covered; host functions and exact input error wording remain |
 | `query_find_specs.cljc` | 1 | covered | Vev result helpers cover collection, tuple, scalar, cut, and aggregate find specs |
 | `query_aggregates.cljc` | 1 | subset | built-in aggregates and DataScript-shaped `(aggregate ?f ?x)` with named native aggregate functions covered; arbitrary host callback aggregates remain pluggability work |
 | `query_not.cljc` | 5 | subset | relation and DB source-prefixed forms, nested inherited/override source, checked unbound-group errors, query text plus Kvist literal macro source-order top-level `not` validation, and supported ordered rule bodies covered |
