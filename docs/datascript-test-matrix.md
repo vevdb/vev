@@ -17,7 +17,7 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 336
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 338
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
 remaining native callback design, and performance work.
@@ -60,7 +60,7 @@ EDN/text coverage first and add Kvist macro coverage as a convenience layer.
 
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
-| `parser.cljc` | 3 | partial | flat EDN node reader supports nested vectors/lists/maps/sets and now feeds query/pull/tx text subsets; full validation remains |
+| `parser.cljc` | 3 | partial | direct parser APIs now cover DataScript binding, `:in`, and `:with` shapes including scalar vars, `_`, collection, tuple, nested collection/tuple bindings, source vars, and `%`; flat EDN node reader also feeds query/pull/tx text subsets. Exact parser object rendering and diagnostics remain Vev-shaped |
 | `parser_find.cljc` | 4 | passing | scalar, collection, tuple, pull, aggregate, custom aggregate, top-n aggregate, and multi-argument aggregate find elements including constants and source-symbol args covered through EDN text/prepared query parsing |
 | `parser_query.cljc` | 1 | passing | vector and map query forms, map-form inline `:rules`, `:find`, `:with`, `:in`, named DB sources, ignored `_` input placeholders, optional ordered `:where`, direct map-as-relation inputs, float constants, nested input/result destructuring, reusable prepared query values, and checked validation for unknown `:find`/`:with` vars, `:find`/`:with` overlap, duplicate inputs/`:with`, unknown source vars, and missing `%` for rule calls covered; exact diagnostic text is Vev-shaped |
 | `parser_return_map.cljc` | 1 | passing | `:keys`/`:strs`/`:syms`, keyed text helpers, tuple return-map shape, and marker-specific duplicate/count/collection/scalar validation for vector and map query forms covered; exact API rendering is Vev-shaped |

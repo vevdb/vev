@@ -59,6 +59,84 @@
             (return (input-binding-tuple (slice items 0)) true "")))
       :else (return (input-binding-none) false "unsupported :in binding form"))))
 
+(defn prepared-binding-error [error: string] -> Prepared-Binding
+  (Prepared-Binding {ok: false error: error binding: (input-binding-none)}))
+
+(defn prepared-in-error [error: string] -> Prepared-In
+  (Prepared-In {ok: false error: error bindings: (make [dynamic]Input-Binding)}))
+
+(defn prepared-with-error [error: string] -> Prepared-With
+  (Prepared-With {ok: false error: error vars: (make [dynamic]string)}))
+
+(defn edn-in-binding-from-node [doc: EDN-Doc, node-index: int] -> [binding: Input-Binding, ok: bool, error: string]
+  (when (= node-index -1)
+    (return (input-binding-none) false "missing :in binding"))
+  (let [node doc.nodes[node-index]]
+    (if (and (= node.kind .Symbol)
+             (or (= node.text "%")
+                 (strings.has_prefix node.text "$")))
+      (return (input-binding-var node.text) true "")
+      (edn-input-binding-from-node doc node-index))))
+
+(defn parse-binding-text [text: string] -> Prepared-Binding
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return (prepared-binding-error read-error)))
+    (let [[binding binding-ok binding-error] (edn-input-binding-from-node doc doc.root)]
+      (delete doc.nodes)
+      (if binding-ok
+        (Prepared-Binding {ok: true error: "" binding: binding})
+        (prepared-binding-error binding-error)))))
+
+(defn parse-in-text [text: string] -> Prepared-In
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return (prepared-in-error read-error)))
+    (when (or (= doc.root -1)
+              (and (not (= doc.nodes[doc.root].kind .Vector))
+                   (not (= doc.nodes[doc.root].kind .List))))
+      (delete doc.nodes)
+      (return (prepared-in-error "Cannot parse :in clause")))
+    (let [bindings (make [dynamic]Input-Binding)
+          cursor doc.nodes[doc.root].first-child]
+      (while (not (= cursor -1))
+        (let [[binding binding-ok binding-error] (edn-in-binding-from-node doc cursor)]
+          (when (not binding-ok)
+            (delete bindings)
+            (delete doc.nodes)
+            (return (prepared-in-error binding-error)))
+          (arr.push! bindings binding))
+        (set! cursor doc.nodes[cursor].next-sibling))
+      (delete doc.nodes)
+      (Prepared-In {ok: true error: "" bindings: bindings}))))
+
+(defn parse-with-text [text: string] -> Prepared-With
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return (prepared-with-error read-error)))
+    (when (or (= doc.root -1)
+              (and (not (= doc.nodes[doc.root].kind .Vector))
+                   (not (= doc.nodes[doc.root].kind .List))))
+      (delete doc.nodes)
+      (return (prepared-with-error "Cannot parse :with clause")))
+    (let [vars (make [dynamic]string)
+          cursor doc.nodes[doc.root].first-child]
+      (while (not (= cursor -1))
+        (when (not (edn-var? doc cursor))
+          (delete vars)
+          (delete doc.nodes)
+          (return (prepared-with-error "Cannot parse :with clause")))
+        (arr.push! vars doc.nodes[cursor].text)
+        (set! cursor doc.nodes[cursor].next-sibling))
+      (delete doc.nodes)
+      (Prepared-With {ok: true error: "" vars: vars}))))
+
 (defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
   (let [node doc.nodes[node-index]]
     (cond
