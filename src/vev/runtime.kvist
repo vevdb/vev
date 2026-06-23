@@ -461,6 +461,9 @@
 (defn query-value-fn [name: string, f: fn [args: []Value] -> Native-Query-Function-Result] -> Native-Query-Fn
   (Native-Query-Fn {name: name has-function-callback: true function-callback: f}))
 
+(defn query-aggregate-fn [name: string, f: fn [values: []Value] -> Native-Query-Function-Result] -> Native-Query-Fn
+  (Native-Query-Fn {name: name has-aggregate-callback: true aggregate-callback: f}))
+
 (defn query-fn-index [registry: []Native-Query-Fn, name: string] -> [index: int, ok: bool]
   (for [entry index registry]
     (when (= entry.name name)
@@ -4674,6 +4677,21 @@
         (= name ":sort")) (return (sorted-values-vector values false) true)
     :else (return (Value {}) false)))
 
+(defn apply-named-aggregate-with-fns [name: string, values: []Value, registry: []Native-Query-Fn] -> [value: Value, ok: bool]
+  (let [[builtin builtin-ok] (apply-named-aggregate name values)]
+    (when builtin-ok
+      (return builtin true)))
+  (let [[index found] (query-fn-index registry name)]
+    (when (not found)
+      (return (Value {}) false))
+    (let [entry registry[index]]
+      (when entry.has-aggregate-callback
+        (let [result (entry.aggregate-callback values)]
+          (return result.value result.ok)))
+      (when (> (count entry.target) 0)
+        (return (apply-named-aggregate entry.target values)))))
+  (return (Value {}) false))
+
 (defn apply-aggregate-value [current: Value, aggregate: Aggregate-Find, value: Value] -> Value
   (when (or (= aggregate.op "count")
             (= aggregate.op "count-distinct"))
@@ -4734,7 +4752,7 @@
         pulls (make [dynamic]Pull-Result)]
     (Result-Row {values: stored pulls: pulls})))
 
-(defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
+(defn aggregate-value-for-group-with-fns [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value, registry: []Native-Query-Fn] -> Value
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
         resolved-limit aggregate.limit
@@ -4806,10 +4824,13 @@
     (when (= aggregate.op "stddev")
       (return (stddev-float (slice aggregate-ints 0))))
     (when (= aggregate.op "aggregate")
-      (let [[value ok] (apply-named-aggregate custom-name (slice aggregate-values 0))]
+      (let [[value ok] (apply-named-aggregate-with-fns custom-name (slice aggregate-values 0) registry)]
         (when ok
           (return value))))
     current))
+
+(defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
+  (aggregate-value-for-group-with-fns bindings query aggregate group-values ([]Native-Query-Fn [])))
 
 (defn pull-pattern-input [query: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]
   (for [input-name index query.inputs]
@@ -4866,7 +4887,7 @@
 (defn pulls-for-binding [db: DB, query: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool]
   (pulls-for-binding-with-sources db ([]DB-Source []) query inputs binding))
 
-(defn append-aggregate-rows-with-sources! [rows: ^[dynamic]Result-Row, db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, bindings: []Binding]
+(defn append-aggregate-rows-with-sources-and-fns! [rows: ^[dynamic]Result-Row, db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, bindings: []Binding, registry: []Native-Query-Fn]
   (for [binding bindings]
     (let [[group-values ok] (binding-values-for-vars binding (slice query.find 0))]
       (when ok
@@ -4882,7 +4903,10 @@
   (for [row rows^]
     (for [aggregate index query.aggregates]
       (set! row.values[(+ (count query.find) index)]
-        (aggregate-value-for-group bindings query aggregate (slice row.values 0 (count query.find)))))))
+        (aggregate-value-for-group-with-fns bindings query aggregate (slice row.values 0 (count query.find)) registry)))))
+
+(defn append-aggregate-rows-with-sources! [rows: ^[dynamic]Result-Row, db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, bindings: []Binding]
+  (append-aggregate-rows-with-sources-and-fns! rows db sources query inputs bindings ([]Native-Query-Fn [])))
 
 (defn append-aggregate-rows! [rows: ^[dynamic]Result-Row, db: DB, query: Query, inputs: []Query-Input, bindings: []Binding]
   (append-aggregate-rows-with-sources! rows db ([]DB-Source []) query inputs bindings))
@@ -4991,9 +5015,9 @@
             (let [values (make [dynamic]Value 0 (count query.aggregates))
                   pulls (make [dynamic]Pull-Result)]
               (for [aggregate query.aggregates]
-                (arr.push! values (aggregate-value-for-group (slice bindings 0) query aggregate ([]Value []))))
+                (arr.push! values (aggregate-value-for-group-with-fns (slice bindings 0) query aggregate ([]Value []) registry)))
               (arr.push! rows (Result-Row {values: values pulls: pulls})))
-            (append-aggregate-rows-with-sources! (addr rows) db sources query inputs (slice bindings 0)))
+            (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice bindings 0) registry))
           (delete bindings)
           (return (result-set-ok rows))))
       (let [rows (make [dynamic]Result-Row 0 (count bindings))]
@@ -5094,9 +5118,9 @@
           (let [values (make [dynamic]Value 0 (count query.aggregates))
                 pulls (make [dynamic]Pull-Result)]
             (for [aggregate query.aggregates]
-              (arr.push! values (aggregate-value-for-group (slice bindings 0) query aggregate ([]Value []))))
+              (arr.push! values (aggregate-value-for-group-with-fns (slice bindings 0) query aggregate ([]Value []) registry)))
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
-          (append-aggregate-rows-with-sources! (addr rows) db sources query inputs (slice bindings 0)))
+          (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice bindings 0) registry))
         (delete bindings)
         (return (result-set-ok rows))))
     (let [rows (make [dynamic]Result-Row 0 (count bindings))]

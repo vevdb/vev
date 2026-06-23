@@ -20,7 +20,7 @@ Status:
 Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 329
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
-tuple edge matrices, non-query native callback design, and performance work.
+tuple edge matrices, remaining native callback design, and performance work.
 
 ## Semantic Core
 
@@ -36,7 +36,7 @@ These are the main in-memory parity target before durable storage.
 | `query_pull.cljc` | 8 | partial | multi-source pull, text/Kvist `:in` pattern variables, plus scalar, collection, and tuple pull find-spec shapes covered; exact Clojure return rendering remains |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, repeated calls, ordered body execution for literal/text rules, inline map-query `:rules`, primary collection DB rule queries, intermediate rule-binding dedup for DataScript issue-456-style duplicate propagation, and unknown/arity/param validation covered; host predicate inputs and full semi-naive performance remain |
-| `query_aggregates.cljc` | 1 | partial | built-in aggregates including numeric sum/avg, top-n, median, variance, stddev, multi-argument aggregate tuple distinctness, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
+| `query_aggregates.cljc` | 1 | partial | built-in aggregates including numeric sum/avg, top-n, median, variance, stddev, multi-argument aggregate tuple distinctness, DataScript-shaped named custom aggregates, and typed aggregate callbacks through text/prepared APIs covered; exact edge behavior remains |
 | `transact.cljc` | 19 | partial | DataScript-style report `:db/current-tx` tempids, EDN text/prepared negative numeric tempids and single operation vectors, schema-aware map vector values, empty cardinality-many tempid validation, native tx functions, registry-backed ident tx functions including EDN text/prepared `:db.fn/call` and shorthand ident calls, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, main conflict matrix, and EDN text/prepared transaction coverage for ordinary identity upsert, lookup-ref upsert, retry convergence, forward ref tempids, and rollback on conflict covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation including `:db.type/symbol` plus `transact-text` bad-shape rollback covered; reader/macro bad forms and exact errors remain |
@@ -96,8 +96,8 @@ These are useful, but not the next engine-parity gate.
    `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
-3. Extend the native callback surface beyond query predicate/value callbacks:
-   aggregates, pull `:xform`, transaction functions, listeners, and final
+3. Extend the native callback surface beyond query predicate/value/aggregate
+   callbacks: pull `:xform`, transaction functions, listeners, and final
    C/Odin/non-Kvist registration shape.
 4. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript

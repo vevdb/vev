@@ -111,6 +111,24 @@
     (vev.value-keyword
       (strings.concatenate ([]string [":" args[0].text "/" args[1].text])))))
 
+(defn native-sort-reverse [values: []vev.Value] -> vev.Native-Query-Function-Result
+  (let [sorted (arr.into [dynamic]vev.Value values)
+        out (make [dynamic]vev.Value)]
+    (defer (delete sorted))
+    (for [i (arr.range 1 (count sorted))]
+      (let [current sorted[i]
+            j i]
+        (while (and (> j 0)
+                    (vev.value-less? sorted[(- j 1)] current))
+          (set! sorted[j] sorted[(- j 1)])
+          (set! j (- j 1)))
+        (set! sorted[j] current)))
+    (for [value sorted]
+      (arr.push! out value))
+    (let [result (vev.value-vector (slice out 0))]
+      (delete out)
+      (vev.native-query-function-result result))))
+
 (defn create-oleg [db: vev.DB] -> vev.Tx-Fn-Result
   (vev.tx-fn-ok
     ([]vev.Tx-Data
@@ -6148,7 +6166,32 @@
                                           (vev.value-keyword ":blue") (vev.value-int 7)
                                           (vev.value-keyword ":blue") (vev.value-int 8)])
                            2)
-                         (vev.query-input-scalar (vev.value-string "sort-reverse"))]))]
+                         (vev.query-input-scalar (vev.value-string "sort-reverse"))]))
+        callback-registry ([]vev.Native-Query-Fn
+                            [(vev.query-aggregate-fn "native-sort-reverse" native-sort-reverse)])
+        callback-inputs ([]vev.Query-Input
+                          [(vev.query-input-relation
+                             ([]vev.Value [(vev.value-keyword ":red") (vev.value-int 1)
+                                            (vev.value-keyword ":red") (vev.value-int 2)
+                                            (vev.value-keyword ":red") (vev.value-int 3)
+                                            (vev.value-keyword ":red") (vev.value-int 4)
+                                            (vev.value-keyword ":red") (vev.value-int 5)
+                                            (vev.value-keyword ":blue") (vev.value-int 7)
+                                            (vev.value-keyword ":blue") (vev.value-int 8)])
+                             2)
+                           (vev.query-input-scalar (vev.value-string "native-sort-reverse"))])
+        custom-callback-text (vev.q-text-with-inputs-and-fns
+                               conn.db
+                               "[:find ?color (aggregate ?agg ?x) :in [[?color ?x]] ?agg]"
+                               callback-inputs
+                               callback-registry)
+        prepared-custom (vev.prepare-query-text
+                          "[:find ?color (aggregate ?agg ?x) :in [[?color ?x]] ?agg]")
+        custom-callback-prepared (vev.q-prepared-with-inputs-and-fns
+                                   conn.db
+                                   prepared-custom
+                                   callback-inputs
+                                   callback-registry)]
     (t.is (= (count with-result.rows) 4))
     (t.is (= with-result.rows[0].values[0].int-value 3))
     (t.is (= with-result.rows[1].values[0].int-value 1))
@@ -6177,7 +6220,14 @@
     (t.is (= custom-result.rows[1].values[1].items[1].int-value 7))
     (t.is (= (count custom-text.rows) 2))
     (t.is (= custom-text.rows[0].values[1].items[0].int-value 5))
-    (t.is (= custom-text.rows[1].values[1].items[0].int-value 8))))
+    (t.is (= custom-text.rows[1].values[1].items[0].int-value 8))
+    (t.is (= (count custom-callback-text.rows) 2))
+    (t.is (= custom-callback-text.rows[0].values[1].items[0].int-value 5))
+    (t.is (= custom-callback-text.rows[0].values[1].items[4].int-value 1))
+    (t.is (= custom-callback-text.rows[1].values[1].items[0].int-value 8))
+    (t.is (= (count custom-callback-prepared.rows) 2))
+    (t.is (= custom-callback-prepared.rows[0].values[1].items[0].int-value 5))
+    (t.is (= custom-callback-prepared.rows[1].values[1].items[0].int-value 8))))
 
 (t.deftest datascript-query-keyword-min-max-aggregate-subset
   (defer (free_all context.allocator))
