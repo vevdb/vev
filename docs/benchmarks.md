@@ -69,6 +69,22 @@ rules are attached to the prepared query once instead of copied in on every
 execution. These are still local development benchmarks, not JMH/Criterium-grade
 measurements.
 
+## DataScript Comparison
+
+Speedups below use median timings from the sample output above. They are
+DataScript median divided by Vev median, so larger is better for Vev.
+
+| Workload | Vev text | Vev prepared |
+|---|---:|---:|
+| `chain-root n=3` | 18.8x | 50.1x |
+| `chain-root n=10` | 20.7x | 32.6x |
+| `chain-root n=30` | 37.4x | 43.6x |
+| `chain-root n=100` | 245.7x | 251.8x |
+| `tree-root n=4` | 3.6x | 8.7x |
+| `tree-root n=13` | 2.7x | 4.0x |
+| `tree-root n=40` | 2.1x | 2.4x |
+| `bad-order-join n=1000` | 8.7x | 16.6x |
+
 ## Current Findings
 
 Ordered text queries now plan contiguous data-pattern runs. The initial
