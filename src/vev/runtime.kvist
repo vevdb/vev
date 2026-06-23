@@ -1014,9 +1014,9 @@
 (defn validate-index-lookup-refs [db: DB, args: []Index-Arg] -> [ok: bool, error: string]
   (for [arg args]
     (when arg.has-lookup-ref
-      (let [[_ found] (resolve-lookup-ref db arg.lookup-attr arg.lookup-value)]
+      (let [[_ found lookup-error] (resolve-lookup-ref-checked db arg.lookup-attr arg.lookup-value)]
         (when (not found)
-          (return false "lookup ref not found")))))
+          (return false lookup-error)))))
   (return true ""))
 
 (defn resolve-index-args [db: DB, args: []Index-Arg] -> [values: [dynamic]Value, ok: bool]
@@ -1630,10 +1630,10 @@
     (and (= value.kind .Vector)
          (= (count value.items) 2)
          (= value.items[0].kind .Keyword))
-      (let [[entity entity-ok] (resolve-lookup-ref db value.items[0].text value.items[1])]
+      (let [[entity entity-ok lookup-error] (resolve-lookup-ref-checked db value.items[0].text value.items[1])]
         (if entity-ok
           (return (value-entity entity) true "")
-          (return value false "lookup ref not found")))
+          (return value false lookup-error)))
     :else (return value true "")))
 
 (defn resolve-tuple-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
@@ -1672,6 +1672,14 @@
         (when (datom-current-at? db datom-index)
           (return db.datoms[datom-index].e true)))))
   (return 0 false))
+
+(defn resolve-lookup-ref-checked [db: DB, attr: string, value: Value] -> [e: u64, ok: bool, error: string]
+  (when (not (schema-unique? db attr))
+    (return 0 false "lookup ref attribute must be unique"))
+  (let [[entity found] (resolve-lookup-ref db attr value)]
+    (if found
+      (return entity true "")
+      (return 0 false "lookup ref not found"))))
 
 (defn current-value-exists? [db: DB, entity: u64, attr: string, value: Value] -> bool
   (let [indexes (slice db.eavt 0)
@@ -1721,20 +1729,20 @@
   (when data.has-expected-lookup-ref
     (when (not (schema-ref? db data.a))
       (return (value-lookup-ref-vector data.expected-lookup-attr data.expected-lookup-value) true ""))
-    (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.expected-lookup-attr data.expected-lookup-value)]
+    (let [[lookup-e lookup-ok lookup-error] (resolve-lookup-ref-checked db data.expected-lookup-attr data.expected-lookup-value)]
       (if lookup-ok
         (return (value-entity lookup-e) true "")
-        (return data.expected false "lookup ref not found"))))
+        (return data.expected false lookup-error))))
   (resolve-tx-value db data.a data.expected))
 
 (defn resolve-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
   (when data.has-value-lookup-ref
     (when (not (schema-ref-target? db data.a))
       (return (value-lookup-ref-vector data.value-lookup-attr data.value-lookup-value) true ""))
-    (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value-lookup-attr data.value-lookup-value)]
+    (let [[lookup-e lookup-ok lookup-error] (resolve-lookup-ref-checked db data.value-lookup-attr data.value-lookup-value)]
       (if lookup-ok
         (return (value-entity lookup-e) true "")
-        (return data.v false "lookup ref not found"))))
+        (return data.v false lookup-error))))
   (resolve-tx-value db data.a data.v))
 
 (defn tx-data-has-tempid? [db: DB, tx-data: []Tx-Data, tempid: string] -> bool
@@ -2233,16 +2241,22 @@
                       (set! next-e (+ next-e 1)))))
                 (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e})))))))
         (when data.has-lookup-ref
-          (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.lookup-attr data.lookup-value)]
+          (let [[lookup-e lookup-ok lookup-error] (resolve-lookup-ref-checked current-db data.lookup-attr data.lookup-value)]
             (if lookup-ok
               (set! e lookup-e)
               (if (= data.op ":db/add")
                 (return (Resolved-Tx {ok: false
-                                      error: "lookup ref not found"
+                                      error: lookup-error
                                       ops: resolved-ops
                                       tx-meta: resolved-meta
                                       tempids: resolved-tempids}))
-                (set! skip-data true)))))
+                (if (= lookup-error "lookup ref not found")
+                  (set! skip-data true)
+                  (return (Resolved-Tx {ok: false
+                                        error: lookup-error
+                                        ops: resolved-ops
+                                        tx-meta: resolved-meta
+                                        tempids: resolved-tempids})))))))
         (when skip-data
           (continue))
         (when (should-split-map-collection? current-db data)
@@ -2339,41 +2353,42 @@
                                     ops: resolved-ops
                                     tx-meta: resolved-meta
                                     tempids: resolved-tempids})))))
-	        (let [v data.v
-                value-ok true
-                value-error ""]
-            (when (and (not (current-tx-value? v))
-                       (not (ref-negative-int-value? current-db data.a v)))
-              (let [[resolved resolved-ok resolved-error] (resolve-tx-value current-db data.a data.v)]
-                (set! v resolved)
-                (set! value-ok resolved-ok)
-                (set! value-error resolved-error)))
-	          (when data.has-value-lookup-ref
-              (if (not (schema-ref-target? current-db data.a))
-                (set! v (value-lookup-ref-vector data.value-lookup-attr data.value-lookup-value))
-	              (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value-lookup-attr data.value-lookup-value)]
-	                (if lookup-ok
-	                  (set! v (value-entity lookup-e))
-	                  (if (= data.op ":db/retract")
-	                    (set! skip-data true)
-	                    (return (Resolved-Tx {ok: false
-	                                          error: "lookup ref not found"
-	                                          ops: resolved-ops
-	                                          tx-meta: resolved-meta
-	                                          tempids: resolved-tempids})))))))
-	          (when skip-data
-	            (continue))
-            (when (current-tx-value? v)
-              (when (not current-tx-reserved)
-                (set! current-tx-e next-e)
-                (set! next-e (+ next-e 1))
-                (set! current-tx-reserved true))
-              (set! v (value-entity current-tx-e))
-              (ensure-tempid! (addr resolved-tempids) v.text current-tx-e))
-	          (when (or data.has-value-tempid
-                       (ref-string-value? current-db data.a v)
-                       (ref-negative-int-value? current-db data.a v))
-	            (let [value-tempid data.value-tempid]
+        (let [v data.v
+              value-ok true
+              value-error ""]
+          (when (and (not (current-tx-value? v))
+                     (not (ref-negative-int-value? current-db data.a v)))
+            (let [[resolved resolved-ok resolved-error] (resolve-tx-value current-db data.a data.v)]
+              (set! v resolved)
+              (set! value-ok resolved-ok)
+              (set! value-error resolved-error)))
+          (when data.has-value-lookup-ref
+            (if (not (schema-ref-target? current-db data.a))
+              (set! v (value-lookup-ref-vector data.value-lookup-attr data.value-lookup-value))
+              (let [[lookup-e lookup-ok lookup-error] (resolve-lookup-ref-checked current-db data.value-lookup-attr data.value-lookup-value)]
+                (if lookup-ok
+                  (set! v (value-entity lookup-e))
+                  (if (and (= data.op ":db/retract")
+                           (= lookup-error "lookup ref not found"))
+                    (set! skip-data true)
+                    (return (Resolved-Tx {ok: false
+                                          error: lookup-error
+                                          ops: resolved-ops
+                                          tx-meta: resolved-meta
+                                          tempids: resolved-tempids})))))))
+          (when skip-data
+            (continue))
+          (when (current-tx-value? v)
+            (when (not current-tx-reserved)
+              (set! current-tx-e next-e)
+              (set! next-e (+ next-e 1))
+              (set! current-tx-reserved true))
+            (set! v (value-entity current-tx-e))
+            (ensure-tempid! (addr resolved-tempids) v.text current-tx-e))
+          (when (or data.has-value-tempid
+                    (ref-string-value? current-db data.a v)
+                    (ref-negative-int-value? current-db data.a v))
+            (let [value-tempid data.value-tempid]
               (when (not data.has-value-tempid)
                 (set! value-tempid (ref-tempid-value-text v)))
               (if (current-tx-tempid? value-tempid)
@@ -3921,9 +3936,9 @@
 
 (defn validate-inline-lookup-ref-term [db: DB, term: Term] -> [ok: bool, error: string]
   (when (= term.kind .LookupRef)
-    (let [[_ found] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
+    (let [[_ found lookup-error] (resolve-lookup-ref-checked db term.lookup-attr term.lookup-value)]
       (when (not found)
-        (return false "lookup ref not found"))))
+        (return false lookup-error))))
   (return true ""))
 
 (defn validate-query-clause-inline-lookup-refs [db: DB, sources: []DB-Source, clause-value: Clause] -> [ok: bool, error: string]
