@@ -2726,6 +2726,9 @@
 (defn tx-fn-string [ident: string, f: fn [db: DB, arg: string] -> Tx-Fn-Result] -> Tx-Fn-String
   (Tx-Fn-String {ident: ident f: f}))
 
+(defn tx-fn-values [ident: string, f: fn [db: DB, args: []Value] -> Tx-Fn-Result] -> Tx-Fn-String
+  (Tx-Fn-String {ident: ident has-values-fn: true values-f: f}))
+
 (defn tx-fn-string-index [registry: []Tx-Fn-String, ident: string] -> [index: int, ok: bool]
   (for [entry index registry]
     (when (= entry.ident ident)
@@ -2901,6 +2904,20 @@
   (delete segment)
   (failed-tx-report before error))
 
+(defn call-registered-tx-fn [entry: Tx-Fn-String, db: DB, data: Tx-Data] -> Tx-Fn-Result
+  (when (= data.v.kind .Vector)
+    (when entry.has-values-fn
+      (return (entry.values-f db (slice data.v.items 0))))
+    (when (and (= (count data.v.items) 1)
+               (= data.v.items[0].kind .String))
+      (return (entry.f db data.v.items[0].text)))
+    (return (tx-fn-error "transaction fn expects one string argument")))
+  (when entry.has-values-fn
+    (return (entry.values-f db ([]Value [data.v]))))
+  (when (= data.v.kind .String)
+    (return (entry.f db data.v.text)))
+  (tx-fn-error "transaction fn expects one string argument"))
+
 (defn transact-tx-data-with-string-fns [conn: ^Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
         ops (make [dynamic]Tx-Op)
@@ -2922,8 +2939,7 @@
             (when (not fn-ok)
               (delete-owned-db current-db)
               (return (failed-registered-tx before ops tx-meta tempids segment "transaction fn not registered")))
-            (let [f registry[fn-index].f
-                  result (f current-db data.v.text)]
+            (let [result (call-registered-tx-fn registry[fn-index] current-db data)]
               (delete-owned-db current-db)
               (when (not result.ok)
                 (delete result.tx-data)

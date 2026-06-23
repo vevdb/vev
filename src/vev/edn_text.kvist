@@ -2384,6 +2384,19 @@
       (return false ref-error))
     (append-edn-tx-map-items! out doc map-node ref map-group)))
 
+(defn edn-tx-call-args [doc: EDN-Doc, vector-node: int, start-index: int] -> [value: Value, ok: bool, error: string]
+  (let [items (make [dynamic]Value)]
+    (for [index (arr.range start-index doc.nodes[vector-node].child-count)]
+      (let [arg-node (edn-child-at doc vector-node index)
+            [arg arg-ok arg-error] (edn-value-from-node doc arg-node)]
+        (when (not arg-ok)
+          (delete items)
+          (return (Value {}) false arg-error))
+        (arr.push! items arg)))
+    (let [out (value-vector (slice items 0))]
+      (delete items)
+      (return out true ""))))
+
 (defn append-edn-tx-vector! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, vector-node: int] -> [ok: bool, error: string]
   (let [op-node (edn-child-at doc vector-node 0)]
     (when (= op-node -1)
@@ -2505,16 +2518,16 @@
               (return true "")))
         (= op ":db.fn/call")
           (do
-            (when (not (= doc.nodes[vector-node].child-count 3))
-              (return false ":db.fn/call text form expects [op ident string-arg]"))
-            (let [ident-node (edn-child-at doc vector-node 1)
-                  arg-node (edn-child-at doc vector-node 2)]
+            (when (< doc.nodes[vector-node].child-count 2)
+              (return false ":db.fn/call text form expects [op ident arg ...]"))
+            (let [ident-node (edn-child-at doc vector-node 1)]
               (when (not (= doc.nodes[ident-node].kind .Keyword))
                 (return false ":db.fn/call text form expects keyword function ident"))
-              (when (not (= doc.nodes[arg-node].kind .String))
-                (return false ":db.fn/call text form currently expects one string argument"))
-              (arr.push! out^ (call-ident-string doc.nodes[ident-node].text doc.nodes[arg-node].text))
-              (return true "")))
+              (let [[args args-ok args-error] (edn-tx-call-args doc vector-node 2)]
+                (when (not args-ok)
+                  (return false args-error))
+                (arr.push! out^ (call-ident-arg-vector doc.nodes[ident-node].text args))
+                (return true ""))))
         (and (not (or (= op ":db/add")
                       (= op ":db/retract")
                       (= op ":db/retractEntity")
@@ -2523,12 +2536,12 @@
                       (= op ":db.fn/cas")
                       (= op ":db/cas")
                       (= op ":db.fn/call")))
-             (= doc.nodes[vector-node].child-count 2))
+             (>= doc.nodes[vector-node].child-count 1))
           (do
-            (let [arg-node (edn-child-at doc vector-node 1)]
-              (when (not (= doc.nodes[arg-node].kind .String))
-                (return false "transaction function text shorthand currently expects one string argument"))
-              (arr.push! out^ (call-ident-string op doc.nodes[arg-node].text))
+            (let [[args args-ok args-error] (edn-tx-call-args doc vector-node 1)]
+              (when (not args-ok)
+                (return false args-error))
+              (arr.push! out^ (call-ident-arg-vector op args))
               (return true "")))
         :else (return false "unknown tx-data operation")))))
 

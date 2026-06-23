@@ -96,6 +96,32 @@
                  (vev.add datom.e ":had-birthday" (vev.value-bool true))])))))))
   (vev.tx-fn-error "No entity with name"))
 
+(defn birthday-by-name-and-delta [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result
+  (when (not (and (= (count args) 2)
+                  (= args[0].kind .String)
+                  (= args[1].kind .Int)))
+    (return (vev.tx-fn-error "Expected name and delta")))
+  (for [datom-index db.eavt]
+    (let [datom db.datoms[datom-index]]
+      (when (and (vev.datom-current-at? db datom-index)
+                 (= datom.a ":name")
+                 (= datom.v.kind .String)
+                 (= datom.v.text args[0].text))
+        (let [age (vev.entity-get (vev.db-entity db datom.e) ":age")]
+          (return
+            (vev.tx-fn-ok
+              ([]vev.Tx-Data
+                [(vev.add datom.e ":age" (vev.value-int (+ age.int-value args[1].int-value)))
+                 (vev.add datom.e ":birthday-delta" args[1])])))))))
+  (vev.tx-fn-error "No entity with name"))
+
+(defn create-vera-value-fn [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result
+  (when (not (= (count args) 0))
+    (return (vev.tx-fn-error "Expected no args")))
+  (vev.tx-fn-ok
+    ([]vev.Tx-Data
+      [(vev.add-tempid "vera" ":name" (vev.value-string "Vera"))])))
+
 (defn native-adult-age? [args: []vev.Value] -> bool
   (and (= (count args) 2)
        (= args[0].kind .Int)
@@ -6861,10 +6887,14 @@
 (t.deftest datascript-ident-transaction-functions-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
-        registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" birthday-by-name)])
+        registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" birthday-by-name)
+                                       (vev.tx-fn-values ":inc-age-by" birthday-by-name-and-delta)
+                                       (vev.tx-fn-values ":create-vera" create-vera-value-fn)])
         _ (vev.transact
             (addr conn)
             [{:db/id 10 :db/ident :inc-age}
+             {:db/id 12 :db/ident :inc-age-by}
+             {:db/id 13 :db/ident :create-vera}
              {:db/id 11 :db/ident :Petr}])
         unknown (vev.transact-tx-data-with-string-fns
                   (addr conn)
@@ -6894,9 +6924,23 @@
                     (addr conn)
                     "[[:db/add 2 :name \"Ada\"] [:db/add 2 :age 40] [:db.fn/call :inc-age \"Ada\"] [:db/add 2 :label \"after-text-call\"]]"
                     registry)
+        text-value-call (vev.transact-text-with-string-fns
+                          (addr conn)
+                          "[[:db/add 4 :name \"Lin\"] [:db/add 4 :age 20] [:db.fn/call :inc-age-by \"Lin\" 5] [:db/add 4 :label \"after-value-call\"]]"
+                          registry)
         prepared (vev.prepare-tx-text
                    "[[:db/add 3 :name \"Grace\"] [:db/add 3 :age 50] [:inc-age \"Grace\"] [:db/add 3 :label \"after-prepared-call\"]]")
         prepared-call (vev.transact-prepared-with-string-fns (addr conn) prepared registry)
+        prepared-values (vev.prepare-tx-text
+                          "[[:db/add 5 :name \"Mina\"] [:db/add 5 :age 30] [:inc-age-by \"Mina\" 7] [:create-vera]]")
+        prepared-value-call (vev.transact-prepared-with-string-fns (addr conn) prepared-values registry)
+        literal-value-call (vev.transact-tx-data-with-string-fns
+                             (addr conn)
+                             (vev.tx-data
+                               [:db/add 6 :name "Nia"]
+                               [:db/add 6 :age 60]
+                               [:inc-age-by "Nia" 4])
+                             registry)
         no-registry (vev.transact-text-with-string-fns
                       (addr conn)
                       "[[:inc-age \"Petr\"]]"
@@ -6911,7 +6955,12 @@
                          registry)
         petr (vev.db-entity report.db-after 1)
         ada (vev.db-entity text-call.db-after 2)
-        grace (vev.db-entity prepared-call.db-after 3)]
+        lin (vev.db-entity text-value-call.db-after 4)
+        grace (vev.db-entity prepared-call.db-after 3)
+        mina (vev.db-entity prepared-value-call.db-after 5)
+        nia (vev.db-entity literal-value-call.db-after 6)
+        [vera-e vera-ok] (tempid-e (slice prepared-value-call.tempids 0) "vera")
+        vera (vev.db-entity prepared-value-call.db-after vera-e)]
     (t.is (not unknown.ok))
     (t.is (= unknown.error "transaction fn not found"))
     (t.is (not non-fn.ok))
@@ -6928,17 +6977,30 @@
     (t.is (= (vev.entity-get ada ":age").int-value 41))
     (t.is (vev.entity-get ada ":had-birthday").bool-value)
     (t.is (= (vev.entity-get ada ":label").text "after-text-call"))
+    (t.is text-value-call.ok)
+    (t.is (= (vev.entity-get lin ":age").int-value 25))
+    (t.is (= (vev.entity-get lin ":birthday-delta").int-value 5))
+    (t.is (= (vev.entity-get lin ":label").text "after-value-call"))
     (t.is prepared.ok)
     (t.is prepared-call.ok)
     (t.is (= (vev.entity-get grace ":age").int-value 51))
     (t.is (vev.entity-get grace ":had-birthday").bool-value)
     (t.is (= (vev.entity-get grace ":label").text "after-prepared-call"))
+    (t.is prepared-values.ok)
+    (t.is prepared-value-call.ok)
+    (t.is (= (vev.entity-get mina ":age").int-value 37))
+    (t.is (= (vev.entity-get mina ":birthday-delta").int-value 7))
+    (t.is vera-ok)
+    (t.is (= (vev.entity-get vera ":name").text "Vera"))
+    (t.is literal-value-call.ok)
+    (t.is (= (vev.entity-get nia ":age").int-value 64))
+    (t.is (= (vev.entity-get nia ":birthday-delta").int-value 4))
     (t.is (not no-registry.ok))
     (t.is (= no-registry.error "transaction fn not registered"))
     (t.is (not unknown-text.ok))
     (t.is (= unknown-text.error "transaction fn not found"))
     (t.is (not bad-call-shape.ok))
-    (t.is (= bad-call-shape.error ":db.fn/call text form currently expects one string argument"))))
+    (t.is (= bad-call-shape.error "transaction fn expects one string argument"))))
 
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))
