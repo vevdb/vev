@@ -189,6 +189,50 @@ int main(void) {
         return 1;
     }
 
+    vev_prepared_query_t collection_query =
+        vev_prepare_query_edn("[:find ?name :in [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]");
+    if (collection_query == NULL) {
+        fprintf(stderr, "failed to prepare collection query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t collection_stmt = vev_stmt_create(collection_query);
+    if (collection_stmt == NULL) {
+        fprintf(stderr, "failed to create collection statement\n");
+        vev_prepared_query_free(collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *emails[] = {"ada@example.com", "grace@example.com"};
+    if (!vev_stmt_bind_string_collection(collection_stmt, emails, 2)) {
+        fprintf(stderr, "failed to bind collection statement\n");
+        vev_stmt_free(collection_stmt);
+        vev_prepared_query_free(collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t collection_stmt_result = vev_query_stmt_result(conn, collection_stmt);
+    int collection_stmt_rows = result_row_count_or_error("stmt-collection", collection_stmt_result);
+    printf("stmt-collection rows: %d\n", collection_stmt_rows);
+    vev_result_free(collection_stmt_result);
+    if (collection_stmt_rows != 2) {
+        fprintf(stderr, "unexpected collection statement row count\n");
+        vev_stmt_free(collection_stmt);
+        vev_prepared_query_free(collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_free(collection_stmt);
+    vev_prepared_query_free(collection_query);
+
     vev_prepared_query_t pull_query =
         vev_prepare_query_edn("[:find (pull ?e [:user/name {:user/friend [:user/name]}]) :where [?e :user/name \"Ada\"]]");
     if (pull_query == NULL) {

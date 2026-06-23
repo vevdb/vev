@@ -55,6 +55,24 @@ def main() -> int:
                 if rows != [[vev.Entity(1), "ada@example.com"]]:
                     raise RuntimeError("unexpected rebound statement rows")
 
+            collection_query = conn.prepare(
+                """
+                [:find ?name
+                 :in [?email ...]
+                 :where [?e :user/email ?email]
+                        [?e :user/name ?name]]
+                """
+            )
+            try:
+                with collection_query.statement() as stmt:
+                    rows = stmt.bind(["ada@example.com", "grace@example.com"]).rows(conn)
+                    names = sorted(row[0] for row in rows)
+                    print(f"statement collection names: {names}")
+                    if names != ["Ada", "Grace"]:
+                        raise RuntimeError("unexpected collection statement rows")
+            finally:
+                collection_query.close()
+
             pull_query = conn.prepare(
                 """
                 [:find (pull ?e [:user/name {:user/friend [:user/name]}])

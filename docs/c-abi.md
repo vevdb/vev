@@ -10,7 +10,7 @@ The current shape is intentionally narrow:
 - EDN query strings
 - EDN input vectors for `:in` values
 - prepared query handles
-- reusable statement handles with typed scalar bindings
+- reusable statement handles with typed scalar and collection bindings
 - rendered result strings owned by the caller
 - opaque result handles for typed row/value access
 - borrowed value handles for nested vector/map/pull traversal
@@ -207,6 +207,20 @@ with vev.open_memory() as conn:
         rows = stmt.bind("ada@example.com").query(conn).rows()
 ```
 
+Collection inputs are ordinary homogeneous Python lists:
+
+```python
+query = conn.prepare("""
+[:find ?name
+ :in [?email ...]
+ :where [?e :user/email ?email]
+        [?e :user/name ?name]]
+""")
+
+with query.statement() as stmt:
+    rows = stmt.bind(["ada@example.com", "grace@example.com"]).rows(conn)
+```
+
 Pull results are converted to normal Python dictionaries:
 
 ```python
@@ -295,7 +309,7 @@ input representation.
 
 ## Statement Bindings
 
-`vev_stmt_t` is the SQLite-like path for repeated scalar inputs:
+`vev_stmt_t` is the SQLite-like path for repeated inputs:
 
 ```c
 vev_prepared_query_t query =
@@ -316,6 +330,23 @@ vev_stmt_free(stmt);
 vev_prepared_query_free(query);
 ```
 
+Collection `:in` bindings use host arrays:
+
+```c
+vev_prepared_query_t query =
+    vev_prepare_query_edn("[:find ?name :in [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]");
+
+vev_stmt_t stmt = vev_stmt_create(query);
+const char *emails[] = {"ada@example.com", "grace@example.com"};
+vev_stmt_bind_string_collection(stmt, emails, 2);
+
+vev_result_t rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(rows);
+
+vev_stmt_free(stmt);
+vev_prepared_query_free(query);
+```
+
 Current bind functions:
 
 - `vev_stmt_bind_string`
@@ -324,11 +355,15 @@ Current bind functions:
 - `vev_stmt_bind_entity`
 - `vev_stmt_bind_int`
 - `vev_stmt_bind_bool`
+- `vev_stmt_bind_string_collection`
+- `vev_stmt_bind_entity_collection`
+- `vev_stmt_bind_int_collection`
+- `vev_stmt_bind_bool_collection`
 
-The first statement API intentionally covers scalar bindings. EDN input text
-still handles collection, tuple, relation, lookup-ref, source, and pull-pattern
-inputs. Those should be added to statement bindings as typed APIs instead of
-forcing host wrappers to construct EDN strings.
+The statement API currently covers scalar bindings and homogeneous collection
+bindings. EDN input text still handles tuple, relation, lookup-ref, source, and
+pull-pattern inputs. Those should be added to statement bindings as typed APIs
+instead of forcing host wrappers to construct EDN strings.
 
 ## Result Handles
 
@@ -412,8 +447,8 @@ The next useful steps are:
 - add streaming callbacks so callers can consume very large results without
   materializing full result handles
 - add explicit error/result status APIs
-- add typed statement bindings for collection, tuple, relation, lookup-ref,
-  source, and pull-pattern inputs
+- add typed statement bindings for tuple, relation, lookup-ref, source, and
+  pull-pattern inputs
 - add pull-specific entry points
 - add Rust smoke wrapper using the same shape as the Python adapter
 - add broader result-shape benchmarks for nested values, pull results, and

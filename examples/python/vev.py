@@ -86,6 +86,30 @@ class Library:
         lib.vev_stmt_bind_int.restype = ctypes.c_bool
         lib.vev_stmt_bind_bool.argtypes = [ctypes.c_void_p, ctypes.c_bool]
         lib.vev_stmt_bind_bool.restype = ctypes.c_bool
+        lib.vev_stmt_bind_string_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_string_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_entity_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_entity_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_int_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_longlong),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_int_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_bool_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_bool),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_bool_collection.restype = ctypes.c_bool
 
         lib.vev_query_prepared_with_inputs.argtypes = [
             ctypes.c_void_p,
@@ -414,10 +438,35 @@ class Statement:
             ok = lib.vev_stmt_bind_symbol(self._handle, _bytes(value.text))
         elif isinstance(value, str):
             ok = lib.vev_stmt_bind_string(self._handle, _bytes(value))
+        elif isinstance(value, (list, tuple)):
+            ok = self._bind_collection(value)
         else:
             raise TypeError(f"unsupported Vev statement binding: {value!r}")
         if not ok:
             raise VevError(f"failed to bind statement value: {value!r}")
+
+    def _bind_collection(self, values: list[object] | tuple[object, ...]) -> bool:
+        lib = self._library.lib
+        if len(values) == 0:
+            raise TypeError("empty collection bindings need an explicit typed wrapper")
+        if all(isinstance(value, Entity) for value in values):
+            array_type = ctypes.c_ulonglong * len(values)
+            array = array_type(*(value.id for value in values))
+            return bool(lib.vev_stmt_bind_entity_collection(self._handle, array, len(values)))
+        if all(isinstance(value, bool) for value in values):
+            array_type = ctypes.c_bool * len(values)
+            array = array_type(*values)
+            return bool(lib.vev_stmt_bind_bool_collection(self._handle, array, len(values)))
+        if all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            array_type = ctypes.c_longlong * len(values)
+            array = array_type(*values)
+            return bool(lib.vev_stmt_bind_int_collection(self._handle, array, len(values)))
+        if all(isinstance(value, str) for value in values):
+            encoded = [_bytes(value) for value in values]
+            array_type = ctypes.c_char_p * len(encoded)
+            array = array_type(*encoded)
+            return bool(lib.vev_stmt_bind_string_collection(self._handle, array, len(encoded)))
+        raise TypeError(f"unsupported Vev collection binding: {values!r}")
 
     def _require_open(self) -> None:
         if not self._handle:
