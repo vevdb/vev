@@ -44,7 +44,8 @@ scripts/build_c_abi.sh
 
 The script compiles `src/vev_abi/vev_abi.kvist` to Odin, builds
 `build/lib/libvev.dylib`, compiles `examples/c/smoke.c`, runs the C smoke
-program, and runs the Python ctypes smoke program.
+program, and runs the Python smoke program through the thin
+`examples/python/vev.py` adapter.
 
 ## ABI Benchmark
 
@@ -178,6 +179,50 @@ vev_prepared_query_free(query);
 
 vev_conn_close(conn);
 ```
+
+## Python Adapter
+
+The raw `ctypes` surface is intentionally hidden behind a small Python adapter
+in [vev.py](../examples/python/vev.py). It is still an example, not a packaged
+library, but it shows the intended host-language shape:
+
+```python
+import vev
+
+with vev.open_memory() as conn:
+    conn.transact("""
+    [{:db/id 1
+      :user/name "Ada"
+      :user/email "ada@example.com"}]
+    """)
+
+    query = conn.prepare("""
+    [:find ?e ?email
+     :in ?needle
+     :where [?e :user/email ?email]
+            [(= ?email ?needle)]]
+    """)
+
+    with query.statement() as stmt:
+        rows = stmt.bind("ada@example.com").query(conn).rows()
+```
+
+Pull results are converted to normal Python dictionaries:
+
+```python
+pull = conn.prepare("""
+[:find (pull ?e [:user/name {:user/friend [:user/name]}])
+ :where [?e :user/name "Ada"]]
+""")
+
+user = pull.query(conn).scalar()
+name = user[":user/name"]
+friend = user[":user/friend"][":user/name"]
+```
+
+`vev.Entity` is used for entity ids so Python callers can distinguish Vev
+entity values from ordinary integer values. Keywords and symbols currently
+convert to their EDN text strings, for example `":user/name"`.
 
 ## Ownership
 
@@ -370,6 +415,6 @@ The next useful steps are:
 - add typed statement bindings for collection, tuple, relation, lookup-ref,
   source, and pull-pattern inputs
 - add pull-specific entry points
-- add Rust smoke wrapper
+- add Rust smoke wrapper using the same shape as the Python adapter
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets
