@@ -2812,7 +2812,28 @@
                     [:find [?e ...]
                      :where
                      [?e :name "Oleg"]
-                     (not [?e :age 10])])]
+                     (not [?e :age 10])])
+        two-rels-two-rels (vev.q report.db-after
+                            [:find ?e ?e2
+                             :where
+                             [?e :name "Ivan"]
+                             [?e2 :name "Ivan"]
+                             (not [?e :age 10]
+                                  [?e2 :age 20])])
+        two-rels-rel-const (vev.q report.db-after
+                             [:find ?e ?e2
+                              :where
+                              [?e :name "Ivan"]
+                              [?e2 :name "Oleg"]
+                              (not [?e :age 10]
+                                   [?e2 :age 20])])
+        two-rels-two-consts (vev.q report.db-after
+                              [:find ?e ?e2
+                               :where
+                               [?e :name "Oleg"]
+                               [?e2 :name "Oleg"]
+                               (not [?e :age 10]
+                                    [?e2 :age 20])])]
     (t.is (= (count not-ivan) 2))
     (t.is (= not-ivan[0].entity 3))
     (t.is (= not-ivan[1].entity 4))
@@ -2854,7 +2875,31 @@
     (t.is (= const-empty[0].entity 3))
     (t.is (= (count const-const) 0))
     (t.is (= (count rel-const) 1))
-    (t.is (= rel-const[0].entity 4))))
+    (t.is (= rel-const[0].entity 4))
+    (t.is (= (count two-rels-two-rels.rows) 12))
+    (t.is (result-has-entity-pair? two-rels-two-rels 2 1))
+    (t.is (result-has-entity-pair? two-rels-two-rels 6 5))
+    (t.is (result-has-entity-pair? two-rels-two-rels 1 1))
+    (t.is (result-has-entity-pair? two-rels-two-rels 2 2))
+    (t.is (result-has-entity-pair? two-rels-two-rels 5 5))
+    (t.is (result-has-entity-pair? two-rels-two-rels 6 6))
+    (t.is (result-has-entity-pair? two-rels-two-rels 2 5))
+    (t.is (result-has-entity-pair? two-rels-two-rels 1 5))
+    (t.is (result-has-entity-pair? two-rels-two-rels 2 6))
+    (t.is (result-has-entity-pair? two-rels-two-rels 6 1))
+    (t.is (result-has-entity-pair? two-rels-two-rels 5 1))
+    (t.is (result-has-entity-pair? two-rels-two-rels 6 2))
+    (t.is (= (count two-rels-rel-const.rows) 6))
+    (t.is (result-has-entity-pair? two-rels-rel-const 2 3))
+    (t.is (result-has-entity-pair? two-rels-rel-const 1 3))
+    (t.is (result-has-entity-pair? two-rels-rel-const 2 4))
+    (t.is (result-has-entity-pair? two-rels-rel-const 6 3))
+    (t.is (result-has-entity-pair? two-rels-rel-const 5 3))
+    (t.is (result-has-entity-pair? two-rels-rel-const 6 4))
+    (t.is (= (count two-rels-two-consts.rows) 3))
+    (t.is (result-has-entity-pair? two-rels-two-consts 4 3))
+    (t.is (result-has-entity-pair? two-rels-two-consts 3 3))
+    (t.is (result-has-entity-pair? two-rels-two-consts 4 4))))
 
 (t.deftest datalog-macro-supports-missing
   (defer (free_all context.allocator))
@@ -5140,7 +5185,36 @@
         nested-text-or-join (vev.q-text-with-inputs
                               report.db-after
                               "[:find ?e :in ?age :where (or-join [[?age] ?e] [?e :age ?age] [?e :name \"Oleg\"])]"
-                              ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 10))]))]
+                              ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 10))]))
+        const-conn (vev.create-conn)
+        _ (vev.transact
+            (addr const-conn)
+            [{:db/id 100 :db/ident :parent :db/valueType :db.type/ref}
+             {:db/id "Ivan" :name "Ivan"}
+             {:db/id "Oleg" :name "Oleg" :parent "Ivan"}
+             {:db/id "Petr" :name "Petr" :parent "Oleg"}])
+        constant-substitution (vev.q const-conn.db
+                                [:find ?name ?x ?y
+                                 :in ?name
+                                 :where
+                                 [?x :name ?name]
+                                 (or-join [?x ?y]
+                                   (and
+                                     [?x :parent ?z]
+                                     [?z :parent ?y])
+                                   [?y :parent ?x])]
+                                "Ivan")
+        constant-substitution-empty (vev.q const-conn.db
+                                      [:find ?name ?x ?y
+                                       :in ?name
+                                       :where
+                                       [?x :name ?name]
+                                       (or-join [?x ?y]
+                                         (and
+                                           [?x :parent ?z]
+                                           [?z :parent ?y])
+                                         [?x :parent ?y])]
+                                      "Ivan")]
     (t.is (= (count intersecting) 4))
     (t.is (= intersecting[0].entity 3))
     (t.is (= intersecting[1].entity 4))
@@ -5190,7 +5264,12 @@
     (t.is (result-has-entity? nested-text-or-join 1))
     (t.is (result-has-entity? nested-text-or-join 3))
     (t.is (result-has-entity? nested-text-or-join 4))
-    (t.is (result-has-entity? nested-text-or-join 5))))
+    (t.is (result-has-entity? nested-text-or-join 5))
+    (t.is (= (count constant-substitution.rows) 1))
+    (t.is (= constant-substitution.rows[0].values[0].text "Ivan"))
+    (t.is (= constant-substitution.rows[0].values[1].entity 101))
+    (t.is (= constant-substitution.rows[0].values[2].entity 102))
+    (t.is (= (count constant-substitution-empty.rows) 0))))
 
 (t.deftest datascript-query-relation-source-or-join-subset
   (defer (free_all context.allocator))
