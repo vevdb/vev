@@ -1,6 +1,7 @@
 (package vev-tests)
 
 (import arr "kvist:arr")
+(import math "core:math")
 (import strings "core:strings")
 (import t "kvist:test")
 (import vev "../vev")
@@ -73,6 +74,12 @@
   (let [age (vev.entity-get (vev.db-entity db datom.e) ":age")]
     (and (= age.kind .Int)
          (>= age.int-value 18))))
+
+(defn keep-all [db: vev.DB, datom: vev.Datom] -> bool
+  true)
+
+(defn keep-none [db: vev.DB, datom: vev.Datom] -> bool
+  false)
 
 (defn birthday-by-name [db: vev.DB, name: string] -> vev.Tx-Fn-Result
   (for [datom-index db.eavt]
@@ -1184,6 +1191,10 @@
                                 (vev.value-int 2)
                                 (vev.value-int 2)
                                 (vev.value-int 3)]))
+        map-source (vev.value-map
+                     ([]vev.Value [(vev.value-keyword ":a") (vev.value-int 1)
+                                   (vev.value-keyword ":b") (vev.value-int 2)
+                                   (vev.value-keyword ":c") (vev.value-int 2)]))
         conn (vev.create-conn)
         pair-result (vev.q-text-relation-db
                       pairs
@@ -1207,6 +1218,12 @@
         scalar-primary (vev.q-text-relation-db
                          scalars
                          "[:find ?a :where [?a]]")
+        map-primary (vev.q-text-relation-db
+                      map-source
+                      "[:find ?k ?v :where [?k ?v]]")
+        map-filtered (vev.q-text-relation-db
+                       map-source
+                       "[:find ?k :where [?k 2]]")
         scalar-named (vev.q-text-with-inputs
                        conn.db
                        "[:find ?a :in $xs :where [$xs ?a]]"
@@ -1230,6 +1247,18 @@
     (t.is (= scalar-primary.rows[0].values[0].int-value 1))
     (t.is (= scalar-primary.rows[1].values[0].int-value 2))
     (t.is (= scalar-primary.rows[2].values[0].int-value 3))
+    (t.is map-primary.ok)
+    (t.is (= (count map-primary.rows) 3))
+    (t.is (= map-primary.rows[0].values[0].text ":a"))
+    (t.is (= map-primary.rows[0].values[1].int-value 1))
+    (t.is (= map-primary.rows[1].values[0].text ":b"))
+    (t.is (= map-primary.rows[1].values[1].int-value 2))
+    (t.is (= map-primary.rows[2].values[0].text ":c"))
+    (t.is (= map-primary.rows[2].values[1].int-value 2))
+    (t.is map-filtered.ok)
+    (t.is (= (count map-filtered.rows) 2))
+    (t.is (= map-filtered.rows[0].values[0].text ":b"))
+    (t.is (= map-filtered.rows[1].values[0].text ":c"))
     (t.is scalar-named.ok)
     (t.is (= (count scalar-named.rows) 3))
     (t.is (= scalar-named.rows[0].values[0].int-value 1))
@@ -1707,12 +1736,18 @@
                   {:db/id 101 :father 10}
                   {:db/id 200 :father 999}])
         ivan (vev.db-entity report.db-after 1)
-        by-email (vev.entity-lookup-ref report.db-after ":email" (vev.value-string "ivan@example.com"))
-        aka (vev.entity-values ivan ":aka")
-        children (vev.entity-refs ivan ":children")
+	        by-email (vev.entity-lookup-ref report.db-after ":email" (vev.value-string "ivan@example.com"))
+	        aka (vev.entity-values ivan ":aka")
+	        children (vev.entity-refs ivan ":children")
         child children[0]
         grandkids (vev.entity-refs child ":children")
+        reverse-children-on-root (vev.entity-refs ivan ":_children")
+        reverse-children-on-child (vev.entity-refs child ":_children")
         reverse-father (vev.entity-refs ivan ":_father")
+        reverse-father-on-child (vev.entity-refs child ":_father")
+        reverse-father-on-grandchild (vev.entity-refs grandkids[0] ":_father")
+        reverse-children-on-grandchild (vev.entity-refs grandkids[0] ":_children")
+        nested-reverse-children (vev.entity-refs reverse-children-on-grandchild[0] ":_children")
         schema-attr (vev.entity-ident report.db-after ":children")
         missing (vev.db-entity report.db-after 777)
         dangling (vev.entity-refs (vev.db-entity report.db-after 200) ":father")
@@ -1735,8 +1770,19 @@
     (t.is (= (count grandkids) 2))
     (t.is (= grandkids[0].e 100))
     (t.is (= grandkids[1].e 101))
+    (t.is (= (count reverse-children-on-root) 0))
+    (t.is (= (count reverse-children-on-child) 1))
+    (t.is (= reverse-children-on-child[0].e 1))
     (t.is (= (count reverse-father) 1))
     (t.is (= reverse-father[0].e 10))
+    (t.is (= (count reverse-father-on-child) 2))
+    (t.is (= reverse-father-on-child[0].e 100))
+    (t.is (= reverse-father-on-child[1].e 101))
+    (t.is (= (count reverse-father-on-grandchild) 0))
+    (t.is (= (count reverse-children-on-grandchild) 1))
+    (t.is (= reverse-children-on-grandchild[0].e 10))
+    (t.is (= (count nested-reverse-children) 1))
+    (t.is (= nested-reverse-children[0].e 1))
     (t.is schema-attr.found)
     (t.is (= schema-attr.e 11))
     (t.is (not missing.found))
@@ -1849,6 +1895,14 @@
         no-ivan-no-passwords (vev.filter-db no-ivan keep-not-password)
         no-ivan-long-akas (vev.filter-db no-ivan keep-long-akas)
         long-akas-no-ivan (vev.filter-db long-akas keep-not-entity-2)
+        empty-conn (vev.create-conn)
+        empty-filtered (vev.filter-db empty-conn.db keep-all)
+        all-filtered-out (vev.filter-db db keep-none)
+        retracted-ivan-conn (vev.conn-from-db db)
+        retracted-ivan (vev.transact (addr retracted-ivan-conn) [[:db.fn/retractEntity 2]])
+        no-ivan-diff (vev.db-diff no-ivan retracted-ivan.db-after)
+        empty-diff (vev.db-diff empty-conn.db empty-filtered)
+        none-diff (vev.db-diff empty-conn.db all-filtered-out)
         passwords (vev.q-collection db [:find [?v ...] :where [_ :password ?v]])
         passwords-filtered (vev.q-collection no-passwords [:find [?v ...] :where [_ :password ?v]])
         passwords-no-ivan (vev.q-collection no-ivan [:find [?v ...] :where [_ :password ?v]])
@@ -1861,7 +1915,9 @@
         akas-long-no-ivan (vev.q-collection long-akas-no-ivan [:find [?v ...] :where [_ :aka ?v]])
         petr-filtered (vev.db-entity no-passwords 1)
         ivan-filtered (vev.db-entity long-akas 2)
-        ivan-akas (vev.entity-values ivan-filtered ":aka")]
+        ivan-akas (vev.entity-values ivan-filtered ":aka")
+        password-index (vev.datoms db :aevt :password)
+        password-index-filtered (vev.datoms no-passwords :aevt :password)]
     (defer (delete ivan-akas))
     (t.is (= (count passwords) 3))
     (t.is (= (count passwords-filtered) 0))
@@ -1884,7 +1940,19 @@
     (t.is (= akas-long-no-ivan[1].text "II"))
     (t.is (not (vev.entity-contains? petr-filtered ":password")))
     (t.is (= (count ivan-akas) 1))
-    (t.is (= ivan-akas[0].text "Terrible"))))
+    (t.is (= ivan-akas[0].text "Terrible"))
+    (t.is (= (count password-index) 3))
+    (t.is (= password-index[0].v.text "<SECRET>"))
+    (t.is (= password-index[1].v.text "<PROTECTED>"))
+    (t.is (= password-index[2].v.text "<UNKNOWN>"))
+    (t.is (= (count password-index-filtered) 0))
+    (t.is retracted-ivan.ok)
+    (t.is (= (count no-ivan-diff.only-left) 0))
+    (t.is (= (count no-ivan-diff.only-right) 0))
+    (t.is (= (count empty-diff.only-left) 0))
+    (t.is (= (count empty-diff.only-right) 0))
+    (t.is (= (count none-diff.only-left) 0))
+    (t.is (= (count none-diff.only-right) 0))))
 
 (t.deftest datascript-filter-db-double-filtering-subset
   (defer (free_all context.allocator))
@@ -2046,6 +2114,9 @@
                    :friend (vev.value-entity 2)
                    :attach {:some-key :some-value}
                    :score (vev.value-float 42.5)
+                   :nan (vev.value-float (math.nan_f64))
+                   :inf (vev.value-float (math.inf_f64 1))
+                   :neg-inf (vev.value-float (math.inf_f64 -1))
                    :status (vev.value-symbol "active")
                    :quote "Ada \"Lovelace\" \\ math"}])
         retract (vev.transact (addr conn) [[:db/retract 1 :aka "Devil"]])
@@ -2073,6 +2144,9 @@
                            [1 :friend ?friend]
                            [?friend :name ?friend-name]])
         restored-attach (vev.entity-get (vev.db-entity restored 1) ":attach")
+        restored-nan (vev.entity-get (vev.db-entity restored 1) ":nan")
+        restored-inf (vev.entity-get (vev.db-entity restored 1) ":inf")
+        restored-neg-inf (vev.entity-get (vev.db-entity restored 1) ":neg-inf")
         restored-status (vev.entity-get (vev.db-entity restored 1) ":status")
         text-restored-names (vev.q-collection text-restored
                               [:find [?name ...]
@@ -2089,6 +2163,9 @@
                                 [?friend :name ?friend-name]])
         text-restored-attach (vev.entity-get (vev.db-entity text-restored 1) ":attach")
         text-restored-score (vev.entity-get (vev.db-entity text-restored 1) ":score")
+        text-restored-nan (vev.entity-get (vev.db-entity text-restored 1) ":nan")
+        text-restored-inf (vev.entity-get (vev.db-entity text-restored 1) ":inf")
+        text-restored-neg-inf (vev.entity-get (vev.db-entity text-restored 1) ":neg-inf")
         text-restored-status (vev.entity-get (vev.db-entity text-restored 1) ":status")
         text-restored-quote (vev.entity-get (vev.db-entity text-restored 1) ":quote")
         [invalid-db invalid-ok invalid-error] (vev.from-serializable-text "[[1 :name]]")
@@ -2122,6 +2199,12 @@
       (t.is (= restored-attach.kind .Map))
       (t.is (= restored-attach.items[0].text ":some-key"))
       (t.is (= restored-attach.items[1].text ":some-value"))
+      (t.is (= restored-nan.kind .Float))
+      (t.is (math.is_nan restored-nan.float-value))
+      (t.is (= restored-inf.kind .Float))
+      (t.is (math.is_inf restored-inf.float-value 1))
+      (t.is (= restored-neg-inf.kind .Float))
+      (t.is (math.is_inf restored-neg-inf.float-value -1))
       (t.is (= restored-status.kind .Symbol))
       (t.is (= restored-status.text "active"))
       (t.is (= restored-next-tx 5))
@@ -2144,6 +2227,12 @@
       (t.is (= text-restored-attach.items[1].text ":some-value"))
       (t.is (= text-restored-score.kind .Float))
       (t.is (= text-restored-score.float-value 42.5))
+      (t.is (= text-restored-nan.kind .Float))
+      (t.is (math.is_nan text-restored-nan.float-value))
+      (t.is (= text-restored-inf.kind .Float))
+      (t.is (math.is_inf text-restored-inf.float-value 1))
+      (t.is (= text-restored-neg-inf.kind .Float))
+      (t.is (math.is_inf text-restored-neg-inf.float-value -1))
       (t.is (= text-restored-status.kind .Symbol))
       (t.is (= text-restored-status.text "active"))
       (t.is (= text-restored-quote.text "Ada \"Lovelace\" \\ math"))
@@ -2927,6 +3016,7 @@
         report (vev.transact
                  (addr conn)
                  [[:db/add 1 :name "Ivan"]
+                  [:db/add 1 :age 35]
                   [:db/add 1 :friend (vev.value-entity 2)]
                   [:db/add 2 :name "Petr"]])
         friend (vev.q-collection report.db-after
@@ -2940,7 +3030,11 @@
         missing-entity-text (vev.q-text report.db-after
                               "[:find ?v :where [[:name :missing] :friend ?v]]")
         missing-value-text (vev.q-text report.db-after
-                             "[:find ?e :where [?e :friend [:name :missing]]]")]
+                             "[:find ?e :where [?e :friend [:name :missing]]]")
+        non-unique-entity-text (vev.q-text report.db-after
+                                 "[:find ?v :where [[:age 35] :friend ?v]]")
+        non-unique-value-text (vev.q-text report.db-after
+                                "[:find ?e :where [?e :friend [:age 35]]]")]
     (t.is (= (count friend) 1))
     (t.is (= friend[0].entity 2))
     (t.is (= (count entity) 1))
@@ -2948,7 +3042,11 @@
     (t.is (not missing-entity-text.ok))
     (t.is (= missing-entity-text.error "lookup ref not found"))
     (t.is (not missing-value-text.ok))
-    (t.is (= missing-value-text.error "lookup ref not found"))))
+    (t.is (= missing-value-text.error "lookup ref not found"))
+    (t.is (not non-unique-entity-text.ok))
+    (t.is (= non-unique-entity-text.error "lookup ref attribute must be unique"))
+    (t.is (not non-unique-value-text.ok))
+    (t.is (= non-unique-value-text.error "lookup ref attribute must be unique"))))
 
 (t.deftest datascript-lookup-ref-query-input-subset
   (defer (free_all context.allocator))
@@ -3361,7 +3459,11 @@
         missing-lookup-datoms (vev.datoms-checked conn.db :eavt [:email "missing@example.com"])
         missing-lookup-seek (vev.seek-datoms-checked conn.db :eavt [:email "missing@example.com"])
         missing-lookup-rseek (vev.rseek-datoms-checked conn.db :eavt [:email "missing@example.com"])
-        missing-lookup-range (vev.index-range-checked conn.db :age [:email "missing@example.com"] nil)]
+        missing-lookup-range (vev.index-range-checked conn.db :age [:email "missing@example.com"] nil)
+        non-unique-lookup-datoms (vev.datoms-checked conn.db :eavt [:name "Petr"])
+        non-unique-lookup-seek (vev.seek-datoms-checked conn.db :eavt [:name "Petr"])
+        non-unique-lookup-rseek (vev.rseek-datoms-checked conn.db :eavt [:name "Petr"])
+        non-unique-lookup-range (vev.index-range-checked conn.db :age [:name "Petr"] nil)]
     (t.is (= (count age) 1))
     (t.is (= age[0].v.int-value 44))
     (t.is (= (count email) 1))
@@ -3391,7 +3493,15 @@
     (t.is (not missing-lookup-rseek.ok))
     (t.is (= missing-lookup-rseek.error "lookup ref not found"))
     (t.is (not missing-lookup-range.ok))
-    (t.is (= missing-lookup-range.error "lookup ref not found"))))
+    (t.is (= missing-lookup-range.error "lookup ref not found"))
+    (t.is (not non-unique-lookup-datoms.ok))
+    (t.is (= non-unique-lookup-datoms.error "lookup ref attribute must be unique"))
+    (t.is (not non-unique-lookup-seek.ok))
+    (t.is (= non-unique-lookup-seek.error "lookup ref attribute must be unique"))
+    (t.is (not non-unique-lookup-rseek.ok))
+    (t.is (= non-unique-lookup-rseek.error "lookup ref attribute must be unique"))
+    (t.is (not non-unique-lookup-range.ok))
+    (t.is (= non-unique-lookup-range.error "lookup ref attribute must be unique"))))
 
 (t.deftest datascript-index-sequence-compare-subset
   (defer (free_all context.allocator))
@@ -4468,7 +4578,34 @@
                                     report.db-after
                                     "[:find ?x ?y :in $ % ?even :where (match ?even ?x ?y)]"
                                     "[[(match ?pred ?e ?e2) [?e :follow ?e2] [(?pred ?e)] [(?pred ?e2)]]]"
-                                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":even?"))]))]
+                                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":even?"))]))
+        rule-wildcard (vev.q-collection
+                        report.db-after
+                        [:find [?x ...]
+                         :in $ %
+                         :where
+                         (follow ?x _)]
+                        [[(follow ?e1 ?e2)
+                          [?e1 :follow ?e2]]])
+        rule-wildcard-text (vev.q-text-with-rules
+                             report.db-after
+                             "[:find [?x ...] :in $ % :where (follow ?x _)]"
+                             "[[(follow ?e1 ?e2) [?e1 :follow ?e2]]]"
+                             ([]vev.Query-Input []))
+        rule-constant-wildcard (vev.q-collection
+                                 report.db-after
+                                 [:find [?ok ...]
+                                  :in $ %
+                                  :where
+                                  (follow 2 _)
+                                  [(ground :ok) ?ok]]
+                                 [[(follow ?e1 ?e2)
+                                   [?e1 :follow ?e2]]])
+        rule-constant-wildcard-text (vev.q-text-with-rules
+                                      report.db-after
+                                      "[:find [?ok ...] :in $ % :where (follow 2 _) [(ground :ok) ?ok]]"
+                                      "[[(follow ?e1 ?e2) [?e1 :follow ?e2]]]"
+                                      ([]vev.Query-Input []))]
     (t.is (= (count follows.rows) 6))
     (t.is (= follows.rows[0].values[0].entity 1))
     (t.is (= follows.rows[0].values[1].entity 2))
@@ -4510,7 +4647,23 @@
     (t.is (= rule-predicate-input-text.rows[0].values[0].entity 2))
     (t.is (= rule-predicate-input-text.rows[0].values[1].entity 4))
     (t.is (= rule-predicate-input-text.rows[1].values[0].entity 4))
-    (t.is (= rule-predicate-input-text.rows[1].values[1].entity 6))))
+    (t.is (= rule-predicate-input-text.rows[1].values[1].entity 6))
+    (t.is (= (count rule-wildcard) 5))
+    (t.is (= rule-wildcard[0].entity 1))
+    (t.is (= rule-wildcard[1].entity 2))
+    (t.is (= rule-wildcard[2].entity 3))
+    (t.is (= rule-wildcard[3].entity 4))
+    (t.is (= rule-wildcard[4].entity 5))
+    (t.is (= (count rule-wildcard-text.rows) 5))
+    (t.is (= rule-wildcard-text.rows[0].values[0].entity 1))
+    (t.is (= rule-wildcard-text.rows[1].values[0].entity 2))
+    (t.is (= rule-wildcard-text.rows[2].values[0].entity 3))
+    (t.is (= rule-wildcard-text.rows[3].values[0].entity 4))
+    (t.is (= rule-wildcard-text.rows[4].values[0].entity 5))
+    (t.is (= (count rule-constant-wildcard) 1))
+    (t.is (= rule-constant-wildcard[0].text ":ok"))
+    (t.is (= (count rule-constant-wildcard-text.rows) 1))
+    (t.is (= rule-constant-wildcard-text.rows[0].values[0].text ":ok"))))
 
 (t.deftest datascript-query-rule-performance-dedup-subset
   (defer (free_all context.allocator))
@@ -8966,6 +9119,9 @@
         report (vev.transact
                    (addr conn)
                    [[:db/add [:user/email "ada@example.com"] :user/name "Ada"]])
+        non-unique (vev.transact
+                     (addr conn)
+                     [[:db/add [:user/name "Ada"] :user/title "Bad"]])
         missing (vev.transact
                     (addr conn)
                     [[:db/add [:user/email "missing@example.com"] :user/name "Missing"]])
@@ -8977,6 +9133,8 @@
       (t.is (= report.tx-data[0].e 1))
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].text "Ada"))
+      (t.is (not non-unique.ok))
+      (t.is (= non-unique.error "lookup ref attribute must be unique"))
       (t.is (not missing.ok))
       (t.is (= missing.error "lookup ref not found"))))
 
@@ -10065,6 +10223,24 @@
     (t.is (= result.rows[0].values[2].text "@2"))
     (t.is (= result.rows[1].values[1].text "Petr"))
     (t.is (= result.rows[1].values[2].text "@2"))))
+
+(t.deftest datascript-explode-reverse-attr-requires-ref-schema
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        missing (vev.transact-text
+                  (addr conn)
+                  "[{:name \"Sergey\" :_parent 1}]")
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :parent]
+             [:db/add 100 :db/valueType :db.type/string]])
+        non-ref (vev.transact-text
+                  (addr conn)
+                  "[{:name \"Sergey\" :_parent 1}]")]
+    (t.is (not missing.ok))
+    (t.is (= missing.error "reverse attribute requires ref schema"))
+    (t.is (not non-ref.ok))
+    (t.is (= non-ref.error "reverse attribute requires ref schema"))))
 
 (t.deftest datascript-text-map-reverse-ref-values-subset
   (defer (free_all context.allocator))
