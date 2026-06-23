@@ -10840,6 +10840,79 @@
     (t.is (= (count callback-query.rows) 1))
     (t.is (= callback-query.rows[0].pulls[0].attrs[0].v.text "tag:Petr"))))
 
+(t.deftest datascript-pull-visitor-trace-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :name}
+             {:db/id 101 :db/ident :aka :db/cardinality :db.cardinality/many}
+             {:db/id 102 :db/ident :child :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+             {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"] :child [2 3]}
+             {:db/id 2 :name "David"}
+             {:db/id 3 :name "Thomas"}])
+        simple (vev.pull-visits-pattern-spec
+                 conn.db
+                 1
+                 ([]vev.Pull-Spec [(vev.flat-pull-spec ":name")
+                                    (vev.flat-pull-spec ":aka")]))
+        with-id (vev.pull-visits-pattern-spec
+                  conn.db
+                  1
+                  ([]vev.Pull-Spec [(vev.flat-pull-spec ":db/id")
+                                     (vev.flat-pull-spec ":name")]))
+        wildcard (vev.pull-visits-pattern-spec
+                   conn.db
+                   1
+                   ([]vev.Pull-Spec [(vev.flat-pull-spec "*")
+                                      (vev.flat-pull-spec ":missing")]))
+        nested (vev.pull-visits-pattern-spec
+                 conn.db
+                 1
+                 ([]vev.Pull-Spec [(vev.pull-spec
+                                      ":child"
+                                      ([]vev.Pull-Spec [(vev.flat-pull-spec ":name")]))]))
+        reverse (vev.pull-visits-pattern-spec
+                  conn.db
+                  2
+                  ([]vev.Pull-Spec [(vev.flat-pull-spec ":name")
+                                     (vev.flat-pull-spec ":_child")]))
+        [pulled traced] (vev.pull-pattern-spec-traced
+                          conn.db
+                          1
+                          ([]vev.Pull-Spec [(vev.flat-pull-spec ":name")]))]
+    (t.is (= (count simple) 2))
+    (t.is (= simple[0].kind ":db.pull/attr"))
+    (t.is simple[0].has-e)
+    (t.is (= simple[0].e 1))
+    (t.is (= simple[0].a ":name"))
+    (t.is (= simple[1].a ":aka"))
+    (t.is (= (count with-id) 1))
+    (t.is (= with-id[0].a ":name"))
+    (t.is (= (count wildcard) 5))
+    (t.is (= wildcard[0].kind ":db.pull/wildcard"))
+    (t.is (= wildcard[0].e 1))
+    (t.is (= wildcard[1].a ":aka"))
+    (t.is (= wildcard[2].a ":child"))
+    (t.is (= wildcard[3].a ":name"))
+    (t.is (= wildcard[4].a ":missing"))
+    (t.is (= (count nested) 3))
+    (t.is (= nested[0].a ":child"))
+    (t.is (= nested[1].e 2))
+    (t.is (= nested[1].a ":name"))
+    (t.is (= nested[2].e 3))
+    (t.is (= nested[2].a ":name"))
+    (t.is (= (count reverse) 2))
+    (t.is (= reverse[0].a ":name"))
+    (t.is (= reverse[1].kind ":db.pull/reverse"))
+    (t.is (not reverse[1].has-e))
+    (t.is (= reverse[1].a ":child"))
+    (t.is reverse[1].has-v)
+    (t.is (= reverse[1].v-entity 2))
+    (t.is (= pulled.attrs[0].v.text "Petr"))
+    (t.is (= (count traced) 1))
+    (t.is (= traced[0].a ":name"))))
+
 (t.deftest pull-supports-as-attr-option
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

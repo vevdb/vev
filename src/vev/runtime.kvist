@@ -5872,6 +5872,132 @@
 (defn pull-pattern-ident [db: DB, ident: string, pattern: []Pull-Spec] -> Pull-Result
   (pull-pattern-ident-with-fns db ident pattern ([]Native-Query-Fn [])))
 
+(defn pull-visit-attr [entity: u64, attr: string] -> Pull-Visit
+  (Pull-Visit {kind: ":db.pull/attr"
+               has-e: true
+               e: entity
+               a: attr
+               has-v: false}))
+
+(defn pull-visit-wildcard [entity: u64] -> Pull-Visit
+  (Pull-Visit {kind: ":db.pull/wildcard"
+               has-e: true
+               e: entity
+               a: ""
+               has-v: false}))
+
+(defn pull-visit-reverse [attr: string, entity: u64] -> Pull-Visit
+  (Pull-Visit {kind: ":db.pull/reverse"
+               has-e: false
+               e: 0
+               a: attr
+               has-v: true
+               v-entity: entity}))
+
+(defn string-seen? [items: []string, value: string] -> bool
+  (for [item items]
+    (when (= item value)
+      (return true)))
+  false)
+
+(defn trace-pull-wildcard! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64]
+  (arr.push! visits^ (pull-visit-wildcard entity))
+  (let [seen-attrs (make [dynamic]string) :defer
+        indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt" entity "" (Value {}))
+        high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (string-seen? (slice seen-attrs 0) datom.a)))
+          (arr.push! seen-attrs datom.a)
+          (arr.push! visits^ (pull-visit-attr entity datom.a)))))))
+
+(defn trace-pull-reverse-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (arr.push! visits^ (pull-visit-reverse (forward-attr-for-reverse spec.a) entity))
+  (when (and (= (count spec.pattern) 0)
+             (not spec.has-recursion))
+    (return))
+  (when (and spec.has-recursion (<= spec.recursion-depth 0))
+    (return))
+  (let [forward-attr (forward-attr-for-reverse spec.a) :defer
+        ref-value (value-entity entity)
+        indexes (slice db.vaet 0)
+        low (lower-bound-index db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index db indexes "vaet" 0 "" ref-value)
+        limit (pull-limit spec)
+        seen 0]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (= datom.a forward-attr)
+                   (datom-current-at? db datom-index)
+                   (< seen limit))
+          (if (> (count spec.pattern) 0)
+            (trace-pull-pattern! visits db datom.e spec.pattern spec.pattern seen-entities)
+            (when spec.has-recursion
+              (let [pattern (pull-recursion-pattern root spec.a)]
+                (defer (delete pattern))
+                (trace-pull-pattern! visits db datom.e (slice pattern 0) (slice pattern 0) seen-entities))))
+          (set! seen (+ seen 1)))))))
+
+(defn trace-pull-forward-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (arr.push! visits^ (pull-visit-attr entity spec.a))
+  (when (and (= (count spec.pattern) 0)
+             (not spec.has-recursion))
+    (return))
+  (when (and spec.has-recursion (<= spec.recursion-depth 0))
+    (return))
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity spec.a (Value {}))
+        limit (pull-limit spec)
+        seen 0]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Entity)
+                   (< seen limit))
+          (if (> (count spec.pattern) 0)
+            (trace-pull-pattern! visits db datom.v.entity spec.pattern spec.pattern seen-entities)
+            (when spec.has-recursion
+              (let [pattern (pull-recursion-pattern root spec.a)]
+                (defer (delete pattern))
+                (trace-pull-pattern! visits db datom.v.entity (slice pattern 0) (slice pattern 0) seen-entities))))
+          (set! seen (+ seen 1)))))))
+
+(defn trace-pull-spec! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (when (and spec.has-recursion (<= spec.recursion-depth 0))
+    (return))
+  (when (= spec.a "*")
+    (trace-pull-wildcard! visits db entity)
+    (return))
+  (when (= spec.a ":db/id")
+    (return))
+  (if (reverse-attr? spec.a)
+    (trace-pull-reverse-refs! visits db entity spec root seen-entities)
+    (trace-pull-forward-refs! visits db entity spec root seen-entities)))
+
+(defn trace-pull-pattern! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+  (when (u64-contains? seen-entities entity)
+    (return))
+  (let [child-seen (arr.into [dynamic]u64 seen-entities) :defer]
+    (arr.push! child-seen entity)
+    (let [normalized (normalize-pull-pattern pattern) :defer]
+      (for [spec normalized]
+        (trace-pull-spec! visits db entity spec root (slice child-seen 0))))))
+
+(defn pull-visits-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> [dynamic]Pull-Visit
+  (let [visits (make [dynamic]Pull-Visit)
+        seen (make [dynamic]u64) :defer
+        normalized (normalize-pull-pattern pattern) :defer]
+    (trace-pull-pattern! (addr visits) db entity (slice normalized 0) (slice normalized 0) (slice seen 0))
+    visits))
+
+(defn pull-pattern-spec-traced [db: DB, entity: u64, pattern: []Pull-Spec] -> [result: Pull-Result, visits: [dynamic]Pull-Visit]
+  (let [pulled (pull-pattern-spec db entity pattern)
+        trace (pull-visits-pattern-spec db entity pattern)]
+    (return pulled trace)))
+
 (defn entity-exists? [db: DB, e: u64] -> bool
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt" e "" (Value {}))
