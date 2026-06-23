@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "vev.h"
 
 static void print_and_free(const char *label, const char *text) {
@@ -51,6 +52,27 @@ static int result_row_count_or_error(const char *label, vev_result_t result) {
     return vev_result_row_count(result);
 }
 
+static vev_value_t map_get(vev_value_t map, const char *key) {
+    int count = vev_value_map_count(map);
+    for (int i = 0; i < count; i++) {
+        vev_value_t item_key = vev_value_map_key(map, i);
+        const char *text = vev_value_text(item_key);
+        int matches = text != NULL && strcmp(text, key) == 0;
+        vev_string_free(text);
+        if (matches) {
+            return vev_value_map_value(map, i);
+        }
+    }
+    return NULL;
+}
+
+static int value_text_equals(vev_value_t value, const char *expected) {
+    const char *text = vev_value_text(value);
+    int matches = text != NULL && strcmp(text, expected) == 0;
+    vev_string_free(text);
+    return matches;
+}
+
 int main(void) {
     printf("version: %s\n", vev_version());
 
@@ -100,6 +122,14 @@ int main(void) {
             conn,
             "[:find ?name :in [[?email ?label]] :where [?e :user/email ?email] [?e :user/name ?name]]",
             "[[[\"ada@example.com\" :primary] [\"missing@example.com\" :missing]]]"));
+
+    print_and_free(
+        "tx-ref-schema",
+        vev_transact_edn(
+            conn,
+            "[[:db/add 100 :db/ident :user/friend]"
+            " [:db/add 100 :db/valueType :db.type/ref]"
+            " [:db/add 1 :user/friend 2]]"));
 
     vev_prepared_query_t query =
         vev_prepare_query_edn("[:find ?e ?email :in ?needle :where [?e :user/email ?email] [(= ?email ?needle)]]");
@@ -158,6 +188,41 @@ int main(void) {
         vev_conn_close(conn);
         return 1;
     }
+
+    vev_prepared_query_t pull_query =
+        vev_prepare_query_edn("[:find (pull ?e [:user/name {:user/friend [:user/name]}]) :where [?e :user/name \"Ada\"]]");
+    if (pull_query == NULL) {
+        fprintf(stderr, "failed to prepare pull query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t pull_result = vev_query_prepared_result_with_inputs(conn, pull_query, "[]");
+    int pull_rows = result_row_count_or_error("pull", pull_result);
+    int pull_count = vev_result_pull_count(pull_result, 0);
+    vev_value_t pulled = vev_result_pull(pull_result, 0, 0);
+    vev_value_t name = map_get(pulled, ":user/name");
+    vev_value_t friend_map = map_get(pulled, ":user/friend");
+    vev_value_t friend_name = map_get(friend_map, ":user/name");
+    printf("pull rows: %d pulls: %d\n", pull_rows, pull_count);
+    if (pull_rows != 1 ||
+        pull_count != 1 ||
+        vev_value_kind(pulled) != VEV_VALUE_MAP ||
+        !value_text_equals(name, "Ada") ||
+        !value_text_equals(friend_name, "Grace")) {
+        const char *edn = vev_value_edn(pulled);
+        fprintf(stderr, "unexpected pull traversal output: %s\n", edn);
+        vev_string_free(edn);
+        vev_result_free(pull_result);
+        vev_prepared_query_free(pull_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(pull_result);
+    vev_prepared_query_free(pull_query);
 
     vev_prepared_query_t all_emails =
         vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");

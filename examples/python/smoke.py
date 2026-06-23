@@ -6,6 +6,7 @@ import sys
 
 VEV_VALUE_ENTITY = 1
 VEV_VALUE_STRING = 2
+VEV_VALUE_MAP = 9
 
 
 def load_library() -> ctypes.CDLL:
@@ -21,6 +22,18 @@ def owned_text(lib: ctypes.CDLL, ptr: int) -> str:
         return ctypes.cast(ptr, ctypes.c_char_p).value.decode("utf-8")
     finally:
         lib.vev_string_free(ptr)
+
+
+def value_text(lib: ctypes.CDLL, value: int) -> str:
+    return owned_text(lib, lib.vev_value_text(value))
+
+
+def map_get(lib: ctypes.CDLL, value: int, key: str) -> int:
+    for index in range(lib.vev_value_map_count(value)):
+        item_key = lib.vev_value_map_key(value, index)
+        if value_text(lib, item_key) == key:
+            return lib.vev_value_map_value(value, index)
+    return 0
 
 
 def main() -> int:
@@ -100,12 +113,42 @@ def main() -> int:
     lib.vev_result_value_count.restype = ctypes.c_int
     lib.vev_result_value_kind.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     lib.vev_result_value_kind.restype = ctypes.c_int
+    lib.vev_result_value.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.vev_result_value.restype = ctypes.c_void_p
+    lib.vev_result_pull_count.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.vev_result_pull_count.restype = ctypes.c_int
+    lib.vev_result_pull.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.vev_result_pull.restype = ctypes.c_void_p
     lib.vev_result_value_entity.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     lib.vev_result_value_entity.restype = ctypes.c_ulonglong
     lib.vev_result_value_text.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     lib.vev_result_value_text.restype = ctypes.c_void_p
     lib.vev_result_value_edn.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     lib.vev_result_value_edn.restype = ctypes.c_void_p
+    lib.vev_value_kind.argtypes = [ctypes.c_void_p]
+    lib.vev_value_kind.restype = ctypes.c_int
+    lib.vev_value_entity.argtypes = [ctypes.c_void_p]
+    lib.vev_value_entity.restype = ctypes.c_ulonglong
+    lib.vev_value_int.argtypes = [ctypes.c_void_p]
+    lib.vev_value_int.restype = ctypes.c_longlong
+    lib.vev_value_float.argtypes = [ctypes.c_void_p]
+    lib.vev_value_float.restype = ctypes.c_double
+    lib.vev_value_bool.argtypes = [ctypes.c_void_p]
+    lib.vev_value_bool.restype = ctypes.c_bool
+    lib.vev_value_text.argtypes = [ctypes.c_void_p]
+    lib.vev_value_text.restype = ctypes.c_void_p
+    lib.vev_value_edn.argtypes = [ctypes.c_void_p]
+    lib.vev_value_edn.restype = ctypes.c_void_p
+    lib.vev_value_item_count.argtypes = [ctypes.c_void_p]
+    lib.vev_value_item_count.restype = ctypes.c_int
+    lib.vev_value_item.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.vev_value_item.restype = ctypes.c_void_p
+    lib.vev_value_map_count.argtypes = [ctypes.c_void_p]
+    lib.vev_value_map_count.restype = ctypes.c_int
+    lib.vev_value_map_key.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.vev_value_map_key.restype = ctypes.c_void_p
+    lib.vev_value_map_value.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.vev_value_map_value.restype = ctypes.c_void_p
 
     print(f"version: {lib.vev_version().decode('utf-8')}")
 
@@ -138,6 +181,17 @@ def main() -> int:
             ),
         )
         print(f"input-collection: {result}")
+
+        tx_ref_schema = owned_text(
+            lib,
+            lib.vev_transact_edn(
+                conn,
+                b"[[:db/add 100 :db/ident :user/friend]"
+                b" [:db/add 100 :db/valueType :db.type/ref]"
+                b" [:db/add 1 :user/friend 2]]",
+            ),
+        )
+        print(f"tx-ref-schema: {tx_ref_schema}")
 
         prepared = lib.vev_prepare_query_edn(
             b"[:find ?e ?email :in ?needle :where [?e :user/email ?email] [(= ?email ?needle)]]"
@@ -212,6 +266,42 @@ def main() -> int:
         print(f"stmt-rebound rows: {rebound_rows}")
         if stmt_rows != 1 or rebound_rows != 1:
             raise RuntimeError("unexpected statement row counts")
+
+        pull_query = lib.vev_prepare_query_edn(
+            b"[:find (pull ?e [:user/name {:user/friend [:user/name]}]) :where [?e :user/name \"Ada\"]]"
+        )
+        if not pull_query:
+            raise RuntimeError("failed to prepare pull query")
+        pull_handle = lib.vev_query_prepared_result_with_inputs(conn, pull_query, b"[]")
+        try:
+            if not lib.vev_result_ok(pull_handle):
+                raise RuntimeError("pull result returned an error")
+            pulled = lib.vev_result_pull(pull_handle, 0, 0)
+            name = map_get(lib, pulled, ":user/name")
+            friend_map = map_get(lib, pulled, ":user/friend")
+            friend_name = map_get(lib, friend_map, ":user/name")
+            print(
+                "pull traversal:",
+                {
+                    "rows": lib.vev_result_row_count(pull_handle),
+                    "pulls": lib.vev_result_pull_count(pull_handle, 0),
+                    "name": value_text(lib, name),
+                    "friend": value_text(lib, friend_name),
+                },
+            )
+            if (
+                lib.vev_result_row_count(pull_handle) != 1
+                or lib.vev_result_pull_count(pull_handle, 0) != 1
+                or lib.vev_value_kind(pulled) != VEV_VALUE_MAP
+                or value_text(lib, name) != "Ada"
+                or value_text(lib, friend_name) != "Grace"
+            ):
+                raise RuntimeError(
+                    f"unexpected pull traversal output: {owned_text(lib, lib.vev_value_edn(pulled))}"
+                )
+        finally:
+            lib.vev_result_free(pull_handle)
+            lib.vev_prepared_query_free(pull_query)
 
         all_emails = lib.vev_prepare_query_edn(
             b"[:find ?e ?email :where [?e :user/email ?email]]"

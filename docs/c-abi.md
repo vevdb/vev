@@ -13,6 +13,7 @@ The current shape is intentionally narrow:
 - reusable statement handles with typed scalar bindings
 - rendered result strings owned by the caller
 - opaque result handles for typed row/value access
+- borrowed value handles for nested vector/map/pull traversal
 
 This is the portable baseline for Python, Rust, Java, Clojure, and other hosts.
 Host wrappers should build on this surface first instead of mirroring internal
@@ -132,12 +133,33 @@ vev_result_t rows =
 for (int row = 0; row < vev_result_row_count(rows); row++) {
     int values = vev_result_value_count(rows, row);
     for (int column = 0; column < values; column++) {
-        int kind = vev_result_value_kind(rows, row, column);
-        const char *text = vev_result_value_edn(rows, row, column);
+        vev_value_t value = vev_result_value(rows, row, column);
+        int kind = vev_value_kind(value);
+        const char *text = vev_value_edn(value);
         vev_string_free(text);
     }
 }
 vev_result_free(rows);
+
+vev_prepared_query_t pull_query =
+    vev_prepare_query_edn("[:find (pull ?e [:user/name]) :where [?e :user/email ?email]]");
+vev_stmt_t pull_stmt = vev_stmt_create(pull_query);
+vev_stmt_bind_string(pull_stmt, "ada@example.com");
+vev_result_t pull_rows = vev_query_stmt_result(conn, pull_stmt);
+
+vev_value_t pulled = vev_result_pull(pull_rows, 0, 0);
+for (int i = 0; i < vev_value_map_count(pulled); i++) {
+    vev_value_t key = vev_value_map_key(pulled, i);
+    vev_value_t value = vev_value_map_value(pulled, i);
+    const char *key_text = vev_value_text(key);
+    const char *value_text = vev_value_edn(value);
+    vev_string_free(key_text);
+    vev_string_free(value_text);
+}
+
+vev_result_free(pull_rows);
+vev_stmt_free(pull_stmt);
+vev_prepared_query_free(pull_query);
 
 vev_db_t snapshot = vev_conn_db(conn);
 vev_transact_edn(conn, "[{:db/id 2 :user/name \"Grace\"}]");
@@ -176,6 +198,11 @@ Result handles from `vev_query_prepared_result_with_inputs` are released with
 `vev_result_free`. Strings returned from result accessors such as
 `vev_result_error`, `vev_result_value_text`, and `vev_result_value_edn` are
 released with `vev_string_free`.
+
+`vev_value_t` handles are borrowed views into an owning `vev_result_t`. Do not
+free them, and do not use them after `vev_result_free`. Strings returned from
+`vev_value_text` and `vev_value_edn` are owned by the caller and must be released
+with `vev_string_free`.
 
 The current parser stores references into transaction and query source text in
 some internal structures. The ABI wrappers therefore keep transaction source
@@ -269,16 +296,39 @@ Current result-handle accessors:
 - `vev_result_error`
 - `vev_result_row_count`
 - `vev_result_value_count`
+- `vev_result_value`
 - `vev_result_value_kind`
 - `vev_result_value_entity`
 - `vev_result_value_int`
 - `vev_result_value_bool`
 - `vev_result_value_text`
 - `vev_result_value_edn`
+- `vev_result_pull_count`
+- `vev_result_pull`
 
-The first handle API intentionally starts with row values only. Pull results,
-aggregates that produce nested values, and efficient vector/map traversal should
-grow out of the same handle shape rather than adding a parallel API.
+The `vev_result_value_*` scalar accessors are convenience functions for direct
+row values. New host wrappers should prefer `vev_result_value` plus the generic
+`vev_value_*` traversal functions, because the same path works for nested values
+and rendered pull results.
+
+Current value-handle accessors:
+
+- `vev_value_kind`
+- `vev_value_entity`
+- `vev_value_int`
+- `vev_value_float`
+- `vev_value_bool`
+- `vev_value_text`
+- `vev_value_edn`
+- `vev_value_item_count`
+- `vev_value_item`
+- `vev_value_map_count`
+- `vev_value_map_key`
+- `vev_value_map_value`
+
+Pull results are rendered into map-shaped values and stored on the result handle
+when the query runs. This keeps pull traversal independent of the original
+connection or DB snapshot lifetime.
 
 ## DB Snapshots
 
@@ -314,8 +364,8 @@ model.
 
 The next useful steps are:
 
-- add nested value traversal and streaming callbacks so callers do not have to
-  render large or nested results as text
+- add streaming callbacks so callers can consume very large results without
+  materializing full result handles
 - add explicit error/result status APIs
 - add typed statement bindings for collection, tuple, relation, lookup-ref,
   source, and pull-pattern inputs

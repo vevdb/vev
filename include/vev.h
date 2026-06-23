@@ -12,6 +12,7 @@ typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
 typedef void *vev_stmt_t;
+typedef const void *vev_value_t;
 
 enum {
     VEV_VALUE_NIL = 0,
@@ -79,11 +80,27 @@ const char *vev_result_error(vev_result_t result);
 int vev_result_row_count(vev_result_t result);
 int vev_result_value_count(vev_result_t result, int row);
 int vev_result_value_kind(vev_result_t result, int row, int column);
+vev_value_t vev_result_value(vev_result_t result, int row, int column);
+int vev_result_pull_count(vev_result_t result, int row);
+vev_value_t vev_result_pull(vev_result_t result, int row, int pull);
 unsigned long long vev_result_value_entity(vev_result_t result, int row, int column);
 long long vev_result_value_int(vev_result_t result, int row, int column);
 bool vev_result_value_bool(vev_result_t result, int row, int column);
 const char *vev_result_value_text(vev_result_t result, int row, int column);
 const char *vev_result_value_edn(vev_result_t result, int row, int column);
+
+int vev_value_kind(vev_value_t value);
+unsigned long long vev_value_entity(vev_value_t value);
+long long vev_value_int(vev_value_t value);
+double vev_value_float(vev_value_t value);
+bool vev_value_bool(vev_value_t value);
+const char *vev_value_text(vev_value_t value);
+const char *vev_value_edn(vev_value_t value);
+int vev_value_item_count(vev_value_t value);
+vev_value_t vev_value_item(vev_value_t value, int index);
+int vev_value_map_count(vev_value_t value);
+vev_value_t vev_value_map_key(vev_value_t value, int index);
+vev_value_t vev_value_map_value(vev_value_t value, int index);
 
 #ifdef __cplusplus
 }
