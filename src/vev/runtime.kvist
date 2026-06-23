@@ -302,6 +302,47 @@
     (= op "<=") (not (value-less? right left))
     :else false))
 
+(defn query-var-name? [name: string] -> bool
+  (strings.has_prefix name "?"))
+
+(defn query-op-value-name [value: Value] -> [name: string, ok: bool]
+  (when (= value.kind .Keyword)
+    (if (strings.has_prefix value.text ":")
+      (return (slice value.text 1) true)
+      (return value.text true)))
+  (when (= value.kind .String)
+    (return value.text true))
+  (return "" false))
+
+(defn query-op-name [op: string, binding: Binding] -> [name: string, ok: bool]
+  (when (not (query-var-name? op))
+    (return op true))
+  (let [[value value-ok] (binding-lookup binding op)]
+    (when (not value-ok)
+      (return "" false))
+    (query-op-value-name value)))
+
+(defn query-fn [name: string, target: string] -> Native-Query-Fn
+  (Native-Query-Fn {name: name target: target}))
+
+(defn query-fn-index [registry: []Native-Query-Fn, name: string] -> [index: int, ok: bool]
+  (for [entry index registry]
+    (when (= entry.name name)
+      (return index true)))
+  (return 0 false))
+
+(defn query-fn-supported? [registry: []Native-Query-Fn, op: string] -> bool
+  (when (query-var-name? op)
+    (return true))
+  (let [[_ ok] (query-fn-index registry op)]
+    ok))
+
+(defn query-fn-target [registry: []Native-Query-Fn, op: string] -> [target: string, ok: bool]
+  (let [[index found] (query-fn-index registry op)]
+    (when (not found)
+      (return "" false))
+    (return registry[index].target true)))
+
 (defn re-find-matches? [pattern: Value, text: Value] -> bool
   (when (not (and (= pattern.kind .String)
                   (= text.kind .String)))
@@ -340,68 +381,71 @@
     :else (return "" false)))
 
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
-  (when (and (or (= predicate.op "true?")
-                 (= predicate.op "false?")
-                 (= predicate.op "nil?")
-                 (= predicate.op "some?")
-                 (= predicate.op "not")
-                 (= predicate.op "empty?"))
+  (let [[op op-ok] (query-op-name predicate.op binding)]
+    (when (not op-ok)
+      (return false))
+  (when (and (or (= op "true?")
+                 (= op "false?")
+                 (= op "nil?")
+                 (= op "some?")
+                 (= op "not")
+                 (= op "empty?"))
              (= (count predicate.terms) 1))
     (let [[value value-ok] (resolve-term predicate.terms[0] binding)]
       (when (not value-ok)
         (return false))
       (cond
-        (= predicate.op "true?") (return (and (= value.kind .Bool) value.bool-value))
-        (= predicate.op "false?") (return (and (= value.kind .Bool) (not value.bool-value)))
-        (= predicate.op "nil?") (return (= value.kind .Nil))
-        (= predicate.op "some?") (return (not (= value.kind .Nil)))
-        (= predicate.op "not") (return (or (= value.kind .Nil)
+        (= op "true?") (return (and (= value.kind .Bool) value.bool-value))
+        (= op "false?") (return (and (= value.kind .Bool) (not value.bool-value)))
+        (= op "nil?") (return (= value.kind .Nil))
+        (= op "some?") (return (not (= value.kind .Nil)))
+        (= op "not") (return (or (= value.kind .Nil)
                                            (and (= value.kind .Bool) (not value.bool-value))))
-        (= predicate.op "empty?") (return (and (= value.kind .Vector) (= (count value.items) 0))))))
-  (when (and (or (= predicate.op "even?")
-                 (= predicate.op "odd?")
-                 (= predicate.op "zero?")
-                 (= predicate.op "pos?")
-                 (= predicate.op "neg?"))
+        (= op "empty?") (return (and (= value.kind .Vector) (= (count value.items) 0))))))
+  (when (and (or (= op "even?")
+                 (= op "odd?")
+                 (= op "zero?")
+                 (= op "pos?")
+                 (= op "neg?"))
              (= (count predicate.terms) 1))
     (let [[value value-ok] (resolve-term predicate.terms[0] binding)]
       (when (not value-ok)
         (return false))
       (when (= value.kind .Int)
         (cond
-          (= predicate.op "even?") (return (= (% value.int-value 2) 0))
-          (= predicate.op "odd?") (return (not (= (% value.int-value 2) 0)))
-          (= predicate.op "zero?") (return (= value.int-value 0))
-          (= predicate.op "pos?") (return (> value.int-value 0))
-          (= predicate.op "neg?") (return (< value.int-value 0))))
+          (= op "even?") (return (= (% value.int-value 2) 0))
+          (= op "odd?") (return (not (= (% value.int-value 2) 0)))
+          (= op "zero?") (return (= value.int-value 0))
+          (= op "pos?") (return (> value.int-value 0))
+          (= op "neg?") (return (< value.int-value 0))))
       (when (= value.kind .Entity)
         (cond
-          (= predicate.op "even?") (return (= (% value.entity 2) 0))
-          (= predicate.op "odd?") (return (not (= (% value.entity 2) 0)))
-          (= predicate.op "zero?") (return (= value.entity 0))
-          (= predicate.op "pos?") (return (> value.entity 0))
-          (= predicate.op "neg?") (return false)))
+          (= op "even?") (return (= (% value.entity 2) 0))
+          (= op "odd?") (return (not (= (% value.entity 2) 0)))
+          (= op "zero?") (return (= value.entity 0))
+          (= op "pos?") (return (> value.entity 0))
+          (= op "neg?") (return false)))
       (return false)))
-  (when (and (= predicate.op "re-find")
+  (when (and (= op "re-find")
              (= (count predicate.terms) 2))
     (let [[pattern pattern-ok] (resolve-term predicate.terms[0] binding)
           [text text-ok] (resolve-term predicate.terms[1] binding)]
       (return (and pattern-ok text-ok (re-find-matches? pattern text)))))
-  (when (and (or (= predicate.op "contains?")
-                 (= predicate.op "clojure.string/includes?")
-                 (= predicate.op "clojure.string/starts-with?")
-                 (= predicate.op "clojure.string/ends-with?"))
+  (when (and (or (= op "contains?")
+                 (= op "clojure.string/includes?")
+                 (= op "clojure.string/starts-with?")
+                 (= op "clojure.string/ends-with?"))
              (= (count predicate.terms) 2))
     (let [[left left-ok] (resolve-term predicate.terms[0] binding)
           [right right-ok] (resolve-term predicate.terms[1] binding)]
       (when (not (and left-ok right-ok (= left.kind .String) (= right.kind .String)))
         (return false))
       (cond
-        (or (= predicate.op "contains?") (= predicate.op "clojure.string/includes?"))
+        (or (= op "contains?") (= op "clojure.string/includes?"))
           (return (strings.contains left.text right.text))
-        (= predicate.op "clojure.string/starts-with?")
+        (= op "clojure.string/starts-with?")
           (return (strings.has_prefix left.text right.text))
-        (= predicate.op "clojure.string/ends-with?")
+        (= op "clojure.string/ends-with?")
           (return (strings.has_suffix left.text right.text)))))
   (when (< (count predicate.terms) 2)
     (return false))
@@ -410,9 +454,20 @@
           [right right-ok] (resolve-term predicate.terms[(+ index 1)] binding)]
       (when (not (and left-ok right-ok))
         (return false))
-      (when (not (predicate-pair-matches? predicate.op left right))
+      (when (not (predicate-pair-matches? op left right))
         (return false))))
-  true)
+  true))
+
+(defn predicate-matches-with-fns? [predicate: Predicate, binding: Binding, registry: []Native-Query-Fn] -> bool
+  (when (predicate-matches? predicate binding)
+    (return true))
+  (let [[op op-ok] (query-op-name predicate.op binding)]
+    (when (not op-ok)
+      (return false))
+    (let [[target target-ok] (query-fn-target registry op)]
+      (when (not target-ok)
+        (return false))
+      (predicate-matches? (Predicate {op: target terms: predicate.terms}) binding))))
 
 (defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
   (when (not (= map-value.kind .Map))
@@ -425,29 +480,32 @@
   (return (Value {}) false))
 
 (defn apply-function-op [function: Function-Clause, binding: Binding] -> [value: Value, ok: bool]
-  (when (and (= function.op "count")
+  (let [[op op-ok] (query-op-name function.op binding)]
+    (when (not op-ok)
+      (return (Value {}) false))
+  (when (and (= op "count")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .String))
         (return (value-int (i64 (count input.text))) true))
       (return (Value {}) false)))
-  (when (and (or (= function.op "identity")
-                 (= function.op "ground"))
+  (when (and (or (= op "identity")
+                 (= op "ground"))
              (= (count function.terms) 1))
     (return (resolve-term function.terms[0] binding)))
-  (when (and (= function.op "inc")
+  (when (and (= op "inc")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .Int))
         (return (value-int (+ input.int-value 1)) true))
       (return (Value {}) false)))
-  (when (and (= function.op "dec")
+  (when (and (= op "dec")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .Int))
         (return (value-int (- input.int-value 1)) true))
       (return (Value {}) false)))
-  (when (and (= function.op "name")
+  (when (and (= op "name")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (not input-ok)
@@ -460,7 +518,7 @@
             (return (value-string (slice input.text 1)) true)
             (return (value-string (slice input.text (+ slash 1))) true))))
       (return (Value {}) false)))
-  (when (and (= function.op "subs")
+  (when (and (= op "subs")
              (or (= (count function.terms) 2)
                  (= (count function.terms) 3)))
     (let [[input input-ok] (resolve-term function.terms[0] binding)
@@ -477,7 +535,7 @@
               (when ok
                 (return (value-string part) true))))))
       (return (Value {}) false)))
-  (when (and (= function.op "re-pattern")
+  (when (and (= op "re-pattern")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .String))
@@ -486,14 +544,14 @@
             (regex.destroy compiled)
             (return input true))))
       (return (Value {}) false)))
-  (when (and (= function.op "re-find")
+  (when (and (= op "re-find")
              (= (count function.terms) 2))
     (let [[pattern pattern-ok] (resolve-term function.terms[0] binding)
           [text text-ok] (resolve-term function.terms[1] binding)]
       (when (and pattern-ok text-ok)
         (return (re-find-value pattern text)))
       (return (Value {}) false)))
-  (when (= function.op "str")
+  (when (= op "str")
     (let [parts (make [dynamic]string 0 (count function.terms))]
       (defer (delete parts))
       (for [term function.terms]
@@ -505,7 +563,7 @@
               (return (Value {}) false))
             (arr.push! parts part))))
       (return (value-string (strings.concatenate (slice parts 0))) true)))
-  (when (and (= function.op "keyword")
+  (when (and (= op "keyword")
              (or (= (count function.terms) 1)
                  (= (count function.terms) 2)))
     (if (= (count function.terms) 1)
@@ -526,18 +584,18 @@
         (return
           (value-keyword (strings.concatenate ([]string [":" namespace.text "/" name.text])))
           true))))
-  (when (and (or (= function.op "first")
-                 (= function.op "second"))
+  (when (and (or (= op "first")
+                 (= op "second"))
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)
-          index (if (= function.op "first") 0 1)]
+          index (if (= op "first") 0 1)]
       (when (and input-ok
                  (= input.kind .Vector)
                  (< index (count input.items)))
         (return input.items[index] true))
       (return (Value {}) false)))
-  (when (or (= function.op "vector")
-            (= function.op "tuple"))
+  (when (or (= op "vector")
+            (= op "tuple"))
     (let [items (make [dynamic]Value 0 (count function.terms))]
       (for [term function.terms]
         (let [[value ok] (resolve-term term binding)]
@@ -545,13 +603,13 @@
             (return (Value {}) false))
           (arr.push! items value)))
       (return (value-vector (slice items 0)) true)))
-  (when (and (= function.op "untuple")
+  (when (and (= op "untuple")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
       (when (and input-ok (= input.kind .Vector))
         (return input true))
       (return (Value {}) false)))
-  (when (= function.op "hash-map")
+  (when (= op "hash-map")
     (when (not (= (% (count function.terms) 2) 0))
       (return (Value {}) false))
     (let [items (make [dynamic]Value 0 (count function.terms))]
@@ -561,38 +619,38 @@
             (return (Value {}) false))
           (arr.push! items value)))
       (return (value-map (slice items 0)) true)))
-  (when (and (= function.op "get")
+  (when (and (= op "get")
              (= (count function.terms) 2))
     (let [[map-value map-ok] (resolve-term function.terms[0] binding)
           [key key-ok] (resolve-term function.terms[1] binding)]
       (when (and map-ok key-ok)
         (return (map-get-value map-value key)))
       (return (Value {}) false)))
-  (when (and (or (= function.op "contains?")
-                 (= function.op "clojure.string/includes?")
-                 (= function.op "clojure.string/starts-with?")
-                 (= function.op "clojure.string/ends-with?"))
+  (when (and (or (= op "contains?")
+                 (= op "clojure.string/includes?")
+                 (= op "clojure.string/starts-with?")
+                 (= op "clojure.string/ends-with?"))
              (= (count function.terms) 2))
     (let [[left left-ok] (resolve-term function.terms[0] binding)
           [right right-ok] (resolve-term function.terms[1] binding)]
       (when (not (and left-ok right-ok (= left.kind .String) (= right.kind .String)))
         (return (Value {}) false))
       (cond
-        (or (= function.op "contains?") (= function.op "clojure.string/includes?"))
+        (or (= op "contains?") (= op "clojure.string/includes?"))
           (return (value-bool (strings.contains left.text right.text)) true)
-        (= function.op "clojure.string/starts-with?")
+        (= op "clojure.string/starts-with?")
           (return (value-bool (strings.has_prefix left.text right.text)) true)
-        (= function.op "clojure.string/ends-with?")
+        (= op "clojure.string/ends-with?")
           (return (value-bool (strings.has_suffix left.text right.text)) true))))
-  (when (or (= function.op "+")
-            (= function.op "-")
-            (= function.op "*")
-            (= function.op "/")
-            (= function.op "quot")
-            (= function.op "rem")
-            (= function.op "mod")
-            (= function.op "min")
-            (= function.op "max"))
+  (when (or (= op "+")
+            (= op "-")
+            (= op "*")
+            (= op "/")
+            (= op "quot")
+            (= op "rem")
+            (= op "mod")
+            (= op "min")
+            (= op "max"))
     (when (= (count function.terms) 0)
       (return (Value {}) false))
     (let [[first-value first-ok] (resolve-term function.terms[0] binding)
@@ -604,22 +662,22 @@
           (when (not (and next-ok (= next.kind .Int)))
             (return (Value {}) false))
           (cond
-            (= function.op "+") (set! result (+ result next.int-value))
-            (= function.op "-") (set! result (- result next.int-value))
-            (= function.op "*") (set! result (* result next.int-value))
-            (= function.op "/") (do
+            (= op "+") (set! result (+ result next.int-value))
+            (= op "-") (set! result (- result next.int-value))
+            (= op "*") (set! result (* result next.int-value))
+            (= op "/") (do
               (when (= next.int-value 0)
                 (return (Value {}) false))
               (set! result (/ result next.int-value)))
-            (= function.op "quot") (do
+            (= op "quot") (do
               (when (= next.int-value 0)
                 (return (Value {}) false))
               (set! result (/ result next.int-value)))
-            (= function.op "rem") (do
+            (= op "rem") (do
               (when (= next.int-value 0)
                 (return (Value {}) false))
               (set! result (% result next.int-value)))
-            (= function.op "mod") (do
+            (= op "mod") (do
               (when (= next.int-value 0)
                 (return (Value {}) false))
               (let [m (% result next.int-value)]
@@ -628,22 +686,70 @@
                              (and (> m 0) (< next.int-value 0))))
                   (set! result (+ m next.int-value))
                   (set! result m))))
-            (= function.op "min") (when (< next.int-value result)
+            (= op "min") (when (< next.int-value result)
               (set! result next.int-value))
-            (= function.op "max") (when (> next.int-value result)
+            (= op "max") (when (> next.int-value result)
               (set! result next.int-value)))))
       (return (value-int result) true)))
-  (when (and (= function.op "compare")
+  (when (and (= op "compare")
              (= (count function.terms) 2))
     (let [[left left-ok] (resolve-term function.terms[0] binding)
           [right right-ok] (resolve-term function.terms[1] binding)]
       (when (and left-ok right-ok)
         (return (value-int (i64 (value-compare left right))) true))
       (return (Value {}) false)))
-  (return (Value {}) false))
+  (return (Value {}) false)))
+
+(defn apply-function-op-with-fns [function: Function-Clause, binding: Binding, registry: []Native-Query-Fn] -> [value: Value, ok: bool]
+  (let [[builtin builtin-ok] (apply-function-op function binding)]
+    (when builtin-ok
+      (return builtin true)))
+  (let [[op op-ok] (query-op-name function.op binding)]
+    (when (not op-ok)
+      (return (Value {}) false))
+    (let [[target target-ok] (query-fn-target registry op)]
+      (when (not target-ok)
+        (return (Value {}) false))
+      (apply-function-op (Function-Clause {op: target
+                                           terms: function.terms
+                                           out: ""
+                                           out-vars: ([]string [])
+                                           out-binding: (Input-Binding {})
+                                           is-tuple: false})
+        binding))))
 
 (defn apply-function-clause [binding: Binding, function: Function-Clause] -> [out: Binding, ok: bool]
   (let [[value value-ok] (apply-function-op function binding)]
+    (when (not value-ok)
+      (return binding false))
+    (when (not (= function.out-binding.kind .None))
+      (let [bound (bind-input-pattern binding function.out-binding value)]
+        (when (= (count bound) 1)
+          (return bound[0] true))
+        (return binding false)))
+    (when function.is-tuple
+      (when (not (= value.kind .Vector))
+        (return binding false))
+      (when (not (= (count value.items) (count function.out-vars)))
+        (return binding false))
+      (let [next (clone-binding binding)]
+        (for [name index function.out-vars]
+          (when (not (= name "_"))
+            (let [[bound bound-ok] (binding-with-value next name value.items[index])]
+              (when (not bound-ok)
+                (return binding false))
+              (set! next bound))))
+        (return next true)))
+    (let [next (clone-binding binding)
+          [existing exists] (binding-lookup next function.out)]
+      (if exists
+        (return next (predicate-value-equal? existing value))
+        (do
+          (binding-store! (addr next) function.out value)
+          (return next true))))))
+
+(defn apply-function-clause-with-fns [binding: Binding, function: Function-Clause, registry: []Native-Query-Fn] -> [out: Binding, ok: bool]
+  (let [[value value-ok] (apply-function-op-with-fns function binding registry)]
     (when (not value-ok)
       (return binding false))
     (when (not (= function.out-binding.kind .None))
@@ -685,6 +791,14 @@
         (return (value-entity entity) true))
       (return (Value {}) false)))
   (return arg.value true))
+
+(defn validate-index-lookup-refs [db: DB, args: []Index-Arg] -> [ok: bool, error: string]
+  (for [arg args]
+    (when arg.has-lookup-ref
+      (let [[_ found] (resolve-lookup-ref db arg.lookup-attr arg.lookup-value)]
+        (when (not found)
+          (return false "lookup ref not found")))))
+  (return true ""))
 
 (defn resolve-index-args [db: DB, args: []Index-Arg] -> [values: [dynamic]Value, ok: bool]
   (let [resolved (make [dynamic]Value)]
@@ -781,6 +895,9 @@
     (return "" false)))
 
 (defn validate-public-index-args [db: DB, order: string, args: []Index-Arg] -> [ok: bool, error: string]
+  (let [[lookup-ok lookup-error] (validate-index-lookup-refs db args)]
+    (when (not lookup-ok)
+      (return false lookup-error)))
   (when (not (= order ":avet"))
     (return true ""))
   (when (= (count args) 0)
@@ -938,6 +1055,14 @@
     (return (Datoms-Result {ok: false
                             error: (fmt.tprintf "Attribute %s should be marked as :db/index true" attr)
                             datoms: (make [dynamic]Datom)})))
+  (when has-start
+    (let [[start-ok start-error] (validate-index-lookup-refs db ([]Index-Arg [start]))]
+      (when (not start-ok)
+        (return (Datoms-Result {ok: false error: start-error datoms: (make [dynamic]Datom)})))))
+  (when has-end
+    (let [[end-ok end-error] (validate-index-lookup-refs db ([]Index-Arg [end]))]
+      (when (not end-ok)
+        (return (Datoms-Result {ok: false error: end-error datoms: (make [dynamic]Datom)})))))
   (Datoms-Result {ok: true error: "" datoms: (index-range-with-args db attr start has-start end has-end)}))
 
 (defn u64-contains? [items: []u64, value: u64] -> bool
@@ -1189,6 +1314,7 @@
     (= schema-type ":db.type/boolean") (= value.kind .Bool)
     (= schema-type ":db.type/ref") (= value.kind .Entity)
     (= schema-type ":db.type/keyword") (= value.kind .Keyword)
+    (= schema-type ":db.type/symbol") (= value.kind .Symbol)
     :else true))
 
 (defn valid-tuple-attrs-value? [db: DB, value: Value] -> bool
@@ -1369,10 +1495,12 @@
         (return data.v false "lookup ref not found"))))
   (resolve-tx-value db data.a data.v))
 
-(defn tx-data-has-tempid? [tx-data: []Tx-Data, tempid: string] -> bool
+(defn tx-data-has-tempid? [db: DB, tx-data: []Tx-Data, tempid: string] -> bool
   (for [data tx-data]
     (when (and data.has-tempid
-               (= data.tempid tempid))
+               (= data.tempid tempid)
+               (not (and (should-split-map-collection? db data)
+                         (= (count data.v.items) 0))))
       (return true)))
   false)
 
@@ -1587,14 +1715,20 @@
       (and has-value (value-equal? tuple-value op.v)))))
 
 (defn expand-tuple-ops [db: DB, ops: []Tx-Op] -> [dynamic]Tx-Op
-  (let [out (make [dynamic]Tx-Op 0 (count ops))]
+  (let [out (make [dynamic]Tx-Op 0 (count ops))
+        whole-tx-db (db-with-resolved-ops db ops)]
     (for [op ops]
-      (let [scratch-before (db-with-resolved-ops db (slice out 0))]
-        (when (direct-tuple-add-matches? scratch-before op)
+      (let [before-op-db (db-with-resolved-ops db (slice out 0))
+            direct-tuple-matches (or (direct-tuple-add-matches? before-op-db op)
+                                     (direct-tuple-add-matches? whole-tx-db op))]
+        (delete-owned-db before-op-db)
+        (when direct-tuple-matches
           (continue)))
       (arr.push! out op)
       (let [scratch (db-with-resolved-ops db (slice out 0))]
-        (append-tuple-maintenance-ops! (addr out) scratch op)))
+        (append-tuple-maintenance-ops! (addr out) scratch op)
+        (delete-owned-db scratch)))
+    (delete-owned-db whole-tx-db)
     out))
 
 (defn lookup-ref-vector-value? [value: Value] -> bool
@@ -1694,6 +1828,47 @@
           (append-nested-map-value-tx! pending entity key.text value seed)))
       (set! index (+ index 2))))
   (return true ""))
+
+(defn tx-entity-ref-from-data [data: Tx-Data] -> Tx-Data
+  (Tx-Data {e: data.e
+            tempid: data.tempid
+            has-tempid: data.has-tempid
+            lookup-attr: data.lookup-attr
+            lookup-value: data.lookup-value
+            has-lookup-ref: data.has-lookup-ref
+            ident: data.ident
+            has-ident: data.has-ident}))
+
+(defn append-map-collection-items! [pending: ^[dynamic]Tx-Data, data: Tx-Data, db: DB]
+  (when (not (= data.v.kind .Vector))
+    (return))
+  (let [entity (tx-entity-ref-from-data data)
+        ref-attr (schema-ref? db data.a)]
+    (for [item index data.v.items]
+      (if (and ref-attr (lookup-ref-vector-value? item))
+        (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]))
+        (if (and ref-attr (= item.kind .Map))
+          (arr.push! pending^ (tx-add-nested-map-from-entity-data entity data.a item (fmt.tprintf "vev_tx_map_%d" (+ (count pending^) index))))
+          (arr.push! pending^ (tx-add-from-entity-data entity data.a item)))))))
+
+(defn should-split-map-collection? [db: DB, data: Tx-Data] -> bool
+  (when (not (and data.from-map-collection
+                  (= data.op ":db/add")
+                  (= data.v.kind .Vector)))
+    (return false))
+  (if (reverse-attr? data.a)
+    (let [schema-attr (forward-attr-for-reverse data.a)]
+      (defer (delete schema-attr))
+      (let [tuple-attrs (schema-tuple-attrs db schema-attr)]
+        (defer (delete tuple-attrs))
+        (when (> (count tuple-attrs) 0)
+          (return false)))
+      (return (not (schema-cardinality-one? db schema-attr)))))
+  (let [tuple-attrs (schema-tuple-attrs db data.a)]
+    (defer (delete tuple-attrs))
+    (when (> (count tuple-attrs) 0)
+      (return false)))
+  (not (schema-cardinality-one? db data.a)))
 
 (defn tx-data-op-known? [op: string] -> bool
   (or (= op ":db/add")
@@ -1816,6 +1991,9 @@
                                       tempids: resolved-tempids}))
                 (set! skip-data true)))))
         (when skip-data
+          (continue))
+        (when (should-split-map-collection? current-db data)
+          (append-map-collection-items! (addr pending) data current-db)
           (continue))
         (when data.has-ident
           (let [[ident-e ident-ok] (schema-entity-for-attr current-db data.ident)]
@@ -1951,7 +2129,7 @@
                     (set! current-tx-reserved true))
                   (set! v (value-entity current-tx-e))
                   (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
-              (if (not (tx-data-has-tempid? (slice pending 0) value-tempid))
+              (if (not (tx-data-has-tempid? current-db (slice pending 0) value-tempid))
                 (return (Resolved-Tx {ok: false
                                       error: "tempid used only as value"
                                       ops: resolved-ops
@@ -2066,6 +2244,7 @@
           (= value ":db.type/boolean")
           (= value ":db.type/ref")
           (= value ":db.type/keyword")
+          (= value ":db.type/symbol")
           (= value ":db.type/tuple"))
     (= schema-attr ":db/cardinality")
       (or (= value ":db.cardinality/one")
@@ -2709,7 +2888,7 @@
               (return true)))))))
   false)
 
-(defn bindings-after-clause-group-with-sources [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> [dynamic]Binding
+(defn bindings-after-clause-group-with-sources-and-fns [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings ([dynamic]Binding [binding])]
     (for [clause group.clauses]
       (let [next-bindings (make [dynamic]Binding)]
@@ -2722,13 +2901,16 @@
     (for [not-group group.not-groups]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
-          (when (not (binding-matches-not-group-with-sources? db sources not-group candidate-binding))
+          (when (not (binding-matches-not-group-with-sources-and-fns? db sources not-group candidate-binding registry))
             (arr.push! next-bindings candidate-binding)))
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
           (return bindings))))
     bindings))
+
+(defn bindings-after-clause-group-with-sources [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> [dynamic]Binding
+  (bindings-after-clause-group-with-sources-and-fns db sources group binding ([]Native-Query-Fn [])))
 
 (defn bindings-after-clause-group [db: DB, group: Not-Group, binding: Binding] -> [dynamic]Binding
   (bindings-after-clause-group-with-sources db ([]DB-Source []) group binding))
@@ -2830,26 +3012,32 @@
                       (arr.push! out next)))))))))))
     out))
 
-(defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
+(defn bindings-after-function-with-fns [bindings: []Binding, function: Function-Clause, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
       (if (not (= function.out-binding.kind .None))
-        (let [[value value-ok] (apply-function-op function binding)]
+        (let [[value value-ok] (apply-function-op-with-fns function binding registry)]
           (when value-ok
             (let [bound (bind-input-pattern binding function.out-binding value)]
               (for [item bound]
                 (arr.push! out item)))))
-        (let [[next ok] (apply-function-clause binding function)]
+        (let [[next ok] (apply-function-clause-with-fns binding function registry)]
           (when ok
             (arr.push! out next)))))
     out))
 
-(defn bindings-after-predicate [bindings: []Binding, predicate: Predicate] -> [dynamic]Binding
+(defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
+  (bindings-after-function-with-fns bindings function ([]Native-Query-Fn [])))
+
+(defn bindings-after-predicate-with-fns [bindings: []Binding, predicate: Predicate, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
-      (when (predicate-matches? predicate binding)
+      (when (predicate-matches-with-fns? predicate binding registry)
         (arr.push! out binding)))
     out))
+
+(defn bindings-after-predicate [bindings: []Binding, predicate: Predicate] -> [dynamic]Binding
+  (bindings-after-predicate-with-fns bindings predicate ([]Native-Query-Fn [])))
 
 (defn relation-source-width-for-clause [clause: Clause] -> int
   (if (= clause.v.kind .Wildcard)
@@ -2903,7 +3091,7 @@
       (return true)))
   false)
 
-(defn bindings-after-rule-step-depth [db: DB, rules: []Rule, rule: Rule, bindings: []Binding, step: Query-Step, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+(defn bindings-after-rule-step-depth-with-fns [db: DB, rules: []Rule, rule: Rule, bindings: []Binding, step: Query-Step, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (case step.kind
     .Clause
       (let [out (make [dynamic]Binding)
@@ -2917,7 +3105,7 @@
         (for [binding bindings]
           (let [next-source (if call.has-source call.source source)
                 next-has-source (or call.has-source has-source)
-                rule-bindings (bindings-after-rule-call-depth db rules call binding (- depth 1) next-source next-has-source)]
+                rule-bindings (bindings-after-rule-call-depth-with-fns db rules call binding (- depth 1) next-source next-has-source registry)]
             (for [rule-binding rule-bindings]
               (arr.push! out rule-binding))
             (delete rule-bindings)))
@@ -2925,16 +3113,16 @@
     .Ground
       (apply-ground bindings rule.grounds[step.index])
     .Function
-      (bindings-after-function bindings rule.function-clauses[step.index])
+      (bindings-after-function-with-fns bindings rule.function-clauses[step.index] registry)
     .Predicate
-      (bindings-after-predicate bindings rule.predicates[step.index])
+      (bindings-after-predicate-with-fns bindings rule.predicates[step.index] registry)
     .Or
       (let [out (make [dynamic]Binding)
             group (if has-source (relation-db-or-group rule.or-groups[step.index] source) rule.or-groups[step.index])]
         (defer (when has-source (delete group.branches)))
         (for [binding bindings]
           (for [branch group.branches]
-            (let [branch-bindings (bindings-after-or-branch-with-sources db ([]DB-Source []) group branch binding)]
+            (let [branch-bindings (bindings-after-or-branch-with-sources-and-fns db ([]DB-Source []) group branch binding registry)]
               (for [branch-binding branch-bindings]
                 (arr.push! out branch-binding))
               (delete branch-bindings))))
@@ -2947,32 +3135,38 @@
           (delete group.not-groups)
           (delete group.join-vars)))
         (for [binding bindings]
-          (when (not (binding-matches-not-group-with-sources? db ([]DB-Source []) group binding))
+          (when (not (binding-matches-not-group-with-sources-and-fns? db ([]DB-Source []) group binding registry))
             (arr.push! out binding)))
         out)))
 
-(defn bindings-after-rule-body-ordered-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+(defn bindings-after-rule-step-depth [db: DB, rules: []Rule, rule: Rule, bindings: []Binding, step: Query-Step, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (bindings-after-rule-step-depth-with-fns db rules rule bindings step depth source has-source ([]Native-Query-Fn [])))
+
+(defn bindings-after-rule-body-ordered-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (make [dynamic]Binding)]
     (arr.push! bindings initial)
     (for [step rule.body-steps]
-      (let [next (bindings-after-rule-step-depth db rules rule (slice bindings 0) step depth source has-source)]
+      (let [next (bindings-after-rule-step-depth-with-fns db rules rule (slice bindings 0) step depth source has-source registry)]
         (delete bindings)
         (set! bindings next)
         (when (= (count bindings) 0)
           (return bindings))))
     bindings))
 
-(defn bindings-after-rule-body-grouped-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+(defn bindings-after-rule-body-ordered-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (bindings-after-rule-body-ordered-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))
+
+(defn bindings-after-rule-body-grouped-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [clauses (rule-clauses-with-source rule.clauses source has-source)
         group (not-group-simple (slice clauses 0))
-        bindings (bindings-after-clause-group db group initial)]
+        bindings (bindings-after-clause-group-with-sources-and-fns db ([]DB-Source []) group initial registry)]
     (delete clauses)
     (for [call rule.rule-calls]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
           (let [next-source (if call.has-source call.source source)
                 next-has-source (or call.has-source has-source)
-                rule-bindings (bindings-after-rule-call-depth db rules call binding (- depth 1) next-source next-has-source)]
+                rule-bindings (bindings-after-rule-call-depth-with-fns db rules call binding (- depth 1) next-source next-has-source registry)]
             (for [rule-binding rule-bindings]
               (arr.push! next-bindings rule-binding))
             (delete rule-bindings)))
@@ -2983,19 +3177,25 @@
         (delete bindings)
         (set! bindings next)))
     (for [function rule.function-clauses]
-      (let [next (bindings-after-function (slice bindings 0) function)]
+      (let [next (bindings-after-function-with-fns (slice bindings 0) function registry)]
         (delete bindings)
         (set! bindings next)))
     (for [predicate rule.predicates]
-      (let [next (bindings-after-predicate (slice bindings 0) predicate)]
+      (let [next (bindings-after-predicate-with-fns (slice bindings 0) predicate registry)]
         (delete bindings)
         (set! bindings next)))
     bindings))
 
-(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+(defn bindings-after-rule-body-grouped-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (bindings-after-rule-body-grouped-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))
+
+(defn bindings-after-rule-body-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (if (> (count rule.body-steps) 0)
-    (bindings-after-rule-body-ordered-depth db rules rule initial depth source has-source)
-    (bindings-after-rule-body-grouped-depth db rules rule initial depth source has-source)))
+    (bindings-after-rule-body-ordered-depth-with-fns db rules rule initial depth source has-source registry)
+    (bindings-after-rule-body-grouped-depth-with-fns db rules rule initial depth source has-source registry)))
+
+(defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (bindings-after-rule-body-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))
 
 (defn bind-rule-args [outer: Binding, call: Rule-Call, rule: Rule] -> [binding: Binding, ok: bool]
   (let [out (Binding {})]
@@ -3033,7 +3233,7 @@
                 (set! out next)))))))
     (return out true)))
 
-(defn bindings-after-rule-call-depth [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+(defn bindings-after-rule-call-depth-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (when (<= depth 0)
       (return out))
@@ -3043,7 +3243,7 @@
           (when ok
             (let [[source-initial source-ok] (bind-rule-source binding initial source has-source)]
               (when source-ok
-                (let [results (bindings-after-rule-body-depth db rules rule source-initial depth source has-source)]
+                (let [results (bindings-after-rule-body-depth-with-fns db rules rule source-initial depth source has-source registry)]
                   (for [result results]
                     (let [[merged merged-ok] (merge-rule-output binding call rule result)]
                       (when merged-ok
@@ -3051,14 +3251,17 @@
                   (delete results))))))))
     out))
 
-(defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+(defn bindings-after-rule-call-depth [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
+  (bindings-after-rule-call-depth-with-fns db rules call binding depth source has-source ([]Native-Query-Fn [])))
+
+(defn bindings-after-rule-call-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)
         depth 1
         min-depth (+ (count rules) 1)
         changed true]
     (while (or changed (<= depth min-depth))
       (set! changed false)
-      (let [candidates (bindings-after-rule-call-depth db rules call binding depth call.source call.has-source)]
+      (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
           (when (not (binding-exists? (slice out 0) candidate))
@@ -3067,7 +3270,10 @@
       (set! depth (+ depth 1)))
     out))
 
-(defn bindings-after-or-branch-with-sources [db: DB, sources: []DB-Source, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
+(defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+  (bindings-after-rule-call-with-fns db rules call binding ([]Native-Query-Fn [])))
+
+(defn bindings-after-or-branch-with-sources-and-fns [db: DB, sources: []DB-Source, group: Or-Group, branch: Not-Group, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [initial (clone-binding binding)]
     (when group.has-join
       (set! initial (project-binding binding group.join-vars))
@@ -3077,7 +3283,7 @@
           (let [[source source-ok] (binding-lookup binding branch-clause.source)]
             (when source-ok
               (binding-store! (addr initial) branch-clause.source source)))))))
-  (let [branch-bindings (bindings-after-clause-group-with-sources db sources branch initial) :defer
+  (let [branch-bindings (bindings-after-clause-group-with-sources-and-fns db sources branch initial registry) :defer
         out (make [dynamic]Binding)]
     (for [branch-binding branch-bindings]
       (let [branch-output (if group.has-join (project-binding branch-binding group.join-vars) branch-binding)
@@ -3086,10 +3292,13 @@
           (arr.push! out merged))))
     out)))
 
+(defn bindings-after-or-branch-with-sources [db: DB, sources: []DB-Source, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
+  (bindings-after-or-branch-with-sources-and-fns db sources group branch binding ([]Native-Query-Fn [])))
+
 (defn bindings-after-or-branch [db: DB, group: Or-Group, branch: Not-Group, binding: Binding] -> [dynamic]Binding
   (bindings-after-or-branch-with-sources db ([]DB-Source []) group branch binding))
 
-(defn binding-matches-not-group-with-sources? [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> bool
+(defn binding-matches-not-group-with-sources-and-fns? [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding, registry: []Native-Query-Fn] -> bool
   (let [initial (clone-binding binding)]
     (when group.has-join
       (delete initial.items)
@@ -3107,7 +3316,7 @@
     (for [not-group group.not-groups]
       (let [next-bindings (make [dynamic]Binding)]
         (for [candidate-binding bindings]
-          (when (not (binding-matches-not-group-with-sources? db sources not-group candidate-binding))
+          (when (not (binding-matches-not-group-with-sources-and-fns? db sources not-group candidate-binding registry))
             (arr.push! next-bindings candidate-binding)))
         (delete bindings)
         (set! bindings next-bindings)
@@ -3117,6 +3326,9 @@
     (let [matched (> (count bindings) 0)]
       (delete bindings)
       (return matched)))))
+
+(defn binding-matches-not-group-with-sources? [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding] -> bool
+  (binding-matches-not-group-with-sources-and-fns? db sources group binding ([]Native-Query-Fn [])))
 
 (defn binding-matches-not-group? [db: DB, group: Not-Group, binding: Binding] -> bool
   (binding-matches-not-group-with-sources? db ([]DB-Source []) group binding))
@@ -3265,6 +3477,63 @@
         (return false error))))
   (return true ""))
 
+(defn query-clause-db [db: DB, sources: []DB-Source, clause-value: Clause] -> [clause-db: DB, ok: bool]
+  (if clause-value.has-source
+    (source-db-lookup db sources clause-value.source)
+    (return db true)))
+
+(defn validate-inline-lookup-ref-term [db: DB, term: Term] -> [ok: bool, error: string]
+  (when (= term.kind .LookupRef)
+    (let [[_ found] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
+      (when (not found)
+        (return false "lookup ref not found"))))
+  (return true ""))
+
+(defn validate-query-clause-inline-lookup-refs [db: DB, sources: []DB-Source, clause-value: Clause] -> [ok: bool, error: string]
+  (let [[clause-db db-ok] (query-clause-db db sources clause-value)]
+    (when (not db-ok)
+      (return true ""))
+    (let [[e-ok e-error] (validate-inline-lookup-ref-term clause-db clause-value.e)]
+      (when (not e-ok)
+        (return false e-error)))
+    (let [[v-ok v-error] (validate-inline-lookup-ref-term clause-db clause-value.v)]
+      (when (not v-ok)
+        (return false v-error))))
+  (return true ""))
+
+(defn validate-not-group-inline-lookup-refs [db: DB, sources: []DB-Source, group: Not-Group] -> [ok: bool, error: string]
+  (for [item group.clauses]
+    (let [[ok error] (validate-query-clause-inline-lookup-refs db sources item)]
+      (when (not ok)
+        (return false error))))
+  (for [child group.not-groups]
+    (let [[ok error] (validate-not-group-inline-lookup-refs db sources child)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-or-group-inline-lookup-refs [db: DB, sources: []DB-Source, group: Or-Group] -> [ok: bool, error: string]
+  (for [branch group.branches]
+    (let [[ok error] (validate-not-group-inline-lookup-refs db sources branch)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn validate-query-inline-lookup-refs [db: DB, query-value: Query, sources: []DB-Source] -> [ok: bool, error: string]
+  (for [item query-value.clauses]
+    (let [[ok error] (validate-query-clause-inline-lookup-refs db sources item)]
+      (when (not ok)
+        (return false error))))
+  (for [group query-value.not-groups]
+    (let [[ok error] (validate-not-group-inline-lookup-refs db sources group)]
+      (when (not ok)
+        (return false error))))
+  (for [group query-value.or-groups]
+    (let [[ok error] (validate-or-group-inline-lookup-refs db sources group)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
 (defn string-slice-contains? [items: []string, value: string] -> bool
   (for [item items]
     (when (= item value)
@@ -3350,10 +3619,14 @@
   (append-input-binding-vars! vars function.out-binding))
 
 (defn append-predicate-vars! [vars: ^[dynamic]string, predicate: Predicate]
+  (when (query-var-name? predicate.op)
+    (append-var-once! vars predicate.op))
   (for [term predicate.terms]
     (append-term-var! vars term)))
 
 (defn append-function-vars! [vars: ^[dynamic]string, function: Function-Clause]
+  (when (query-var-name? function.op)
+    (append-var-once! vars function.op))
   (for [term function.terms]
     (append-term-var! vars term))
   (append-function-output-vars! vars function))
@@ -3594,17 +3867,31 @@
           (append-or-group-vars! available query-value.or-groups[step.index]))
     :else (do)))
 
-(defn validate-query-ordered-step [available: ^[dynamic]string, query-value: Query, step: Query-Step] -> [ok: bool, error: string]
+(defn predicate-op-supported-with-fns? [op: string, registry: []Native-Query-Fn] -> bool
+  (or (predicate-op-supported? op)
+      (query-fn-supported? registry op)))
+
+(defn function-op-supported-with-fns? [op: string, registry: []Native-Query-Fn] -> bool
+  (or (function-op-supported? op)
+      (query-fn-supported? registry op)))
+
+(defn validate-query-ordered-step-with-fns [available: ^[dynamic]string, query-value: Query, step: Query-Step, registry: []Native-Query-Fn] -> [ok: bool, error: string]
   (case step.kind
     .Predicate (let [predicate query-value.predicates[step.index]]
-                 (when (not (predicate-op-supported? predicate.op))
+                 (when (not (predicate-op-supported-with-fns? predicate.op registry))
                    (return false (fmt.tprintf "unknown query predicate: %s" predicate.op)))
+                 (when (and (query-var-name? predicate.op)
+                            (not (string-slice-contains? (slice available^ 0) predicate.op)))
+                   (return false (fmt.tprintf "insufficient bindings for %s: %s" predicate.op predicate.op)))
                  (let [[ok error] (validate-term-vars-bound (slice available^ 0) predicate.terms predicate.op)]
                    (when (not ok)
                      (return false error))))
     .Function (let [function query-value.function-clauses[step.index]]
-                (when (not (function-op-supported? function.op))
+                (when (not (function-op-supported-with-fns? function.op registry))
                   (return false (fmt.tprintf "unknown query function: %s" function.op)))
+                (when (and (query-var-name? function.op)
+                           (not (string-slice-contains? (slice available^ 0) function.op)))
+                  (return false (fmt.tprintf "insufficient bindings for %s: %s" function.op function.op)))
                 (let [[ok error] (validate-term-vars-bound (slice available^ 0) function.terms function.op)]
                   (when (not ok)
                     (return false error))))
@@ -3622,17 +3909,24 @@
   (append-query-step-output-vars! available query-value step)
   (return true ""))
 
-(defn validate-query-ordered-bindings [query-value: Query] -> [ok: bool, error: string]
+(defn validate-query-ordered-step [available: ^[dynamic]string, query-value: Query, step: Query-Step] -> [ok: bool, error: string]
+  (validate-query-ordered-step-with-fns available query-value step ([]Native-Query-Fn [])))
+
+(defn validate-query-ordered-bindings-with-fns [query-value: Query, registry: []Native-Query-Fn] -> [ok: bool, error: string]
   (let [available (query-input-vars query-value)]
     (defer (delete available))
     (for [step query-value.where-steps]
-      (let [[ok error] (validate-query-ordered-step (addr available) query-value step)]
+      (let [[ok error] (validate-query-ordered-step-with-fns (addr available) query-value step registry)]
         (when (not ok)
           (return false error)))))
   (return true ""))
 
+(defn validate-query-ordered-bindings [query-value: Query] -> [ok: bool, error: string]
+  (validate-query-ordered-bindings-with-fns query-value ([]Native-Query-Fn [])))
+
 (defn predicate-op-supported? [op: string] -> bool
-  (or (= op "=")
+  (or (query-var-name? op)
+      (= op "=")
       (= op "!=")
       (= op "not=")
       (= op ">")
@@ -3657,7 +3951,8 @@
       (= op "clojure.string/ends-with?")))
 
 (defn function-op-supported? [op: string] -> bool
-  (or (= op "count")
+  (or (query-var-name? op)
+      (= op "count")
       (= op "identity")
       (= op "ground")
       (= op "inc")
@@ -3697,23 +3992,32 @@
       (return false (fmt.tprintf "insufficient bindings for %s: %s" ctx term.name))))
   (return true ""))
 
-(defn validate-query-predicates-and-functions [query-value: Query] -> [ok: bool, error: string]
+(defn validate-query-predicates-and-functions-with-fns [query-value: Query, registry: []Native-Query-Fn] -> [ok: bool, error: string]
   (let [available (query-potential-vars query-value)]
     (defer (delete available))
     (for [function query-value.function-clauses]
-      (when (not (function-op-supported? function.op))
+      (when (not (function-op-supported-with-fns? function.op registry))
         (return false (fmt.tprintf "unknown query function: %s" function.op)))
+      (when (and (query-var-name? function.op)
+                 (not (string-slice-contains? (slice available 0) function.op)))
+        (return false (fmt.tprintf "insufficient bindings for %s: %s" function.op function.op)))
       (let [[ok error] (validate-term-vars-bound (slice available 0) function.terms function.op)]
         (when (not ok)
           (return false error)))
       (append-function-output-vars! (addr available) function))
     (for [predicate query-value.predicates]
-      (when (not (predicate-op-supported? predicate.op))
+      (when (not (predicate-op-supported-with-fns? predicate.op registry))
         (return false (fmt.tprintf "unknown query predicate: %s" predicate.op)))
+      (when (and (query-var-name? predicate.op)
+                 (not (string-slice-contains? (slice available 0) predicate.op)))
+        (return false (fmt.tprintf "insufficient bindings for %s: %s" predicate.op predicate.op)))
       (let [[ok error] (validate-term-vars-bound (slice available 0) predicate.terms predicate.op)]
         (when (not ok)
           (return false error)))))
   (return true ""))
+
+(defn validate-query-predicates-and-functions [query-value: Query] -> [ok: bool, error: string]
+  (validate-query-predicates-and-functions-with-fns query-value ([]Native-Query-Fn [])))
 
 (defn validate-query-get-elses [query-value: Query] -> [ok: bool, error: string]
   (for [get-else query-value.get-elses]
@@ -3812,7 +4116,7 @@
         (return false error))))
   (return true ""))
 
-(defn validate-query-call [query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
+(defn validate-query-call-with-fns [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> [ok: bool, error: string]
   (let [expected (query-expected-input-count query-value)
         provided (count inputs)]
     (when (not (= expected provided))
@@ -3826,6 +4130,9 @@
   (let [[source-input-ok source-input-error] (validate-query-source-input-values query-value inputs sources)]
     (when (not source-input-ok)
       (return false source-input-error)))
+  (let [[lookup-ok lookup-error] (validate-query-inline-lookup-refs db query-value sources)]
+    (when (not lookup-ok)
+      (return false lookup-error)))
   (let [[rules-ok rules-error] (validate-query-rules query-value)]
     (when (not rules-ok)
       (return false rules-error)))
@@ -3834,7 +4141,7 @@
       (let [[get-else-ok get-else-error] (validate-query-get-elses query-value)]
         (when (not get-else-ok)
           (return false get-else-error)))
-      (validate-query-ordered-bindings query-value))
+      (validate-query-ordered-bindings-with-fns query-value registry))
     (do
       (let [[get-else-ok get-else-error] (validate-query-get-elses query-value)]
         (when (not get-else-ok)
@@ -3842,7 +4149,10 @@
       (let [[binding-ok binding-error] (validate-query-not-or-bindings query-value)]
         (when (not binding-ok)
           (return false binding-error)))
-      (validate-query-predicates-and-functions query-value))))
+      (validate-query-predicates-and-functions-with-fns query-value registry))))
+
+(defn validate-query-call [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
+  (validate-query-call-with-fns db query-value inputs sources ([]Native-Query-Fn [])))
 
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
   (if (or (= aggregate.op "count")
@@ -4146,9 +4456,12 @@
   (append-aggregate-rows-with-sources! rows db ([]DB-Source []) query inputs bindings))
 
 (defn bindings-after-rule-call-step [db: DB, rules: []Rule, bindings: []Binding, call: Rule-Call] -> [dynamic]Binding
+  (bindings-after-rule-call-step-with-fns db rules bindings call ([]Native-Query-Fn [])))
+
+(defn bindings-after-rule-call-step-with-fns [db: DB, rules: []Rule, bindings: []Binding, call: Rule-Call, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
-      (let [rule-bindings (bindings-after-rule-call db rules call binding)]
+      (let [rule-bindings (bindings-after-rule-call-with-fns db rules call binding registry)]
         (for [rule-binding rule-bindings]
           (arr.push! out rule-binding))
         (delete rule-bindings)))
@@ -4170,24 +4483,30 @@
           (arr.push! out next))))
     out))
 
-(defn bindings-after-or-group-step [db: DB, sources: []DB-Source, bindings: []Binding, group: Or-Group] -> [dynamic]Binding
+(defn bindings-after-or-group-step-with-fns [db: DB, sources: []DB-Source, bindings: []Binding, group: Or-Group, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
       (for [branch group.branches]
-        (let [branch-bindings (bindings-after-or-branch-with-sources db sources group branch binding)]
+        (let [branch-bindings (bindings-after-or-branch-with-sources-and-fns db sources group branch binding registry)]
           (for [branch-binding branch-bindings]
             (arr.push! out branch-binding))
           (delete branch-bindings))))
     out))
 
-(defn bindings-after-not-group-step [db: DB, sources: []DB-Source, bindings: []Binding, group: Not-Group] -> [dynamic]Binding
+(defn bindings-after-or-group-step [db: DB, sources: []DB-Source, bindings: []Binding, group: Or-Group] -> [dynamic]Binding
+  (bindings-after-or-group-step-with-fns db sources bindings group ([]Native-Query-Fn [])))
+
+(defn bindings-after-not-group-step-with-fns [db: DB, sources: []DB-Source, bindings: []Binding, group: Not-Group, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
-      (when (not (binding-matches-not-group-with-sources? db sources group binding))
+      (when (not (binding-matches-not-group-with-sources-and-fns? db sources group binding registry))
         (arr.push! out binding)))
     out))
 
-(defn bindings-after-query-step [db: DB, sources: []DB-Source, query: ^Query, bindings: []Binding, step: Query-Step] -> [dynamic]Binding
+(defn bindings-after-not-group-step [db: DB, sources: []DB-Source, bindings: []Binding, group: Not-Group] -> [dynamic]Binding
+  (bindings-after-not-group-step-with-fns db sources bindings group ([]Native-Query-Fn [])))
+
+(defn bindings-after-query-step-with-fns [db: DB, sources: []DB-Source, query: ^Query, bindings: []Binding, step: Query-Step, registry: []Native-Query-Fn] -> [dynamic]Binding
   (case step.kind
     .Clause
       (let [out (make [dynamic]Binding)]
@@ -4195,7 +4514,7 @@
           (append-bindings-after-clause-with-sources! (addr out) db sources query^.clauses[step.index] binding))
         out)
     .RuleCall
-      (bindings-after-rule-call-step db (slice query^.rules 0) bindings query^.rule-calls[step.index])
+      (bindings-after-rule-call-step-with-fns db (slice query^.rules 0) bindings query^.rule-calls[step.index] registry)
     .Ground
       (apply-ground bindings query^.grounds[step.index])
     .GetElse
@@ -4203,31 +4522,37 @@
     .GetSome
       (bindings-after-get-some-step db bindings query^.get-somes[step.index])
     .Function
-      (bindings-after-function bindings query^.function-clauses[step.index])
+      (bindings-after-function-with-fns bindings query^.function-clauses[step.index] registry)
     .Predicate
-      (bindings-after-predicate bindings query^.predicates[step.index])
+      (bindings-after-predicate-with-fns bindings query^.predicates[step.index] registry)
     .Or
-      (bindings-after-or-group-step db sources bindings query^.or-groups[step.index])
+      (bindings-after-or-group-step-with-fns db sources bindings query^.or-groups[step.index] registry)
     :else
-      (bindings-after-not-group-step db sources bindings query^.not-groups[step.index])))
+      (bindings-after-not-group-step-with-fns db sources bindings query^.not-groups[step.index] registry)))
 
-(defn bindings-after-ordered-where [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input] -> [dynamic]Binding
+(defn bindings-after-query-step [db: DB, sources: []DB-Source, query: ^Query, bindings: []Binding, step: Query-Step] -> [dynamic]Binding
+  (bindings-after-query-step-with-fns db sources query bindings step ([]Native-Query-Fn [])))
+
+(defn bindings-after-ordered-where-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (bindings-from-inputs db query^ inputs)]
     (for [step query^.where-steps]
-      (let [next-bindings (bindings-after-query-step db sources query (slice bindings 0) step)]
+      (let [next-bindings (bindings-after-query-step-with-fns db sources query (slice bindings 0) step registry)]
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
           (return bindings))))
     (return bindings)))
 
-(defn q-query-with-sources [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
-  (let [[valid error] (validate-query-call query inputs sources)]
+(defn bindings-after-ordered-where [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input] -> [dynamic]Binding
+  (bindings-after-ordered-where-with-fns db sources query inputs ([]Native-Query-Fn [])))
+
+(defn q-query-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Result-Set
+  (let [[valid error] (validate-query-call-with-fns db query inputs sources registry)]
     (when (not valid)
       (return (result-set-error error))))
   (when (> (count query.where-steps) 0)
     (let [ordered-query query
-          bindings (bindings-after-ordered-where db sources (addr ordered-query) inputs)]
+          bindings (bindings-after-ordered-where-with-fns db sources (addr ordered-query) inputs registry)]
       (when (> (count query.aggregates) 0)
         (let [rows (make [dynamic]Result-Row)]
           (if (= (count query.find) 0)
@@ -4280,7 +4605,7 @@
     (for [call query.rule-calls]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
-          (let [rule-bindings (bindings-after-rule-call db (slice query.rules 0) call binding)]
+          (let [rule-bindings (bindings-after-rule-call-with-fns db (slice query.rules 0) call binding registry)]
             (for [rule-binding rule-bindings]
               (arr.push! next-bindings rule-binding))
             (delete rule-bindings)))
@@ -4307,21 +4632,18 @@
         (delete bindings)
         (set! bindings next-bindings)))
     (for [function query.function-clauses]
-      (let [next-bindings (bindings-after-function (slice bindings 0) function)]
+      (let [next-bindings (bindings-after-function-with-fns (slice bindings 0) function registry)]
         (delete bindings)
         (set! bindings next-bindings)))
     (for [predicate query.predicates]
-      (let [next-bindings (make [dynamic]Binding)]
-        (for [binding bindings]
-          (when (predicate-matches? predicate binding)
-            (arr.push! next-bindings binding)))
+      (let [next-bindings (bindings-after-predicate-with-fns (slice bindings 0) predicate registry)]
         (delete bindings)
         (set! bindings next-bindings)))
     (for [group query.or-groups]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
           (for [branch group.branches]
-            (let [branch-bindings (bindings-after-or-branch-with-sources db sources group branch binding)]
+            (let [branch-bindings (bindings-after-or-branch-with-sources-and-fns db sources group branch binding registry)]
               (for [branch-binding branch-bindings]
                 (arr.push! next-bindings branch-binding))
               (delete branch-bindings))))
@@ -4330,7 +4652,7 @@
     (for [not-group query.not-groups]
       (let [next-bindings (make [dynamic]Binding)]
         (for [binding bindings]
-          (when (not (binding-matches-not-group-with-sources? db sources not-group binding))
+          (when (not (binding-matches-not-group-with-sources-and-fns? db sources not-group binding registry))
             (arr.push! next-bindings binding)))
         (delete bindings)
         (set! bindings next-bindings)))
@@ -4371,6 +4693,15 @@
               (arr.push! rows (Result-Row {values: values pulls: pulls}))))))
       (delete bindings)
       (result-set-ok rows))))
+
+(defn q-query-with-sources [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
+  (q-query-with-sources-and-fns db query inputs sources ([]Native-Query-Fn [])))
+
+(defn q-query-with-inputs-and-fns [db: DB, query: Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
+  (q-query-with-sources-and-fns db query inputs ([]DB-Source []) registry))
+
+(defn q-query-with-fns [db: DB, query: Query, registry: []Native-Query-Fn] -> Result-Set
+  (q-query-with-inputs-and-fns db query ([]Query-Input []) registry))
 
 (defn relation-db-not-group [group: Not-Group, source: string] -> Not-Group
   (let [clauses (rule-clauses-with-source (slice group.clauses 0) source true) :defer

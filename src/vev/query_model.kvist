@@ -425,24 +425,52 @@
        (not (= doc.nodes[node-index].text "."))
        (not (= doc.nodes[node-index].text "..."))))
 
+(defn lookup-ref-term-from-edn-node [doc: EDN-Doc, node-index: int] -> [term: Term, ok: bool]
+  (when (or (= node-index -1)
+            (not (= doc.nodes[node-index].kind .Vector))
+            (not (= doc.nodes[node-index].child-count 2)))
+    (return (Term {}) false))
+  (let [attr-node (edn-child-at doc node-index 0)
+        value-node (edn-child-at doc node-index 1)
+        attr-doc-node doc.nodes[attr-node]
+        attr ""]
+    (cond
+      (= attr-doc-node.kind .Keyword) (set! attr attr-doc-node.text)
+      (= attr-doc-node.kind .String) (set! attr attr-doc-node.text)
+      :else (return (Term {}) false))
+    (when (not (strings.has_prefix attr ":"))
+      (return (Term {}) false))
+    (let [[value value-ok _] (edn-value-from-node doc value-node)]
+      (when (not value-ok)
+        (return (Term {}) false))
+      (return (term-lookup-ref attr value) true))))
+
 (defn term-from-edn-node [doc: EDN-Doc, node-index: int, attr-position: bool] -> Term
+  (let [[lookup-term lookup-ok] (lookup-ref-term-from-edn-node doc node-index)]
+    (when lookup-ok
+      (return lookup-term)))
   (let [node doc.nodes[node-index]]
     (cond
       (and (= node.kind .Symbol) (= node.text "_")) (term-wildcard)
       (and (= node.kind .Symbol) (strings.has_prefix node.text "?")) (term-var node.text)
       (= node.kind .String) (term-string node.text)
       (= node.kind .Keyword) (if attr-position (term-keyword node.text) (term-value (value-keyword node.text)))
+      (= node.kind .Symbol) (term-symbol node.text)
       (= node.kind .Bool) (term-value (value-bool node.bool-value))
       (= node.kind .Int) (if attr-position (term-value (value-int node.int-value)) (term-entity (u64 node.int-value)))
       :else (term-string node.text))))
 
 (defn value-term-from-edn-node [doc: EDN-Doc, node-index: int] -> Term
+  (let [[lookup-term lookup-ok] (lookup-ref-term-from-edn-node doc node-index)]
+    (when lookup-ok
+      (return lookup-term)))
   (let [node doc.nodes[node-index]]
     (cond
       (and (= node.kind .Symbol) (= node.text "_")) (term-wildcard)
       (and (= node.kind .Symbol) (strings.has_prefix node.text "?")) (term-var node.text)
       (= node.kind .String) (term-string node.text)
       (= node.kind .Keyword) (term-value (value-keyword node.text))
+      (= node.kind .Symbol) (term-symbol node.text)
       (= node.kind .Bool) (term-value (value-bool node.bool-value))
       (= node.kind .Int) (term-value (value-int node.int-value))
       (= node.kind .Nil) (term-value (value-nil))

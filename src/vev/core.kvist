@@ -16,6 +16,7 @@
   Float
   Bool
   Keyword
+  Symbol
   Vector
   Map
 ])
@@ -131,6 +132,7 @@
   nested-map: Value
   nested-tempid: string
   has-nested-map: bool
+  from-map-collection: bool
 })
 
 (defstruct Tempid {
@@ -171,6 +173,11 @@
 (defstruct Tx-Fn-String {
   ident: string
   f: fn [db: DB, arg: string] -> Tx-Fn-Result
+})
+
+(defstruct Native-Query-Fn {
+  name: string
+  target: string
 })
 
 (defenum Tx-EDN-Entity-Kind [
@@ -395,6 +402,18 @@
   aggregates: [dynamic]Aggregate-Find
 })
 
+(defstruct Prepared-Query {
+  ok: bool
+  error: string
+  query: Query
+})
+
+(defstruct Prepared-Tx-Data {
+  ok: bool
+  error: string
+  tx-data: [dynamic]Tx-Data
+})
+
 (defstruct Var-Binding {
   name: string
   value: Value
@@ -495,6 +514,12 @@
   recursion-depth: int
 })
 
+(defstruct Prepared-Pull-Pattern {
+  ok: bool
+  error: string
+  pattern: [dynamic]Pull-Spec
+})
+
 (defenum Query-Input-Kind [
   Scalar
   Collection
@@ -546,6 +571,9 @@
 (defn value-keyword [text: string] -> Value
   (Value {kind: .Keyword text: text}))
 
+(defn value-symbol [text: string] -> Value
+  (Value {kind: .Symbol text: text}))
+
 (defn value-nil [] -> Value
   (Value {kind: .Nil}))
 
@@ -581,8 +609,9 @@
     .String 4
     .Bool 5
     .Keyword 6
-    .Vector 7
-    .Map 8
+    .Symbol 7
+    .Vector 8
+    .Map 9
     :else 99))
 
 (defn slash-index [text: string] -> int
@@ -621,6 +650,7 @@
       .Float (< left.float-value right.float-value)
       .Bool (and (not left.bool-value) right.bool-value)
       .Keyword (keyword-less? left.text right.text)
+      .Symbol (string-less? left.text right.text)
       .Vector (do
         (let [limit (min (count left.items) (count right.items))]
           (for [index 0..<limit]
@@ -664,6 +694,9 @@
 
 (defn term-keyword [text: string] -> Term
   (term-value (value-keyword text)))
+
+(defn term-symbol [text: string] -> Term
+  (term-value (value-symbol text)))
 
 (defn term-var [name: string] -> Term
   (Term {kind: .Var name: name}))
@@ -710,6 +743,9 @@
 
 (defn add [e: u64, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/add" e: e a: a v: v}))
+
+(defn add-map-collection [e: u64, a: string, v: Value] -> Tx-Data
+  (Tx-Data {op: ":db/add" e: e a: a v: v from-map-collection: true}))
 
 (defn retract [e: u64, a: string, v: Value] -> Tx-Data
   (Tx-Data {op: ":db/retract" e: e a: a v: v}))
@@ -845,6 +881,7 @@
       .Float (= left.float-value right.float-value)
       .Bool (= left.bool-value right.bool-value)
       .Keyword (= left.text right.text)
+      .Symbol (= left.text right.text)
       .Vector (values-equal? (slice left.items 0) (slice right.items 0))
       .Map (do
         (when (not (= (count left.items) (count right.items)))

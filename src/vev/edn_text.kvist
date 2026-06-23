@@ -382,6 +382,30 @@
     (let [out (edn-pull-specs doc doc.root)]
       (return out true ""))))
 
+(defn prepare-pull-pattern-text [text: string] -> Prepared-Pull-Pattern
+  (let [[pattern ok error] (parse-pull-pattern-text text)]
+    (Prepared-Pull-Pattern {ok: ok error: error pattern: pattern})))
+
+(defn pull-prepared [db: DB, prepared: Prepared-Pull-Pattern, entity: u64] -> Pull-Result
+  (if prepared.ok
+    (pull-pattern-spec db entity (slice prepared.pattern 0))
+    (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)})))
+
+(defn pull-prepared-lookup-ref [db: DB, prepared: Prepared-Pull-Pattern, attr: string, value: Value] -> Pull-Result
+  (if prepared.ok
+    (pull-pattern-lookup-ref db attr value (slice prepared.pattern 0))
+    (Pull-Result {e: 0 attrs: (make [dynamic]Pull-Attr)})))
+
+(defn pull-many-prepared [db: DB, prepared: Prepared-Pull-Pattern, entities: []u64] -> [dynamic]Pull-Result
+  (if prepared.ok
+    (pull-many-pattern-spec db entities (slice prepared.pattern 0))
+    (make [dynamic]Pull-Result)))
+
+(defn pull-many-prepared-lookup-refs [db: DB, prepared: Prepared-Pull-Pattern, attrs: []string, values: []Value] -> [dynamic]Pull-Result
+  (if prepared.ok
+    (pull-many-pattern-lookup-refs db attrs values (slice prepared.pattern 0))
+    (make [dynamic]Pull-Result)))
+
 (defn pull-text [db: DB, pattern-text: string, entity: u64] -> Pull-Result
   (let [[pattern ok _] (parse-pull-pattern-text pattern-text)]
     (defer (delete pattern))
@@ -1378,6 +1402,44 @@
       (delete doc.nodes)
       (return parsed-ok parsed-error))))
 
+(defn prepare-query-text-with-sources [text: string, sources: []DB-Source] -> Prepared-Query
+  (let [query-value (empty-query)
+        [ok error] (parse-query-text-with-sources! (addr query-value) text sources)]
+    (Prepared-Query {ok: ok error: error query: query-value})))
+
+(defn prepare-query-text [text: string] -> Prepared-Query
+  (prepare-query-text-with-sources text ([]DB-Source [])))
+
+(defn q-prepared [db: DB, prepared: Prepared-Query] -> Result-Set
+  (if prepared.ok
+    (q-query db prepared.query)
+    (result-set-error prepared.error)))
+
+(defn q-prepared-with-fns [db: DB, prepared: Prepared-Query, registry: []Native-Query-Fn] -> Result-Set
+  (if prepared.ok
+    (q-query-with-fns db prepared.query registry)
+    (result-set-error prepared.error)))
+
+(defn q-prepared-with-inputs [db: DB, prepared: Prepared-Query, inputs: []Query-Input] -> Result-Set
+  (if prepared.ok
+    (q-query-with-inputs db prepared.query inputs)
+    (result-set-error prepared.error)))
+
+(defn q-prepared-with-inputs-and-fns [db: DB, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
+  (if prepared.ok
+    (q-query-with-inputs-and-fns db prepared.query inputs registry)
+    (result-set-error prepared.error)))
+
+(defn q-prepared-with-sources [db: DB, prepared: Prepared-Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
+  (if prepared.ok
+    (q-query-with-sources db prepared.query inputs sources)
+    (result-set-error prepared.error)))
+
+(defn q-prepared-with-sources-and-fns [db: DB, prepared: Prepared-Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Result-Set
+  (if prepared.ok
+    (q-query-with-sources-and-fns db prepared.query inputs sources registry)
+    (result-set-error prepared.error)))
+
 (defn q-text [db: DB, text: string] -> Result-Set
   (let [query-value (empty-query)
         [ok error] (parse-query-text! (addr query-value) text)]
@@ -1385,11 +1447,25 @@
       (q-query db query-value)
       (result-set-error error))))
 
+(defn q-text-with-fns [db: DB, text: string, registry: []Native-Query-Fn] -> Result-Set
+  (let [query-value (empty-query)
+        [ok error] (parse-query-text! (addr query-value) text)]
+    (if ok
+      (q-query-with-fns db query-value registry)
+      (result-set-error error))))
+
 (defn q-text-with-inputs [db: DB, text: string, inputs: []Query-Input] -> Result-Set
   (let [query-value (empty-query)
         [ok error] (parse-query-text! (addr query-value) text)]
     (if ok
       (q-query-with-inputs db query-value inputs)
+      (result-set-error error))))
+
+(defn q-text-with-inputs-and-fns [db: DB, text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
+  (let [query-value (empty-query)
+        [ok error] (parse-query-text! (addr query-value) text)]
+    (if ok
+      (q-query-with-inputs-and-fns db query-value inputs registry)
       (result-set-error error))))
 
 (defn q-text-relation-db [rows: Value, text: string] -> Result-Set
@@ -1413,6 +1489,13 @@
       (q-query-with-sources db query-value inputs sources)
       (result-set-error error))))
 
+(defn q-text-with-sources-and-fns [db: DB, text: string, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Result-Set
+  (let [query-value (empty-query)
+        [ok error] (parse-query-text-with-sources! (addr query-value) text sources)]
+    (if ok
+      (q-query-with-sources-and-fns db query-value inputs sources registry)
+      (result-set-error error))))
+
 (defn q-text-with-rules [db: DB, text: string, rules-text: string, inputs: []Query-Input] -> Result-Set
   (let [query-value (empty-query)
         rules (make [dynamic]Rule) :defer
@@ -1423,6 +1506,17 @@
       (when (not rules-ok)
         (return (result-set-error rules-error)))
       (q-query-with-inputs db (query-with-rules query-value (slice rules 0)) inputs))))
+
+(defn q-text-with-rules-and-fns [db: DB, text: string, rules-text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
+  (let [query-value (empty-query)
+        rules (make [dynamic]Rule) :defer
+        [query-ok query-error] (parse-query-text! (addr query-value) text)]
+    (when (not query-ok)
+      (return (result-set-error query-error)))
+    (let [[rules-ok rules-error] (parse-rules-text! (addr rules) rules-text)]
+      (when (not rules-ok)
+        (return (result-set-error rules-error)))
+      (q-query-with-inputs-and-fns db (query-with-rules query-value (slice rules 0)) inputs registry))))
 
 (defn q-text-scalar [db: DB, text: string] -> [value: Value, ok: bool]
   (result-scalar (q-text db text)))
@@ -1541,7 +1635,7 @@
       .Bool (return (value-bool node.bool-value) true "")
       .Int (return (value-int node.int-value) true "")
       .String (return (value-string node.text) true "")
-      .Symbol (return (value-string node.text) true "")
+      .Symbol (return (value-symbol node.text) true "")
       .Keyword (return (value-keyword node.text) true "")
       .Vector (let [items (make [dynamic]Value) :defer
                     child node.first-child]
@@ -1593,6 +1687,7 @@
     .Float (fmt.tprintf "[:vev/float \"%v\"]" value.float-value)
     .String (edn-escaped-string-text value.text)
     .Keyword value.text
+    .Symbol value.text
     .Entity (fmt.tprintf "[:vev/entity %d]" value.entity)
     .Vector
       (let [parts (make [dynamic]string) :defer]
@@ -1676,6 +1771,7 @@
       .Int (return (value-int node.int-value) true "")
       .String (return (value-string node.text) true "")
       .Keyword (return (value-keyword node.text) true "")
+      .Symbol (return (value-symbol node.text) true "")
       .Vector (let [items (make [dynamic]Value) :defer
                     child node.first-child]
                 (while (not (= child -1))
@@ -1793,6 +1889,11 @@
     .LookupRef (add-lookup-ref ref.lookup-attr ref.lookup-value a v)
     .Ident (add-ident ref.ident a v)
     :else (Tx-Data {})))
+
+(defn tx-add-map-collection-from-ref [ref: Tx-EDN-Entity, a: string, v: Value] -> Tx-Data
+  (let [data (tx-add-from-ref ref a v)]
+    (set! data.from-map-collection true)
+    data))
 
 (defn tx-add-value-tempid-from-ref [ref: Tx-EDN-Entity, a: string, value-tempid: string] -> Tx-Data
   (case ref.kind
@@ -1948,16 +2049,13 @@
     (when (= attr ":db/id")
       (return true ""))
     (if (= doc.nodes[value-node].kind .Vector)
-      (do
-        (if (edn-lookup-ref-node? doc value-node)
-          (append-edn-tx-add-value! out doc ref attr value-node)
-          (let [child doc.nodes[value-node].first-child]
-            (while (not (= child -1))
-              (let [[item-ok item-error] (append-edn-tx-add-value! out doc ref attr child)]
-                (when (not item-ok)
-                  (return false item-error)))
-              (set! child doc.nodes[child].next-sibling))
-            (return true ""))))
+      (if (edn-lookup-ref-node? doc value-node)
+        (append-edn-tx-add-value! out doc ref attr value-node)
+        (let [[value value-ok value-error] (edn-value-from-node doc value-node)]
+          (when (not value-ok)
+            (return false value-error))
+          (arr.push! out^ (tx-add-map-collection-from-ref ref attr value))
+          (return true "")))
       (if (= doc.nodes[value-node].kind .Map)
         (let [nested-tempid (fmt.tprintf "__vev_tx_map_%d" value-node)
               [nested-value nested-ok nested-error] (edn-value-from-node doc value-node)]
@@ -2143,6 +2241,16 @@
         (set! child doc.nodes[child].next-sibling)))
     (delete doc.nodes)
     (return true "")))
+
+(defn prepare-tx-text [text: string] -> Prepared-Tx-Data
+  (let [tx-data (make [dynamic]Tx-Data)
+        [ok error] (parse-tx-text! (addr tx-data) text)]
+    (Prepared-Tx-Data {ok: ok error: error tx-data: tx-data})))
+
+(defn transact-prepared [conn: ^Conn, prepared: Prepared-Tx-Data] -> Tx-Report
+  (if prepared.ok
+    (transact-tx-data conn (slice prepared.tx-data 0))
+    (failed-tx-report conn^.db prepared.error)))
 
 (defn transact-text [conn: ^Conn, text: string] -> Tx-Report
   (let [tx-data (make [dynamic]Tx-Data) :defer
