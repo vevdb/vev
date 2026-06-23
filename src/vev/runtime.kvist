@@ -63,22 +63,117 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn lookup-ref-value [attr: string, value: Value] -> Value
+  (value-vector2 (value-keyword attr) value))
+
+(defn value-lookup-ref-parts [value: Value] -> [attr: string, lookup-value: Value, ok: bool]
+  (when (and (= value.kind .Vector)
+             (= (count value.items) 2)
+             (= value.items[0].kind .Keyword))
+    (return value.items[0].text value.items[1] true))
+  (return "" (Value {}) false))
+
+(defn value-as-entity [db: DB, value: Value] -> [entity: Value, ok: bool]
+  (cond
+    (= value.kind .Entity)
+      (return value true)
+    (= value.kind .Int)
+      (return (value-entity (u64 value.int-value)) true)
+    (= value.kind .Keyword)
+      (let [[entity found] (schema-entity-for-attr db value.text)]
+        (if found
+          (return (value-entity entity) true)
+          (return (Value {}) false)))
+    :else
+      (let [[attr lookup-value lookup-ok] (value-lookup-ref-parts value)]
+        (when lookup-ok
+          (let [[entity found] (resolve-lookup-ref db attr lookup-value)]
+            (if found
+              (return (value-entity entity) true)
+              (return (Value {}) false))))
+        (return (Value {}) false))))
+
+(defn lookup-ref-value-as-entity [db: DB, value: Value] -> [entity: Value, ok: bool]
+  (let [[attr lookup-value lookup-ok] (value-lookup-ref-parts value)]
+    (when lookup-ok
+      (let [[entity found] (resolve-lookup-ref db attr lookup-value)]
+        (if found
+          (return (value-entity entity) true)
+          (return (Value {}) false)))))
+  (return (Value {}) false))
+
+(defn entity-value-equal? [db: DB, left: Value, right: Value] -> bool
+  (when (predicate-value-equal? left right)
+    (return true))
+  (let [[left-entity left-ok] (lookup-ref-value-as-entity db left)]
+    (when left-ok
+      (return (predicate-value-equal? left-entity right))))
+  (let [[right-entity right-ok] (lookup-ref-value-as-entity db right)]
+    (when right-ok
+      (return (predicate-value-equal? left right-entity))))
+  false)
+
 (defn query-input-scalar-value [db: DB, input: Query-Input] -> [value: Value, ok: bool]
   (when input.has-lookup-ref
-    (let [[entity lookup-ok] (resolve-lookup-ref db input.lookup-attr input.lookup-value)]
-      (when lookup-ok
-        (return (value-entity entity) true))
-      (return (Value {}) false)))
+    (let [[_ lookup-ok] (resolve-lookup-ref db input.lookup-attr input.lookup-value)]
+      (if lookup-ok
+        (return (lookup-ref-value input.lookup-attr input.lookup-value) true)
+        (return (Value {}) false))))
   (return input.value true))
+
+(defn query-source-input-name? [name: string] -> bool
+  (strings.has_prefix name "$"))
+
+(defn query-input-relation-source-vector [input: Query-Input] -> Value
+  (let [rows (make [dynamic]Value)]
+    (when (and (= input.kind .Relation)
+               (> input.width 0))
+      (let [row_count (/ (count input.values) input.width)]
+        (for [row 0..<row_count]
+          (let [items (make [dynamic]Value)
+                offset (* row input.width)]
+            (for [index 0..<input.width]
+              (arr.push! items input.values[(+ offset index)]))
+            (arr.push! rows (value-vector (slice items 0)))))))
+    (value-vector (slice rows 0))))
+
+(defn query-input-source-value [input: Query-Input] -> [value: Value, ok: bool]
+  (cond
+    (= input.kind .Relation)
+      (return (query-input-relation-source-vector input) true)
+    (= input.kind .Collection)
+      (return (value-vector input.values) true)
+    (and (= input.kind .Scalar)
+         (= input.value.kind .Map))
+      (return (query-input-map-as-relation-vector input) true)
+    (= input.kind .Scalar)
+      (return input.value true)
+    :else (return (Value {}) false)))
+
+(defn query-input-bound-value [db: DB, name: string, input: Query-Input] -> [value: Value, ok: bool]
+  (when (query-source-input-name? name)
+    (return (query-input-source-value input)))
+  (when (or (= input.kind .Scalar)
+            (= input.kind .PullPattern))
+    (return (query-input-scalar-value db input)))
+  (return (Value {}) false))
+
+(defn query-source-input-value? [input: Query-Input] -> bool
+  (cond
+    (= input.kind .Relation) true
+    (= input.kind .Collection) true
+    (and (= input.kind .Scalar)
+         (= input.value.kind .Vector)) true
+    (and (= input.kind .Scalar)
+         (= input.value.kind .Map)) true
+    :else false))
 
 (defn binding-from-inputs [db: DB, names: []string, values: []Query-Input] -> [bindings: [dynamic]Binding]
   (let [binding (Binding {})
         out (make [dynamic]Binding)]
     (for [name index names]
-      (when (and (< index (count values))
-                 (or (= values[index].kind .Scalar)
-                     (= values[index].kind .PullPattern)))
-        (let [[value ok] (query-input-scalar-value db values[index])]
+      (when (< index (count values))
+        (let [[value ok] (query-input-bound-value db name values[index])]
           (if ok
             (binding-store! (addr binding) name value)
             (return out)))))
@@ -87,14 +182,12 @@
 
 (defn expand-scalar-input [db: DB, bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
-    (when (or (= input.kind .Scalar)
-              (= input.kind .PullPattern))
-      (let [[value ok] (query-input-scalar-value db input)]
-        (when ok
-          (for [binding bindings]
-            (let [next (clone-binding binding)]
-              (binding-store! (addr next) name value)
-              (arr.push! out next))))))
+    (let [[value ok] (query-input-bound-value db name input)]
+      (when ok
+        (for [binding bindings]
+          (let [next (clone-binding binding)]
+            (binding-store! (addr next) name value)
+            (arr.push! out next)))))
     out))
 
 (defn expand-collection-input [bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
@@ -112,10 +205,11 @@
     (when (= input.kind .CollectionLookupRefs)
       (for [binding bindings]
         (for [value index input.lookup-values]
-          (let [[entity ok] (resolve-lookup-ref db input.lookup-attrs[index] value)]
+          (let [attr input.lookup-attrs[index]
+                [_ ok] (resolve-lookup-ref db attr value)]
             (when ok
               (let [next (clone-binding binding)]
-                (binding-store! (addr next) name (value-entity entity))
+                (binding-store! (addr next) name (lookup-ref-value attr value))
                 (arr.push! out next)))))))
     out))
 
@@ -312,6 +406,9 @@
   (let [[resolved resolved-ok] (resolve-term term binding)]
     (when (not resolved-ok)
       (return resolved false))
+    (let [[entity entity-ok] (value-as-entity db resolved)]
+      (when entity-ok
+        (return entity true)))
     (when (= resolved.kind .Keyword)
       (let [[entity ident-ok] (schema-entity-for-attr db resolved.text)]
         (return (value-entity entity) ident-ok)))
@@ -532,6 +629,41 @@
       (when (and input-ok (= input.kind .Int))
         (return (value-int (- input.int-value 1)) true))
       (return (Value {}) false)))
+  (when (and (= op "range")
+             (or (= (count function.terms) 1)
+                 (= (count function.terms) 2)
+                 (= (count function.terms) 3)))
+    (let [start: i64 0
+          end: i64 0
+          step: i64 1]
+      (if (= (count function.terms) 1)
+        (let [[end-value end-ok] (resolve-term function.terms[0] binding)]
+          (when (not (and end-ok (= end-value.kind .Int)))
+            (return (Value {}) false))
+          (set! end end-value.int-value))
+        (do
+          (let [[start-value start-ok] (resolve-term function.terms[0] binding)
+                [end-value end-ok] (resolve-term function.terms[1] binding)]
+            (when (not (and start-ok end-ok (= start-value.kind .Int) (= end-value.kind .Int)))
+              (return (Value {}) false))
+            (set! start start-value.int-value)
+            (set! end end-value.int-value))
+          (when (= (count function.terms) 3)
+            (let [[step-value step-ok] (resolve-term function.terms[2] binding)]
+              (when (not (and step-ok (= step-value.kind .Int) (not (= step-value.int-value 0))))
+                (return (Value {}) false))
+              (set! step step-value.int-value)))))
+      (let [items (make [dynamic]Value)]
+        (if (> step 0)
+          (while (< start end)
+            (arr.push! items (value-int start))
+            (set! start (+ start step)))
+          (while (> start end)
+            (arr.push! items (value-int start))
+            (set! start (+ start step))))
+        (let [out (value-vector (slice items 0))]
+          (delete items)
+          (return out true)))))
   (when (and (= op "name")
              (= (count function.terms) 1))
     (let [[input input-ok] (resolve-term function.terms[0] binding)]
@@ -1402,6 +1534,11 @@
       false
       true)))
 
+(defn schema-cardinality-many? [db: DB, attr: string] -> bool
+  (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
+    (and has-cardinality
+         (= cardinality ":db.cardinality/many"))))
+
 (defn tx-op-cardinality-one? [db: DB, op: Tx-Op] -> bool
   (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
     (when (and has-cardinality
@@ -1761,10 +1898,9 @@
   (let [out (make [dynamic]Tx-Op 0 (count ops))
         whole-tx-db (db-with-resolved-ops db ops)]
     (for [op ops]
-      (let [before-op-db (db-with-resolved-ops db (slice out 0))
-            direct-tuple-matches (or (direct-tuple-add-matches? before-op-db op)
-                                     (direct-tuple-add-matches? whole-tx-db op))]
-        (delete-owned-db before-op-db)
+      (let [direct-tuple-matches (or (direct-tuple-add-matches? whole-tx-db op)
+                                     (and op.tuple-identity
+                                          (direct-tuple-add-matches? db op)))]
         (when direct-tuple-matches
           (continue)))
       (arr.push! out op)
@@ -2219,7 +2355,10 @@
                                   tempids: resolved-tempids})))
           (if (= data.op ":db/retract")
             (arr.push! resolved-ops (tx-retract e data.a v))
-            (arr.push! resolved-ops (tx-add e data.a v)))))))
+            (let [op (tx-add e data.a v)]
+              (when data.has-tempid
+                (set! op.tuple-identity true))
+              (arr.push! resolved-ops op)))))))
     (Resolved-Tx {ok: true error: "" ops: resolved-ops tx-meta: resolved-meta tempids: resolved-tempids})))
 
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]
@@ -2688,6 +2827,13 @@
     (transact-tx-data conn (slice result.tx-data 0))))
 
 (defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (= term.kind .Var)
+    (let [[existing exists] (binding-lookup binding^ term.name)]
+      (if exists
+        (return (entity-value-equal? db existing actual))
+        (do
+          (binding-store! binding term.name actual)
+          (return true)))))
   (let [[resolved resolved-ok] (resolve-entity-term db term binding^)]
     (when resolved-ok
       (return (value-equal? resolved actual))))
@@ -2708,6 +2854,13 @@
   (when (= term.kind .LookupRef)
     (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
       (return (and lookup-ok (value-equal? (value-entity entity) actual)))))
+  (when (= term.kind .Var)
+    (let [[existing exists] (binding-lookup binding^ term.name)]
+      (if exists
+        (return (entity-value-equal? db existing actual))
+        (do
+          (binding-store! binding term.name actual)
+          (return true)))))
   (when (= term.kind .Value)
     (let [[resolved ok] (ref-entity-literal db attr term.value)]
       (when ok
@@ -2797,10 +2950,15 @@
     best))
 
 (defn relation-source-row-matches? [clause: Clause, row: Value, binding: ^Binding] -> bool
+  (when (and (= clause.source-width 1)
+             (not (= row.kind .Vector)))
+    (return (match-term? clause.e row binding)))
   (when (not (= row.kind .Vector))
     (return false))
   (when (not (= (count row.items) clause.source-width))
     (return false))
+  (when (= clause.source-width 1)
+    (return (match-term? clause.e row.items[0] binding)))
   (when (= clause.source-width 2)
     (return
       (and (match-term? clause.e row.items[0] binding)
@@ -2881,6 +3039,10 @@
         (when lookup-ok
           (set! v-value (value-entity lookup-entity))
           (set! v-ok true))))
+    (when v-ok
+      (let [[entity entity-ok] (lookup-ref-value-as-entity db v-value)]
+        (when entity-ok
+          (set! v-value entity))))
     (when (and a-ok v-ok (= a-value.kind .Keyword))
       (let [[resolved resolved-ok] (ref-entity-literal db a-value.text v-value)]
         (when resolved-ok
@@ -3127,6 +3289,8 @@
   (bindings-after-predicate-with-fns bindings predicate ([]Native-Query-Fn [])))
 
 (defn relation-source-width-for-clause [clause: Clause] -> int
+  (when (> clause.source-width 0)
+    (return clause.source-width))
   (if (= clause.v.kind .Wildcard)
     2
     (if (not (= clause.op-term.kind .Wildcard))
@@ -3177,6 +3341,13 @@
     (when (binding-equal? existing binding)
       (return true)))
   false)
+
+(defn unique-bindings [bindings: []Binding] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding 0 (count bindings))]
+    (for [binding bindings]
+      (when (not (binding-exists? (slice out 0) binding))
+        (arr.push! out binding)))
+    out))
 
 (defn bindings-after-rule-step-depth-with-fns [db: DB, rules: []Rule, rule: Rule, bindings: []Binding, step: Query-Step, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (case step.kind
@@ -3237,7 +3408,9 @@
   (let [bindings (make [dynamic]Binding)]
     (arr.push! bindings initial)
     (for [step rule.body-steps]
-      (let [next (bindings-after-rule-step-depth-with-fns db rules rule (slice bindings 0) step depth source has-source registry)]
+      (let [next-raw (bindings-after-rule-step-depth-with-fns db rules rule (slice bindings 0) step depth source has-source registry)
+            next (unique-bindings (slice next-raw 0))]
+        (delete next-raw)
         (delete bindings)
         (set! bindings next)
         (when (= (count bindings) 0)
@@ -3250,7 +3423,9 @@
 (defn bindings-after-rule-body-grouped-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [clauses (rule-clauses-with-source rule.clauses source has-source)
         group (not-group-simple (slice clauses 0))
-        bindings (bindings-after-clause-group-with-sources-and-fns db ([]DB-Source []) group initial registry)]
+        initial-bindings (bindings-after-clause-group-with-sources-and-fns db ([]DB-Source []) group initial registry)
+        bindings (unique-bindings (slice initial-bindings 0))]
+    (delete initial-bindings)
     (delete clauses)
     (for [call rule.rule-calls]
       (let [next-bindings (make [dynamic]Binding)]
@@ -3261,26 +3436,38 @@
             (for [rule-binding rule-bindings]
               (arr.push! next-bindings rule-binding))
             (delete rule-bindings)))
-        (delete bindings)
-        (set! bindings next-bindings)))
+        (let [next (unique-bindings (slice next-bindings 0))]
+          (delete next-bindings)
+          (delete bindings)
+          (set! bindings next))))
     (for [ground rule.grounds]
-      (let [next (apply-ground (slice bindings 0) ground)]
+      (let [next-raw (apply-ground (slice bindings 0) ground)
+            next (unique-bindings (slice next-raw 0))]
+        (delete next-raw)
         (delete bindings)
         (set! bindings next)))
     (for [get-else rule.get-elses]
-      (let [next (bindings-after-get-else-step db (slice bindings 0) get-else)]
+      (let [next-raw (bindings-after-get-else-step db (slice bindings 0) get-else)
+            next (unique-bindings (slice next-raw 0))]
+        (delete next-raw)
         (delete bindings)
         (set! bindings next)))
     (for [get-some rule.get-somes]
-      (let [next (bindings-after-get-some-step db (slice bindings 0) get-some)]
+      (let [next-raw (bindings-after-get-some-step db (slice bindings 0) get-some)
+            next (unique-bindings (slice next-raw 0))]
+        (delete next-raw)
         (delete bindings)
         (set! bindings next)))
     (for [function rule.function-clauses]
-      (let [next (bindings-after-function-with-fns (slice bindings 0) function registry)]
+      (let [next-raw (bindings-after-function-with-fns (slice bindings 0) function registry)
+            next (unique-bindings (slice next-raw 0))]
+        (delete next-raw)
         (delete bindings)
         (set! bindings next)))
     (for [predicate rule.predicates]
-      (let [next (bindings-after-predicate-with-fns (slice bindings 0) predicate registry)]
+      (let [next-raw (bindings-after-predicate-with-fns (slice bindings 0) predicate registry)
+            next (unique-bindings (slice next-raw 0))]
+        (delete next-raw)
         (delete bindings)
         (set! bindings next)))
     bindings))
@@ -3506,8 +3693,7 @@
     (when (>= index (count inputs))
       (return true ""))
     (let [input inputs[index]]
-      (if (and (= input.kind .Scalar)
-               (= input.value.kind .Vector))
+      (if (query-source-input-value? input)
         (return true "")
         (return false (fmt.tprintf "query source is not a collection: %s" source))))))
 
@@ -3606,7 +3792,9 @@
 (defn validate-query-input-spec-value [spec: Query-Input-Spec, input: Query-Input] -> [ok: bool, error: string]
   (case spec.kind
     .Scalar (if (or (= input.kind .Scalar)
-                    (= input.kind .PullPattern))
+                    (= input.kind .PullPattern)
+                    (and (query-source-input-name? spec.name)
+                         (query-source-input-value? input)))
               (return true "")
               (return false (fmt.tprintf "cannot bind query input to scalar %s" spec.name)))
     .Collection (validate-query-collection-input input spec.name)
@@ -3809,6 +3997,8 @@
       (append-var-once! vars pull-find.pattern-var)))
   (for [aggregate query-value.aggregates]
     (append-var-once! vars aggregate.var)
+    (for [arg aggregate.args]
+      (append-term-var! vars arg))
     (when aggregate.has-function-var
       (append-var-once! vars aggregate.function-var))
     (when aggregate.has-limit-var
@@ -4117,6 +4307,7 @@
       (= op "ground")
       (= op "inc")
       (= op "dec")
+      (= op "range")
       (= op "name")
       (= op "subs")
       (= op "re-pattern")
@@ -4282,6 +4473,19 @@
         (return false error))))
   (return true ""))
 
+(defn validate-query-pull-patterns [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
+  (for [pull-find query-value.pulls]
+    (let [[pull-db pull-db-ok] (pull-db-for-find db sources pull-find)]
+      (when (not pull-db-ok)
+        (return false "unknown pull source"))
+      (let [[pattern pattern-ok] (pull-find-pattern query-value inputs pull-find)]
+        (when (not pattern-ok)
+          (return false "pull pattern input must be a pull pattern"))
+        (let [[pattern-valid pattern-error] (validate-pull-pattern pull-db pattern)]
+          (when (not pattern-valid)
+            (return false pattern-error))))))
+  (return true ""))
+
 (defn validate-query-call-with-fns [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> [ok: bool, error: string]
   (let [expected (query-expected-input-count query-value)
         provided (count inputs)]
@@ -4299,6 +4503,9 @@
   (let [[input-ok input-error] (validate-query-input-values query-value inputs)]
     (when (not input-ok)
       (return false input-error)))
+  (let [[pull-ok pull-error] (validate-query-pull-patterns db query-value inputs sources)]
+    (when (not pull-ok)
+      (return false pull-error)))
   (let [[lookup-ok lookup-error] (validate-query-inline-lookup-refs db query-value sources)]
     (when (not lookup-ok)
       (return false lookup-error)))
@@ -4470,10 +4677,16 @@
         (if ok
           (arr.push! out value)
           (return out false))))
-    (let [[value ok] (binding-lookup binding aggregate.var)]
-      (if ok
-        (arr.push! out value)
-        (return out false)))
+    (if (> (count aggregate.args) 0)
+      (for [arg aggregate.args]
+        (let [[value ok] (resolve-term arg binding)]
+          (if ok
+            (arr.push! out value)
+            (return out false))))
+      (let [[value ok] (binding-lookup binding aggregate.var)]
+        (if ok
+          (arr.push! out value)
+          (return out false))))
     (return out true)))
 
 (defn aggregate-key-row [values: []Value] -> Result-Row
@@ -4932,9 +5145,24 @@
              or-groups: owned-or-groups
              body-steps: body-steps}))))
 
+(defn relation-db-rule-call [call: Rule-Call, source: string] -> Rule-Call
+  (when call.has-source
+    (return call))
+  (Rule-Call {name: call.name
+              source: source
+              has-source: true
+              args: call.args}))
+
+(defn relation-db-rule-calls [calls: []Rule-Call, source: string] -> [dynamic]Rule-Call
+  (let [out (make [dynamic]Rule-Call 0 (count calls))]
+    (for [call calls]
+      (arr.push! out (relation-db-rule-call call source)))
+    out))
+
 (defn relation-db-query [query-value: Query, source: string] -> Query
   (let [inputs (arr.into [dynamic]string (slice query-value.inputs 0)) :defer
         clauses (rule-clauses-with-source (slice query-value.clauses 0) source true) :defer
+        rule-calls (relation-db-rule-calls (slice query-value.rule-calls 0) source) :defer
         rules (make [dynamic]Rule) :defer
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer]
@@ -4956,7 +5184,7 @@
              (slice query-value.predicates 0)
              (slice query-value.function-clauses 0)
              (slice rules 0)
-             (slice query-value.rule-calls 0)
+             (slice rule-calls 0)
              (slice query-value.get-elses 0)
              (slice query-value.get-somes 0)
              (slice query-value.grounds 0)
@@ -4966,14 +5194,14 @@
              (slice query-value.aggregates 0))
       query-value.has-rules-input)))
 
-(defn q-query-relation-db [rows: Value, query-value: Query, inputs: []Query-Input] -> Result-Set
+(defn q-query-relation-db-with-fns [rows: Value, query-value: Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
   (let [source "__vev_primary_relation_db"
         relation-query (relation-db-query query-value source)
         relation-inputs (arr.into [dynamic]Query-Input inputs) :defer
         empty-datoms (make [dynamic]Datom)
         empty (build-db empty-datoms)]
     (arr.push! relation-inputs (query-input-scalar rows))
-    (let [result (q-query-with-sources empty relation-query (slice relation-inputs 0) ([]DB-Source []))]
+    (let [result (q-query-with-sources-and-fns empty relation-query (slice relation-inputs 0) ([]DB-Source []) registry)]
       (delete empty-datoms)
       (delete empty.current)
       (delete empty.eavt)
@@ -4981,6 +5209,9 @@
       (delete empty.avet)
       (delete empty.vaet)
       result)))
+
+(defn q-query-relation-db [rows: Value, query-value: Query, inputs: []Query-Input] -> Result-Set
+  (q-query-relation-db-with-fns rows query-value inputs ([]Native-Query-Fn [])))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (q-query-with-sources db query inputs ([]DB-Source [])))
@@ -5066,6 +5297,42 @@
       (return (strings.concatenate ([]string [(slice attr 0 (+ index 1))
                                               (slice attr (+ index 2))])))))
   attr)
+
+(defn validate-pull-spec-schema [db: DB, spec: Pull-Spec] -> [ok: bool, error: string]
+  (when (or (= spec.a "*")
+            (= spec.a ":db/id"))
+    (return true ""))
+  (let [has-schema (db-has-schema? db)
+        reverse? (reverse-attr? spec.a)
+        attr (if reverse?
+               (forward-attr-for-reverse spec.a)
+               spec.a)]
+    (defer (when reverse? (delete attr)))
+    (when (and has-schema
+               reverse?
+               (not (schema-ref? db attr)))
+      (return false (fmt.tprintf "pull reverse attr must be ref: %s" spec.a)))
+    (when (and has-schema
+               spec.has-limit
+               (not (schema-cardinality-many? db attr)))
+      (return false (fmt.tprintf "pull limit attr must be cardinality many: %s" spec.a)))
+    (when (and has-schema
+               (or (> (count spec.pattern) 0)
+                   spec.has-recursion)
+               (not (schema-ref? db attr)))
+      (return false (fmt.tprintf "pull nested attr must be ref: %s" spec.a)))
+    (for [child spec.pattern]
+      (let [[child-ok child-error] (validate-pull-spec-schema db child)]
+        (when (not child-ok)
+          (return false child-error)))))
+  (return true ""))
+
+(defn validate-pull-pattern [db: DB, pattern: []Pull-Spec] -> [ok: bool, error: string]
+  (for [spec pattern]
+    (let [[spec-ok spec-error] (validate-pull-spec-schema db spec)]
+      (when (not spec-ok)
+        (return false spec-error))))
+  (return true ""))
 
 (defn pull-output-has-attr? [out: [dynamic]Pull-Attr, attr: string] -> bool
   (for [pulled out]
@@ -5224,6 +5491,7 @@
     (Pull-Spec {a: spec.a
                 pattern: spec.pattern
                 limit: spec.limit
+                has-limit: spec.has-limit
                 has-default: spec.has-default
                 default-value: spec.default-value
                 has-alias: spec.has-alias
@@ -5466,6 +5734,7 @@
 (defn flat-pull-spec [attr: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5477,6 +5746,7 @@
 (defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5491,6 +5761,7 @@
 (defn pull-spec-recursion [attr: string, depth: int] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5504,6 +5775,7 @@
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: limit
+              has-limit: true
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5515,6 +5787,7 @@
 (defn pull-spec-limit-as [attr: string, pattern: []Pull-Spec, limit: int, alias: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: limit
+              has-limit: true
               has-default: false
               default-value: (Value {})
               has-alias: true
@@ -5526,6 +5799,7 @@
 (defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: true
               default-value: default-value
               has-alias: false
@@ -5537,6 +5811,7 @@
 (defn pull-spec-as [attr: string, alias: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: true
@@ -5548,6 +5823,7 @@
 (defn pull-spec-default-as [attr: string, default-value: Value, alias: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: true
               default-value: default-value
               has-alias: true
@@ -5559,6 +5835,7 @@
 (defn pull-spec-xform [attr: string, pattern: []Pull-Spec, xform: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: false
               default-value: (Value {})
               has-alias: false
@@ -5570,6 +5847,7 @@
 (defn pull-spec-default-xform [attr: string, default-value: Value, xform: string] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
+              has-limit: false
               has-default: true
               default-value: default-value
               has-alias: false

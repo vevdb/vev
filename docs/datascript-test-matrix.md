@@ -17,27 +17,32 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 328
+tests successfully. The most important remaining gaps are no longer basic
+Datalog syntax or transaction shape coverage; they are exact parser validation,
+tuple edge matrices, host/native callback design, and performance work.
+
 ## Semantic Core
 
 These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | DB-backed tx/op data pattern terms, primary/named collection datom sources, map-form text queries, direct map-as-relation inputs, nested `:in` binding patterns, nested map values, DataScript namespaced reverse attrs, checked scalar/collection/tuple/relation input shape errors, and issue-425 symbol constants covered; host functions and exact input error wording remain |
+| `query.cljc` | 11 | partial | DB-backed tx/op data pattern terms, primary/named collection datom sources including 1-wide scalar rows, 2-wide tuple rows, typed relation/collection/map input values, and prepared primary collection queries, map-form text queries, direct map-as-relation inputs, nested `:in` binding patterns, nested map values, DataScript namespaced reverse attrs, checked scalar/collection/tuple/relation input shape errors, and issue-425 symbol constants covered; host functions and exact input error wording remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
-| `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, lookup-ref `get-else`/`get-some` entity inputs in literal and text APIs, regex predicate surface, regex match-return clauses, nested result binding including EDN text vector/map literal function args and text/prepared tuple/relation/collection output destructuring, named predicate/function operator inputs, and registered native-op aliases for EDN/prepared text queries including rule bodies covered; checked query errors now cover unknown native predicate/function ops and insufficient function/predicate bindings; arbitrary host callback function surface remains |
+| `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, `range`, lookup-ref `get-else`/`get-some` entity inputs in literal and text APIs, regex predicate surface, regex match-return clauses, nested result binding including EDN text vector/map literal function args and text/prepared tuple/relation/collection output destructuring, named predicate/function operator inputs, and registered native-op aliases for EDN/prepared text queries including rule bodies and primary collection DB queries covered; checked query errors now cover unknown native predicate/function ops and insufficient function/predicate bindings; arbitrary host callback function surface remains |
 | `query_not.cljc` | 5 | partial | source semantics plus checked unbound-group errors covered; query text and Kvist literal macros have ordered top-level `not` binding validation; supported rule bodies execute in source order |
 | `query_or.cljc` | 5 | partial | source semantics, plain-`or` branch var matching, nested `or-join` binding forms, and `or-join` projection validation covered; exact diagnostics remain |
 | `query_pull.cljc` | 8 | partial | multi-source pull, text/Kvist `:in` pattern variables, plus scalar, collection, and tuple pull find-spec shapes covered; exact Clojure return rendering remains |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
-| `query_rules.cljc` | 3 | partial | source args, recursion, repeated calls, ordered body execution for literal/text rules, inline map-query `:rules`, and unknown/arity/param validation covered; host predicate inputs and semi-naive performance remain |
-| `query_aggregates.cljc` | 1 | partial | built-in aggregates including numeric sum/avg, top-n, median, variance, stddev, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
+| `query_rules.cljc` | 3 | partial | source args, recursion, repeated calls, ordered body execution for literal/text rules, inline map-query `:rules`, primary collection DB rule queries, intermediate rule-binding dedup for DataScript issue-456-style duplicate propagation, and unknown/arity/param validation covered; host predicate inputs and full semi-naive performance remain |
+| `query_aggregates.cljc` | 1 | partial | built-in aggregates including numeric sum/avg, top-n, median, variance, stddev, multi-argument aggregate tuple distinctness, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
 | `transact.cljc` | 19 | partial | DataScript-style report `:db/current-tx` tempids, EDN text/prepared negative numeric tempids and single operation vectors, schema-aware map vector values, empty cardinality-many tempid validation, native tx functions, registry-backed ident tx functions including EDN text/prepared `:db.fn/call` and shorthand ident calls, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, main conflict matrix, and EDN text/prepared transaction coverage for ordinary identity upsert, lookup-ref upsert, retry convergence, forward ref tempids, and rollback on conflict covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation including `:db.type/symbol` plus `transact-text` bad-shape rollback covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface and indexed-attribute errors covered; exact lazy sequence/API rendering details remain |
-| `tuples.cljc` | 11 | partial | direct/component tuple upsert, redundant direct tuple-value ignore cases, lookup-ref tuple values, and EDN text/prepared tuple upsert plus lookup-ref transaction coverage covered; remaining exact errors and edge conflict matrix |
-| `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
+| `tuples.cljc` | 11 | partial | direct/component tuple upsert, redundant direct tuple-value ignore cases including final-state update assertions, stale explicit direct tuple update rejection, tempid tuple values as upsert identity, lookup-ref tuple values, tuple lookup-ref conflict/update paths, and EDN text/prepared tuple upsert plus lookup-ref transaction coverage covered; remaining exact errors and edge conflict matrix |
+| `lookup_refs.cljc` | 5 | partial | entity/query/tx/index lookup refs, mixed entity-id inputs, scalar and collection lookup-ref query inputs with DataScript-style projection of the original lookup-ref value, multi-source lookup-ref inputs, unresolved inline query lookup-ref errors, and checked index unresolved lookup-ref errors covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
 | `explode.cljc` | 4 | partial | cardinality-many tx-map collection expansion, ref collections, reverse ref tx-map values, nested maps, multi-valued nested maps including EDN sets, reverse nested maps, and circular/nested ref shapes covered through EDN/text and Kvist tx-data; host list/array inputs and exact reverse-attr schema errors remain |
 | `components.cljc` | 2 | partial | reverse component pull id/pattern/recursion behavior covered; exact schema validation and render/touch shapes remain |
@@ -56,12 +61,12 @@ EDN/text coverage first and add Kvist macro coverage as a convenience layer.
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
 | `parser.cljc` | 3 | partial | flat EDN node reader supports nested vectors/lists/maps/sets and now feeds query/pull/tx text subsets; full validation remains |
-| `parser_find.cljc` | 4 | partial | text query parser covers scalar, collection, tuple, pull, aggregate, and top-n aggregate find specs; exact validation remains |
+| `parser_find.cljc` | 4 | partial | text query parser covers scalar, collection, tuple, pull, aggregate, multi-argument aggregate elements, custom aggregate, and top-n aggregate find specs; exact validation remains |
 | `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers vector and map query forms, map-form inline `:rules`, `:find`, `:with`, `:in`, named DB sources, optional ordered `:where`, direct map-as-relation inputs, float constants, nested input/result destructuring, execution through normal query inputs/sources, reusable prepared query values, and checked parse/input/source errors; parser-style validation now covers unknown `:find`/`:with` vars, `:find`/`:with` overlap, duplicate variable inputs, duplicate `:with` vars, unknown source vars, and missing `%` for rule calls; exact diagnostics remain |
 | `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls, rule definitions, inline map-query `:rules`, ordered text rule bodies, rule-body `get-else`/`get-some`, and empty/duplicate/arity rule validation covered; remaining exact parser shapes remain |
-| `parser_where.cljc` | 6 | partial | data pattern including lookup-ref entity terms, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, ordinary rule clauses, nested text `not`, and ordered top-level execution/validation covered; parser validation rejects empty rule calls, empty `not`/`or`, empty `not-join`/`or-join` bodies, and empty join-var sets with DataScript-shaped errors; exact diagnostics remain |
-| `pull_parser.cljc` | 1 | partial | query text pull finds, pull pattern variables, direct pull text APIs, and reusable prepared pull pattern values cover attrs, wildcard, DataScript namespaced reverse attrs, nested maps with vector or list pattern values, recursive map values, flat/nested `:default`/`:as`/`:limit`/`:xform` option forms including string/vector option heads, repeated attr specs, option-wrapped map keys, and checked rejection of malformed option/map specs; schema-aware validation and exact diagnostics remain |
+| `parser_where.cljc` | 6 | partial | data pattern including lookup-ref entity terms, named DB source patterns, 1/2/3/4/5-wide relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, ordinary rule clauses, nested text `not`, and ordered top-level execution/validation covered; parser validation rejects empty rule calls, empty `not`/`or`, empty `not-join`/`or-join` bodies, and empty join-var sets with DataScript-shaped errors; exact diagnostics remain |
+| `pull_parser.cljc` | 1 | partial | query text pull finds, pull pattern variables, direct pull text APIs, and reusable prepared pull pattern values cover attrs, wildcard, DataScript namespaced reverse attrs, nested maps with vector or list pattern values, recursive map values, flat/nested `:default`/`:as`/`:limit`/`:xform` option forms including string/vector option heads, repeated attr specs, option-wrapped map keys, checked rejection of malformed option/map specs, and schema-aware validation for reverse refs, nested refs/recursion, and explicit limits through query pull literals and pattern inputs; exact diagnostics remain |
 | transaction EDN text | n/a | partial | `transact-text` and reusable prepared tx-data cover `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, single operation vectors, map tx-data, set-valued collections, lookup refs, idents, float values, string/current-tx/negative numeric tempids, generated map ids, nested maps, reverse ref tx-map attrs including nested maps, ordinary and tuple upsert/lookup-ref transactions, and bad-shape/no-mutation validation through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
@@ -77,19 +82,26 @@ These are useful, but not the next engine-parity gate.
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
 | `issues.cljc` | 5 | partial | engine-relevant regressions for vector result isolation, mixed-type DB diff, and schema inspection covered; metadata/pprint cases are Clojure host behavior |
-| `query_v3.cljc` | 2 | partial | input arity validation and non-collection source validation covered; remaining query-v3 engine surface later |
+| `query_v3.cljc` | 2 | partial | input arity, non-collection source validation, and primary collection query execution over scalar and tuple rows covered through current query APIs; remaining query-v3 engine surface later |
 | `lru.cljc` | 2 | host | DataScript implementation detail |
 | `core.cljc` | 1 | host | test harness/runtime behavior |
 | `cljs.cljc` | 0 | host | ClojureScript environment behavior |
 
 ## Batch Order
 
-1. Broaden parser/EDN APIs around pull options, return-map markers,
-   source-qualified rules, transactions, and exact validation. This is the
-   primary compatibility route because non-Kvist consumers depend on it.
-2. Port remaining `transact.cljc`, `upsert.cljc`, and `validation.cljc`
-   semantics that are not host-runtime-specific, with text/prepared API tests
-   where a portable representation exists.
-3. Finish tuple/index public API behavior as one schema/index batch.
-4. Keep Kvist macros aligned with the typed AST as ergonomic sugar, not as the
-   definition of compatibility.
+1. Finish the tuple edge matrix from `tuples.cljc`: conflicting tuple upsert
+   paths, direct tuple-value corner cases, and exact schema validation where
+   those affect engine behavior rather than only Clojure error text.
+2. Tighten parser validation against `parser_*.cljc`, especially malformed
+   `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
+   because EDN text/prepared APIs are the compatibility route for non-Kvist
+   consumers.
+3. Design the native callback surface for query predicates/functions,
+   aggregates, pull `:xform`, transaction functions, and listeners. Existing
+   named aliases are useful but not enough for broad C/Odin/non-Kvist use.
+4. Replace the current rule/fixpoint and aggregate hot paths with measured
+   implementations. The current engine is semantically useful, but DataScript
+   parity also needs predictable performance on recursive rules and large
+   relations.
+5. Keep Kvist literal macros aligned with the typed AST as ergonomic sugar, not
+   as the definition of compatibility.

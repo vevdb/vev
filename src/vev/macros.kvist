@@ -567,7 +567,7 @@
 
 (defmacro- query-function-op? [op]
   (or (query-op-var? op)
-      (contains? ["count" "+" "-" "*" "/" "quot" "rem" "mod" "min" "max" "compare" "inc" "dec" "identity" "ground" "name" "str" "keyword" "subs" "vector" "tuple" "untuple" "hash-map" "get" "first" "second" "contains?" "clojure.string/includes?" "clojure.string/starts-with?" "clojure.string/ends-with?" "re-pattern" "re-find"] op)))
+      (contains? ["count" "+" "-" "*" "/" "quot" "rem" "mod" "min" "max" "compare" "inc" "dec" "range" "identity" "ground" "name" "str" "keyword" "subs" "vector" "tuple" "untuple" "hash-map" "get" "first" "second" "contains?" "clojure.string/includes?" "clojure.string/starts-with?" "clojure.string/ends-with?" "re-pattern" "re-find"] op)))
 
 (defmacro- top-n-aggregate-op? [op]
   (contains? ["min" "max"] op))
@@ -627,19 +627,38 @@
 (defmacro- aggregate-find? [form]
   (cond
     (not (list? form)) false
-    (not (or (= (count form) 2) (= (count form) 3))) false
+    (< (count form) 2) false
     (not (symbol? (first form))) false
     :else (let [op (source (first form))]
-            (if (= (count form) 3)
-              (if (= op "aggregate")
+            (if (= op "aggregate")
+              (and (= (count form) 3)
+                   (find-var? (nth form 1))
+                   (find-var? (nth form 2)))
+              (if (top-n-aggregate-op? op)
+                (if (= (count form) 3)
+                  (and (or (int? (nth form 1))
+                           (find-var? (nth form 1)))
+                       (find-var? (nth form 2)))
+                  (and (= (count form) 2)
+                       (find-var? (nth form 1))
+                       (aggregate-op? op)))
                 (and (find-var? (nth form 1))
-                     (find-var? (nth form 2)))
-                (and (top-n-aggregate-op? op)
-                     (or (int? (nth form 1))
-                         (find-var? (nth form 1)))
-                     (find-var? (nth form 2))))
-              (and (find-var? (nth form 1))
-                   (aggregate-op? op))))))
+                     (aggregate-op? op)))))))
+
+(defmacro- emit-aggregate-arg-terms [forms]
+  (if (= (count forms) 0)
+    (forms)
+    (forms
+      (emit-value-term (first forms))
+      (emit-aggregate-arg-terms (rest forms)))))
+
+(defmacro- emit-aggregate-value-args [form]
+  (if (= (source (first form)) "aggregate")
+    (forms (emit-value-term (nth form 2)))
+    (if (and (top-n-aggregate-op? (source (first form)))
+             (= (count form) 3))
+      (forms (emit-value-term (nth form 2)))
+      (emit-aggregate-arg-terms (rest form)))))
 
 (defmacro- emit-find-vars [forms]
   (if (= (count forms) 0)
@@ -1986,22 +2005,26 @@
         (quasiquote
           (Aggregate-Find {op: (unquote (source (first form)))
                            var: (unquote (emit-find-var (nth form 2)))
+                           args: ([]Term [(splice (emit-aggregate-value-args form))])
                            function-var: (unquote (emit-find-var (nth form 1)))
                            has-function-var: true}))
         (if (int? (nth form 1))
           (quasiquote
             (Aggregate-Find {op: (unquote (source (first form)))
                              var: (unquote (emit-find-var (nth form 2)))
+                             args: ([]Term [(splice (emit-aggregate-value-args form))])
                              limit: (unquote (nth form 1))
                              has-limit: true}))
           (quasiquote
             (Aggregate-Find {op: (unquote (source (first form)))
                              var: (unquote (emit-find-var (nth form 2)))
+                             args: ([]Term [(splice (emit-aggregate-value-args form))])
                              limit-var: (unquote (emit-find-var (nth form 1)))
                              has-limit-var: true}))))
       (quasiquote
         (Aggregate-Find {op: (unquote (source (first form)))
-                         var: (unquote (emit-find-var (nth form 1)))})))
+                         var: (unquote (emit-find-var (nth form 1)))
+                         args: ([]Term [(splice (emit-aggregate-value-args form))])})))
     (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, variance, stddev, and aggregate")))
 
 (defmacro- emit-aggregate-finds [forms]
