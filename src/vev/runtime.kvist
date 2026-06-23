@@ -4982,6 +4982,25 @@
       (return true)))
   false)
 
+(defn pull-spec-output-index [pattern: []Pull-Spec, spec: Pull-Spec] -> [index: int, ok: bool]
+  (let [attr (pull-output-attr spec)]
+    (for [existing index pattern]
+      (when (and (not (= existing.a "*"))
+                 (= (pull-output-attr existing) attr))
+        (return index true))))
+  (return 0 false))
+
+(defn normalize-pull-pattern [pattern: []Pull-Spec] -> [dynamic]Pull-Spec
+  (let [out (make [dynamic]Pull-Spec 0 (count pattern))]
+    (for [spec pattern]
+      (if (= spec.a "*")
+        (arr.push! out spec)
+        (let [[index exists] (pull-spec-output-index (slice out 0) spec)]
+          (if exists
+            (set! out[index] spec)
+            (arr.push! out spec)))))
+    out))
+
 (defn pull-attr-value [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
@@ -5008,7 +5027,8 @@
   (let [child-seen (arr.into [dynamic]u64 seen)]
     (defer (delete child-seen))
     (arr.push! child-seen entity)
-    (let [pulled (pull-pattern-spec-seen db entity pattern root (slice child-seen 0))]
+    (let [normalized (normalize-pull-pattern pattern) :defer
+          pulled (pull-pattern-spec-seen db entity (slice normalized 0) (slice normalized 0) (slice child-seen 0))]
       pulled.attrs)))
 
 (defn pull-child-recursion [db: DB, entity: u64, pattern: []Pull-Spec, seen: []u64] -> [dynamic]Pull-Attr
@@ -5228,10 +5248,12 @@
     (Pull-Result {e: entity attrs: out})))
 
 (defn pull-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> Pull-Result
-  (let [seen (make [dynamic]u64)]
+  (let [seen (make [dynamic]u64)
+        normalized (normalize-pull-pattern pattern)]
     (defer (delete seen))
+    (defer (delete normalized))
     (arr.push! seen entity)
-    (pull-pattern-spec-seen db entity pattern pattern (slice seen 0))))
+    (pull-pattern-spec-seen db entity (slice normalized 0) (slice normalized 0) (slice seen 0))))
 
 (defn pull-pattern-lookup-ref [db: DB, attr: string, value: Value, pattern: []Pull-Spec] -> Pull-Result
   (let [[entity ok] (resolve-lookup-ref db attr value)]
