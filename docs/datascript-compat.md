@@ -46,23 +46,20 @@ Status key:
 | `issues` | covered | Engine-relevant regressions from `issues.cljc` are covered: vector result isolation, mixed-type DB diff, and schema inspection; Clojure metadata/pprint cases are host-specific |
 | `listen` | covered | Named report-sink listeners cover registration, tx-data reports, metadata reports, and unlisten; arbitrary closure callbacks are host/ABI design work |
 | `storage`, `datafy` | later | API/package features after semantic core |
-| `tuples` | partial | Tuple attr schema, inferred tuple value type/cardinality metadata, final tuple schema validation independent of tx-data order, derived multi-tuple transaction maintenance, direct tuple attr rejection except redundant final-state tuple assertions, stale explicit direct tuple update rejection, unique tuple lookup refs including ref-component nested lookup refs, query lookup refs over tuple attrs in literal and EDN text APIs, tuple lookup-ref pull via literal/text/prepared APIs, tuple lookup-ref unique conflict/update paths through EDN text tx-data, component-based tuple upsert, direct tuple-value tempid upsert, tuple unique conflict and multi-component update shapes, EDN text/prepared tx-data tuple component upsert, tuple lookup-ref entity refs, prepared direct tuple-value tempid upsert, conflict rollback, text/map tx-data direct tuple-value ignore cases, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation including invalid `:db/tupleAttrs` shapes, nested tuple dependency rejection, and cardinality-many tuple/component rejection subsets; remaining exact errors and edge conflict matrix missing |
+| `tuples` | covered | Tuple attr schema, inferred tuple value type/cardinality metadata, final tuple schema validation independent of tx-data order, derived multi-tuple transaction maintenance, direct tuple attr rejection except redundant final-state tuple assertions, stale explicit direct tuple update rejection, unique tuple lookup refs including ref-component nested lookup refs, query lookup refs over tuple attrs in literal and EDN text APIs, tuple lookup-ref pull via literal/text/prepared APIs, tuple lookup-ref unique conflict/update paths through EDN text tx-data, component-based tuple upsert, direct tuple-value tempid upsert, tuple unique conflict and multi-component update shapes including DataScript's vector-sequential versus tx-map-atomic component updates, EDN text/prepared tx-data tuple component upsert, tuple lookup-ref entity refs, prepared direct tuple-value tempid upsert, conflict rollback, text/map tx-data direct tuple-value ignore cases, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation including invalid `:db/tupleAttrs` shapes, nested tuple dependency rejection, and cardinality-many tuple/component rejection covered; exact diagnostic text is Vev-shaped |
 
 ## Next Porting Order
 
-The local compatibility suite currently passes 330 tests. The remaining
+The local compatibility suite currently passes 331 tests. The remaining
 DataScript work should focus on the areas where Vev still differs in engine
 semantics or required native interop, not on already-covered syntax families.
 
-1. Finish tuple compatibility: the remaining useful work is the edge conflict
-   matrix and exact schema validation behavior, especially through EDN
-   text/prepared transaction APIs.
-2. Tighten parser validation against the upstream parser namespaces. Query,
+1. Tighten parser validation against the upstream parser namespaces. Query,
    pull, rule, return-map, and transaction text parsing are broad now, but
    malformed-shape handling still trails DataScript.
-3. Extend the native callback ABI beyond query predicate/value/aggregate/pull
+2. Extend the native callback ABI beyond query predicate/value/aggregate/pull
    xform callbacks: transaction functions, listeners, and the final
    C ABI-facing registration shape remain.
-4. Add measurement-driven performance work for recursive rules, large
+3. Add measurement-driven performance work for recursive rules, large
    relations, aggregates, and index-backed planning before starting durable
    storage.

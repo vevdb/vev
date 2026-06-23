@@ -2311,25 +2311,25 @@
       (return "" (Value {}) false value-error))
     (return lookup-attr lookup-value true "")))
 
-(defn append-edn-tx-add-value! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, ref: Tx-EDN-Entity, a: string, value-node: int] -> [ok: bool, error: string]
+(defn append-edn-tx-add-value! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, ref: Tx-EDN-Entity, a: string, value-node: int, map-group: string] -> [ok: bool, error: string]
   (if (and (= doc.nodes[value-node].kind .String)
            (not (edn-lookup-ref-node? doc value-node)))
     (do
-      (arr.push! out^ (tx-add-from-ref ref a (value-string doc.nodes[value-node].text)))
+      (arr.push! out^ (tx-data-with-map-group (tx-add-from-ref ref a (value-string doc.nodes[value-node].text)) map-group))
       (return true ""))
     (if (edn-lookup-ref-node? doc value-node)
       (let [[lookup-attr lookup-value lookup-ok lookup-error] (edn-lookup-ref-parts doc value-node)]
         (when (not lookup-ok)
           (return false lookup-error))
-        (arr.push! out^ (tx-add-value-lookup-ref-from-ref ref a lookup-attr lookup-value))
+        (arr.push! out^ (tx-data-with-map-group (tx-add-value-lookup-ref-from-ref ref a lookup-attr lookup-value) map-group))
         (return true ""))
       (let [[value value-ok value-error] (edn-value-from-node doc value-node)]
         (when (not value-ok)
           (return false value-error))
-        (arr.push! out^ (tx-add-from-ref ref a value))
+        (arr.push! out^ (tx-data-with-map-group (tx-add-from-ref ref a value) map-group))
         (return true "")))))
 
-(defn append-edn-tx-map-attr! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, ref: Tx-EDN-Entity, attr-node: int, value-node: int] -> [ok: bool, error: string]
+(defn append-edn-tx-map-attr! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, ref: Tx-EDN-Entity, attr-node: int, value-node: int, map-group: string] -> [ok: bool, error: string]
   (let [[attr attr-ok] (edn-attr-text doc attr-node)]
     (when (not attr-ok)
       (return false "tx map attributes must be keywords or strings"))
@@ -2338,20 +2338,20 @@
     (if (or (= doc.nodes[value-node].kind .Vector)
             (= doc.nodes[value-node].kind .Set))
       (if (edn-lookup-ref-node? doc value-node)
-        (append-edn-tx-add-value! out doc ref attr value-node)
+        (append-edn-tx-add-value! out doc ref attr value-node map-group)
         (let [[value value-ok value-error] (edn-value-from-node doc value-node)]
           (when (not value-ok)
             (return false value-error))
-          (arr.push! out^ (tx-add-map-collection-from-ref ref attr value))
+          (arr.push! out^ (tx-data-with-map-group (tx-add-map-collection-from-ref ref attr value) map-group))
           (return true "")))
       (if (= doc.nodes[value-node].kind .Map)
         (let [nested-tempid (fmt.tprintf "__vev_tx_map_%d" value-node)
               [nested-value nested-ok nested-error] (edn-value-from-node doc value-node)]
           (when (not nested-ok)
             (return false nested-error))
-          (arr.push! out^ (tx-add-nested-map-from-ref ref attr nested-value nested-tempid))
+          (arr.push! out^ (tx-data-with-map-group (tx-add-nested-map-from-ref ref attr nested-value nested-tempid) map-group))
           (return true ""))
-        (append-edn-tx-add-value! out doc ref attr value-node)))))
+        (append-edn-tx-add-value! out doc ref attr value-node map-group)))))
 
 (defn edn-tx-map-entity-ref [doc: EDN-Doc, map-node: int, generated-tempid: string] -> [ref: Tx-EDN-Entity, ok: bool, error: string]
   (let [child doc.nodes[map-node].first-child]
@@ -2364,13 +2364,13 @@
         (set! child doc.nodes[value-node].next-sibling)))
     (return (Tx-EDN-Entity {kind: .Tempid tempid: generated-tempid}) true "")))
 
-(defn append-edn-tx-map-items! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, map-node: int, ref: Tx-EDN-Entity] -> [ok: bool, error: string]
+(defn append-edn-tx-map-items! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, map-node: int, ref: Tx-EDN-Entity, map-group: string] -> [ok: bool, error: string]
   (let [child doc.nodes[map-node].first-child]
     (while (not (= child -1))
       (let [value-node doc.nodes[child].next-sibling]
         (when (= value-node -1)
           (return false "tx map value missing"))
-        (let [[item-ok item-error] (append-edn-tx-map-attr! out doc ref child value-node)]
+        (let [[item-ok item-error] (append-edn-tx-map-attr! out doc ref child value-node map-group)]
           (when (not item-ok)
             (return false item-error)))
         (set! child doc.nodes[value-node].next-sibling)))
@@ -2378,10 +2378,11 @@
 
 (defn append-edn-tx-map! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, map-node: int] -> [ok: bool, error: string]
   (let [generated-tempid (fmt.tprintf "__vev_tx_map_%d" map-node)
+        map-group (fmt.tprintf "__vev_tx_map_group_%d" map-node)
         [ref ref-ok ref-error] (edn-tx-map-entity-ref doc map-node generated-tempid)]
     (when (not ref-ok)
       (return false ref-error))
-    (append-edn-tx-map-items! out doc map-node ref)))
+    (append-edn-tx-map-items! out doc map-node ref map-group)))
 
 (defn append-edn-tx-vector! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, vector-node: int] -> [ok: bool, error: string]
   (let [op-node (edn-child-at doc vector-node 0)]
@@ -2413,7 +2414,7 @@
                   (arr.push! out^ (tx-retract-attr-from-ref ref attr))
                   (return true ""))
                 (if (= op ":db/add")
-                  (append-edn-tx-add-value! out doc ref attr v-node)
+                  (append-edn-tx-add-value! out doc ref attr v-node "")
                   (if (edn-lookup-ref-node? doc v-node)
                     (let [[lookup-attr lookup-value lookup-ok lookup-error] (edn-lookup-ref-parts doc v-node)]
                       (when (not lookup-ok)

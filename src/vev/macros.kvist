@@ -367,58 +367,66 @@
           attr
           (str (slice attr 0 (+ index 1)) (slice attr (+ index 2))))))))
 
-(defmacro- emit-tx-map-reverse-attr [e a v]
+(defmacro- emit-tx-map-reverse-attr [group e a v]
   (if (int? e)
     (if (lookup-ref? v)
       (quasiquote
-        (add-lookup-ref
-          (unquote (emit-attr (nth v 0)))
-          (unquote (emit-literal-value (nth v 1)))
-          (unquote (forward-attr-source a))
-          (value-entity (unquote e))))
+        (tx-data-with-map-group
+          (add-lookup-ref
+            (unquote (emit-attr (nth v 0)))
+            (unquote (emit-literal-value (nth v 1)))
+            (unquote (forward-attr-source a))
+            (value-entity (unquote e)))
+          (unquote group)))
       (if (int? v)
         (quasiquote
-          (add
-            (unquote v)
-            (unquote (forward-attr-source a))
-            (value-entity (unquote e))))
+          (tx-data-with-map-group
+            (add
+              (unquote v)
+              (unquote (forward-attr-source a))
+              (value-entity (unquote e)))
+            (unquote group)))
         (if (keyword? v)
           (quasiquote
-            (add-ident
-              (unquote (source v))
-              (unquote (forward-attr-source a))
-              (value-entity (unquote e))))
+            (tx-data-with-map-group
+              (add-ident
+                (unquote (source v))
+                (unquote (forward-attr-source a))
+                (value-entity (unquote e)))
+              (unquote group)))
           (if (string? v)
             (quasiquote
-              (add-tempid
-                (unquote v)
-                (unquote (forward-attr-source a))
-                (value-entity (unquote e))))
+              (tx-data-with-map-group
+                (add-tempid
+                  (unquote v)
+                  (unquote (forward-attr-source a))
+                  (value-entity (unquote e)))
+                (unquote group)))
             (error "reverse tx map attrs currently require id, tempid, ident, or lookup ref values")))))
     (error "reverse tx map attrs currently require numeric :db/id on the map entity")))
 
-(defmacro- emit-tx-map-attr [e a v]
+(defmacro- emit-tx-map-attr [group e a v]
   (if (reverse-attr-form? a)
     (if (vector? v)
       (if (lookup-ref? v)
-        (emit-tx-map-reverse-attr e a v)
-        (emit-tx-map-vector-attr e a v))
-      (emit-tx-map-reverse-attr e a v))
+        (emit-tx-map-reverse-attr group e a v)
+        (emit-tx-map-vector-attr group e a v))
+      (emit-tx-map-reverse-attr group e a v))
   (if (brace? v)
-    (forms (emit-tx-map-nested-call e a v))
+    (forms (quasiquote (tx-data-with-map-group (unquote (emit-tx-map-nested-call e a v)) (unquote group))))
     (if (vector? v)
       (if (lookup-ref? v)
-        (emit-tx-data-call (keyword "db/add") e a v)
-        (forms (emit-tx-map-collection-call e a v)))
+        (forms (quasiquote (tx-data-with-map-group (unquote (emit-tx-data-call (keyword "db/add") e a v)) (unquote group))))
+        (forms (quasiquote (tx-data-with-map-group (unquote (emit-tx-map-collection-call e a v)) (unquote group)))))
       (forms
-        (emit-tx-data-call (keyword "db/add") e a v))))))
+        (quasiquote (tx-data-with-map-group (unquote (emit-tx-data-call (keyword "db/add") e a v)) (unquote group))))))))
 
-(defmacro- emit-tx-map-vector-attr [e a values]
+(defmacro- emit-tx-map-vector-attr [group e a values]
   (if (= (count values) 0)
     (forms)
     (concat
-      (forms (emit-tx-map-attr e a (first values)))
-      (emit-tx-map-vector-attr e a (rest values)))))
+      (forms (emit-tx-map-attr group e a (first values)))
+      (emit-tx-map-vector-attr group e a (rest values)))))
 
 (defmacro- emit-retract-entity-call [e]
   (if (lookup-ref? e)
@@ -454,24 +462,25 @@
             (unquote e)
             (unquote (emit-attr a))))))))
 
-(defmacro- emit-tx-map-attrs [e items]
+(defmacro- emit-tx-map-attrs [group e items]
   (if (= (count items) 0)
     (forms)
     (if (= (count items) 1)
       (error "tx map forms require key/value pairs")
       (if (keyword? (nth items 0))
         (if (= (source (nth items 0)) ":db/id")
-          (emit-tx-map-attrs e (rest (rest items)))
+          (emit-tx-map-attrs group e (rest (rest items)))
           (concat
-            (forms (emit-tx-map-attr e (nth items 0) (nth items 1)))
-            (emit-tx-map-attrs e (rest (rest items)))))
+            (forms (emit-tx-map-attr group e (nth items 0) (nth items 1)))
+            (emit-tx-map-attrs group e (rest (rest items)))))
         (concat
-          (forms (emit-tx-map-attr e (nth items 0) (nth items 1)))
-          (emit-tx-map-attrs e (rest (rest items))))))))
+          (forms (emit-tx-map-attr group e (nth items 0) (nth items 1)))
+          (emit-tx-map-attrs group e (rest (rest items))))))))
 
 (defmacro- emit-tx-map-items [form]
-  (let [e (tx-map-entity-id form)]
-    (emit-tx-map-attrs e form)))
+  (let [e (tx-map-entity-id form)
+        group (source (gensym "vev_tx_map_group"))]
+    (emit-tx-map-attrs group e form)))
 
 (defmacro- emit-tx-data-item [form]
   (if (nil? form)

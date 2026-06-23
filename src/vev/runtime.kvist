@@ -1939,14 +1939,16 @@
       (delete items)
       (return out true))))
 
-(defn remove-derived-tuple-adds! [ops: ^[dynamic]Tx-Op, entity: u64, attr: string]
+(defn remove-derived-tuple-adds! [ops: ^[dynamic]Tx-Op, entity: u64, attr: string, map-group: string]
   (let [index (- (count ops^) 1)]
     (while (>= index 0)
       (let [op ops^[index]]
         (when (and op.derived
                    (= op.kind .Add)
                    (= op.e entity)
-                   (= op.a attr))
+                   (= op.a attr)
+                   (not (= op.map-group ""))
+                   (= op.map-group map-group))
           (arr.remove-ordered-at! ops^ index))
         (set! index (- index 1))))))
 
@@ -1959,8 +1961,10 @@
       (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice schema.attrs 0))]
         (if has-value
           (do
-            (remove-derived-tuple-adds! out op.e schema.attr)
-            (arr.push! out^ (tx-add-derived op.e schema.attr tuple-value)))
+            (remove-derived-tuple-adds! out op.e schema.attr op.map-group)
+            (let [derived (tx-add-derived op.e schema.attr tuple-value)]
+              (set! derived.map-group op.map-group)
+              (arr.push! out^ derived)))
           (append-retract-attr-ops! out db op.e schema.attr)))
       (delete schema.attrs))))
 
@@ -2066,15 +2070,20 @@
     entity.has-ident (add-ident-nested-map entity.ident attr nested-map nested-tempid)
     :else (add-nested-map entity.e attr nested-map nested-tempid)))
 
+(defn tx-op-with-map-group [op: Tx-Op, map-group: string] -> Tx-Op
+  (let [out op]
+    (set! out.map-group map-group)
+    out))
+
 (defn append-nested-map-value-tx! [pending: ^[dynamic]Tx-Data, entity: Tx-Data, attr: string, value: Value, seed: string]
   (if (= value.kind .Vector)
     (if (lookup-ref-vector-value? value)
-      (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity attr value.items[0].text value.items[1]))
+      (arr.push! pending^ (tx-data-with-map-group (tx-add-value-lookup-from-entity-data entity attr value.items[0].text value.items[1]) entity.map-group))
       (for [item value.items]
         (append-nested-map-value-tx! pending entity attr item seed)))
     (if (= value.kind .Map)
-      (arr.push! pending^ (tx-add-nested-map-from-entity-data entity attr value (fmt.tprintf "%s_%d" seed (count pending^))))
-      (arr.push! pending^ (tx-add-from-entity-data entity attr value)))))
+      (arr.push! pending^ (tx-data-with-map-group (tx-add-nested-map-from-entity-data entity attr value (fmt.tprintf "%s_%d" seed (count pending^))) entity.map-group))
+      (arr.push! pending^ (tx-data-with-map-group (tx-add-from-entity-data entity attr value) entity.map-group)))))
 
 (defn append-nested-map-tx! [pending: ^[dynamic]Tx-Data, entity: Tx-Data, map-value: Value, seed: string] -> [ok: bool, error: string]
   (when (not (= map-value.kind .Map))
@@ -2098,7 +2107,8 @@
             lookup-value: data.lookup-value
             has-lookup-ref: data.has-lookup-ref
             ident: data.ident
-            has-ident: data.has-ident}))
+            has-ident: data.has-ident
+            map-group: data.map-group}))
 
 (defn append-map-collection-items! [pending: ^[dynamic]Tx-Data, data: Tx-Data, db: DB]
   (when (not (= data.v.kind .Vector))
@@ -2107,10 +2117,10 @@
         ref-attr (schema-ref-target? db data.a)]
     (for [item index data.v.items]
       (if (and ref-attr (lookup-ref-vector-value? item))
-        (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]))
+        (arr.push! pending^ (tx-data-with-map-group (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]) data.map-group))
         (if (and ref-attr (= item.kind .Map))
-          (arr.push! pending^ (tx-add-nested-map-from-entity-data entity data.a item (fmt.tprintf "vev_tx_map_%d" (+ (count pending^) index))))
-          (arr.push! pending^ (tx-add-from-entity-data entity data.a item)))))))
+          (arr.push! pending^ (tx-data-with-map-group (tx-add-nested-map-from-entity-data entity data.a item (fmt.tprintf "vev_tx_map_%d" (+ (count pending^) index))) data.map-group))
+          (arr.push! pending^ (tx-data-with-map-group (tx-add-from-entity-data entity data.a item) data.map-group)))))))
 
 (defn should-split-map-collection? [db: DB, data: Tx-Data] -> bool
   (when (not (and data.from-map-collection
@@ -2440,18 +2450,19 @@
           (if (= v.kind .Entity)
             (let [forward-attr (forward-attr-for-reverse data.a)]
               (if (= data.op ":db/retract")
-                (arr.push! resolved-ops (tx-retract v.entity forward-attr (value-entity e)))
-                (arr.push! resolved-ops (tx-add v.entity forward-attr (value-entity e)))))
+                (arr.push! resolved-ops (tx-op-with-map-group (tx-retract v.entity forward-attr (value-entity e)) data.map-group))
+                (arr.push! resolved-ops (tx-op-with-map-group (tx-add v.entity forward-attr (value-entity e)) data.map-group))))
             (return (Resolved-Tx {ok: false
                                   error: "reverse ref value must resolve to entity"
                                   ops: resolved-ops
                                   tx-meta: resolved-meta
                                   tempids: resolved-tempids})))
           (if (= data.op ":db/retract")
-            (arr.push! resolved-ops (tx-retract e data.a v))
+            (arr.push! resolved-ops (tx-op-with-map-group (tx-retract e data.a v) data.map-group))
             (let [op (tx-add e data.a v)]
               (when data.has-tempid
                 (set! op.tuple-identity true))
+              (set! op.map-group data.map-group)
               (arr.push! resolved-ops op)))))))
     (Resolved-Tx {ok: true error: "" ops: resolved-ops tx-meta: resolved-meta tempids: resolved-tempids})))
 

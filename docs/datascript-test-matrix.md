@@ -17,10 +17,10 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 330
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 331
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
-tuple edge matrices, remaining native callback design, and performance work.
+remaining native callback design, and performance work.
 
 ## Semantic Core
 
@@ -41,7 +41,7 @@ These are the main in-memory parity target before durable storage.
 | `upsert.cljc` | 6 | passing | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, main conflict matrix, ref and lookup-ref upserts, non-upsert of new ref tempids, unique cardinality-many upserts, and EDN text/prepared transaction coverage for ordinary identity upsert, two-identity upsert, lookup-ref upsert, retry convergence, forward ref tempids, negative tempid refs, and rollback on conflict covered; exact diagnostic text is Vev-shaped |
 | `validation.cljc` | 2 | passing | bad entity ids, bad attrs, nil values, bad ref values, unknown ops, tempids outside add, bad tx root shapes, uniqueness, schema booleans/keywords, component schema, and rollback/no-mutation validation are covered through runtime and EDN text APIs; exact Clojure exception types/messages are host |
 | `index.cljc` | 5 | passing | main index order, component filtering, AVET schema filtering/errors, empty DB `find-datom`, prefix `find-datom`, `seek-datoms`, `rseek-datoms`, upstream `index-range`, sequence-value compare, lookup-ref index args, and binary-bound backed index access are covered; exact lazy sequence rendering is host/API shape |
-| `tuples.cljc` | 11 | partial | direct/component tuple upsert, redundant direct tuple-value ignore cases including final-state update assertions, stale explicit direct tuple update rejection, tempid tuple values as upsert identity, lookup-ref tuple values, tuple lookup-ref conflict/update paths, inferred tuple value type/cardinality metadata, final tuple schema validation independent of tx-data order, and EDN text/prepared tuple upsert plus lookup-ref transaction coverage covered; remaining exact errors and edge conflict matrix |
+| `tuples.cljc` | 11 | passing | tuple schema and validation, derived tuple maintenance, direct tuple attr rejection with redundant final-state tuple assertions, map-atomic versus vector-sequential tuple component updates, unique tuple conflicts/upserts, tuple lookup refs including nested ref lookup refs, tuple lookup-ref pull/query/index access, tuple query functions, and EDN text/prepared tuple tx-data covered; exact diagnostics are Vev-shaped |
 | `lookup_refs.cljc` | 5 | passing | entity/query/tx/index lookup refs, mixed entity-id inputs, scalar and collection lookup-ref query inputs with DataScript-style projection of the original lookup-ref value, multi-source lookup-ref inputs, unresolved inline query lookup-ref errors, missing lookup-ref retract no-ops, and checked missing/non-unique lookup-ref errors covered; exact host/API rendering is Vev-shaped |
 | `ident.cljc` | 4 | passing | keep covered |
 | `explode.cljc` | 4 | passing | cardinality-many tx-map collection expansion, ref collections, reverse ref tx-map values, nested maps, multi-valued nested maps including EDN sets, reverse nested maps, circular/nested ref shapes, and reverse-attr ref-schema validation covered through EDN/text and Kvist tx-data; Clojure host list/array inputs are not part of Vev's native API surface |
@@ -89,19 +89,16 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Finish the tuple edge matrix from `tuples.cljc`: conflicting tuple upsert
-   paths, direct tuple-value corner cases, and exact schema validation where
-   those affect engine behavior rather than only Clojure error text.
-2. Tighten parser validation against `parser_*.cljc`, especially malformed
+1. Tighten parser validation against `parser_*.cljc`, especially malformed
    `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
-3. Extend the native callback surface beyond query predicate/value/aggregate
+2. Extend the native callback surface beyond query predicate/value/aggregate
    and pull `:xform` callbacks: transaction functions, listeners, and final
    C/Odin/non-Kvist registration shape.
-4. Replace the current rule/fixpoint and aggregate hot paths with measured
+3. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript
    parity also needs predictable performance on recursive rules and large
    relations.
-5. Keep Kvist literal macros aligned with the typed AST as ergonomic sugar, not
+4. Keep Kvist literal macros aligned with the typed AST as ergonomic sugar, not
    as the definition of compatibility.
