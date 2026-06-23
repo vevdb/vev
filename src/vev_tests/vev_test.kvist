@@ -5742,7 +5742,32 @@
                    [:inc-age "Petr"]
                    [:db/add 1 :label "after-call"])
                  registry)
-        petr (vev.db-entity report.db-after 1)]
+        text-missing (vev.transact-text-with-string-fns
+                       (addr conn)
+                       "[[:db.fn/call :inc-age \"Bob\"]]"
+                       registry)
+        text-call (vev.transact-text-with-string-fns
+                    (addr conn)
+                    "[[:db/add 2 :name \"Ada\"] [:db/add 2 :age 40] [:db.fn/call :inc-age \"Ada\"] [:db/add 2 :label \"after-text-call\"]]"
+                    registry)
+        prepared (vev.prepare-tx-text
+                   "[[:db/add 3 :name \"Grace\"] [:db/add 3 :age 50] [:inc-age \"Grace\"] [:db/add 3 :label \"after-prepared-call\"]]")
+        prepared-call (vev.transact-prepared-with-string-fns (addr conn) prepared registry)
+        no-registry (vev.transact-text-with-string-fns
+                      (addr conn)
+                      "[[:inc-age \"Petr\"]]"
+                      ([]vev.Tx-Fn-String []))
+        unknown-text (vev.transact-text-with-string-fns
+                       (addr conn)
+                       "[[:unknown-fn \"Petr\"]]"
+                       registry)
+        bad-call-shape (vev.transact-text-with-string-fns
+                         (addr conn)
+                         "[[:db.fn/call :inc-age 42]]"
+                         registry)
+        petr (vev.db-entity report.db-after 1)
+        ada (vev.db-entity text-call.db-after 2)
+        grace (vev.db-entity prepared-call.db-after 3)]
     (t.is (not unknown.ok))
     (t.is (= unknown.error "transaction fn not found"))
     (t.is (not non-fn.ok))
@@ -5752,7 +5777,24 @@
     (t.is report.ok)
     (t.is (= (vev.entity-get petr ":age").int-value 32))
     (t.is (vev.entity-get petr ":had-birthday").bool-value)
-    (t.is (= (vev.entity-get petr ":label").text "after-call"))))
+    (t.is (= (vev.entity-get petr ":label").text "after-call"))
+    (t.is (not text-missing.ok))
+    (t.is (= text-missing.error "No entity with name"))
+    (t.is text-call.ok)
+    (t.is (= (vev.entity-get ada ":age").int-value 41))
+    (t.is (vev.entity-get ada ":had-birthday").bool-value)
+    (t.is (= (vev.entity-get ada ":label").text "after-text-call"))
+    (t.is prepared.ok)
+    (t.is prepared-call.ok)
+    (t.is (= (vev.entity-get grace ":age").int-value 51))
+    (t.is (vev.entity-get grace ":had-birthday").bool-value)
+    (t.is (= (vev.entity-get grace ":label").text "after-prepared-call"))
+    (t.is (not no-registry.ok))
+    (t.is (= no-registry.error "transaction fn not registered"))
+    (t.is (not unknown-text.ok))
+    (t.is (= unknown-text.error "transaction fn not found"))
+    (t.is (not bad-call-shape.ok))
+    (t.is (= bad-call-shape.error ":db.fn/call text form currently expects one string argument"))))
 
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))

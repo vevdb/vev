@@ -2213,6 +2213,33 @@
                 (return false value-error))
               (arr.push! out^ (tx-cas-lookup-values-from-ref ref attr expected has-expected-lookup expected-lookup-attr expected-lookup-value value has-value-lookup value-lookup-attr value-lookup-value))
               (return true "")))
+        (= op ":db.fn/call")
+          (do
+            (when (not (= doc.nodes[vector-node].child-count 3))
+              (return false ":db.fn/call text form expects [op ident string-arg]"))
+            (let [ident-node (edn-child-at doc vector-node 1)
+                  arg-node (edn-child-at doc vector-node 2)]
+              (when (not (= doc.nodes[ident-node].kind .Keyword))
+                (return false ":db.fn/call text form expects keyword function ident"))
+              (when (not (= doc.nodes[arg-node].kind .String))
+                (return false ":db.fn/call text form currently expects one string argument"))
+              (arr.push! out^ (call-ident-string doc.nodes[ident-node].text doc.nodes[arg-node].text))
+              (return true "")))
+        (and (not (or (= op ":db/add")
+                      (= op ":db/retract")
+                      (= op ":db/retractEntity")
+                      (= op ":db.fn/retractEntity")
+                      (= op ":db.fn/retractAttribute")
+                      (= op ":db.fn/cas")
+                      (= op ":db/cas")
+                      (= op ":db.fn/call")))
+             (= doc.nodes[vector-node].child-count 2))
+          (do
+            (let [arg-node (edn-child-at doc vector-node 1)]
+              (when (not (= doc.nodes[arg-node].kind .String))
+                (return false "transaction function text shorthand currently expects one string argument"))
+              (arr.push! out^ (call-ident-string op doc.nodes[arg-node].text))
+              (return true "")))
         :else (return false "unknown tx-data operation")))))
 
 (defn append-edn-tx-item! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, node-index: int] -> [ok: bool, error: string]
@@ -2251,9 +2278,21 @@
     (transact-tx-data conn (slice prepared.tx-data 0))
     (failed-tx-report conn^.db prepared.error)))
 
+(defn transact-prepared-with-string-fns [conn: ^Conn, prepared: Prepared-Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
+  (if prepared.ok
+    (transact-tx-data-with-string-fns conn (slice prepared.tx-data 0) registry)
+    (failed-tx-report conn^.db prepared.error)))
+
 (defn transact-text [conn: ^Conn, text: string] -> Tx-Report
   (let [tx-data (make [dynamic]Tx-Data) :defer
         [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
     (when (not parse-ok)
       (return (failed-tx-report conn^.db parse-error)))
     (transact-tx-data conn (slice tx-data 0))))
+
+(defn transact-text-with-string-fns [conn: ^Conn, text: string, registry: []Tx-Fn-String] -> Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (when (not parse-ok)
+      (return (failed-tx-report conn^.db parse-error)))
+    (transact-tx-data-with-string-fns conn (slice tx-data 0) registry)))
