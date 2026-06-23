@@ -102,6 +102,9 @@
        (= args[1].kind .Int)
        (>= args[0].int-value args[1].int-value)))
 
+(defn native-always? [args: []vev.Value] -> bool
+  true)
+
 (defn native-db-age-equals? [db: vev.DB, args: []vev.Value] -> bool
   (when (not (and (= (count args) 3)
                   (= args[0].kind .Symbol)
@@ -4644,7 +4647,8 @@
                   [:db/add 2 :follow (vev.value-entity 3)]
                   [:db/add 3 :follow (vev.value-entity 4)]
                   [:db/add 4 :follow (vev.value-entity 6)]
-                  [:db/add 2 :follow (vev.value-entity 4)]])
+                  [:db/add 2 :follow (vev.value-entity 4)]
+                  [:db/add 2 :age 15]])
         follows (vev.q report.db-after
                   [:find ?e1 ?e2
                    :in $ %
@@ -4724,6 +4728,26 @@
                                     "[:find ?x ?y :in $ % ?even :where (match ?even ?x ?y)]"
                                     "[[(match ?pred ?e ?e2) [?e :follow ?e2] [(?pred ?e)] [(?pred ?e2)]]]"
                                     ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":even?"))]))
+        native-rule-registry ([]vev.Native-Query-Fn
+                               [(vev.query-predicate-fn "always?" native-always?)
+                                (vev.query-db-predicate-fn "db-age-equals?" native-db-age-equals?)])
+        native-rule-rows (vev.value-vector
+                           ([]vev.Value
+                             [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":attr") (vev.value-string "a")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":attr") (vev.value-string "b")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":attr") (vev.value-string "a")]))]))
+        native-rule-predicate (vev.q-text-relation-db-with-rules-and-fns
+                                native-rule-rows
+                                "[:find ?p :in $ % ?fn :where (rule ?p ?fn \"a\") (rule ?p ?fn \"b\")]"
+                                "[[(rule ?p ?fn ?x) [?p :attr ?x] [(?fn ?x)]]]"
+                                ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "always?"))])
+                                native-rule-registry)
+        db-rule-predicate (vev.q-text-with-rules-and-fns
+                            report.db-after
+                            "[:find ?x :in $ % ?pred :where (match ?pred ?x)]"
+                            "[[(match ?pred ?e) [?e :follow ?next] [(?pred $ ?e 15)]]]"
+                            ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "db-age-equals?"))])
+                            native-rule-registry)
         rule-wildcard (vev.q-collection
                         report.db-after
                         [:find [?x ...]
@@ -4793,6 +4817,12 @@
     (t.is (= rule-predicate-input-text.rows[0].values[1].entity 4))
     (t.is (= rule-predicate-input-text.rows[1].values[0].entity 4))
     (t.is (= rule-predicate-input-text.rows[1].values[1].entity 6))
+    (t.is native-rule-predicate.ok)
+    (t.is (= (count native-rule-predicate.rows) 1))
+    (t.is (= native-rule-predicate.rows[0].values[0].int-value 1))
+    (t.is db-rule-predicate.ok)
+    (t.is (= (count db-rule-predicate.rows) 1))
+    (t.is (= db-rule-predicate.rows[0].values[0].entity 2))
     (t.is (= (count rule-wildcard) 5))
     (t.is (= rule-wildcard[0].entity 1))
     (t.is (= rule-wildcard[1].entity 2))
