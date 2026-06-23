@@ -23,7 +23,7 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | partial | primary/named collection datom sources, map-form text queries, map relation inputs, nested `:in` binding patterns, nested map values, checked scalar/collection/tuple/relation input shape errors, and issue-425 symbol constants covered; host functions and exact input error wording remain |
+| `query.cljc` | 11 | partial | primary/named collection datom sources, map-form text queries, map relation inputs, nested `:in` binding patterns, nested map values, DataScript namespaced reverse attrs, checked scalar/collection/tuple/relation input shape errors, and issue-425 symbol constants covered; host functions and exact input error wording remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, lookup-ref `get-else`/`get-some` entity inputs in literal and text APIs, regex predicate surface, regex match-return clauses, nested result binding including EDN text vector/map literal function args and text/prepared tuple/relation/collection output destructuring, named predicate/function operator inputs, and registered native-op aliases for EDN/prepared text queries including rule bodies covered; checked query errors now cover unknown native predicate/function ops and insufficient function/predicate bindings; arbitrary host callback function surface remains |
 | `query_not.cljc` | 5 | partial | source semantics plus checked unbound-group errors covered; query text and Kvist literal macros have ordered top-level `not` binding validation; supported rule bodies execute in source order |
@@ -40,7 +40,7 @@ These are the main in-memory parity target before durable storage.
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
 | `components.cljc` | 2 | partial | reverse component pull id/pattern/recursion behavior covered; exact schema validation and render/touch shapes remain |
-| `pull_api.cljc` | 17 | partial | repeated attr-spec normalization, reverse component pull id/pattern/recursion shapes, and ABI-friendly named `:xform` transforms for `vector`/`name` covered; arbitrary host xform functions, visitor options, and exact collection/scalar shapes remain |
+| `pull_api.cljc` | 17 | partial | repeated attr-spec normalization, DataScript namespaced reverse attrs, reverse component pull id/pattern/recursion shapes, and ABI-friendly named `:xform` transforms for `vector`/`name` covered; arbitrary host xform functions, visitor options, and exact collection/scalar shapes remain |
 | `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
 | `filter.cljc` | 1 | partial | materialized filtered DBs cover query/entity/index-visible semantics; exact hash/equality/runtime wrapper behavior remains |
 
@@ -60,7 +60,7 @@ EDN/text coverage first and add Kvist macro coverage as a convenience layer.
 | `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls, rule definitions, ordered text rule bodies, rule-body `get-else`/`get-some`, and empty/duplicate/arity rule validation covered; remaining exact parser shapes remain |
 | `parser_where.cljc` | 6 | partial | data pattern including lookup-ref entity terms, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, ordinary rule clauses, nested text `not`, and ordered top-level execution/validation covered; parser validation rejects empty rule calls, empty `not`/`or`, empty `not-join`/`or-join` bodies, and empty join-var sets with DataScript-shaped errors; exact diagnostics remain |
-| `pull_parser.cljc` | 1 | partial | query text pull finds, pull pattern variables, direct pull text APIs, and reusable prepared pull pattern values cover attrs, wildcard, nested maps, recursive map values, flat/nested `:default`/`:as`/`:limit`/`:xform` option forms, repeated attr specs, and option-wrapped map keys; exact validation remains |
+| `pull_parser.cljc` | 1 | partial | query text pull finds, pull pattern variables, direct pull text APIs, and reusable prepared pull pattern values cover attrs, wildcard, DataScript namespaced reverse attrs, nested maps with vector or list pattern values, recursive map values, flat/nested `:default`/`:as`/`:limit`/`:xform` option forms, repeated attr specs, and option-wrapped map keys; exact validation remains |
 | transaction EDN text | n/a | partial | `transact-text` and reusable prepared tx-data cover `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, map tx-data, lookup refs, idents, string/current-tx/negative numeric tempids, generated map ids, nested maps, ordinary and tuple upsert/lookup-ref transactions, and bad-shape/no-mutation validation through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
