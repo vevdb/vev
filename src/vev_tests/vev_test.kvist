@@ -565,6 +565,8 @@
         zero-function-query (vev.empty-query)
         [zero-predicate-ok zero-predicate-error] (vev.parse-query-text! (addr zero-predicate-query) "[:find ?e :where [?e :name] [(custom-pred)]]")
         [zero-function-ok zero-function-error] (vev.parse-query-text! (addr zero-function-query) "[:find ?e ?x :where [?e :name] [(custom-fn) ?x]]")
+        aggregate-extra-query (vev.empty-query)
+        [aggregate-extra-ok aggregate-extra-error] (vev.parse-query-text! (addr aggregate-extra-query) "[:find (count ?name 1 $x) :in $x :where [?e :name ?name]]")
         zero-predicate-runtime (vev.q-text conn.db "[:find ?e :where [?e :name] [(custom-pred)]]")
         zero-function-runtime (vev.q-text conn.db "[:find ?e ?x :where [?e :name] [(custom-fn) ?x]]")
         unknown-predicate (vev.q-text-with-inputs
@@ -581,17 +583,45 @@
         not-before-binding (vev.q-text conn.db "[:find ?e :where (not [?e :name \"Ada Lovelace\"]) [?e :name]]")
         predicate-before-binding (vev.q-text conn.db "[:find ?name :where [(= ?name \"Ada Lovelace\")] [?e :name ?name]]")
         mismatched-or (vev.q-text conn.db "[:find ?e :where (or [?e :name _] [?e :age ?a])]")
+        symbol-constant (vev.q-text conn.db "[:find ?e :where [?e :name sym]]")
+        dollar-symbol-constant (vev.q-text conn.db "[:find ?e :where [?e :name $src-sym]]")
         relation-source (vev.q-text-with-inputs
                           conn.db
                           "[:find ?name :in $rows :where [$rows ?e :name ?name]]"
                           ([]vev.Query-Input
                             [(vev.query-input-scalar
                                (vev.value-vector
-                                 ([]vev.Value
-                                   [(vev.value-vector
-                                      ([]vev.Value [(vev.value-int 1)
-                                                    (vev.value-keyword ":name")
-                                                    (vev.value-string "Ada Lovelace")]))])))]))]
+                                    ([]vev.Value
+                                      [(vev.value-vector
+                                         ([]vev.Value [(vev.value-int 1)
+                                                       (vev.value-keyword ":name")
+                                                       (vev.value-string "Ada Lovelace")]))])))]))
+        source-one-wide (vev.q-text-with-inputs
+                          conn.db
+                          "[:find ?e :in $ids :where [$ids ?e]]"
+                          ([]vev.Query-Input
+                            [(vev.query-input-collection
+                               ([]vev.Value [(vev.value-entity 1)
+                                             (vev.value-entity 2)]))]))
+        source-two-wide (vev.q-text-with-inputs
+                          conn.db
+                          "[:find ?e :in $pairs :where [$pairs ?e :name]]"
+                          ([]vev.Query-Input
+                            [(vev.query-input-relation
+                               ([]vev.Value [(vev.value-entity 1) (vev.value-keyword ":name")
+                                             (vev.value-entity 2) (vev.value-keyword ":age")])
+                               2)]))
+        source-symbol-value (vev.q-text-with-inputs
+                              conn.db
+                              "[:find ?e :in $rows :where [$rows ?e :status $src-sym]]"
+                              ([]vev.Query-Input
+                                [(vev.query-input-scalar
+                                   (vev.value-vector
+                                     ([]vev.Value
+                                       [(vev.value-vector
+                                          ([]vev.Value [(vev.value-entity 1)
+                                                        (vev.value-keyword ":status")
+                                                        (vev.value-symbol "$src-sym")]))])))]))]
     (defer (delete collection))
     (t.is (= (count relation.rows) 1))
     (t.is (= relation.rows[0].values[0].entity 1))
@@ -664,6 +694,16 @@
     (t.is (= empty-pattern.error "Pattern could not be empty"))
     (t.is zero-predicate-ok zero-predicate-error)
     (t.is zero-function-ok zero-function-error)
+    (t.is aggregate-extra-ok aggregate-extra-error)
+    (t.is (= (count aggregate-extra-query.aggregates) 1))
+    (t.is (= aggregate-extra-query.aggregates[0].op "count"))
+    (t.is (= aggregate-extra-query.aggregates[0].var "?name"))
+    (t.is (= (count aggregate-extra-query.aggregates[0].args) 3))
+    (t.is (= aggregate-extra-query.aggregates[0].args[0].kind .Var))
+    (t.is (= aggregate-extra-query.aggregates[0].args[1].value.kind .Int))
+    (t.is (= aggregate-extra-query.aggregates[0].args[1].value.int-value 1))
+    (t.is (= aggregate-extra-query.aggregates[0].args[2].value.kind .Symbol))
+    (t.is (= aggregate-extra-query.aggregates[0].args[2].value.text "$x"))
     (t.is (not zero-predicate-runtime.ok))
     (t.is (= zero-predicate-runtime.error "unknown query predicate: custom-pred"))
     (t.is (not zero-function-runtime.ok))
@@ -684,9 +724,18 @@
     (t.is (= predicate-before-binding.error "insufficient bindings for =: ?name"))
     (t.is (not mismatched-or.ok))
     (t.is (= mismatched-or.error "or branches must use same vars"))
+    (t.is (= (count symbol-constant.rows) 0))
+    (t.is (= (count dollar-symbol-constant.rows) 0))
     (t.is relation-source.ok)
     (t.is (= (count relation-source.rows) 1))
-    (t.is (= relation-source.rows[0].values[0].text "Ada Lovelace"))))
+    (t.is (= relation-source.rows[0].values[0].text "Ada Lovelace"))
+    (t.is (= (count source-one-wide.rows) 2))
+    (t.is (= source-one-wide.rows[0].values[0].entity 1))
+    (t.is (= source-one-wide.rows[1].values[0].entity 2))
+    (t.is (= (count source-two-wide.rows) 1))
+    (t.is (= source-two-wide.rows[0].values[0].entity 1))
+    (t.is (= (count source-symbol-value.rows) 1))
+    (t.is (= source-symbol-value.rows[0].values[0].entity 1))))
 
 (t.deftest datascript-parser-query-text-predicates-and-functions
   (defer (free_all context.allocator))
