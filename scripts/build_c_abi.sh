@@ -29,3 +29,5 @@ clang \
   -o "$EXAMPLE_DIR/vev_c_smoke"
 
 "$EXAMPLE_DIR/vev_c_smoke"
+
+python3 "$ROOT/examples/python/smoke.py"
