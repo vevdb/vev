@@ -109,11 +109,11 @@
                                     db email)))]
     (print-result "bad-order-join" n measured)))
 
-(doseq [n [3]]
+(doseq [n [3 10 30 100]]
   (run-chain-from-root n))
 (doseq [n []]
   (run-chain-all n))
-(doseq [n []]
+(doseq [n [4 13 40]]
   (run-tree-from-root n))
 (doseq [n [1000]]
   (run-bad-order-join n))

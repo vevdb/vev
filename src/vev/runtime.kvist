@@ -3710,6 +3710,131 @@
   (when (> count-value stats^.max-intermediate-bindings)
     (set! stats^.max-intermediate-bindings count-value)))
 
+(defn term-var-name? [term: Term, name: string] -> bool
+  (and (= term.kind .Var)
+       (= term.name name)))
+
+(defn clause-attr-keyword [clause: Clause] -> [attr: string, ok: bool]
+  (when (and (= clause.a.kind .Value)
+             (= clause.a.value.kind .Keyword))
+    (return clause.a.value.text true))
+  (return "" false))
+
+(defn rule-has-only-plain-clauses-and-calls? [rule: Rule] -> bool
+  (and (= (count rule.predicates) 0)
+       (= (count rule.function-clauses) 0)
+       (= (count rule.get-elses) 0)
+       (= (count rule.get-somes) 0)
+       (= (count rule.grounds) 0)
+       (= (count rule.not-groups) 0)
+       (= (count rule.or-groups) 0)))
+
+(defn linear-transitive-rule-attr [rules: []Rule, name: string] -> [attr: string, ok: bool]
+  (let [found-base false
+        found-recursive false
+        attr ""]
+    (for [rule rules]
+      (when (= rule.name name)
+        (when (not (and (= (count rule.params) 2)
+                        (rule-has-only-plain-clauses-and-calls? rule)))
+          (return "" false))
+        (if (= (count rule.rule-calls) 0)
+          (do
+            (when (not (= (count rule.clauses) 1))
+              (return "" false))
+            (let [rule-clause rule.clauses[0]]
+              (let [[clause-attr clause-attr-ok] (clause-attr-keyword rule-clause)]
+              (when (not (and clause-attr-ok
+                              (term-var-name? rule-clause.e rule.params[0])
+                              (term-var-name? rule-clause.v rule.params[1])))
+                (return "" false))
+              (when (and found-base (not (= attr clause-attr)))
+                (return "" false))
+              (set! attr clause-attr)
+              (set! found-base true))))
+          (do
+            (when (not (and (= (count rule.clauses) 1)
+                            (= (count rule.rule-calls) 1)))
+              (return "" false))
+            (let [rule-clause rule.clauses[0]
+                  recursive-call rule.rule-calls[0]]
+              (let [[clause-attr clause-attr-ok] (clause-attr-keyword rule-clause)]
+              (when (not (and clause-attr-ok
+                              (= recursive-call.name name)
+                              (= (count recursive-call.args) 2)
+                              (term-var-name? rule-clause.e rule.params[0])
+                              (= rule-clause.v.kind .Var)
+                              (term-var-name? recursive-call.args[0] rule-clause.v.name)
+                              (term-var-name? recursive-call.args[1] rule.params[1])))
+                (return "" false))
+              (when (and found-base (not (= attr clause-attr)))
+                (return "" false))
+              (set! attr clause-attr)
+              (set! found-recursive true)))))))
+    (return attr (and found-base found-recursive))))
+
+(defn append-transitive-targets! [out: ^[dynamic]u64, db: DB, attr: string, start: u64]
+  (let [seen (make (map u64 bool))
+        frontier (make [dynamic]u64)
+        frontier-index 0]
+    (defer (delete seen))
+    (defer (delete frontier))
+    (mmap.assoc! seen start true)
+    (arr.push! frontier start)
+    (while (< frontier-index (count frontier))
+      (let [current frontier[frontier-index]
+            edge-clause (clause (term-value (value-entity current)) attr (term-wildcard))
+            candidates (clause-candidate-indexes db edge-clause (Binding {})) :defer]
+        (set! frontier-index (+ frontier-index 1))
+        (for [datom-index candidates]
+          (let [datom db.datoms[datom-index]]
+            (when (and (datom-current-at? db datom-index)
+                       (= datom.v.kind .Entity))
+              (let [[_ found] (mmap.get seen datom.v.entity)]
+                (when (not found)
+                  (mmap.assoc! seen datom.v.entity true)
+                  (arr.push! frontier datom.v.entity)
+                  (arr.push! out^ datom.v.entity))))))))))
+
+(defn transitive-target-matches? [db: DB, target: Value, target-ok: bool, entity: u64] -> bool
+  (when (not target-ok)
+    (return true))
+  (let [[target-entity target-entity-ok] (value-as-entity db target)]
+    (and target-entity-ok (= target-entity.entity entity))))
+
+(defn append-linear-transitive-results! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule]
+  (let [[initial initial-ok] (bind-rule-args binding call rule)]
+    (when (not initial-ok)
+      (return))
+    (let [[start start-ok] (binding-lookup initial rule.params[0])]
+      (when (not start-ok)
+        (return))
+      (let [[start-entity start-entity-ok] (value-as-entity db start)]
+        (when (not start-entity-ok)
+          (return))
+        (let [[target target-ok] (binding-lookup initial rule.params[1])
+              targets (make [dynamic]u64)]
+          (defer (delete targets))
+          (append-transitive-targets! (addr targets) db attr start-entity.entity)
+          (for [target-entity targets]
+            (when (transitive-target-matches? db target target-ok target-entity)
+              (let [[result result-ok] (binding-with-value initial rule.params[1] (value-entity target-entity))]
+                (when result-ok
+                  (let [[merged merged-ok] (merge-rule-output binding call rule result)]
+                    (when merged-ok
+                      (arr.push! out^ merged))))))))))))
+
+(defn bindings-after-linear-transitive-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
+  (let [result-bindings (make [dynamic]Binding)
+        [attr attr-ok] (linear-transitive-rule-attr rules call.name)]
+    (when (not attr-ok)
+      (return result-bindings false))
+    (for [rule rules]
+      (when (= rule.name call.name)
+        (append-linear-transitive-results! (addr result-bindings) db attr call binding rule)
+        (return result-bindings true)))
+    (return result-bindings true)))
+
 (defn bindings-after-rule-step-depth-with-fns [db: DB, rules: []Rule, rule: Rule, bindings: []Binding, step: Query-Step, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (case step.kind
     .Clause
@@ -3912,6 +4037,10 @@
     matched))
 
 (defn bindings-after-rule-call-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
+    (when optimized-ok
+      (return optimized))
+    (delete optimized))
   (when (matching-rules-are-leaves? rules call)
     (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding 1 call.source call.has-source registry)
           out (unique-bindings (slice candidates 0))]
@@ -3934,6 +4063,12 @@
 
 (defn bindings-after-rule-call-profiled-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
   (set! stats^.rule-calls (+ stats^.rule-calls 1))
+  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
+    (when optimized-ok
+      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+      (query-stats-observe-bindings! stats (count optimized))
+      (return optimized))
+    (delete optimized))
   (when (matching-rules-are-leaves? rules call)
     (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
     (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
