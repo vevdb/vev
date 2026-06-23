@@ -3316,6 +3316,137 @@
     (t.is (= function-collection-output.rows[1].values[0].text ":b"))
     (t.is (= function-collection-output.rows[2].values[0].text ":c"))))
 
+(t.deftest datascript-query-text-function-result-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :age 15}
+             {:db/id 2 :age 22}
+             {:db/id 3 :age 37}])
+        counted (vev.q-text-with-inputs
+                  conn.db
+                  "[:find ?x ?c :in [?x ...] :where [(count ?x) ?c]]"
+                  ([]vev.Query-Input
+                    [(vev.query-input-collection
+                       ([]vev.Value [(vev.value-string "a")
+                                      (vev.value-string "abc")]))]))
+        vector-tx (vev.q-text-collection
+                    conn.db
+                    "[:find [?tx-data ...] :where [(ground :db/add) ?op] [(vector ?op -1 :attr 12) ?tx-data]]")
+        map-tx (vev.q-text-collection
+                 conn.db
+                 "[:find [?tx-data ...] :where [(hash-map :db/id -1 :age 92 :name \"Aaron\") ?tx-data]]")
+        map-order (vev.q-text-collection
+                    conn.db
+                    "[:find [?m ...] :where [(hash-map :a 1 :b 2) ?m] [(hash-map :b 2 :a 1) ?m]]")
+        map-get (vev.q-text
+                  conn.db
+                  "[:find ?m ?v :where [(hash-map :b 1 :d 2) ?m] [(get ?m :d) ?v]]")
+        summed (vev.q-text
+                 conn.db
+                 "[:find ?e1 ?e2 ?e3 :where [?e1 :age ?a1] [?e2 :age ?a2] [?e3 :age ?a3] [(+ ?a1 ?a2) ?a12] [(= ?a12 ?a3)]]")
+        prepared (vev.prepare-query-text
+                   "[:find ?age ?next :where [_ :age ?age] [(inc ?age) ?next]]")
+        incremented (vev.q-prepared conn.db prepared)
+        conflicting (vev.q-text-with-inputs
+                      conn.db
+                      "[:find ?n :in ?n :where [(+ 1 2) ?n]]"
+                      ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 4))]))
+        identity-conflict (vev.q-text
+                            conn.db
+                            "[:find ?n :where [(identity 1) ?n] [(identity 2) ?n]]")
+        destructured (vev.q-text
+                       conn.db
+                       "[:find ?n ?x :where [(identity [3 4]) [?n ?x]]]")
+        destructured-conflict (vev.q-text
+                                conn.db
+                                "[:find ?n ?x :where [(identity [3 4]) [?n ?x] [(identity [1 2]) [?n ?x]]]")
+        pair-unification (vev.q-text-with-inputs
+                           conn.db
+                           "[:find ?pair ?x :in [[?e ?attr ?pair]] :where [(first ?pair) ?x] [(second ?pair) ?x]]"
+                           ([]vev.Query-Input
+                             [(vev.query-input-relation
+                                ([]vev.Value
+                                  [(vev.value-int 1)
+                                   (vev.value-keyword ":pair")
+                                   (vev.value-vector ([]vev.Value [(vev.value-keyword ":a") (vev.value-keyword ":a")]))
+                                   (vev.value-int 2)
+                                   (vev.value-keyword ":pair")
+                                   (vev.value-vector ([]vev.Value [(vev.value-keyword ":b") (vev.value-keyword ":c")]))])
+                                3)]))
+        rel-function-conflict (vev.q-text
+                                conn.db
+                                "[:find ?age :where [_ :age ?age] [(identity 100) ?age]]")
+        nil-result-filtered (vev.q-text
+                              conn.db
+                              "[:find ?x :where [(first []) ?x]]")
+        ground-relation-output (vev.q-text-with-inputs
+                                 conn.db
+                                 "[:find ?x ?z :in ?in :where [(ground ?in) [[?x _ ?z] ...]]]"
+                                 ([]vev.Query-Input
+                                   [(vev.query-input-scalar
+                                      (vev.value-vector
+                                        ([]vev.Value
+                                          [(vev.value-vector ([]vev.Value [(vev.value-keyword ":a") (vev.value-keyword ":b") (vev.value-keyword ":c")]))
+                                           (vev.value-vector ([]vev.Value [(vev.value-keyword ":d") (vev.value-keyword ":e") (vev.value-keyword ":f")]))])))]))
+        function-relation-output (vev.q-text
+                                   conn.db
+                                   "[:find ?x ?z :where [(identity [[:a :b :c] [:d :e :f]]) [[?x _ ?z] ...]]]")
+        function-collection-output (vev.q-text
+                                     conn.db
+                                     "[:find ?x :where [(identity [:a :b :c]) [?x ...]]]")]
+    (t.is (= (count counted.rows) 2))
+    (t.is (= counted.rows[0].values[0].text "a"))
+    (t.is (= counted.rows[0].values[1].int-value 1))
+    (t.is (= counted.rows[1].values[0].text "abc"))
+    (t.is (= counted.rows[1].values[1].int-value 3))
+    (t.is (= (count vector-tx) 1))
+    (t.is (= vector-tx[0].kind .Vector))
+    (t.is (= vector-tx[0].items[0].text ":db/add"))
+    (t.is (= vector-tx[0].items[1].int-value -1))
+    (t.is (= vector-tx[0].items[2].text ":attr"))
+    (t.is (= vector-tx[0].items[3].int-value 12))
+    (t.is (= (count map-tx) 1))
+    (t.is (= map-tx[0].kind .Map))
+    (t.is (= map-tx[0].items[0].text ":db/id"))
+    (t.is (= map-tx[0].items[1].int-value -1))
+    (t.is (= map-tx[0].items[4].text ":name"))
+    (t.is (= map-tx[0].items[5].text "Aaron"))
+    (t.is (= (count map-order) 1))
+    (t.is (= map-order[0].kind .Map))
+    (t.is (= (count map-get.rows) 1))
+    (t.is (= map-get.rows[0].values[0].kind .Map))
+    (t.is (= map-get.rows[0].values[1].int-value 2))
+    (t.is (= (count summed.rows) 2))
+    (t.is (= summed.rows[0].values[2].entity 3))
+    (t.is (= summed.rows[1].values[2].entity 3))
+    (t.is (= (count incremented.rows) 3))
+    (t.is (= incremented.rows[0].values[0].int-value 15))
+    (t.is (= incremented.rows[2].values[1].int-value 38))
+    (t.is (= (count conflicting.rows) 0))
+    (t.is (= (count identity-conflict.rows) 0))
+    (t.is (= (count destructured.rows) 1))
+    (t.is (= destructured.rows[0].values[0].int-value 3))
+    (t.is (= destructured.rows[0].values[1].int-value 4))
+    (t.is (= (count destructured-conflict.rows) 0))
+    (t.is (= (count pair-unification.rows) 1))
+    (t.is (= pair-unification.rows[0].values[0].items[0].text ":a"))
+    (t.is (= pair-unification.rows[0].values[1].text ":a"))
+    (t.is (= (count rel-function-conflict.rows) 0))
+    (t.is (= (count nil-result-filtered.rows) 0))
+    (t.is (= (count ground-relation-output.rows) 2))
+    (t.is (= ground-relation-output.rows[0].values[0].text ":a"))
+    (t.is (= ground-relation-output.rows[0].values[1].text ":c"))
+    (t.is (= ground-relation-output.rows[1].values[0].text ":d"))
+    (t.is (= ground-relation-output.rows[1].values[1].text ":f"))
+    (t.is (= (count function-relation-output.rows) 2))
+    (t.is (= function-relation-output.rows[0].values[0].text ":a"))
+    (t.is (= function-relation-output.rows[1].values[1].text ":f"))
+    (t.is (= (count function-collection-output.rows) 3))
+    (t.is (= function-collection-output.rows[0].values[0].text ":a"))
+    (t.is (= function-collection-output.rows[2].values[0].text ":c"))))
+
 (t.deftest datascript-query-named-function-input-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
