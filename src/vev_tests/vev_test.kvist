@@ -2431,7 +2431,35 @@
         after-failed (vev.q-collection failed.db-after
                        [:find [?name ...]
                         :where
-                        [1 :name ?name]])]
+                        [1 :name ?name]])
+        text-report (vev.with-text
+                      second-db
+                      "[[:db/add 2 :name \"Ada\"] [:db/add 2 :aka \"Countess\"]]")
+        prepared (vev.prepare-tx-text "[[:db/add 3 :name \"Grace\"]]")
+        prepared-report (vev.with-prepared text-report.db-after prepared)
+        db-with-text (vev.db-with-text second-db "[[:db/add 4 :name \"Lin\"]]")
+        db-with-prepared (vev.db-with-prepared db-with-text (vev.prepare-tx-text "[[:db/add 5 :name \"Mina\"]]"))
+        bad-text (vev.with-text second-db "{:db/id 6 :name \"Bad Root\"}")
+        original-ada (vev.q-collection second-db
+                       [:find [?name ...]
+                        :where
+                        [2 :name ?name]])
+        text-ada (vev.q-collection text-report.db-after
+                   [:find [?name ...]
+                    :where
+                    [2 :name ?name]])
+        prepared-grace (vev.q-collection prepared-report.db-after
+                         [:find [?name ...]
+                          :where
+                          [3 :name ?name]])
+        lin (vev.q-collection db-with-text
+              [:find [?name ...]
+               :where
+               [4 :name ?name]])
+        mina (vev.q-collection db-with-prepared
+               [:find [?name ...]
+                :where
+                [5 :name ?name]])]
     (t.is first.ok)
     (t.is (= first.tx 1))
     (t.is (= (count original-names) 0))
@@ -2445,7 +2473,21 @@
     (t.is (not failed.ok))
     (t.is (= failed.error "unknown tx op"))
     (t.is (= (count after-failed) 1))
-    (t.is (= after-failed[0].text "Petr"))))
+    (t.is (= after-failed[0].text "Petr"))
+    (t.is text-report.ok)
+    (t.is prepared.ok)
+    (t.is prepared-report.ok)
+    (t.is (= (count original-ada) 0))
+    (t.is (= (count text-ada) 1))
+    (t.is (= text-ada[0].text "Ada"))
+    (t.is (= (count prepared-grace) 1))
+    (t.is (= prepared-grace[0].text "Grace"))
+    (t.is (= (count lin) 1))
+    (t.is (= lin[0].text "Lin"))
+    (t.is (= (count mina) 1))
+    (t.is (= mina[0].text "Mina"))
+    (t.is (not bad-text.ok))
+    (t.is (= (count bad-text.db-after.datoms) (count second-db.datoms)))))
 
 (t.deftest datascript-db-with-datoms-preserves-tx-and-retractions-subset
   (defer (free_all context.allocator))
@@ -7307,6 +7349,30 @@
                                    :where
                                    [?e :name ?name]
                                    [(= ?name "RollbackPrepared")]])
+        pure-text-fn (vev.with-text-with-string-fns
+                       report.db-after
+                       "[[:db/add 20 :name \"Ruth\"] [:db/add 20 :age 10] [:inc-age \"Ruth\"]]"
+                       registry)
+        pure-prepared-fn (vev.prepare-tx-text
+                           "[[:db/add 21 :name \"Sofia\"] [:db/add 21 :age 11] [:inc-age-by \"Sofia\" 3]]")
+        pure-prepared-report (vev.with-prepared-with-string-fns report.db-after pure-prepared-fn registry)
+        pure-db-text (vev.db-with-text-with-string-fns
+                       report.db-after
+                       "[[:db/add 22 :name \"Tara\"] [:db/add 22 :age 12] [:inc-age \"Tara\"]]"
+                       registry)
+        pure-db-prepared (vev.db-with-prepared-with-string-fns
+                           report.db-after
+                           (vev.prepare-tx-text "[[:db/add 23 :name \"Uma\"] [:db/add 23 :age 13] [:inc-age-by \"Uma\" 2]]")
+                           registry)
+        base-ruth (vev.q report.db-after
+                    [:find ?age
+                     :where
+                     [?e :name "Ruth"]
+                     [?e :age ?age]])
+        ruth (vev.db-entity pure-text-fn.db-after 20)
+        sofia (vev.db-entity pure-prepared-report.db-after 21)
+        tara (vev.db-entity pure-db-text 22)
+        uma (vev.db-entity pure-db-prepared 23)
         petr (vev.db-entity report.db-after 1)
         ada (vev.db-entity text-call.db-after 2)
         lin (vev.db-entity text-value-call.db-after 4)
@@ -7373,7 +7439,19 @@
     (t.is (= (count listener-reports) 0))
     (t.is (= (count rollback-query.rows) 0))
     (t.is (= (count text-rollback-query.rows) 0))
-    (t.is (= (count prepared-rollback-query.rows) 0))))
+    (t.is (= (count prepared-rollback-query.rows) 0))
+    (t.is pure-text-fn.ok)
+    (t.is pure-prepared-fn.ok)
+    (t.is pure-prepared-report.ok)
+    (t.is (= (count base-ruth.rows) 0))
+    (t.is (= (vev.entity-get ruth ":age").int-value 11))
+    (t.is (vev.entity-get ruth ":had-birthday").bool-value)
+    (t.is (= (vev.entity-get sofia ":age").int-value 14))
+    (t.is (= (vev.entity-get sofia ":birthday-delta").int-value 3))
+    (t.is (= (vev.entity-get tara ":age").int-value 13))
+    (t.is (vev.entity-get tara ":had-birthday").bool-value)
+    (t.is (= (vev.entity-get uma ":age").int-value 15))
+    (t.is (= (vev.entity-get uma ":birthday-delta").int-value 2))))
 
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))
