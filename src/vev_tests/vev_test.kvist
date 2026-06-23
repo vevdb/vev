@@ -214,6 +214,15 @@
     ([]vev.Tx-Data
       [(vev.add-tempid "new-person" ":name" (vev.value-string "Oleg"))])))
 
+(defn create-entity-without-db-id [db: vev.DB] -> vev.Tx-Fn-Result
+  (vev.tx-fn-ok
+    (vev.tx-data {:foo "bar"})))
+
+(defn create-entity-without-db-id-values [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result
+  (when (not (= (count args) 0))
+    (return (vev.tx-fn-error "Expected no args")))
+  (create-entity-without-db-id db))
+
 (t.deftest transact-reports-snapshots-and-metadata
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -7061,7 +7070,12 @@
         created (vev.transact-fn (addr conn) create-oleg)
         new-e created.tempids[0].e
         [created-current-tx created-current-tx-ok] (tempid-e (slice created.tempids 0) ":db/current-tx")
-        oleg (vev.db-entity created.db-after new-e)]
+        oleg (vev.db-entity created.db-after new-e)
+        map-created (vev.transact-fn (addr conn) create-entity-without-db-id)
+        [foo foo-ok] (vev.q-scalar map-created.db-after
+                       [:find ?foo .
+                        :where
+                        [?e :foo ?foo]])]
     (t.is (not missing.ok))
     (t.is (= missing.error "No entity with name"))
     (t.is report.ok)
@@ -7072,19 +7086,24 @@
     (t.is (= created.tempids[0].tempid "new-person"))
     (t.is created-current-tx-ok)
     (t.is (= created-current-tx created.tx))
-    (t.is (= (vev.entity-get oleg ":name").text "Oleg"))))
+    (t.is (= (vev.entity-get oleg ":name").text "Oleg"))
+    (t.is map-created.ok)
+    (t.is foo-ok)
+    (t.is (= foo.text "bar"))))
 
 (t.deftest datascript-ident-transaction-functions-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
         registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" birthday-by-name)
                                        (vev.tx-fn-values ":inc-age-by" birthday-by-name-and-delta)
-                                       (vev.tx-fn-values ":create-vera" create-vera-value-fn)])
+                                       (vev.tx-fn-values ":create-vera" create-vera-value-fn)
+                                       (vev.tx-fn-values ":create-map" create-entity-without-db-id-values)])
         _ (vev.transact
             (addr conn)
             [{:db/id 10 :db/ident :inc-age}
              {:db/id 12 :db/ident :inc-age-by}
              {:db/id 13 :db/ident :create-vera}
+             {:db/id 14 :db/ident :create-map}
              {:db/id 11 :db/ident :Petr}])
         unknown (vev.transact-tx-data-with-string-fns
                   (addr conn)
@@ -7122,7 +7141,7 @@
                    "[[:db/add 3 :name \"Grace\"] [:db/add 3 :age 50] [:inc-age \"Grace\"] [:db/add 3 :label \"after-prepared-call\"]]")
         prepared-call (vev.transact-prepared-with-string-fns (addr conn) prepared registry)
         prepared-values (vev.prepare-tx-text
-                          "[[:db/add 5 :name \"Mina\"] [:db/add 5 :age 30] [:inc-age-by \"Mina\" 7] [:create-vera]]")
+                          "[[:db/add 5 :name \"Mina\"] [:db/add 5 :age 30] [:inc-age-by \"Mina\" 7] [:create-vera] [:create-map]]")
         prepared-value-call (vev.transact-prepared-with-string-fns (addr conn) prepared-values registry)
         literal-value-call (vev.transact-tx-data-with-string-fns
                              (addr conn)
@@ -7150,7 +7169,11 @@
         mina (vev.db-entity prepared-value-call.db-after 5)
         nia (vev.db-entity literal-value-call.db-after 6)
         [vera-e vera-ok] (tempid-e (slice prepared-value-call.tempids 0) "vera")
-        vera (vev.db-entity prepared-value-call.db-after vera-e)]
+        vera (vev.db-entity prepared-value-call.db-after vera-e)
+        [foo foo-ok] (vev.q-scalar prepared-value-call.db-after
+                       [:find ?foo .
+                        :where
+                        [?e :foo ?foo]])]
     (t.is (not unknown.ok))
     (t.is (= unknown.error "transaction fn not found"))
     (t.is (not non-fn.ok))
@@ -7182,6 +7205,8 @@
     (t.is (= (vev.entity-get mina ":birthday-delta").int-value 7))
     (t.is vera-ok)
     (t.is (= (vev.entity-get vera ":name").text "Vera"))
+    (t.is foo-ok)
+    (t.is (= foo.text "bar"))
     (t.is literal-value-call.ok)
     (t.is (= (vev.entity-get nia ":age").int-value 64))
     (t.is (= (vev.entity-get nia ":birthday-delta").int-value 4))
