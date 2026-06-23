@@ -67,6 +67,10 @@
     (or (<= (count akas) 1)
         (>= (count datom.v.text) 4))))
 
+(defn keep-not-tupen [db: vev.DB, datom: vev.Datom] -> bool
+  (not (and (= datom.v.kind .String)
+            (= datom.v.text "Tupen"))))
+
 (defn keep-has-age [db: vev.DB, datom: vev.Datom] -> bool
   (vev.entity-contains? (vev.db-entity db datom.e) ":age"))
 
@@ -11534,6 +11538,49 @@
     (t.is (= (count pulled[2].attrs) 0))
     (t.is (= (count pulled[3].attrs) 0))
     (t.is (= (count pulled[4].attrs) 0))))
+
+(t.deftest datascript-pull-other-dbs-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :aka]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"]}])
+        filtered (vev.filter-db conn.db keep-not-tupen)
+        data (vev.serializable conn.db)
+        restored (vev.from-serializable data)
+        initialized (vev.init-db (slice conn.db.datoms 0))
+        filtered-rendered (vev.pull-result-value filtered (vev.pull filtered [:name :aka] 1))
+        restored-rendered (vev.pull-result-value restored (vev.pull restored [:name :aka] 1))
+        initialized-rendered (vev.pull-result-value initialized (vev.pull initialized [:name :aka] 1))
+        [filtered-aka filtered-aka-ok] (map-value filtered-rendered ":aka")
+        [restored-aka restored-aka-ok] (map-value restored-rendered ":aka")
+        [initialized-aka initialized-aka-ok] (map-value initialized-rendered ":aka")
+        [filtered-name filtered-name-ok] (map-value filtered-rendered ":name")
+        [restored-name restored-name-ok] (map-value restored-rendered ":name")
+        [initialized-name initialized-name-ok] (map-value initialized-rendered ":name")]
+    (defer (vev.delete-serializable data))
+    (t.is filtered-name-ok)
+    (t.is (= filtered-name.text "Petr"))
+    (t.is filtered-aka-ok)
+    (t.is (= filtered-aka.kind .Vector))
+    (t.is (= (count filtered-aka.items) 1))
+    (t.is (= filtered-aka.items[0].text "Devil"))
+    (t.is restored-name-ok)
+    (t.is (= restored-name.text "Petr"))
+    (t.is restored-aka-ok)
+    (t.is (= (count restored-aka.items) 2))
+    (t.is (= restored-aka.items[0].text "Devil"))
+    (t.is (= restored-aka.items[1].text "Tupen"))
+    (t.is initialized-name-ok)
+    (t.is (= initialized-name.text "Petr"))
+    (t.is initialized-aka-ok)
+    (t.is (= (count initialized-aka.items) 2))
+    (t.is (= initialized-aka.items[0].text "Devil"))
+    (t.is (= initialized-aka.items[1].text "Tupen"))))
 
 (t.deftest datascript-pull-rendered-value-shape-subset
   (defer (free_all context.allocator))
