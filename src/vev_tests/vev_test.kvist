@@ -6728,6 +6728,55 @@
     (t.is (= result.rows[0].values[2].text "C"))
     (t.is (= result.rows[0].values[3].text "D"))))
 
+(t.deftest datascript-text-tuple-attrs-upsert-and-lookup-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema-tx (vev.tuple-attrs-schema-tx 100 ":a-and-b" ":a" ":b")
+        _ (vev.transact-tx-data (addr conn) (slice schema-tx 0))
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 100 :db/unique :db.unique/identity] [:db/add 101 :db/ident :c] [:db/add 101 :db/unique :db.unique/identity]]")
+        seed (vev.transact-text
+               (addr conn)
+               "[{:db/id 1 :a \"A\" :b \"B\" :name \"Ivan\"} {:db/id 2 :a \"a\" :b \"b\" :c \"c\"}]")
+        by-components (vev.transact-text
+                        (addr conn)
+                        "[{:a \"A\" :b \"B\" :name \"Oleg\"}]")
+        by-lookup-ref (vev.transact-text
+                        (addr conn)
+                        "[[:db/add [:a-and-b [\"a\" \"b\"]] :name \"Petr\"]]")
+        prepared (vev.prepare-tx-text
+                   "[[:db/add \"x\" :a-and-b [\"A\" \"B\"]] [:db/add \"x\" :city \"Oslo\"]]")
+        by-tuple-value (vev.transact-prepared (addr conn) prepared)
+        [x-e x-ok] (tempid-e (slice by-tuple-value.tempids 0) "x")
+        before-conflict-count (count conn.db.datoms)
+        conflict (vev.transact-text
+                   (addr conn)
+                   "[{:a-and-b [\"A\" \"B\"] :c \"c\"}]")
+        after-conflict-count (count conn.db.datoms)
+        result (vev.q-text
+                 conn.db
+                 "[:find ?e ?name ?city :where [?e :a \"A\"] [?e :name ?name] [?e :city ?city]]")
+        lookup-result (vev.q-text
+                        conn.db
+                        "[:find ?e ?name :where [?e :a \"a\"] [?e :name ?name]]")]
+    (t.is seed.ok)
+    (t.is by-components.ok)
+    (t.is by-lookup-ref.ok)
+    (t.is by-tuple-value.ok)
+    (t.is x-ok)
+    (t.is (= x-e 1))
+    (t.is (not conflict.ok))
+    (t.is (= conflict.error "conflicting upsert"))
+    (t.is (= before-conflict-count after-conflict-count))
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].entity 1))
+    (t.is (= result.rows[0].values[1].text "Oleg"))
+    (t.is (= result.rows[0].values[2].text "Oslo"))
+    (t.is (= (count lookup-result.rows) 1))
+    (t.is (= lookup-result.rows[0].values[0].entity 2))
+    (t.is (= lookup-result.rows[0].values[1].text "Petr"))))
+
 (t.deftest datascript-tuple-attrs-unique-conflict-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
