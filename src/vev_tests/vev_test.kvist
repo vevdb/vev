@@ -6281,6 +6281,62 @@
     (t.is (= (count results.rows) 1))
     (t.is (= results.rows[0].values[0].text "Ada"))))
 
+(t.deftest datascript-text-transact-supports-negative-tempids
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 100 :db/ident :friend] [:db/add 100 :db/valueType :db.type/ref] [:db/add 100 :db/cardinality :db.cardinality/many] [:db/add 101 :db/ident :score] [:db/add 101 :db/valueType :db.type/long]]")
+        report (vev.transact-text
+                 (addr conn)
+                 "[[:db/add -1 :name \"Ivan\"] [:db/add -2 :name \"Petr\"] [:db/add -2 :friend -1] {:db/id -3 :name \"Sergey\" :friend [-1 -2]} [:db/add 1 :score -1]]")
+        prepared (vev.prepare-tx-text
+                   "[[:db/add -4 :name \"Oleg\"] [:db/add -5 :name \"Boris\"] [:db/add -5 :friend -4]]")
+        prepared-report (vev.transact-prepared (addr conn) prepared)
+        cas-tempid (vev.transact-text
+                     (addr conn)
+                     "[[:db/add -6 :name \"Temp\"] [:db.fn/cas -6 :name \"Temp\" \"Other\"]]")
+        [ivan-e ivan-ok] (tempid-e (slice report.tempids 0) "-1")
+        [petr-e petr-ok] (tempid-e (slice report.tempids 0) "-2")
+        [sergey-e sergey-ok] (tempid-e (slice report.tempids 0) "-3")
+        [oleg-e oleg-ok] (tempid-e (slice prepared-report.tempids 0) "-4")
+        [boris-e boris-ok] (tempid-e (slice prepared-report.tempids 0) "-5")
+        petr-friends (vev.q-text-collection
+                       conn.db
+                       "[:find [?name ...] :where [?p :name \"Petr\"] [?p :friend ?f] [?f :name ?name]]")
+        sergey-friends (vev.q-text-collection
+                         conn.db
+                         "[:find [?name ...] :where [?p :name \"Sergey\"] [?p :friend ?f] [?f :name ?name]]")
+        boris-friends (vev.q-text-collection
+                        conn.db
+                        "[:find [?name ...] :where [?p :name \"Boris\"] [?p :friend ?f] [?f :name ?name]]")
+        [score score-ok] (vev.q-text-scalar
+                           conn.db
+                           "[:find ?score . :where [1 :score ?score]]")]
+    (t.is report.ok)
+    (t.is prepared.ok)
+    (t.is prepared-report.ok)
+    (t.is (not cas-tempid.ok))
+    (t.is (= cas-tempid.error "tempids not allowed outside add"))
+    (t.is ivan-ok)
+    (t.is petr-ok)
+    (t.is sergey-ok)
+    (t.is oleg-ok)
+    (t.is boris-ok)
+    (t.is (not (= ivan-e petr-e)))
+    (t.is (not (= sergey-e ivan-e)))
+    (t.is (not (= oleg-e boris-e)))
+    (t.is (= (count petr-friends) 1))
+    (t.is (= petr-friends[0].text "Ivan"))
+    (t.is (= (count sergey-friends) 2))
+    (t.is (= sergey-friends[0].text "Ivan"))
+    (t.is (= sergey-friends[1].text "Petr"))
+    (t.is (= (count boris-friends) 1))
+    (t.is (= boris-friends[0].text "Oleg"))
+    (t.is score-ok)
+    (t.is (= score.kind .Int))
+    (t.is (= score.int-value -1))))
+
 (t.deftest schema-enforces-value-type-cardinality-and-unique
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

@@ -1511,6 +1511,20 @@
     (and has-type
          (= schema-type ":db.type/ref"))))
 
+(defn ref-negative-int-value? [db: DB, attr: string, value: Value] -> bool
+  (when (not (= value.kind .Int))
+    (return false))
+  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
+    (and has-type
+         (= schema-type ":db.type/ref")
+         (< value.int-value 0))))
+
+(defn ref-tempid-value-text [value: Value] -> string
+  (case value.kind
+    .String value.text
+    .Int (fmt.tprintf "%d" value.int-value)
+    :else ""))
+
 (defn tempid-tuple-component-value [db: DB, tx-data: []Tx-Data, tempid: string, attr: string] -> [value: Value, ok: bool]
   (for [data tx-data]
     (when (and data.has-tempid
@@ -1753,7 +1767,9 @@
       (return (Tx-Data {tempid: generated-tempid has-tempid: true}) true ""))
     (case id-value.kind
       .Entity (return (Tx-Data {e: id-value.entity}) true "")
-      .Int (return (Tx-Data {e: (u64 id-value.int-value)}) true "")
+      .Int (if (< id-value.int-value 0)
+             (return (Tx-Data {tempid: (fmt.tprintf "%d" id-value.int-value) has-tempid: true}) true "")
+             (return (Tx-Data {e: (u64 id-value.int-value)}) true ""))
       .String (return (Tx-Data {tempid: id-value.text has-tempid: true}) true "")
       .Keyword (return (Tx-Data {ident: id-value.text has-ident: true}) true "")
       .Vector
@@ -2089,7 +2105,8 @@
 	        (let [v data.v
                 value-ok true
                 value-error ""]
-            (when (not (current-tx-value? v))
+            (when (and (not (current-tx-value? v))
+                       (not (ref-negative-int-value? current-db data.a v)))
               (let [[resolved resolved-ok resolved-error] (resolve-tx-value current-db data.a data.v)]
                 (set! v resolved)
                 (set! value-ok resolved-ok)
@@ -2117,10 +2134,11 @@
               (set! v (value-entity current-tx-e))
               (ensure-tempid! (addr resolved-tempids) v.text current-tx-e))
 	          (when (or data.has-value-tempid
-                       (ref-string-value? current-db data.a v))
+                       (ref-string-value? current-db data.a v)
+                       (ref-negative-int-value? current-db data.a v))
 	            (let [value-tempid data.value-tempid]
               (when (not data.has-value-tempid)
-                (set! value-tempid v.text))
+                (set! value-tempid (ref-tempid-value-text v)))
               (if (current-tx-tempid? value-tempid)
                 (do
                   (when (not current-tx-reserved)
