@@ -17,7 +17,7 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 327
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 328
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
 tuple edge matrices, host/native callback design, and performance work.
@@ -36,7 +36,7 @@ These are the main in-memory parity target before durable storage.
 | `query_pull.cljc` | 8 | partial | multi-source pull, text/Kvist `:in` pattern variables, plus scalar, collection, and tuple pull find-spec shapes covered; exact Clojure return rendering remains |
 | `query_return_map.cljc` | 1 | passing | keep covered with Vev keyed-row shape |
 | `query_rules.cljc` | 3 | partial | source args, recursion, repeated calls, ordered body execution for literal/text rules, inline map-query `:rules`, primary collection DB rule queries, intermediate rule-binding dedup for DataScript issue-456-style duplicate propagation, and unknown/arity/param validation covered; host predicate inputs and full semi-naive performance remain |
-| `query_aggregates.cljc` | 1 | partial | built-in aggregates including numeric sum/avg, top-n, median, variance, stddev, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
+| `query_aggregates.cljc` | 1 | partial | built-in aggregates including numeric sum/avg, top-n, median, variance, stddev, multi-argument aggregate tuple distinctness, and DataScript-shaped named custom aggregates covered; arbitrary host callback aggregates later |
 | `transact.cljc` | 19 | partial | DataScript-style report `:db/current-tx` tempids, EDN text/prepared negative numeric tempids and single operation vectors, schema-aware map vector values, empty cardinality-many tempid validation, native tx functions, registry-backed ident tx functions including EDN text/prepared `:db.fn/call` and shorthand ident calls, tempids-outside-add validation, and large entity-id rejection covered; exact Clojure function-value storage and exact errors remain |
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, main conflict matrix, and EDN text/prepared transaction coverage for ordinary identity upsert, lookup-ref upsert, retry convergence, forward ref tempids, and rollback on conflict covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation including `:db.type/symbol` plus `transact-text` bad-shape rollback covered; reader/macro bad forms and exact errors remain |
@@ -61,7 +61,7 @@ EDN/text coverage first and add Kvist macro coverage as a convenience layer.
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
 | `parser.cljc` | 3 | partial | flat EDN node reader supports nested vectors/lists/maps/sets and now feeds query/pull/tx text subsets; full validation remains |
-| `parser_find.cljc` | 4 | partial | text query parser covers scalar, collection, tuple, pull, aggregate, and top-n aggregate find specs; exact validation remains |
+| `parser_find.cljc` | 4 | partial | text query parser covers scalar, collection, tuple, pull, aggregate, multi-argument aggregate elements, custom aggregate, and top-n aggregate find specs; exact validation remains |
 | `parser_query.cljc` | 1 | partial | EDN-reader-backed text query subset covers vector and map query forms, map-form inline `:rules`, `:find`, `:with`, `:in`, named DB sources, optional ordered `:where`, direct map-as-relation inputs, float constants, nested input/result destructuring, execution through normal query inputs/sources, reusable prepared query values, and checked parse/input/source errors; parser-style validation now covers unknown `:find`/`:with` vars, `:find`/`:with` overlap, duplicate variable inputs, duplicate `:with` vars, unknown source vars, and missing `%` for rule calls; exact diagnostics remain |
 | `parser_return_map.cljc` | 1 | partial | text query parser accepts `:keys`/`:strs`/`:syms` and exposes keyed text helpers; exact validation remains |
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls, rule definitions, inline map-query `:rules`, ordered text rule bodies, rule-body `get-else`/`get-some`, and empty/duplicate/arity rule validation covered; remaining exact parser shapes remain |

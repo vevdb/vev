@@ -467,51 +467,75 @@
 (defn edn-top-n-aggregate-op? [op: string] -> bool
   (or (= op "min") (= op "max")))
 
+(defn edn-aggregate-args-from [doc: EDN-Doc, first-arg: int] -> [dynamic]Term
+  (let [args (make [dynamic]Term)
+        cursor first-arg]
+    (while (not (= cursor -1))
+      (arr.push! args (value-term-from-edn-node doc cursor))
+      (set! cursor doc.nodes[cursor].next-sibling))
+    args))
+
+(defn aggregate-single-var-args [name: string] -> [dynamic]Term
+  (let [args (make [dynamic]Term)]
+    (arr.push! args (term-var name))
+    args))
+
 (defn append-edn-aggregate-find! [out: ^[dynamic]Aggregate-Find, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [op-node doc.nodes[form].first-child]
     (when (or (= op-node -1) (not (= doc.nodes[op-node].kind .Symbol)))
       (return false "aggregate find expressions must start with a symbol"))
     (let [op doc.nodes[op-node].text
           first-arg doc.nodes[op-node].next-sibling
-          second-arg (if (= first-arg -1) -1 doc.nodes[first-arg].next-sibling)]
+          second-arg (if (= first-arg -1) -1 doc.nodes[first-arg].next-sibling)
+          third-arg (if (= second-arg -1) -1 doc.nodes[second-arg].next-sibling)]
       (when (not (edn-aggregate-op? op))
         (return false "unsupported aggregate find expression"))
       (when (= first-arg -1)
         (return false "aggregate find expression missing variable"))
-      (if (= second-arg -1)
+      (if (= op "aggregate")
         (do
-          (when (not (edn-var? doc first-arg))
-            (return false "aggregate find expression expects variable argument"))
-          (arr.push! out^ (Aggregate-Find {op: op var: doc.nodes[first-arg].text}))
+          (when (or (= second-arg -1) (not (= third-arg -1)))
+            (return false "custom aggregate expects (aggregate ?f ?x)"))
+          (when (not (and (edn-var? doc first-arg)
+                          (edn-var? doc second-arg)))
+            (return false "custom aggregate expects (aggregate ?f ?x)"))
+          (let [args (aggregate-single-var-args doc.nodes[second-arg].text)]
+            (arr.push! out^ (Aggregate-Find {op: op
+                                             var: doc.nodes[second-arg].text
+                                             args: (slice args 0)
+                                             function-var: doc.nodes[first-arg].text
+                                             has-function-var: true})))
           (return true ""))
-        (do
-          (when (not (= doc.nodes[second-arg].next-sibling -1))
-            (return false "aggregate find expression has too many arguments"))
-          (if (= op "aggregate")
-            (do
-              (when (not (and (edn-var? doc first-arg)
-                              (edn-var? doc second-arg)))
-                (return false "custom aggregate expects (aggregate ?f ?x)"))
-              (arr.push! out^ (Aggregate-Find {op: op
-                                               var: doc.nodes[second-arg].text
-                                               function-var: doc.nodes[first-arg].text
-                                               has-function-var: true})))
-            (do
-              (when (not (and (edn-top-n-aggregate-op? op)
-                              (edn-var? doc second-arg)))
-                (return false "top-n aggregate find expressions expect (min n ?x), (max n ?x), (min ?n ?x), or (max ?n ?x)"))
-              (if (= doc.nodes[first-arg].kind .Int)
+        (if (and (edn-top-n-aggregate-op? op)
+                 (not (= second-arg -1))
+                 (= third-arg -1))
+          (do
+            (when (not (edn-var? doc second-arg))
+              (return false "top-n aggregate find expressions expect (min n ?x), (max n ?x), (min ?n ?x), or (max ?n ?x)"))
+            (if (= doc.nodes[first-arg].kind .Int)
+              (let [args (aggregate-single-var-args doc.nodes[second-arg].text)]
                 (arr.push! out^ (Aggregate-Find {op: op
                                                  var: doc.nodes[second-arg].text
+                                                 args: (slice args 0)
                                                  limit: (int doc.nodes[first-arg].int-value)
-                                                 has-limit: true}))
-                (if (edn-var? doc first-arg)
+                                                 has-limit: true})))
+              (if (edn-var? doc first-arg)
+                (let [args (aggregate-single-var-args doc.nodes[second-arg].text)]
                   (arr.push! out^ (Aggregate-Find {op: op
                                                    var: doc.nodes[second-arg].text
+                                                   args: (slice args 0)
                                                    limit-var: doc.nodes[first-arg].text
-                                                   has-limit-var: true}))
-                  (return false "top-n aggregate limit must be an int or variable")))))
-          (return true ""))))))
+                                                   has-limit-var: true})))
+                (return false "top-n aggregate limit must be an int or variable")))
+            (return true ""))
+          (do
+            (when (not (edn-var? doc first-arg))
+              (return false "aggregate find expression expects variable argument"))
+            (let [args (edn-aggregate-args-from doc first-arg)]
+              (arr.push! out^ (Aggregate-Find {op: op
+                                               var: doc.nodes[first-arg].text
+                                               args: (slice args 0)})))
+            (return true "")))))))
 
 (defn append-edn-find-item! [find: ^[dynamic]string, pulls: ^[dynamic]Pull-Find, aggregates: ^[dynamic]Aggregate-Find, doc: EDN-Doc, item: int] -> [ok: bool, error: string]
   (cond
