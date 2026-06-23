@@ -46,7 +46,7 @@ These are the main in-memory parity target before durable storage.
 | `ident.cljc` | 4 | passing | keep covered |
 | `explode.cljc` | 4 | partial | cardinality-many tx-map collection expansion, ref collections, reverse ref tx-map values, nested maps, multi-valued nested maps including EDN sets, reverse nested maps, and circular/nested ref shapes covered through EDN/text and Kvist tx-data; host list/array inputs and exact reverse-attr schema errors remain |
 | `components.cljc` | 2 | partial | reverse component pull id/pattern/recursion behavior covered; exact schema validation and render/touch shapes remain |
-| `pull_api.cljc` | 17 | partial | repeated attr-spec normalization, DataScript namespaced reverse attrs, reverse component pull id/pattern/recursion shapes, and ABI-friendly named `:xform` transforms for `vector`/`name` covered; arbitrary host xform functions, visitor options, and exact collection/scalar shapes remain |
+| `pull_api.cljc` | 17 | partial | repeated attr-spec normalization, DataScript namespaced reverse attrs, reverse component pull id/pattern/recursion shapes, ABI-friendly named `:xform` transforms for `vector`/`name`, and typed native pull xform callbacks through text/prepared/query pull APIs covered; visitor options, final C ABI registration shape, and exact collection/scalar shapes remain |
 | `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
 | `filter.cljc` | 1 | partial | materialized filtered DBs cover query/entity/index-visible semantics; exact hash/equality/runtime wrapper behavior remains |
 
@@ -97,7 +97,7 @@ These are useful, but not the next engine-parity gate.
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
 3. Extend the native callback surface beyond query predicate/value/aggregate
-   callbacks: pull `:xform`, transaction functions, listeners, and final
+   and pull `:xform` callbacks: transaction functions, listeners, and final
    C/Odin/non-Kvist registration shape.
 4. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript

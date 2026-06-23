@@ -111,6 +111,12 @@
     (vev.value-keyword
       (strings.concatenate ([]string [":" args[0].text "/" args[1].text])))))
 
+(defn native-tag-value [value: vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (= value.kind .String))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result
+    (vev.value-string (strings.concatenate ([]string ["tag:" value.text])))))
+
 (defn native-sort-reverse [values: []vev.Value] -> vev.Native-Query-Function-Result
   (let [sorted (arr.into [dynamic]vev.Value values)
         out (make [dynamic]vev.Value)]
@@ -10166,7 +10172,16 @@
                    1)
         forward-ref (vev.pull conn.db [{[:father :xform name] [:name]}] 2)
         reverse-ref (vev.pull conn.db [{[:_father :xform name] [:name]}] 1)
-        text (vev.pull-text conn.db "[[:name :xform vector] {[:father :xform name] [:name]}]" 2)]
+        text (vev.pull-text conn.db "[[:name :xform vector] {[:father :xform name] [:name]}]" 2)
+        registry ([]vev.Native-Query-Fn [(vev.pull-xform-fn "tag-value" native-tag-value)])
+        callback-text (vev.pull-text-with-fns conn.db "[[:name :xform tag-value]]" 1 registry)
+        prepared (vev.prepare-pull-pattern-text "[[:name :xform tag-value]]")
+        callback-prepared (vev.pull-prepared-with-fns conn.db prepared 2 registry)
+        callback-many (vev.pull-many-text-with-fns conn.db "[[:name :xform tag-value]]" ([]u64 [1 2]) registry)
+        callback-query (vev.q-text-with-fns
+                         conn.db
+                         "[:find (pull ?e [[:name :xform tag-value]]) :where [?e :name \"Petr\"]]"
+                         registry)]
     (t.is (= scalar.attrs[0].v.kind .Vector))
     (t.is (= scalar.attrs[0].v.items[0].text "Petr"))
     (t.is (= scalar.attrs[1].v.kind .Vector))
@@ -10180,7 +10195,14 @@
     (t.is (= (count reverse-ref.attrs[0].attrs) 0))
     (t.is (= text.attrs[0].v.kind .Vector))
     (t.is (= text.attrs[0].v.items[0].text "David"))
-    (t.is (= text.attrs[1].v.text "Petr"))))
+    (t.is (= text.attrs[1].v.text "Petr"))
+    (t.is (= callback-text.attrs[0].v.text "tag:Petr"))
+    (t.is (= callback-prepared.attrs[0].v.text "tag:David"))
+    (t.is (= (count callback-many) 2))
+    (t.is (= callback-many[0].attrs[0].v.text "tag:Petr"))
+    (t.is (= callback-many[1].attrs[0].v.text "tag:David"))
+    (t.is (= (count callback-query.rows) 1))
+    (t.is (= callback-query.rows[0].pulls[0].attrs[0].v.text "tag:Petr"))))
 
 (t.deftest pull-supports-as-attr-option
   (defer (free_all context.allocator))
