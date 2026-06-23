@@ -307,6 +307,83 @@
     (t.is (= report.tx-meta[1].a ":tx/reason"))
     (t.is (= report.tx-meta[1].v.text ":profile-edit"))))
 
+(t.deftest datascript-transaction-report-rendered-value-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact-with-meta
+                 (addr conn)
+                 ([]vev.Tx-Op
+                   [(vev.tx-add 1 ":name" (vev.value-string "Petr"))])
+                 ([]vev.Tx-Meta
+                   [(vev.Tx-Meta {a: ":request/id" v: (vev.value-string "req-1")})]))
+        rendered (vev.tx-report-value report)
+        prepared (vev.prepare-tx-text "[[:db/add \"person\" :name \"Ada\"]]")
+        prepared-rendered (vev.transact-prepared-value (addr conn) prepared)
+        text-rendered (vev.transact-text-value (addr conn) "[[:db/add \"other\" :name \"Grace\"]]")
+        immutable-rendered (vev.with-text-value conn.db "[[:db/add \"immutable\" :name \"Alan\"]]")
+        bad-rendered (vev.transact-text-value (addr conn) "[[:db/add nil :name \"Bad\"]]")
+        [ok ok-ok] (map-value rendered ":ok")
+        [tx tx-ok] (map-value rendered ":tx")
+        [tx-data tx-data-ok] (map-value rendered ":tx-data")
+        [first-datom-e first-datom-e-ok] (map-value tx-data.items[0] ":e")
+        [first-datom-a first-datom-a-ok] (map-value tx-data.items[0] ":a")
+        [first-datom-v first-datom-v-ok] (map-value tx-data.items[0] ":v")
+        [first-datom-op first-datom-op-ok] (map-value tx-data.items[0] ":op")
+        [tx-meta tx-meta-ok] (map-value rendered ":tx-meta")
+        [first-meta-a first-meta-a-ok] (map-value tx-meta.items[0] ":a")
+        [first-meta-v first-meta-v-ok] (map-value tx-meta.items[0] ":v")
+        [tempids tempids-ok] (map-value prepared-rendered ":tempids")
+        [person-e person-e-ok] (vev.map-get-value tempids (vev.value-string "person"))
+        [current-tx current-tx-ok] (map-value tempids ":db/current-tx")
+        [text-tempids text-tempids-ok] (map-value text-rendered ":tempids")
+        [other-e other-e-ok] (vev.map-get-value text-tempids (vev.value-string "other"))
+        [immutable-ok immutable-ok-ok] (map-value immutable-rendered ":ok")
+        [immutable-tempids immutable-tempids-ok] (map-value immutable-rendered ":tempids")
+        [immutable-e immutable-e-ok] (vev.map-get-value immutable-tempids (vev.value-string "immutable"))
+        [bad-ok bad-ok-ok] (map-value bad-rendered ":ok")
+        [bad-error bad-error-ok] (map-value bad-rendered ":error")
+        [bad-tx-data bad-tx-data-ok] (map-value bad-rendered ":tx-data")]
+    (t.is ok-ok)
+    (t.is ok.bool-value)
+    (t.is tx-ok)
+    (t.is (= tx.entity report.tx))
+    (t.is tx-data-ok)
+    (t.is (= tx-data.kind .Vector))
+    (t.is (= (count tx-data.items) 1))
+    (t.is first-datom-e-ok)
+    (t.is (= first-datom-e.entity 1))
+    (t.is first-datom-a-ok)
+    (t.is (= first-datom-a.text ":name"))
+    (t.is first-datom-v-ok)
+    (t.is (= first-datom-v.text "Petr"))
+    (t.is first-datom-op-ok)
+    (t.is (= first-datom-op.text ":db/add"))
+    (t.is tx-meta-ok)
+    (t.is (= (count tx-meta.items) 1))
+    (t.is first-meta-a-ok)
+    (t.is (= first-meta-a.text ":request/id"))
+    (t.is first-meta-v-ok)
+    (t.is (= first-meta-v.text "req-1"))
+    (t.is tempids-ok)
+    (t.is person-e-ok)
+    (t.is (= person-e.kind .Entity))
+    (t.is current-tx-ok)
+    (t.is (= current-tx.kind .Entity))
+    (t.is text-tempids-ok)
+    (t.is other-e-ok)
+    (t.is (= other-e.kind .Entity))
+    (t.is immutable-ok-ok)
+    (t.is immutable-ok.bool-value)
+    (t.is immutable-tempids-ok)
+    (t.is immutable-e-ok)
+    (t.is (= immutable-e.kind .Entity))
+    (t.is bad-ok-ok)
+    (t.is (not bad-ok.bool-value))
+    (t.is bad-error-ok)
+    (t.is (= bad-error.text "entity id must be int, tempid string, ident keyword, or lookup ref"))
+    (t.is bad-tx-data-ok)
+    (t.is (= (count bad-tx-data.items) 0))))
+
 (t.deftest datascript-query-db-datom-tx-op-terms-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1074,6 +1151,194 @@
     (t.is (= (count source-symbol-value.rows) 1))
     (t.is (= source-symbol-value.rows[0].values[0].entity 1))))
 
+(t.deftest datascript-query-rendered-text-and-prepared-values-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :name}
+             {:db/id 101 :db/ident :friend :db/valueType :db.type/ref}
+             {:db/id 1 :name "Petr" :friend 2}
+             {:db/id 2 :name "David"}])
+        prepared (vev.prepare-query-text "[:find ?name :where [?e :name ?name]]")
+        text-value (vev.q-text-value conn.db "[:find ?name :where [?e :name ?name]]")
+        prepared-value (vev.q-prepared-value conn.db prepared)
+        input-value (vev.q-text-value-with-inputs
+                      conn.db
+                      "[:find ?name :in $ ?needle :where [?e :name ?needle] [?e :name ?name]]"
+                      ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Petr"))]))
+        pull-value (vev.q-text-value conn.db "[:find (pull ?e [:name]) :where [?e :name \"Petr\"]]")
+        bad-value (vev.q-text-value conn.db "[:where [?e :name ?name]]")
+        [text-ok text-ok-ok] (map-value text-value ":ok")
+        [text-rows text-rows-ok] (map-value text-value ":rows")
+        [text-first-values text-first-values-ok] (map-value text-rows.items[0] ":values")
+        [prepared-rows prepared-rows-ok] (map-value prepared-value ":rows")
+        [prepared-first-values prepared-first-values-ok] (map-value prepared-rows.items[0] ":values")
+        [input-rows input-rows-ok] (map-value input-value ":rows")
+        [input-first-values input-first-values-ok] (map-value input-rows.items[0] ":values")
+        [pull-rows pull-rows-ok] (map-value pull-value ":rows")
+        [pull-first-pulls pull-first-pulls-ok] (map-value pull-rows.items[0] ":pulls")
+        [pulled-name pulled-name-ok] (map-value pull-first-pulls.items[0] ":name")
+        [bad-ok bad-ok-ok] (map-value bad-value ":ok")
+        [bad-error bad-error-ok] (map-value bad-value ":error")
+        [bad-rows bad-rows-ok] (map-value bad-value ":rows")]
+    (t.is text-ok-ok)
+    (t.is text-ok.bool-value)
+    (t.is text-rows-ok)
+    (t.is (= text-rows.kind .Vector))
+    (t.is (= (count text-rows.items) 2))
+    (t.is text-first-values-ok)
+    (t.is (= text-first-values.kind .Vector))
+    (t.is (= text-first-values.items[0].text "Petr"))
+    (t.is prepared-rows-ok)
+    (t.is prepared-first-values-ok)
+    (t.is (= prepared-first-values.items[0].text "Petr"))
+    (t.is input-rows-ok)
+    (t.is (= (count input-rows.items) 1))
+    (t.is input-first-values-ok)
+    (t.is (= input-first-values.items[0].text "Petr"))
+    (t.is pull-rows-ok)
+    (t.is pull-first-pulls-ok)
+    (t.is (= pull-first-pulls.kind .Vector))
+    (t.is (= (count pull-first-pulls.items) 1))
+    (t.is pulled-name-ok)
+    (t.is (= pulled-name.text "Petr"))
+    (t.is bad-ok-ok)
+    (t.is (not bad-ok.bool-value))
+    (t.is bad-error-ok)
+    (t.is (= bad-error.text "query text must start with [:find"))
+    (t.is bad-rows-ok)
+    (t.is (= (count bad-rows.items) 0))))
+
+(t.deftest datascript-query-profiled-text-and-prepared-values-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ada" :status "pending"}
+             {:db/id 2 :name "Grace" :status "started"}
+             {:db/id 3 :name "Barbara" :status "pending"}])
+        text-profiled (vev.q-text-profiled
+                        conn.db
+                        "[:find ?e :where [?e :status \"pending\"] [?e :name ?name]]")
+        prepared (vev.prepare-query-text "[:find ?name :in $ ?status :where [?e :status ?status] [?e :name ?name]]")
+        prepared-profiled (vev.q-prepared-profiled-with-inputs
+                             conn.db
+                             prepared
+                             ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "pending"))]))
+        rendered (vev.q-text-profiled-value
+                   conn.db
+                   "[:find ?e :where [?e :status \"pending\"] [?e :name ?name]]")
+        [rendered-result rendered-result-ok] (map-value rendered ":result")
+        [rendered-stats rendered-stats-ok] (map-value rendered ":stats")
+        [rendered-rows rendered-rows-ok] (map-value rendered-result ":rows")
+        [rendered-candidates rendered-candidates-ok] (map-value rendered-stats ":clause-candidates")
+        [rendered-steps rendered-steps-ok] (map-value rendered-stats ":steps")
+        [rendered-output rendered-output-ok] (map-value rendered-stats ":output-rows")
+        bad-rendered (vev.q-text-profiled-value conn.db "[:where [?e :name ?name]]")
+        [bad-result bad-result-ok] (map-value bad-rendered ":result")
+        [bad-stats bad-stats-ok] (map-value bad-rendered ":stats")
+        [bad-ok bad-ok-ok] (map-value bad-result ":ok")
+        [bad-output bad-output-ok] (map-value bad-stats ":output-rows")]
+    (t.is text-profiled.result.ok)
+    (t.is (= (count text-profiled.result.rows) 2))
+    (t.is (= text-profiled.stats.input-bindings 1))
+    (t.is (= text-profiled.stats.steps 2))
+    (t.is (= text-profiled.stats.output-rows 2))
+    (t.is (> text-profiled.stats.clause-candidates 0))
+    (t.is prepared-profiled.result.ok)
+    (t.is (= (count prepared-profiled.result.rows) 2))
+    (t.is (= prepared-profiled.stats.steps 2))
+    (t.is (= prepared-profiled.stats.output-rows 2))
+    (t.is rendered-result-ok)
+    (t.is rendered-stats-ok)
+    (t.is rendered-rows-ok)
+    (t.is (= (count rendered-rows.items) 2))
+    (t.is rendered-candidates-ok)
+    (t.is (> rendered-candidates.int-value 0))
+    (t.is rendered-steps-ok)
+    (t.is (= rendered-steps.int-value 2))
+    (t.is rendered-output-ok)
+    (t.is (= rendered-output.int-value 2))
+    (t.is bad-result-ok)
+    (t.is bad-stats-ok)
+    (t.is bad-ok-ok)
+    (t.is (not bad-ok.bool-value))
+    (t.is bad-output-ok)
+    (t.is (= bad-output.int-value 0))))
+
+(t.deftest datascript-query-rendered-rules-and-sources-values-subset
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        right (vev.create-conn)
+        _ (vev.transact
+            (addr left)
+            [{:db/id 1 :name "Petr" :friend 2}
+             {:db/id 2 :name "David"}])
+        _ (vev.transact
+            (addr right)
+            [{:db/id 2 :status :active}
+             {:db/id 3 :status :archived}])
+        rules-text "[[(friend-name ?e ?name) [?e :friend ?f] [?f :name ?name]]]"
+        query-text "[:find ?name :in $ % ?e :where (friend-name ?e ?name)]"
+        prepared (vev.prepare-query-text query-text)
+        prepared-rules (vev.parse-rules-text rules-text)
+        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))])
+        text-rules-value (vev.q-text-value-with-rules left.db query-text rules-text inputs)
+        prepared-rules-value (vev.q-prepared-value-with-rules left.db prepared prepared-rules inputs)
+        sources ([]vev.DB-Source [(vev.db-source "$left" left.db)
+                                  (vev.db-source "$right" right.db)])
+        source-value (vev.q-text-value-with-sources
+                       left.db
+                       "[:find ?name ?status :where [$left ?e :name ?name] [$right ?e :status ?status]]"
+                       ([]vev.Query-Input [])
+                       sources)
+        prepared-source (vev.prepare-query-text-with-sources
+                          "[:find ?name ?status :where [$left ?e :name ?name] [$right ?e :status ?status]]"
+                          sources)
+        prepared-source-value (vev.q-prepared-value-with-sources
+                                left.db
+                                prepared-source
+                                ([]vev.Query-Input [])
+                                sources)
+        bad-rules-value (vev.q-text-value-with-rules
+                          left.db
+                          query-text
+                          "[[(friend-name ?e ?name)]]"
+                          inputs)
+        [text-rules-rows text-rules-rows-ok] (map-value text-rules-value ":rows")
+        [text-rules-values text-rules-values-ok] (map-value text-rules-rows.items[0] ":values")
+        [prepared-rules-rows prepared-rules-rows-ok] (map-value prepared-rules-value ":rows")
+        [prepared-rules-values prepared-rules-values-ok] (map-value prepared-rules-rows.items[0] ":values")
+        [source-rows source-rows-ok] (map-value source-value ":rows")
+        [source-values source-values-ok] (map-value source-rows.items[0] ":values")
+        [prepared-source-rows prepared-source-rows-ok] (map-value prepared-source-value ":rows")
+        [prepared-source-values prepared-source-values-ok] (map-value prepared-source-rows.items[0] ":values")
+        [bad-ok bad-ok-ok] (map-value bad-rules-value ":ok")
+        [bad-error bad-error-ok] (map-value bad-rules-value ":error")]
+    (t.is text-rules-rows-ok)
+    (t.is (= (count text-rules-rows.items) 1))
+    (t.is text-rules-values-ok)
+    (t.is (= text-rules-values.items[0].text "David"))
+    (t.is prepared-rules-rows-ok)
+    (t.is (= (count prepared-rules-rows.items) 1))
+    (t.is prepared-rules-values-ok)
+    (t.is (= prepared-rules-values.items[0].text "David"))
+    (t.is source-rows-ok)
+    (t.is (= (count source-rows.items) 1))
+    (t.is source-values-ok)
+    (t.is (= source-values.items[0].text "David"))
+    (t.is (= source-values.items[1].text ":active"))
+    (t.is prepared-source-rows-ok)
+    (t.is (= (count prepared-source-rows.items) 1))
+    (t.is prepared-source-values-ok)
+    (t.is (= prepared-source-values.items[0].text "David"))
+    (t.is (= prepared-source-values.items[1].text ":active"))
+    (t.is bad-ok-ok)
+    (t.is (not bad-ok.bool-value))
+    (t.is bad-error-ok)
+    (t.is (= bad-error.text "Rule branch should have clauses"))))
+
 (t.deftest datascript-parser-query-text-predicates-and-functions
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1335,6 +1600,9 @@
              [:db/add 3 :age 30]
              [:db/add 4 :age 40]])
         prepared (vev.prepare-query-text "[:find [?e2 ...] :in $ ?e1 % :where (reachable ?e1 ?e2)]")
+        attached-prepared (vev.prepare-query-text-with-rules
+                            "[:find [?e2 ...] :in $ ?e1 % :where (reachable ?e1 ?e2)]"
+                            "[[(reachable ?e1 ?e2) [?e1 :follow ?e2]] [(reachable ?e1 ?e2) [?e1 :follow ?t] (reachable ?t ?e2)]]")
         rules (vev.parse-rules-text "[[(reachable ?e1 ?e2) [?e1 :follow ?e2]] [(reachable ?e1 ?e2) [?e1 :follow ?t] (reachable ?t ?e2)]]")
         result (vev.q-prepared-with-rules
                  conn.db
@@ -1346,6 +1614,14 @@
                    prepared
                    rules
                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 2))]))
+        attached-result (vev.q-prepared-with-inputs
+                          conn.db
+                          attached-prepared
+                          ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))]))
+        attached-repeated (vev.q-prepared-with-inputs
+                            conn.db
+                            attached-prepared
+                            ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 2))]))
         fn-query (vev.prepare-query-text "[:find [?e ...] :in $ ?min % :where (adult ?e ?min)]")
         fn-rules (vev.parse-rules-text "[[(adult ?e ?min) [?e :age ?age] [(>= ?age ?min)]]]")
         fn-result (vev.q-prepared-with-rules-and-fns
@@ -1355,8 +1631,12 @@
                     ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 30))])
                     ([]vev.Native-Query-Fn []))
         bad-rules (vev.parse-rules-text "[[(broken) [_]]]")
-        bad-result (vev.q-prepared-with-rules conn.db prepared bad-rules ([]vev.Query-Input []))]
+        bad-result (vev.q-prepared-with-rules conn.db prepared bad-rules ([]vev.Query-Input []))
+        bad-attached (vev.prepare-query-text-with-rules
+                       "[:find [?e2 ...] :in $ ?e1 % :where (reachable ?e1 ?e2)]"
+                       "[[(broken) [_]]]")]
     (t.is prepared.ok)
+    (t.is attached-prepared.ok)
     (t.is rules.ok)
     (t.is result.ok)
     (t.is (= (count result.rows) 3))
@@ -1367,6 +1647,15 @@
     (t.is (= (count repeated.rows) 2))
     (t.is (= repeated.rows[0].values[0].entity 3))
     (t.is (= repeated.rows[1].values[0].entity 4))
+    (t.is attached-result.ok)
+    (t.is (= (count attached-result.rows) 3))
+    (t.is (= attached-result.rows[0].values[0].entity 2))
+    (t.is (= attached-result.rows[1].values[0].entity 3))
+    (t.is (= attached-result.rows[2].values[0].entity 4))
+    (t.is attached-repeated.ok)
+    (t.is (= (count attached-repeated.rows) 2))
+    (t.is (= attached-repeated.rows[0].values[0].entity 3))
+    (t.is (= attached-repeated.rows[1].values[0].entity 4))
     (t.is fn-query.ok)
     (t.is fn-rules.ok)
     (t.is fn-result.ok)
@@ -1375,7 +1664,9 @@
     (t.is (= fn-result.rows[1].values[0].entity 4))
     (t.is (not bad-rules.ok))
     (t.is (not bad-result.ok))
-    (t.is (= bad-result.error bad-rules.error))))
+    (t.is (= bad-result.error bad-rules.error))
+    (t.is (not bad-attached.ok))
+    (t.is (= bad-attached.error bad-rules.error))))
 
 (t.deftest datascript-parser-query-text-sources
   (defer (free_all context.allocator))
@@ -5313,12 +5604,29 @@
                report.db-after
                "[:find ?e :in $ % :where [?e :item/status ?status] (pending? ?status)]"
                "[[(pending? ?status) [(ground \"pending\") ?status]]]"
-               ([]vev.Query-Input []))]
+               ([]vev.Query-Input []))
+        profiled-query (vev.prepare-query-text "[:find ?e :where [?e :item/status ?status] [(ground \"pending\") ?status]]")
+        profiled (vev.q-prepared-profiled report.db-after profiled-query)
+        rule-profiled (vev.q-text-profiled-with-rules
+                         report.db-after
+                         "[:find ?e :in $ % :where [?e :item/status ?status] (pending? ?status)]"
+                         "[[(pending? ?status) [(ground \"pending\") ?status]]]"
+                         ([]vev.Query-Input []))]
     (t.is report.ok)
     (t.is inline.ok)
     (t.is rule.ok)
+    (t.is profiled.result.ok)
+    (t.is rule-profiled.result.ok)
     (t.is (= (count inline.rows) 300))
     (t.is (= (count rule.rows) (count inline.rows)))
+    (t.is (= (count profiled.result.rows) (count inline.rows)))
+    (t.is (= (count rule-profiled.result.rows) (count inline.rows)))
+    (t.is (= profiled.stats.steps 2))
+    (t.is (= profiled.stats.output-rows 300))
+    (t.is (> profiled.stats.clause-candidates 0))
+    (t.is (= rule-profiled.stats.output-rows 300))
+    (t.is (> rule-profiled.stats.rule-calls 0))
+    (t.is (> rule-profiled.stats.rule-iterations 0))
     (t.is (= rule.rows[0].values[0].entity 3))
     (t.is (= rule.rows[299].values[0].entity 900))))
 
@@ -12164,6 +12472,90 @@
     (t.is (not invalid-prepared.ok))
     (t.is (= (count invalid-prepared-result.attrs) 0))
     (t.is (= (count invalid.attrs) 0))))
+
+(t.deftest datascript-pull-rendered-text-and-prepared-values-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 100 :db/ident :name :db/unique :db.unique/identity}
+             {:db/id 101 :db/ident :aka :db/cardinality :db.cardinality/many}
+             {:db/id 102 :db/ident :friend :db/valueType :db.type/ref}
+             {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"] :friend 2}
+             {:db/id 2 :name "David"}])
+        prepared (vev.prepare-pull-pattern-text "[:name :aka {:friend [:name]}]")
+        text-value (vev.pull-text-value conn.db "[:name :aka {:friend [:name]}]" 1)
+        prepared-value (vev.pull-prepared-value conn.db prepared 1)
+        lookup-value (vev.pull-text-lookup-ref-value conn.db "[:name :aka]" ":name" (vev.value-string "Petr"))
+        prepared-lookup-value (vev.pull-prepared-lookup-ref-value conn.db prepared ":name" (vev.value-string "Petr"))
+        missing-lookup (vev.pull-text-lookup-ref-value conn.db "[:name]" ":name" (vev.value-string "Missing"))
+        many-value (vev.pull-many-text-value conn.db "[:name]" ([]u64 [1 2]))
+        prepared-many-value (vev.pull-many-prepared-value conn.db prepared ([]u64 [1 2]))
+        many-lookup-value (vev.pull-many-text-lookup-refs-value
+                            conn.db
+                            "[:name]"
+                            ([]string [":name" ":name" ":name"])
+                            ([]vev.Value [(vev.value-string "Petr")
+                                          (vev.value-string "David")
+                                          (vev.value-string "Missing")]))
+        prepared-many-lookup-value (vev.pull-many-prepared-lookup-refs-value
+                                     conn.db
+                                     prepared
+                                     ([]string [":name" ":name"])
+                                     ([]vev.Value [(vev.value-string "Petr")
+                                                   (vev.value-string "Missing")]))
+        [text-name text-name-ok] (map-value text-value ":name")
+        [text-aka text-aka-ok] (map-value text-value ":aka")
+        [text-friend text-friend-ok] (map-value text-value ":friend")
+        [friend-name friend-name-ok] (map-value text-friend ":name")
+        [prepared-name prepared-name-ok] (map-value prepared-value ":name")
+        [lookup-name lookup-name-ok] (map-value lookup-value ":name")
+        [prepared-lookup-name prepared-lookup-name-ok] (map-value prepared-lookup-value ":name")
+        [many-first-name many-first-name-ok] (map-value many-value.items[0] ":name")
+        [many-second-name many-second-name-ok] (map-value many-value.items[1] ":name")
+        [prepared-many-first-name prepared-many-first-name-ok] (map-value prepared-many-value.items[0] ":name")
+        [lookup-many-first-name lookup-many-first-name-ok] (map-value many-lookup-value.items[0] ":name")
+        [lookup-many-second-name lookup-many-second-name-ok] (map-value many-lookup-value.items[1] ":name")
+        [prepared-lookup-many-first-name prepared-lookup-many-first-name-ok] (map-value prepared-many-lookup-value.items[0] ":name")]
+    (t.is (= text-value.kind .Map))
+    (t.is text-name-ok)
+    (t.is (= text-name.text "Petr"))
+    (t.is text-aka-ok)
+    (t.is (= text-aka.kind .Vector))
+    (t.is (= (count text-aka.items) 2))
+    (t.is text-friend-ok)
+    (t.is (= text-friend.kind .Map))
+    (t.is friend-name-ok)
+    (t.is (= friend-name.text "David"))
+    (t.is prepared-name-ok)
+    (t.is (= prepared-name.text "Petr"))
+    (t.is lookup-name-ok)
+    (t.is (= lookup-name.text "Petr"))
+    (t.is prepared-lookup-name-ok)
+    (t.is (= prepared-lookup-name.text "Petr"))
+    (t.is (= missing-lookup.kind .Nil))
+    (t.is (= many-value.kind .Vector))
+    (t.is (= (count many-value.items) 2))
+    (t.is many-first-name-ok)
+    (t.is (= many-first-name.text "Petr"))
+    (t.is many-second-name-ok)
+    (t.is (= many-second-name.text "David"))
+    (t.is (= prepared-many-value.kind .Vector))
+    (t.is (= (count prepared-many-value.items) 2))
+    (t.is prepared-many-first-name-ok)
+    (t.is (= prepared-many-first-name.text "Petr"))
+    (t.is (= many-lookup-value.kind .Vector))
+    (t.is (= (count many-lookup-value.items) 3))
+    (t.is lookup-many-first-name-ok)
+    (t.is (= lookup-many-first-name.text "Petr"))
+    (t.is lookup-many-second-name-ok)
+    (t.is (= lookup-many-second-name.text "David"))
+    (t.is (= many-lookup-value.items[2].kind .Nil))
+    (t.is (= prepared-many-lookup-value.kind .Vector))
+    (t.is (= (count prepared-many-lookup-value.items) 2))
+    (t.is prepared-lookup-many-first-name-ok)
+    (t.is (= prepared-lookup-many-first-name.text "Petr"))
+    (t.is (= prepared-many-lookup-value.items[1].kind .Nil))))
 
 (t.deftest datascript-pull-text-parser-validation-subset
   (defer (free_all context.allocator))
