@@ -5499,10 +5499,12 @@
         (arr.push! out row.pulls[0])))
     out))
 
-(defn pull-render-attr-key [attr: string] -> Value
-  (if (strings.has_prefix attr ":")
-    (value-keyword attr)
-    (value-string attr)))
+(defn pull-render-attr-key [pulled: Pull-Attr] -> Value
+  (case pulled.key-kind
+    .Keyword (value-keyword pulled.a)
+    .Symbol (value-symbol pulled.a)
+    .String (value-string pulled.a)
+    :else (value-keyword pulled.a)))
 
 (defn pull-render-ref-id-map [entity: u64] -> Value
   (value-map ([]Value [(value-keyword ":db/id") (value-entity entity)])))
@@ -5524,7 +5526,11 @@
   (schema-cardinality-many? db pulled.a))
 
 (defn pull-render-append-key-value! [items: ^[dynamic]Value, key: string, value: Value]
-  (arr.push! items^ (pull-render-attr-key key))
+  (arr.push! items^ (value-keyword key))
+  (arr.push! items^ value))
+
+(defn pull-render-append-attr-value! [items: ^[dynamic]Value, pulled: Pull-Attr, value: Value]
+  (arr.push! items^ (pull-render-attr-key pulled))
   (arr.push! items^ value))
 
 (defn pull-render-group-values [db: DB, attrs: []Pull-Attr, attr-name: string] -> [dynamic]Value
@@ -5540,11 +5546,11 @@
     (while (< i (count attrs))
       (let [pulled attrs[i]
             seen false
+            key (pull-render-attr-key pulled)
             j 0]
         (while (< j (count items))
           (when (and (= (% j 2) 0)
-                     (= items[j].kind .Keyword)
-                     (= items[j].text pulled.a))
+                     (value-equal? items[j] key))
             (set! seen true))
           (set! j (+ j 1)))
         (when (not seen)
@@ -5552,7 +5558,7 @@
                 rendered (if (pull-render-attr-is-many? db pulled (count values))
                            (value-vector (slice values 0))
                            values[0])]
-            (pull-render-append-key-value! (addr items) pulled.a rendered)
+            (pull-render-append-attr-value! (addr items) pulled rendered)
             (delete values))))
       (set! i (+ i 1)))
     (let [result (value-map (slice items 0))]
@@ -5749,9 +5755,7 @@
                 (arr.push! out^
                   (pull-spec-transform-attr-with-fns
                     spec
-                    (Pull-Attr {a: (pull-output-attr spec)
-                                v: (value-entity datom.e)
-                                attrs: children})
+                    (pull-attr-from-spec spec (value-entity datom.e) children)
                     registry))
                 (set! found true)
                 (set! seen (+ seen 1))
@@ -5809,6 +5813,15 @@
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has-alias spec.alias spec.a))
 
+(defn pull-output-key-kind [spec: Pull-Spec] -> Key-Kind
+  (if spec.has-alias spec.alias-kind .Keyword))
+
+(defn pull-attr-from-spec [spec: Pull-Spec, value: Value, attrs: [dynamic]Pull-Attr] -> Pull-Attr
+  (Pull-Attr {a: (pull-output-attr spec)
+              key-kind: (pull-output-key-kind spec)
+              v: value
+              attrs: attrs}))
+
 (defn pull-next-recursion-depth [depth: int] -> int
   (- depth 1))
 
@@ -5824,6 +5837,7 @@
                 default-value: spec.default-value
                 has-alias: spec.has-alias
                 alias: spec.alias
+                alias-kind: spec.alias-kind
                 has-xform: spec.has-xform
                 xform: spec.xform
                 has-recursion: true
@@ -5847,6 +5861,7 @@
     (return attr))
   (when (= spec.xform "vector")
     (return (Pull-Attr {a: attr.a
+                        key-kind: attr.key-kind
                         v: (value-vector ([]Value [attr.v]))
                         attrs: (make [dynamic]Pull-Attr)})))
   (when (= spec.xform "name")
@@ -5854,6 +5869,7 @@
       (when name-ok
         (delete attr.attrs)
         (return (Pull-Attr {a: attr.a
+                            key-kind: attr.key-kind
                             v: name
                             attrs: (make [dynamic]Pull-Attr)})))))
   (let [[index found] (query-fn-index registry spec.xform)]
@@ -5864,6 +5880,7 @@
             (when result.ok
               (delete attr.attrs)
               (return (Pull-Attr {a: attr.a
+                                  key-kind: attr.key-kind
                                   v: result.value
                                   attrs: (make [dynamic]Pull-Attr)}))))))))
   attr)
@@ -5873,14 +5890,10 @@
 
 (defn pull-spec-missing-attr-with-fns [spec: Pull-Spec, registry: []Native-Query-Fn] -> Pull-Attr
   (if spec.has-default
-    (Pull-Attr {a: (pull-output-attr spec)
-                v: spec.default-value
-                attrs: (make [dynamic]Pull-Attr)})
+    (pull-attr-from-spec spec spec.default-value (make [dynamic]Pull-Attr))
     (pull-spec-transform-attr-with-fns
       spec
-      (Pull-Attr {a: (pull-output-attr spec)
-                  v: (value-nil)
-                  attrs: (make [dynamic]Pull-Attr)})
+      (pull-attr-from-spec spec (value-nil) (make [dynamic]Pull-Attr))
       registry)))
 
 (defn pull-spec-missing-attr [spec: Pull-Spec] -> Pull-Attr
@@ -5911,9 +5924,7 @@
                 (arr.push! out^
                   (pull-spec-transform-attr-with-fns
                     spec
-                    (Pull-Attr {a: (pull-output-attr spec)
-                                v: datom.v
-                                attrs: children})
+                    (pull-attr-from-spec spec datom.v children)
                     registry))
                 (set! found true)
                 (set! seen (+ seen 1))
@@ -5936,9 +5947,7 @@
       (arr.push! out^
         (pull-spec-transform-attr-with-fns
           spec
-          (Pull-Attr {a: (pull-output-attr spec)
-                      v: (value-entity entity)
-                      attrs: (make [dynamic]Pull-Attr)})
+          (pull-attr-from-spec spec (value-entity entity) (make [dynamic]Pull-Attr))
           registry)))
     (return))
   (when (reverse-attr? spec.a)
@@ -6236,12 +6245,18 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])}))
 
 (defn flat-pull-spec-kw [attr: keyword] -> Pull-Spec
   (flat-pull-spec (keyword-text attr)))
+
+(defn pull-alias-key-kind [alias: string] -> Key-Kind
+  (if (strings.has_prefix alias ":")
+    .Keyword
+    .String))
 
 (defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
   (Pull-Spec {a: attr
@@ -6251,6 +6266,7 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: pattern}))
@@ -6269,6 +6285,7 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])
@@ -6286,6 +6303,7 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: pattern}))
@@ -6301,6 +6319,7 @@
               default-value: (Value {})
               has-alias: true
               alias: alias
+              alias-kind: (pull-alias-key-kind alias)
               has-xform: false
               xform: ""
               pattern: pattern}))
@@ -6313,6 +6332,7 @@
               default-value: default-value
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])}))
@@ -6328,6 +6348,7 @@
               default-value: (Value {})
               has-alias: true
               alias: alias
+              alias-kind: (pull-alias-key-kind alias)
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])}))
@@ -6340,6 +6361,7 @@
               default-value: default-value
               has-alias: true
               alias: alias
+              alias-kind: (pull-alias-key-kind alias)
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])}))
@@ -6352,6 +6374,7 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: true
               xform: xform
               pattern: pattern}))
@@ -6364,6 +6387,7 @@
               default-value: default-value
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: true
               xform: xform
               pattern: ([]Pull-Spec [])}))
