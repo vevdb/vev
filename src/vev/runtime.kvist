@@ -5395,6 +5395,23 @@
     :else
       (bindings-after-not-group-step-with-fns db sources bindings query^.not-groups[step.index] registry)))
 
+(defn bindings-after-planned-clauses-profiled [db: DB, sources: []DB-Source, bindings: []Binding, clauses: []Clause, stats: ^Query-Stats] -> [dynamic]Binding
+  (let [current (arr.into [dynamic]Binding bindings)
+        remaining (arr.into [dynamic]Clause clauses)]
+    (defer (delete remaining))
+    (while (and (> (count current) 0) (> (count remaining) 0))
+      (let [clause-index (best-clause-index (slice remaining 0) current[0])
+            clause remaining[clause-index]
+            next (make [dynamic]Binding)]
+        (set! stats^.steps (+ stats^.steps 1))
+        (for [binding current]
+          (append-bindings-after-clause-with-sources-profiled! (addr next) db sources clause binding stats))
+        (delete current)
+        (set! current next)
+        (query-stats-observe-bindings! stats (count current))
+        (arr.remove-ordered-at! remaining clause-index)))
+    current))
+
 (defn bindings-after-ordered-where-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (bindings-from-inputs db query^ inputs)]
     (for [step query^.where-steps]
@@ -5409,16 +5426,30 @@
   (bindings-after-ordered-where-with-fns db sources query inputs ([]Native-Query-Fn [])))
 
 (defn bindings-after-ordered-where-profiled-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
-  (let [bindings (bindings-from-inputs db query^ inputs)]
+  (let [bindings (bindings-from-inputs db query^ inputs)
+        step-index 0]
     (set! stats^.input-bindings (count bindings))
     (query-stats-observe-bindings! stats (count bindings))
-    (for [step query^.where-steps]
-      (let [next-bindings (bindings-after-query-step-profiled-with-fns db sources query (slice bindings 0) step registry stats)]
-        (delete bindings)
-        (set! bindings next-bindings)
-        (query-stats-observe-bindings! stats (count bindings))
-        (when (= (count bindings) 0)
-          (return bindings))))
+    (while (< step-index (count query^.where-steps))
+      (let [step query^.where-steps[step-index]]
+        (if (= step.kind .Clause)
+          (let [clauses (make [dynamic]Clause)]
+            (while (and (< step-index (count query^.where-steps))
+                        (= query^.where-steps[step-index].kind .Clause))
+              (arr.push! clauses query^.clauses[query^.where-steps[step-index].index])
+              (set! step-index (+ step-index 1)))
+            (let [next-bindings (bindings-after-planned-clauses-profiled db sources (slice bindings 0) (slice clauses 0) stats)]
+              (delete clauses)
+              (delete bindings)
+              (set! bindings next-bindings)))
+          (do
+            (let [next-bindings (bindings-after-query-step-profiled-with-fns db sources query (slice bindings 0) step registry stats)]
+              (delete bindings)
+              (set! bindings next-bindings)
+              (query-stats-observe-bindings! stats (count bindings)))
+            (set! step-index (+ step-index 1)))))
+      (when (= (count bindings) 0)
+        (return bindings)))
     (return bindings)))
 
 (defn profiled-result-set [result: Result-Set, stats: Query-Stats] -> Profiled-Result-Set
