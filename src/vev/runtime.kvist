@@ -2442,6 +2442,7 @@
     (let [[valid error] (validate-ops before (slice expanded-ops 0))]
       (when (not valid)
         (delete expanded-ops)
+        (delete tempids)
         (return (failed-tx-report before error))))
     (for [op expanded-ops]
       (let [apply-op (or (= op.kind .Add)
@@ -2459,16 +2460,21 @@
     (let [after (build-db after-datoms)]
       (set! conn^.db after)
       (set! conn^.next-tx (+ conn^.next-tx 1))
-      (let [report (Tx-Report {db-before: before
-                               db-after: after
-                               ok: true
-                               error: ""
-                               tx-data: tx-data
-                               tx: tx
-                               tx-meta: (clone-tx-meta tx-meta)
-                               tempids: tempids})]
-        (notify-listeners! conn report)
-        report))))
+      (let [report-tempids (arr.into [dynamic]Tempid (slice tempids 0))]
+        (delete tempids)
+        (let [[_ has-current-tx] (tempid-lookup (slice report-tempids 0) ":db/current-tx")]
+        (when (not has-current-tx)
+          (arr.push! report-tempids (Tempid {tempid: ":db/current-tx" e: tx}))))
+        (let [report (Tx-Report {db-before: before
+                                 db-after: after
+                                 ok: true
+                                 error: ""
+                                 tx-data: tx-data
+                                 tx: tx
+                                 tx-meta: (clone-tx-meta tx-meta)
+                                 tempids: report-tempids})]
+          (notify-listeners! conn report)
+          report)))))
 
 (defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
   (transact-ops-with-tempids conn ops tx-meta (make [dynamic]Tempid)))
