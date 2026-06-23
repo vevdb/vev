@@ -1182,13 +1182,19 @@
                  "[[:db/add 100 :db/ident :user/email] [:db/add 100 :db/valueType :db.type/string] [:db/add 100 :db/unique :db.unique/identity] [:db/add 101 :db/ident :user/friend] [:db/add 101 :db/valueType :db.type/ref] [:db/add 102 :db/ident :user/address] [:db/add 102 :db/valueType :db.type/ref]]")
         initial (vev.transact-text
                   (addr conn)
-                  "[[:db/add 1 :user/email \"ada@example.com\"] [:db/add 1 :user/name \"Ada\"] [:db/add 1 :user/friend [:user/email \"ada@example.com\"]] {:db/id \"grace\" :user/name \"Grace\" :user/friend 1} {:user/name \"Generated\"} {:db/id [:user/email \"ada@example.com\"] :user/age 37} {:db/id 3 :user/name \"Parent\" :user/address {:user/city \"London\"}}]")
+                  "[[:db/add 1 :user/email \"ada@example.com\"] [:db/add 1 :user/name \"Ada\"] [:db/add 1 :user/score 42.5] [:db/add 1 :user/friend [:user/email \"ada@example.com\"]] {:db/id \"grace\" :user/name \"Grace\" :user/friend 1} {:user/name \"Generated\"} {:db/id [:user/email \"ada@example.com\"] :user/age 37} {:db/id 3 :user/name \"Parent\" :user/address {:user/city \"London\"}}]")
         names (vev.q-text
                 initial.db-after
                 "[:find ?name :where [?e :user/name ?name]]")
         age (vev.q-text
               initial.db-after
               "[:find ?age :where [1 :user/age ?age]]")
+        score (vev.q-text
+                initial.db-after
+                "[:find ?score :where [1 :user/score ?score]]")
+        score-match (vev.q-text
+                      initial.db-after
+                      "[:find ?e :where [?e :user/score 42.5]]")
         nested (vev.q-text
                  initial.db-after
                  "[:find ?city :where [3 :user/address ?address] [?address :user/city ?city]]")
@@ -1214,6 +1220,9 @@
     (t.is initial.ok)
     (t.is (>= (count names.rows) 3))
     (t.is (= age.rows[0].values[0].int-value 37))
+    (t.is (= score.rows[0].values[0].kind .Float))
+    (t.is (= score.rows[0].values[0].float-value 42.5))
+    (t.is (= score-match.rows[0].values[0].entity 1))
     (t.is (= nested.rows[0].values[0].text "London"))
     (t.is cas.ok)
     (t.is (= friend.rows[0].values[0].entity 3))
@@ -1223,7 +1232,7 @@
 (t.deftest edn-reader-parses-nested-forms
   (defer (free_all context.allocator))
   (let [doc (vev.empty-edn-doc)
-        [ok error] (vev.read-edn-text! (addr doc) "[:find (pull ?e [:name {:friend [:name]}]) :where [?e :active true]]")
+        [ok error] (vev.read-edn-text! (addr doc) "[:find (pull ?e [:name {:friend [:name]}]) :where [?e :active true] [?e :score 42.5]]")
         bad (vev.empty-edn-doc)
         [bad-ok bad-error] (vev.read-edn-text! (addr bad) "[:find ?e] trailing")]
     (defer (delete doc.nodes))
@@ -1237,9 +1246,11 @@
             pull-symbol doc.nodes[second.first-child]
             pull-var doc.nodes[pull-symbol.next-sibling]
             pattern doc.nodes[pull-var.next-sibling]
-            nested-map doc.nodes[doc.nodes[pattern.first-child].next-sibling]]
+            nested-map doc.nodes[doc.nodes[pattern.first-child].next-sibling]
+            score-clause (vev.edn-child-at doc doc.root 4)
+            score-value (vev.edn-child-at doc score-clause 2)]
         (t.is (= root.kind .Vector))
-        (t.is (= root.child-count 4))
+        (t.is (= root.child-count 5))
         (t.is (= first.kind .Keyword))
         (t.is (= first.text ":find"))
         (t.is (= second.kind .List))
@@ -1248,7 +1259,9 @@
         (t.is (= pull-symbol.text "pull"))
         (t.is (= pattern.kind .Vector))
         (t.is (= nested-map.kind .Map))
-        (t.is (= nested-map.child-count 2))))
+        (t.is (= nested-map.child-count 2))
+        (t.is (= doc.nodes[score-value].kind .Float))
+        (t.is (= doc.nodes[score-value].float-value 42.5))))
     (t.is (not bad-ok))
     (t.is (= bad-error "trailing EDN input"))))
 

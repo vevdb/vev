@@ -271,6 +271,22 @@
       (and (> n 1) (ascii-digit? (kstr.get token 1)))
       (ascii-digit? (kstr.get token 0)))))
 
+(defn edn-float-token? [token: string] -> bool
+  (let [n (kstr.count token)
+        saw-dot false
+        saw-digit false]
+    (when (= n 0)
+      (return false))
+    (for [index 0..<n]
+      (let [ch (kstr.get token index)]
+        (if (ascii-digit? ch)
+          (set! saw-digit true)
+          (if (= ch 46)
+            (set! saw-dot true)
+            (when (not (and (= index 0) (= ch 45)))
+              (return false))))))
+    (and saw-dot saw-digit)))
+
 (defn edn-skip-ws [text: string, i: int] -> int
   (let [out i
         n (kstr.count text)]
@@ -335,12 +351,19 @@
         (not (edn-int-token? token))
           (return cursor (edn-add-node! doc (edn-node .Symbol token)) true "")
         :else
-          (let [[parsed parsed-ok] (strconv.parse_int token)]
-            (if parsed-ok
-              (let [node (edn-node .Int token)]
-                (set! node.int-value (i64 parsed))
-                (return cursor (edn-add-node! doc node) true ""))
-              (return cursor (edn-add-node! doc (edn-node .Symbol token)) true "")))))))
+          (if (edn-float-token? token)
+            (let [[parsed parsed-ok] (strconv.parse_f64 token)]
+              (if parsed-ok
+                (let [node (edn-node .Float token)]
+                  (set! node.float-value parsed)
+                  (return cursor (edn-add-node! doc node) true ""))
+                (return cursor (edn-add-node! doc (edn-node .Symbol token)) true "")))
+            (let [[parsed parsed-ok] (strconv.parse_int token)]
+              (if parsed-ok
+                (let [node (edn-node .Int token)]
+                  (set! node.int-value (i64 parsed))
+                  (return cursor (edn-add-node! doc node) true ""))
+                (return cursor (edn-add-node! doc (edn-node .Symbol token)) true ""))))))))
 
 (defn read-edn-form! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
   (let [cursor (edn-skip-ws text i)
@@ -462,6 +485,7 @@
       (= node.kind .Symbol) (term-symbol node.text)
       (= node.kind .Bool) (term-value (value-bool node.bool-value))
       (= node.kind .Int) (if attr-position (term-value (value-int node.int-value)) (term-entity (u64 node.int-value)))
+      (= node.kind .Float) (term-value (value-float node.float-value))
       (or (= node.kind .Vector) (= node.kind .Map))
         (let [[value value-ok _] (edn-value-from-node doc node-index)]
           (if value-ok
@@ -482,6 +506,7 @@
       (= node.kind .Symbol) (term-symbol node.text)
       (= node.kind .Bool) (term-value (value-bool node.bool-value))
       (= node.kind .Int) (term-value (value-int node.int-value))
+      (= node.kind .Float) (term-value (value-float node.float-value))
       (= node.kind .Nil) (term-value (value-nil))
       (or (= node.kind .Vector) (= node.kind .Map))
         (let [[value value-ok _] (edn-value-from-node doc node-index)]
