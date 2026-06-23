@@ -49,9 +49,20 @@ Status key:
 
 ## Next Porting Order
 
-1. Close high-surface query gaps: variable pull patterns, more rule source
-   forms, and broader host function/predicate clauses.
-2. Broaden EDN string interop for pull options, return maps, source-qualified rules, and exact
-   parser validation.
-3. Add a DataScript test-port ledger so each upstream namespace has pass/fail
-   counts instead of a prose-only status.
+The local compatibility suite currently passes 327 tests. The remaining
+DataScript work should focus on the areas where Vev still differs in engine
+semantics or required native interop, not on already-covered syntax families.
+
+1. Finish tuple compatibility: the remaining useful work is the edge conflict
+   matrix and exact schema validation behavior, especially through EDN
+   text/prepared transaction APIs.
+2. Tighten parser validation against the upstream parser namespaces. Query,
+   pull, rule, return-map, and transaction text parsing are broad now, but
+   malformed-shape handling still trails DataScript.
+3. Design and implement the native callback ABI for predicates, functions,
+   aggregates, pull transforms, transaction functions, and listeners. Named
+   aliases cover common tests, but non-Kvist consumers need a real callback
+   surface.
+4. Add measurement-driven performance work for recursive rules, large
+   relations, aggregates, and index-backed planning before starting durable
+   storage.

@@ -17,6 +17,11 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 327
+tests successfully. The most important remaining gaps are no longer basic
+Datalog syntax or transaction shape coverage; they are exact parser validation,
+tuple edge matrices, host/native callback design, and performance work.
+
 ## Semantic Core
 
 These are the main in-memory parity target before durable storage.
@@ -84,12 +89,19 @@ These are useful, but not the next engine-parity gate.
 
 ## Batch Order
 
-1. Broaden parser/EDN APIs around pull options, return-map markers,
-   source-qualified rules, transactions, and exact validation. This is the
-   primary compatibility route because non-Kvist consumers depend on it.
-2. Port remaining `transact.cljc`, `upsert.cljc`, and `validation.cljc`
-   semantics that are not host-runtime-specific, with text/prepared API tests
-   where a portable representation exists.
-3. Finish tuple/index public API behavior as one schema/index batch.
-4. Keep Kvist macros aligned with the typed AST as ergonomic sugar, not as the
-   definition of compatibility.
+1. Finish the tuple edge matrix from `tuples.cljc`: conflicting tuple upsert
+   paths, direct tuple-value corner cases, and exact schema validation where
+   those affect engine behavior rather than only Clojure error text.
+2. Tighten parser validation against `parser_*.cljc`, especially malformed
+   `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
+   because EDN text/prepared APIs are the compatibility route for non-Kvist
+   consumers.
+3. Design the native callback surface for query predicates/functions,
+   aggregates, pull `:xform`, transaction functions, and listeners. Existing
+   named aliases are useful but not enough for broad C/Odin/non-Kvist use.
+4. Replace the current rule/fixpoint and aggregate hot paths with measured
+   implementations. The current engine is semantically useful, but DataScript
+   parity also needs predictable performance on recursive rules and large
+   relations.
+5. Keep Kvist literal macros aligned with the typed AST as ergonomic sugar, not
+   as the definition of compatibility.
