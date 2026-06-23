@@ -10039,6 +10039,42 @@
     (t.is (= (count invalid-prepared-result.attrs) 0))
     (t.is (= (count invalid.attrs) 0))))
 
+(t.deftest datascript-pull-text-parser-validation-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 101 :db/ident :aka]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             [:db/add 102 :db/ident :friend]
+             [:db/add 102 :db/valueType :db.type/ref]
+             {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"] :friend 2}
+             {:db/id 2 :name "David"}])
+        string-limit (vev.prepare-pull-pattern-text "[((\"limit\" :aka 1) :as :first-aka)]")
+        vector-limit (vev.prepare-pull-pattern-text "[[\"limit\" :aka 1]]")
+        nested-default (vev.prepare-pull-pattern-text "[(default (limit :missing 1) \"Unknown\")]")
+        pulled-string-limit (vev.pull-prepared conn.db string-limit 1)
+        pulled-vector-limit (vev.pull-prepared conn.db vector-limit 1)
+        pulled-default (vev.pull-prepared conn.db nested-default 1)
+        bad-option (vev.prepare-pull-pattern-text "[[:aka :limit]]")
+        bad-limit-call (vev.prepare-pull-pattern-text "[(limit :aka)]")
+        bad-map-key (vev.prepare-pull-pattern-text "[{[:friend :limit] [:name]}]")
+        bad-map-value (vev.prepare-pull-pattern-text "[{:friend :name}]")
+        partial-query (vev.prepare-query-text "[:find (pull ?e [[:aka :limit]]) :where [?e :name \"Petr\"]]")]
+    (t.is string-limit.ok)
+    (t.is vector-limit.ok)
+    (t.is nested-default.ok)
+    (t.is (= pulled-string-limit.attrs[0].a ":first-aka"))
+    (t.is (= pulled-string-limit.attrs[0].v.text "Devil"))
+    (t.is (= pulled-vector-limit.attrs[0].v.text "Devil"))
+    (t.is (= pulled-default.attrs[0].v.text "Unknown"))
+    (t.is (not bad-option.ok))
+    (t.is (not bad-limit-call.ok))
+    (t.is (not bad-map-key.ok))
+    (t.is (not bad-map-value.ok))
+    (t.is (not partial-query.ok))))
+
 (t.deftest datascript-pull-lookup-ref-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

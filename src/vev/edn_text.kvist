@@ -305,7 +305,11 @@
           (return spec true)))))
   (return (Pull-Spec {}) false))
 
-(defn edn-pull-specs [doc: EDN-Doc, vector-node: int] -> [dynamic]Pull-Spec
+(defn edn-pull-specs [doc: EDN-Doc, vector-node: int] -> [pattern: [dynamic]Pull-Spec, ok: bool, error: string]
+  (when (or (= vector-node -1)
+            (and (not (= doc.nodes[vector-node].kind .Vector))
+                 (not (= doc.nodes[vector-node].kind .List))))
+    (return (make [dynamic]Pull-Spec) false "pull pattern must be a vector or list"))
   (let [out (make [dynamic]Pull-Spec)
         child doc.nodes[vector-node].first-child]
     (while (not (= child -1))
@@ -314,22 +318,27 @@
           (while (not (= entry -1))
             (let [pattern-node doc.nodes[entry].next-sibling
                   [base base-ok] (edn-pull-spec-node doc entry)]
-              (when (and base-ok (not (= pattern-node -1)))
-                (if (or (= doc.nodes[pattern-node].kind .Vector)
-                        (= doc.nodes[pattern-node].kind .List))
-                  (let [nested (edn-pull-specs doc pattern-node)]
-                    (arr.push! out (edn-pull-spec-with-pattern base (slice nested 0))))
-                  (let [[depth depth-ok] (edn-pull-recursion-depth doc pattern-node)]
-                    (when depth-ok
-                      (arr.push! out (edn-pull-spec-with-recursion base depth))))))
-              (if (= pattern-node -1)
-                (set! entry -1)
-                (set! entry doc.nodes[pattern-node].next-sibling)))))
+              (when (not base-ok)
+                (return out false "invalid pull map key"))
+              (when (= pattern-node -1)
+                (return out false "pull map entry expects a nested pattern or recursion depth"))
+              (if (or (= doc.nodes[pattern-node].kind .Vector)
+                      (= doc.nodes[pattern-node].kind .List))
+                (let [[nested nested-ok nested-error] (edn-pull-specs doc pattern-node)]
+                  (when (not nested-ok)
+                    (return out false nested-error))
+                  (arr.push! out (edn-pull-spec-with-pattern base (slice nested 0))))
+                (let [[depth depth-ok] (edn-pull-recursion-depth doc pattern-node)]
+                  (when (not depth-ok)
+                    (return out false "pull map value must be a pattern vector/list or recursion depth"))
+                  (arr.push! out (edn-pull-spec-with-recursion base depth))))
+              (set! entry doc.nodes[pattern-node].next-sibling))))
         (let [[spec spec-ok] (edn-pull-spec-node doc child)]
-          (when spec-ok
-            (arr.push! out spec))))
+          (when (not spec-ok)
+            (return out false "invalid pull pattern spec"))
+          (arr.push! out spec)))
       (set! child doc.nodes[child].next-sibling))
-    out))
+    (return out true "")))
 
 (defn append-edn-pull-find! [out: ^[dynamic]Pull-Find, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
   (let [head doc.nodes[form].first-child
@@ -360,7 +369,9 @@
         (return true ""))
       (when (or (= pattern-node -1) (not (= doc.nodes[pattern-node].kind .Vector)))
         (return false "pull find expects a literal vector pattern or pattern variable"))
-      (let [pattern (edn-pull-specs doc pattern-node)]
+      (let [[pattern pattern-ok pattern-error] (edn-pull-specs doc pattern-node)]
+        (when (not pattern-ok)
+          (return false pattern-error))
         (arr.push! out^
           (Pull-Find {var: doc.nodes[var-node].text
                       source: source
@@ -380,8 +391,8 @@
     (when (or (= doc.root -1)
               (not (= doc.nodes[doc.root].kind .Vector)))
       (return (make [dynamic]Pull-Spec) false "pull text pattern must be an EDN vector"))
-    (let [out (edn-pull-specs doc doc.root)]
-      (return out true ""))))
+    (let [[out out-ok out-error] (edn-pull-specs doc doc.root)]
+      (return out out-ok out-error))))
 
 (defn prepare-pull-pattern-text [text: string] -> Prepared-Pull-Pattern
   (let [[pattern ok error] (parse-pull-pattern-text text)]
