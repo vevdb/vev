@@ -140,6 +140,9 @@
                  (vev.add datom.e ":birthday-delta" args[1])])))))))
   (vev.tx-fn-error "No entity with name"))
 
+(defn fail-tx-fn-string [db: vev.DB, arg: string] -> vev.Tx-Fn-Result
+  (vev.tx-fn-error arg))
+
 (defn create-vera-value-fn [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result
   (when (not (= (count args) 0))
     (return (vev.tx-fn-error "Expected no args")))
@@ -7203,12 +7206,15 @@
   (let [conn (vev.create-conn)
         registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" birthday-by-name)
                                        (vev.tx-fn-values ":inc-age-by" birthday-by-name-and-delta)
+                                       (vev.tx-fn-string ":fail-tx" fail-tx-fn-string)
                                        (vev.tx-fn-values ":create-vera" create-vera-value-fn)
                                        (vev.tx-fn-values ":create-map" create-entity-without-db-id-values)])
+        listener-reports (make [dynamic]vev.Tx-Report) :defer
         _ (vev.transact
             (addr conn)
             [{:db/id 10 :db/ident :inc-age}
              {:db/id 12 :db/ident :inc-age-by}
+             {:db/id 15 :db/ident :fail-tx}
              {:db/id 13 :db/ident :create-vera}
              {:db/id 14 :db/ident :create-map}
              {:db/id 11 :db/ident :Petr}])
@@ -7269,6 +7275,38 @@
                          (addr conn)
                          "[[:db.fn/call :inc-age 42]]"
                          registry)
+        _ (vev.listen! (addr conn) "tx-fn-failures" (addr listener-reports))
+        before-failure-next-tx conn.next-tx
+        before-failure-datom-count (count conn.db.datoms)
+        literal-fail (vev.transact-tx-data-with-string-fns
+                       (addr conn)
+                       (vev.tx-data
+                         [:db/add 7 :name "RollbackLiteral"]
+                         [:fail-tx "literal failure"]
+                         [:db/add 8 :name "AfterLiteralFailure"])
+                       registry)
+        text-fail (vev.transact-text-with-string-fns
+                    (addr conn)
+                    "[[:db/add 9 :name \"RollbackText\"] [:db.fn/call :fail-tx \"text failure\"] [:db/add 10 :name \"AfterTextFailure\"]]"
+                    registry)
+        prepared-fail (vev.prepare-tx-text
+                        "[[:db/add 11 :name \"RollbackPrepared\"] [:fail-tx \"prepared failure\"] [:db/add 12 :name \"AfterPreparedFailure\"]]")
+        prepared-fail-report (vev.transact-prepared-with-string-fns (addr conn) prepared-fail registry)
+        rollback-query (vev.q conn.db
+                         [:find ?e ?name
+                          :where
+                          [?e :name ?name]
+                          [(= ?name "RollbackLiteral")]])
+        text-rollback-query (vev.q conn.db
+                              [:find ?e ?name
+                               :where
+                               [?e :name ?name]
+                               [(= ?name "RollbackText")]])
+        prepared-rollback-query (vev.q conn.db
+                                  [:find ?e ?name
+                                   :where
+                                   [?e :name ?name]
+                                   [(= ?name "RollbackPrepared")]])
         petr (vev.db-entity report.db-after 1)
         ada (vev.db-entity text-call.db-after 2)
         lin (vev.db-entity text-value-call.db-after 4)
@@ -7322,7 +7360,20 @@
     (t.is (not unknown-text.ok))
     (t.is (= unknown-text.error "transaction fn not found"))
     (t.is (not bad-call-shape.ok))
-    (t.is (= bad-call-shape.error "transaction fn expects one string argument"))))
+    (t.is (= bad-call-shape.error "transaction fn expects one string argument"))
+    (t.is (not literal-fail.ok))
+    (t.is (= literal-fail.error "literal failure"))
+    (t.is (not text-fail.ok))
+    (t.is (= text-fail.error "text failure"))
+    (t.is prepared-fail.ok)
+    (t.is (not prepared-fail-report.ok))
+    (t.is (= prepared-fail-report.error "prepared failure"))
+    (t.is (= conn.next-tx before-failure-next-tx))
+    (t.is (= (count conn.db.datoms) before-failure-datom-count))
+    (t.is (= (count listener-reports) 0))
+    (t.is (= (count rollback-query.rows) 0))
+    (t.is (= (count text-rollback-query.rows) 0))
+    (t.is (= (count prepared-rollback-query.rows) 0))))
 
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))
