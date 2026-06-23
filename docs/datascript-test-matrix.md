@@ -17,7 +17,7 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 348
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 349
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
 remaining native callback design, and performance work.
@@ -28,7 +28,7 @@ These are the main in-memory parity target before durable storage.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
-| `query.cljc` | 11 | passing | DB-backed tx/op data pattern terms, primary/named collection datom sources including 1-wide scalar rows, 2-wide tuple rows, primary map relation sources, typed relation/collection/map input values, prepared primary collection queries, portable text/prepared result `Value` rendering, map-form text queries, direct map-as-relation inputs, nested `:in` binding patterns, ignored `_` input placeholders in literal and text queries, nested map values, DataScript namespaced reverse attrs, checked scalar/collection/tuple/relation input shape errors, issue-425 symbol constants, and issue-385-style zero-arg/native function input behavior covered through EDN text/prepared-compatible registered functions; exact Clojure diagnostic text is host-shaped |
+| `query.cljc` | 11 | passing | DB-backed tx/op data pattern terms, primary/named collection datom sources including 1-wide scalar rows, 2-wide tuple rows, primary map relation sources, typed relation/collection/map input values, prepared primary collection queries, portable text/prepared result `Value` rendering including rules and named DB sources, map-form text queries, direct map-as-relation inputs, nested `:in` binding patterns, ignored `_` input placeholders in literal and text queries, nested map values, DataScript namespaced reverse attrs, checked scalar/collection/tuple/relation input shape errors, issue-425 symbol constants, and issue-385-style zero-arg/native function input behavior covered through EDN text/prepared-compatible registered functions; exact Clojure diagnostic text is host-shaped |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
 | `query_fns.cljc` | 7 | passing | built-in predicates/functions including boolean/nil predicates, string contains/prefix/suffix helpers, integer arithmetic helpers, `name`, `str`, `keyword`, `subs`, `range`, regex predicate and match-return `re-pattern`/`re-find`, scalar/collection/tuple/relation `ground`, `get-else`, `get-some`, `missing?`, lookup-ref entity inputs, text/prepared tuple/relation/collection output destructuring, named predicate/function operator inputs, registered native-op aliases, typed native predicate/value callbacks including rule bodies and primary collection DB queries, DB-aware native predicates, unresolved data-bound predicate values producing no rows, and checked query errors covered; exact Clojure diagnostics are host-shaped |
 | `query_not.cljc` | 5 | passing | nested `not`, `not-join`, default and explicit source semantics, anti-join implementation edge cases, checked unbound-group errors, query text plus Kvist literal macro source-order validation, and supported ordered rule bodies covered; exact diagnostics are Vev-shaped |

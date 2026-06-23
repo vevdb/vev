@@ -1210,6 +1210,78 @@
     (t.is bad-rows-ok)
     (t.is (= (count bad-rows.items) 0))))
 
+(t.deftest datascript-query-rendered-rules-and-sources-values-subset
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        right (vev.create-conn)
+        _ (vev.transact
+            (addr left)
+            [{:db/id 1 :name "Petr" :friend 2}
+             {:db/id 2 :name "David"}])
+        _ (vev.transact
+            (addr right)
+            [{:db/id 2 :status :active}
+             {:db/id 3 :status :archived}])
+        rules-text "[[(friend-name ?e ?name) [?e :friend ?f] [?f :name ?name]]]"
+        query-text "[:find ?name :in $ % ?e :where (friend-name ?e ?name)]"
+        prepared (vev.prepare-query-text query-text)
+        prepared-rules (vev.parse-rules-text rules-text)
+        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))])
+        text-rules-value (vev.q-text-value-with-rules left.db query-text rules-text inputs)
+        prepared-rules-value (vev.q-prepared-value-with-rules left.db prepared prepared-rules inputs)
+        sources ([]vev.DB-Source [(vev.db-source "$left" left.db)
+                                  (vev.db-source "$right" right.db)])
+        source-value (vev.q-text-value-with-sources
+                       left.db
+                       "[:find ?name ?status :where [$left ?e :name ?name] [$right ?e :status ?status]]"
+                       ([]vev.Query-Input [])
+                       sources)
+        prepared-source (vev.prepare-query-text-with-sources
+                          "[:find ?name ?status :where [$left ?e :name ?name] [$right ?e :status ?status]]"
+                          sources)
+        prepared-source-value (vev.q-prepared-value-with-sources
+                                left.db
+                                prepared-source
+                                ([]vev.Query-Input [])
+                                sources)
+        bad-rules-value (vev.q-text-value-with-rules
+                          left.db
+                          query-text
+                          "[[(friend-name ?e ?name)]]"
+                          inputs)
+        [text-rules-rows text-rules-rows-ok] (map-value text-rules-value ":rows")
+        [text-rules-values text-rules-values-ok] (map-value text-rules-rows.items[0] ":values")
+        [prepared-rules-rows prepared-rules-rows-ok] (map-value prepared-rules-value ":rows")
+        [prepared-rules-values prepared-rules-values-ok] (map-value prepared-rules-rows.items[0] ":values")
+        [source-rows source-rows-ok] (map-value source-value ":rows")
+        [source-values source-values-ok] (map-value source-rows.items[0] ":values")
+        [prepared-source-rows prepared-source-rows-ok] (map-value prepared-source-value ":rows")
+        [prepared-source-values prepared-source-values-ok] (map-value prepared-source-rows.items[0] ":values")
+        [bad-ok bad-ok-ok] (map-value bad-rules-value ":ok")
+        [bad-error bad-error-ok] (map-value bad-rules-value ":error")]
+    (t.is text-rules-rows-ok)
+    (t.is (= (count text-rules-rows.items) 1))
+    (t.is text-rules-values-ok)
+    (t.is (= text-rules-values.items[0].text "David"))
+    (t.is prepared-rules-rows-ok)
+    (t.is (= (count prepared-rules-rows.items) 1))
+    (t.is prepared-rules-values-ok)
+    (t.is (= prepared-rules-values.items[0].text "David"))
+    (t.is source-rows-ok)
+    (t.is (= (count source-rows.items) 1))
+    (t.is source-values-ok)
+    (t.is (= source-values.items[0].text "David"))
+    (t.is (= source-values.items[1].text ":active"))
+    (t.is prepared-source-rows-ok)
+    (t.is (= (count prepared-source-rows.items) 1))
+    (t.is prepared-source-values-ok)
+    (t.is (= prepared-source-values.items[0].text "David"))
+    (t.is (= prepared-source-values.items[1].text ":active"))
+    (t.is bad-ok-ok)
+    (t.is (not bad-ok.bool-value))
+    (t.is bad-error-ok)
+    (t.is (= bad-error.text "Rule branch should have clauses"))))
+
 (t.deftest datascript-parser-query-text-predicates-and-functions
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
