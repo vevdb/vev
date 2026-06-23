@@ -1335,6 +1335,50 @@
       (delete doc.nodes)
       (return parsed-ok parsed-error))))
 
+(defn parsed-rule-params-have-duplicate? [params: []string] -> bool
+  (for [param index params]
+    (for [other-index (arr.range (+ index 1) (count params))]
+      (when (= param params[other-index])
+        (return true))))
+  false)
+
+(defn validate-parsed-rule [rules: []Rule, rule-index: int] -> [ok: bool, error: string]
+  (let [rule rules[rule-index]]
+    (when (= (count rule.body-steps) 0)
+      (return false "Rule branch should have clauses"))
+    (when (parsed-rule-params-have-duplicate? (slice rule.params 0))
+      (return false "Rule variables should be distinct"))
+    (for [other index rules]
+      (when (and (not (= index rule-index))
+                 (= other.name rule.name))
+        (when (or (not (= other.required-param-count rule.required-param-count))
+                  (not (= (count other.params) (count rule.params))))
+          (return false (fmt.tprintf "Arity mismatch for rule: %s" rule.name)))))
+    (return true "")))
+
+(defn validate-parsed-rules [rules: []Rule] -> [ok: bool, error: string]
+  (for [_ index rules]
+    (let [[ok error] (validate-parsed-rule rules index)]
+      (when (not ok)
+        (return false error))))
+  (return true ""))
+
+(defn parse-rules-text [text: string] -> Prepared-Rules
+  (let [rules (make [dynamic]Rule)
+        [ok error] (parse-rules-text! (addr rules) text)]
+    (when (not ok)
+      (return (Prepared-Rules {ok: false error: error rules: rules})))
+    (let [[valid valid-error] (validate-parsed-rules (slice rules 0))]
+      (if valid
+        (Prepared-Rules {ok: true error: "" rules: rules})
+        (Prepared-Rules {ok: false error: valid-error rules: rules})))))
+
+(defn parse-rules-text-checked! [out: ^[dynamic]Rule, text: string] -> [ok: bool, error: string]
+  (let [[parsed-ok parsed-error] (parse-rules-text! out text)]
+    (when (not parsed-ok)
+      (return false parsed-error))
+    (validate-parsed-rules (slice out^ 0))))
+
 (defn parse-query-vector-edn-with-sources! [out: ^Query, doc: EDN-Doc, db-sources: []DB-Source] -> [ok: bool, error: string]
   (when (or (= doc.root -1)
             (not (= doc.nodes[doc.root].kind .Vector)))
@@ -1815,7 +1859,7 @@
         [query-ok query-error] (parse-query-text! (addr query-value) text)]
     (when (not query-ok)
       (return (result-set-error query-error)))
-    (let [[rules-ok rules-error] (parse-rules-text! (addr rules) rules-text)]
+    (let [[rules-ok rules-error] (parse-rules-text-checked! (addr rules) rules-text)]
       (when (not rules-ok)
         (return (result-set-error rules-error)))
       (q-query-with-inputs db (query-with-rules query-value (slice rules 0)) inputs))))
@@ -1826,7 +1870,7 @@
         [query-ok query-error] (parse-query-text! (addr query-value) text)]
     (when (not query-ok)
       (return (result-set-error query-error)))
-    (let [[rules-ok rules-error] (parse-rules-text! (addr rules) rules-text)]
+    (let [[rules-ok rules-error] (parse-rules-text-checked! (addr rules) rules-text)]
       (when (not rules-ok)
         (return (result-set-error rules-error)))
       (q-query-with-inputs-and-fns db (query-with-rules query-value (slice rules 0)) inputs registry))))
@@ -1837,7 +1881,7 @@
         [query-ok query-error] (parse-query-text! (addr query-value) text)]
     (when (not query-ok)
       (return (result-set-error query-error)))
-    (let [[rules-ok rules-error] (parse-rules-text! (addr rules) rules-text)]
+    (let [[rules-ok rules-error] (parse-rules-text-checked! (addr rules) rules-text)]
       (when (not rules-ok)
         (return (result-set-error rules-error)))
       (q-query-relation-db rows (query-with-rules query-value (slice rules 0)) inputs))))
@@ -1848,7 +1892,7 @@
         [query-ok query-error] (parse-query-text! (addr query-value) text)]
     (when (not query-ok)
       (return (result-set-error query-error)))
-    (let [[rules-ok rules-error] (parse-rules-text! (addr rules) rules-text)]
+    (let [[rules-ok rules-error] (parse-rules-text-checked! (addr rules) rules-text)]
       (when (not rules-ok)
         (return (result-set-error rules-error)))
       (q-query-relation-db-with-fns rows (query-with-rules query-value (slice rules 0)) inputs registry))))
