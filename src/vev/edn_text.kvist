@@ -1271,11 +1271,12 @@
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer
         where-steps (make [dynamic]Query-Step) :defer
-        pulls (make [dynamic]Pull-Find) :defer
-        aggregates (make [dynamic]Aggregate-Find) :defer
-        return-map-allowed true
-        has-rules-input false
-        cursor (edn-child-at doc doc.root 1)]
+          pulls (make [dynamic]Pull-Find) :defer
+          aggregates (make [dynamic]Aggregate-Find) :defer
+          return-map-allowed true
+          return-map-scalar false
+          has-rules-input false
+          cursor (edn-child-at doc doc.root 1)]
     (while (and (not (= cursor -1))
                 (not (edn-keyword-text? doc cursor ":in"))
                 (not (edn-keyword-text? doc cursor ":where"))
@@ -1284,8 +1285,10 @@
                 (not (edn-keyword-text? doc cursor ":strs"))
                 (not (edn-keyword-text? doc cursor ":syms")))
       (when (or (edn-symbol-text? doc cursor ".")
-                (edn-find-vector-collection? doc cursor))
-        (set! return-map-allowed false))
+                  (edn-find-vector-collection? doc cursor))
+          (set! return-map-allowed false))
+        (when (edn-symbol-text? doc cursor ".")
+          (set! return-map-scalar true))
       (if (= doc.nodes[cursor].kind .Vector)
         (let [[find-ok find-error] (append-edn-find-vector! (addr find) (addr pulls) (addr aggregates) doc cursor)]
           (when (not find-ok)
@@ -1295,15 +1298,16 @@
             (return false find-error))))
       (set! cursor doc.nodes[cursor].next-sibling))
     (when (or (edn-keyword-text? doc cursor ":keys")
-              (edn-keyword-text? doc cursor ":strs")
-              (edn-keyword-text? doc cursor ":syms"))
-      (when (> (edn-vector-return-marker-count doc) 1)
-        (return false "only one of :keys/:strs/:syms may be present"))
+        (edn-keyword-text? doc cursor ":strs")
+        (edn-keyword-text? doc cursor ":syms"))
+    (when (> (edn-vector-return-marker-count doc) 1)
+      (return false "Only one of :keys/:syms/:strs must be present"))
+    (let [marker (edn-return-map-marker-text doc cursor)]
       (when (not return-map-allowed)
-        (return false "return-map markers do not work with collection or scalar :find"))
+        (return false (return-map-kind-error marker return-map-scalar)))
       (when (not (= (edn-vector-return-entry-count doc cursor)
                     (+ (count find) (count pulls) (count aggregates))))
-        (return false "return-map marker count must match :find count"))
+        (return false (return-map-count-error marker))))
       (set! cursor doc.nodes[cursor].next-sibling)
       (while (and (not (= cursor -1))
                   (not (edn-keyword-text? doc cursor ":in"))
@@ -1361,6 +1365,19 @@
       (edn-keyword-text? doc node-index ":strs")
       (edn-keyword-text? doc node-index ":syms")))
 
+(defn edn-return-map-marker-text [doc: EDN-Doc, node-index: int] -> string
+  (when (= node-index -1)
+    (return ":keys"))
+  doc.nodes[node-index].text)
+
+(defn return-map-kind-error [marker: string, scalar: bool] -> string
+  (if scalar
+    (fmt.tprintf "%s does not work with single-scalar :find" marker)
+    (fmt.tprintf "%s does not work with collection :find" marker)))
+
+(defn return-map-count-error [marker: string] -> string
+  (fmt.tprintf "Count of %s must match count of :find" marker))
+
 (defn edn-find-vector-collection? [doc: EDN-Doc, vector-node: int] -> bool
   (when (or (= vector-node -1)
             (not (= doc.nodes[vector-node].kind .Vector))
@@ -1396,7 +1413,16 @@
   (let [strs-node (edn-map-value-node doc doc.root ":strs")]
     (when (not (= strs-node -1))
       (return strs-node)))
-  (edn-map-value-node doc doc.root ":syms"))
+    (edn-map-value-node doc doc.root ":syms"))
+
+(defn edn-map-return-marker-text [doc: EDN-Doc] -> string
+  (when (not (= (edn-map-value-node doc doc.root ":keys") -1))
+    (return ":keys"))
+  (when (not (= (edn-map-value-node doc doc.root ":strs") -1))
+    (return ":strs"))
+  (when (not (= (edn-map-value-node doc doc.root ":syms") -1))
+    (return ":syms"))
+  ":keys")
 
 (defn edn-return-entry-count [doc: EDN-Doc, node-index: int] -> int
   (when (= node-index -1)
@@ -1503,17 +1529,19 @@
         rules-node (edn-map-value-node doc doc.root ":rules")
         has-rules-input (edn-section-has-rules-input? doc in-node)
         [find-ok find-error] (append-edn-find-section! (addr find) (addr pulls) (addr aggregates) doc find-node)]
-    (when (not find-ok)
-      (return false find-error))
-    (when (> (edn-map-return-marker-count doc) 1)
-      (return false "only one of :keys/:strs/:syms may be present"))
-    (when (> (edn-map-return-marker-count doc) 0)
-      (when (or (edn-find-vector-collection? doc find-node)
-                (edn-find-vector-scalar? doc find-node))
-        (return false "return-map markers do not work with collection or scalar :find"))
-      (when (not (= (edn-return-entry-count doc (edn-map-return-node doc))
-                    (+ (count find) (count pulls) (count aggregates))))
-        (return false "return-map marker count must match :find count")))
+      (when (not find-ok)
+        (return false find-error))
+      (when (> (edn-map-return-marker-count doc) 1)
+        (return false "Only one of :keys/:syms/:strs must be present"))
+      (when (> (edn-map-return-marker-count doc) 0)
+        (let [marker-node (edn-map-return-node doc)
+              marker (edn-map-return-marker-text doc)]
+          (when (or (edn-find-vector-collection? doc find-node)
+                    (edn-find-vector-scalar? doc find-node))
+            (return false (return-map-kind-error marker (edn-find-vector-scalar? doc find-node))))
+          (when (not (= (edn-return-entry-count doc marker-node)
+                        (+ (count find) (count pulls) (count aggregates))))
+            (return false (return-map-count-error marker)))))
     (let [[with-ok with-error] (append-edn-with-section! (addr with) doc with-node)]
       (when (not with-ok)
         (return false with-error)))
