@@ -118,6 +118,30 @@
     (vev.value-keyword
       (strings.concatenate ([]string [":" args[0].text "/" args[1].text])))))
 
+(defn native-constant-five [args: []vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (= (count args) 0))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result (vev.value-int 5)))
+
+(defn native-minmax [args: []vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (and (= (count args) 1)
+                  (= args[0].kind .Vector)
+                  (> (count args[0].items) 0)))
+    (return (vev.native-query-function-none)))
+  (let [min-value args[0].items[0]
+        max-value args[0].items[0]]
+    (when (not (= min-value.kind .Int))
+      (return (vev.native-query-function-none)))
+    (for [item args[0].items]
+      (when (not (= item.kind .Int))
+        (return (vev.native-query-function-none)))
+      (when (< item.int-value min-value.int-value)
+        (set! min-value item))
+      (when (> item.int-value max-value.int-value)
+        (set! max-value item)))
+    (vev.native-query-function-result
+      (vev.value-vector ([]vev.Value [min-value max-value])))))
+
 (defn native-tag-value [value: vev.Value] -> vev.Native-Query-Function-Result
   (when (not (= value.kind .String))
     (return (vev.native-query-function-none)))
@@ -6047,6 +6071,45 @@
     (t.is (= (count nested.rows) 1))
     (t.is (= nested.rows[0].values[0].kind .Map))
     (t.is (= nested.rows[0].values[1].int-value 2))))
+
+(t.deftest datascript-query-native-function-input-binding-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :person/name "Joe"}])
+        registry ([]vev.Native-Query-Fn
+                   [(vev.query-value-fn "constant-five" native-constant-five)
+                    (vev.query-value-fn "minmax" native-minmax)])
+        nested-source (vev.value-map
+                        ([]vev.Value
+                          [(vev.value-keyword ":a")
+                           (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-int 2) (vev.value-int 3) (vev.value-int 4)]))
+                           (vev.value-keyword ":b")
+                           (vev.value-vector ([]vev.Value [(vev.value-int 5) (vev.value-int 6) (vev.value-int 7)]))
+                           (vev.value-keyword ":c")
+                           (vev.value-vector ([]vev.Value [(vev.value-int 3)]))]))
+        nested (vev.q-text-with-inputs-and-fns
+                 conn.db
+                 "[:find ?k ?min ?max :in [[?k ?v] ...] ?minmax :where [(?minmax ?v) [?min ?max]] [(> ?max ?min)]]"
+                 ([]vev.Query-Input
+                   [(vev.query-input-scalar nested-source)
+                    (vev.query-input-scalar (vev.value-string "minmax"))])
+                 registry)
+        unrelated (vev.q-text-with-fns
+                    conn.db
+                    "[:find ?name :where [?e :person/name ?name] [(constant-five) ?result] [(< ?result 3)]]"
+                    registry)]
+    (t.is nested.ok)
+    (t.is (= (count nested.rows) 2))
+    (t.is (= nested.rows[0].values[0].text ":a"))
+    (t.is (= nested.rows[0].values[1].int-value 1))
+    (t.is (= nested.rows[0].values[2].int-value 4))
+    (t.is (= nested.rows[1].values[0].text ":b"))
+    (t.is (= nested.rows[1].values[1].int-value 5))
+    (t.is (= nested.rows[1].values[2].int-value 7))
+    (t.is unrelated.ok)
+    (t.is (= (count unrelated.rows) 0))))
 
 (t.deftest datascript-query-constant-substitution-subset
   (defer (free_all context.allocator))
