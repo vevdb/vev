@@ -82,7 +82,7 @@ These are useful, but not the next engine-parity gate.
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
 | `issues.cljc` | 5 | partial | engine-relevant regressions for vector result isolation, mixed-type DB diff, and schema inspection covered; metadata/pprint cases are Clojure host behavior |
-| `query_v3.cljc` | 2 | partial | input arity, non-collection source validation, and primary collection query execution over scalar and tuple rows covered through current query APIs; remaining query-v3 engine surface later |
+| `query_v3.cljc` | 2 | partial | input arity, non-collection source validation, explicit `$` primary relation input handling, prepared primary relation queries, and primary collection query execution over scalar and tuple rows covered through current query APIs; remaining query-v3 engine surface later |
 | `lru.cljc` | 2 | host | DataScript implementation detail |
 | `core.cljc` | 1 | host | test harness/runtime behavior |
 | `cljs.cljc` | 0 | host | ClojureScript environment behavior |
