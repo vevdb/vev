@@ -1331,6 +1331,13 @@
   (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
     (and has-type (= schema-type ":db.type/ref"))))
 
+(defn schema-ref-target? [db: DB, attr: string] -> bool
+  (if (reverse-attr? attr)
+    (let [forward (forward-attr-for-reverse attr)]
+      (defer (delete forward))
+      (schema-ref? db forward))
+    (schema-ref? db attr)))
+
 (defn schema-component? [db: DB, attr: string] -> bool
   (schema-bool? db attr ":db/isComponent"))
 
@@ -1494,9 +1501,8 @@
     (return false "entity id exceeds supported range")))
 
 (defn resolve-tx-value [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
-  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-    (when (and has-type (= schema-type ":db.type/ref"))
-      (return (resolve-ref-component-value db value))))
+  (when (schema-ref-target? db attr)
+    (return (resolve-ref-component-value db value)))
   (resolve-tuple-value db attr value))
 
 (defn value-lookup-ref-vector [attr: string, value: Value] -> Value
@@ -1514,7 +1520,7 @@
 
 (defn resolve-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
   (when data.has-value-lookup-ref
-    (when (not (schema-ref? db data.a))
+    (when (not (schema-ref-target? db data.a))
       (return (value-lookup-ref-vector data.value-lookup-attr data.value-lookup-value) true ""))
     (let [[lookup-e lookup-ok] (resolve-lookup-ref db data.value-lookup-attr data.value-lookup-value)]
       (if lookup-ok
@@ -1534,17 +1540,13 @@
 (defn ref-string-value? [db: DB, attr: string, value: Value] -> bool
   (when (not (= value.kind .String))
     (return false))
-  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-    (and has-type
-         (= schema-type ":db.type/ref"))))
+  (schema-ref-target? db attr))
 
 (defn ref-negative-int-value? [db: DB, attr: string, value: Value] -> bool
   (when (not (= value.kind .Int))
     (return false))
-  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-    (and has-type
-         (= schema-type ":db.type/ref")
-         (< value.int-value 0))))
+  (and (schema-ref-target? db attr)
+       (< value.int-value 0)))
 
 (defn ref-tempid-value-text [value: Value] -> string
   (case value.kind
@@ -1886,7 +1888,7 @@
   (when (not (= data.v.kind .Vector))
     (return))
   (let [entity (tx-entity-ref-from-data data)
-        ref-attr (schema-ref? db data.a)]
+        ref-attr (schema-ref-target? db data.a)]
     (for [item index data.v.items]
       (if (and ref-attr (lookup-ref-vector-value? item))
         (arr.push! pending^ (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]))
@@ -2052,7 +2054,7 @@
         (when skip-data
           (continue))
         (when data.has-nested-map
-          (if (schema-ref? current-db data.a)
+          (if (schema-ref-target? current-db data.a)
             (let [[nested-entity nested-ok nested-error] (nested-entity-ref-data data.nested-map data.nested-tempid)]
               (when (not nested-ok)
                 (return (Resolved-Tx {ok: false
@@ -2139,7 +2141,7 @@
                 (set! value-ok resolved-ok)
                 (set! value-error resolved-error)))
 	          (when data.has-value-lookup-ref
-              (if (not (schema-ref? current-db data.a))
+              (if (not (schema-ref-target? current-db data.a))
                 (set! v (value-lookup-ref-vector data.value-lookup-attr data.value-lookup-value))
 	              (let [[lookup-e lookup-ok] (resolve-lookup-ref current-db data.value-lookup-attr data.value-lookup-value)]
 	                (if lookup-ok
@@ -2204,9 +2206,20 @@
                                   ops: resolved-ops
                                   tx-meta: resolved-meta
                                   tempids: resolved-tempids})))
-        (if (= data.op ":db/retract")
-          (arr.push! resolved-ops (tx-retract e data.a v))
-          (arr.push! resolved-ops (tx-add e data.a v))))))
+        (if (reverse-attr? data.a)
+          (if (= v.kind .Entity)
+            (let [forward-attr (forward-attr-for-reverse data.a)]
+              (if (= data.op ":db/retract")
+                (arr.push! resolved-ops (tx-retract v.entity forward-attr (value-entity e)))
+                (arr.push! resolved-ops (tx-add v.entity forward-attr (value-entity e)))))
+            (return (Resolved-Tx {ok: false
+                                  error: "reverse ref value must resolve to entity"
+                                  ops: resolved-ops
+                                  tx-meta: resolved-meta
+                                  tempids: resolved-tempids})))
+          (if (= data.op ":db/retract")
+            (arr.push! resolved-ops (tx-retract e data.a v))
+            (arr.push! resolved-ops (tx-add e data.a v)))))))
     (Resolved-Tx {ok: true error: "" ops: resolved-ops tx-meta: resolved-meta tempids: resolved-tempids})))
 
 (defn validate-add-op [db: DB, op: Tx-Op] -> [ok: bool, error: string]

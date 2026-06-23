@@ -39,6 +39,7 @@ These are the main in-memory parity target before durable storage.
 | `tuples.cljc` | 11 | partial | direct/component tuple upsert, redundant direct tuple-value ignore cases, lookup-ref tuple values, and EDN text/prepared tuple upsert plus lookup-ref transaction coverage covered; remaining exact errors and edge conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | mixed entity-id inputs covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
+| `explode.cljc` | 4 | partial | cardinality-many tx-map collection expansion, ref collections, reverse ref tx-map values, nested maps, multi-valued nested maps including EDN sets, reverse nested maps, and circular/nested ref shapes covered through EDN/text and Kvist tx-data; host list/array inputs and exact reverse-attr schema errors remain |
 | `components.cljc` | 2 | partial | reverse component pull id/pattern/recursion behavior covered; exact schema validation and render/touch shapes remain |
 | `pull_api.cljc` | 17 | partial | repeated attr-spec normalization, DataScript namespaced reverse attrs, reverse component pull id/pattern/recursion shapes, and ABI-friendly named `:xform` transforms for `vector`/`name` covered; arbitrary host xform functions, visitor options, and exact collection/scalar shapes remain |
 | `entity.cljc` | 6 | partial | engine-relevant entity reads are covered; Clojure protocol behavior is host |
@@ -61,7 +62,7 @@ EDN/text coverage first and add Kvist macro coverage as a convenience layer.
 | `parser_rules.cljc` | 3 | partial | ordinary and source-qualified rule calls, rule definitions, ordered text rule bodies, rule-body `get-else`/`get-some`, and empty/duplicate/arity rule validation covered; remaining exact parser shapes remain |
 | `parser_where.cljc` | 6 | partial | data pattern including lookup-ref entity terms, named DB source patterns, relation-source rows, predicate, built-in function, missing?, not/not-join, or/or-join, `and` branches, ordinary rule clauses, nested text `not`, and ordered top-level execution/validation covered; parser validation rejects empty rule calls, empty `not`/`or`, empty `not-join`/`or-join` bodies, and empty join-var sets with DataScript-shaped errors; exact diagnostics remain |
 | `pull_parser.cljc` | 1 | partial | query text pull finds, pull pattern variables, direct pull text APIs, and reusable prepared pull pattern values cover attrs, wildcard, DataScript namespaced reverse attrs, nested maps with vector or list pattern values, recursive map values, flat/nested `:default`/`:as`/`:limit`/`:xform` option forms, repeated attr specs, and option-wrapped map keys; exact validation remains |
-| transaction EDN text | n/a | partial | `transact-text` and reusable prepared tx-data cover `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, single operation vectors, map tx-data, set-valued collections, lookup refs, idents, float values, string/current-tx/negative numeric tempids, generated map ids, nested maps, ordinary and tuple upsert/lookup-ref transactions, and bad-shape/no-mutation validation through the normal transaction engine |
+| transaction EDN text | n/a | partial | `transact-text` and reusable prepared tx-data cover `:db/add`, `:db/retract`, `:db/retractEntity`, `:db.fn/retractAttribute`, `:db.fn/cas`, single operation vectors, map tx-data, set-valued collections, lookup refs, idents, float values, string/current-tx/negative numeric tempids, generated map ids, nested maps, reverse ref tx-map attrs including nested maps, ordinary and tuple upsert/lookup-ref transactions, and bad-shape/no-mutation validation through the normal transaction engine |
 
 ## Host Or Later Runtime APIs
 
@@ -77,7 +78,6 @@ These are useful, but not the next engine-parity gate.
 | `db.cljc` | 4 | partial | semantic DB diff covered; hash/cache/uuid/record behavior is host |
 | `issues.cljc` | 5 | partial | engine-relevant regressions for vector result isolation, mixed-type DB diff, and schema inspection covered; metadata/pprint cases are Clojure host behavior |
 | `query_v3.cljc` | 2 | partial | input arity validation and non-collection source validation covered; remaining query-v3 engine surface later |
-| `explode.cljc` | 4 | host | likely implementation/debug tooling specific |
 | `lru.cljc` | 2 | host | DataScript implementation detail |
 | `core.cljc` | 1 | host | test harness/runtime behavior |
 | `cljs.cljc` | 0 | host | ClojureScript environment behavior |

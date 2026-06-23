@@ -20,6 +20,16 @@
       (return true)))
   false)
 
+(defn result-has-entity-text? [result: vev.Result-Set, entity: u64, text: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .Entity)
+               (= row.values[0].entity entity)
+               (= row.values[1].kind .String)
+               (= row.values[1].text text))
+      (return true)))
+  false)
+
 (defn values-has-entity? [values: []vev.Value, entity: u64] -> bool
   (for [value values]
     (when (and (= value.kind .Entity)
@@ -9255,6 +9265,125 @@
       (t.is (= (count report.tempids) 2))
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].text "London"))))
+
+(t.deftest datascript-explode-nested-maps-multi-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :profile]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 100 :db/cardinality :db.cardinality/many]])
+        vector-report (vev.transact
+                        (addr conn)
+                        [{:db/id 1
+                          :name "Ivan"
+                          :profile [{:db/id 7 :email "@2"}
+                                    {:db/id 8 :email "@3"}]}])
+        vector-result (vev.q vector-report.db-after
+                        [:find ?profile ?email
+                         :where
+                         [1 :profile ?profile]
+                         [?profile :email ?email]])
+        set-report (vev.transact-text
+                     (addr conn)
+                     "[{:db/id 2 :name \"Petr\" :profile #{{:email \"@4\"} {:email \"@5\"}}}]")
+        set-result (vev.q-text
+                     set-report.db-after
+                     "[:find ?profile ?email :where [2 :profile ?profile] [?profile :email ?email]]")]
+    (t.is vector-report.ok)
+    (t.is (= (count vector-result.rows) 2))
+    (t.is (= vector-result.rows[0].values[0].entity 7))
+    (t.is (= vector-result.rows[0].values[1].text "@2"))
+    (t.is (= vector-result.rows[1].values[0].entity 8))
+    (t.is (= vector-result.rows[1].values[1].text "@3"))
+    (t.is set-report.ok)
+    (t.is (= (count set-result.rows) 2))
+    (t.is (= set-result.rows[0].values[1].text "@4"))
+    (t.is (= set-result.rows[1].values[1].text "@5"))))
+
+(t.deftest datascript-explode-nested-maps-reverse-ref-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :profile]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 100 :db/cardinality :db.cardinality/many]])
+        report (vev.transact-text
+                 (addr conn)
+                 "[{:email \"@2\" :_profile [{:name \"Ivan\"} {:name \"Petr\"}]}]")
+        result (vev.q-text
+                 report.db-after
+                 "[:find ?parent ?name ?email :where [?parent :profile ?profile] [?parent :name ?name] [?profile :email ?email]]")]
+    (t.is report.ok)
+    (t.is (= (count result.rows) 2))
+    (t.is (= result.rows[0].values[1].text "Ivan"))
+    (t.is (= result.rows[0].values[2].text "@2"))
+    (t.is (= result.rows[1].values[1].text "Petr"))
+    (t.is (= result.rows[1].values[2].text "@2"))))
+
+(t.deftest datascript-text-map-reverse-ref-values-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/valueType :db.type/string]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :mentor]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 2 :name "Petr"]
+             [:db/add 3 :name "Oleg"]])
+        scalar-report (vev.transact-text
+                        (addr conn)
+                        "[{:db/id 2 :_mentor 1}]")
+        lookup-report (vev.transact-text
+                        (addr conn)
+                        "[{:db/id 3 :_mentor [:name \"Ivan\"]}]")
+        tempid-report (vev.transact-text
+                        (addr conn)
+                        "[{:db/id \"parent\" :name \"Parent\" :_mentor \"child\"} {:db/id \"child\" :name \"Child\"}]")
+        result (vev.q-text
+                 conn.db
+                 "[:find ?source ?name :where [?target :mentor ?source] [?source :name ?name]]")]
+    (t.is scalar-report.ok)
+    (t.is lookup-report.ok)
+    (t.is tempid-report.ok)
+    (t.is (= (count result.rows) 3))
+    (t.is (result-has-entity-text? result 2 "Petr"))
+    (t.is (result-has-entity-text? result 3 "Oleg"))
+    (t.is (result-has-entity-text? result (vev.entity-id (vev.entity-lookup-ref conn.db ":name" (vev.value-string "Parent"))) "Parent"))))
+
+(t.deftest datascript-explode-circular-refs-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :comp]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 100 :db/cardinality :db.cardinality/many]
+             [:db/add 100 :db/isComponent true]])
+        root-report (vev.transact-text
+                      (addr conn)
+                      "[{:db/id 1 :name \"Name\"}]")
+        child-report (vev.transact-text
+                       (addr conn)
+                       "[{:db/id 1 :comp [{:name \"C\"}]}]")
+        root-name (vev.q-text
+                    child-report.db-after
+                    "[:find ?name :where [1 :name ?name]]")
+        child (vev.q-text
+                child-report.db-after
+                "[:find ?child ?name :where [1 :comp ?child] [?child :name ?name]]")]
+    (t.is root-report.ok)
+    (t.is child-report.ok)
+    (t.is (= (count root-name.rows) 1))
+    (t.is (= root-name.rows[0].values[0].text "Name"))
+    (t.is (= (count child.rows) 1))
+    (t.is (= child.rows[0].values[1].text "C"))))
 
 (t.deftest tx-data-macro-coerces-literal-values
   (defer (free_all context.allocator))
