@@ -27,31 +27,37 @@ clojure \
 Current sample output on June 23, 2026:
 
 ```text
-engine=vev workload=chain-root-text n=3 ok=true rows=2 min_us=23 median_us=24 p90_us=26 max_us=26 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
-engine=vev workload=chain-root-prepared n=3 ok=true rows=2 min_us=8 median_us=9 p90_us=10 max_us=10 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
-engine=vev workload=chain-root-text n=10 ok=true rows=9 min_us=43 median_us=44 p90_us=46 max_us=47 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
-engine=vev workload=chain-root-prepared n=10 ok=true rows=9 min_us=26 median_us=28 p90_us=30 max_us=46 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
-engine=vev workload=chain-root-text n=30 ok=true rows=29 min_us=102 median_us=105 p90_us=111 max_us=118 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
-engine=vev workload=chain-root-prepared n=30 ok=true rows=29 min_us=87 median_us=90 p90_us=93 max_us=112 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
-engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=363 median_us=370 p90_us=380 max_us=382 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
-engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=355 median_us=361 p90_us=376 max_us=379 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
-engine=vev workload=tree-root-text n=4 ok=true rows=3 min_us=25 median_us=27 p90_us=29 max_us=40 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
-engine=vev workload=tree-root-prepared n=4 ok=true rows=3 min_us=10 median_us=11 p90_us=12 max_us=14 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
-engine=vev workload=tree-root-text n=13 ok=true rows=12 min_us=52 median_us=55 p90_us=58 max_us=92 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
-engine=vev workload=tree-root-prepared n=13 ok=true rows=12 min_us=36 median_us=38 p90_us=41 max_us=42 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
-engine=vev workload=tree-root-text n=40 ok=true rows=39 min_us=130 median_us=134 p90_us=137 max_us=151 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
-engine=vev workload=tree-root-prepared n=40 ok=true rows=39 min_us=115 median_us=119 p90_us=124 max_us=131 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
-engine=vev workload=bad-order-join-text n=1000 ok=true rows=1 min_us=19 median_us=23 p90_us=24 max_us=26 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
-engine=vev workload=bad-order-join-prepared n=1000 ok=true rows=1 min_us=11 median_us=12 p90_us=14 max_us=16 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
+engine=vev workload=chain-root-text n=3 ok=true rows=2 min_us=23 median_us=25 p90_us=26 max_us=27 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
+engine=vev workload=chain-root-prepared n=3 ok=true rows=2 min_us=8 median_us=10 p90_us=11 max_us=12 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
+engine=vev workload=chain-root-text n=10 ok=true rows=9 min_us=46 median_us=47 p90_us=48 max_us=49 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
+engine=vev workload=chain-root-prepared n=10 ok=true rows=9 min_us=29 median_us=32 p90_us=34 max_us=36 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
+engine=vev workload=chain-root-text n=30 ok=true rows=29 min_us=112 median_us=117 p90_us=123 max_us=132 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
+engine=vev workload=chain-root-prepared n=30 ok=true rows=29 min_us=97 median_us=99 p90_us=104 max_us=111 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
+engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=402 median_us=411 p90_us=445 max_us=456 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=378 median_us=385 p90_us=394 max_us=412 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-all-text n=10 ok=true rows=45 min_us=185 median_us=193 p90_us=201 max_us=210 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
+engine=vev workload=chain-all-prepared n=10 ok=true rows=45 min_us=174 median_us=177 p90_us=183 max_us=191 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
+engine=vev workload=chain-all-text n=30 ok=true rows=435 min_us=2939 median_us=3033 p90_us=3138 max_us=3313 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
+engine=vev workload=chain-all-prepared n=30 ok=true rows=435 min_us=2853 median_us=3030 p90_us=3117 max_us=3219 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
+engine=vev workload=tree-root-text n=4 ok=true rows=3 min_us=26 median_us=28 p90_us=32 max_us=35 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
+engine=vev workload=tree-root-prepared n=4 ok=true rows=3 min_us=11 median_us=12 p90_us=13 max_us=15 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
+engine=vev workload=tree-root-text n=13 ok=true rows=12 min_us=54 median_us=56 p90_us=61 max_us=65 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
+engine=vev workload=tree-root-prepared n=13 ok=true rows=12 min_us=38 median_us=40 p90_us=43 max_us=45 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
+engine=vev workload=tree-root-text n=40 ok=true rows=39 min_us=139 median_us=142 p90_us=146 max_us=154 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
+engine=vev workload=tree-root-prepared n=40 ok=true rows=39 min_us=121 median_us=126 p90_us=133 max_us=140 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
+engine=vev workload=bad-order-join-text n=1000 ok=true rows=1 min_us=20 median_us=21 p90_us=22 max_us=23 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
+engine=vev workload=bad-order-join-prepared n=1000 ok=true rows=1 min_us=11 median_us=12 p90_us=13 max_us=14 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
 
-engine=datascript workload=chain-root n=3 ok=true rows=2 min_us=353 median_us=451 p90_us=691 max_us=1024 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
-engine=datascript workload=chain-root n=10 ok=true rows=9 min_us=764 median_us=912 p90_us=1107 max_us=2678 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
-engine=datascript workload=chain-root n=30 ok=true rows=29 min_us=3673 median_us=3923 p90_us=4426 max_us=5498 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
-engine=datascript workload=chain-root n=100 ok=true rows=99 min_us=49463 median_us=90891 p90_us=269222 max_us=578282 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
-engine=datascript workload=tree-root n=4 ok=true rows=3 min_us=88 median_us=96 p90_us=160 max_us=334 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
-engine=datascript workload=tree-root n=13 ok=true rows=12 min_us=144 median_us=151 p90_us=201 max_us=849 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
-engine=datascript workload=tree-root n=40 ok=true rows=39 min_us=235 median_us=282 p90_us=448 max_us=2215 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
-engine=datascript workload=bad-order-join n=1000 ok=true rows=1 min_us=175 median_us=199 p90_us=286 max_us=1412 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-root n=3 ok=true rows=2 min_us=339 median_us=486 p90_us=621 max_us=1363 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-root n=10 ok=true rows=9 min_us=743 median_us=880 p90_us=1023 max_us=2598 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-root n=30 ok=true rows=29 min_us=3643 median_us=3800 p90_us=4352 max_us=5409 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-root n=100 ok=true rows=99 min_us=47910 median_us=49737 p90_us=51453 max_us=53906 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-all n=10 ok=true rows=45 min_us=589 median_us=618 p90_us=648 max_us=1637 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=chain-all n=30 ok=true rows=435 min_us=5056 median_us=5216 p90_us=5491 max_us=6383 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=tree-root n=4 ok=true rows=3 min_us=81 median_us=83 p90_us=86 max_us=103 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=tree-root n=13 ok=true rows=12 min_us=129 median_us=136 p90_us=149 max_us=229 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=tree-root n=40 ok=true rows=39 min_us=213 median_us=219 p90_us=235 max_us=339 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
+engine=datascript workload=bad-order-join n=1000 ok=true rows=1 min_us=159 median_us=164 p90_us=185 max_us=352 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
 ```
 
 The important Vev-specific counters are:
@@ -76,14 +82,16 @@ DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 18.8x | 50.1x |
-| `chain-root n=10` | 20.7x | 32.6x |
-| `chain-root n=30` | 37.4x | 43.6x |
-| `chain-root n=100` | 245.7x | 251.8x |
-| `tree-root n=4` | 3.6x | 8.7x |
-| `tree-root n=13` | 2.7x | 4.0x |
-| `tree-root n=40` | 2.1x | 2.4x |
-| `bad-order-join n=1000` | 8.7x | 16.6x |
+| `chain-root n=3` | 19.4x | 48.6x |
+| `chain-root n=10` | 18.7x | 27.5x |
+| `chain-root n=30` | 32.5x | 38.4x |
+| `chain-root n=100` | 121.0x | 129.2x |
+| `chain-all n=10` | 3.2x | 3.5x |
+| `chain-all n=30` | 1.7x | 1.7x |
+| `tree-root n=4` | 3.0x | 6.9x |
+| `tree-root n=13` | 2.4x | 3.4x |
+| `tree-root n=40` | 1.5x | 1.7x |
+| `bad-order-join n=1000` | 7.8x | 13.7x |
 
 ## Current Findings
 

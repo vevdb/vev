@@ -3774,27 +3774,47 @@
     (return attr (and found-base found-recursive))))
 
 (defn append-transitive-targets! [out: ^[dynamic]u64, db: DB, attr: string, start: u64]
-  (let [seen (make (map u64 bool))
+  (let [expanded (make (map u64 bool))
+        emitted (make (map u64 bool))
         frontier (make [dynamic]u64)
         frontier-index 0]
-    (defer (delete seen))
+    (defer (delete expanded))
+    (defer (delete emitted))
     (defer (delete frontier))
-    (mmap.assoc! seen start true)
     (arr.push! frontier start)
     (while (< frontier-index (count frontier))
       (let [current frontier[frontier-index]
             edge-clause (clause (term-value (value-entity current)) attr (term-wildcard))
             candidates (clause-candidate-indexes db edge-clause (Binding {})) :defer]
         (set! frontier-index (+ frontier-index 1))
-        (for [datom-index candidates]
-          (let [datom db.datoms[datom-index]]
-            (when (and (datom-current-at? db datom-index)
-                       (= datom.v.kind .Entity))
-              (let [[_ found] (mmap.get seen datom.v.entity)]
-                (when (not found)
-                  (mmap.assoc! seen datom.v.entity true)
-                  (arr.push! frontier datom.v.entity)
-                  (arr.push! out^ datom.v.entity))))))))))
+        (let [[_ already-expanded] (mmap.get expanded current)]
+          (when (not already-expanded)
+            (mmap.assoc! expanded current true)
+            (for [datom-index candidates]
+              (let [datom db.datoms[datom-index]]
+                (when (and (datom-current-at? db datom-index)
+                           (= datom.v.kind .Entity))
+                  (let [[_ already-emitted] (mmap.get emitted datom.v.entity)
+                        [_ target-expanded] (mmap.get expanded datom.v.entity)]
+                    (when (not already-emitted)
+                      (mmap.assoc! emitted datom.v.entity true)
+                      (arr.push! out^ datom.v.entity))
+                    (when (not target-expanded)
+                      (arr.push! frontier datom.v.entity))))))))))))
+
+(defn append-transitive-starts! [out: ^[dynamic]u64, db: DB, attr: string]
+  (let [seen (make (map u64 bool))
+        attr-clause (clause (term-wildcard) attr (term-wildcard))
+        candidates (clause-candidate-indexes db attr-clause (Binding {}))]
+    (defer (delete seen))
+    (defer (delete candidates))
+    (for [datom-index candidates]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [[_ found] (mmap.get seen datom.e)]
+            (when (not found)
+              (mmap.assoc! seen datom.e true)
+              (arr.push! out^ datom.e))))))))
 
 (defn transitive-target-matches? [db: DB, target: Value, target-ok: bool, entity: u64] -> bool
   (when (not target-ok)
@@ -3802,27 +3822,57 @@
   (let [[target-entity target-entity-ok] (value-as-entity db target)]
     (and target-entity-ok (= target-entity.entity entity))))
 
+(defn append-linear-transitive-target-result! [out: ^[dynamic]Binding, db: DB, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding, start-entity: u64, target: Value, target-ok: bool, target-entity: u64]
+  (when (not (transitive-target-matches? db target target-ok target-entity))
+    (return))
+  (let [[_ start-bound] (binding-lookup initial rule.params[0])
+        with-start initial
+        with-start-ok true]
+    (when (not start-bound)
+      (let [[bound bound-ok] (binding-with-value initial rule.params[0] (value-entity start-entity))]
+        (set! with-start bound)
+        (set! with-start-ok bound-ok)))
+    (when (not with-start-ok)
+      (return))
+    (let [[_ target-bound] (binding-lookup with-start rule.params[1])
+          result with-start
+          result-ok true]
+      (when (not target-bound)
+        (let [[bound bound-ok] (binding-with-value with-start rule.params[1] (value-entity target-entity))]
+          (set! result bound)
+          (set! result-ok bound-ok)))
+      (when (not result-ok)
+        (return))
+      (let [[merged merged-ok] (merge-rule-output binding call rule result)]
+        (when merged-ok
+          (arr.push! out^ merged))))))
+
+(defn append-linear-transitive-from-start! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding, start-entity: u64]
+  (let [[target target-ok] (binding-lookup initial rule.params[1])
+        targets (make [dynamic]u64)]
+    (defer (delete targets))
+    (append-transitive-targets! (addr targets) db attr start-entity)
+    (for [target-entity targets]
+      (append-linear-transitive-target-result! out db call binding rule initial start-entity target target-ok target-entity))))
+
+(defn append-linear-transitive-from-all-starts! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding]
+  (let [starts (make [dynamic]u64)]
+    (defer (delete starts))
+    (append-transitive-starts! (addr starts) db attr)
+    (for [start-entity starts]
+      (append-linear-transitive-from-start! out db attr call binding rule initial start-entity))))
+
 (defn append-linear-transitive-results! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule]
   (let [[initial initial-ok] (bind-rule-args binding call rule)]
     (when (not initial-ok)
       (return))
     (let [[start start-ok] (binding-lookup initial rule.params[0])]
-      (when (not start-ok)
-        (return))
-      (let [[start-entity start-entity-ok] (value-as-entity db start)]
-        (when (not start-entity-ok)
-          (return))
-        (let [[target target-ok] (binding-lookup initial rule.params[1])
-              targets (make [dynamic]u64)]
-          (defer (delete targets))
-          (append-transitive-targets! (addr targets) db attr start-entity.entity)
-          (for [target-entity targets]
-            (when (transitive-target-matches? db target target-ok target-entity)
-              (let [[result result-ok] (binding-with-value initial rule.params[1] (value-entity target-entity))]
-                (when result-ok
-                  (let [[merged merged-ok] (merge-rule-output binding call rule result)]
-                    (when merged-ok
-                      (arr.push! out^ merged))))))))))))
+      (if start-ok
+        (let [[start-entity start-entity-ok] (value-as-entity db start)]
+          (when (not start-entity-ok)
+            (return))
+          (append-linear-transitive-from-start! out db attr call binding rule initial start-entity.entity))
+        (append-linear-transitive-from-all-starts! out db attr call binding rule initial)))))
 
 (defn bindings-after-linear-transitive-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
   (let [result-bindings (make [dynamic]Binding)

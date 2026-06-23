@@ -123,7 +123,7 @@
 
 (doseq [n [3 10 30 100]]
   (run-chain-from-root n))
-(doseq [n []]
+(doseq [n [10 30]]
   (run-chain-all n))
 (doseq [n [4 13 40]]
   (run-tree-from-root n))
