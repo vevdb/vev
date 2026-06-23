@@ -71,14 +71,59 @@
       (return (Value {}) false)))
   (return input.value true))
 
+(defn query-source-input-name? [name: string] -> bool
+  (strings.has_prefix name "$"))
+
+(defn query-input-relation-source-vector [input: Query-Input] -> Value
+  (let [rows (make [dynamic]Value)]
+    (when (and (= input.kind .Relation)
+               (> input.width 0))
+      (let [row_count (/ (count input.values) input.width)]
+        (for [row 0..<row_count]
+          (let [items (make [dynamic]Value)
+                offset (* row input.width)]
+            (for [index 0..<input.width]
+              (arr.push! items input.values[(+ offset index)]))
+            (arr.push! rows (value-vector (slice items 0)))))))
+    (value-vector (slice rows 0))))
+
+(defn query-input-source-value [input: Query-Input] -> [value: Value, ok: bool]
+  (cond
+    (= input.kind .Relation)
+      (return (query-input-relation-source-vector input) true)
+    (= input.kind .Collection)
+      (return (value-vector input.values) true)
+    (and (= input.kind .Scalar)
+         (= input.value.kind .Map))
+      (return (query-input-map-as-relation-vector input) true)
+    (= input.kind .Scalar)
+      (return input.value true)
+    :else (return (Value {}) false)))
+
+(defn query-input-bound-value [db: DB, name: string, input: Query-Input] -> [value: Value, ok: bool]
+  (when (query-source-input-name? name)
+    (return (query-input-source-value input)))
+  (when (or (= input.kind .Scalar)
+            (= input.kind .PullPattern))
+    (return (query-input-scalar-value db input)))
+  (return (Value {}) false))
+
+(defn query-source-input-value? [input: Query-Input] -> bool
+  (cond
+    (= input.kind .Relation) true
+    (= input.kind .Collection) true
+    (and (= input.kind .Scalar)
+         (= input.value.kind .Vector)) true
+    (and (= input.kind .Scalar)
+         (= input.value.kind .Map)) true
+    :else false))
+
 (defn binding-from-inputs [db: DB, names: []string, values: []Query-Input] -> [bindings: [dynamic]Binding]
   (let [binding (Binding {})
         out (make [dynamic]Binding)]
     (for [name index names]
-      (when (and (< index (count values))
-                 (or (= values[index].kind .Scalar)
-                     (= values[index].kind .PullPattern)))
-        (let [[value ok] (query-input-scalar-value db values[index])]
+      (when (< index (count values))
+        (let [[value ok] (query-input-bound-value db name values[index])]
           (if ok
             (binding-store! (addr binding) name value)
             (return out)))))
@@ -87,14 +132,12 @@
 
 (defn expand-scalar-input [db: DB, bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
-    (when (or (= input.kind .Scalar)
-              (= input.kind .PullPattern))
-      (let [[value ok] (query-input-scalar-value db input)]
-        (when ok
-          (for [binding bindings]
-            (let [next (clone-binding binding)]
-              (binding-store! (addr next) name value)
-              (arr.push! out next))))))
+    (let [[value ok] (query-input-bound-value db name input)]
+      (when ok
+        (for [binding bindings]
+          (let [next (clone-binding binding)]
+            (binding-store! (addr next) name value)
+            (arr.push! out next)))))
     out))
 
 (defn expand-collection-input [bindings: []Binding, name: string, input: Query-Input] -> [dynamic]Binding
@@ -3511,8 +3554,7 @@
     (when (>= index (count inputs))
       (return true ""))
     (let [input inputs[index]]
-      (if (and (= input.kind .Scalar)
-               (= input.value.kind .Vector))
+      (if (query-source-input-value? input)
         (return true "")
         (return false (fmt.tprintf "query source is not a collection: %s" source))))))
 
@@ -3611,7 +3653,9 @@
 (defn validate-query-input-spec-value [spec: Query-Input-Spec, input: Query-Input] -> [ok: bool, error: string]
   (case spec.kind
     .Scalar (if (or (= input.kind .Scalar)
-                    (= input.kind .PullPattern))
+                    (= input.kind .PullPattern)
+                    (and (query-source-input-name? spec.name)
+                         (query-source-input-value? input)))
               (return true "")
               (return false (fmt.tprintf "cannot bind query input to scalar %s" spec.name)))
     .Collection (validate-query-collection-input input spec.name)
