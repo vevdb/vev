@@ -1,6 +1,7 @@
 (package vev-tests)
 
 (import arr "kvist:arr")
+(import fmt "core:fmt")
 (import math "core:math")
 (import strings "core:strings")
 (import t "kvist:test")
@@ -39,8 +40,28 @@
       (return true)))
   false)
 
-(defn append-status-rule-performance-tx! [tx: ^[dynamic]vev.Tx-Data] -> bool
-  (let [ids (arr.range 1 91) :defer]
+(defn pull-attr-index [attrs: []vev.Pull-Attr, attr: string] -> [index: int, ok: bool]
+  (for [item index attrs]
+    (when (= item.a attr)
+      (return index true)))
+  (return 0 false))
+
+(defn pull-deep-friend-name [pulled: vev.Pull-Result, hops: int] -> [name: string, ok: bool]
+  (let [attrs: []vev.Pull-Attr (slice pulled.attrs 0)
+        step 0]
+    (while (< step hops)
+      (let [[friend-index friend-ok] (pull-attr-index attrs ":friend")]
+        (when (not friend-ok)
+          (return "" false))
+        (set! attrs (slice attrs[friend-index].attrs 0)))
+      (set! step (+ step 1)))
+    (let [[name-index name-ok] (pull-attr-index attrs ":name")]
+      (when (not name-ok)
+        (return "" false))
+      (return attrs[name-index].v.text true))))
+
+(defn append-status-rule-performance-tx! [tx: ^[dynamic]vev.Tx-Data, limit: int] -> bool
+  (let [ids (arr.range 1 limit) :defer]
     (for [i ids]
       (let [status (if (= (% i 3) 0) "pending" (if (= (% i 3) 1) "started" "stopped"))]
         (arr.push! tx^ (vev.add (u64 i) ":item/status" (vev.value-string status))))))
@@ -66,6 +87,10 @@
     (defer (delete akas))
     (or (<= (count akas) 1)
         (>= (count datom.v.text) 4))))
+
+(defn keep-not-tupen [db: vev.DB, datom: vev.Datom] -> bool
+  (not (and (= datom.v.kind .String)
+            (= datom.v.text "Tupen"))))
 
 (defn keep-has-age [db: vev.DB, datom: vev.Datom] -> bool
   (vev.entity-contains? (vev.db-entity db datom.e) ":age"))
@@ -114,6 +139,9 @@
                 [(vev.add datom.e ":age" (vev.value-int (+ age.int-value args[1].int-value)))
                  (vev.add datom.e ":birthday-delta" args[1])])))))))
   (vev.tx-fn-error "No entity with name"))
+
+(defn fail-tx-fn-string [db: vev.DB, arg: string] -> vev.Tx-Fn-Result
+  (vev.tx-fn-error arg))
 
 (defn create-vera-value-fn [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result
   (when (not (= (count args) 0))
@@ -708,6 +736,89 @@
     (t.is (not bad-branch.ok))
     (t.is (= bad-branch.error "Rule branch should have clauses"))))
 
+(t.deftest datascript-parser-value-rendering-subset
+  (defer (free_all context.allocator))
+  (let [binding (vev.prepared-binding-value (vev.parse-binding-text "[?x [?y ...]]"))
+        in-value (vev.prepared-in-value (vev.parse-in-text "[$ % [?x ...]]"))
+        with-value (vev.prepared-with-value (vev.parse-with-text "[?x ?y]"))
+        rules-value (vev.prepared-rules-value
+                      (vev.parse-rules-text
+                        "[[(adult [?e] ?name) [?e :age ?age] [(>= ?age 18)] [?e :name ?name]] [(adult-name ?e ?name) ($rows adult ?e ?name)]]"))
+        query-value (vev.prepared-query-value
+                      (vev.prepare-query-text
+                        "[:find ?name (count ?e) :with ?tag :in $ % [?tag ...] :where [?e :name ?name] (adult ?e ?name)]"))
+        tx-value (vev.prepared-tx-data-value
+                   (vev.prepare-tx-text
+                     "[[:db/add \"person\" :name \"Ada\"] [:db.fn/cas [:name \"Ada\"] :age nil 37]]"))
+        bad-query (vev.prepared-query-value (vev.prepare-query-text "[:where [?e :name ?name]]"))
+        [binding-ok binding-ok?] (map-value binding ":ok")
+        [binding-shape binding-shape-ok] (map-value binding ":binding")
+        [binding-items binding-items-ok] (map-value binding-shape ":items")
+        [in-bindings in-bindings-ok] (map-value in-value ":bindings")
+        [with-vars with-vars-ok] (map-value with-value ":vars")
+        [rules rules-ok] (map-value rules-value ":rules")
+        [first-rule-name first-rule-name-ok] (map-value rules.items[0] ":name")
+        [first-rule-required first-rule-required-ok] (map-value rules.items[0] ":required-param-count")
+        [first-rule-where first-rule-where-ok] (map-value rules.items[0] ":where")
+        [second-rule-calls second-rule-calls-ok] (map-value rules.items[1] ":rule-calls")
+        [query-find query-find-ok] (map-value query-value ":find")
+        [query-with query-with-ok] (map-value query-value ":with")
+        [query-input-specs query-input-specs-ok] (map-value query-value ":input-specs")
+        [query-rules-input query-rules-input-ok] (map-value query-value ":rules-input")
+        [query-where query-where-ok] (map-value query-value ":where")
+        [query-aggregate-count query-aggregate-count-ok] (map-value query-value ":aggregate-count")
+        [tx-data tx-data-ok] (map-value tx-value ":tx-data")
+        [first-tx-op first-tx-op-ok] (map-value tx-data.items[0] ":op")
+        [first-tx-e first-tx-e-ok] (map-value tx-data.items[0] ":e")
+        [second-tx-e second-tx-e-ok] (map-value tx-data.items[1] ":e")
+        [bad-ok bad-ok-ok] (map-value bad-query ":ok")
+        [bad-error bad-error-ok] (map-value bad-query ":error")]
+    (t.is binding-ok?)
+    (t.is binding-ok.bool-value)
+    (t.is binding-shape-ok)
+    (t.is binding-items-ok)
+    (t.is (= (count binding-items.items) 2))
+    (t.is in-bindings-ok)
+    (t.is (= (count in-bindings.items) 3))
+    (t.is with-vars-ok)
+    (t.is (= with-vars.items[0].text "?x"))
+    (t.is (= with-vars.items[1].text "?y"))
+    (t.is rules-ok)
+    (t.is (= (count rules.items) 2))
+    (t.is first-rule-name-ok)
+    (t.is (= first-rule-name.text "adult"))
+    (t.is first-rule-required-ok)
+    (t.is (= first-rule-required.int-value 1))
+    (t.is first-rule-where-ok)
+    (t.is (= (count first-rule-where.items) 3))
+    (t.is second-rule-calls-ok)
+    (t.is (= (count second-rule-calls.items) 1))
+    (t.is query-find-ok)
+    (t.is (= (count query-find.items) 1))
+    (t.is (= query-find.items[0].text "?name"))
+    (t.is query-with-ok)
+    (t.is (= query-with.items[0].text "?tag"))
+    (t.is query-input-specs-ok)
+    (t.is (= (count query-input-specs.items) 1))
+    (t.is query-rules-input-ok)
+    (t.is query-rules-input.bool-value)
+    (t.is query-where-ok)
+    (t.is (= (count query-where.items) 2))
+    (t.is query-aggregate-count-ok)
+    (t.is (= query-aggregate-count.int-value 1))
+    (t.is tx-data-ok)
+    (t.is (= (count tx-data.items) 2))
+    (t.is first-tx-op-ok)
+    (t.is (= first-tx-op.text ":db/add"))
+    (t.is first-tx-e-ok)
+    (t.is (= first-tx-e.text "person"))
+    (t.is second-tx-e-ok)
+    (t.is (= second-tx-e.kind .Vector))
+    (t.is bad-ok-ok)
+    (t.is (not bad-ok.bool-value))
+    (t.is bad-error-ok)
+    (t.is (= bad-error.text "query text must start with [:find"))))
+
 (t.deftest datascript-parser-query-text-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -1209,6 +1320,63 @@
     (t.is (not bad-get-else.ok))
     (t.is (= bad-get-else.error "get-else: nil default value is not supported"))))
 
+(t.deftest datascript-prepared-query-and-rules-text-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :follow]
+             [:db/add 100 :db/valueType :db.type/ref]
+             [:db/add 1 :follow (vev.value-entity 2)]
+             [:db/add 2 :follow (vev.value-entity 3)]
+             [:db/add 3 :follow (vev.value-entity 4)]
+             [:db/add 1 :age 10]
+             [:db/add 2 :age 20]
+             [:db/add 3 :age 30]
+             [:db/add 4 :age 40]])
+        prepared (vev.prepare-query-text "[:find [?e2 ...] :in $ ?e1 % :where (reachable ?e1 ?e2)]")
+        rules (vev.parse-rules-text "[[(reachable ?e1 ?e2) [?e1 :follow ?e2]] [(reachable ?e1 ?e2) [?e1 :follow ?t] (reachable ?t ?e2)]]")
+        result (vev.q-prepared-with-rules
+                 conn.db
+                 prepared
+                 rules
+                 ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))]))
+        repeated (vev.q-prepared-with-rules
+                   conn.db
+                   prepared
+                   rules
+                   ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 2))]))
+        fn-query (vev.prepare-query-text "[:find [?e ...] :in $ ?min % :where (adult ?e ?min)]")
+        fn-rules (vev.parse-rules-text "[[(adult ?e ?min) [?e :age ?age] [(>= ?age ?min)]]]")
+        fn-result (vev.q-prepared-with-rules-and-fns
+                    conn.db
+                    fn-query
+                    fn-rules
+                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 30))])
+                    ([]vev.Native-Query-Fn []))
+        bad-rules (vev.parse-rules-text "[[(broken) [_]]]")
+        bad-result (vev.q-prepared-with-rules conn.db prepared bad-rules ([]vev.Query-Input []))]
+    (t.is prepared.ok)
+    (t.is rules.ok)
+    (t.is result.ok)
+    (t.is (= (count result.rows) 3))
+    (t.is (= result.rows[0].values[0].entity 2))
+    (t.is (= result.rows[1].values[0].entity 3))
+    (t.is (= result.rows[2].values[0].entity 4))
+    (t.is repeated.ok)
+    (t.is (= (count repeated.rows) 2))
+    (t.is (= repeated.rows[0].values[0].entity 3))
+    (t.is (= repeated.rows[1].values[0].entity 4))
+    (t.is fn-query.ok)
+    (t.is fn-rules.ok)
+    (t.is fn-result.ok)
+    (t.is (= (count fn-result.rows) 2))
+    (t.is (= fn-result.rows[0].values[0].entity 3))
+    (t.is (= fn-result.rows[1].values[0].entity 4))
+    (t.is (not bad-rules.ok))
+    (t.is (not bad-result.ok))
+    (t.is (= bad-result.error bad-rules.error))))
+
 (t.deftest datascript-parser-query-text-sources
   (defer (free_all context.allocator))
   (let [left (vev.create-conn)
@@ -1430,12 +1598,27 @@
                       "[:find ?name :in % :where (adult ?e) [?e :name ?name]]"
                       "[[(adult ?e) [?e :age ?age] [(>= ?age 18)]]]"
                       ([]vev.Query-Input []))
+        prepared-rule-query (vev.prepare-query-text "[:find ?name :in % :where (adult ?e) [?e :name ?name]]")
+        prepared-rules (vev.parse-rules-text "[[(adult ?e) [?e :age ?age] [(>= ?age 18)]]]")
+        prepared-rule-result (vev.q-prepared-relation-db-with-rules
+                               rows
+                               prepared-rule-query
+                               prepared-rules
+                               ([]vev.Query-Input []))
         rule-fn-result (vev.q-text-relation-db-with-rules-and-fns
                          rows
                          "[:find ?name :in % :where (adult ?e) [?e :name ?name]]"
                          "[[(adult ?e) [?e :age ?age] [(adult-age? ?age 18)]]]"
                          ([]vev.Query-Input [])
-                         registry)]
+                         registry)
+        prepared-rule-fn-query (vev.prepare-query-text "[:find ?name :in % :where (adult ?e) [?e :name ?name]]")
+        prepared-fn-rules (vev.parse-rules-text "[[(adult ?e) [?e :age ?age] [(adult-age? ?age 18)]]]")
+        prepared-rule-fn-result (vev.q-prepared-relation-db-with-rules-and-fns
+                                  rows
+                                  prepared-rule-fn-query
+                                  prepared-fn-rules
+                                  ([]vev.Query-Input [])
+                                  registry)]
     (t.is prepared.ok)
     (t.is prepared-result.ok)
     (t.is (= (count prepared-result.rows) 1))
@@ -1450,9 +1633,19 @@
     (t.is rule-result.ok)
     (t.is (= (count rule-result.rows) 1))
     (t.is (= rule-result.rows[0].values[0].text "Ivan"))
+    (t.is prepared-rule-query.ok)
+    (t.is prepared-rules.ok)
+    (t.is prepared-rule-result.ok)
+    (t.is (= (count prepared-rule-result.rows) 1))
+    (t.is (= prepared-rule-result.rows[0].values[0].text "Ivan"))
     (t.is rule-fn-result.ok)
     (t.is (= (count rule-fn-result.rows) 1))
-    (t.is (= rule-fn-result.rows[0].values[0].text "Ivan"))))
+    (t.is (= rule-fn-result.rows[0].values[0].text "Ivan"))
+    (t.is prepared-rule-fn-query.ok)
+    (t.is prepared-fn-rules.ok)
+    (t.is prepared-rule-fn-result.ok)
+    (t.is (= (count prepared-rule-fn-result.rows) 1))
+    (t.is (= prepared-rule-fn-result.rows[0].values[0].text "Ivan"))))
 
 (t.deftest datascript-query-v3-primary-collection-patterns-subset
   (defer (free_all context.allocator))
@@ -2321,7 +2514,35 @@
         after-failed (vev.q-collection failed.db-after
                        [:find [?name ...]
                         :where
-                        [1 :name ?name]])]
+                        [1 :name ?name]])
+        text-report (vev.with-text
+                      second-db
+                      "[[:db/add 2 :name \"Ada\"] [:db/add 2 :aka \"Countess\"]]")
+        prepared (vev.prepare-tx-text "[[:db/add 3 :name \"Grace\"]]")
+        prepared-report (vev.with-prepared text-report.db-after prepared)
+        db-with-text (vev.db-with-text second-db "[[:db/add 4 :name \"Lin\"]]")
+        db-with-prepared (vev.db-with-prepared db-with-text (vev.prepare-tx-text "[[:db/add 5 :name \"Mina\"]]"))
+        bad-text (vev.with-text second-db "{:db/id 6 :name \"Bad Root\"}")
+        original-ada (vev.q-collection second-db
+                       [:find [?name ...]
+                        :where
+                        [2 :name ?name]])
+        text-ada (vev.q-collection text-report.db-after
+                   [:find [?name ...]
+                    :where
+                    [2 :name ?name]])
+        prepared-grace (vev.q-collection prepared-report.db-after
+                         [:find [?name ...]
+                          :where
+                          [3 :name ?name]])
+        lin (vev.q-collection db-with-text
+              [:find [?name ...]
+               :where
+               [4 :name ?name]])
+        mina (vev.q-collection db-with-prepared
+               [:find [?name ...]
+                :where
+                [5 :name ?name]])]
     (t.is first.ok)
     (t.is (= first.tx 1))
     (t.is (= (count original-names) 0))
@@ -2335,7 +2556,21 @@
     (t.is (not failed.ok))
     (t.is (= failed.error "unknown tx op"))
     (t.is (= (count after-failed) 1))
-    (t.is (= after-failed[0].text "Petr"))))
+    (t.is (= after-failed[0].text "Petr"))
+    (t.is text-report.ok)
+    (t.is prepared.ok)
+    (t.is prepared-report.ok)
+    (t.is (= (count original-ada) 0))
+    (t.is (= (count text-ada) 1))
+    (t.is (= text-ada[0].text "Ada"))
+    (t.is (= (count prepared-grace) 1))
+    (t.is (= prepared-grace[0].text "Grace"))
+    (t.is (= (count lin) 1))
+    (t.is (= lin[0].text "Lin"))
+    (t.is (= (count mina) 1))
+    (t.is (= mina[0].text "Mina"))
+    (t.is (not bad-text.ok))
+    (t.is (= (count bad-text.db-after.datoms) (count second-db.datoms)))))
 
 (t.deftest datascript-db-with-datoms-preserves-tx-and-retractions-subset
   (defer (free_all context.allocator))
@@ -5069,7 +5304,7 @@
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
         tx (make [dynamic]vev.Tx-Data) :defer
-        _ (append-status-rule-performance-tx! (addr tx))
+        _ (append-status-rule-performance-tx! (addr tx) 901)
         report (vev.transact-tx-data (addr conn) (slice tx 0))
         inline (vev.q-text
                  report.db-after
@@ -5082,10 +5317,10 @@
     (t.is report.ok)
     (t.is inline.ok)
     (t.is rule.ok)
-    (t.is (= (count inline.rows) 30))
+    (t.is (= (count inline.rows) 300))
     (t.is (= (count rule.rows) (count inline.rows)))
     (t.is (= rule.rows[0].values[0].entity 3))
-    (t.is (= rule.rows[29].values[0].entity 90))))
+    (t.is (= rule.rows[299].values[0].entity 900))))
 
 (t.deftest datascript-query-mutual-recursive-rules-subset
   (defer (free_all context.allocator))
@@ -7096,12 +7331,15 @@
   (let [conn (vev.create-conn)
         registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" birthday-by-name)
                                        (vev.tx-fn-values ":inc-age-by" birthday-by-name-and-delta)
+                                       (vev.tx-fn-string ":fail-tx" fail-tx-fn-string)
                                        (vev.tx-fn-values ":create-vera" create-vera-value-fn)
                                        (vev.tx-fn-values ":create-map" create-entity-without-db-id-values)])
+        listener-reports (make [dynamic]vev.Tx-Report) :defer
         _ (vev.transact
             (addr conn)
             [{:db/id 10 :db/ident :inc-age}
              {:db/id 12 :db/ident :inc-age-by}
+             {:db/id 15 :db/ident :fail-tx}
              {:db/id 13 :db/ident :create-vera}
              {:db/id 14 :db/ident :create-map}
              {:db/id 11 :db/ident :Petr}])
@@ -7162,6 +7400,62 @@
                          (addr conn)
                          "[[:db.fn/call :inc-age 42]]"
                          registry)
+        _ (vev.listen! (addr conn) "tx-fn-failures" (addr listener-reports))
+        before-failure-next-tx conn.next-tx
+        before-failure-datom-count (count conn.db.datoms)
+        literal-fail (vev.transact-tx-data-with-string-fns
+                       (addr conn)
+                       (vev.tx-data
+                         [:db/add 7 :name "RollbackLiteral"]
+                         [:fail-tx "literal failure"]
+                         [:db/add 8 :name "AfterLiteralFailure"])
+                       registry)
+        text-fail (vev.transact-text-with-string-fns
+                    (addr conn)
+                    "[[:db/add 9 :name \"RollbackText\"] [:db.fn/call :fail-tx \"text failure\"] [:db/add 10 :name \"AfterTextFailure\"]]"
+                    registry)
+        prepared-fail (vev.prepare-tx-text
+                        "[[:db/add 11 :name \"RollbackPrepared\"] [:fail-tx \"prepared failure\"] [:db/add 12 :name \"AfterPreparedFailure\"]]")
+        prepared-fail-report (vev.transact-prepared-with-string-fns (addr conn) prepared-fail registry)
+        rollback-query (vev.q conn.db
+                         [:find ?e ?name
+                          :where
+                          [?e :name ?name]
+                          [(= ?name "RollbackLiteral")]])
+        text-rollback-query (vev.q conn.db
+                              [:find ?e ?name
+                               :where
+                               [?e :name ?name]
+                               [(= ?name "RollbackText")]])
+        prepared-rollback-query (vev.q conn.db
+                                  [:find ?e ?name
+                                   :where
+                                   [?e :name ?name]
+                                   [(= ?name "RollbackPrepared")]])
+        pure-text-fn (vev.with-text-with-string-fns
+                       report.db-after
+                       "[[:db/add 20 :name \"Ruth\"] [:db/add 20 :age 10] [:inc-age \"Ruth\"]]"
+                       registry)
+        pure-prepared-fn (vev.prepare-tx-text
+                           "[[:db/add 21 :name \"Sofia\"] [:db/add 21 :age 11] [:inc-age-by \"Sofia\" 3]]")
+        pure-prepared-report (vev.with-prepared-with-string-fns report.db-after pure-prepared-fn registry)
+        pure-db-text (vev.db-with-text-with-string-fns
+                       report.db-after
+                       "[[:db/add 22 :name \"Tara\"] [:db/add 22 :age 12] [:inc-age \"Tara\"]]"
+                       registry)
+        pure-db-prepared (vev.db-with-prepared-with-string-fns
+                           report.db-after
+                           (vev.prepare-tx-text "[[:db/add 23 :name \"Uma\"] [:db/add 23 :age 13] [:inc-age-by \"Uma\" 2]]")
+                           registry)
+        base-ruth (vev.q report.db-after
+                    [:find ?age
+                     :where
+                     [?e :name "Ruth"]
+                     [?e :age ?age]])
+        ruth (vev.db-entity pure-text-fn.db-after 20)
+        sofia (vev.db-entity pure-prepared-report.db-after 21)
+        tara (vev.db-entity pure-db-text 22)
+        uma (vev.db-entity pure-db-prepared 23)
         petr (vev.db-entity report.db-after 1)
         ada (vev.db-entity text-call.db-after 2)
         lin (vev.db-entity text-value-call.db-after 4)
@@ -7215,7 +7509,32 @@
     (t.is (not unknown-text.ok))
     (t.is (= unknown-text.error "transaction fn not found"))
     (t.is (not bad-call-shape.ok))
-    (t.is (= bad-call-shape.error "transaction fn expects one string argument"))))
+    (t.is (= bad-call-shape.error "transaction fn expects one string argument"))
+    (t.is (not literal-fail.ok))
+    (t.is (= literal-fail.error "literal failure"))
+    (t.is (not text-fail.ok))
+    (t.is (= text-fail.error "text failure"))
+    (t.is prepared-fail.ok)
+    (t.is (not prepared-fail-report.ok))
+    (t.is (= prepared-fail-report.error "prepared failure"))
+    (t.is (= conn.next-tx before-failure-next-tx))
+    (t.is (= (count conn.db.datoms) before-failure-datom-count))
+    (t.is (= (count listener-reports) 0))
+    (t.is (= (count rollback-query.rows) 0))
+    (t.is (= (count text-rollback-query.rows) 0))
+    (t.is (= (count prepared-rollback-query.rows) 0))
+    (t.is pure-text-fn.ok)
+    (t.is pure-prepared-fn.ok)
+    (t.is pure-prepared-report.ok)
+    (t.is (= (count base-ruth.rows) 0))
+    (t.is (= (vev.entity-get ruth ":age").int-value 11))
+    (t.is (vev.entity-get ruth ":had-birthday").bool-value)
+    (t.is (= (vev.entity-get sofia ":age").int-value 14))
+    (t.is (= (vev.entity-get sofia ":birthday-delta").int-value 3))
+    (t.is (= (vev.entity-get tara ":age").int-value 13))
+    (t.is (vev.entity-get tara ":had-birthday").bool-value)
+    (t.is (= (vev.entity-get uma ":age").int-value 15))
+    (t.is (= (vev.entity-get uma ":birthday-delta").int-value 2))))
 
 (t.deftest transact-data-supports-retract-without-value
   (defer (free_all context.allocator))
@@ -7252,6 +7571,89 @@
     (t.is report.ok)
     (t.is (= (count names) 1))
     (t.is (= names[0].text "Ivan"))))
+
+(t.deftest datascript-retract-without-value-issue-339-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :aka]
+             [:db/add 100 :db/cardinality :db.cardinality/many]
+             [:db/add 101 :db/ident :friend]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 1 :age 15]
+             [:db/add 1 :aka "X"]
+             [:db/add 1 :aka "Y"]
+             [:db/add 1 :aka "Z"]
+             [:db/add 1 :friend 2]
+             [:db/add 2 :name "Petr"]
+             [:db/add 2 :age 37]
+             [:db/add 2 :employed? true]
+             [:db/add 2 :married? false]])
+        original conn.db
+        report (vev.with-tx-data
+                 original
+                 ([]vev.Tx-Data
+                   [(vev.retract-attr 1 ":name")
+                    (vev.retract-attr 1 ":aka")
+                    (vev.retract-attr 2 ":employed?")
+                    (vev.retract-attr 2 ":married?")]))
+        ivan-names (vev.q-collection report.db-after
+                    [:find [?v ...]
+                     :where
+                     [1 :name ?v]])
+        ivan-akas (vev.q-collection report.db-after
+                   [:find [?v ...]
+                    :where
+                    [1 :aka ?v]])
+        ivan-ages (vev.q-collection report.db-after
+                   [:find [?v ...]
+                    :where
+                    [1 :age ?v]])
+        ivan-friends (vev.q-collection report.db-after
+                      [:find [?v ...]
+                       :where
+                       [1 :friend ?v]])
+        petr-names (vev.q-collection report.db-after
+                    [:find [?v ...]
+                     :where
+                     [2 :name ?v]])
+        petr-ages (vev.q-collection report.db-after
+                   [:find [?v ...]
+                    :where
+                    [2 :age ?v]])
+        employed-after-retract (vev.q-collection report.db-after
+                                [:find [?v ...]
+                                 :where
+                                 [2 :employed? ?v]])
+        married-after-retract (vev.q-collection report.db-after
+                               [:find [?v ...]
+                                :where
+                                [2 :married? ?v]])
+        mismatch (vev.with-tx-data
+                   original
+                   ([]vev.Tx-Data [(vev.retract 2 ":employed?" (vev.value-bool false))]))
+        employed (vev.q-collection mismatch.db-after
+                   [:find [?v ...]
+                    :where
+                    [2 :employed? ?v]])]
+    (t.is report.ok)
+    (t.is (= (count ivan-names) 0))
+    (t.is (= (count ivan-akas) 0))
+    (t.is (= (count employed-after-retract) 0))
+    (t.is (= (count married-after-retract) 0))
+    (t.is (= (count ivan-ages) 1))
+    (t.is (= ivan-ages[0].int-value 15))
+    (t.is (= (count ivan-friends) 1))
+    (t.is (= ivan-friends[0].entity 2))
+    (t.is (= (count petr-names) 1))
+    (t.is (= petr-names[0].text "Petr"))
+    (t.is (= (count petr-ages) 1))
+    (t.is (= petr-ages[0].int-value 37))
+    (t.is mismatch.ok)
+    (t.is (= (count employed) 1))
+    (t.is employed[0].bool-value)))
 
 (t.deftest datascript-retract-fns-not-found-and-idempotent-subset
   (defer (free_all context.allocator))
@@ -7476,8 +7878,30 @@
                  [3 ?a ?v]])]
     (t.is report.ok)
     (t.is (= (count report.tx-data) 6))
-    (for [datom report.tx-data]
-      (t.is (not datom.added)))
+    (t.is (= report.tx-data[0].e 1))
+    (t.is (= report.tx-data[0].a ":a1"))
+    (t.is (= report.tx-data[0].v.int-value 1))
+    (t.is (not report.tx-data[0].added))
+    (t.is (= report.tx-data[1].e 1))
+    (t.is (= report.tx-data[1].a ":a2"))
+    (t.is (= report.tx-data[1].v.int-value 2))
+    (t.is (not report.tx-data[1].added))
+    (t.is (= report.tx-data[2].e 1))
+    (t.is (= report.tx-data[2].a ":a3"))
+    (t.is (= report.tx-data[2].v.int-value 3))
+    (t.is (not report.tx-data[2].added))
+    (t.is (= report.tx-data[3].e 2))
+    (t.is (= report.tx-data[3].a ":a1"))
+    (t.is (= report.tx-data[3].v.int-value 1))
+    (t.is (not report.tx-data[3].added))
+    (t.is (= report.tx-data[4].e 2))
+    (t.is (= report.tx-data[4].a ":a2"))
+    (t.is (= report.tx-data[4].v.int-value 2))
+    (t.is (not report.tx-data[4].added))
+    (t.is (= report.tx-data[5].e 2))
+    (t.is (= report.tx-data[5].a ":a3"))
+    (t.is (= report.tx-data[5].v.int-value 3))
+    (t.is (not report.tx-data[5].added))
     (t.is (= (count first.rows) 0))
     (t.is (= (count second.rows) 0))
     (t.is (= (count third.rows) 3))))
@@ -9861,7 +10285,7 @@
     (t.is first.ok)
     (t.is second.ok)
     (t.is (not failed.ok))
-    (t.is (= failed.error "cas failed"))
+    (t.is (= failed.error ":db.fn/cas failed on datom [1 :weight 400], expected 200"))
     (t.is current-ok)
     (t.is (= current.int-value 400))))
 
@@ -9949,11 +10373,14 @@
              [:db/add 1 :label :x]
              [:db/add 1 :label :y]])
         report (vev.transact (addr conn) [[:db.fn/cas 1 :label :y :z]])
+        failed (vev.transact (addr conn) [[:db.fn/cas 1 :label :s :t]])
         labels (vev.q-collection report.db-after
                  [:find [?label ...]
                   :where
                   [1 :label ?label]])]
     (t.is report.ok)
+    (t.is (not failed.ok))
+    (t.is (= failed.error ":db.fn/cas failed on datom [1 :label (:x :y :z)], expected :s"))
     (t.is (= (count labels) 3))
     (t.is (= labels[0].text ":x"))
     (t.is (= labels[1].text ":y"))
@@ -9973,6 +10400,7 @@
                        [1 :age ?age]])]
     (t.is first.ok)
     (t.is (not failed.ok))
+    (t.is (= failed.error ":db.fn/cas failed on datom [1 :age 42], expected nil"))
     (t.is age-ok)
     (t.is (= age.int-value 42))))
 
@@ -11478,6 +11906,21 @@
     (t.is (= (count friend-again.attrs) 1))
     (t.is (= friend-again.attrs[0].v.entity 4))))
 
+(t.deftest datascript-pull-deep-recursion-subset
+  (defer (free_all context.allocator))
+  (let [start 100
+        depth 3000
+        datoms (make [dynamic]vev.Datom) :defer
+        _ (arr.push! datoms (vev.make-datom (u64 start) ":name" (vev.value-string (fmt.tprintf "Person-%d" start))))]
+    (for [i (arr.range (+ start 1) depth)]
+      (arr.push! datoms (vev.make-datom (u64 i) ":name" (vev.value-string (fmt.tprintf "Person-%d" i))))
+      (arr.push! datoms (vev.make-datom (u64 (- i 1)) ":friend" (vev.value-entity (u64 i)))))
+    (let [db (vev.init-db (slice datoms 0))
+          pulled (vev.pull db [:name {:friend ...}] (u64 start))
+          [deep-name deep-ok] (pull-deep-friend-name pulled (- (- depth 1) start))]
+      (t.is deep-ok)
+      (t.is (= deep-name "Person-2999")))))
+
 (t.deftest pull-many-returns-multiple-entities
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -11525,7 +11968,8 @@
                   [:name "Petr"]
                   [:name "Eunan"]
                   [:name "Rebecca"]
-                  [:name "Unknown"]])]
+                  [:name "Unknown"]])
+        rendered (vev.pull-many-result-values conn.db (slice pulled 0))]
     (t.is (= (count pulled) 5))
     (t.is (= (count pulled[0].attrs) 0))
     (t.is (= (count pulled[1].attrs) 2))
@@ -11533,7 +11977,56 @@
     (t.is (= pulled[1].attrs[1].v.text "Tupen"))
     (t.is (= (count pulled[2].attrs) 0))
     (t.is (= (count pulled[3].attrs) 0))
-    (t.is (= (count pulled[4].attrs) 0))))
+    (t.is (= (count pulled[4].attrs) 0))
+    (t.is (= (count rendered) 5))
+    (t.is (= rendered[0].kind .Nil))
+    (t.is (= rendered[1].kind .Map))
+    (t.is (= rendered[2].kind .Nil))
+    (t.is (= rendered[3].kind .Nil))
+    (t.is (= rendered[4].kind .Nil))))
+
+(t.deftest datascript-pull-other-dbs-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :aka]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"]}])
+        filtered (vev.filter-db conn.db keep-not-tupen)
+        data (vev.serializable conn.db)
+        restored (vev.from-serializable data)
+        initialized (vev.init-db (slice conn.db.datoms 0))
+        filtered-rendered (vev.pull-result-value filtered (vev.pull filtered [:name :aka] 1))
+        restored-rendered (vev.pull-result-value restored (vev.pull restored [:name :aka] 1))
+        initialized-rendered (vev.pull-result-value initialized (vev.pull initialized [:name :aka] 1))
+        [filtered-aka filtered-aka-ok] (map-value filtered-rendered ":aka")
+        [restored-aka restored-aka-ok] (map-value restored-rendered ":aka")
+        [initialized-aka initialized-aka-ok] (map-value initialized-rendered ":aka")
+        [filtered-name filtered-name-ok] (map-value filtered-rendered ":name")
+        [restored-name restored-name-ok] (map-value restored-rendered ":name")
+        [initialized-name initialized-name-ok] (map-value initialized-rendered ":name")]
+    (defer (vev.delete-serializable data))
+    (t.is filtered-name-ok)
+    (t.is (= filtered-name.text "Petr"))
+    (t.is filtered-aka-ok)
+    (t.is (= filtered-aka.kind .Vector))
+    (t.is (= (count filtered-aka.items) 1))
+    (t.is (= filtered-aka.items[0].text "Devil"))
+    (t.is restored-name-ok)
+    (t.is (= restored-name.text "Petr"))
+    (t.is restored-aka-ok)
+    (t.is (= (count restored-aka.items) 2))
+    (t.is (= restored-aka.items[0].text "Devil"))
+    (t.is (= restored-aka.items[1].text "Tupen"))
+    (t.is initialized-name-ok)
+    (t.is (= initialized-name.text "Petr"))
+    (t.is initialized-aka-ok)
+    (t.is (= (count initialized-aka.items) 2))
+    (t.is (= initialized-aka.items[0].text "Devil"))
+    (t.is (= initialized-aka.items[1].text "Tupen"))))
 
 (t.deftest datascript-pull-rendered-value-shape-subset
   (defer (free_all context.allocator))

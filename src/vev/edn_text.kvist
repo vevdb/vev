@@ -3,6 +3,181 @@
 (defn db-source [name: string, db: DB] -> DB-Source
   (DB-Source {name: name db: db}))
 
+(defn parser-string-vector-value [items: []string, as-symbols: bool] -> Value
+  (let [out (make [dynamic]Value 0 (count items))]
+    (defer (delete out))
+    (for [item items]
+      (arr.push! out (if as-symbols (value-symbol item) (value-string item))))
+    (value-vector (slice out 0))))
+
+(defn parser-binding-kind-value [kind: Input-Binding-Kind] -> Value
+  (case kind
+    .Ignore (value-keyword ":ignore")
+    .Var (value-keyword ":var")
+    .Tuple (value-keyword ":tuple")
+    .Collection (value-keyword ":collection")
+    :else (value-keyword ":none")))
+
+(defn parser-binding-value [binding: Input-Binding] -> Value
+  (let [children (make [dynamic]Value 0 (count binding.items))]
+    (defer (delete children))
+    (for [child binding.items]
+      (arr.push! children (parser-binding-value child)))
+    (value-map
+      ([]Value [(value-keyword ":kind") (parser-binding-kind-value binding.kind)
+                (value-keyword ":name") (if (> (count binding.name) 0) (value-symbol binding.name) (value-nil))
+                (value-keyword ":items") (value-vector (slice children 0))]))))
+
+(defn parser-term-value [term: Term] -> Value
+  (case term.kind
+    .Var (value-map
+           ([]Value [(value-keyword ":kind") (value-keyword ":var")
+                     (value-keyword ":name") (value-symbol term.name)]))
+    .Wildcard (value-map
+                ([]Value [(value-keyword ":kind") (value-keyword ":wildcard")]))
+    .LookupRef (value-map
+                 ([]Value [(value-keyword ":kind") (value-keyword ":lookup-ref")
+                           (value-keyword ":attr") (value-keyword term.lookup-attr)
+                           (value-keyword ":value") term.lookup-value]))
+    :else (value-map
+            ([]Value [(value-keyword ":kind") (value-keyword ":value")
+                      (value-keyword ":value") term.value]))))
+
+(defn parser-step-kind-value [kind: Query-Step-Kind] -> Value
+  (case kind
+    .Clause (value-keyword ":clause")
+    .Predicate (value-keyword ":predicate")
+    .Function (value-keyword ":function")
+    .RuleCall (value-keyword ":rule-call")
+    .GetElse (value-keyword ":get-else")
+    .GetSome (value-keyword ":get-some")
+    .Ground (value-keyword ":ground")
+    .Not (value-keyword ":not")
+    .Or (value-keyword ":or")
+    :else (value-keyword ":unknown")))
+
+(defn parser-query-step-value [step: Query-Step] -> Value
+  (value-map
+    ([]Value [(value-keyword ":kind") (parser-step-kind-value step.kind)
+              (value-keyword ":index") (value-int (i64 step.index))])))
+
+(defn parser-query-steps-value [steps: []Query-Step] -> Value
+  (let [out (make [dynamic]Value 0 (count steps))]
+    (defer (delete out))
+    (for [step steps]
+      (arr.push! out (parser-query-step-value step)))
+    (value-vector (slice out 0))))
+
+(defn parser-rule-call-value [call: Rule-Call] -> Value
+  (let [args (make [dynamic]Value 0 (count call.args))]
+    (defer (delete args))
+    (for [arg call.args]
+      (arr.push! args (parser-term-value arg)))
+    (value-map
+      ([]Value [(value-keyword ":name") (value-symbol call.name)
+                (value-keyword ":source") (if call.has-source (value-symbol call.source) (value-nil))
+                (value-keyword ":args") (value-vector (slice args 0))]))))
+
+(defn parser-rule-value [rule: Rule] -> Value
+  (let [calls (make [dynamic]Value 0 (count rule.rule-calls))]
+    (defer (delete calls))
+    (for [call rule.rule-calls]
+      (arr.push! calls (parser-rule-call-value call)))
+    (value-map
+      ([]Value [(value-keyword ":name") (value-symbol rule.name)
+                (value-keyword ":required-param-count") (value-int (i64 rule.required-param-count))
+                (value-keyword ":params") (parser-string-vector-value (slice rule.params 0) true)
+                (value-keyword ":where") (parser-query-steps-value (slice rule.body-steps 0))
+                (value-keyword ":rule-calls") (value-vector (slice calls 0))]))))
+
+(defn prepared-binding-value [prepared: Prepared-Binding] -> Value
+  (value-map
+    ([]Value [(value-keyword ":ok") (value-bool prepared.ok)
+              (value-keyword ":error") (value-string prepared.error)
+              (value-keyword ":binding") (if prepared.ok (parser-binding-value prepared.binding) (value-nil))])))
+
+(defn prepared-in-value [prepared: Prepared-In] -> Value
+  (let [bindings (make [dynamic]Value 0 (count prepared.bindings))]
+    (defer (delete bindings))
+    (for [binding prepared.bindings]
+      (arr.push! bindings (parser-binding-value binding)))
+    (value-map
+      ([]Value [(value-keyword ":ok") (value-bool prepared.ok)
+                (value-keyword ":error") (value-string prepared.error)
+                (value-keyword ":bindings") (value-vector (slice bindings 0))]))))
+
+(defn prepared-with-value [prepared: Prepared-With] -> Value
+  (value-map
+    ([]Value [(value-keyword ":ok") (value-bool prepared.ok)
+              (value-keyword ":error") (value-string prepared.error)
+              (value-keyword ":vars") (parser-string-vector-value (slice prepared.vars 0) true)])))
+
+(defn prepared-rules-value [prepared: Prepared-Rules] -> Value
+  (let [rules (make [dynamic]Value 0 (count prepared.rules))]
+    (defer (delete rules))
+    (for [rule prepared.rules]
+      (arr.push! rules (parser-rule-value rule)))
+    (value-map
+      ([]Value [(value-keyword ":ok") (value-bool prepared.ok)
+                (value-keyword ":error") (value-string prepared.error)
+                (value-keyword ":rules") (value-vector (slice rules 0))]))))
+
+(defn parser-input-spec-kind-value [kind: Query-Input-Spec-Kind] -> Value
+  (case kind
+    .Scalar (value-keyword ":scalar")
+    .Collection (value-keyword ":collection")
+    .Tuple (value-keyword ":tuple")
+    .Relation (value-keyword ":relation")
+    .Ignore (value-keyword ":ignore")
+    :else (value-keyword ":unknown")))
+
+(defn parser-query-input-spec-value [spec: Query-Input-Spec] -> Value
+  (value-map
+    ([]Value [(value-keyword ":kind") (parser-input-spec-kind-value spec.kind)
+              (value-keyword ":name") (if (> (count spec.name) 0) (value-symbol spec.name) (value-nil))])))
+
+(defn prepared-query-value [prepared: Prepared-Query] -> Value
+  (let [input-specs (make [dynamic]Value 0 (count prepared.query.input-specs))]
+    (defer (delete input-specs))
+    (for [spec prepared.query.input-specs]
+      (arr.push! input-specs (parser-query-input-spec-value spec)))
+    (value-map
+      ([]Value [(value-keyword ":ok") (value-bool prepared.ok)
+                (value-keyword ":error") (value-string prepared.error)
+                (value-keyword ":find") (parser-string-vector-value (slice prepared.query.find 0) true)
+                (value-keyword ":with") (parser-string-vector-value (slice prepared.query.with 0) true)
+                (value-keyword ":inputs") (parser-string-vector-value (slice prepared.query.inputs 0) true)
+                (value-keyword ":input-specs") (value-vector (slice input-specs 0))
+                (value-keyword ":rules-input") (value-bool prepared.query.has-rules-input)
+                (value-keyword ":where") (parser-query-steps-value (slice prepared.query.where-steps 0))
+                (value-keyword ":rules-count") (value-int (i64 (count prepared.query.rules)))
+                (value-keyword ":pull-count") (value-int (i64 (count prepared.query.pulls)))
+                (value-keyword ":aggregate-count") (value-int (i64 (count prepared.query.aggregates)))]))))
+
+(defn parser-tx-entity-value [data: Tx-Data] -> Value
+  (cond
+    data.has-tempid (value-string data.tempid)
+    data.has-lookup-ref (lookup-ref-value data.lookup-attr data.lookup-value)
+    data.has-ident (value-keyword data.ident)
+    :else (value-entity data.e)))
+
+(defn parser-tx-data-value [data: Tx-Data] -> Value
+  (value-map
+    ([]Value [(value-keyword ":op") (value-keyword data.op)
+              (value-keyword ":e") (parser-tx-entity-value data)
+              (value-keyword ":a") (if (> (count data.a) 0) (value-keyword data.a) (value-nil))
+              (value-keyword ":v") data.v])))
+
+(defn prepared-tx-data-value [prepared: Prepared-Tx-Data] -> Value
+  (let [tx-data (make [dynamic]Value 0 (count prepared.tx-data))]
+    (defer (delete tx-data))
+    (for [data prepared.tx-data]
+      (arr.push! tx-data (parser-tx-data-value data)))
+    (value-map
+      ([]Value [(value-keyword ":ok") (value-bool prepared.ok)
+                (value-keyword ":error") (value-string prepared.error)
+                (value-keyword ":tx-data") (value-vector (slice tx-data 0))]))))
+
 (defn query-from-text-parts [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, input-specs: []Query-Input-Spec, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
   (let [out (query find with inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls get-elses get-somes grounds not-groups or-groups pulls aggregates)]
     (delete out.input-specs)
@@ -355,10 +530,10 @@
     (case node.kind
       .Int (return (int node.int-value) true)
       .Symbol (if (= node.text "...")
-                (return 32 true)
+                (return 2147483647 true)
                 (return 0 false))
       .String (if (= node.text "...")
-                (return 32 true)
+                (return 2147483647 true)
                 (return 0 false))
       :else (return 0 false))))
 
@@ -1753,6 +1928,18 @@
     (q-query-with-inputs-and-fns db prepared.query inputs registry)
     (result-set-error prepared.error)))
 
+(defn q-prepared-with-rules [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Result-Set
+  (cond
+    (not prepared.ok) (result-set-error prepared.error)
+    (not prepared-rules.ok) (result-set-error prepared-rules.error)
+    :else (q-query-with-inputs db (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs)))
+
+(defn q-prepared-with-rules-and-fns [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
+  (cond
+    (not prepared.ok) (result-set-error prepared.error)
+    (not prepared-rules.ok) (result-set-error prepared-rules.error)
+    :else (q-query-with-inputs-and-fns db (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs registry)))
+
 (defn q-prepared-with-sources [db: DB, prepared: Prepared-Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
   (if prepared.ok
     (q-query-with-sources db prepared.query inputs sources)
@@ -1782,6 +1969,18 @@
   (if prepared.ok
     (q-query-relation-db-with-fns rows prepared.query inputs registry)
     (result-set-error prepared.error)))
+
+(defn q-prepared-relation-db-with-rules [rows: Value, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Result-Set
+  (cond
+    (not prepared.ok) (result-set-error prepared.error)
+    (not prepared-rules.ok) (result-set-error prepared-rules.error)
+    :else (q-query-relation-db rows (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs)))
+
+(defn q-prepared-relation-db-with-rules-and-fns [rows: Value, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
+  (cond
+    (not prepared.ok) (result-set-error prepared.error)
+    (not prepared-rules.ok) (result-set-error prepared-rules.error)
+    :else (q-query-relation-db-with-fns rows (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs registry)))
 
 (defn q-text [db: DB, text: string] -> Result-Set
   (let [query-value (empty-query)
@@ -2715,10 +2914,33 @@
     (transact-tx-data conn (slice prepared.tx-data 0))
     (failed-tx-report conn^.db prepared.error)))
 
+(defn with-prepared [db: DB, prepared: Prepared-Tx-Data] -> Tx-Report
+  (if prepared.ok
+    (with-tx-data db (slice prepared.tx-data 0))
+    (failed-tx-report db prepared.error)))
+
+(defn db-with-prepared [db: DB, prepared: Prepared-Tx-Data] -> DB
+  (let [report (with-prepared db prepared)]
+    (if report.ok
+      report.db-after
+      report.db-before)))
+
 (defn transact-prepared-with-string-fns [conn: ^Conn, prepared: Prepared-Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
   (if prepared.ok
     (transact-tx-data-with-string-fns conn (slice prepared.tx-data 0) registry)
     (failed-tx-report conn^.db prepared.error)))
+
+(defn with-prepared-with-string-fns [db: DB, prepared: Prepared-Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
+  (if prepared.ok
+    (let [conn (conn-from-db db)]
+      (transact-tx-data-with-string-fns (addr conn) (slice prepared.tx-data 0) registry))
+    (failed-tx-report db prepared.error)))
+
+(defn db-with-prepared-with-string-fns [db: DB, prepared: Prepared-Tx-Data, registry: []Tx-Fn-String] -> DB
+  (let [report (with-prepared-with-string-fns db prepared registry)]
+    (if report.ok
+      report.db-after
+      report.db-before)))
 
 (defn transact-text [conn: ^Conn, text: string] -> Tx-Report
   (let [tx-data (make [dynamic]Tx-Data) :defer
@@ -2727,9 +2949,36 @@
       (return (failed-tx-report conn^.db parse-error)))
     (transact-tx-data conn (slice tx-data 0))))
 
+(defn with-text [db: DB, text: string] -> Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (when (not parse-ok)
+      (return (failed-tx-report db parse-error)))
+    (with-tx-data db (slice tx-data 0))))
+
+(defn db-with-text [db: DB, text: string] -> DB
+  (let [report (with-text db text)]
+    (if report.ok
+      report.db-after
+      report.db-before)))
+
 (defn transact-text-with-string-fns [conn: ^Conn, text: string, registry: []Tx-Fn-String] -> Tx-Report
   (let [tx-data (make [dynamic]Tx-Data) :defer
         [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
     (when (not parse-ok)
       (return (failed-tx-report conn^.db parse-error)))
     (transact-tx-data-with-string-fns conn (slice tx-data 0) registry)))
+
+(defn with-text-with-string-fns [db: DB, text: string, registry: []Tx-Fn-String] -> Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (when (not parse-ok)
+      (return (failed-tx-report db parse-error)))
+    (let [conn (conn-from-db db)]
+      (transact-tx-data-with-string-fns (addr conn) (slice tx-data 0) registry))))
+
+(defn db-with-text-with-string-fns [db: DB, text: string, registry: []Tx-Fn-String] -> DB
+  (let [report (with-text-with-string-fns db text registry)]
+    (if report.ok
+      report.db-after
+      report.db-before)))

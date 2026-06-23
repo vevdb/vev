@@ -113,8 +113,16 @@ The transaction side has the same split:
 
 - a text API, `transact-text` / `parse-tx-text!`, that parses common
   DataScript-shaped EDN tx-data strings into normal `Tx-Data` before execution
-- prepared tx-data values, `prepare-tx-text` plus `transact-prepared`, for
-  parsing EDN tx-data once and applying it through the same transaction engine
+- immutable DB-value text APIs, `with-text` and `db-with-text`, for
+  DataScript-style `d/with` behavior without mutating a connection
+- prepared tx-data values, `prepare-tx-text` plus `transact-prepared`,
+  `with-prepared`, and `db-with-prepared`, for parsing EDN tx-data once and
+  applying it through the same transaction engine
+- registered transaction-function variants exist for both connection and
+  immutable DB-value APIs, including `transact-text-with-string-fns`,
+  `with-text-with-string-fns`, `db-with-text-with-string-fns`,
+  `transact-prepared-with-string-fns`, `with-prepared-with-string-fns`, and
+  `db-with-prepared-with-string-fns`
 - a Kvist tx-data literal macro used by `transact`
 
 Supported now:
