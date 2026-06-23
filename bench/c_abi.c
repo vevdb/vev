@@ -106,6 +106,34 @@ int main(void) {
         samples[sample_count / 2],
         sample_count);
 
+    for (int i = 0; i < warmups; i++) {
+        vev_result_t result = vev_query_prepared_result_with_inputs(conn, prepared, inputs);
+        vev_result_free(result);
+    }
+
+    for (int i = 0; i < sample_count; i++) {
+        double start = now_us();
+        vev_result_t result = vev_query_prepared_result_with_inputs(conn, prepared, inputs);
+        double elapsed = now_us() - start;
+        if (!vev_result_ok(result) || vev_result_row_count(result) != 1) {
+            fprintf(stderr, "unexpected result handle output\n");
+            vev_result_free(result);
+            free(samples);
+            vev_prepared_query_free(prepared);
+            vev_conn_close(conn);
+            return 1;
+        }
+        vev_result_free(result);
+        samples[i] = elapsed;
+    }
+
+    qsort(samples, (size_t)sample_count, sizeof(double), compare_double);
+    printf(
+        "engine=c-abi workload=prepared-email-result n=%d median_us=%.0f samples=%d\n",
+        n,
+        samples[sample_count / 2],
+        sample_count);
+
     free(samples);
     vev_prepared_query_free(prepared);
     vev_conn_close(conn);

@@ -4,6 +4,10 @@ import pathlib
 import sys
 
 
+VEV_VALUE_ENTITY = 1
+VEV_VALUE_STRING = 2
+
+
 def load_library() -> ctypes.CDLL:
     root = pathlib.Path(__file__).resolve().parents[2]
     lib_path = root / "build" / "lib" / "libvev.dylib"
@@ -52,6 +56,28 @@ def main() -> int:
     ]
     lib.vev_query_prepared_with_inputs.restype = ctypes.c_void_p
 
+    lib.vev_query_prepared_result_with_inputs.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+    ]
+    lib.vev_query_prepared_result_with_inputs.restype = ctypes.c_void_p
+    lib.vev_result_free.argtypes = [ctypes.c_void_p]
+    lib.vev_result_ok.argtypes = [ctypes.c_void_p]
+    lib.vev_result_ok.restype = ctypes.c_bool
+    lib.vev_result_row_count.argtypes = [ctypes.c_void_p]
+    lib.vev_result_row_count.restype = ctypes.c_int
+    lib.vev_result_value_count.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.vev_result_value_count.restype = ctypes.c_int
+    lib.vev_result_value_kind.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.vev_result_value_kind.restype = ctypes.c_int
+    lib.vev_result_value_entity.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.vev_result_value_entity.restype = ctypes.c_ulonglong
+    lib.vev_result_value_text.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.vev_result_value_text.restype = ctypes.c_void_p
+    lib.vev_result_value_edn.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.vev_result_value_edn.restype = ctypes.c_void_p
+
     print(f"version: {lib.vev_version().decode('utf-8')}")
 
     conn = lib.vev_conn_open_memory()
@@ -98,6 +124,34 @@ def main() -> int:
 
         if "\"Ada\"" not in result or "grace@example.com" not in prepared_result:
             raise RuntimeError("unexpected Vev query output")
+
+        handle = lib.vev_query_prepared_result_with_inputs(
+            conn,
+            prepared,
+            b"[\"grace@example.com\"]",
+        )
+        if not handle:
+            raise RuntimeError("failed to create result handle")
+        try:
+            if not lib.vev_result_ok(handle):
+                raise RuntimeError("typed result handle returned an error")
+            rows = []
+            for row in range(lib.vev_result_row_count(handle)):
+                values = []
+                for column in range(lib.vev_result_value_count(handle, row)):
+                    kind = lib.vev_result_value_kind(handle, row, column)
+                    if kind == VEV_VALUE_ENTITY:
+                        values.append(lib.vev_result_value_entity(handle, row, column))
+                    elif kind == VEV_VALUE_STRING:
+                        values.append(owned_text(lib, lib.vev_result_value_text(handle, row, column)))
+                    else:
+                        values.append(owned_text(lib, lib.vev_result_value_edn(handle, row, column)))
+                rows.append(values)
+            print(f"result-handle: {rows}")
+            if rows != [[2, "grace@example.com"]]:
+                raise RuntimeError("unexpected typed result rows")
+        finally:
+            lib.vev_result_free(handle)
     finally:
         if prepared:
             lib.vev_prepared_query_free(prepared)

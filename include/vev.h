@@ -1,12 +1,28 @@
 #ifndef VEV_H
 #define VEV_H
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef void *vev_conn_t;
 typedef void *vev_prepared_query_t;
+typedef void *vev_result_t;
+
+enum {
+    VEV_VALUE_NIL = 0,
+    VEV_VALUE_ENTITY = 1,
+    VEV_VALUE_STRING = 2,
+    VEV_VALUE_INT = 3,
+    VEV_VALUE_FLOAT = 4,
+    VEV_VALUE_BOOL = 5,
+    VEV_VALUE_KEYWORD = 6,
+    VEV_VALUE_SYMBOL = 7,
+    VEV_VALUE_VECTOR = 8,
+    VEV_VALUE_MAP = 9,
+};
 
 const char *vev_version(void);
 
@@ -29,6 +45,22 @@ const char *vev_query_prepared_with_inputs(
     vev_conn_t conn,
     vev_prepared_query_t query,
     const char *inputs_text);
+
+vev_result_t vev_query_prepared_result_with_inputs(
+    vev_conn_t conn,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+void vev_result_free(vev_result_t result);
+bool vev_result_ok(vev_result_t result);
+const char *vev_result_error(vev_result_t result);
+int vev_result_row_count(vev_result_t result);
+int vev_result_value_count(vev_result_t result, int row);
+int vev_result_value_kind(vev_result_t result, int row, int column);
+unsigned long long vev_result_value_entity(vev_result_t result, int row, int column);
+long long vev_result_value_int(vev_result_t result, int row, int column);
+bool vev_result_value_bool(vev_result_t result, int row, int column);
+const char *vev_result_value_text(vev_result_t result, int row, int column);
+const char *vev_result_value_edn(vev_result_t result, int row, int column);
 
 #ifdef __cplusplus
 }

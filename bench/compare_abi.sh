@@ -47,16 +47,22 @@ function field_value(prefix,    i) {
 }
 
 /^engine=vev-native / {
-  native = field_value("median_us") + 0
+  workload = field_value("workload")
+  native[workload] = field_value("median_us") + 0
 }
 
 /^engine=c-abi / {
-  cabi = field_value("median_us") + 0
+  workload = field_value("workload")
+  order[++count] = workload
+  cabi[workload] = field_value("median_us") + 0
 }
 
 END {
-  if (native > 0 && cabi > 0) {
-    printf "comparison workload=prepared-email-input-text c_abi_over_native=%.2fx\n", cabi / native
+  for (i = 1; i <= count; i++) {
+    workload = order[i]
+    if (native[workload] > 0 && cabi[workload] > 0) {
+      printf "comparison workload=%s c_abi_over_native=%.2fx\n", workload, cabi[workload] / native[workload]
+    }
   }
 }
 ' "$NATIVE_OUT" "$C_OUT"
