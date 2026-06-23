@@ -2326,6 +2326,93 @@
 (defn q-text-row-tuple-with-inputs [db: DB, text: string, inputs: []Query-Input] -> Result-Row
   (result-row-tuple (q-text-with-inputs db text inputs)))
 
+(defn query-input-specs-for-query [query-value: Query] -> [dynamic]Query-Input-Spec
+  (let [specs (make [dynamic]Query-Input-Spec)]
+    (if (> (count query-value.input-specs) 0)
+      (for [spec query-value.input-specs]
+        (arr.push! specs spec))
+      (append-legacy-query-input-specs! (addr specs) query-value))
+    specs))
+
+(defn relation-input-value-width [relation: Relation-Input] -> int
+  (count relation.vars))
+
+(defn query-input-relation-from-value [relation: Relation-Input, value: Value] -> Query-Input
+  (cond
+    (= value.kind .Map) (query-input-scalar value)
+    (not (= value.kind .Vector)) (query-input-scalar value)
+    (not (= relation.binding.kind .None)) (query-input-collection (slice value.items 0))
+    :else
+      (let [width (relation-input-value-width relation)
+            flat (make [dynamic]Value)]
+        (for [row value.items]
+          (if (= row.kind .Vector)
+            (for [item row.items]
+              (arr.push! flat item))
+            (arr.push! flat row)))
+        (query-input-relation (slice flat 0) width))))
+
+(defn query-input-from-value-for-spec [spec: Query-Input-Spec, value: Value] -> Query-Input
+  (case spec.kind
+    .Collection
+      (if (= value.kind .Vector)
+        (query-input-collection (slice value.items 0))
+        (query-input-scalar value))
+    .Tuple
+      (if (= value.kind .Vector)
+        (query-input-collection (slice value.items 0))
+        (query-input-scalar value))
+    .Relation (query-input-relation-from-value spec.relation value)
+    .Ignore (query-input-scalar (value-nil))
+    :else (query-input-scalar value)))
+
+(defn parse-query-inputs-text-for-query [query-value: Query, text: string] -> [inputs: [dynamic]Query-Input, ok: bool, error: string]
+  (let [out (make [dynamic]Query-Input)
+        doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return out false read-error))
+    (when (or (= doc.root -1) (not (= doc.nodes[doc.root].kind .Vector)))
+      (delete doc.nodes)
+      (return out false "query inputs must be an EDN vector"))
+    (let [specs (query-input-specs-for-query query-value) :defer
+          cursor doc.nodes[doc.root].first-child
+          index 0]
+      (while (not (= cursor -1))
+        (let [[value value-ok value-error] (edn-value-from-node doc cursor)]
+          (when (not value-ok)
+            (delete doc.nodes)
+            (return out false value-error))
+          (if (< index (count specs))
+            (arr.push! out (query-input-from-value-for-spec specs[index] value))
+            (arr.push! out (query-input-scalar value))))
+        (set! index (+ index 1))
+        (set! cursor doc.nodes[cursor].next-sibling)))
+    (delete doc.nodes)
+    (return out true "")))
+
+(defn q-text-value-with-input-text [db: DB, text: string, inputs-text: string] -> Value
+  (let [query-value (empty-query)
+        [query-ok query-error] (parse-query-text! (addr query-value) text)]
+    (when (not query-ok)
+      (return (result-set-value db (result-set-error query-error))))
+    (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query query-value inputs-text)]
+      (when (not input-ok)
+        (return (result-set-value db (result-set-error input-error))))
+      (result-set-value db (q-query-with-inputs db query-value (slice inputs 0))))))
+
+(defn q-prepared-with-input-text [db: DB, prepared: Prepared-Query, inputs-text: string] -> Result-Set
+  (when (not prepared.ok)
+    (return (result-set-error prepared.error)))
+  (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query prepared.query inputs-text)]
+    (when (not input-ok)
+      (return (result-set-error input-error)))
+    (q-prepared-with-inputs db prepared (slice inputs 0))))
+
+(defn q-prepared-value-with-input-text [db: DB, prepared: Prepared-Query, inputs-text: string] -> Value
+  (result-set-value db (q-prepared-with-input-text db prepared inputs-text)))
+
 (defn append-edn-return-keys! [out: ^[dynamic]string, doc: EDN-Doc, marker: string] -> bool
   (when (and (not (= doc.root -1)) (= doc.nodes[doc.root].kind .Map))
     (let [section (edn-map-value-node doc doc.root marker)]

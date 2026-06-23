@@ -101,6 +101,13 @@
                                     db rules)))]
     (print-result "chain-all" n measured)))
 
+(defn run-chain-to-leaf [n]
+  (let [db (db-with (seed-chain n))
+        measured (time-query (fn []
+                               (d/q '[:find ?x :in $ % ?y :where (reachable ?x ?y)]
+                                    db rules n)))]
+    (print-result "chain-leaf" n measured)))
+
 (defn run-tree-from-root [n]
   (let [db (db-with (seed-tree n 3))
         measured (time-query (fn []
@@ -123,7 +130,9 @@
 
 (doseq [n [3 10 30 100]]
   (run-chain-from-root n))
-(doseq [n []]
+(doseq [n [10 30 100]]
+  (run-chain-to-leaf n))
+(doseq [n [10 30]]
   (run-chain-all n))
 (doseq [n [4 13 40]]
   (run-tree-from-root n))
