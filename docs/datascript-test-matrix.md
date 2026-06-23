@@ -77,7 +77,7 @@ These are useful, but not the next engine-parity gate.
 | --- | ---: | --- | --- |
 | `conn.cljc` | 2 | passing | create/conn-from-db/conn-from-datoms and reset reports with tx-data, before/after snapshots, metadata, and listener delivery are covered; Clojure schema-map storage shape is host |
 | `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; arbitrary closure callbacks are host/ABI design work |
-| `serialize.cljc` | 5 | partial | `init-db` from datoms and typed EDN-ish datom snapshot text roundtrip covered, including schema, retractions, refs, symbol/map/vector values, and next-tx recovery; JSON/transit-style formats later |
+| `serialize.cljc` | 5 | passing | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | passing | semantic DB diff is covered; record-updatable, hash-cache, and UUID helpers are Clojure/DataScript runtime details |

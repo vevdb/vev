@@ -42,7 +42,7 @@ Status key:
 | `db` | covered | Immutable DB values, current datom indexes, public datom access, and semantic DB diff covered; Clojure hash/cache/record/uuid helpers are host/runtime-specific |
 | `conn` | covered | `create-conn`, `conn-from-db`, `conn-from-datoms`, reset reports with before/after snapshots, tx-data, metadata, and named report-sink listener delivery covered; Clojure schema-map field shape is host |
 | `filter` | covered | Materialized `filter-db` covers DataScript-style predicate filtering, chained filters, filtered entity reads, index-backed queries, and semantic DB equivalence; Clojure hash/equality/runtime wrapper behavior is host |
-| `serialize` | partial | `init-db` from datoms and typed EDN-ish datom snapshot text roundtrip covered, including schema, retractions, refs, symbol/map/vector values, and next-tx recovery; JSON/transit-style formats later |
+| `serialize` | covered | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
 | `issues` | covered | Engine-relevant regressions from `issues.cljc` are covered: vector result isolation, mixed-type DB diff, and schema inspection; Clojure metadata/pprint cases are host-specific |
 | `listen` | covered | Named report-sink listeners cover registration, tx-data reports, metadata reports, and unlisten; arbitrary closure callbacks are host/ABI design work |
 | `storage`, `datafy` | later | API/package features after semantic core |
