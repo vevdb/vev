@@ -27,22 +27,22 @@ clojure \
 Current sample output on June 23, 2026:
 
 ```text
-engine=vev workload=chain-root-text n=3 ok=true rows=2 min_us=23 median_us=25 p90_us=26 max_us=27 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
-engine=vev workload=chain-root-prepared n=3 ok=true rows=2 min_us=9 median_us=11 p90_us=12 max_us=12 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
-engine=vev workload=chain-root-text n=10 ok=true rows=9 min_us=44 median_us=46 p90_us=48 max_us=48 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
-engine=vev workload=chain-root-prepared n=10 ok=true rows=9 min_us=29 median_us=30 p90_us=32 max_us=36 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
-engine=vev workload=chain-root-text n=30 ok=true rows=29 min_us=106 median_us=109 p90_us=113 max_us=137 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
-engine=vev workload=chain-root-prepared n=30 ok=true rows=29 min_us=90 median_us=92 p90_us=96 max_us=104 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
-engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=354 median_us=358 p90_us=374 max_us=409 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
-engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=338 median_us=346 p90_us=361 max_us=365 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
-engine=vev workload=tree-root-text n=4 ok=true rows=3 min_us=25 median_us=26 p90_us=29 max_us=30 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
-engine=vev workload=tree-root-prepared n=4 ok=true rows=3 min_us=10 median_us=12 p90_us=14 max_us=21 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
-engine=vev workload=tree-root-text n=13 ok=true rows=12 min_us=49 median_us=51 p90_us=59 max_us=109 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
-engine=vev workload=tree-root-prepared n=13 ok=true rows=12 min_us=37 median_us=41 p90_us=43 max_us=88 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
-engine=vev workload=tree-root-text n=40 ok=true rows=39 min_us=132 median_us=138 p90_us=143 max_us=151 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
-engine=vev workload=tree-root-prepared n=40 ok=true rows=39 min_us=118 median_us=124 p90_us=128 max_us=151 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
-engine=vev workload=bad-order-join-text n=1000 ok=true rows=1 min_us=20 median_us=22 p90_us=29 max_us=33 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
-engine=vev workload=bad-order-join-prepared n=1000 ok=true rows=1 min_us=11 median_us=12 p90_us=14 max_us=19 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
+engine=vev workload=chain-root-text n=3 ok=true rows=2 min_us=23 median_us=24 p90_us=26 max_us=26 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
+engine=vev workload=chain-root-prepared n=3 ok=true rows=2 min_us=8 median_us=9 p90_us=10 max_us=10 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=2
+engine=vev workload=chain-root-text n=10 ok=true rows=9 min_us=43 median_us=44 p90_us=46 max_us=47 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
+engine=vev workload=chain-root-prepared n=10 ok=true rows=9 min_us=26 median_us=28 p90_us=30 max_us=46 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
+engine=vev workload=chain-root-text n=30 ok=true rows=29 min_us=102 median_us=105 p90_us=111 max_us=118 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
+engine=vev workload=chain-root-prepared n=30 ok=true rows=29 min_us=87 median_us=90 p90_us=93 max_us=112 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
+engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=363 median_us=370 p90_us=380 max_us=382 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=355 median_us=361 p90_us=376 max_us=379 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=tree-root-text n=4 ok=true rows=3 min_us=25 median_us=27 p90_us=29 max_us=40 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
+engine=vev workload=tree-root-prepared n=4 ok=true rows=3 min_us=10 median_us=11 p90_us=12 max_us=14 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
+engine=vev workload=tree-root-text n=13 ok=true rows=12 min_us=52 median_us=55 p90_us=58 max_us=92 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
+engine=vev workload=tree-root-prepared n=13 ok=true rows=12 min_us=36 median_us=38 p90_us=41 max_us=42 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
+engine=vev workload=tree-root-text n=40 ok=true rows=39 min_us=130 median_us=134 p90_us=137 max_us=151 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
+engine=vev workload=tree-root-prepared n=40 ok=true rows=39 min_us=115 median_us=119 p90_us=124 max_us=131 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
+engine=vev workload=bad-order-join-text n=1000 ok=true rows=1 min_us=19 median_us=23 p90_us=24 max_us=26 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
+engine=vev workload=bad-order-join-prepared n=1000 ok=true rows=1 min_us=11 median_us=12 p90_us=14 max_us=16 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
 
 engine=datascript workload=chain-root n=3 ok=true rows=2 min_us=353 median_us=451 p90_us=691 max_us=1024 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
 engine=datascript workload=chain-root n=10 ok=true rows=9 min_us=764 median_us=912 p90_us=1107 max_us=2678 steps= clauses= candidates= rule_calls= rule_iterations= max_bindings=
@@ -63,9 +63,11 @@ The important Vev-specific counters are:
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured
 samples to reduce JVM warmup noise. Vev emits `*-text` rows, which include EDN
-query/rule parsing, and `*-prepared` rows, which reuse parsed query/rule values
-where the API supports it. These are still local development benchmarks, not
-JMH/Criterium-grade measurements.
+query/rule parsing, and `*-prepared` rows, which reuse parsed query values. For
+recursive-rule workloads, prepared rows use `prepare-query-text-with-rules`, so
+rules are attached to the prepared query once instead of copied in on every
+execution. These are still local development benchmarks, not JMH/Criterium-grade
+measurements.
 
 ## Current Findings
 

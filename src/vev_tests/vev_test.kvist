@@ -1600,6 +1600,9 @@
              [:db/add 3 :age 30]
              [:db/add 4 :age 40]])
         prepared (vev.prepare-query-text "[:find [?e2 ...] :in $ ?e1 % :where (reachable ?e1 ?e2)]")
+        attached-prepared (vev.prepare-query-text-with-rules
+                            "[:find [?e2 ...] :in $ ?e1 % :where (reachable ?e1 ?e2)]"
+                            "[[(reachable ?e1 ?e2) [?e1 :follow ?e2]] [(reachable ?e1 ?e2) [?e1 :follow ?t] (reachable ?t ?e2)]]")
         rules (vev.parse-rules-text "[[(reachable ?e1 ?e2) [?e1 :follow ?e2]] [(reachable ?e1 ?e2) [?e1 :follow ?t] (reachable ?t ?e2)]]")
         result (vev.q-prepared-with-rules
                  conn.db
@@ -1611,6 +1614,14 @@
                    prepared
                    rules
                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 2))]))
+        attached-result (vev.q-prepared-with-inputs
+                          conn.db
+                          attached-prepared
+                          ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))]))
+        attached-repeated (vev.q-prepared-with-inputs
+                            conn.db
+                            attached-prepared
+                            ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 2))]))
         fn-query (vev.prepare-query-text "[:find [?e ...] :in $ ?min % :where (adult ?e ?min)]")
         fn-rules (vev.parse-rules-text "[[(adult ?e ?min) [?e :age ?age] [(>= ?age ?min)]]]")
         fn-result (vev.q-prepared-with-rules-and-fns
@@ -1620,8 +1631,12 @@
                     ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 30))])
                     ([]vev.Native-Query-Fn []))
         bad-rules (vev.parse-rules-text "[[(broken) [_]]]")
-        bad-result (vev.q-prepared-with-rules conn.db prepared bad-rules ([]vev.Query-Input []))]
+        bad-result (vev.q-prepared-with-rules conn.db prepared bad-rules ([]vev.Query-Input []))
+        bad-attached (vev.prepare-query-text-with-rules
+                       "[:find [?e2 ...] :in $ ?e1 % :where (reachable ?e1 ?e2)]"
+                       "[[(broken) [_]]]")]
     (t.is prepared.ok)
+    (t.is attached-prepared.ok)
     (t.is rules.ok)
     (t.is result.ok)
     (t.is (= (count result.rows) 3))
@@ -1632,6 +1647,15 @@
     (t.is (= (count repeated.rows) 2))
     (t.is (= repeated.rows[0].values[0].entity 3))
     (t.is (= repeated.rows[1].values[0].entity 4))
+    (t.is attached-result.ok)
+    (t.is (= (count attached-result.rows) 3))
+    (t.is (= attached-result.rows[0].values[0].entity 2))
+    (t.is (= attached-result.rows[1].values[0].entity 3))
+    (t.is (= attached-result.rows[2].values[0].entity 4))
+    (t.is attached-repeated.ok)
+    (t.is (= (count attached-repeated.rows) 2))
+    (t.is (= attached-repeated.rows[0].values[0].entity 3))
+    (t.is (= attached-repeated.rows[1].values[0].entity 4))
     (t.is fn-query.ok)
     (t.is fn-rules.ok)
     (t.is fn-result.ok)
@@ -1640,7 +1664,9 @@
     (t.is (= fn-result.rows[1].values[0].entity 4))
     (t.is (not bad-rules.ok))
     (t.is (not bad-result.ok))
-    (t.is (= bad-result.error bad-rules.error))))
+    (t.is (= bad-result.error bad-rules.error))
+    (t.is (not bad-attached.ok))
+    (t.is (= bad-attached.error bad-rules.error))))
 
 (t.deftest datascript-parser-query-text-sources
   (defer (free_all context.allocator))
