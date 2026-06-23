@@ -466,6 +466,9 @@
 (defn query-predicate-fn [name: string, f: fn [args: []Value] -> bool] -> Native-Query-Fn
   (Native-Query-Fn {name: name has-predicate-callback: true predicate-callback: f}))
 
+(defn query-db-predicate-fn [name: string, f: fn [db: DB, args: []Value] -> bool] -> Native-Query-Fn
+  (Native-Query-Fn {name: name has-db-predicate-callback: true db-predicate-callback: f}))
+
 (defn native-query-function-result [value: Value] -> Native-Query-Function-Result
   (Native-Query-Function-Result {ok: true value: value}))
 
@@ -623,7 +626,7 @@
         (return false))))
   true))
 
-(defn predicate-matches-with-fns? [predicate: Predicate, binding: Binding, registry: []Native-Query-Fn] -> bool
+(defn predicate-matches-with-db-and-fns? [db: DB, predicate: Predicate, binding: Binding, registry: []Native-Query-Fn] -> bool
   (when (predicate-matches? predicate binding)
     (return true))
   (let [[op op-ok] (query-op-name predicate.op binding)]
@@ -639,9 +642,18 @@
             (when (not args-ok)
               (return false))
             (return (entry.predicate-callback (slice args 0)))))
+        (when entry.has-db-predicate-callback
+          (let [[args args-ok] (resolve-query-call-args predicate.terms binding)]
+            (defer (delete args))
+            (when (not args-ok)
+              (return false))
+            (return (entry.db-predicate-callback db (slice args 0)))))
         (when (> (count entry.target) 0)
           (return (predicate-matches? (Predicate {op: entry.target terms: predicate.terms}) binding)))
         (return false)))))
+
+(defn predicate-matches-with-fns? [predicate: Predicate, binding: Binding, registry: []Native-Query-Fn] -> bool
+  (predicate-matches-with-db-and-fns? (DB {}) predicate binding registry))
 
 (defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
   (when (not (= map-value.kind .Map))
@@ -3398,12 +3410,15 @@
 (defn bindings-after-function [bindings: []Binding, function: Function-Clause] -> [dynamic]Binding
   (bindings-after-function-with-fns bindings function ([]Native-Query-Fn [])))
 
-(defn bindings-after-predicate-with-fns [bindings: []Binding, predicate: Predicate, registry: []Native-Query-Fn] -> [dynamic]Binding
+(defn bindings-after-predicate-with-db-and-fns [db: DB, bindings: []Binding, predicate: Predicate, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
-      (when (predicate-matches-with-fns? predicate binding registry)
+      (when (predicate-matches-with-db-and-fns? db predicate binding registry)
         (arr.push! out binding)))
     out))
+
+(defn bindings-after-predicate-with-fns [bindings: []Binding, predicate: Predicate, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (bindings-after-predicate-with-db-and-fns (DB {}) bindings predicate registry))
 
 (defn bindings-after-predicate [bindings: []Binding, predicate: Predicate] -> [dynamic]Binding
   (bindings-after-predicate-with-fns bindings predicate ([]Native-Query-Fn [])))
@@ -3497,7 +3512,7 @@
     .Function
       (bindings-after-function-with-fns bindings rule.function-clauses[step.index] registry)
     .Predicate
-      (bindings-after-predicate-with-fns bindings rule.predicates[step.index] registry)
+      (bindings-after-predicate-with-db-and-fns db bindings rule.predicates[step.index] registry)
     .Or
       (let [out (make [dynamic]Binding)
             group (if has-source (relation-db-or-group rule.or-groups[step.index] source) rule.or-groups[step.index])]
@@ -3585,7 +3600,7 @@
         (delete bindings)
         (set! bindings next)))
     (for [predicate rule.predicates]
-      (let [next-raw (bindings-after-predicate-with-fns (slice bindings 0) predicate registry)
+      (let [next-raw (bindings-after-predicate-with-db-and-fns db (slice bindings 0) predicate registry)
             next (unique-bindings (slice next-raw 0))]
         (delete next-raw)
         (delete bindings)
@@ -5075,7 +5090,7 @@
     .Function
       (bindings-after-function-with-fns bindings query^.function-clauses[step.index] registry)
     .Predicate
-      (bindings-after-predicate-with-fns bindings query^.predicates[step.index] registry)
+      (bindings-after-predicate-with-db-and-fns db bindings query^.predicates[step.index] registry)
     .Or
       (bindings-after-or-group-step-with-fns db sources bindings query^.or-groups[step.index] registry)
     :else
@@ -5187,7 +5202,7 @@
         (delete bindings)
         (set! bindings next-bindings)))
     (for [predicate query.predicates]
-      (let [next-bindings (bindings-after-predicate-with-fns (slice bindings 0) predicate registry)]
+      (let [next-bindings (bindings-after-predicate-with-db-and-fns db (slice bindings 0) predicate registry)]
         (delete bindings)
         (set! bindings next-bindings)))
     (for [group query.or-groups]

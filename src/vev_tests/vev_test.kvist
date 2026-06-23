@@ -102,6 +102,17 @@
        (= args[1].kind .Int)
        (>= args[0].int-value args[1].int-value)))
 
+(defn native-db-age-equals? [db: vev.DB, args: []vev.Value] -> bool
+  (when (not (and (= (count args) 3)
+                  (= args[0].kind .Symbol)
+                  (= args[0].text "$")
+                  (= args[1].kind .Entity)
+                  (= args[2].kind .Int)))
+    (return false))
+  (let [age (vev.entity-get (vev.db-entity db args[1].entity) ":age")]
+    (and (= age.kind .Int)
+         (= age.int-value args[2].int-value))))
+
 (defn native-even-identity [args: []vev.Value] -> vev.Native-Query-Function-Result
   (when (not (and (= (count args) 1)
                   (= args[0].kind .Int)
@@ -4379,17 +4390,28 @@
   (let [conn (vev.create-conn)
         registry ([]vev.Native-Query-Fn
                    [(vev.query-predicate-fn "adult-age?" native-adult-age?)
+                    (vev.query-db-predicate-fn "db-age-equals?" native-db-age-equals?)
                     (vev.query-value-fn "even-identity" native-even-identity)
                     (vev.query-value-fn "person-label" native-person-label)])
         _ (vev.transact
             (addr conn)
             [{:db/id 1 :name "Ivan" :age 15}
              {:db/id 2 :name "Petr" :age 22}
-             {:db/id 3 :name "Oleg" :age 37}])
+             {:db/id 3 :name "Oleg" :age 37}
+             {:db/id 10 :pred "missing-predicate"}])
         predicate (vev.q-text-with-fns
                     conn.db
                     "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]"
                     registry)
+        db-predicate (vev.q-text-with-inputs-and-fns
+                       conn.db
+                       "[:find ?e :in ?pred :where [?e :age ?a] [(?pred $ ?e 15)]]"
+                       ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "db-age-equals?"))])
+                       registry)
+        missing-predicate-from-data (vev.q-text-with-fns
+                                      conn.db
+                                      "[:find ?e ?a :where [_ :pred ?pred] [?e :age ?a] [(?pred ?a)]]"
+                                      registry)
         fn-filter (vev.q-text-with-fns
                     conn.db
                     "[:find ?age ?same :where [?e :age ?age] [(even-identity ?age) ?same]]"
@@ -4404,6 +4426,11 @@
     (t.is (= (count predicate.rows) 2))
     (t.is (= predicate.rows[0].values[0].text "Petr"))
     (t.is (= predicate.rows[1].values[0].text "Oleg"))
+    (t.is db-predicate.ok)
+    (t.is (= (count db-predicate.rows) 1))
+    (t.is (= db-predicate.rows[0].values[0].entity 1))
+    (t.is missing-predicate-from-data.ok)
+    (t.is (= (count missing-predicate-from-data.rows) 0))
     (t.is (= (count fn-filter.rows) 1))
     (t.is (= fn-filter.rows[0].values[0].int-value 22))
     (t.is (= fn-filter.rows[0].values[1].int-value 22))
