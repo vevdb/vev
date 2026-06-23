@@ -1,6 +1,7 @@
 (package vev-tests)
 
 (import arr "kvist:arr")
+(import strings "core:strings")
 (import t "kvist:test")
 (import vev "../vev")
 
@@ -87,6 +88,52 @@
                 [(vev.add datom.e ":age" (vev.value-int (+ age.int-value 1)))
                  (vev.add datom.e ":had-birthday" (vev.value-bool true))])))))))
   (vev.tx-fn-error "No entity with name"))
+
+(defn native-adult-age? [args: []vev.Value] -> bool
+  (and (= (count args) 2)
+       (= args[0].kind .Int)
+       (= args[1].kind .Int)
+       (>= args[0].int-value args[1].int-value)))
+
+(defn native-even-identity [args: []vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (and (= (count args) 1)
+                  (= args[0].kind .Int)
+                  (= (% args[0].int-value 2) 0)))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result args[0]))
+
+(defn native-person-label [args: []vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (and (= (count args) 2)
+                  (= args[0].kind .String)
+                  (= args[1].kind .String)))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result
+    (vev.value-keyword
+      (strings.concatenate ([]string [":" args[0].text "/" args[1].text])))))
+
+(defn native-tag-value [value: vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (= value.kind .String))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result
+    (vev.value-string (strings.concatenate ([]string ["tag:" value.text])))))
+
+(defn native-sort-reverse [values: []vev.Value] -> vev.Native-Query-Function-Result
+  (let [sorted (arr.into [dynamic]vev.Value values)
+        out (make [dynamic]vev.Value)]
+    (defer (delete sorted))
+    (for [i (arr.range 1 (count sorted))]
+      (let [current sorted[i]
+            j i]
+        (while (and (> j 0)
+                    (vev.value-less? sorted[(- j 1)] current))
+          (set! sorted[j] sorted[(- j 1)])
+          (set! j (- j 1)))
+        (set! sorted[j] current)))
+    (for [value sorted]
+      (arr.push! out value))
+    (let [result (vev.value-vector (slice out 0))]
+      (delete out)
+      (vev.native-query-function-result result))))
 
 (defn create-oleg [db: vev.DB] -> vev.Tx-Fn-Result
   (vev.tx-fn-ok
@@ -482,6 +529,12 @@
                       ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "unused"))]))
         unknown-find (vev.q-text conn.db "[:find ?missing :where [?e :name]]")
         unknown-with (vev.q-text conn.db "[:find ?e :with ?missing :where [?e :name]]")
+        unknown-find-many (vev.q-text-with-inputs
+                             conn.db
+                             "[:find ?e ?x ?t :in ?x :where [?e :name]]"
+                             ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "input"))]))
+        unknown-with-many (vev.q-text conn.db "[:find ?name :with ?e ?missing :where [?e :name ?name]]")
+        unknown-find-and-with (vev.q-text conn.db "[:find ?missing ?also-missing :with ?with-missing :where [?e :name]]")
         unknown-find-literal (vev.q conn.db
                                [:find ?missing
                                 :where
@@ -500,6 +553,13 @@
                                      :where
                                      (rule ?e)])
         unknown-source (vev.q-text conn.db "[:find ?name :where [$2 ?e :name ?name]]")
+        empty-pattern (vev.q-text conn.db "[:find ?e :where []]")
+        zero-predicate-query (vev.empty-query)
+        zero-function-query (vev.empty-query)
+        [zero-predicate-ok zero-predicate-error] (vev.parse-query-text! (addr zero-predicate-query) "[:find ?e :where [?e :name] [(custom-pred)]]")
+        [zero-function-ok zero-function-error] (vev.parse-query-text! (addr zero-function-query) "[:find ?e ?x :where [?e :name] [(custom-fn) ?x]]")
+        zero-predicate-runtime (vev.q-text conn.db "[:find ?e :where [?e :name] [(custom-pred)]]")
+        zero-function-runtime (vev.q-text conn.db "[:find ?e ?x :where [?e :name] [(custom-fn) ?x]]")
         unknown-predicate (vev.q-text-with-inputs
                              conn.db
                              "[:find ?e :in [?e ...] :where [(fun ?e)]]"
@@ -568,11 +628,17 @@
     (t.is (not extra-input.ok))
     (t.is (= extra-input.error "wrong number of query inputs: expected 0, got 1"))
     (t.is (not unknown-find.ok))
-    (t.is (= unknown-find.error "Query for unknown vars: ?missing"))
+    (t.is (= unknown-find.error "Query for unknown vars: [?missing]"))
     (t.is (not unknown-with.ok))
-    (t.is (= unknown-with.error "Query for unknown vars: ?missing"))
+    (t.is (= unknown-with.error "Query for unknown vars: [?missing]"))
+    (t.is (not unknown-find-many.ok))
+    (t.is (= unknown-find-many.error "Query for unknown vars: [?t]"))
+    (t.is (not unknown-with-many.ok))
+    (t.is (= unknown-with-many.error "Query for unknown vars: [?missing]"))
+    (t.is (not unknown-find-and-with.ok))
+    (t.is (= unknown-find-and-with.error "Query for unknown vars: [?missing ?also-missing ?with-missing]"))
     (t.is (not unknown-find-literal.ok))
-    (t.is (= unknown-find-literal.error "Query for unknown vars: ?missing"))
+    (t.is (= unknown-find-literal.error "Query for unknown vars: [?missing]"))
     (t.is (not find-with-overlap.ok))
     (t.is (= find-with-overlap.error ":find and :with should not use same variables: ?e"))
     (t.is (not duplicate-in.ok))
@@ -587,6 +653,14 @@
     (t.is (= missing-rules-var-literal.error "Missing rules var '%' in :in"))
     (t.is (not unknown-source.ok))
     (t.is (= unknown-source.error "unknown query source: $2"))
+    (t.is (not empty-pattern.ok))
+    (t.is (= empty-pattern.error "Pattern could not be empty"))
+    (t.is zero-predicate-ok zero-predicate-error)
+    (t.is zero-function-ok zero-function-error)
+    (t.is (not zero-predicate-runtime.ok))
+    (t.is (= zero-predicate-runtime.error "unknown query predicate: custom-pred"))
+    (t.is (not zero-function-runtime.ok))
+    (t.is (= zero-function-runtime.error "unknown query function: custom-fn"))
     (t.is (not unknown-predicate.ok))
     (t.is (= unknown-predicate.error "unknown query predicate: fun"))
     (t.is (not unknown-function.ok))
@@ -690,7 +764,21 @@
         no-where (vev.q-text-with-inputs
                    conn.db
                    "[:find ?x :in ?x]"
-                   ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":ok"))]))]
+                   ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":ok"))]))
+        ignored (vev.q-text-with-inputs
+                  conn.db
+                  "[:find ?name :in _ ?email :where [?e :email ?email] [?e :name ?name]]"
+                  ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":ignored"))
+                                       (vev.query-input-scalar (vev.value-string "grace@example.com"))]))
+        ignored-no-where (vev.q-text-with-inputs
+                           conn.db
+                           "[:find ?x :in _ ?x]"
+                           ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":ignored"))
+                                                (vev.query-input-scalar (vev.value-keyword ":kept"))]))
+        ignored-missing (vev.q-text-with-inputs
+                          conn.db
+                          "[:find ?x :in _ ?x]"
+                          ([]vev.Query-Input [(vev.query-input-scalar (vev.value-keyword ":only"))]))]
     (t.is (= (count scalar.rows) 1))
     (t.is (= scalar.rows[0].values[0].text "Ada"))
     (t.is (= (count collection.rows) 2))
@@ -715,7 +803,15 @@
     (t.is (= nested-collection.rows[1].values[1].int-value 3))
     (t.is (= nested-collection.rows[2].values[0].text ":b"))
     (t.is (= nested-collection.rows[2].values[1].int-value 4))
-    (t.is (= no-where.rows[0].values[0].text ":ok"))))
+    (t.is (= no-where.rows[0].values[0].text ":ok"))
+    (t.is ignored.ok)
+    (t.is (= (count ignored.rows) 1))
+    (t.is (= ignored.rows[0].values[0].text "Grace"))
+    (t.is ignored-no-where.ok)
+    (t.is (= (count ignored-no-where.rows) 1))
+    (t.is (= ignored-no-where.rows[0].values[0].text ":kept"))
+    (t.is (not ignored-missing.ok))
+    (t.is (= ignored-missing.error "wrong number of query inputs: expected 2, got 1"))))
 
 (t.deftest datascript-query-input-binding-validation-subset
   (defer (free_all context.allocator))
@@ -866,6 +962,26 @@
                  left.db
                  "[:find ?e (pull $2 ?e [:name]) :in $1 $2 :where [$1 ?e :id 1]]"
                  ([]vev.Query-Input [])
+                 ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        source-not (vev.q-text-with-sources
+                     left.db
+                     "[:find ?e :in $1 $2 :where [$1 ?e :id] ($2 not [?e :id 1])]"
+                     ([]vev.Query-Input [])
+                     ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        source-not-join (vev.q-text-with-sources
+                          left.db
+                          "[:find ?e :in $1 $2 :where [$1 ?e :id] ($2 not-join [?e] [?e :name \"Petr\"])]"
+                          ([]vev.Query-Input [])
+                          ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        source-or (vev.q-text-with-sources
+                    left.db
+                    "[:find ?e :in $1 $2 :where [$1 ?e :id] ($2 or [?e :name \"Ivan\"] [?e :name \"Oleg\"])]"
+                    ([]vev.Query-Input [])
+                    ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))
+        source-or-join (vev.q-text-with-sources
+                         left.db
+                         "[:find ?e :in $1 $2 :where [$1 ?e :id] ($2 or-join [?e] [?e :name \"Ivan\"] [?e :name \"Oleg\"])]"
+                         ([]vev.Query-Input [])
                  ([]vev.DB-Source [(vev.db-source "$1" left.db) (vev.db-source "$2" right.db)]))]
     (t.is (= (count numeric.rows) 3))
     (t.is (= numeric.rows[0].values[0].int-value 1))
@@ -883,7 +999,19 @@
     (t.is (= map-sources.rows[2].values[1].int-value 3))
     (t.is (= map-sources.rows[2].values[2].int-value 3))
     (t.is (= (count pulled.rows) 1))
-    (t.is (= pulled.rows[0].pulls[0].attrs[0].v.text "Petr"))))
+    (t.is (= pulled.rows[0].pulls[0].attrs[0].v.text "Petr"))
+    (t.is (= (count source-not.rows) 2))
+    (t.is (= source-not.rows[0].values[0].entity 2))
+    (t.is (= source-not.rows[1].values[0].entity 3))
+    (t.is (= (count source-not-join.rows) 2))
+    (t.is (= source-not-join.rows[0].values[0].entity 2))
+    (t.is (= source-not-join.rows[1].values[0].entity 3))
+    (t.is (= (count source-or.rows) 2))
+    (t.is (= source-or.rows[0].values[0].entity 2))
+    (t.is (= source-or.rows[1].values[0].entity 3))
+    (t.is (= (count source-or-join.rows) 2))
+    (t.is (= source-or-join.rows[0].values[0].entity 2))
+    (t.is (= source-or-join.rows[1].values[0].entity 3))))
 
 (t.deftest datascript-parser-query-text-relation-source-inputs
   (defer (free_all context.allocator))
@@ -1060,6 +1188,22 @@
         pair-result (vev.q-text-relation-db
                       pairs
                       "[:find ?a :where [?a ?a]]")
+        explicit-primary (vev.q-text-relation-db-with-inputs
+                           pairs
+                           "[:find ?a :in $ ?wanted :where [?a ?wanted]]"
+                           ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 3))]))
+        explicit-primary-prepared (vev.q-prepared-relation-db-with-inputs
+                                    pairs
+                                    (vev.prepare-query-text "[:find ?a :in $ ?wanted :where [?a ?wanted]]")
+                                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 6))]))
+        missing-explicit-input (vev.q-text-relation-db-with-inputs
+                                 pairs
+                                 "[:find ?a :in $ ?wanted :where [?a ?wanted]]"
+                                 ([]vev.Query-Input []))
+        extra-implicit-input (vev.q-text-relation-db-with-inputs
+                               pairs
+                               "[:find ?a :where [?a ?a]]"
+                               ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 3))]))
         scalar-primary (vev.q-text-relation-db
                          scalars
                          "[:find ?a :where [?a]]")
@@ -1071,6 +1215,16 @@
     (t.is (= (count pair-result.rows) 2))
     (t.is (= pair-result.rows[0].values[0].int-value 3))
     (t.is (= pair-result.rows[1].values[0].int-value 6))
+    (t.is explicit-primary.ok)
+    (t.is (= (count explicit-primary.rows) 1))
+    (t.is (= explicit-primary.rows[0].values[0].int-value 3))
+    (t.is explicit-primary-prepared.ok)
+    (t.is (= (count explicit-primary-prepared.rows) 1))
+    (t.is (= explicit-primary-prepared.rows[0].values[0].int-value 6))
+    (t.is (not missing-explicit-input.ok))
+    (t.is (= missing-explicit-input.error "wrong number of query inputs: expected 2, got 1"))
+    (t.is (not extra-implicit-input.ok))
+    (t.is (= extra-implicit-input.error "wrong number of query inputs: expected 1, got 2"))
     (t.is scalar-primary.ok)
     (t.is (= (count scalar-primary.rows) 3))
     (t.is (= scalar-primary.rows[0].values[0].int-value 1))
@@ -1332,13 +1486,18 @@
         count-coll (vev.q-text-collection conn.db "[:find [(count ?name) ...] :where [?e :name ?name]]")
         [count-scalar count-scalar-ok] (vev.q-text-scalar conn.db "[:find (count ?name) . :where [?e :name ?name]]")
         top (vev.q-text conn.db "[:find (min 2 ?age) :where [?e :age ?age]]")
-        keys (vev.q-text-keys conn.db "[:find ?name ?age :keys name age :where [?e :name ?name] [?e :age ?age]]")
-        duplicate-return-map (vev.q-text conn.db "[:find ?name ?age :keys name age :strs n a :where [?e :name ?name] [?e :age ?age]]")
-        short-return-map (vev.q-text conn.db "[:find ?name ?age :keys name :where [?e :name ?name] [?e :age ?age]]")
-        collection-return-map (vev.q-text conn.db "[:find [?name ...] :keys name :where [?e :name ?name]]")
-        scalar-return-map (vev.q-text conn.db "[:find ?name . :keys name :where [?e :name ?name]]")
-        map-short-return-map (vev.q-text conn.db "{:find [?name ?age] :keys [name] :where [[?e :name ?name] [?e :age ?age]]}")
-        map-collection-return-map (vev.q-text conn.db "{:find [?name ...] :keys [name] :where [[?e :name ?name]]}")]
+          keys (vev.q-text-keys conn.db "[:find ?name ?age :keys name age :where [?e :name ?name] [?e :age ?age]]")
+          duplicate-return-map (vev.q-text conn.db "[:find ?name ?age :keys name age :strs n a :where [?e :name ?name] [?e :age ?age]]")
+          short-return-map (vev.q-text conn.db "[:find ?name ?age :keys name :where [?e :name ?name] [?e :age ?age]]")
+          short-strs-return-map (vev.q-text conn.db "[:find ?name ?age :strs name :where [?e :name ?name] [?e :age ?age]]")
+          long-syms-return-map (vev.q-text conn.db "[:find ?name ?age :syms name age extra :where [?e :name ?name] [?e :age ?age]]")
+          collection-return-map (vev.q-text conn.db "[:find [?name ...] :keys name :where [?e :name ?name]]")
+          scalar-return-map (vev.q-text conn.db "[:find ?name . :keys name :where [?e :name ?name]]")
+          map-short-return-map (vev.q-text conn.db "{:find [?name ?age] :keys [name] :where [[?e :name ?name] [?e :age ?age]]}")
+          map-strs-short-return-map (vev.q-text conn.db "{:find [?name ?age] :strs [name] :where [[?e :name ?name] [?e :age ?age]]}")
+          map-syms-long-return-map (vev.q-text conn.db "{:find [?name ?age] :syms [name age extra] :where [[?e :name ?name] [?e :age ?age]]}")
+          map-collection-return-map (vev.q-text conn.db "{:find [?name ...] :keys [name] :where [[?e :name ?name]]}")
+          map-scalar-return-map (vev.q-text conn.db "{:find [?name .] :keys [name] :where [[?e :name ?name]]}")]
     (t.is (= (count names) 3))
     (t.is (= names[0].text "Petr"))
     (t.is (= names[1].text "Ivan"))
@@ -1361,19 +1520,29 @@
     (t.is (= keys[0].items[0].key "name"))
     (t.is (= keys[0].items[0].value.text "Petr"))
     (t.is (= keys[0].items[1].key "age"))
-    (t.is (= keys[0].items[1].value.int-value 44))
-    (t.is (not duplicate-return-map.ok))
-    (t.is (= duplicate-return-map.error "only one of :keys/:strs/:syms may be present"))
-    (t.is (not short-return-map.ok))
-    (t.is (= short-return-map.error "return-map marker count must match :find count"))
-    (t.is (not collection-return-map.ok))
-    (t.is (= collection-return-map.error "return-map markers do not work with collection or scalar :find"))
-    (t.is (not scalar-return-map.ok))
-    (t.is (= scalar-return-map.error "return-map markers do not work with collection or scalar :find"))
-    (t.is (not map-short-return-map.ok))
-    (t.is (= map-short-return-map.error "return-map marker count must match :find count"))
-    (t.is (not map-collection-return-map.ok))
-    (t.is (= map-collection-return-map.error "return-map markers do not work with collection or scalar :find"))))
+      (t.is (= keys[0].items[1].value.int-value 44))
+      (t.is (not duplicate-return-map.ok))
+      (t.is (= duplicate-return-map.error "Only one of :keys/:syms/:strs must be present"))
+      (t.is (not short-return-map.ok))
+      (t.is (= short-return-map.error "Count of :keys must match count of :find"))
+      (t.is (not short-strs-return-map.ok))
+      (t.is (= short-strs-return-map.error "Count of :strs must match count of :find"))
+      (t.is (not long-syms-return-map.ok))
+      (t.is (= long-syms-return-map.error "Count of :syms must match count of :find"))
+      (t.is (not collection-return-map.ok))
+      (t.is (= collection-return-map.error ":keys does not work with collection :find"))
+      (t.is (not scalar-return-map.ok))
+      (t.is (= scalar-return-map.error ":keys does not work with single-scalar :find"))
+      (t.is (not map-short-return-map.ok))
+      (t.is (= map-short-return-map.error "Count of :keys must match count of :find"))
+      (t.is (not map-strs-short-return-map.ok))
+      (t.is (= map-strs-short-return-map.error "Count of :strs must match count of :find"))
+      (t.is (not map-syms-long-return-map.ok))
+      (t.is (= map-syms-long-return-map.error "Count of :syms must match count of :find"))
+      (t.is (not map-collection-return-map.ok))
+      (t.is (= map-collection-return-map.error ":keys does not work with collection :find"))
+      (t.is (not map-scalar-return-map.ok))
+      (t.is (= map-scalar-return-map.error ":keys does not work with single-scalar :find"))))
 
 (t.deftest datascript-parser-tx-text-subset
   (defer (free_all context.allocator))
@@ -3977,6 +4146,45 @@
     (t.is (not unknown.ok))
     (t.is (= unknown.error "unknown query predicate: adult-age?"))))
 
+(t.deftest datascript-query-native-callback-functions-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        registry ([]vev.Native-Query-Fn
+                   [(vev.query-predicate-fn "adult-age?" native-adult-age?)
+                    (vev.query-value-fn "even-identity" native-even-identity)
+                    (vev.query-value-fn "person-label" native-person-label)])
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ivan" :age 15}
+             {:db/id 2 :name "Petr" :age 22}
+             {:db/id 3 :name "Oleg" :age 37}])
+        predicate (vev.q-text-with-fns
+                    conn.db
+                    "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]"
+                    registry)
+        fn-filter (vev.q-text-with-fns
+                    conn.db
+                    "[:find ?age ?same :where [?e :age ?age] [(even-identity ?age) ?same]]"
+                    registry)
+        function (vev.q-text-with-fns
+                   conn.db
+                   "[:find ?name ?label :where [?e :name ?name] [(person-label \"person\" ?name) ?label]]"
+                   registry)
+        prepared (vev.prepare-query-text
+                   "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]")
+        prepared-result (vev.q-prepared-with-fns conn.db prepared registry)]
+    (t.is (= (count predicate.rows) 2))
+    (t.is (= predicate.rows[0].values[0].text "Petr"))
+    (t.is (= predicate.rows[1].values[0].text "Oleg"))
+    (t.is (= (count fn-filter.rows) 1))
+    (t.is (= fn-filter.rows[0].values[0].int-value 22))
+    (t.is (= fn-filter.rows[0].values[1].int-value 22))
+    (t.is (= (count function.rows) 3))
+    (t.is (= function.rows[0].values[1].text ":person/Ivan"))
+    (t.is (= function.rows[2].values[1].text ":person/Oleg"))
+    (t.is (= (count prepared-result.rows) 2))
+    (t.is (= prepared-result.rows[1].values[0].text "Oleg"))))
+
 (t.deftest datascript-query-built-in-regex-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -6045,7 +6253,32 @@
                                           (vev.value-keyword ":blue") (vev.value-int 7)
                                           (vev.value-keyword ":blue") (vev.value-int 8)])
                            2)
-                         (vev.query-input-scalar (vev.value-string "sort-reverse"))]))]
+                         (vev.query-input-scalar (vev.value-string "sort-reverse"))]))
+        callback-registry ([]vev.Native-Query-Fn
+                            [(vev.query-aggregate-fn "native-sort-reverse" native-sort-reverse)])
+        callback-inputs ([]vev.Query-Input
+                          [(vev.query-input-relation
+                             ([]vev.Value [(vev.value-keyword ":red") (vev.value-int 1)
+                                            (vev.value-keyword ":red") (vev.value-int 2)
+                                            (vev.value-keyword ":red") (vev.value-int 3)
+                                            (vev.value-keyword ":red") (vev.value-int 4)
+                                            (vev.value-keyword ":red") (vev.value-int 5)
+                                            (vev.value-keyword ":blue") (vev.value-int 7)
+                                            (vev.value-keyword ":blue") (vev.value-int 8)])
+                             2)
+                           (vev.query-input-scalar (vev.value-string "native-sort-reverse"))])
+        custom-callback-text (vev.q-text-with-inputs-and-fns
+                               conn.db
+                               "[:find ?color (aggregate ?agg ?x) :in [[?color ?x]] ?agg]"
+                               callback-inputs
+                               callback-registry)
+        prepared-custom (vev.prepare-query-text
+                          "[:find ?color (aggregate ?agg ?x) :in [[?color ?x]] ?agg]")
+        custom-callback-prepared (vev.q-prepared-with-inputs-and-fns
+                                   conn.db
+                                   prepared-custom
+                                   callback-inputs
+                                   callback-registry)]
     (t.is (= (count with-result.rows) 4))
     (t.is (= with-result.rows[0].values[0].int-value 3))
     (t.is (= with-result.rows[1].values[0].int-value 1))
@@ -6074,7 +6307,14 @@
     (t.is (= custom-result.rows[1].values[1].items[1].int-value 7))
     (t.is (= (count custom-text.rows) 2))
     (t.is (= custom-text.rows[0].values[1].items[0].int-value 5))
-    (t.is (= custom-text.rows[1].values[1].items[0].int-value 8))))
+    (t.is (= custom-text.rows[1].values[1].items[0].int-value 8))
+    (t.is (= (count custom-callback-text.rows) 2))
+    (t.is (= custom-callback-text.rows[0].values[1].items[0].int-value 5))
+    (t.is (= custom-callback-text.rows[0].values[1].items[4].int-value 1))
+    (t.is (= custom-callback-text.rows[1].values[1].items[0].int-value 8))
+    (t.is (= (count custom-callback-prepared.rows) 2))
+    (t.is (= custom-callback-prepared.rows[0].values[1].items[0].int-value 5))
+    (t.is (= custom-callback-prepared.rows[1].values[1].items[0].int-value 8))))
 
 (t.deftest datascript-query-keyword-min-max-aggregate-subset
   (defer (free_all context.allocator))
@@ -7163,6 +7403,10 @@
     (t.is (= (count schema-view[0].tuple-attrs) 2))
     (t.is (= schema-view[0].tuple-attrs[0] ":a"))
     (t.is (= schema-view[0].tuple-attrs[1] ":b"))
+    (t.is schema-view[0].has-value-type)
+    (t.is (= schema-view[0].value-type ":db.type/tuple"))
+    (t.is schema-view[0].has-cardinality)
+    (t.is (= schema-view[0].cardinality ":db.cardinality/one"))
     (t.is after-a-ok)
     (t.is (= after-a.kind .Vector))
     (t.is (= after-a.items[0].text "A"))
@@ -7992,6 +8236,34 @@
         report (vev.transact-tx-data (addr conn) (slice second-schema 0))]
     (t.is (not report.ok))
     (t.is (= report.error "invalid tuple schema"))))
+
+(t.deftest datascript-tuple-attrs-validates-final-schema-subset
+  (defer (free_all context.allocator))
+  (let [target-many-conn (vev.create-conn)
+        target-many (vev.transact
+                      (addr target-many-conn)
+                      [[:db/add 100 :db/ident :a-and-b]
+                       [:db/add 100 :db/tupleAttrs [:a :b]]
+                       [:db/add 100 :db/cardinality :db.cardinality/many]])
+        component-many-conn (vev.create-conn)
+        component-many (vev.transact
+                         (addr component-many-conn)
+                         [[:db/add 100 :db/ident :a-and-b]
+                          [:db/add 100 :db/tupleAttrs [:a :b]]
+                          [:db/add 101 :db/ident :a]
+                          [:db/add 101 :db/cardinality :db.cardinality/many]])
+        wrong-type-conn (vev.create-conn)
+        wrong-type (vev.transact
+                     (addr wrong-type-conn)
+                     [[:db/add 100 :db/ident :a-and-b]
+                      [:db/add 100 :db/tupleAttrs [:a :b]]
+                      [:db/add 100 :db/valueType :db.type/string]])]
+    (t.is (not target-many.ok))
+    (t.is (= target-many.error "invalid tuple schema"))
+    (t.is (not component-many.ok))
+    (t.is (= component-many.error "invalid tuple schema"))
+    (t.is (not wrong-type.ok))
+    (t.is (= wrong-type.error "invalid tuple schema"))))
 
 (t.deftest datascript-upsert-unique-identity-subset
   (defer (free_all context.allocator))
@@ -10013,7 +10285,16 @@
                    1)
         forward-ref (vev.pull conn.db [{[:father :xform name] [:name]}] 2)
         reverse-ref (vev.pull conn.db [{[:_father :xform name] [:name]}] 1)
-        text (vev.pull-text conn.db "[[:name :xform vector] {[:father :xform name] [:name]}]" 2)]
+        text (vev.pull-text conn.db "[[:name :xform vector] {[:father :xform name] [:name]}]" 2)
+        registry ([]vev.Native-Query-Fn [(vev.pull-xform-fn "tag-value" native-tag-value)])
+        callback-text (vev.pull-text-with-fns conn.db "[[:name :xform tag-value]]" 1 registry)
+        prepared (vev.prepare-pull-pattern-text "[[:name :xform tag-value]]")
+        callback-prepared (vev.pull-prepared-with-fns conn.db prepared 2 registry)
+        callback-many (vev.pull-many-text-with-fns conn.db "[[:name :xform tag-value]]" ([]u64 [1 2]) registry)
+        callback-query (vev.q-text-with-fns
+                         conn.db
+                         "[:find (pull ?e [[:name :xform tag-value]]) :where [?e :name \"Petr\"]]"
+                         registry)]
     (t.is (= scalar.attrs[0].v.kind .Vector))
     (t.is (= scalar.attrs[0].v.items[0].text "Petr"))
     (t.is (= scalar.attrs[1].v.kind .Vector))
@@ -10027,7 +10308,14 @@
     (t.is (= (count reverse-ref.attrs[0].attrs) 0))
     (t.is (= text.attrs[0].v.kind .Vector))
     (t.is (= text.attrs[0].v.items[0].text "David"))
-    (t.is (= text.attrs[1].v.text "Petr"))))
+    (t.is (= text.attrs[1].v.text "Petr"))
+    (t.is (= callback-text.attrs[0].v.text "tag:Petr"))
+    (t.is (= callback-prepared.attrs[0].v.text "tag:David"))
+    (t.is (= (count callback-many) 2))
+    (t.is (= callback-many[0].attrs[0].v.text "tag:Petr"))
+    (t.is (= callback-many[1].attrs[0].v.text "tag:David"))
+    (t.is (= (count callback-query.rows) 1))
+    (t.is (= callback-query.rows[0].pulls[0].attrs[0].v.text "tag:Petr"))))
 
 (t.deftest pull-supports-as-attr-option
   (defer (free_all context.allocator))
