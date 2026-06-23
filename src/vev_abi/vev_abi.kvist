@@ -1,0 +1,187 @@
+(package vev-abi)
+
+(import kvist-slice "core:slice")
+(import runtime "base:runtime")
+(import strings "core:strings")
+(import vev "../vev")
+
+(odin "
+ABI_Conn :: struct {
+    conn: vev__Conn,
+    tx_sources: [dynamic]string,
+}
+
+ABI_Prepared_Query :: struct {
+    source: string,
+    query: vev__Prepared_Query,
+}
+
+abi_alloc_conn :: proc() -> rawptr {
+    wrapper := new(ABI_Conn)
+    wrapper.tx_sources = make([dynamic]string)
+    return rawptr(wrapper)
+}
+
+abi_conn_ptr :: proc(conn: rawptr) -> ^vev__Conn {
+    return &((^ABI_Conn)(conn))^.conn
+}
+
+abi_conn_store_tx_source :: proc(conn: rawptr, source: string) {
+    append(&((^ABI_Conn)(conn))^.tx_sources, source)
+}
+
+abi_free_conn :: proc(conn: rawptr) {
+    wrapper := (^ABI_Conn)(conn)
+    for source in wrapper.tx_sources {
+        delete(source)
+    }
+    delete(wrapper.tx_sources)
+    free(wrapper)
+}
+
+abi_alloc_prepared_query :: proc(source: string) -> rawptr {
+    wrapper := new(ABI_Prepared_Query)
+    wrapper.source = source
+    return rawptr(wrapper)
+}
+
+abi_prepared_query_ptr :: proc(query: rawptr) -> ^vev__Prepared_Query {
+    return &((^ABI_Prepared_Query)(query))^.query
+}
+
+abi_free_prepared_query :: proc(query: rawptr) {
+    wrapper := (^ABI_Prepared_Query)(query)
+    delete(wrapper.source)
+    free(wrapper)
+}
+")
+
+(def Vev-Conn (distinct rawptr))
+(def Vev-Prepared-Query (distinct rawptr))
+
+(defn- conn-ptr [conn: Vev-Conn] -> ^vev.Conn
+  (abi-conn-ptr (rawptr conn)))
+
+(defn- prepared-query-ptr [query: Vev-Prepared-Query] -> ^vev.Prepared-Query
+  (abi-prepared-query-ptr (rawptr query)))
+
+(defn- text-from-c [text: cstring] -> string
+  (let [[out err] (strings.clone_from_cstring text)]
+    (if (= err nil)
+      out
+      "")))
+
+(defn- c-string-owned [text: string] -> cstring
+  (let [[out err] (strings.clone_to_cstring text)]
+    (if (= err nil)
+      out
+      (cstring ""))))
+
+(defn- delete-query-shallow [query: vev.Query]
+  (delete query.find)
+  (delete query.with)
+  (delete query.inputs)
+  (delete query.collection-inputs)
+  (delete query.tuple-inputs)
+  (delete query.relation-inputs)
+  (delete query.input-specs)
+  (delete query.clauses)
+  (delete query.predicates)
+  (delete query.function-clauses)
+  (delete query.rules)
+  (delete query.rule-calls)
+  (delete query.get-elses)
+  (delete query.get-somes)
+  (delete query.grounds)
+  (delete query.not-groups)
+  (delete query.or-groups)
+  (delete query.where-steps)
+  (delete query.pulls)
+  (delete query.aggregates))
+
+@export
+(defn vev_version :abi "c" [] -> cstring
+  (odin "context = runtime.default_context()")
+  (cstring "vev-abi/0.1"))
+
+@export
+(defn vev_conn_open_memory :abi "c" [] -> Vev-Conn
+  (odin "context = runtime.default_context()")
+  (let [conn (abi-alloc-conn)
+        ptr (conn-ptr (Vev-Conn conn))]
+    (set! ptr^ (vev.create-conn))
+    (Vev-Conn conn)))
+
+@export
+(defn vev_conn_close :abi "c" [conn: Vev-Conn]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr conn) nil)
+    (return))
+  (let [ptr (conn-ptr conn)]
+    (vev.delete-owned-db ptr^.db)
+    (delete ptr^.listeners)
+    (abi-free-conn (rawptr conn))))
+
+@export
+(defn vev_string_free :abi "c" [text: cstring]
+  (odin "context = runtime.default_context()")
+  (when (= text nil)
+    (return))
+  (delete text))
+
+@export
+(defn vev_transact_edn :abi "c" [conn: Vev-Conn, tx-text: cstring] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= tx-text nil))
+    (return (c-string-owned "[:vev/error \"null conn or tx\"]")))
+  (let [tx (text-from-c tx-text)
+        value (vev.transact-text-value (conn-ptr conn) tx)
+        text (vev.value-serializable-text value)
+        out (c-string-owned text)]
+    (abi-conn-store-tx-source (rawptr conn) tx)
+    out))
+
+@export
+(defn vev_query_edn :abi "c" [conn: Vev-Conn, query-text: cstring] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= query-text nil))
+    (return (c-string-owned "[:vev/error \"null conn or query\"]")))
+  (let [query (text-from-c query-text)
+        ptr (conn-ptr conn)
+        value (vev.q-text-value ptr^.db query)
+        text (vev.value-serializable-text value)
+        out (c-string-owned text)]
+    (delete query)
+    out))
+
+@export
+(defn vev_prepare_query_edn :abi "c" [query-text: cstring] -> Vev-Prepared-Query
+  (odin "context = runtime.default_context()")
+  (when (= query-text nil)
+    (return (Vev-Prepared-Query nil)))
+  (let [query (text-from-c query-text)
+        prepared (abi-alloc-prepared-query query)
+        ptr (prepared-query-ptr (Vev-Prepared-Query prepared))]
+    (set! ptr^ (vev.prepare-query-text query))
+    (Vev-Prepared-Query prepared)))
+
+@export
+(defn vev_prepared_query_free :abi "c" [query: Vev-Prepared-Query]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr query) nil)
+    (return))
+  (let [ptr (prepared-query-ptr query)]
+    (delete-query-shallow ptr^.query)
+    (abi-free-prepared-query (rawptr query))))
+
+@export
+(defn vev_query_prepared :abi "c" [conn: Vev-Conn, query: Vev-Prepared-Query] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= (rawptr query) nil))
+    (return (c-string-owned "[:vev/error \"null conn or prepared query\"]")))
+  (let [conn-ptr-value (conn-ptr conn)
+        query-ptr-value (prepared-query-ptr query)
+        value (vev.q-prepared-value conn-ptr-value^.db query-ptr-value^)
+        text (vev.value-serializable-text value)
+        out (c-string-owned text)]
+    out))

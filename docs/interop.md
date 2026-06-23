@@ -124,6 +124,18 @@ Avoid exposing:
 - backend-specific details
 - pointer ownership rules that leak deep engine internals
 
+An initial implementation exists in `src/vev_abi` with the public header in
+`include/vev.h`. It currently proves the basic foreign-consumer path:
+
+- open an in-memory connection
+- transact EDN text
+- query EDN text
+- prepare a query
+- run a prepared query
+- free returned strings and handles
+
+See `docs/c-abi.md` and `examples/c/smoke.c`.
+
 ## Clojure/JVM future
 
 If future Clojure consumption matters, the easiest path is likely:
