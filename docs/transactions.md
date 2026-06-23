@@ -168,9 +168,10 @@ Lookup refs in list-form entity positions resolve through `:db/unique` attrs.
 Missing lookup refs fail the report with `ok=false`.
 
 The reserved tempids `:db/current-tx`, `"datomic.tx"`, and `"datascript.tx"`
-name the current transaction entity. Facts targeting that entity are written
-as datoms and are also mirrored into `tx-meta` for convenient transaction
-report inspection.
+name the current transaction entity and resolve to the report `tx` id, not to
+a newly allocated entity id. Facts targeting that entity are written as datoms
+and are also mirrored into `tx-meta` for convenient transaction report
+inspection.
 
 In the embedded single-process case, this is usually enough:
 

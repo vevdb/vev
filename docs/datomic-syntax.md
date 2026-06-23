@@ -171,8 +171,10 @@ Example:
 This should be the default transaction-context model for Vev instead of
 inventing a different metadata syntax.
 
-Current Vev supports this shape: facts targeting `"datomic.tx"` are returned
-as `tx-meta` entries instead of ordinary datoms.
+Current Vev supports this shape: `"datomic.tx"`, `"datascript.tx"`, and
+`:db/current-tx` resolve to the report transaction id. Facts targeting that
+entity are ordinary datoms and are also mirrored into `tx-meta` entries for
+report inspection.
 
 ## Query data
 

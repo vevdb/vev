@@ -2188,13 +2188,13 @@
     (return false "bad lookup attribute"))
   (return true ""))
 
-(defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
+(defn resolve-tx-data-for-tx [db: DB, tx-data: []Tx-Data, tx: u64] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
         pending (arr.into [dynamic]Tx-Data tx-data)
         next-e (next-entity-id (slice db.datoms 0))
-        current-tx-e next-e
+        current-tx-e tx
         current-tx-reserved false
         data-index 0]
     (defer (delete pending))
@@ -2221,8 +2221,6 @@
           (if (current-tx-tempid? data.tempid)
             (do
               (when (not current-tx-reserved)
-                (set! current-tx-e next-e)
-                (set! next-e (+ next-e 1))
                 (set! current-tx-reserved true))
               (set! e current-tx-e)
               (ensure-tempid! (addr resolved-tempids) data.tempid current-tx-e)
@@ -2408,12 +2406,11 @@
           (when skip-data
             (continue))
           (when (current-tx-value? v)
-            (when (not current-tx-reserved)
-              (set! current-tx-e next-e)
-              (set! next-e (+ next-e 1))
-              (set! current-tx-reserved true))
-            (set! v (value-entity current-tx-e))
-            (ensure-tempid! (addr resolved-tempids) v.text current-tx-e))
+            (let [current-tx-tempid v.text]
+              (when (not current-tx-reserved)
+                (set! current-tx-reserved true))
+              (set! v (value-entity current-tx-e))
+              (ensure-tempid! (addr resolved-tempids) current-tx-tempid current-tx-e)))
           (when (or data.has-value-tempid
                     (ref-string-value? current-db data.a v)
                     (ref-negative-int-value? current-db data.a v))
@@ -2423,8 +2420,6 @@
               (if (current-tx-tempid? value-tempid)
                 (do
                   (when (not current-tx-reserved)
-                    (set! current-tx-e next-e)
-                    (set! next-e (+ next-e 1))
                     (set! current-tx-reserved true))
                   (set! v (value-entity current-tx-e))
                   (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
@@ -2816,7 +2811,7 @@
 
 (defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
-        resolved (resolve-tx-data before tx-data)]
+        resolved (resolve-tx-data-for-tx before tx-data conn^.next-tx)]
     (when (not resolved.ok)
       (delete resolved.ops)
       (delete resolved.tx-meta)
@@ -2853,6 +2848,53 @@
       (arr.push! out datom))
     (build-db out)))
 
+(defn next-tx-after-datoms [current-next-tx: u64, datoms: []Datom] -> u64
+  (let [candidate (+ (max-tx datoms) 1)]
+    (if (> candidate current-next-tx)
+      candidate
+      current-next-tx)))
+
+(defn report-tx-for-datoms [fallback: u64, datoms: []Datom] -> u64
+  (let [tx (max-tx datoms)]
+    (if (> tx 0) tx fallback)))
+
+(defn with-datoms [db: DB, datoms: []Datom] -> Tx-Report
+  (let [before (build-db (clone-datoms db.datoms))
+        out (clone-datoms db.datoms)]
+    (for [datom datoms]
+      (arr.push! out datom))
+    (let [after (build-db out)
+          tx-data (arr.into [dynamic]Datom datoms)]
+      (Tx-Report {ok: true
+                  error: ""
+                  db-before: before
+                  db-after: after
+                  tx-data: tx-data
+                  tx: (report-tx-for-datoms (+ (max-tx (slice db.datoms 0)) 1) datoms)
+                  tx-meta: (make [dynamic]Tx-Meta)
+                  tempids: (make [dynamic]Tempid)}))))
+
+(defn transact-datoms [conn: ^Conn, datoms: []Datom] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))
+        out (clone-datoms conn^.db.datoms)]
+    (for [datom datoms]
+      (arr.push! out datom))
+    (let [after (build-db out)
+          tx-data (arr.into [dynamic]Datom datoms)
+          tx (report-tx-for-datoms conn^.next-tx datoms)]
+      (set! conn^.db after)
+      (set! conn^.next-tx (next-tx-after-datoms conn^.next-tx (slice conn^.db.datoms 0)))
+      (let [report (Tx-Report {ok: true
+                               error: ""
+                               db-before: before
+                               db-after: after
+                               tx-data: tx-data
+                               tx: tx
+                               tx-meta: (make [dynamic]Tx-Meta)
+                               tempids: (make [dynamic]Tempid)})]
+        (notify-listeners! conn report)
+        report))))
+
 (defn delete-owned-db [db: DB]
   (delete db.current)
   (delete db.eavt)
@@ -2878,11 +2920,11 @@
   (for [tempid resolved.tempids]
     (arr.push! tempids^ tempid)))
 
-(defn resolve-tx-segment! [base: DB, ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, segment: ^[dynamic]Tx-Data] -> [ok: bool, error: string]
+(defn resolve-tx-segment! [base: DB, tx: u64, ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, segment: ^[dynamic]Tx-Data] -> [ok: bool, error: string]
   (when (= (count segment^) 0)
     (return true ""))
   (let [current-db (db-with-resolved-ops base (slice ops^ 0))
-        resolved (resolve-tx-data current-db (slice segment^ 0))]
+        resolved (resolve-tx-data-for-tx current-db (slice segment^ 0) tx)]
     (delete-owned-db current-db)
     (when (not resolved.ok)
       (delete resolved.ops)
@@ -2920,6 +2962,7 @@
 
 (defn transact-tx-data-with-string-fns [conn: ^Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
+        tx conn^.next-tx
         ops (make [dynamic]Tx-Op)
         tx-meta (make [dynamic]Tx-Meta)
         tempids (make [dynamic]Tempid)
@@ -2927,7 +2970,7 @@
     (for [data tx-data]
       (if (= data.op ":db.fn/call-ident")
         (do
-          (let [[segment-ok segment-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+          (let [[segment-ok segment-error] (resolve-tx-segment! before tx (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
             (when (not segment-ok)
               (return (failed-registered-tx before ops tx-meta tempids segment segment-error))))
           (let [current-db (db-with-resolved-ops before (slice ops 0))
@@ -2944,12 +2987,12 @@
               (when (not result.ok)
                 (delete result.tx-data)
                 (return (failed-registered-tx before ops tx-meta tempids segment result.error)))
-              (let [[result-ok result-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr result.tx-data))]
+              (let [[result-ok result-error] (resolve-tx-segment! before tx (addr ops) (addr tx-meta) (addr tempids) (addr result.tx-data))]
                 (delete result.tx-data)
                 (when (not result-ok)
                   (return (failed-registered-tx before ops tx-meta tempids segment result-error)))))))
         (arr.push! segment data)))
-    (let [[tail-ok tail-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+    (let [[tail-ok tail-error] (resolve-tx-segment! before tx (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
       (when (not tail-ok)
         (return (failed-registered-tx before ops tx-meta tempids segment tail-error))))
     (delete segment)
@@ -5451,6 +5494,83 @@
         (arr.push! out row.pulls[0])))
     out))
 
+(defn pull-render-attr-key [pulled: Pull-Attr] -> Value
+  (case pulled.key-kind
+    .Keyword (value-keyword pulled.a)
+    .Symbol (value-symbol pulled.a)
+    .String (value-string pulled.a)
+    :else (value-keyword pulled.a)))
+
+(defn pull-render-ref-id-map [entity: u64] -> Value
+  (value-map ([]Value [(value-keyword ":db/id") (value-entity entity)])))
+
+(defn pull-render-attr-value [db: DB, pulled: Pull-Attr] -> Value
+  (if (> (count pulled.attrs) 0)
+    (pull-render-attrs-map db (slice pulled.attrs 0))
+    (if (and (= pulled.v.kind .Entity)
+             (not (= pulled.a ":db/id")))
+      (pull-render-ref-id-map pulled.v.entity)
+      pulled.v)))
+
+(defn pull-render-attr-is-many? [db: DB, pulled: Pull-Attr, count-for-attr: int] -> bool
+  (when (> count-for-attr 1)
+    (return true))
+  (when (reverse-attr? pulled.a)
+    (let [forward (forward-attr-for-reverse pulled.a) :defer]
+      (return (not (schema-component? db forward)))))
+  (schema-cardinality-many? db pulled.a))
+
+(defn pull-render-append-key-value! [items: ^[dynamic]Value, key: string, value: Value]
+  (arr.push! items^ (value-keyword key))
+  (arr.push! items^ value))
+
+(defn pull-render-append-attr-value! [items: ^[dynamic]Value, pulled: Pull-Attr, value: Value]
+  (arr.push! items^ (pull-render-attr-key pulled))
+  (arr.push! items^ value))
+
+(defn pull-render-group-values [db: DB, attrs: []Pull-Attr, attr-name: string] -> [dynamic]Value
+  (let [values (make [dynamic]Value)]
+    (for [pulled attrs]
+      (when (= pulled.a attr-name)
+        (arr.push! values (pull-render-attr-value db pulled))))
+    values))
+
+(defn pull-render-attrs-map [db: DB, attrs: []Pull-Attr] -> Value
+  (let [items (make [dynamic]Value)
+        i 0]
+    (while (< i (count attrs))
+      (let [pulled attrs[i]
+            seen false
+            key (pull-render-attr-key pulled)
+            j 0]
+        (while (< j (count items))
+          (when (and (= (% j 2) 0)
+                     (value-equal? items[j] key))
+            (set! seen true))
+          (set! j (+ j 1)))
+        (when (not seen)
+          (let [values (pull-render-group-values db attrs pulled.a)
+                rendered (if (pull-render-attr-is-many? db pulled (count values))
+                           (value-vector (slice values 0))
+                           values[0])]
+            (pull-render-append-attr-value! (addr items) pulled rendered)
+            (delete values))))
+      (set! i (+ i 1)))
+    (let [result (value-map (slice items 0))]
+      (delete items)
+      result)))
+
+(defn pull-result-value [db: DB, result: Pull-Result] -> Value
+  (if (= (count result.attrs) 0)
+    (value-nil)
+    (pull-render-attrs-map db (slice result.attrs 0))))
+
+(defn pull-many-result-values [db: DB, results: []Pull-Result] -> [dynamic]Value
+  (let [out (make [dynamic]Value 0 (count results))]
+    (for [result results]
+      (arr.push! out (pull-result-value db result)))
+    out))
+
 (defn result-row-tuple [result: Result-Set] -> Result-Row
   (if (> (count result.rows) 0)
     (let [values (arr.into [dynamic]Value (slice result.rows[0].values 0))
@@ -5630,9 +5750,7 @@
                 (arr.push! out^
                   (pull-spec-transform-attr-with-fns
                     spec
-                    (Pull-Attr {a: (pull-output-attr spec)
-                                v: (value-entity datom.e)
-                                attrs: children})
+                    (pull-attr-from-spec spec (value-entity datom.e) children)
                     registry))
                 (set! found true)
                 (set! seen (+ seen 1))
@@ -5690,6 +5808,15 @@
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has-alias spec.alias spec.a))
 
+(defn pull-output-key-kind [spec: Pull-Spec] -> Key-Kind
+  (if spec.has-alias spec.alias-kind .Keyword))
+
+(defn pull-attr-from-spec [spec: Pull-Spec, value: Value, attrs: [dynamic]Pull-Attr] -> Pull-Attr
+  (Pull-Attr {a: (pull-output-attr spec)
+              key-kind: (pull-output-key-kind spec)
+              v: value
+              attrs: attrs}))
+
 (defn pull-next-recursion-depth [depth: int] -> int
   (- depth 1))
 
@@ -5705,6 +5832,7 @@
                 default-value: spec.default-value
                 has-alias: spec.has-alias
                 alias: spec.alias
+                alias-kind: spec.alias-kind
                 has-xform: spec.has-xform
                 xform: spec.xform
                 has-recursion: true
@@ -5728,6 +5856,7 @@
     (return attr))
   (when (= spec.xform "vector")
     (return (Pull-Attr {a: attr.a
+                        key-kind: attr.key-kind
                         v: (value-vector ([]Value [attr.v]))
                         attrs: (make [dynamic]Pull-Attr)})))
   (when (= spec.xform "name")
@@ -5735,6 +5864,7 @@
       (when name-ok
         (delete attr.attrs)
         (return (Pull-Attr {a: attr.a
+                            key-kind: attr.key-kind
                             v: name
                             attrs: (make [dynamic]Pull-Attr)})))))
   (let [[index found] (query-fn-index registry spec.xform)]
@@ -5745,6 +5875,7 @@
             (when result.ok
               (delete attr.attrs)
               (return (Pull-Attr {a: attr.a
+                                  key-kind: attr.key-kind
                                   v: result.value
                                   attrs: (make [dynamic]Pull-Attr)}))))))))
   attr)
@@ -5754,14 +5885,10 @@
 
 (defn pull-spec-missing-attr-with-fns [spec: Pull-Spec, registry: []Native-Query-Fn] -> Pull-Attr
   (if spec.has-default
-    (Pull-Attr {a: (pull-output-attr spec)
-                v: spec.default-value
-                attrs: (make [dynamic]Pull-Attr)})
+    (pull-attr-from-spec spec spec.default-value (make [dynamic]Pull-Attr))
     (pull-spec-transform-attr-with-fns
       spec
-      (Pull-Attr {a: (pull-output-attr spec)
-                  v: (value-nil)
-                  attrs: (make [dynamic]Pull-Attr)})
+      (pull-attr-from-spec spec (value-nil) (make [dynamic]Pull-Attr))
       registry)))
 
 (defn pull-spec-missing-attr [spec: Pull-Spec] -> Pull-Attr
@@ -5792,9 +5919,7 @@
                 (arr.push! out^
                   (pull-spec-transform-attr-with-fns
                     spec
-                    (Pull-Attr {a: (pull-output-attr spec)
-                                v: datom.v
-                                attrs: children})
+                    (pull-attr-from-spec spec datom.v children)
                     registry))
                 (set! found true)
                 (set! seen (+ seen 1))
@@ -5817,9 +5942,7 @@
       (arr.push! out^
         (pull-spec-transform-attr-with-fns
           spec
-          (Pull-Attr {a: (pull-output-attr spec)
-                      v: (value-entity entity)
-                      attrs: (make [dynamic]Pull-Attr)})
+          (pull-attr-from-spec spec (value-entity entity) (make [dynamic]Pull-Attr))
           registry)))
     (return))
   (when (reverse-attr? spec.a)
@@ -6073,6 +6196,9 @@
       values[0]
       (value-nil))))
 
+(defn entity-get-kw [entity: Entity, attr: keyword] -> Value
+  (entity-get entity (keyword-text attr)))
+
 (defn entity-contains? [entity: Entity, attr: string] -> bool
   (when (= attr ":db/id")
     (return entity.found))
@@ -6098,6 +6224,9 @@
       refs[0]
       (Entity {db: entity.db e: 0 found: false}))))
 
+(defn entity-ref-kw [entity: Entity, attr: keyword] -> Entity
+  (entity-ref entity (keyword-text attr)))
+
 (defn touch [entity: Entity] -> Pull-Result
   (if entity.found
     (pull-pattern-spec entity.db entity.e ([]Pull-Spec [(flat-pull-spec "*")]))
@@ -6111,9 +6240,18 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])}))
+
+(defn flat-pull-spec-kw [attr: keyword] -> Pull-Spec
+  (flat-pull-spec (keyword-text attr)))
+
+(defn pull-alias-key-kind [alias: string] -> Key-Kind
+  (if (strings.has_prefix alias ":")
+    .Keyword
+    .String))
 
 (defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
   (Pull-Spec {a: attr
@@ -6123,9 +6261,13 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: pattern}))
+
+(defn pull-spec-kw [attr: keyword, pattern: []Pull-Spec] -> Pull-Spec
+  (pull-spec (keyword-text attr) pattern))
 
 (defn query-input-pull-pattern [pattern: []Pull-Spec] -> Query-Input
   (Query-Input {kind: .PullPattern pattern: pattern}))
@@ -6138,11 +6280,15 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])
               has-recursion: true
               recursion-depth: depth}))
+
+(defn pull-spec-recursion-kw [attr: keyword, depth: int] -> Pull-Spec
+  (pull-spec-recursion (keyword-text attr) depth))
 
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
   (Pull-Spec {a: attr
@@ -6152,9 +6298,13 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: pattern}))
+
+(defn pull-spec-limit-kw [attr: keyword, pattern: []Pull-Spec, limit: int] -> Pull-Spec
+  (pull-spec-limit (keyword-text attr) pattern limit))
 
 (defn pull-spec-limit-as [attr: string, pattern: []Pull-Spec, limit: int, alias: string] -> Pull-Spec
   (Pull-Spec {a: attr
@@ -6164,6 +6314,7 @@
               default-value: (Value {})
               has-alias: true
               alias: alias
+              alias-kind: (pull-alias-key-kind alias)
               has-xform: false
               xform: ""
               pattern: pattern}))
@@ -6176,9 +6327,13 @@
               default-value: default-value
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])}))
+
+(defn pull-spec-default-kw [attr: keyword, default-value: Value] -> Pull-Spec
+  (pull-spec-default (keyword-text attr) default-value))
 
 (defn pull-spec-as [attr: string, alias: string] -> Pull-Spec
   (Pull-Spec {a: attr
@@ -6188,6 +6343,7 @@
               default-value: (Value {})
               has-alias: true
               alias: alias
+              alias-kind: (pull-alias-key-kind alias)
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])}))
@@ -6200,6 +6356,7 @@
               default-value: default-value
               has-alias: true
               alias: alias
+              alias-kind: (pull-alias-key-kind alias)
               has-xform: false
               xform: ""
               pattern: ([]Pull-Spec [])}))
@@ -6212,6 +6369,7 @@
               default-value: (Value {})
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: true
               xform: xform
               pattern: pattern}))
@@ -6224,6 +6382,7 @@
               default-value: default-value
               has-alias: false
               alias: ""
+              alias-kind: .Keyword
               has-xform: true
               xform: xform
               pattern: ([]Pull-Spec [])}))
