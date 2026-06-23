@@ -131,6 +131,9 @@
 (defn native-always? [args: []vev.Value] -> bool
   true)
 
+(defn map-value [m: vev.Value, key: string] -> [found: vev.Value, ok: bool]
+  (vev.map-get-value m (vev.value-keyword key)))
+
 (defn native-db-age-equals? [db: vev.DB, args: []vev.Value] -> bool
   (when (not (and (= (count args) 3)
                   (= args[0].kind .Symbol)
@@ -11352,6 +11355,67 @@
     (t.is (= (count pulled[2].attrs) 0))
     (t.is (= (count pulled[3].attrs) 0))
     (t.is (= (count pulled[4].attrs) 0))))
+
+(t.deftest datascript-pull-rendered-value-shape-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :name]
+             [:db/add 100 :db/unique :db.unique/identity]
+             [:db/add 101 :db/ident :aka]
+             [:db/add 101 :db/cardinality :db.cardinality/many]
+             [:db/add 102 :db/ident :child]
+             [:db/add 102 :db/valueType :db.type/ref]
+             [:db/add 102 :db/cardinality :db.cardinality/many]
+             [:db/add 103 :db/ident :father]
+             [:db/add 103 :db/valueType :db.type/ref]
+             {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"] :child [2 3]}
+             {:db/id 2 :name "David" :father 1}
+             {:db/id 3 :name "Thomas" :father 1}])
+        pulled (vev.pull conn.db [:db/id :name :aka :father {:child [:name]} :_father] 1)
+        rendered (vev.pull-result-value conn.db pulled)
+        [id id-ok] (map-value rendered ":db/id")
+        [name name-ok] (map-value rendered ":name")
+        [aka aka-ok] (map-value rendered ":aka")
+        [children children-ok] (map-value rendered ":child")
+        [missing missing-ok] (map-value rendered ":father")
+        [reverse reverse-ok] (map-value rendered ":_father")
+        lookup-missing (vev.pull conn.db [:aka] [:name "Missing"])
+        missing-rendered (vev.pull-result-value conn.db lookup-missing)
+        many (vev.pull-many conn.db [:name] ([]u64 [1 2]))
+        many-rendered (vev.pull-many-result-values conn.db (slice many 0))
+        [first-name first-name-ok] (map-value many-rendered[0] ":name")
+        [second-name second-name-ok] (map-value many-rendered[1] ":name")
+        [child-name child-name-ok] (map-value children.items[0] ":name")
+        [reverse-id reverse-id-ok] (map-value reverse.items[0] ":db/id")]
+    (t.is (= rendered.kind .Map))
+    (t.is id-ok)
+    (t.is (= id.kind .Entity))
+    (t.is (= id.entity 1))
+    (t.is name-ok)
+    (t.is (= name.text "Petr"))
+    (t.is aka-ok)
+    (t.is (= aka.kind .Vector))
+    (t.is (= (count aka.items) 2))
+    (t.is (= aka.items[0].text "Devil"))
+    (t.is (= aka.items[1].text "Tupen"))
+    (t.is children-ok)
+    (t.is (= children.kind .Vector))
+    (t.is (= children.items[0].kind .Map))
+    (t.is child-name-ok)
+    (t.is (= child-name.text "David"))
+    (t.is (not missing-ok))
+    (t.is reverse-ok)
+    (t.is (= reverse.kind .Vector))
+    (t.is reverse-id-ok)
+    (t.is (= reverse-id.entity 2))
+    (t.is (= missing-rendered.kind .Nil))
+    (t.is (= (count many-rendered) 2))
+    (t.is first-name-ok)
+    (t.is (= first-name.text "Petr"))
+    (t.is second-name-ok)
+    (t.is (= second-name.text "David"))))
 
 (t.deftest datascript-pull-text-api-subset
   (defer (free_all context.allocator))

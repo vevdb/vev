@@ -5498,6 +5498,75 @@
         (arr.push! out row.pulls[0])))
     out))
 
+(defn pull-render-attr-key [attr: string] -> Value
+  (value-keyword attr))
+
+(defn pull-render-ref-id-map [entity: u64] -> Value
+  (value-map ([]Value [(value-keyword ":db/id") (value-entity entity)])))
+
+(defn pull-render-attr-value [db: DB, pulled: Pull-Attr] -> Value
+  (if (> (count pulled.attrs) 0)
+    (pull-render-attrs-map db (slice pulled.attrs 0))
+    (if (and (= pulled.v.kind .Entity)
+             (not (= pulled.a ":db/id")))
+      (pull-render-ref-id-map pulled.v.entity)
+      pulled.v)))
+
+(defn pull-render-attr-is-many? [db: DB, pulled: Pull-Attr, count-for-attr: int] -> bool
+  (when (> count-for-attr 1)
+    (return true))
+  (when (reverse-attr? pulled.a)
+    (let [forward (forward-attr-for-reverse pulled.a) :defer]
+      (return (not (schema-component? db forward)))))
+  (schema-cardinality-many? db pulled.a))
+
+(defn pull-render-append-key-value! [items: ^[dynamic]Value, key: string, value: Value]
+  (arr.push! items^ (pull-render-attr-key key))
+  (arr.push! items^ value))
+
+(defn pull-render-group-values [db: DB, attrs: []Pull-Attr, attr-name: string] -> [dynamic]Value
+  (let [values (make [dynamic]Value)]
+    (for [pulled attrs]
+      (when (= pulled.a attr-name)
+        (arr.push! values (pull-render-attr-value db pulled))))
+    values))
+
+(defn pull-render-attrs-map [db: DB, attrs: []Pull-Attr] -> Value
+  (let [items (make [dynamic]Value)
+        i 0]
+    (while (< i (count attrs))
+      (let [pulled attrs[i]
+            seen false
+            j 0]
+        (while (< j (count items))
+          (when (and (= (% j 2) 0)
+                     (= items[j].kind .Keyword)
+                     (= items[j].text pulled.a))
+            (set! seen true))
+          (set! j (+ j 1)))
+        (when (not seen)
+          (let [values (pull-render-group-values db attrs pulled.a)
+                rendered (if (pull-render-attr-is-many? db pulled (count values))
+                           (value-vector (slice values 0))
+                           values[0])]
+            (pull-render-append-key-value! (addr items) pulled.a rendered)
+            (delete values))))
+      (set! i (+ i 1)))
+    (let [result (value-map (slice items 0))]
+      (delete items)
+      result)))
+
+(defn pull-result-value [db: DB, result: Pull-Result] -> Value
+  (if (= (count result.attrs) 0)
+    (value-nil)
+    (pull-render-attrs-map db (slice result.attrs 0))))
+
+(defn pull-many-result-values [db: DB, results: []Pull-Result] -> [dynamic]Value
+  (let [out (make [dynamic]Value 0 (count results))]
+    (for [result results]
+      (arr.push! out (pull-result-value db result)))
+    out))
+
 (defn result-row-tuple [result: Result-Set] -> Result-Row
   (if (> (count result.rows) 0)
     (let [values (arr.into [dynamic]Value (slice result.rows[0].values 0))
