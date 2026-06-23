@@ -60,8 +60,8 @@
         (return "" false))
       (return attrs[name-index].v.text true))))
 
-(defn append-status-rule-performance-tx! [tx: ^[dynamic]vev.Tx-Data] -> bool
-  (let [ids (arr.range 1 91) :defer]
+(defn append-status-rule-performance-tx! [tx: ^[dynamic]vev.Tx-Data, limit: int] -> bool
+  (let [ids (arr.range 1 limit) :defer]
     (for [i ids]
       (let [status (if (= (% i 3) 0) "pending" (if (= (% i 3) 1) "started" "stopped"))]
         (arr.push! tx^ (vev.add (u64 i) ":item/status" (vev.value-string status))))))
@@ -5094,7 +5094,7 @@
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
         tx (make [dynamic]vev.Tx-Data) :defer
-        _ (append-status-rule-performance-tx! (addr tx))
+        _ (append-status-rule-performance-tx! (addr tx) 901)
         report (vev.transact-tx-data (addr conn) (slice tx 0))
         inline (vev.q-text
                  report.db-after
@@ -5107,10 +5107,10 @@
     (t.is report.ok)
     (t.is inline.ok)
     (t.is rule.ok)
-    (t.is (= (count inline.rows) 30))
+    (t.is (= (count inline.rows) 300))
     (t.is (= (count rule.rows) (count inline.rows)))
     (t.is (= rule.rows[0].values[0].entity 3))
-    (t.is (= rule.rows[29].values[0].entity 90))))
+    (t.is (= rule.rows[299].values[0].entity 900))))
 
 (t.deftest datascript-query-mutual-recursive-rules-subset
   (defer (free_all context.allocator))
@@ -7277,6 +7277,89 @@
     (t.is report.ok)
     (t.is (= (count names) 1))
     (t.is (= names[0].text "Ivan"))))
+
+(t.deftest datascript-retract-without-value-issue-339-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 100 :db/ident :aka]
+             [:db/add 100 :db/cardinality :db.cardinality/many]
+             [:db/add 101 :db/ident :friend]
+             [:db/add 101 :db/valueType :db.type/ref]
+             [:db/add 1 :name "Ivan"]
+             [:db/add 1 :age 15]
+             [:db/add 1 :aka "X"]
+             [:db/add 1 :aka "Y"]
+             [:db/add 1 :aka "Z"]
+             [:db/add 1 :friend 2]
+             [:db/add 2 :name "Petr"]
+             [:db/add 2 :age 37]
+             [:db/add 2 :employed? true]
+             [:db/add 2 :married? false]])
+        original conn.db
+        report (vev.with-tx-data
+                 original
+                 ([]vev.Tx-Data
+                   [(vev.retract-attr 1 ":name")
+                    (vev.retract-attr 1 ":aka")
+                    (vev.retract-attr 2 ":employed?")
+                    (vev.retract-attr 2 ":married?")]))
+        ivan-names (vev.q-collection report.db-after
+                    [:find [?v ...]
+                     :where
+                     [1 :name ?v]])
+        ivan-akas (vev.q-collection report.db-after
+                   [:find [?v ...]
+                    :where
+                    [1 :aka ?v]])
+        ivan-ages (vev.q-collection report.db-after
+                   [:find [?v ...]
+                    :where
+                    [1 :age ?v]])
+        ivan-friends (vev.q-collection report.db-after
+                      [:find [?v ...]
+                       :where
+                       [1 :friend ?v]])
+        petr-names (vev.q-collection report.db-after
+                    [:find [?v ...]
+                     :where
+                     [2 :name ?v]])
+        petr-ages (vev.q-collection report.db-after
+                   [:find [?v ...]
+                    :where
+                    [2 :age ?v]])
+        employed-after-retract (vev.q-collection report.db-after
+                                [:find [?v ...]
+                                 :where
+                                 [2 :employed? ?v]])
+        married-after-retract (vev.q-collection report.db-after
+                               [:find [?v ...]
+                                :where
+                                [2 :married? ?v]])
+        mismatch (vev.with-tx-data
+                   original
+                   ([]vev.Tx-Data [(vev.retract 2 ":employed?" (vev.value-bool false))]))
+        employed (vev.q-collection mismatch.db-after
+                   [:find [?v ...]
+                    :where
+                    [2 :employed? ?v]])]
+    (t.is report.ok)
+    (t.is (= (count ivan-names) 0))
+    (t.is (= (count ivan-akas) 0))
+    (t.is (= (count employed-after-retract) 0))
+    (t.is (= (count married-after-retract) 0))
+    (t.is (= (count ivan-ages) 1))
+    (t.is (= ivan-ages[0].int-value 15))
+    (t.is (= (count ivan-friends) 1))
+    (t.is (= ivan-friends[0].entity 2))
+    (t.is (= (count petr-names) 1))
+    (t.is (= petr-names[0].text "Petr"))
+    (t.is (= (count petr-ages) 1))
+    (t.is (= petr-ages[0].int-value 37))
+    (t.is mismatch.ok)
+    (t.is (= (count employed) 1))
+    (t.is employed[0].bool-value)))
 
 (t.deftest datascript-retract-fns-not-found-and-idempotent-subset
   (defer (free_all context.allocator))
