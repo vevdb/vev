@@ -17,7 +17,7 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 329
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 330
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
 tuple edge matrices, remaining native callback design, and performance work.
@@ -41,7 +41,7 @@ These are the main in-memory parity target before durable storage.
 | `upsert.cljc` | 6 | partial | vector tx tempid ordering, DataScript retry-order tempid merging, unique-value no-upsert, current-tx conflict, explicit-id identity conflicts, main conflict matrix, and EDN text/prepared transaction coverage for ordinary identity upsert, lookup-ref upsert, retry convergence, forward ref tempids, and rollback on conflict covered; exact messages remain |
 | `validation.cljc` | 2 | partial | runtime bad tx-data validation including `:db.type/symbol` plus `transact-text` bad-shape rollback covered; reader/macro bad forms and exact errors remain |
 | `index.cljc` | 5 | partial | main index surface and indexed-attribute errors covered; exact lazy sequence/API rendering details remain |
-| `tuples.cljc` | 11 | partial | direct/component tuple upsert, redundant direct tuple-value ignore cases including final-state update assertions, stale explicit direct tuple update rejection, tempid tuple values as upsert identity, lookup-ref tuple values, tuple lookup-ref conflict/update paths, and EDN text/prepared tuple upsert plus lookup-ref transaction coverage covered; remaining exact errors and edge conflict matrix |
+| `tuples.cljc` | 11 | partial | direct/component tuple upsert, redundant direct tuple-value ignore cases including final-state update assertions, stale explicit direct tuple update rejection, tempid tuple values as upsert identity, lookup-ref tuple values, tuple lookup-ref conflict/update paths, inferred tuple value type/cardinality metadata, final tuple schema validation independent of tx-data order, and EDN text/prepared tuple upsert plus lookup-ref transaction coverage covered; remaining exact errors and edge conflict matrix |
 | `lookup_refs.cljc` | 5 | partial | entity/query/tx/index lookup refs, mixed entity-id inputs, scalar and collection lookup-ref query inputs with DataScript-style projection of the original lookup-ref value, multi-source lookup-ref inputs, unresolved inline query lookup-ref errors, and checked index unresolved lookup-ref errors covered; exact invalid lookup-ref behavior remains |
 | `ident.cljc` | 4 | passing | keep covered |
 | `explode.cljc` | 4 | partial | cardinality-many tx-map collection expansion, ref collections, reverse ref tx-map values, nested maps, multi-valued nested maps including EDN sets, reverse nested maps, and circular/nested ref shapes covered through EDN/text and Kvist tx-data; host list/array inputs and exact reverse-attr schema errors remain |

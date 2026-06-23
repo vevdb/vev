@@ -1429,12 +1429,23 @@
         [indexed has-indexed] (schema-has-bool-property? db entity ":db/index")
         [component has-component] (schema-has-bool-property? db entity ":db/isComponent")
         tuple-attrs (schema-tuple-attrs-for-entity db entity)
-        has-tuple-attrs (> (count tuple-attrs) 0)]
+        has-tuple-attrs (> (count tuple-attrs) 0)
+        inferred-value-type value-type
+        inferred-has-value-type has-value-type
+        inferred-cardinality cardinality
+        inferred-has-cardinality has-cardinality]
+    (when has-tuple-attrs
+      (when (not inferred-has-value-type)
+        (set! inferred-value-type ":db.type/tuple")
+        (set! inferred-has-value-type true))
+      (when (not inferred-has-cardinality)
+        (set! inferred-cardinality ":db.cardinality/one")
+        (set! inferred-has-cardinality true)))
     (Schema-Attr {attr: attr
-                  value-type: value-type
-                  has-value-type: has-value-type
-                  cardinality: cardinality
-                  has-cardinality: has-cardinality
+                  value-type: inferred-value-type
+                  has-value-type: inferred-has-value-type
+                  cardinality: inferred-cardinality
+                  has-cardinality: inferred-has-cardinality
                   unique: unique
                   has-unique: has-unique
                   indexed: indexed
@@ -1527,6 +1538,7 @@
     (= schema-type ":db.type/ref") (= value.kind .Entity)
     (= schema-type ":db.type/keyword") (= value.kind .Keyword)
     (= schema-type ":db.type/symbol") (= value.kind .Symbol)
+    (= schema-type ":db.type/tuple") (= value.kind .Vector)
     :else true))
 
 (defn valid-tuple-attrs-value? [db: DB, value: Value] -> bool
@@ -2440,7 +2452,7 @@
         (return false value-error))))
   (return true ""))
 
-(defn validate-tuple-type-schema [db: DB] -> [ok: bool, error: string]
+(defn validate-tuple-schema [db: DB] -> [ok: bool, error: string]
   (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
         high (upper-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))]
@@ -2454,6 +2466,21 @@
               (let [tuple-attrs (schema-tuple-attrs db attr)]
                 (defer (delete tuple-attrs))
                 (when (= (count tuple-attrs) 0)
+                  (return false "invalid tuple schema")))))))))
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (datom-current-at? db datom-index)
+          (let [[attr attr-ok] (schema-ident-for-entity db datom.e)]
+            (when attr-ok
+              (when (not (valid-tuple-attr-target? db datom.e))
+                (return false "invalid tuple schema"))
+              (when (not (valid-tuple-attrs-value? db datom.v))
+                (return false "invalid tuple schema"))
+              (let [[value-type has-value-type] (schema-keyword db attr ":db/valueType")]
+                (when (and has-value-type (not (= value-type ":db.type/tuple")))
                   (return false "invalid tuple schema")))))))))
   (return true ""))
 
@@ -2544,7 +2571,7 @@
                 added: (= op.kind .Add)})))
     (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
           scratch (build-db scratch-owned)
-          [ok error] (validate-tuple-type-schema scratch)]
+          [ok error] (validate-tuple-schema scratch)]
       (when (not ok)
         (return false error)))
     (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
