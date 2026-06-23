@@ -2188,13 +2188,13 @@
     (return false "bad lookup attribute"))
   (return true ""))
 
-(defn resolve-tx-data [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
+(defn resolve-tx-data-for-tx [db: DB, tx-data: []Tx-Data, tx: u64] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
         pending (arr.into [dynamic]Tx-Data tx-data)
         next-e (next-entity-id (slice db.datoms 0))
-        current-tx-e next-e
+        current-tx-e tx
         current-tx-reserved false
         data-index 0]
     (defer (delete pending))
@@ -2221,8 +2221,6 @@
           (if (current-tx-tempid? data.tempid)
             (do
               (when (not current-tx-reserved)
-                (set! current-tx-e next-e)
-                (set! next-e (+ next-e 1))
                 (set! current-tx-reserved true))
               (set! e current-tx-e)
               (ensure-tempid! (addr resolved-tempids) data.tempid current-tx-e)
@@ -2410,8 +2408,6 @@
           (when (current-tx-value? v)
             (let [current-tx-tempid v.text]
               (when (not current-tx-reserved)
-                (set! current-tx-e next-e)
-                (set! next-e (+ next-e 1))
                 (set! current-tx-reserved true))
               (set! v (value-entity current-tx-e))
               (ensure-tempid! (addr resolved-tempids) current-tx-tempid current-tx-e)))
@@ -2424,8 +2420,6 @@
               (if (current-tx-tempid? value-tempid)
                 (do
                   (when (not current-tx-reserved)
-                    (set! current-tx-e next-e)
-                    (set! next-e (+ next-e 1))
                     (set! current-tx-reserved true))
                   (set! v (value-entity current-tx-e))
                   (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
@@ -2817,7 +2811,7 @@
 
 (defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
-        resolved (resolve-tx-data before tx-data)]
+        resolved (resolve-tx-data-for-tx before tx-data conn^.next-tx)]
     (when (not resolved.ok)
       (delete resolved.ops)
       (delete resolved.tx-meta)
@@ -2926,11 +2920,11 @@
   (for [tempid resolved.tempids]
     (arr.push! tempids^ tempid)))
 
-(defn resolve-tx-segment! [base: DB, ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, segment: ^[dynamic]Tx-Data] -> [ok: bool, error: string]
+(defn resolve-tx-segment! [base: DB, tx: u64, ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, segment: ^[dynamic]Tx-Data] -> [ok: bool, error: string]
   (when (= (count segment^) 0)
     (return true ""))
   (let [current-db (db-with-resolved-ops base (slice ops^ 0))
-        resolved (resolve-tx-data current-db (slice segment^ 0))]
+        resolved (resolve-tx-data-for-tx current-db (slice segment^ 0) tx)]
     (delete-owned-db current-db)
     (when (not resolved.ok)
       (delete resolved.ops)
@@ -2968,6 +2962,7 @@
 
 (defn transact-tx-data-with-string-fns [conn: ^Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
+        tx conn^.next-tx
         ops (make [dynamic]Tx-Op)
         tx-meta (make [dynamic]Tx-Meta)
         tempids (make [dynamic]Tempid)
@@ -2975,7 +2970,7 @@
     (for [data tx-data]
       (if (= data.op ":db.fn/call-ident")
         (do
-          (let [[segment-ok segment-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+          (let [[segment-ok segment-error] (resolve-tx-segment! before tx (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
             (when (not segment-ok)
               (return (failed-registered-tx before ops tx-meta tempids segment segment-error))))
           (let [current-db (db-with-resolved-ops before (slice ops 0))
@@ -2992,12 +2987,12 @@
               (when (not result.ok)
                 (delete result.tx-data)
                 (return (failed-registered-tx before ops tx-meta tempids segment result.error)))
-              (let [[result-ok result-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr result.tx-data))]
+              (let [[result-ok result-error] (resolve-tx-segment! before tx (addr ops) (addr tx-meta) (addr tempids) (addr result.tx-data))]
                 (delete result.tx-data)
                 (when (not result-ok)
                   (return (failed-registered-tx before ops tx-meta tempids segment result-error)))))))
         (arr.push! segment data)))
-    (let [[tail-ok tail-error] (resolve-tx-segment! before (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+    (let [[tail-ok tail-error] (resolve-tx-segment! before tx (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
       (when (not tail-ok)
         (return (failed-registered-tx before ops tx-meta tempids segment tail-error))))
     (delete segment)
