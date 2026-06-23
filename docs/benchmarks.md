@@ -24,6 +24,15 @@ clojure \
   -M bench/datascript_query_rules.clj
 ```
 
+To run both harnesses and print only the DataScript-relative speedup table:
+
+```sh
+bench/compare_query_rules.sh
+```
+
+The comparison script accepts `KVIST_ROOT`, `KVIST_BIN`,
+`KVIST_PACKAGES_DIR`, and `DATASCRIPT_ROOT` environment overrides.
+
 Current sample output on June 23, 2026:
 
 ```text
