@@ -1,6 +1,7 @@
 (package vev-tests)
 
 (import arr "kvist:arr")
+(import strings "core:strings")
 (import t "kvist:test")
 (import vev "../vev")
 
@@ -87,6 +88,28 @@
                 [(vev.add datom.e ":age" (vev.value-int (+ age.int-value 1)))
                  (vev.add datom.e ":had-birthday" (vev.value-bool true))])))))))
   (vev.tx-fn-error "No entity with name"))
+
+(defn native-adult-age? [args: []vev.Value] -> bool
+  (and (= (count args) 2)
+       (= args[0].kind .Int)
+       (= args[1].kind .Int)
+       (>= args[0].int-value args[1].int-value)))
+
+(defn native-even-identity [args: []vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (and (= (count args) 1)
+                  (= args[0].kind .Int)
+                  (= (% args[0].int-value 2) 0)))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result args[0]))
+
+(defn native-person-label [args: []vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (and (= (count args) 2)
+                  (= args[0].kind .String)
+                  (= args[1].kind .String)))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result
+    (vev.value-keyword
+      (strings.concatenate ([]string [":" args[0].text "/" args[1].text])))))
 
 (defn create-oleg [db: vev.DB] -> vev.Tx-Fn-Result
   (vev.tx-fn-ok
@@ -4017,6 +4040,45 @@
     (t.is (= rule-result.rows[1].values[0].text "Oleg"))
     (t.is (not unknown.ok))
     (t.is (= unknown.error "unknown query predicate: adult-age?"))))
+
+(t.deftest datascript-query-native-callback-functions-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        registry ([]vev.Native-Query-Fn
+                   [(vev.query-predicate-fn "adult-age?" native-adult-age?)
+                    (vev.query-value-fn "even-identity" native-even-identity)
+                    (vev.query-value-fn "person-label" native-person-label)])
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ivan" :age 15}
+             {:db/id 2 :name "Petr" :age 22}
+             {:db/id 3 :name "Oleg" :age 37}])
+        predicate (vev.q-text-with-fns
+                    conn.db
+                    "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]"
+                    registry)
+        fn-filter (vev.q-text-with-fns
+                    conn.db
+                    "[:find ?age ?same :where [?e :age ?age] [(even-identity ?age) ?same]]"
+                    registry)
+        function (vev.q-text-with-fns
+                   conn.db
+                   "[:find ?name ?label :where [?e :name ?name] [(person-label \"person\" ?name) ?label]]"
+                   registry)
+        prepared (vev.prepare-query-text
+                   "[:find ?name :where [?e :name ?name] [?e :age ?a] [(adult-age? ?a 18)]]")
+        prepared-result (vev.q-prepared-with-fns conn.db prepared registry)]
+    (t.is (= (count predicate.rows) 2))
+    (t.is (= predicate.rows[0].values[0].text "Petr"))
+    (t.is (= predicate.rows[1].values[0].text "Oleg"))
+    (t.is (= (count fn-filter.rows) 1))
+    (t.is (= fn-filter.rows[0].values[0].int-value 22))
+    (t.is (= fn-filter.rows[0].values[1].int-value 22))
+    (t.is (= (count function.rows) 3))
+    (t.is (= function.rows[0].values[1].text ":person/Ivan"))
+    (t.is (= function.rows[2].values[1].text ":person/Oleg"))
+    (t.is (= (count prepared-result.rows) 2))
+    (t.is (= prepared-result.rows[1].values[0].text "Oleg"))))
 
 (t.deftest datascript-query-built-in-regex-subset
   (defer (free_all context.allocator))

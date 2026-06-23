@@ -17,10 +17,10 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 328
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 329
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
-tuple edge matrices, host/native callback design, and performance work.
+tuple edge matrices, non-query native callback design, and performance work.
 
 ## Semantic Core
 
@@ -30,7 +30,7 @@ These are the main in-memory parity target before durable storage.
 | --- | ---: | --- | --- |
 | `query.cljc` | 11 | partial | DB-backed tx/op data pattern terms, primary/named collection datom sources including 1-wide scalar rows, 2-wide tuple rows, typed relation/collection/map input values, and prepared primary collection queries, map-form text queries, direct map-as-relation inputs, nested `:in` binding patterns, nested map values, DataScript namespaced reverse attrs, checked scalar/collection/tuple/relation input shape errors, and issue-425 symbol constants covered; host functions and exact input error wording remain |
 | `query_find_specs.cljc` | 1 | passing | keep covered |
-| `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, `range`, lookup-ref `get-else`/`get-some` entity inputs in literal and text APIs, regex predicate surface, regex match-return clauses, nested result binding including EDN text vector/map literal function args and text/prepared tuple/relation/collection output destructuring, named predicate/function operator inputs, and registered native-op aliases for EDN/prepared text queries including rule bodies and primary collection DB queries covered; checked query errors now cover unknown native predicate/function ops and insufficient function/predicate bindings; arbitrary host callback function surface remains |
+| `query_fns.cljc` | 7 | partial | broader native built-ins including `keyword`, `str`, `range`, lookup-ref `get-else`/`get-some` entity inputs in literal and text APIs, regex predicate surface, regex match-return clauses, nested result binding including EDN text vector/map literal function args and text/prepared tuple/relation/collection output destructuring, named predicate/function operator inputs, registered native-op aliases, and typed native predicate/value callbacks for EDN/prepared text queries including rule bodies and primary collection DB queries covered; checked query errors now cover unknown native predicate/function ops and insufficient function/predicate bindings; exact Clojure diagnostics remain |
 | `query_not.cljc` | 5 | partial | source semantics plus checked unbound-group errors covered; query text and Kvist literal macros have ordered top-level `not` binding validation; supported rule bodies execute in source order |
 | `query_or.cljc` | 5 | partial | source semantics, plain-`or` branch var matching, nested `or-join` binding forms, and `or-join` projection validation covered; exact diagnostics remain |
 | `query_pull.cljc` | 8 | partial | multi-source pull, text/Kvist `:in` pattern variables, plus scalar, collection, and tuple pull find-spec shapes covered; exact Clojure return rendering remains |
@@ -96,9 +96,9 @@ These are useful, but not the next engine-parity gate.
    `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
-3. Design the native callback surface for query predicates/functions,
-   aggregates, pull `:xform`, transaction functions, and listeners. Existing
-   named aliases are useful but not enough for broad C/Odin/non-Kvist use.
+3. Extend the native callback surface beyond query predicate/value callbacks:
+   aggregates, pull `:xform`, transaction functions, listeners, and final
+   C/Odin/non-Kvist registration shape.
 4. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript
    parity also needs predictable performance on recursive rules and large

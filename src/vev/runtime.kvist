@@ -449,6 +449,18 @@
 (defn query-fn [name: string, target: string] -> Native-Query-Fn
   (Native-Query-Fn {name: name target: target}))
 
+(defn query-predicate-fn [name: string, f: fn [args: []Value] -> bool] -> Native-Query-Fn
+  (Native-Query-Fn {name: name has-predicate-callback: true predicate-callback: f}))
+
+(defn native-query-function-result [value: Value] -> Native-Query-Function-Result
+  (Native-Query-Function-Result {ok: true value: value}))
+
+(defn native-query-function-none [] -> Native-Query-Function-Result
+  (Native-Query-Function-Result {ok: false}))
+
+(defn query-value-fn [name: string, f: fn [args: []Value] -> Native-Query-Function-Result] -> Native-Query-Fn
+  (Native-Query-Fn {name: name has-function-callback: true function-callback: f}))
+
 (defn query-fn-index [registry: []Native-Query-Fn, name: string] -> [index: int, ok: bool]
   (for [entry index registry]
     (when (= entry.name name)
@@ -466,6 +478,15 @@
     (when (not found)
       (return "" false))
     (return registry[index].target true)))
+
+(defn resolve-query-call-args [terms: []Term, binding: Binding] -> [out: [dynamic]Value, ok: bool]
+  (let [args (make [dynamic]Value 0 (count terms))]
+    (for [term terms]
+      (let [[value value-ok] (resolve-term term binding)]
+        (when (not value-ok)
+          (return args false))
+        (arr.push! args value)))
+    (return args true)))
 
 (defn re-find-matches? [pattern: Value, text: Value] -> bool
   (when (not (and (= pattern.kind .String)
@@ -588,10 +609,19 @@
   (let [[op op-ok] (query-op-name predicate.op binding)]
     (when (not op-ok)
       (return false))
-    (let [[target target-ok] (query-fn-target registry op)]
-      (when (not target-ok)
+    (let [[index found] (query-fn-index registry op)]
+      (when (not found)
         (return false))
-      (predicate-matches? (Predicate {op: target terms: predicate.terms}) binding))))
+      (let [entry registry[index]]
+        (when entry.has-predicate-callback
+          (let [[args args-ok] (resolve-query-call-args predicate.terms binding)]
+            (defer (delete args))
+            (when (not args-ok)
+              (return false))
+            (return (entry.predicate-callback (slice args 0)))))
+        (when (> (count entry.target) 0)
+          (return (predicate-matches? (Predicate {op: entry.target terms: predicate.terms}) binding)))
+        (return false)))))
 
 (defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
   (when (not (= map-value.kind .Map))
@@ -866,16 +896,26 @@
   (let [[op op-ok] (query-op-name function.op binding)]
     (when (not op-ok)
       (return (Value {}) false))
-    (let [[target target-ok] (query-fn-target registry op)]
-      (when (not target-ok)
+    (let [[index found] (query-fn-index registry op)]
+      (when (not found)
         (return (Value {}) false))
-      (apply-function-op (Function-Clause {op: target
-                                           terms: function.terms
-                                           out: ""
-                                           out-vars: ([]string [])
-                                           out-binding: (Input-Binding {})
-                                           is-tuple: false})
-        binding))))
+      (let [entry registry[index]]
+        (when entry.has-function-callback
+          (let [[args args-ok] (resolve-query-call-args function.terms binding)]
+            (defer (delete args))
+            (when (not args-ok)
+              (return (Value {}) false))
+            (let [result (entry.function-callback (slice args 0))]
+              (return result.value result.ok))))
+        (when (> (count entry.target) 0)
+          (return (apply-function-op (Function-Clause {op: entry.target
+                                                       terms: function.terms
+                                                       out: ""
+                                                       out-vars: ([]string [])
+                                                       out-binding: (Input-Binding {})
+                                                       is-tuple: false})
+                    binding)))
+        (return (Value {}) false)))))
 
 (defn apply-function-clause [binding: Binding, function: Function-Clause] -> [out: Binding, ok: bool]
   (let [[value value-ok] (apply-function-op function binding)]
