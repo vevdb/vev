@@ -63,12 +63,62 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn lookup-ref-value [attr: string, value: Value] -> Value
+  (value-vector2 (value-keyword attr) value))
+
+(defn value-lookup-ref-parts [value: Value] -> [attr: string, lookup-value: Value, ok: bool]
+  (when (and (= value.kind .Vector)
+             (= (count value.items) 2)
+             (= value.items[0].kind .Keyword))
+    (return value.items[0].text value.items[1] true))
+  (return "" (Value {}) false))
+
+(defn value-as-entity [db: DB, value: Value] -> [entity: Value, ok: bool]
+  (cond
+    (= value.kind .Entity)
+      (return value true)
+    (= value.kind .Int)
+      (return (value-entity (u64 value.int-value)) true)
+    (= value.kind .Keyword)
+      (let [[entity found] (schema-entity-for-attr db value.text)]
+        (if found
+          (return (value-entity entity) true)
+          (return (Value {}) false)))
+    :else
+      (let [[attr lookup-value lookup-ok] (value-lookup-ref-parts value)]
+        (when lookup-ok
+          (let [[entity found] (resolve-lookup-ref db attr lookup-value)]
+            (if found
+              (return (value-entity entity) true)
+              (return (Value {}) false))))
+        (return (Value {}) false))))
+
+(defn lookup-ref-value-as-entity [db: DB, value: Value] -> [entity: Value, ok: bool]
+  (let [[attr lookup-value lookup-ok] (value-lookup-ref-parts value)]
+    (when lookup-ok
+      (let [[entity found] (resolve-lookup-ref db attr lookup-value)]
+        (if found
+          (return (value-entity entity) true)
+          (return (Value {}) false)))))
+  (return (Value {}) false))
+
+(defn entity-value-equal? [db: DB, left: Value, right: Value] -> bool
+  (when (predicate-value-equal? left right)
+    (return true))
+  (let [[left-entity left-ok] (lookup-ref-value-as-entity db left)]
+    (when left-ok
+      (return (predicate-value-equal? left-entity right))))
+  (let [[right-entity right-ok] (lookup-ref-value-as-entity db right)]
+    (when right-ok
+      (return (predicate-value-equal? left right-entity))))
+  false)
+
 (defn query-input-scalar-value [db: DB, input: Query-Input] -> [value: Value, ok: bool]
   (when input.has-lookup-ref
-    (let [[entity lookup-ok] (resolve-lookup-ref db input.lookup-attr input.lookup-value)]
-      (when lookup-ok
-        (return (value-entity entity) true))
-      (return (Value {}) false)))
+    (let [[_ lookup-ok] (resolve-lookup-ref db input.lookup-attr input.lookup-value)]
+      (if lookup-ok
+        (return (lookup-ref-value input.lookup-attr input.lookup-value) true)
+        (return (Value {}) false))))
   (return input.value true))
 
 (defn query-source-input-name? [name: string] -> bool
@@ -155,10 +205,11 @@
     (when (= input.kind .CollectionLookupRefs)
       (for [binding bindings]
         (for [value index input.lookup-values]
-          (let [[entity ok] (resolve-lookup-ref db input.lookup-attrs[index] value)]
+          (let [attr input.lookup-attrs[index]
+                [_ ok] (resolve-lookup-ref db attr value)]
             (when ok
               (let [next (clone-binding binding)]
-                (binding-store! (addr next) name (value-entity entity))
+                (binding-store! (addr next) name (lookup-ref-value attr value))
                 (arr.push! out next)))))))
     out))
 
@@ -355,6 +406,9 @@
   (let [[resolved resolved-ok] (resolve-term term binding)]
     (when (not resolved-ok)
       (return resolved false))
+    (let [[entity entity-ok] (value-as-entity db resolved)]
+      (when entity-ok
+        (return entity true)))
     (when (= resolved.kind .Keyword)
       (let [[entity ident-ok] (schema-entity-for-attr db resolved.text)]
         (return (value-entity entity) ident-ok)))
@@ -2773,6 +2827,13 @@
     (transact-tx-data conn (slice result.tx-data 0))))
 
 (defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
+  (when (= term.kind .Var)
+    (let [[existing exists] (binding-lookup binding^ term.name)]
+      (if exists
+        (return (entity-value-equal? db existing actual))
+        (do
+          (binding-store! binding term.name actual)
+          (return true)))))
   (let [[resolved resolved-ok] (resolve-entity-term db term binding^)]
     (when resolved-ok
       (return (value-equal? resolved actual))))
@@ -2793,6 +2854,13 @@
   (when (= term.kind .LookupRef)
     (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
       (return (and lookup-ok (value-equal? (value-entity entity) actual)))))
+  (when (= term.kind .Var)
+    (let [[existing exists] (binding-lookup binding^ term.name)]
+      (if exists
+        (return (entity-value-equal? db existing actual))
+        (do
+          (binding-store! binding term.name actual)
+          (return true)))))
   (when (= term.kind .Value)
     (let [[resolved ok] (ref-entity-literal db attr term.value)]
       (when ok
@@ -2971,6 +3039,10 @@
         (when lookup-ok
           (set! v-value (value-entity lookup-entity))
           (set! v-ok true))))
+    (when v-ok
+      (let [[entity entity-ok] (lookup-ref-value-as-entity db v-value)]
+        (when entity-ok
+          (set! v-value entity))))
     (when (and a-ok v-ok (= a-value.kind .Keyword))
       (let [[resolved resolved-ok] (ref-entity-literal db a-value.text v-value)]
         (when resolved-ok
