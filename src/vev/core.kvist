@@ -1097,27 +1097,51 @@
           (< left.e right.e)
           (< left.tx right.tx))))))
 
+(defn datom-less-fact-log? [datoms: []Datom, left-index: int, right-index: int] -> bool
+  (let [left datoms[left-index]
+        right datoms[right-index]]
+    (if (not (= left.e right.e))
+      (< left.e right.e)
+      (if (not (= left.a right.a))
+        (string-less? left.a right.a)
+        (if (not (value-equal? left.v right.v))
+          (value-less? left.v right.v)
+          (< left-index right-index))))))
+
+(defn datom-index-less? [datoms: []Datom, order: string, left: int, right: int] -> bool
+  (cond
+    (= order "eavt") (datom-less-eavt? datoms left right)
+    (= order "aevt") (datom-less-aevt? datoms left right)
+    (= order "avet") (datom-less-avet? datoms left right)
+    (= order "fact-log") (datom-less-fact-log? datoms left right)
+    :else (datom-less-vaet? datoms left right)))
+
+(defn sort-datom-indexes-range! [indexes: ^[dynamic]int, datoms: []Datom, order: string, low: int, high: int]
+  (when (>= low high)
+    (return))
+  (let [pivot-index (/ (+ low high) 2)
+        pivot indexes^[pivot-index]
+        i low
+        j high]
+    (while (<= i j)
+      (while (datom-index-less? datoms order indexes^[i] pivot)
+        (set! i (+ i 1)))
+      (while (datom-index-less? datoms order pivot indexes^[j])
+        (set! j (- j 1)))
+      (when (<= i j)
+        (let [tmp indexes^[i]]
+          (set! indexes^[i] indexes^[j])
+          (set! indexes^[j] tmp)
+          (set! i (+ i 1))
+          (set! j (- j 1)))))
+    (when (< low j)
+      (sort-datom-indexes-range! indexes datoms order low j))
+    (when (< i high)
+      (sort-datom-indexes-range! indexes datoms order i high))))
+
 (defn sort-datom-indexes! [indexes: ^[dynamic]int, datoms: []Datom, order: string]
-  // ponytail: insertion sort is fine for the in-memory proof; replace when benchmarks say index build dominates.
-  (for [i (arr.range 1 (count indexes^))]
-    (let [current indexes^[i]
-          j i]
-      (while (> j 0)
-        (let [previous indexes^[(- j 1)]
-              less false]
-          (if (= order "eavt")
-            (set! less (datom-less-eavt? datoms current previous))
-            (if (= order "aevt")
-              (set! less (datom-less-aevt? datoms current previous))
-              (if (= order "avet")
-                (set! less (datom-less-avet? datoms current previous))
-                (set! less (datom-less-vaet? datoms current previous)))))
-          (if less
-            (do
-              (set! indexes^[j] previous)
-              (set! j (- j 1)))
-            (break))))
-      (set! indexes^[j] current))))
+  (when (> (count indexes^) 1)
+    (sort-datom-indexes-range! indexes datoms order 0 (- (count indexes^) 1))))
 
 (defn build-index [datoms: []Datom, order: string] -> [dynamic]int
   (let [indexes (make [dynamic]int 0 (count datoms))]
@@ -1168,12 +1192,23 @@
     true))
 
 (defn build-current-index [datoms: []Datom] -> [dynamic]int
-  // ponytail: O(n^2) snapshot build is fine until transact benchmarks say otherwise.
-  (let [indexes (make [dynamic]int)]
+  (let [fact-indexes (make [dynamic]int 0 (count datoms)) :defer
+        current (make [dynamic]int)]
     (for [_ index datoms]
-      (when (datom-current-in-log? datoms index)
-        (arr.push! indexes index)))
-    indexes))
+      (arr.push! fact-indexes index))
+    (sort-datom-indexes! (addr fact-indexes) datoms "fact-log")
+    (let [i 0]
+      (while (< i (count fact-indexes))
+        (let [last i]
+          (while (and (< (+ last 1) (count fact-indexes))
+                      (same-fact? datoms[fact-indexes[i]] datoms[fact-indexes[(+ last 1)]]))
+            (set! last (+ last 1)))
+          (let [last-index fact-indexes[last]]
+            (when datoms[last-index].added
+              (arr.push! current last-index)))
+          (set! i (+ last 1)))))
+    (arr.sort! current)
+    current))
 
 (defn int-lower-bound [xs: []int, value: int] -> int
   (let [low 0

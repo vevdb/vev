@@ -1,6 +1,7 @@
 (package vev-tests)
 
 (import arr "kvist:arr")
+(import fmt "core:fmt")
 (import math "core:math")
 (import strings "core:strings")
 (import t "kvist:test")
@@ -38,6 +39,26 @@
                (= value.entity entity))
       (return true)))
   false)
+
+(defn pull-attr-index [attrs: []vev.Pull-Attr, attr: string] -> [index: int, ok: bool]
+  (for [item index attrs]
+    (when (= item.a attr)
+      (return index true)))
+  (return 0 false))
+
+(defn pull-deep-friend-name [pulled: vev.Pull-Result, hops: int] -> [name: string, ok: bool]
+  (let [attrs: []vev.Pull-Attr (slice pulled.attrs 0)
+        step 0]
+    (while (< step hops)
+      (let [[friend-index friend-ok] (pull-attr-index attrs ":friend")]
+        (when (not friend-ok)
+          (return "" false))
+        (set! attrs (slice attrs[friend-index].attrs 0)))
+      (set! step (+ step 1)))
+    (let [[name-index name-ok] (pull-attr-index attrs ":name")]
+      (when (not name-ok)
+        (return "" false))
+      (return attrs[name-index].v.text true))))
 
 (defn append-status-rule-performance-tx! [tx: ^[dynamic]vev.Tx-Data] -> bool
   (let [ids (arr.range 1 91) :defer]
@@ -11481,6 +11502,24 @@
     (t.is (= friend-again.v.entity 4))
     (t.is (= (count friend-again.attrs) 1))
     (t.is (= friend-again.attrs[0].v.entity 4))))
+
+(t.deftest datascript-pull-deep-recursion-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        start 100
+        depth 1000
+        ops (make [dynamic]vev.Tx-Op) :defer
+        _ (arr.push! ops (vev.tx-add 100 ":db/ident" (vev.value-keyword ":friend")))
+        _ (arr.push! ops (vev.tx-add 100 ":db/valueType" (vev.value-keyword ":db.type/ref")))]
+    (for [i (arr.range start (+ depth 1))]
+      (arr.push! ops (vev.tx-add (u64 i) ":name" (vev.value-string (fmt.tprintf "Person-%d" i))))
+      (when (< i depth)
+        (arr.push! ops (vev.tx-add (u64 i) ":friend" (vev.value-entity (u64 (+ i 1)))))))
+    (let [_ (vev.transact-ops (addr conn) (slice ops 0))
+          pulled (vev.pull conn.db [:name {:friend ...}] (u64 start))
+          [deep-name deep-ok] (pull-deep-friend-name pulled (- depth start))]
+      (t.is deep-ok)
+      (t.is (= deep-name "Person-1000")))))
 
 (t.deftest pull-many-returns-multiple-entities
   (defer (free_all context.allocator))
