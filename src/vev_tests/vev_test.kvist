@@ -988,6 +988,55 @@
     (t.is (= long.rows[0].values[2].int-value 39))
     (t.is (= long.rows[0].values[3].int-value 999))))
 
+(t.deftest datascript-query-primary-collection-db-prepared-rules-and-fns-subset
+  (defer (free_all context.allocator))
+  (let [rows (vev.value-vector
+               ([]vev.Value [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 19)]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Petr")]))
+                              (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":age") (vev.value-int 17)]))]))
+        registry ([]vev.Native-Query-Fn [(vev.query-fn "adult-age?" ">=")
+                                         (vev.query-fn "mk-keyword" "keyword")])
+        prepared (vev.prepare-query-text "[:find ?name :in ?min :where [?e :age ?age] [(>= ?age ?min)] [?e :name ?name]]")
+        prepared-result (vev.q-prepared-relation-db-with-inputs
+                          rows
+                          prepared
+                          ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 18))]))
+        prepared-fn (vev.prepare-query-text "[:find ?tag :where [?e :age ?age] [(adult-age? ?age 18)] [(mk-keyword \"adult\") ?tag]]")
+        prepared-fn-result (vev.q-prepared-relation-db-with-fns rows prepared-fn registry)
+        text-fn-result (vev.q-text-relation-db-with-fns
+                         rows
+                         "[:find ?e :where [?e :age ?age] [(adult-age? ?age 18)]]"
+                         registry)
+        rule-result (vev.q-text-relation-db-with-rules
+                      rows
+                      "[:find ?name :in % :where (adult ?e) [?e :name ?name]]"
+                      "[[(adult ?e) [?e :age ?age] [(>= ?age 18)]]]"
+                      ([]vev.Query-Input []))
+        rule-fn-result (vev.q-text-relation-db-with-rules-and-fns
+                         rows
+                         "[:find ?name :in % :where (adult ?e) [?e :name ?name]]"
+                         "[[(adult ?e) [?e :age ?age] [(adult-age? ?age 18)]]]"
+                         ([]vev.Query-Input [])
+                         registry)]
+    (t.is prepared.ok)
+    (t.is prepared-result.ok)
+    (t.is (= (count prepared-result.rows) 1))
+    (t.is (= prepared-result.rows[0].values[0].text "Ivan"))
+    (t.is prepared-fn.ok)
+    (t.is prepared-fn-result.ok)
+    (t.is (= (count prepared-fn-result.rows) 1))
+    (t.is (= prepared-fn-result.rows[0].values[0].text ":adult"))
+    (t.is text-fn-result.ok)
+    (t.is (= (count text-fn-result.rows) 1))
+    (t.is (= text-fn-result.rows[0].values[0].int-value 1))
+    (t.is rule-result.ok)
+    (t.is (= (count rule-result.rows) 1))
+    (t.is (= rule-result.rows[0].values[0].text "Ivan"))
+    (t.is rule-fn-result.ok)
+    (t.is (= (count rule-fn-result.rows) 1))
+    (t.is (= rule-fn-result.rows[0].values[0].text "Ivan"))))
+
 (t.deftest datascript-query-rejects-non-collection-sources-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

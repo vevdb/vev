@@ -4997,9 +4997,24 @@
              or-groups: owned-or-groups
              body-steps: body-steps}))))
 
+(defn relation-db-rule-call [call: Rule-Call, source: string] -> Rule-Call
+  (when call.has-source
+    (return call))
+  (Rule-Call {name: call.name
+              source: source
+              has-source: true
+              args: call.args}))
+
+(defn relation-db-rule-calls [calls: []Rule-Call, source: string] -> [dynamic]Rule-Call
+  (let [out (make [dynamic]Rule-Call 0 (count calls))]
+    (for [call calls]
+      (arr.push! out (relation-db-rule-call call source)))
+    out))
+
 (defn relation-db-query [query-value: Query, source: string] -> Query
   (let [inputs (arr.into [dynamic]string (slice query-value.inputs 0)) :defer
         clauses (rule-clauses-with-source (slice query-value.clauses 0) source true) :defer
+        rule-calls (relation-db-rule-calls (slice query-value.rule-calls 0) source) :defer
         rules (make [dynamic]Rule) :defer
         not-groups (make [dynamic]Not-Group) :defer
         or-groups (make [dynamic]Or-Group) :defer]
@@ -5021,7 +5036,7 @@
              (slice query-value.predicates 0)
              (slice query-value.function-clauses 0)
              (slice rules 0)
-             (slice query-value.rule-calls 0)
+             (slice rule-calls 0)
              (slice query-value.get-elses 0)
              (slice query-value.get-somes 0)
              (slice query-value.grounds 0)
@@ -5031,14 +5046,14 @@
              (slice query-value.aggregates 0))
       query-value.has-rules-input)))
 
-(defn q-query-relation-db [rows: Value, query-value: Query, inputs: []Query-Input] -> Result-Set
+(defn q-query-relation-db-with-fns [rows: Value, query-value: Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
   (let [source "__vev_primary_relation_db"
         relation-query (relation-db-query query-value source)
         relation-inputs (arr.into [dynamic]Query-Input inputs) :defer
         empty-datoms (make [dynamic]Datom)
         empty (build-db empty-datoms)]
     (arr.push! relation-inputs (query-input-scalar rows))
-    (let [result (q-query-with-sources empty relation-query (slice relation-inputs 0) ([]DB-Source []))]
+    (let [result (q-query-with-sources-and-fns empty relation-query (slice relation-inputs 0) ([]DB-Source []) registry)]
       (delete empty-datoms)
       (delete empty.current)
       (delete empty.eavt)
@@ -5046,6 +5061,9 @@
       (delete empty.avet)
       (delete empty.vaet)
       result)))
+
+(defn q-query-relation-db [rows: Value, query-value: Query, inputs: []Query-Input] -> Result-Set
+  (q-query-relation-db-with-fns rows query-value inputs ([]Native-Query-Fn [])))
 
 (defn q-query-with-inputs [db: DB, query: Query, inputs: []Query-Input] -> Result-Set
   (q-query-with-sources db query inputs ([]DB-Source [])))
