@@ -2130,6 +2130,39 @@
         (set! latest db.datoms[datom-index].v)))
     (return latest (>= latest-index 0))))
 
+(defn eavt-ea-prefix-compare-direct [db: DB, datom-index: int, entity: u64, attr: string] -> int
+  (let [datom db.datoms[datom-index]]
+    (if (< datom.e entity)
+      -1
+      (if (> datom.e entity)
+        1
+        (strings.compare datom.a attr)))))
+
+(defn lower-bound-eavt-ea-direct [db: DB, indexes: []int, entity: u64, attr: string] -> int
+  (let [low 0
+        high (count indexes)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            compare (eavt-ea-prefix-compare-direct db indexes[mid] entity attr)]
+        (if (< compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
+(defn current-cardinality-one-int-value-fast [db: DB, entity: u64, attr: string] -> [value: i64, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
+    (when (>= index-pos (count indexes))
+      (return 0 false))
+    (let [datom-index indexes[index-pos]
+          datom db.datoms[datom-index]]
+      (when (and (= datom.e entity)
+                 (= datom.a attr)
+                 (= datom.v.kind .Int)
+                 (datom-current-at? db datom-index))
+        (return datom.v.int-value true))
+      (return 0 false))))
+
 (defn tuple-value-for-entity [db: DB, entity: u64, attrs: []string] -> [value: Value, ok: bool]
   (let [items (make [dynamic]Value 0 (count attrs))
         any false]
@@ -7071,14 +7104,19 @@
         (return out false))
       (let [filter-indexes (slice db.avet 0)
             low (lower-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)
-            high (upper-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)]
+            high (upper-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)
+            direct-value-lookup (all-datoms-current? db)]
         (for [i (arr.range low high)]
           (let [filter-index filter-indexes[i]
                 filter-datom db.datoms[filter-index]]
             (when (datom-current-at? db filter-index)
-              (let [[value value-ok] (latest-attr-value db filter-datom.e projection.value-attr)]
-                (when (and value-ok (= value.kind .Int))
-                  (arr.push! out (Entity-Int-Pair {entity: filter-datom.e value: value.int-value}))))))))
+              (if direct-value-lookup
+                (let [[int-value int-ok] (current-cardinality-one-int-value-fast db filter-datom.e projection.value-attr)]
+                  (when int-ok
+                    (arr.push! out (Entity-Int-Pair {entity: filter-datom.e value: int-value}))))
+                (let [[value value-ok] (latest-attr-value db filter-datom.e projection.value-attr)]
+                  (when (and value-ok (= value.kind .Int))
+                    (arr.push! out (Entity-Int-Pair {entity: filter-datom.e value: value.int-value})))))))))
       (return out true))))
 
 (defn q-query-profiled-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Profiled-Result-Set
