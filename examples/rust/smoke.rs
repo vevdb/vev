@@ -27,7 +27,10 @@ unsafe extern "C" {
     fn vev_conn_open_memory() -> VevConn;
     fn vev_conn_close(conn: VevConn);
     fn vev_conn_db(conn: VevConn) -> VevDb;
+    fn vev_conn_from_db(db: VevDb) -> VevConn;
     fn vev_db_release(db: VevDb);
+    fn vev_with_edn(db: VevDb, tx_text: *const c_char) -> *const c_char;
+    fn vev_db_with_edn(db: VevDb, tx_text: *const c_char) -> VevDb;
 
     fn vev_string_free(text: *const c_char);
 
@@ -185,6 +188,15 @@ impl Conn {
         }
     }
 
+    fn from_db(db: &Db) -> Result<Self, String> {
+        let raw = unsafe { vev_conn_from_db(db.raw) };
+        if raw.is_null() {
+            Err("failed to create connection from DB snapshot".to_string())
+        } else {
+            Ok(Self { raw })
+        }
+    }
+
     fn transact(&self, tx: &str) -> String {
         let tx = cstring(tx);
         unsafe { Library::owned_string(vev_transact_edn(self.raw, tx.as_ptr())) }
@@ -227,6 +239,23 @@ impl Drop for Conn {
 
 struct Db {
     raw: VevDb,
+}
+
+impl Db {
+    fn with_text(&self, tx: &str) -> String {
+        let tx = cstring(tx);
+        unsafe { Library::owned_string(vev_with_edn(self.raw, tx.as_ptr())) }
+    }
+
+    fn db_with(&self, tx: &str) -> Result<Db, String> {
+        let tx = cstring(tx);
+        let raw = unsafe { vev_db_with_edn(self.raw, tx.as_ptr()) };
+        if raw.is_null() {
+            Err("failed to create DB snapshot".to_string())
+        } else {
+            Ok(Db { raw })
+        }
+    }
 }
 
 impl Drop for Db {
@@ -497,6 +526,29 @@ fn main() -> Result<(), String> {
         .rows();
     if snapshot_stmt_rows != vec![vec![Value::Entity(1), Value::String("ada@example.com".to_string())]] {
         return Err("unexpected snapshot statement rows".to_string());
+    }
+
+    let barbara_query = conn.prepare(r#"[:find ?e :where [?e :user/name "Barbara"]]"#)?;
+    let dorothy_query = conn.prepare(r#"[:find ?e :where [?e :user/name "Dorothy"]]"#)?;
+    println!(
+        "with-db: {}",
+        snapshot.with_text(r#"[{:db/id 4 :user/name "Barbara"}]"#)
+    );
+    let next_db = snapshot.db_with(r#"[{:db/id 4 :user/name "Barbara"}]"#)?;
+    let source_barbara_rows = barbara_query.query_db(&snapshot, "[]")?.row_count();
+    let next_barbara_rows = barbara_query.query_db(&next_db, "[]")?.row_count();
+    if source_barbara_rows != 0 || next_barbara_rows != 1 {
+        return Err(format!(
+            "unexpected db-with rows: source={source_barbara_rows} next={next_barbara_rows}"
+        ));
+    }
+
+    let derived = Conn::from_db(&next_db)?;
+    derived.transact(r#"[{:db/id 5 :user/name "Dorothy"}]"#);
+    let derived_barbara_rows = barbara_query.query_conn(&derived, "[]")?.row_count();
+    let derived_dorothy_rows = dorothy_query.query_conn(&derived, "[]")?.row_count();
+    if derived_barbara_rows != 1 || derived_dorothy_rows != 1 {
+        return Err("conn-from-db did not initialize from DB value".to_string());
     }
 
     Ok(())

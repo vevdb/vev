@@ -177,6 +177,19 @@ vev_result_free(old_rows);
 vev_result_t old_stmt_rows = vev_query_db_stmt_result(retained_snapshot, stmt);
 vev_result_free(old_stmt_rows);
 
+const char *with_report =
+    vev_with_edn(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
+vev_string_free(with_report);
+
+vev_db_t next_db =
+    vev_db_with_edn(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
+vev_conn_t derived = vev_conn_from_db(next_db);
+const char *derived_report =
+    vev_transact_edn(derived, "[{:db/id 4 :user/name \"Dorothy\"}]");
+vev_string_free(derived_report);
+vev_conn_close(derived);
+vev_db_release(next_db);
+
 vev_db_release(retained_snapshot);
 
 vev_stmt_free(stmt);
@@ -243,6 +256,10 @@ friend = user[":user/friend"][":user/name"]
 entity values from ordinary integer values. Keywords and symbols currently
 convert to their EDN text strings, for example `":user/name"`.
 
+The smoke also exercises DB-value `with`, `db-with`, and `conn-from-db` so the
+Python path follows the same immutable snapshot contract as C, Java, Clojure,
+and Rust.
+
 ## Rust Example
 
 [smoke.rs](../examples/rust/smoke.rs) is a direct `rustc`-compiled example, not
@@ -256,7 +273,8 @@ a packaged crate yet. It mirrors the intended safe wrapper shape:
 
 The example covers transactions, rendered EDN query output, prepared statement
 bindings, homogeneous collection bindings, pull result traversal, DB snapshots,
-and querying a snapshot with a statement.
+querying a snapshot with a statement, immutable `db-with`, and deriving a
+connection from a DB value.
 
 ## Java And Clojure Examples
 

@@ -327,6 +327,92 @@ int main(void) {
         return 1;
     }
 
+    vev_prepared_query_t barbara_query =
+        vev_prepare_query_edn("[:find ?e :where [?e :user/name \"Barbara\"]]");
+    vev_prepared_query_t dorothy_query =
+        vev_prepare_query_edn("[:find ?e :where [?e :user/name \"Dorothy\"]]");
+    if (barbara_query == NULL || dorothy_query == NULL) {
+        fprintf(stderr, "failed to prepare DB value queries\n");
+        if (barbara_query != NULL) vev_prepared_query_free(barbara_query);
+        if (dorothy_query != NULL) vev_prepared_query_free(dorothy_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    print_and_free(
+        "with-db",
+        vev_with_edn(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]"));
+
+    vev_db_t next_db = vev_db_with_edn(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]");
+    if (next_db == NULL) {
+        fprintf(stderr, "failed to create DB value with tx data\n");
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    vev_result_t source_barbara = vev_query_db_prepared_result_with_inputs(snapshot, barbara_query, "[]");
+    vev_result_t next_barbara = vev_query_db_prepared_result_with_inputs(next_db, barbara_query, "[]");
+    int source_barbara_rows = result_row_count_or_error("source-barbara", source_barbara);
+    int next_barbara_rows = result_row_count_or_error("next-barbara", next_barbara);
+    vev_result_free(source_barbara);
+    vev_result_free(next_barbara);
+    if (source_barbara_rows != 0 || next_barbara_rows != 1) {
+        fprintf(stderr, "unexpected db-with rows: source=%d next=%d\n", source_barbara_rows, next_barbara_rows);
+        vev_db_release(next_db);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    vev_conn_t derived = vev_conn_from_db(next_db);
+    if (derived == NULL) {
+        fprintf(stderr, "failed to create derived connection\n");
+        vev_db_release(next_db);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+    print_and_free(
+        "derived-tx",
+        vev_transact_edn(derived, "[{:db/id 5 :user/name \"Dorothy\"}]"));
+    vev_result_t derived_barbara = vev_query_prepared_result_with_inputs(derived, barbara_query, "[]");
+    vev_result_t derived_dorothy = vev_query_prepared_result_with_inputs(derived, dorothy_query, "[]");
+    int derived_barbara_rows = result_row_count_or_error("derived-barbara", derived_barbara);
+    int derived_dorothy_rows = result_row_count_or_error("derived-dorothy", derived_dorothy);
+    vev_result_free(derived_barbara);
+    vev_result_free(derived_dorothy);
+    vev_conn_close(derived);
+    if (derived_barbara_rows != 1 || derived_dorothy_rows != 1) {
+        fprintf(stderr, "unexpected derived connection rows\n");
+        vev_db_release(next_db);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    vev_db_release(next_db);
+    vev_prepared_query_free(dorothy_query);
+    vev_prepared_query_free(barbara_query);
     vev_db_release(snapshot);
     vev_prepared_query_free(all_emails);
 

@@ -105,6 +105,34 @@ def main() -> int:
                     print(f"snapshot-db rows: {snapshot_rows}")
                     if current_rows != 3 or snapshot_rows != 2:
                         raise RuntimeError("unexpected snapshot row counts")
+
+                    with conn.prepare(
+                        '[:find ?e :where [?e :user/name "Barbara"]]'
+                    ) as barbara_query, conn.prepare(
+                        '[:find ?e :where [?e :user/name "Dorothy"]]'
+                    ) as dorothy_query:
+                        report = snapshot.with_text(
+                            '[{:db/id 4 :user/name "Barbara"}]'
+                        )
+                        print(f"with-db: {report}")
+                        with snapshot.db_with(
+                            '[{:db/id 4 :user/name "Barbara"}]'
+                        ) as next_db:
+                            if len(barbara_query.rows(snapshot)) != 0:
+                                raise RuntimeError("db-with mutated source DB")
+                            if len(barbara_query.rows(next_db)) != 1:
+                                raise RuntimeError("db-with missing new fact")
+                            with vev.Connection.from_db(next_db) as derived:
+                                derived.transact(
+                                    '[{:db/id 5 :user/name "Dorothy"}]'
+                                )
+                                if (
+                                    len(barbara_query.rows(derived)) != 1
+                                    or len(dorothy_query.rows(derived)) != 1
+                                ):
+                                    raise RuntimeError(
+                                        "conn-from-db did not initialize from DB"
+                                    )
             finally:
                 all_emails.close()
         finally:

@@ -51,7 +51,13 @@ class Library:
         lib.vev_conn_close.argtypes = [ctypes.c_void_p]
         lib.vev_conn_db.argtypes = [ctypes.c_void_p]
         lib.vev_conn_db.restype = ctypes.c_void_p
+        lib.vev_conn_from_db.argtypes = [ctypes.c_void_p]
+        lib.vev_conn_from_db.restype = ctypes.c_void_p
         lib.vev_db_release.argtypes = [ctypes.c_void_p]
+        lib.vev_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_with_edn.restype = ctypes.c_void_p
+        lib.vev_db_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_db_with_edn.restype = ctypes.c_void_p
 
         lib.vev_string_free.argtypes = [ctypes.c_void_p]
 
@@ -233,9 +239,9 @@ def open_memory() -> "Connection":
 
 
 class Connection:
-    def __init__(self, library: Library):
+    def __init__(self, library: Library, handle: int | None = None):
         self._library = library
-        self._handle = library.lib.vev_conn_open_memory()
+        self._handle = handle if handle is not None else library.lib.vev_conn_open_memory()
         if not self._handle:
             raise VevError("failed to open Vev connection")
 
@@ -280,6 +286,14 @@ class Connection:
         if not handle:
             raise VevError("failed to retain DB snapshot")
         return DB(self._library, handle)
+
+    @classmethod
+    def from_db(cls, db: "DB") -> "Connection":
+        db._require_open()
+        handle = db._library.lib.vev_conn_from_db(db._handle)
+        if not handle:
+            raise VevError("failed to create connection from DB snapshot")
+        return cls(db._library, handle)
 
     def _query_result(self, prepared: "PreparedQuery", inputs_edn: str = "[]") -> "Result":
         self._require_open()
@@ -328,6 +342,19 @@ class DB:
         self._require_open()
         handle = self._library.lib.vev_query_db_stmt_result(self._handle, stmt._handle)
         return Result(self._library, handle)
+
+    def with_text(self, tx_edn: str) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_with_edn(self._handle, _bytes(tx_edn))
+        )
+
+    def db_with(self, tx_edn: str) -> "DB":
+        self._require_open()
+        handle = self._library.lib.vev_db_with_edn(self._handle, _bytes(tx_edn))
+        if not handle:
+            raise VevError("failed to create DB snapshot")
+        return DB(self._library, handle)
 
     def _require_open(self) -> None:
         if not self._handle:
