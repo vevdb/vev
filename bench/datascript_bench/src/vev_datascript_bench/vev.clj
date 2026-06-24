@@ -10,55 +10,21 @@
    {:db/id 104 :db/ident :age :db/valueType :db.type/long}
    {:db/id 105 :db/ident :salary :db/valueType :db.type/long}])
 
-(def schema-tx-text
-  "[[:db/add 100 :db/ident :follows]
-    [:db/add 100 :db/valueType :db.type/ref]
-    [:db/add 100 :db/cardinality :db.cardinality/many]
-    [:db/add 101 :db/ident :name]
-    [:db/add 101 :db/valueType :db.type/string]
-    [:db/add 102 :db/ident :last-name]
-    [:db/add 102 :db/valueType :db.type/string]
-    [:db/add 103 :db/ident :sex]
-    [:db/add 103 :db/valueType :db.type/keyword]
-    [:db/add 104 :db/ident :age]
-    [:db/add 104 :db/valueType :db.type/long]
-    [:db/add 105 :db/ident :salary]
-    [:db/add 105 :db/valueType :db.type/long]]")
-
 (defn library-path []
   (or (System/getProperty "vev.library")
       (System/getenv "VEV_LIB")
       "build/lib/libvev.dylib"))
 
-(defn- append-value! [^StringBuilder builder value]
-  (.append builder (binding [*print-namespace-maps* false] (pr-str value))))
-
-(defn- append-add! [^StringBuilder builder e attr value]
-  (.append builder "[:db/add ")
-  (.append builder e)
-  (.append builder " ")
-  (.append builder attr)
-  (.append builder " ")
-  (append-value! builder value)
-  (.append builder "]"))
-
-(defn people-tx-text [people]
-  (let [builder (StringBuilder. (* 80 (count people)))]
-    (.append builder "[")
-    (doseq [p people]
-      (let [e (:db/id p)]
-        (append-add! builder e :name (:name p))
-        (append-add! builder e :last-name (:last-name p))
-        (append-add! builder e :sex (:sex p))
-        (append-add! builder e :age (:age p))
-        (append-add! builder e :salary (:salary p))))
-    (.append builder "]")
-    (str builder)))
+(defn db-with-bulk [db entities]
+  (let [datom-count (reduce + 0 (map #(dec (count %)) entities))]
+    (with-open [tx (v/tx-builder db datom-count)]
+      (v/bulk-add! tx entities)
+      (v/db-with db tx))))
 
 (defn people-db []
   (with-open [initial (v/empty-db (library-path))
-              schema-db (v/db-with initial schema-tx-text)]
-    (v/db-with schema-db (people-tx-text @core/people20k))))
+              schema-db (db-with-bulk initial schema-tx)]
+    (db-with-bulk schema-db @core/people20k)))
 
 (def shared-db (delay (people-db)))
 

@@ -13,6 +13,7 @@ typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
 typedef void *vev_stmt_t;
 typedef void *vev_tx_report_t;
+typedef void *vev_tx_builder_t;
 typedef void *vev_tx_fn_registry_t;
 typedef const void *vev_tx_fn_args_t;
 typedef void *vev_value_handle_t;
@@ -90,6 +91,16 @@ vev_tx_report_t vev_with_edn_report_with_tx_fns(
 void vev_tx_report_free(vev_tx_report_t report);
 vev_value_t vev_tx_report_value(vev_tx_report_t report);
 const char *vev_tx_report_edn(vev_tx_report_t report);
+vev_tx_builder_t vev_tx_create(int capacity);
+void vev_tx_free(vev_tx_builder_t builder);
+bool vev_tx_add_string(vev_tx_builder_t builder, unsigned long long e, const char *attr, const char *value);
+bool vev_tx_add_keyword(vev_tx_builder_t builder, unsigned long long e, const char *attr, const char *value);
+bool vev_tx_add_symbol(vev_tx_builder_t builder, unsigned long long e, const char *attr, const char *value);
+bool vev_tx_add_entity(vev_tx_builder_t builder, unsigned long long e, const char *attr, unsigned long long value);
+bool vev_tx_add_int(vev_tx_builder_t builder, unsigned long long e, const char *attr, long long value);
+bool vev_tx_add_bool(vev_tx_builder_t builder, unsigned long long e, const char *attr, bool value);
+vev_tx_report_t vev_tx_commit_report(vev_conn_t conn, vev_tx_builder_t builder);
+vev_db_t vev_tx_db_with(vev_db_t db, vev_tx_builder_t builder);
 vev_tx_fn_registry_t vev_tx_fn_registry_create(void);
 void vev_tx_fn_registry_free(vev_tx_fn_registry_t registry);
 bool vev_tx_fn_registry_register_edn(

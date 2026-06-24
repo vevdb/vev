@@ -2186,7 +2186,41 @@
     (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice tuple-attrs 0))]
       (and has-value (value-equal? tuple-value op.v)))))
 
+(defn db-has-tuple-schema? [db: DB] -> bool
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword)
+                   (= datom.v.text ":db.type/tuple"))
+          (return true)))))
+  false)
+
+(defn op-modifies-tuple-schema? [op: Tx-Op] -> bool
+  (and (= op.kind .Add)
+       (or (= op.a ":db/tupleAttrs")
+           (and (= op.a ":db/valueType")
+                (= op.v.kind .Keyword)
+                (= op.v.text ":db.type/tuple")))))
+
+(defn ops-modify-tuple-schema? [ops: []Tx-Op] -> bool
+  (for [op ops]
+    (when (op-modifies-tuple-schema? op)
+      (return true)))
+  false)
+
 (defn expand-tuple-ops [db: DB, ops: []Tx-Op] -> [dynamic]Tx-Op
+  (when (and (not (db-has-tuple-schema? db))
+             (not (ops-modify-tuple-schema? ops)))
+    (return (arr.into [dynamic]Tx-Op ops)))
   (let [out (make [dynamic]Tx-Op 0 (count ops))
         whole-tx-db (db-with-resolved-ops db ops)]
     (for [op ops]
@@ -2384,7 +2418,71 @@
     (return false "bad lookup attribute"))
   (return true ""))
 
+(defn tx-data-modifies-validation-schema? [data: Tx-Data] -> bool
+  (or (= data.a ":db/ident")
+      (= data.a ":db/valueType")
+      (= data.a ":db/cardinality")
+      (= data.a ":db/unique")
+      (= data.a ":db/tupleAttrs")
+      (= data.a ":db/index")
+      (= data.a ":db/isComponent")))
+
+(defn direct-tx-data-item? [db: DB, data: Tx-Data] -> bool
+  (when (not (or (= data.op ":db/add")
+                 (= data.op ":db/retract")))
+    (return false))
+  (when (or data.has-tempid
+            data.has-lookup-ref
+            data.has-ident
+            data.has-expected-lookup-ref
+            data.has-value-tempid
+            data.has-value-lookup-ref
+            data.has-nested-map
+            data.from-map-collection
+            (tx-data-modifies-validation-schema? data)
+            (current-tx-value? data.v)
+            (ref-string-value? db data.a data.v)
+            (ref-negative-int-value? db data.a data.v)
+            (schema-unique? db data.a)
+            (reverse-attr? data.a))
+    (return false))
+  true)
+
+(defn direct-tx-data? [db: DB, tx-data: []Tx-Data] -> bool
+  (when (db-has-tuple-schema? db)
+    (return false))
+  (for [data tx-data]
+    (when (not (direct-tx-data-item? db data))
+      (return false)))
+  true)
+
+(defn resolve-direct-tx-data-for-tx [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
+  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
+        resolved-meta (make [dynamic]Tx-Meta)
+        resolved-tempids (make [dynamic]Tempid)]
+    (for [data tx-data]
+      (let [[shape-ok shape-error] (validate-tx-data-item data)]
+        (when (not shape-ok)
+          (return (Resolved-Tx {ok: false
+                                error: shape-error
+                                ops: resolved-ops
+                                tx-meta: resolved-meta
+                                tempids: resolved-tempids}))))
+      (let [[value value-ok value-error] (resolve-tx-value db data.a data.v)]
+        (when (not value-ok)
+          (return (Resolved-Tx {ok: false
+                                error: value-error
+                                ops: resolved-ops
+                                tx-meta: resolved-meta
+                                tempids: resolved-tempids})))
+        (if (= data.op ":db/retract")
+          (arr.push! resolved-ops (tx-retract data.e data.a value))
+          (arr.push! resolved-ops (tx-add data.e data.a value)))))
+    (Resolved-Tx {ok: true error: "" ops: resolved-ops tx-meta: resolved-meta tempids: resolved-tempids})))
+
 (defn resolve-tx-data-for-tx [db: DB, tx-data: []Tx-Data, tx: u64] -> Resolved-Tx
+  (when (direct-tx-data? db tx-data)
+    (return (resolve-direct-tx-data-for-tx db tx-data)))
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)

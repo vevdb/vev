@@ -57,21 +57,23 @@ VEV_COMPARE_USE_UPSTREAM_SCRIPT=1 \
   bench/datascript_bench/run_compare.sh q1
 ```
 
-Current caveat:
+Current status:
 
 - The query adapter is wired through the public Clojure API and native C ABI.
-- Full 20k-person setup currently goes through EDN transaction text and is too
-  slow for tight iteration.
-- That setup cost is outside the measured query loop, but it blocks convenient
-  full-scale comparison.
-- A 1k-person smoke through the Clojure API currently measures the read queries
-  in the low-millisecond range, while setup/import dominates wall-clock time.
+- Bulk setup uses the native transaction builder exposed through the C ABI,
+  Java wrapper, and Clojure wrapper.
+- Direct non-schema, non-unique, non-tuple add/retract batches use a one-pass
+  transaction resolver.
+- Non-tuple databases skip tuple maintenance during transaction expansion.
+- A local 1k-person setup takes about 0.44s after these import-path changes.
+- A local full 20k-person Vev-only run completes in about 11s wall time,
+  including setup, with the default seven read queries.
 
 Near-term benchmark work:
 
-1. Add a faster benchmark import path, preferably a reusable bulk transaction
-   path rather than a benchmark-only shortcut.
-2. Extend the comparison runner to capture and normalize output into a single
+1. Extend the comparison runner to capture and normalize output into a single
    table with ratios against DataScript and Datalevin.
+2. Investigate why long baseline comparison runs can stall on local external
+   DataScript/Datalevin/Datomic processes even when the Vev row completes.
 3. Use `q2` and `q2-switch` to drive a general same-entity star / merge-scan
    physical operator in Vev.

@@ -35,6 +35,16 @@ public final class Vev {
     private final MethodHandle txReportFree;
     private final MethodHandle txReportValue;
     private final MethodHandle txReportEdn;
+    private final MethodHandle txCreate;
+    private final MethodHandle txFree;
+    private final MethodHandle txAddString;
+    private final MethodHandle txAddKeyword;
+    private final MethodHandle txAddSymbol;
+    private final MethodHandle txAddEntity;
+    private final MethodHandle txAddInt;
+    private final MethodHandle txAddBool;
+    private final MethodHandle txCommitReport;
+    private final MethodHandle txDbWith;
     private final MethodHandle queryEdnWithInputs;
     private final MethodHandle prepareQueryEdn;
     private final MethodHandle preparedQueryFree;
@@ -98,6 +108,16 @@ public final class Vev {
         this.txReportFree = downcall("vev_tx_report_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.txReportValue = downcall("vev_tx_report_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.txReportEdn = downcall("vev_tx_report_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txCreate = downcall("vev_tx_create", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.txFree = downcall("vev_tx_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.txAddString = downcall("vev_tx_add_string", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txAddKeyword = downcall("vev_tx_add_keyword", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txAddSymbol = downcall("vev_tx_add_symbol", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txAddEntity = downcall("vev_tx_add_entity", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.txAddInt = downcall("vev_tx_add_int", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.txAddBool = downcall("vev_tx_add_bool", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_BOOLEAN));
+        this.txCommitReport = downcall("vev_tx_commit_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txDbWith = downcall("vev_tx_db_with", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.prepareQueryEdn = downcall("vev_prepare_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryFree = downcall("vev_prepared_query_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -161,6 +181,12 @@ public final class Vev {
             if (isNull(raw)) throw new IllegalStateException("failed to prepare query");
             return new PreparedQuery(raw);
         }
+    }
+
+    public TxBuilder txBuilder(int capacity) throws Throwable {
+        MemorySegment raw = (MemorySegment) txCreate.invoke(Math.max(0, capacity));
+        if (isNull(raw)) throw new IllegalStateException("failed to create transaction builder");
+        return new TxBuilder(raw);
     }
 
     public void close() {
@@ -319,6 +345,11 @@ public final class Vev {
             }
         }
 
+        public TxReport transactReport(TxBuilder tx) throws Throwable {
+            tx.requireOpen();
+            return new TxReport((MemorySegment) txCommitReport.invoke(raw, tx.raw));
+        }
+
         public String queryText(String query, String inputs) throws Throwable {
             try (Arena local = Arena.ofConfined()) {
                 return ownedString((MemorySegment) queryEdnWithInputs.invoke(raw, local.allocateUtf8String(query), local.allocateUtf8String(inputs)));
@@ -399,6 +430,14 @@ public final class Vev {
                 if (isNull(db)) throw new IllegalStateException("failed to create DB snapshot");
                 return new DB(db);
             }
+        }
+
+        public DB dbWith(TxBuilder tx) throws Throwable {
+            requireOpen();
+            tx.requireOpen();
+            MemorySegment db = (MemorySegment) txDbWith.invoke(handle.raw, tx.raw);
+            if (isNull(db)) throw new IllegalStateException("failed to create DB snapshot");
+            return new DB(db);
         }
 
         public Object pull(String pattern, long entity) throws Throwable {
@@ -494,6 +533,74 @@ public final class Vev {
         public void close() {
             if (!isNull(raw)) {
                 closeHandle(preparedQueryFree, raw);
+                raw = MemorySegment.NULL;
+            }
+        }
+    }
+
+    public final class TxBuilder implements AutoCloseable {
+        private MemorySegment raw;
+
+        private TxBuilder(MemorySegment raw) {
+            this.raw = raw;
+        }
+
+        public TxBuilder addString(long e, String attr, String value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddString.invoke(raw, e, local.allocateUtf8String(attr), local.allocateUtf8String(value));
+                if (!ok) throw new IllegalStateException("failed to add string tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addKeyword(long e, String attr, String value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddKeyword.invoke(raw, e, local.allocateUtf8String(attr), local.allocateUtf8String(value));
+                if (!ok) throw new IllegalStateException("failed to add keyword tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addSymbol(long e, String attr, String value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddSymbol.invoke(raw, e, local.allocateUtf8String(attr), local.allocateUtf8String(value));
+                if (!ok) throw new IllegalStateException("failed to add symbol tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addEntity(long e, String attr, long value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddEntity.invoke(raw, e, local.allocateUtf8String(attr), value);
+                if (!ok) throw new IllegalStateException("failed to add entity tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addInt(long e, String attr, long value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddInt.invoke(raw, e, local.allocateUtf8String(attr), value);
+                if (!ok) throw new IllegalStateException("failed to add int tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addBool(long e, String attr, boolean value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddBool.invoke(raw, e, local.allocateUtf8String(attr), value);
+                if (!ok) throw new IllegalStateException("failed to add bool tx datom");
+                return this;
+            }
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("transaction builder is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(txFree, raw);
                 raw = MemorySegment.NULL;
             }
         }

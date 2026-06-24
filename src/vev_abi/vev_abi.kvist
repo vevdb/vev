@@ -35,6 +35,10 @@ ABI_Tx_Report :: struct {
     value: vev__Value,
 }
 
+ABI_Tx_Builder :: struct {
+    tx_data: [dynamic]vev__Tx_Data,
+}
+
 ABI_Tx_Fn_Registry :: struct {
     entries: [dynamic]vev__Tx_Fn_String,
     slots: [dynamic]int,
@@ -246,6 +250,22 @@ abi_tx_report_value_ptr :: proc(report: rawptr) -> ^vev__Value {
 
 abi_free_tx_report :: proc(report: rawptr) {
     free((^ABI_Tx_Report)(report))
+}
+
+abi_alloc_tx_builder :: proc(capacity: int) -> rawptr {
+    wrapper := new(ABI_Tx_Builder)
+    wrapper.tx_data = make([dynamic]vev__Tx_Data, 0, capacity)
+    return rawptr(wrapper)
+}
+
+abi_tx_builder_data_ptr :: proc(builder: rawptr) -> ^[dynamic]vev__Tx_Data {
+    return &((^ABI_Tx_Builder)(builder))^.tx_data
+}
+
+abi_free_tx_builder :: proc(builder: rawptr) {
+    wrapper := (^ABI_Tx_Builder)(builder)
+    delete(wrapper.tx_data)
+    free(wrapper)
 }
 
 abi_alloc_tx_fn_registry :: proc() -> rawptr {
@@ -525,6 +545,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (def Vev-Result (distinct rawptr))
 (def Vev-Stmt (distinct rawptr))
 (def Vev-Tx-Report (distinct rawptr))
+(def Vev-Tx-Builder (distinct rawptr))
 (def Vev-Tx-Fn-Registry (distinct rawptr))
 (def Vev-Tx-Fn-Args (distinct rawptr))
 (def Vev-Value-Handle (distinct rawptr))
@@ -550,6 +571,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- tx-report-value-ptr [report: Vev-Tx-Report] -> ^vev.Value
   (abi-tx-report-value-ptr (rawptr report)))
+
+(defn- tx-builder-data-ptr [builder: Vev-Tx-Builder] -> ^[dynamic]vev.Tx-Data
+  (abi-tx-builder-data-ptr (rawptr builder)))
 
 (defn- tx-fn-registry-entries-ptr [registry: Vev-Tx-Fn-Registry] -> ^[dynamic]vev.Tx-Fn-String
   (abi-tx-fn-registry-entries-ptr (rawptr registry)))
@@ -1152,6 +1176,81 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (c-string-owned "nil")))
   (let [ptr (tx-report-value-ptr report)]
     (c-string-owned (vev.value-serializable-text ptr^))))
+
+@export
+(defn vev_tx_create :abi "c" [capacity: int] -> Vev-Tx-Builder
+  (odin "context = runtime.default_context()")
+  (Vev-Tx-Builder (abi-alloc-tx-builder (if (< capacity 0) 0 capacity))))
+
+@export
+(defn vev_tx_free :abi "c" [builder: Vev-Tx-Builder]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr builder) nil)
+    (return))
+  (abi-free-tx-builder (rawptr builder)))
+
+(defn- tx-builder-push-add! [builder: Vev-Tx-Builder, e: u64, attr: cstring, value: vev.Value] -> bool
+  (when (or (= (rawptr builder) nil) (= attr nil))
+    (return false))
+  (let [tx-data (tx-builder-data-ptr builder)]
+    (arr.push! tx-data^ (vev.add e (text-from-c attr) value))
+    true))
+
+@export
+(defn vev_tx_add_string :abi "c" [builder: Vev-Tx-Builder, e: u64, attr: cstring, value: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= value nil)
+    (return false))
+  (tx-builder-push-add! builder e attr (vev.value-string (text-from-c value))))
+
+@export
+(defn vev_tx_add_keyword :abi "c" [builder: Vev-Tx-Builder, e: u64, attr: cstring, value: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= value nil)
+    (return false))
+  (tx-builder-push-add! builder e attr (vev.value-keyword (text-from-c value))))
+
+@export
+(defn vev_tx_add_symbol :abi "c" [builder: Vev-Tx-Builder, e: u64, attr: cstring, value: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= value nil)
+    (return false))
+  (tx-builder-push-add! builder e attr (vev.value-symbol (text-from-c value))))
+
+@export
+(defn vev_tx_add_entity :abi "c" [builder: Vev-Tx-Builder, e: u64, attr: cstring, value: u64] -> bool
+  (odin "context = runtime.default_context()")
+  (tx-builder-push-add! builder e attr (vev.value-entity value)))
+
+@export
+(defn vev_tx_add_int :abi "c" [builder: Vev-Tx-Builder, e: u64, attr: cstring, value: i64] -> bool
+  (odin "context = runtime.default_context()")
+  (tx-builder-push-add! builder e attr (vev.value-int value)))
+
+@export
+(defn vev_tx_add_bool :abi "c" [builder: Vev-Tx-Builder, e: u64, attr: cstring, value: bool] -> bool
+  (odin "context = runtime.default_context()")
+  (tx-builder-push-add! builder e attr (vev.value-bool value)))
+
+@export
+(defn vev_tx_commit_report :abi "c" [conn: Vev-Conn, builder: Vev-Tx-Builder] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= (rawptr builder) nil))
+    (return (Vev-Tx-Report nil)))
+  (let [tx-data (tx-builder-data-ptr builder)
+        report (vev.transact-tx-data (conn-ptr conn) (slice tx-data^ 0))]
+    (notify-abi-tx-listeners! conn report)
+    (tx-report-handle-from-report report)))
+
+@export
+(defn vev_tx_db_with :abi "c" [db: Vev-DB, builder: Vev-Tx-Builder] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr builder) nil))
+    (return (Vev-DB nil)))
+  (let [db-ptr-value (db-ptr db)
+        tx-data (tx-builder-data-ptr builder)
+        next-db (vev.db-with-tx-data db-ptr-value^ (slice tx-data^ 0))]
+    (Vev-DB (abi-alloc-db (db-owned next-db)))))
 
 @export
 (defn vev_tx_fn_arg :abi "c" [args: Vev-Tx-Fn-Args, index: int] -> Vev-Value

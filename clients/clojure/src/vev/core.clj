@@ -70,6 +70,11 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
+(defrecord TxBuilder [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
 (defn create-conn
   "Create an in-memory Vev connection.
 
@@ -107,7 +112,9 @@
 
   Returns a Clojure transaction report map."
   [^Conn conn tx]
-  (with-open [report (.transactReport (:native conn) (edn-text tx))]
+  (with-open [report (if (instance? TxBuilder tx)
+                       (.transactReport (:native conn) (:native tx))
+                       (.transactReport (:native conn) (edn-text tx)))]
     (clj-value (.value report))))
 
 (def transact transact!)
@@ -134,7 +141,61 @@
 (defn db-with
   "Apply tx data to an immutable DB and return the resulting immutable DB value."
   [^DB db tx]
-  (->DB (:engine db) (.dbWith (:native db) (edn-text tx))))
+  (if (instance? TxBuilder tx)
+    (->DB (:engine db) (.dbWith (:native db) (:native tx)))
+    (->DB (:engine db) (.dbWith (:native db) (edn-text tx)))))
+
+(defn tx-builder
+  "Create a native transaction builder for direct typed bulk tx construction."
+  ([source]
+   (tx-builder source 0))
+  ([source capacity]
+   (let [engine (:engine source)]
+     (->TxBuilder engine (.txBuilder engine (int capacity))))))
+
+(defn- attr-text [attr]
+  (cond
+    (keyword? attr) (str attr)
+    (string? attr) attr
+    :else (throw (ex-info "expected tx attr keyword or string" {:attr attr}))))
+
+(defn tx-add!
+  "Append one :db/add datom to a native transaction builder."
+  [^TxBuilder tx e attr value]
+  (let [native (:native tx)
+        e (long e)
+        attr (attr-text attr)]
+    (cond
+      (string? value)
+      (.addString native e attr value)
+
+      (keyword? value)
+      (.addKeyword native e attr (str value))
+
+      (integer? value)
+      (.addInt native e attr (long value))
+
+      (boolean? value)
+      (.addBool native e attr value)
+
+      (instance? Vev$Entity value)
+      (.addEntity native e attr (.id ^Vev$Entity value))
+
+      :else
+      (throw (ex-info "unsupported native tx builder value" {:value value}))))
+  tx)
+
+(defn bulk-add!
+  "Append Datomic/DataScript-style entity maps to a native transaction builder."
+  [^TxBuilder tx entities]
+  (doseq [entity entities]
+    (let [e (:db/id entity)]
+      (when-not (integer? e)
+        (throw (ex-info "bulk entity map requires integer :db/id" {:entity entity})))
+      (doseq [[attr value] entity]
+        (when-not (= attr :db/id)
+          (tx-add! tx e attr value)))))
+  tx)
 
 (defn init-db
   "Create an immutable DB initialized by applying tx data to an empty DB."
