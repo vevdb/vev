@@ -83,6 +83,47 @@ def main() -> int:
             finally:
                 collection_query.close()
 
+            tuple_query = conn.prepare(
+                """
+                [:find ?e
+                 :in [?name ?email]
+                 :where [?e :user/name ?name]
+                        [?e :user/email ?email]]
+                """
+            )
+            try:
+                with tuple_query.statement() as stmt:
+                    rows = stmt.bind(vev.TupleInput(("Ada", "ada@example.com"))).rows(conn)
+                    print(f"tuple statement rows: {rows}")
+                    if rows != [[vev.Entity(1)]]:
+                        raise RuntimeError("unexpected tuple statement rows")
+            finally:
+                tuple_query.close()
+
+            relation_query = conn.prepare(
+                """
+                [:find ?name ?label
+                 :in [[?email ?label]]
+                 :where [?e :user/email ?email]
+                        [?e :user/name ?name]]
+                """
+            )
+            try:
+                with relation_query.statement() as stmt:
+                    rows = stmt.bind(
+                        vev.Relation(
+                            (
+                                ("ada@example.com", "primary"),
+                                ("missing@example.com", "missing"),
+                            )
+                        )
+                    ).rows(conn)
+                    print(f"relation statement rows: {rows}")
+                    if rows != [["Ada", "primary"]]:
+                        raise RuntimeError("unexpected relation statement rows")
+            finally:
+                relation_query.close()
+
             lookup_query = conn.prepare(
                 """
                 [:find ?name

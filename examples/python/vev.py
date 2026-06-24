@@ -29,6 +29,16 @@ class LookupRef:
     value: object
 
 
+@dataclass(frozen=True)
+class TupleInput:
+    values: tuple[object, ...]
+
+
+@dataclass(frozen=True)
+class Relation:
+    rows: tuple[tuple[object, ...], ...]
+
+
 class VevError(RuntimeError):
     pass
 
@@ -155,6 +165,58 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_stmt_bind_bool_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_string_tuple.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_string_tuple.restype = ctypes.c_bool
+        lib.vev_stmt_bind_entity_tuple.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_entity_tuple.restype = ctypes.c_bool
+        lib.vev_stmt_bind_int_tuple.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_longlong),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_int_tuple.restype = ctypes.c_bool
+        lib.vev_stmt_bind_bool_tuple.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_bool),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_bool_tuple.restype = ctypes.c_bool
+        lib.vev_stmt_bind_string_relation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_string_relation.restype = ctypes.c_bool
+        lib.vev_stmt_bind_entity_relation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_entity_relation.restype = ctypes.c_bool
+        lib.vev_stmt_bind_int_relation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_longlong),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_int_relation.restype = ctypes.c_bool
+        lib.vev_stmt_bind_bool_relation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_bool),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_bool_relation.restype = ctypes.c_bool
         lib.vev_stmt_bind_lookup_ref_string_collection.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -555,6 +617,10 @@ class Statement:
             ok = lib.vev_stmt_bind_entity(self._handle, value.id)
         elif isinstance(value, LookupRef):
             ok = self._bind_lookup_ref(value)
+        elif isinstance(value, TupleInput):
+            ok = self._bind_tuple(value.values)
+        elif isinstance(value, Relation):
+            ok = self._bind_relation(value.rows)
         elif isinstance(value, bool):
             ok = lib.vev_stmt_bind_bool(self._handle, value)
         elif isinstance(value, int):
@@ -587,6 +653,49 @@ class Statement:
         if isinstance(value, str):
             return bool(lib.vev_stmt_bind_lookup_ref_string(self._handle, attr, _bytes(value)))
         raise TypeError(f"unsupported Vev lookup-ref binding: {ref!r}")
+
+    def _bind_tuple(self, values: tuple[object, ...]) -> bool:
+        return self._bind_homogeneous_values(values, "tuple")
+
+    def _bind_relation(self, rows: tuple[tuple[object, ...], ...]) -> bool:
+        if len(rows) == 0:
+            raise TypeError("empty relation bindings need an explicit typed wrapper")
+        width = len(rows[0])
+        if width == 0 or any(len(row) != width for row in rows):
+            raise TypeError(f"relation rows must have a stable non-zero width: {rows!r}")
+        flat = tuple(value for row in rows for value in row)
+        return self._bind_homogeneous_values(flat, "relation", width)
+
+    def _bind_homogeneous_values(
+        self, values: tuple[object, ...], kind: str, width: int | None = None
+    ) -> bool:
+        lib = self._library.lib
+        suffix = "_relation" if kind == "relation" else f"_{kind}"
+        if len(values) == 0:
+            raise TypeError(f"empty {kind} bindings need an explicit typed wrapper")
+        if all(isinstance(value, Entity) for value in values):
+            array_type = ctypes.c_ulonglong * len(values)
+            array = array_type(*(value.id for value in values))
+            fn = getattr(lib, f"vev_stmt_bind_entity{suffix}")
+        elif all(isinstance(value, bool) for value in values):
+            array_type = ctypes.c_bool * len(values)
+            array = array_type(*values)
+            fn = getattr(lib, f"vev_stmt_bind_bool{suffix}")
+        elif all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            array_type = ctypes.c_longlong * len(values)
+            array = array_type(*values)
+            fn = getattr(lib, f"vev_stmt_bind_int{suffix}")
+        elif all(isinstance(value, str) for value in values):
+            encoded = [_bytes(value) for value in values]
+            array_type = ctypes.c_char_p * len(encoded)
+            array = array_type(*encoded)
+            fn = getattr(lib, f"vev_stmt_bind_string{suffix}")
+        else:
+            raise TypeError(f"unsupported homogeneous {kind} binding: {values!r}")
+        if kind == "relation":
+            assert width is not None
+            return bool(fn(self._handle, array, len(values), width))
+        return bool(fn(self._handle, array, len(values)))
 
     def _bind_collection(self, values: list[object] | tuple[object, ...]) -> bool:
         lib = self._library.lib

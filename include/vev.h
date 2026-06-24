@@ -92,6 +92,14 @@ bool vev_stmt_bind_string_collection(vev_stmt_t stmt, const char **values, int v
 bool vev_stmt_bind_entity_collection(vev_stmt_t stmt, const unsigned long long *values, int value_count);
 bool vev_stmt_bind_int_collection(vev_stmt_t stmt, const long long *values, int value_count);
 bool vev_stmt_bind_bool_collection(vev_stmt_t stmt, const bool *values, int value_count);
+bool vev_stmt_bind_string_tuple(vev_stmt_t stmt, const char **values, int value_count);
+bool vev_stmt_bind_entity_tuple(vev_stmt_t stmt, const unsigned long long *values, int value_count);
+bool vev_stmt_bind_int_tuple(vev_stmt_t stmt, const long long *values, int value_count);
+bool vev_stmt_bind_bool_tuple(vev_stmt_t stmt, const bool *values, int value_count);
+bool vev_stmt_bind_string_relation(vev_stmt_t stmt, const char **values, int value_count, int width);
+bool vev_stmt_bind_entity_relation(vev_stmt_t stmt, const unsigned long long *values, int value_count, int width);
+bool vev_stmt_bind_int_relation(vev_stmt_t stmt, const long long *values, int value_count, int width);
+bool vev_stmt_bind_bool_relation(vev_stmt_t stmt, const bool *values, int value_count, int width);
 bool vev_stmt_bind_lookup_ref_string_collection(
     vev_stmt_t stmt,
     const char *attr,

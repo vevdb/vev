@@ -333,6 +333,104 @@ int main(void) {
     vev_stmt_free(collection_stmt);
     vev_prepared_query_free(collection_query);
 
+    vev_prepared_query_t tuple_query =
+        vev_prepare_query_edn("[:find ?e :in [?name ?email] :where [?e :user/name ?name] [?e :user/email ?email]]");
+    if (tuple_query == NULL) {
+        fprintf(stderr, "failed to prepare tuple query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t tuple_stmt = vev_stmt_create(tuple_query);
+    if (tuple_stmt == NULL) {
+        fprintf(stderr, "failed to create tuple statement\n");
+        vev_prepared_query_free(tuple_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *tuple_values[] = {"Ada", "ada@example.com"};
+    if (!vev_stmt_bind_string_tuple(tuple_stmt, tuple_values, 2)) {
+        fprintf(stderr, "failed to bind tuple statement\n");
+        vev_stmt_free(tuple_stmt);
+        vev_prepared_query_free(tuple_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t tuple_result = vev_query_stmt_result(conn, tuple_stmt);
+    int tuple_rows = result_row_count_or_error("stmt-tuple", tuple_result);
+    printf("stmt-tuple rows: %d\n", tuple_rows);
+    vev_result_free(tuple_result);
+    if (tuple_rows != 1) {
+        fprintf(stderr, "unexpected tuple statement row count\n");
+        vev_stmt_free(tuple_stmt);
+        vev_prepared_query_free(tuple_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_free(tuple_stmt);
+    vev_prepared_query_free(tuple_query);
+
+    vev_prepared_query_t relation_query =
+        vev_prepare_query_edn("[:find ?name ?label :in [[?email ?label]] :where [?e :user/email ?email] [?e :user/name ?name]]");
+    if (relation_query == NULL) {
+        fprintf(stderr, "failed to prepare relation query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t relation_stmt = vev_stmt_create(relation_query);
+    if (relation_stmt == NULL) {
+        fprintf(stderr, "failed to create relation statement\n");
+        vev_prepared_query_free(relation_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *relation_values[] = {
+        "ada@example.com",
+        "primary",
+        "missing@example.com",
+        "missing",
+    };
+    if (!vev_stmt_bind_string_relation(relation_stmt, relation_values, 4, 2)) {
+        fprintf(stderr, "failed to bind relation statement\n");
+        vev_stmt_free(relation_stmt);
+        vev_prepared_query_free(relation_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t relation_result = vev_query_stmt_result(conn, relation_stmt);
+    int relation_rows = result_row_count_or_error("stmt-relation", relation_result);
+    vev_value_t relation_name = vev_result_value(relation_result, 0, 0);
+    vev_value_t relation_label = vev_result_value(relation_result, 0, 1);
+    printf("stmt-relation rows: %d\n", relation_rows);
+    if (relation_rows != 1 ||
+        !value_text_equals(relation_name, "Ada") ||
+        !value_text_equals(relation_label, "primary")) {
+        fprintf(stderr, "unexpected relation statement result\n");
+        vev_result_free(relation_result);
+        vev_stmt_free(relation_stmt);
+        vev_prepared_query_free(relation_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(relation_result);
+    vev_stmt_free(relation_stmt);
+    vev_prepared_query_free(relation_query);
+
     vev_prepared_query_t lookup_query =
         vev_prepare_query_edn("[:find ?name :in ?person :where [?person :user/name ?name]]");
     if (lookup_query == NULL) {
