@@ -1610,6 +1610,114 @@
       (return false parsed-error))
     (validate-parsed-rules (slice out^ 0))))
 
+(defn edn-query-vector-section-rank [doc: EDN-Doc, node: int] -> int
+  (cond
+    (edn-keyword-text? doc node ":find") 1
+    (edn-return-map-marker? doc node) 2
+    (edn-keyword-text? doc node ":with") 3
+    (edn-keyword-text? doc node ":in") 4
+    (edn-keyword-text? doc node ":where") 5
+    :else 0))
+
+(defn validate-query-vector-sections [doc: EDN-Doc] -> [ok: bool, error: string]
+  (let [seen-find false
+        seen-return false
+        seen-with false
+        seen-in false
+        seen-where false
+        last-rank 0
+        cursor doc.nodes[doc.root].first-child]
+    (while (not (= cursor -1))
+      (let [rank (edn-query-vector-section-rank doc cursor)]
+        (when (> rank 0)
+          (when (< rank last-rank)
+            (return false "query sections must appear in :find :with :in :where order"))
+          (set! last-rank rank)
+          (cond
+            (= rank 1)
+              (do
+                (when seen-find
+                  (return false "query text has duplicate :find section"))
+                (set! seen-find true))
+            (= rank 2)
+              (do
+                (when seen-return
+                  (return false "Only one of :keys/:syms/:strs must be present"))
+                (set! seen-return true))
+            (= rank 3)
+              (do
+                (when seen-with
+                  (return false "query text has duplicate :with section"))
+                (set! seen-with true))
+            (= rank 4)
+              (do
+                (when seen-in
+                  (return false "query text has duplicate :in section"))
+                (set! seen-in true))
+            (= rank 5)
+              (do
+                (when seen-where
+                  (return false "query text has duplicate :where section"))
+                (set! seen-where true)))))
+      (set! cursor doc.nodes[cursor].next-sibling))
+    (return true "")))
+
+(defn edn-query-map-known-key? [doc: EDN-Doc, node: int] -> bool
+  (or (edn-keyword-text? doc node ":find")
+      (edn-keyword-text? doc node ":with")
+      (edn-keyword-text? doc node ":in")
+      (edn-keyword-text? doc node ":where")
+      (edn-keyword-text? doc node ":rules")
+      (edn-return-map-marker? doc node)))
+
+(defn validate-query-map-sections [doc: EDN-Doc] -> [ok: bool, error: string]
+  (let [seen-find false
+        seen-with false
+        seen-in false
+        seen-where false
+        seen-rules false
+        seen-return false
+        entry doc.nodes[doc.root].first-child]
+    (while (not (= entry -1))
+      (let [value-node doc.nodes[entry].next-sibling]
+        (when (= value-node -1)
+          (return false "query map entry missing value"))
+        (when (not (edn-query-map-known-key? doc entry))
+          (return false "query map contains unsupported key"))
+        (cond
+          (edn-keyword-text? doc entry ":find")
+            (do
+              (when seen-find
+                (return false "query map has duplicate :find section"))
+              (set! seen-find true))
+          (edn-keyword-text? doc entry ":with")
+            (do
+              (when seen-with
+                (return false "query map has duplicate :with section"))
+              (set! seen-with true))
+          (edn-keyword-text? doc entry ":in")
+            (do
+              (when seen-in
+                (return false "query map has duplicate :in section"))
+              (set! seen-in true))
+          (edn-keyword-text? doc entry ":where")
+            (do
+              (when seen-where
+                (return false "query map has duplicate :where section"))
+              (set! seen-where true))
+          (edn-keyword-text? doc entry ":rules")
+            (do
+              (when seen-rules
+                (return false "query map has duplicate :rules section"))
+              (set! seen-rules true))
+          (edn-return-map-marker? doc entry)
+            (do
+              (when seen-return
+                (return false "Only one of :keys/:syms/:strs must be present"))
+              (set! seen-return true)))
+        (set! entry doc.nodes[value-node].next-sibling)))
+    (return true "")))
+
 (defn parse-query-vector-edn-with-sources! [out: ^Query, doc: EDN-Doc, db-sources: []DB-Source] -> [ok: bool, error: string]
   (when (or (= doc.root -1)
             (not (= doc.nodes[doc.root].kind .Vector)))
@@ -1617,6 +1725,9 @@
   (let [head (edn-child-at doc doc.root 0)]
     (when (not (edn-keyword-text? doc head ":find"))
       (return false "query text must start with [:find")))
+  (let [[sections-ok sections-error] (validate-query-vector-sections doc)]
+    (when (not sections-ok)
+      (return false sections-error)))
   (let [find (make [dynamic]string) :defer
         with (make [dynamic]string) :defer
         inputs (make [dynamic]string) :defer
@@ -1865,6 +1976,9 @@
   (when (or (= doc.root -1)
             (not (= doc.nodes[doc.root].kind .Map)))
     (return false "query text map must be an EDN map"))
+  (let [[sections-ok sections-error] (validate-query-map-sections doc)]
+    (when (not sections-ok)
+      (return false sections-error)))
   (let [find (make [dynamic]string) :defer
         with (make [dynamic]string) :defer
         inputs (make [dynamic]string) :defer
