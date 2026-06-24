@@ -15,6 +15,7 @@ The current shape is intentionally narrow:
 - opaque result handles for typed row/value access
 - borrowed value handles for nested vector/map/pull traversal
 - callback traversal for nested value trees
+- callback traversal for typed result rows
 
 This is the portable baseline for Python, Rust, Java, Clojure, and other hosts.
 Host wrappers should build on this surface first instead of mirroring internal
@@ -175,6 +176,10 @@ for (int i = 0; i < vev_value_map_count(pulled); i++) {
 // The callback receives borrowed value handles; copy text/EDN if it must outlive
 // the owning result or transaction report.
 bool ok = vev_value_visit(pulled, visit_value, user_data);
+
+// Result rows can be consumed through callbacks too. Row callbacks preserve row
+// boundaries and distinguish scalar find values from pull results.
+bool rows_ok = vev_result_visit(rows, visit_row, user_data);
 
 vev_result_free(pull_rows);
 vev_stmt_free(pull_stmt);
@@ -539,6 +544,7 @@ Current result-handle accessors:
 - `vev_result_value_edn`
 - `vev_result_pull_count`
 - `vev_result_pull`
+- `vev_result_visit`
 
 The `vev_result_value_*` scalar accessors are convenience functions for direct
 row values. New host wrappers should prefer `vev_result_value` plus the generic
@@ -570,6 +576,12 @@ It emits `VEV_VALUE_VISIT_VALUE` for every node and `VEV_VALUE_VISIT_END` after
 each vector/map container. The callback receives borrowed handles; callers must
 copy strings or EDN text they want to retain after the owning result/report is
 freed.
+
+`vev_result_visit` streams a typed result handle by row. It emits
+`VEV_RESULT_VISIT_ROW_BEGIN`, `VEV_RESULT_VISIT_VALUE`,
+`VEV_RESULT_VISIT_PULL`, and `VEV_RESULT_VISIT_ROW_END`. Value and pull events
+carry borrowed `vev_value_t` handles with the same lifetime as values returned
+by `vev_result_value` and `vev_result_pull`.
 
 ## DB Snapshots
 
@@ -605,8 +617,8 @@ model.
 
 The next useful steps are:
 
-- add result-row streaming callbacks so callers can consume very large query
-  results without materializing full result handles
+- add direct query-execution callbacks so callers can consume very large query
+  results without first materializing full result handles
 - add explicit error/result status APIs
 - add typed statement bindings for tuple, relation, lookup-ref, source, and
   pull-pattern inputs

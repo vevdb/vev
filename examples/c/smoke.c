@@ -98,6 +98,35 @@ static bool count_value_visit(void *user, int event, vev_value_t value) {
     return true;
 }
 
+struct result_visit_stats {
+    int row_begins;
+    int row_ends;
+    int values;
+    int pulls;
+};
+
+static bool count_result_visit(void *user, int event, int row, int index, vev_value_t value) {
+    (void)row;
+    (void)index;
+    struct result_visit_stats *stats = (struct result_visit_stats *)user;
+    if (event == VEV_RESULT_VISIT_ROW_BEGIN) {
+        stats->row_begins++;
+    } else if (event == VEV_RESULT_VISIT_ROW_END) {
+        stats->row_ends++;
+    } else if (event == VEV_RESULT_VISIT_VALUE) {
+        if (value == NULL) {
+            return false;
+        }
+        stats->values++;
+    } else if (event == VEV_RESULT_VISIT_PULL) {
+        if (value == NULL) {
+            return false;
+        }
+        stats->pulls++;
+    }
+    return true;
+}
+
 static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
     if (report == NULL) {
         fprintf(stderr, "%s: null transaction report\n", label);
@@ -195,6 +224,24 @@ int main(void) {
         return 1;
     }
     print_result_rows(result);
+    struct result_visit_stats result_stats = {0, 0, 0, 0};
+    if (!vev_result_visit(result, count_result_visit, &result_stats) ||
+        result_stats.row_begins != 1 ||
+        result_stats.row_ends != 1 ||
+        result_stats.values != 2 ||
+        result_stats.pulls != 0) {
+        fprintf(
+            stderr,
+            "unexpected result visitor stats: rows=%d/%d values=%d pulls=%d\n",
+            result_stats.row_begins,
+            result_stats.row_ends,
+            result_stats.values,
+            result_stats.pulls);
+        vev_result_free(result);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
     vev_result_free(result);
 
     vev_stmt_t stmt = vev_stmt_create(query);
@@ -324,6 +371,26 @@ int main(void) {
             visit_stats.ends,
             visit_stats.max_depth,
             visit_stats.depth);
+        vev_result_free(pull_result);
+        vev_prepared_query_free(pull_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    struct result_visit_stats pull_result_stats = {0, 0, 0, 0};
+    if (!vev_result_visit(pull_result, count_result_visit, &pull_result_stats) ||
+        pull_result_stats.row_begins != 1 ||
+        pull_result_stats.row_ends != 1 ||
+        pull_result_stats.values != 0 ||
+        pull_result_stats.pulls != 1) {
+        fprintf(
+            stderr,
+            "unexpected pull result visitor stats: rows=%d/%d values=%d pulls=%d\n",
+            pull_result_stats.row_begins,
+            pull_result_stats.row_ends,
+            pull_result_stats.values,
+            pull_result_stats.pulls);
         vev_result_free(pull_result);
         vev_prepared_query_free(pull_query);
         vev_stmt_free(stmt);

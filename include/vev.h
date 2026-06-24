@@ -33,7 +33,20 @@ enum {
     VEV_VALUE_VISIT_END = 2,
 };
 
+enum {
+    VEV_RESULT_VISIT_ROW_BEGIN = 1,
+    VEV_RESULT_VISIT_VALUE = 2,
+    VEV_RESULT_VISIT_PULL = 3,
+    VEV_RESULT_VISIT_ROW_END = 4,
+};
+
 typedef bool (*vev_value_visit_fn)(void *user, int event, vev_value_t value);
+typedef bool (*vev_result_visit_fn)(
+    void *user,
+    int event,
+    int row,
+    int index,
+    vev_value_t value);
 
 const char *vev_version(void);
 
@@ -104,6 +117,7 @@ int vev_result_value_kind(vev_result_t result, int row, int column);
 vev_value_t vev_result_value(vev_result_t result, int row, int column);
 int vev_result_pull_count(vev_result_t result, int row);
 vev_value_t vev_result_pull(vev_result_t result, int row, int pull);
+bool vev_result_visit(vev_result_t result, vev_result_visit_fn visitor, void *user);
 unsigned long long vev_result_value_entity(vev_result_t result, int row, int column);
 long long vev_result_value_int(vev_result_t result, int row, int column);
 bool vev_result_value_bool(vev_result_t result, int row, int column);
