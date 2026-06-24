@@ -73,6 +73,31 @@ static int value_text_equals(vev_value_t value, const char *expected) {
     return matches;
 }
 
+struct value_visit_stats {
+    int values;
+    int ends;
+    int depth;
+    int max_depth;
+};
+
+static bool count_value_visit(void *user, int event, vev_value_t value) {
+    struct value_visit_stats *stats = (struct value_visit_stats *)user;
+    if (event == VEV_VALUE_VISIT_VALUE) {
+        stats->values++;
+        int kind = vev_value_kind(value);
+        if (kind == VEV_VALUE_VECTOR || kind == VEV_VALUE_MAP) {
+            stats->depth++;
+            if (stats->depth > stats->max_depth) {
+                stats->max_depth = stats->depth;
+            }
+        }
+    } else if (event == VEV_VALUE_VISIT_END) {
+        stats->ends++;
+        stats->depth--;
+    }
+    return true;
+}
+
 static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
     if (report == NULL) {
         fprintf(stderr, "%s: null transaction report\n", label);
@@ -279,6 +304,26 @@ int main(void) {
         const char *edn = vev_value_edn(pulled);
         fprintf(stderr, "unexpected pull traversal output: %s\n", edn);
         vev_string_free(edn);
+        vev_result_free(pull_result);
+        vev_prepared_query_free(pull_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    struct value_visit_stats visit_stats = {0, 0, 0, 0};
+    if (!vev_value_visit(pulled, count_value_visit, &visit_stats) ||
+        visit_stats.values < 7 ||
+        visit_stats.ends != 2 ||
+        visit_stats.max_depth < 2 ||
+        visit_stats.depth != 0) {
+        fprintf(
+            stderr,
+            "unexpected pull visitor stats: values=%d ends=%d max_depth=%d depth=%d\n",
+            visit_stats.values,
+            visit_stats.ends,
+            visit_stats.max_depth,
+            visit_stats.depth);
         vev_result_free(pull_result);
         vev_prepared_query_free(pull_query);
         vev_stmt_free(stmt);

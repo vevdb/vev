@@ -34,6 +34,8 @@ ABI_Tx_Report :: struct {
     value: vev__Value,
 }
 
+ABI_Value_Visit_Fn :: proc \"c\" (user: rawptr, event: int, value: rawptr) -> bool
+
 ABI_Stmt :: struct {
     query: rawptr,
     inputs: [dynamic]vev__Query_Input,
@@ -220,6 +222,34 @@ abi_value_map_value_ptr :: proc(value: rawptr, index: int) -> rawptr {
         return nil
     }
     return rawptr(&v.items[item_index])
+}
+
+abi_value_visit_walk :: proc(value: ^vev__Value, visitor: ABI_Value_Visit_Fn, user: rawptr) -> bool {
+    if value == nil || visitor == nil {
+        return false
+    }
+    if !visitor(user, 1, rawptr(value)) {
+        return false
+    }
+    if value.kind == .Vector || value.kind == .Map {
+        for i in 0..<len(value.items) {
+            if !abi_value_visit_walk(&value.items[i], visitor, user) {
+                return false
+            }
+        }
+        if !visitor(user, 2, rawptr(value)) {
+            return false
+        }
+    }
+    return true
+}
+
+abi_value_visit :: proc(value: rawptr, visitor: rawptr, user: rawptr) -> bool {
+    if value == nil || visitor == nil {
+        return false
+    }
+    cb := transmute(ABI_Value_Visit_Fn)visitor
+    return abi_value_visit_walk((^vev__Value)(value), cb, user)
 }
 
 abi_alloc_stmt :: proc(query: rawptr) -> rawptr {
@@ -1103,3 +1133,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (= (rawptr value) nil)
     (return (Vev-Value nil)))
   (Vev-Value (abi-value-map-value-ptr (rawptr value) index)))
+
+@export
+(defn vev_value_visit :abi "c" [value: Vev-Value, visitor: rawptr, user: rawptr] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr value) nil) (= visitor nil))
+    (return false))
+  (abi-value-visit (rawptr value) visitor user))

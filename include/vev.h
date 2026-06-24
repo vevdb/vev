@@ -28,6 +28,13 @@ enum {
     VEV_VALUE_MAP = 9,
 };
 
+enum {
+    VEV_VALUE_VISIT_VALUE = 1,
+    VEV_VALUE_VISIT_END = 2,
+};
+
+typedef bool (*vev_value_visit_fn)(void *user, int event, vev_value_t value);
+
 const char *vev_version(void);
 
 vev_conn_t vev_conn_open_memory(void);
@@ -115,6 +122,7 @@ vev_value_t vev_value_item(vev_value_t value, int index);
 int vev_value_map_count(vev_value_t value);
 vev_value_t vev_value_map_key(vev_value_t value, int index);
 vev_value_t vev_value_map_value(vev_value_t value, int index);
+bool vev_value_visit(vev_value_t value, vev_value_visit_fn visitor, void *user);
 
 #ifdef __cplusplus
 }
