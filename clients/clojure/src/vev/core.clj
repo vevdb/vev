@@ -275,15 +275,15 @@
       :else
       nil)))
 
-(defn- entity-int-pairs [source ^PreparedQuery prepared inputs]
+(defn- entity-int-pair-columns [source ^PreparedQuery prepared inputs]
   (let [input-edn (inputs-text inputs)]
     (cond
       (instance? DB source)
-      (.queryEntityIntPairs (:native source) (:native prepared) input-edn)
+      (.queryEntityIntPairColumns (:native source) (:native prepared) input-edn)
 
       (instance? Conn source)
       (with-open [snapshot (db source)]
-        (.queryEntityIntPairs (:native snapshot) (:native prepared) input-edn))
+        (.queryEntityIntPairColumns (:native snapshot) (:native prepared) input-edn))
 
       :else
       nil)))
@@ -299,16 +299,25 @@
       (transient #{})
       ids)))
 
-(defn- entity-int-pair-rows [pairs]
-  (mapv (fn [pair] [(long (aget ^longs pair 0)) (long (aget ^longs pair 1))]) pairs))
+(defn- entity-int-pair-rows [columns]
+  (let [^objects columns columns
+        ^longs entities (aget columns 0)
+        ^longs values (aget columns 1)
+        n (alength entities)]
+    (mapv (fn [index] [(long (aget entities index)) (long (aget values index))])
+          (range n))))
 
-(defn- entity-int-pair-set [pairs]
-  (persistent!
-    (reduce
-      (fn [out pair]
-        (conj! out [(long (aget ^longs pair 0)) (long (aget ^longs pair 1))]))
-      (transient #{})
-      pairs)))
+(defn- entity-int-pair-set [columns]
+  (let [^objects columns columns
+        ^longs entities (aget columns 0)
+        ^longs values (aget columns 1)
+        n (alength entities)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget entities index)) (long (aget values index))]))
+        (persistent! out)))))
 
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
@@ -321,8 +330,8 @@
                      (cached-prepare source query))]
       (if-let [ids (entity-column source prepared inputs)]
         (entity-column-rows ids)
-        (if-let [pairs (entity-int-pairs source prepared inputs)]
-          (entity-int-pair-rows pairs)
+        (if-let [columns (entity-int-pair-columns source prepared inputs)]
+          (entity-int-pair-rows columns)
           (with-open [result (apply query-result source prepared inputs)]
             (rows-from-result result)))))))
 
@@ -335,8 +344,8 @@
                      (cached-prepare source query))]
       (if-let [ids (entity-column source prepared inputs)]
         (entity-column-set ids)
-        (if-let [pairs (entity-int-pairs source prepared inputs)]
-          (entity-int-pair-set pairs)
+        (if-let [columns (entity-int-pair-columns source prepared inputs)]
+          (entity-int-pair-set columns)
           (with-open [result (apply query-result source prepared inputs)]
             (q-from-result result)))))))
 

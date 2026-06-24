@@ -480,6 +480,29 @@ public final class Vev {
             }
         }
 
+        public long[][] queryEntityIntPairColumns(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedEntityIntPairsWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) entityIntPairsCount.invoke(raw);
+                    if (count == 0) return new long[][] { new long[0], new long[0] };
+                    MemorySegment entityData = (MemorySegment) entityIntPairsEntitiesData.invoke(raw);
+                    MemorySegment valueData = (MemorySegment) entityIntPairsValuesData.invoke(raw);
+                    if (isNull(entityData) || isNull(valueData)) return new long[][] { new long[0], new long[0] };
+                    long[] entities = entityData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    long[] values = valueData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    return new long[][] { entities, values };
+                } finally {
+                    entityIntPairsFree.invoke(raw);
+                }
+            }
+        }
+
         public ResultSet query(Statement stmt) throws Throwable {
             requireOpen();
             return new ResultSet((MemorySegment) queryDbStmtResult.invoke(handle.raw, stmt.raw));
