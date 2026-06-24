@@ -3900,27 +3900,37 @@
                     (when (not source-expanded)
                       (arr.push! frontier datom.e))))))))))))
 
+(defn u64-slice-contains? [items: []u64, value: u64] -> bool
+  (for [item items]
+    (when (= item value)
+      (return true)))
+  false)
+
 (defstruct Transitive-Adjacency {
   entity: u64
   targets: [dynamic]u64
 })
 
-(defn transitive-adjacency-index [items: []Transitive-Adjacency, entity: u64] -> [index: int, ok: bool]
-  (for [item index items]
-    (when (= item.entity entity)
-      (return index true)))
-  (return 0 false))
+(defstruct Transitive-Adjacency-Index {
+  items: [dynamic]Transitive-Adjacency
+  index: map[u64]int
+})
 
-(defn append-transitive-adjacency-edge! [out: ^[dynamic]Transitive-Adjacency, source: u64, target: u64]
-  (let [[index found] (transitive-adjacency-index (slice out^ 0) source)]
+(defn transitive-adjacency-index [lookup: (ptr (map u64 int)), entity: u64] -> [index: int, ok: bool]
+  (mmap.get lookup^ entity))
+
+(defn append-transitive-adjacency-edge! [out: ^[dynamic]Transitive-Adjacency, index: (ptr (map u64 int)), source: u64, target: u64]
+  (let [[adjacency-index found] (transitive-adjacency-index index source)]
     (if found
-      (arr.push! out^[index].targets target)
+      (arr.push! out^[adjacency-index].targets target)
       (let [targets (make [dynamic]u64)]
         (arr.push! targets target)
+        (mmap.assoc! index^ source (count out^))
         (arr.push! out^ (Transitive-Adjacency {entity: source targets: targets}))))))
 
-(defn transitive-adjacency-from-db [db: DB, attr: string] -> [dynamic]Transitive-Adjacency
+(defn transitive-adjacency-from-db [db: DB, attr: string] -> Transitive-Adjacency-Index
   (let [out (make [dynamic]Transitive-Adjacency)
+        index (make (map u64 int))
         attr-clause (clause (term-wildcard) attr (term-wildcard))
         candidates (clause-candidate-indexes db attr-clause (Binding {}))]
     (defer (delete candidates))
@@ -3928,17 +3938,18 @@
       (let [datom db.datoms[datom-index]]
         (when (and (datom-current-at? db datom-index)
                    (= datom.v.kind .Entity))
-          (append-transitive-adjacency-edge! (addr out) datom.e datom.v.entity))))
-    out))
+          (append-transitive-adjacency-edge! (addr out) (addr index) datom.e datom.v.entity))))
+    (Transitive-Adjacency-Index {items: out index: index})))
 
-(defn delete-transitive-adjacency [items: [dynamic]Transitive-Adjacency]
-  (for [item items]
+(defn delete-transitive-adjacency [adjacency: Transitive-Adjacency-Index]
+  (for [item adjacency.items]
     (delete item.targets))
-  (delete items))
+  (delete adjacency.items)
+  (delete adjacency.index))
 
-(defn append-transitive-targets-with-adjacency! [out: ^[dynamic]u64, adjacency: []Transitive-Adjacency, start: u64]
-  (let [expanded (make (map u64 bool))
-        emitted (make (map u64 bool))
+(defn append-transitive-targets-with-adjacency! [out: ^[dynamic]u64, adjacency: []Transitive-Adjacency, adjacency-index: (ptr (map u64 int)), start: u64]
+  (let [expanded (make [dynamic]u64)
+        emitted (make [dynamic]u64)
         frontier (make [dynamic]u64)
         frontier-index 0]
     (defer (delete expanded))
@@ -3947,16 +3958,16 @@
     (arr.push! frontier start)
     (while (< frontier-index (count frontier))
       (let [current frontier[frontier-index]
-            [adj-index has-edges] (transitive-adjacency-index adjacency current)]
+            [adj-index has-edges] (transitive-adjacency-index adjacency-index current)]
         (set! frontier-index (+ frontier-index 1))
-        (let [[_ already-expanded] (mmap.get expanded current)]
+        (let [already-expanded (u64-slice-contains? (slice expanded 0) current)]
           (when (and (not already-expanded) has-edges)
-            (mmap.assoc! expanded current true)
+            (arr.push! expanded current)
             (for [target-entity adjacency[adj-index].targets]
-              (let [[_ already-emitted] (mmap.get emitted target-entity)
-                    [_ target-expanded] (mmap.get expanded target-entity)]
+              (let [already-emitted (u64-slice-contains? (slice emitted 0) target-entity)
+                    target-expanded (u64-slice-contains? (slice expanded 0) target-entity)]
                 (when (not already-emitted)
-                  (mmap.assoc! emitted target-entity true)
+                  (arr.push! emitted target-entity)
                   (arr.push! out^ target-entity))
                 (when (not target-expanded)
                   (arr.push! frontier target-entity))))))))))
@@ -4000,19 +4011,20 @@
     (for [target-entity targets]
       (append-linear-transitive-target-result! out db call binding rule initial start-entity target target-ok target-entity))))
 
-(defn append-linear-transitive-from-start-adjacency! [out: ^[dynamic]Binding, db: DB, adjacency: []Transitive-Adjacency, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding, start-entity: u64]
+(defn append-linear-transitive-from-start-adjacency! [out: ^[dynamic]Binding, db: DB, adjacency: Transitive-Adjacency-Index, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding, start-entity: u64]
   (let [[target target-ok] (binding-lookup initial rule.params[1])
-        targets (make [dynamic]u64)]
+        targets (make [dynamic]u64)
+        adjacency-index adjacency.index]
     (defer (delete targets))
-    (append-transitive-targets-with-adjacency! (addr targets) adjacency start-entity)
+    (append-transitive-targets-with-adjacency! (addr targets) (slice adjacency.items 0) (addr adjacency-index) start-entity)
     (for [target-entity targets]
       (append-linear-transitive-target-result! out db call binding rule initial start-entity target target-ok target-entity))))
 
 (defn append-linear-transitive-from-all-starts! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding]
   (let [adjacency (transitive-adjacency-from-db db attr)]
     (defer (delete-transitive-adjacency adjacency))
-    (for [entry adjacency]
-      (append-linear-transitive-from-start-adjacency! out db (slice adjacency 0) call binding rule initial entry.entity))))
+    (for [entry adjacency.items]
+      (append-linear-transitive-from-start-adjacency! out db adjacency call binding rule initial entry.entity))))
 
 (defn append-linear-transitive-to-target! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding, target-entity: u64]
   (let [starts (make [dynamic]u64)
@@ -4033,7 +4045,7 @@
             (return))
           (let [adjacency (transitive-adjacency-from-db db attr)]
             (defer (delete-transitive-adjacency adjacency))
-            (append-linear-transitive-from-start-adjacency! out db (slice adjacency 0) call binding rule initial start-entity.entity)))
+            (append-linear-transitive-from-start-adjacency! out db adjacency call binding rule initial start-entity.entity)))
         (let [[target target-ok] (binding-lookup initial rule.params[1])]
           (if target-ok
             (let [[target-entity target-entity-ok] (value-as-entity db target)]
@@ -4217,10 +4229,11 @@
         (when (= arg.kind .Var)
           (let [[value value-ok] (binding-lookup result param)]
             (when value-ok
-              (let [[next bind-ok] (binding-with-value out arg.name value)]
-                (when (not bind-ok)
-                  (return next false))
-                (set! out next)))))))
+              (let [[existing exists] (binding-lookup out arg.name)]
+                (if exists
+                  (when (not (value-equal? existing value))
+                    (return out false))
+                  (binding-store! (addr out) arg.name value))))))))
     (return out true)))
 
 (defn bindings-after-rule-call-depth-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding

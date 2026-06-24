@@ -132,9 +132,9 @@
   (run-chain-from-root n))
 (doseq [n [10 30 100]]
   (run-chain-to-leaf n))
-(doseq [n [10 30]]
+(doseq [n [10 30 100]]
   (run-chain-all n))
-(doseq [n [4 13 40]]
+(doseq [n [4 13 40 121]]
   (run-tree-from-root n))
 (doseq [n [1000]]
   (run-bad-order-join n))
