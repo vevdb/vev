@@ -2702,6 +2702,86 @@
         (return false value-error))))
   (return true ""))
 
+(defn op-modifies-validation-schema? [op: Tx-Op] -> bool
+  (or (= op.a ":db/ident")
+      (= op.a ":db/valueType")
+      (= op.a ":db/cardinality")
+      (= op.a ":db/unique")
+      (= op.a ":db/tupleAttrs")
+      (= op.a ":db/index")
+      (= op.a ":db/isComponent")))
+
+(defn ops-require-incremental-validation? [before: DB, ops: []Tx-Op] -> bool
+  (for [op ops]
+    (when (op-modifies-validation-schema? op)
+      (return true))
+    (when (and (= op.kind .Add)
+               (schema-unique? before op.a))
+      (return true)))
+  false)
+
+(defn validate-final-schema [scratch-datoms: []Datom] -> [ok: bool, error: string]
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-tuple-schema scratch)]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-ident-values scratch)]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-keyword-values scratch ":db/valueType")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-keyword-values scratch ":db/cardinality")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-keyword-values scratch ":db/unique")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-bool-values scratch ":db/index")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-bool-values scratch ":db/isComponent")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-component-schema scratch)]
+    (when (not ok)
+      (return false error)))
+  (return true ""))
+
+(defn validate-ops-batch-against-before [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
+  (let [scratch-datoms (clone-datoms before.datoms)]
+    (defer (delete scratch-datoms))
+    (for [op ops]
+      (let [[entity-ok entity-error] (validate-op-entity-ids op)]
+        (when (not entity-ok)
+          (return false entity-error)))
+      (when (= op.kind .Add)
+        (let [[ok error] (validate-add-op before op)]
+          (when (not ok)
+            (return false error))))
+      (arr.push! scratch-datoms
+        (Datom {e: op.e
+                a: op.a
+                v: op.v
+                tx: 0
+                added: (= op.kind .Add)})))
+    (validate-final-schema (slice scratch-datoms 0))))
+
 (defn validate-tuple-schema [db: DB] -> [ok: bool, error: string]
   (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
@@ -2801,6 +2881,8 @@
   (return true ""))
 
 (defn validate-ops [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
+  (when (not (ops-require-incremental-validation? before ops))
+    (return (validate-ops-batch-against-before before ops)))
   (let [scratch-datoms (clone-datoms before.datoms)]
     (defer (delete scratch-datoms))
     (for [op ops]
@@ -2819,47 +2901,7 @@
                 v: op.v
                 tx: 0
                 added: (= op.kind .Add)})))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-tuple-schema scratch)]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-ident-values scratch)]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-keyword-values scratch ":db/valueType")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-keyword-values scratch ":db/cardinality")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-keyword-values scratch ":db/unique")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-bool-values scratch ":db/index")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-bool-values scratch ":db/isComponent")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-component-schema scratch)]
-      (when (not ok)
-        (return false error)))
-    (return true "")))
+    (validate-final-schema (slice scratch-datoms 0))))
 
 (defn failed-tx-report [db: DB, error: string] -> Tx-Report
   (Tx-Report {ok: false
@@ -2934,10 +2976,32 @@
       (return true)))
   false)
 
-(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
+(defn current-db-attr-exists? [db: DB, entity: u64, attr: string] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn entity-attr-key [entity: u64, attr: string] -> string
+  (fmt.tprintf "%d:%d:%s" entity (count attr) attr))
+
+(defn entity-attr-seen? [seen: (ptr (map string bool)), entity: u64, attr: string] -> bool
+  (let [key (entity-attr-key entity attr)
+        [_ found] (mmap.get seen^ key)]
+    found))
+
+(defn mark-entity-attr-seen! [seen: (ptr (map string bool)), entity: u64, attr: string]
+  (let [key (entity-attr-key entity attr)]
+    (mmap.assoc! seen^ key true)))
+
+(defn append-cardinality-one-retractions! [before: DB, seen-ea: (ptr (map string bool)), after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
-  (when (not (current-log-attr-exists? (slice after-datoms^ 0) op.e op.a))
+  (when (not (or (current-db-attr-exists? before op.e op.a)
+                 (entity-attr-seen? seen-ea op.e op.a)))
     (return))
   (let [current (build-db (clone-datoms after-datoms^))]
     (when (not (tx-op-cardinality-one? current op))
@@ -2953,7 +3017,7 @@
                                   a: datom.a
                                   v: datom.v
                                   tx: tx
-                                  added: false})]
+                             added: false})]
               (arr.push! after-datoms^ retract)
               (arr.push! tx-data^ retract))))))))
 
@@ -2971,7 +3035,9 @@
         expanded-ops (expand-tuple-ops before ops)
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count expanded-ops))
+        seen-ea (make (map string bool))
         tx conn^.next-tx]
+    (defer (delete seen-ea))
     (let [[valid error] (validate-ops before (slice expanded-ops 0))]
       (when (not valid)
         (delete expanded-ops)
@@ -2981,14 +3047,16 @@
       (let [apply-op (or (= op.kind .Add)
                          (current-op-value-exists-in-log? (slice after-datoms 0) op))]
         (when apply-op
-          (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx)
+          (append-cardinality-one-retractions! before (addr seen-ea) (addr after-datoms) (addr tx-data) op tx)
           (let [datom (Datom {e: op.e
                               a: op.a
                               v: op.v
                               tx: tx
                               added: (= op.kind .Add)})]
             (arr.push! after-datoms datom)
-            (arr.push! tx-data datom)))))
+            (arr.push! tx-data datom)))
+        (when (= op.kind .Add)
+          (mark-entity-attr-seen! (addr seen-ea) op.e op.a))))
     (delete expanded-ops)
     (let [after (build-db after-datoms)]
       (set! conn^.db after)
