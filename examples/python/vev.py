@@ -17,6 +17,20 @@ VEV_VALUE_SYMBOL = 7
 VEV_VALUE_VECTOR = 8
 VEV_VALUE_MAP = 9
 
+VEV_RESULT_VISIT_ROW_BEGIN = 1
+VEV_RESULT_VISIT_VALUE = 2
+VEV_RESULT_VISIT_PULL = 3
+VEV_RESULT_VISIT_ROW_END = 4
+
+RESULT_VISIT_FN = ctypes.CFUNCTYPE(
+    ctypes.c_bool,
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_void_p,
+)
+
 
 @dataclass(frozen=True)
 class Entity:
@@ -269,6 +283,20 @@ class Library:
         lib.vev_query_stmt_result.restype = ctypes.c_void_p
         lib.vev_query_db_stmt_result.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         lib.vev_query_db_stmt_result.restype = ctypes.c_void_p
+        lib.vev_query_stmt_visit.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            RESULT_VISIT_FN,
+            ctypes.c_void_p,
+        ]
+        lib.vev_query_stmt_visit.restype = ctypes.c_bool
+        lib.vev_query_db_stmt_visit.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            RESULT_VISIT_FN,
+            ctypes.c_void_p,
+        ]
+        lib.vev_query_db_stmt_visit.restype = ctypes.c_bool
         lib.vev_query_db_prepared_result_with_inputs.argtypes = [
             ctypes.c_void_p,
             ctypes.c_void_p,
@@ -749,6 +777,48 @@ class Statement:
     def scalar(self, conn: Connection | DB) -> Any:
         with self.query(conn) as result:
             return result.scalar()
+
+    def visit(self, conn: Connection | DB, visitor: object) -> None:
+        self._require_open()
+        if isinstance(conn, Connection):
+            conn._require_open()
+            fn = self._library.lib.vev_query_stmt_visit
+            owner = conn._handle
+        else:
+            conn._require_open()
+            fn = self._library.lib.vev_query_db_stmt_visit
+            owner = conn._handle
+
+        def callback(
+            _user: int, event: int, row: int, index: int, value: int
+        ) -> bool:
+            converted = (
+                self._library.value_to_python(value)
+                if event in (VEV_RESULT_VISIT_VALUE, VEV_RESULT_VISIT_PULL)
+                else None
+            )
+            return bool(visitor(event, row, index, converted))
+
+        c_callback = RESULT_VISIT_FN(callback)
+        if not fn(owner, self._handle, c_callback, None):
+            raise VevError("statement visitor failed")
+
+    def stream_rows(self, conn: Connection | DB) -> list[list[Any]]:
+        rows: list[list[Any]] = []
+        current: list[Any] = []
+
+        def collect(event: int, row: int, index: int, value: Any) -> bool:
+            nonlocal current
+            if event == VEV_RESULT_VISIT_ROW_BEGIN:
+                current = []
+            elif event in (VEV_RESULT_VISIT_VALUE, VEV_RESULT_VISIT_PULL):
+                current.append(value)
+            elif event == VEV_RESULT_VISIT_ROW_END:
+                rows.append(current)
+            return True
+
+        self.visit(conn, collect)
+        return rows
 
     def _bind_one(self, value: object) -> None:
         lib = self._library.lib

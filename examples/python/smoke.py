@@ -60,6 +60,11 @@ def main() -> int:
                 if rows != [[vev.Entity(2), "grace@example.com"]]:
                     raise RuntimeError("unexpected statement rows")
 
+                streamed = stmt.stream_rows(conn)
+                print(f"streamed statement rows: {streamed}")
+                if streamed != rows:
+                    raise RuntimeError("unexpected streamed statement rows")
+
                 rows = stmt.bind("ada@example.com").rows(conn)
                 print(f"statement rebound rows: {rows}")
                 if rows != [[vev.Entity(1), "ada@example.com"]]:

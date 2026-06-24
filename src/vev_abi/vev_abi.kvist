@@ -638,6 +638,20 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (result-store-pull-values! result db)
   result)
 
+(defn- result-delete-owned [result: Vev-Result]
+  (let [ptr (result-ptr result)]
+    (for [value (deref (result-pull-values-ptr result))]
+      (delete-owned-value value))
+    (delete-result-shallow ptr^)
+    (abi-free-result (rawptr result))))
+
+(defn- result-finish-visit-delete [result: Vev-Result, db: vev.DB, visitor: rawptr, user: rawptr] -> bool
+  (result-finish result db)
+  (let [ptr (result-ptr result)
+        ok (and ptr^.ok (abi-result-visit (rawptr result) visitor user))]
+    (result-delete-owned result)
+    ok))
+
 (defn- result-value [result: Vev-Result, row: int, column: int] -> vev.Value
   (let [ptr (result-ptr result)]
     (when (or (= (rawptr result) nil)
@@ -1194,6 +1208,34 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (result-finish (Vev-Result result) db-ptr-value^)))
 
 @export
+(defn vev_query_stmt_visit :abi "c" [conn: Vev-Conn, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= (rawptr stmt) nil) (= visitor nil))
+    (return false))
+  (let [conn-ptr-value (conn-ptr conn)
+        query-ptr-value (prepared-query-ptr (stmt-query stmt))
+        inputs (stmt-inputs-ptr stmt)
+        sources (stmt-sources-ptr stmt)
+        result (abi-alloc-result)
+        result-ptr-value (result-ptr (Vev-Result result))]
+    (set! result-ptr-value^ (vev.q-prepared-with-sources conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
+    (result-finish-visit-delete (Vev-Result result) conn-ptr-value^.db visitor user)))
+
+@export
+(defn vev_query_db_stmt_visit :abi "c" [db: Vev-DB, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr stmt) nil) (= visitor nil))
+    (return false))
+  (let [db-ptr-value (db-ptr db)
+        query-ptr-value (prepared-query-ptr (stmt-query stmt))
+        inputs (stmt-inputs-ptr stmt)
+        sources (stmt-sources-ptr stmt)
+        result (abi-alloc-result)
+        result-ptr-value (result-ptr (Vev-Result result))]
+    (set! result-ptr-value^ (vev.q-prepared-with-sources db-ptr-value^ query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
+    (result-finish-visit-delete (Vev-Result result) db-ptr-value^ visitor user)))
+
+@export
 (defn vev_query_prepared :abi "c" [conn: Vev-Conn, query: Vev-Prepared-Query] -> cstring
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr conn) nil) (= (rawptr query) nil))
@@ -1336,11 +1378,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (odin "context = runtime.default_context()")
   (when (= (rawptr result) nil)
     (return))
-  (let [ptr (result-ptr result)]
-    (for [value (deref (result-pull-values-ptr result))]
-      (delete-owned-value value))
-    (delete-result-shallow ptr^)
-    (abi-free-result (rawptr result))))
+  (result-delete-owned result))
 
 @export
 (defn vev_result_ok :abi "c" [result: Vev-Result] -> bool

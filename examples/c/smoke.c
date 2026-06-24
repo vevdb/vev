@@ -265,6 +265,24 @@ int main(void) {
         vev_conn_close(conn);
         return 1;
     }
+    struct result_visit_stats streamed_stmt_stats = {0, 0, 0, 0};
+    if (!vev_query_stmt_visit(conn, stmt, count_result_visit, &streamed_stmt_stats) ||
+        streamed_stmt_stats.row_begins != 1 ||
+        streamed_stmt_stats.row_ends != 1 ||
+        streamed_stmt_stats.values != 2 ||
+        streamed_stmt_stats.pulls != 0) {
+        fprintf(
+            stderr,
+            "unexpected streamed statement stats: rows=%d/%d values=%d pulls=%d\n",
+            streamed_stmt_stats.row_begins,
+            streamed_stmt_stats.row_ends,
+            streamed_stmt_stats.values,
+            streamed_stmt_stats.pulls);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
     vev_result_t stmt_result = vev_query_stmt_result(conn, stmt);
     int stmt_rows = result_row_count_or_error("stmt", stmt_result);
     printf("stmt rows: %d\n", stmt_rows);

@@ -17,6 +17,7 @@ The current shape is intentionally narrow:
 - owned value handles for direct pull entry points
 - callback traversal for nested value trees
 - callback traversal for typed result rows
+- direct statement query execution through typed result-row callbacks
 
 This is the portable baseline for Python, Rust, Java, Clojure, and other hosts.
 Host wrappers should build on this surface first instead of mirroring internal
@@ -187,6 +188,11 @@ bool ok = vev_value_visit(pulled, visit_value, user_data);
 // boundaries and distinguish scalar find values from pull results.
 bool rows_ok = vev_result_visit(rows, visit_row, user_data);
 
+// Statements can also execute directly into the same visitor protocol. This is
+// the preferred shape for large result sets when the host does not need random
+// row access through a materialized result handle.
+bool streamed_ok = vev_query_stmt_visit(conn, stmt, visit_row, user_data);
+
 vev_result_free(pull_rows);
 vev_stmt_free(pull_stmt);
 vev_prepared_query_free(pull_query);
@@ -203,6 +209,8 @@ vev_result_free(old_rows);
 
 vev_result_t old_stmt_rows = vev_query_db_stmt_result(retained_snapshot, stmt);
 vev_result_free(old_stmt_rows);
+bool old_streamed_ok =
+    vev_query_db_stmt_visit(retained_snapshot, stmt, visit_row, user_data);
 
 vev_value_handle_t direct_pull =
     vev_pull_edn(retained_snapshot, "[:user/name]", 1);
@@ -594,6 +602,8 @@ Current result-handle accessors:
 - `vev_result_pull_count`
 - `vev_result_pull`
 - `vev_result_visit`
+- `vev_query_stmt_visit`
+- `vev_query_db_stmt_visit`
 
 The `vev_result_value_*` scalar accessors are convenience functions for direct
 row values. New host wrappers should prefer `vev_result_value` plus the generic
@@ -641,6 +651,11 @@ freed.
 carry borrowed `vev_value_t` handles with the same lifetime as values returned
 by `vev_result_value` and `vev_result_pull`.
 
+`vev_query_stmt_visit` and `vev_query_db_stmt_visit` execute a typed statement
+and stream rows through the same event protocol. They return `false` for null
+handles, query errors, or visitor cancellation. Use materialized result handles
+when the host needs detailed error text until the explicit status API is added.
+
 ## DB Snapshots
 
 `vev_conn_t` is the mutable root. `vev_db_t` is an immutable retained database
@@ -675,8 +690,6 @@ model.
 
 The next useful steps are:
 
-- add direct query-execution callbacks so callers can consume very large query
-  results without first materializing full result handles
 - add explicit error/result status APIs
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets
