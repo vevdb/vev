@@ -75,6 +75,9 @@ Current workloads:
   handle
 - `prepared-email-bound-result`: prepared query plus typed statement binding,
   typed result handle
+- `many-row-result`: 300-row typed result handle materialization
+- `many-row-scan`: 300-row direct statement visitor scan
+- `pull-many-nested`: direct pull-many over nested pull-shaped values
 - `db-snapshot`: retaining a DB value through `vev_conn_db`
 - `prepared-email-db-result`: immutable DB value plus EDN input text, typed
   result handle
@@ -90,19 +93,23 @@ Latest local run:
 ```text
 comparison workload=prepared-email-input-text c_abi_over_native=1.13x
 comparison workload=prepared-email-result c_abi_over_native=1.00x
-comparison workload=prepared-email-bound-result c_abi_over_native=1.00x
-comparison workload=db-snapshot c_abi_over_native=1.06x
+comparison workload=prepared-email-bound-result c_abi_over_native=0.92x
+comparison workload=many-row-result c_abi_over_native=0.98x
+comparison workload=many-row-scan c_abi_over_native=0.98x
+comparison workload=pull-many-nested c_abi_over_native=1.02x
+comparison workload=db-snapshot c_abi_over_native=1.03x
 comparison workload=prepared-email-db-result c_abi_over_native=1.00x
-comparison workload=prepared-email-db-bound-result c_abi_over_native=1.00x
-comparison workload=with-tx-report-text c_abi_over_native=1.00x
-comparison workload=with-tx-report-value c_abi_over_native=1.15x
+comparison workload=prepared-email-db-bound-result c_abi_over_native=0.92x
+comparison workload=with-tx-report-text c_abi_over_native=0.95x
+comparison workload=with-tx-report-value c_abi_over_native=1.07x
 ```
 
 Statement bindings avoid parsing EDN input text on each call and currently
 measure at native parity in this small lookup benchmark. Snapshot creation is
 much more expensive than querying because the current ABI snapshot deep-copies
 datoms and owned strings to make the handle independent of the connection
-lifetime.
+lifetime. Direct statement visitors currently measure at native parity on the
+300-row scan workload, and nested direct pull-many is close to native.
 
 ## Current C Surface
 
@@ -701,7 +708,8 @@ model.
 
 ## Next ABI Work
 
-The next useful steps are:
-
-- add broader result-shape benchmarks for nested values, pull results, and
-  larger row sets
+The initial C ABI shape is now covered for C, Python, Rust, Java, and Clojure,
+including immutable DB handles, typed statement bindings, direct pull handles,
+direct row visitors, status/error accessors, and baseline ABI-vs-native
+benchmarks. The next interop work should be driven by concrete host adapter
+needs rather than expanding the raw C surface speculatively.
