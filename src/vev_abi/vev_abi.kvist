@@ -399,15 +399,10 @@ abi_free_u64_array :: proc(array: rawptr) {
     free(wrapper)
 }
 
-abi_alloc_entity_int_pairs :: proc(values: [dynamic]vev__Entity_Int_Pair) -> rawptr {
+abi_alloc_entity_int_pairs :: proc(columns: vev__Entity_Int_Pair_Columns) -> rawptr {
     wrapper := new(ABI_Entity_Int_Pairs)
-    wrapper.entities = make([dynamic]u64, 0, len(values))
-    wrapper.values = make([dynamic]i64, 0, len(values))
-    for item in values {
-        append(&wrapper.entities, item.entity)
-        append(&wrapper.values, item.value)
-    }
-    delete(values)
+    wrapper.entities = columns.entities
+    wrapper.values = columns.values
     return rawptr(wrapper)
 }
 
@@ -1918,6 +1913,13 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (when (not query-ptr-value^.ok)
       (delete inputs-text-value)
       (return (Vev-U64-Array nil)))
+    (when (= inputs-text-value "[]")
+      (delete inputs-text-value)
+      (let [[entities entity-ok] (vev.q-query-entity-column db-ptr-value^ query-ptr-value^.query ([]vev.Query-Input []))]
+        (when (not entity-ok)
+          (delete entities)
+          (return (Vev-U64-Array nil)))
+        (return (Vev-U64-Array (abi-alloc-u64-array entities)))))
     (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
       (delete inputs-text-value)
       (when (not input-ok)
@@ -1963,17 +1965,24 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (when (not query-ptr-value^.ok)
       (delete inputs-text-value)
       (return (Vev-Entity-Int-Pairs nil)))
+    (when (= inputs-text-value "[]")
+      (delete inputs-text-value)
+      (let [[columns pair-ok] (vev.q-query-entity-int-pair-columns db-ptr-value^ query-ptr-value^.query ([]vev.Query-Input []))]
+        (when (not pair-ok)
+          (vev.delete-entity-int-pair-columns columns)
+          (return (Vev-Entity-Int-Pairs nil)))
+        (return (Vev-Entity-Int-Pairs (abi-alloc-entity-int-pairs columns)))))
     (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
       (delete inputs-text-value)
       (when (not input-ok)
         (delete inputs)
         (return (Vev-Entity-Int-Pairs nil)))
-      (let [[pairs pair-ok] (vev.q-query-entity-int-pairs db-ptr-value^ query-ptr-value^.query (slice inputs 0))]
+      (let [[columns pair-ok] (vev.q-query-entity-int-pair-columns db-ptr-value^ query-ptr-value^.query (slice inputs 0))]
         (delete inputs)
         (when (not pair-ok)
-          (delete pairs)
+          (vev.delete-entity-int-pair-columns columns)
           (return (Vev-Entity-Int-Pairs nil)))
-        (Vev-Entity-Int-Pairs (abi-alloc-entity-int-pairs pairs))))))
+        (Vev-Entity-Int-Pairs (abi-alloc-entity-int-pairs columns))))))
 
 @export
 (defn vev_entity_int_pairs_free :abi "c" [array: Vev-Entity-Int-Pairs]

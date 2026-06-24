@@ -6873,6 +6873,11 @@
   value: i64
 })
 
+(defstruct Entity-Int-Pair-Columns {
+  entities: [dynamic]u64
+  values: [dynamic]i64
+})
+
 (defstruct Entity-Int-Pair-Filter {
   attr: string
   value: Value
@@ -6909,6 +6914,18 @@
 
 (defn empty-entity-int-pair-plan [] -> Entity-Int-Pair-Plan
   (Entity-Int-Pair-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
+
+(defn empty-entity-int-pair-columns [] -> Entity-Int-Pair-Columns
+  (Entity-Int-Pair-Columns {entities: (make [dynamic]u64)
+                            values: (make [dynamic]i64)}))
+
+(defn delete-entity-int-pair-columns [columns: Entity-Int-Pair-Columns]
+  (delete columns.entities)
+  (delete columns.values))
+
+(defn append-entity-int-pair-column! [columns: ^Entity-Int-Pair-Columns, entity: u64, value: i64]
+  (arr.push! columns^.entities entity)
+  (arr.push! columns^.values value))
 
 (defn empty-entity-two-value-plan [] -> Entity-Two-Value-Plan
   (Entity-Two-Value-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
@@ -7233,8 +7250,8 @@
         (set! out.threshold threshold)
         (return out true)))))
 
-(defn q-query-entity-int-threshold-pairs [db: DB, plan: Entity-Int-Threshold-Plan] -> [dynamic]Entity-Int-Pair
-  (let [out (make [dynamic]Entity-Int-Pair)
+(defn q-query-entity-int-threshold-pair-columns [db: DB, plan: Entity-Int-Threshold-Plan] -> Entity-Int-Pair-Columns
+  (let [out (empty-entity-int-pair-columns)
         indexes (slice db.avet 0)
         low (lower-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
         attr-prefix ([]Value [(value-keyword plan.value-attr)])
@@ -7246,7 +7263,7 @@
                    (= datom.a plan.value-attr)
                    (= datom.v.kind .Int)
                    (> datom.v.int-value plan.threshold))
-          (arr.push! out (Entity-Int-Pair {entity: datom.e value: datom.v.int-value})))))
+          (append-entity-int-pair-column! (addr out) datom.e datom.v.int-value))))
     out))
 
 (defn append-two-attr-projection-row! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), query: Query, projection: Two-Attr-Entity-Projection, first-value-source: Value, second-value-source: Value]
@@ -7373,12 +7390,12 @@
     (set! out-stats.output-rows (count rows))
     (profiled-result-set (result-set-ok rows) out-stats)))
 
-(defn q-query-entity-int-pairs [db: DB, query: Query, inputs: []Query-Input] -> [pairs: [dynamic]Entity-Int-Pair, ok: bool]
-  (let [out (make [dynamic]Entity-Int-Pair)]
+(defn q-query-entity-int-pair-columns [db: DB, query: Query, inputs: []Query-Input] -> [columns: Entity-Int-Pair-Columns, ok: bool]
+  (let [out (empty-entity-int-pair-columns)]
     (let [[threshold-plan threshold-ok] (query-entity-int-threshold-plan db query inputs)]
       (when threshold-ok
-        (delete out)
-        (return (q-query-entity-int-threshold-pairs db threshold-plan) true)))
+        (delete-entity-int-pair-columns out)
+        (return (q-query-entity-int-threshold-pair-columns db threshold-plan) true)))
     (when (> (count inputs) 0)
       (return out false))
     (let [[plan plan-ok] (query-entity-int-pair-plan db query)]
@@ -7420,10 +7437,10 @@
                     (if direct-value-lookup
                       (let [[int-value int-ok] (current-cardinality-one-int-value-fast db filter-datom.e plan.value-attr)]
                         (when int-ok
-                          (arr.push! out (Entity-Int-Pair {entity: filter-datom.e value: int-value}))))
+                          (append-entity-int-pair-column! (addr out) filter-datom.e int-value)))
                       (let [[value value-ok] (latest-attr-value db filter-datom.e plan.value-attr)]
                         (when (and value-ok (= value.kind .Int))
-                          (arr.push! out (Entity-Int-Pair {entity: filter-datom.e value: value.int-value})))))))))))
+                          (append-entity-int-pair-column! (addr out) filter-datom.e value.int-value))))))))))
         (delete plan.filters)
         (return out true)))))
 
