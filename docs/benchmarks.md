@@ -106,21 +106,21 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 18.8x | 56.5x |
-| `chain-root n=10` | 23.8x | 40.3x |
-| `chain-root n=30` | 48.2x | 59.0x |
-| `chain-root n=100` | 207.0x | 220.7x |
-| `chain-leaf n=10` | 11.3x | 14.8x |
-| `chain-leaf n=30` | 36.7x | 40.5x |
-| `chain-leaf n=100` | 222.7x | 231.4x |
-| `chain-all n=10` | 10.9x | 14.9x |
-| `chain-all n=30` | 15.8x | 16.5x |
-| `chain-all n=100` | 26.5x | 26.4x |
-| `tree-root n=4` | 3.2x | 8.4x |
-| `tree-root n=13` | 3.4x | 5.4x |
-| `tree-root n=40` | 2.4x | 2.9x |
+| `chain-root n=3` | 20.8x | 62.5x |
+| `chain-root n=10` | 22.2x | 39.6x |
+| `chain-root n=30` | 48.4x | 58.5x |
+| `chain-root n=100` | 205.5x | 217.3x |
+| `chain-leaf n=10` | 11.5x | 15.4x |
+| `chain-leaf n=30` | 35.4x | 38.9x |
+| `chain-leaf n=100` | 205.3x | 211.7x |
+| `chain-all n=10` | 11.3x | 15.4x |
+| `chain-all n=30` | 15.6x | 15.9x |
+| `chain-all n=100` | 23.7x | 23.6x |
+| `tree-root n=4` | 3.3x | 8.3x |
+| `tree-root n=13` | 3.1x | 5.0x |
+| `tree-root n=40` | 2.4x | 3.0x |
 | `tree-root n=121` | 1.8x | 1.9x |
-| `bad-order-join n=1000` | 7.5x | 12.4x |
+| `bad-order-join n=1000` | 7.2x | 11.2x |
 | `distinct-age n=1000` | 0.6x | 0.6x |
 
 ## Current Findings
@@ -142,7 +142,10 @@ and walks it with a queue and compact traversal-local seen sets. When only the
 target is bound, Vev walks the same relation in reverse to find all sources that
 can reach it. Both avoid recursively re-running the rule body to a fixed depth.
 That turns the benchmarked chain-root and chain-leaf workloads into a single
-rule iteration with one output binding per reached entity.
+rule iteration with one output binding per reached entity. The adjacency view is
+built directly from the `aevt` index range for the relation attr, with traversal
+scratch arrays pre-sized from the adjacency size, so the specialized path no
+longer materializes a generic clause candidate vector during closure setup.
 
 The large chain-root/chain-leaf gap should be read narrowly: it compares Vev's
 specialized bound transitive closure path against DataScript's general recursive
