@@ -2,7 +2,11 @@
 
 (def schema
   {:follows {:db/valueType :db.type/ref
-             :db/cardinality :db.cardinality/many}})
+             :db/cardinality :db.cardinality/many}
+   :f1 {:db/valueType :db.type/ref
+        :db/cardinality :db.cardinality/many}
+   :f2 {:db/valueType :db.type/ref
+        :db/cardinality :db.cardinality/many}})
 
 (def rules
   '[[(reachable ?x ?y)
@@ -56,6 +60,17 @@
                    :active true}
             (seq targets) (assoc :follows targets))))
       (range 1 (inc n)))))
+
+(defn seed-mutual-chain [n]
+  (vec
+    (concat
+      (mapcat
+        (fn [i]
+          [{:db/id i :name (str "node-" i)}
+           {:db/id i :f1 (inc i)}
+           {:db/id i :f2 (inc i)}])
+        (range 1 n))
+      [{:db/id n :name (str "node-" n)}])))
 
 (defn db-with [tx]
   (d/db-with (d/empty-db schema) tx))
@@ -153,6 +168,27 @@
                              3)]
     (print-result "stress-filtered-root" n measured)))
 
+(def mutual-rules
+  '[[(f1 ?x ?y)
+     [?x :f1 ?y]]
+    [(f1 ?x ?y)
+     [?x :f1 ?t]
+     (f2 ?t ?y)]
+    [(f2 ?x ?y)
+     [?x :f2 ?y]]
+    [(f2 ?x ?y)
+     [?x :f2 ?t]
+     (f1 ?t ?y)]])
+
+(defn run-mutual-from-root [n]
+  (let [db (db-with (seed-mutual-chain n))
+        measured (time-query (fn []
+                             (d/q '[:find ?y :in $ % ?x :where (f1 ?x ?y)]
+                                    db mutual-rules 1))
+                             1
+                             3)]
+    (print-result "stress-mutual-root" n measured)))
+
 (doseq [n [300]]
   (run-chain-from-root n)
   (run-chain-to-leaf n))
@@ -160,3 +196,5 @@
   (run-chain-all n))
 (doseq [n [364]]
   (run-tree-from-root n))
+(doseq [n [30]]
+  (run-mutual-from-root n))

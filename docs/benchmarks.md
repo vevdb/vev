@@ -40,13 +40,13 @@ bench/compare_query_rules_stress.sh
 ```
 
 The stress harness keeps the default benchmark short while still measuring
-larger chain/tree closures. The Vev side includes larger Vev-only rows such as
-1000-node bound chains, 1093-node trees, dense DAGs, and a filtered recursive
-rule that deliberately does not match the transitive-closure recognizer. The
-DataScript comparison side uses smaller overlapping rows and fewer samples so
-the run stays practical. Dense DAG and filtered generic-recursion rows are kept
-out of the routine DataScript comparison for now because local DataScript/JVM
-runs either run out of memory or take too long at useful sizes.
+larger chain/tree closures and one mutually recursive rule shape. The Vev side
+also includes larger Vev-only rows such as 1000-node bound chains, 1093-node
+trees, dense DAGs, and a filtered recursive rule. The DataScript comparison
+side uses smaller overlapping rows and fewer samples so the run stays
+practical. Dense DAG and filtered generic-recursion rows are kept out of the
+routine DataScript comparison for now because local DataScript/JVM runs either
+run out of memory or take too long at useful sizes.
 
 Current sample output on June 24, 2026:
 
@@ -145,20 +145,20 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1386.7x | 1395.8x |
-| `stress-chain-leaf n=300` | 4425.0x | 4531.1x |
-| `stress-chain-all n=200` | 34.0x | 34.0x |
-| `stress-tree-root n=364` | 1.6x | 1.9x |
+| `stress-chain-root n=300` | 1370.3x | 1411.0x |
+| `stress-chain-leaf n=300` | 3971.5x | 4167.7x |
+| `stress-chain-all n=200` | 32.9x | 32.4x |
+| `stress-tree-root n=364` | 1.8x | 2.0x |
+| `stress-mutual-root n=30` | 17.0x | 21.3x |
 
 The stress harness also emits Vev-only rows for workloads that are currently
 too expensive for routine DataScript comparison:
 
 | Workload | Vev text median | Vev prepared median | Notes |
 |---|---:|---:|---|
-| `stress-dense-root n=60` | 227us | 204us | Dense DAG, width 8 |
-| `stress-dense-root n=160` | 568us | 557us | Dense DAG, width 8 |
-| `stress-filtered-root n=10` | 49us | 30us | Linear recursive rule with a target-node data filter |
-| `stress-mutual-root n=30` | 29461us | 29795us | Generic mutual recursion, not handled by the linear closure recognizer |
+| `stress-dense-root n=60` | 240us | 220us | Dense DAG, width 8 |
+| `stress-dense-root n=160` | 622us | 605us | Dense DAG, width 8 |
+| `stress-filtered-root n=10` | 71us | 44us | Linear recursive rule with a target-node data filter |
 
 ## Current Findings
 
@@ -221,9 +221,22 @@ Generic rule-result dedupe now has the same shape: primitive bindings get a
 stable binding key and use a map-backed seen set, while bindings containing
 complex values still fall back to structural comparison. This removes one
 avoidable O(rows squared) scan from recursive fixpoint accumulation, but it is
-not a full semi-naive evaluator. The new `stress-mutual-root` row is deliberately
-not recognized as linear transitive closure and currently remains the main
-generic-recursion performance target.
+not a full semi-naive evaluator.
+
+Two-rule alternating linear recursion now has its own graph path as well. It
+recognizes shapes like:
+
+```clojure
+[[(f1 ?x ?y) [?x :f1 ?y]]
+ [(f1 ?x ?y) [?x :f1 ?t] (f2 ?t ?y)]
+ [(f2 ?x ?y) [?x :f2 ?y]]
+ [(f2 ?x ?y) [?x :f2 ?t] (f1 ?t ?y)]]
+```
+
+For bound-start calls, Vev builds one adjacency per rule attr and traverses
+`(entity,next-rule)` states. That moves `stress-mutual-root n=30` from roughly
+29461us/29795us text/prepared on the generic fixpoint path to roughly
+112us/83us locally, and it is now part of the DataScript stress comparison.
 
 The harness includes `distinct-age`, a simple `[:find ?age :where [?e :age
 ?age]]` projection over 1000 entities and 100 distinct ages. Vev has a narrow
@@ -245,10 +258,10 @@ DataScript.
 Remaining performance work:
 
 - Generalize this from the current linear transitive closure path into a
-  measured semi-naive/memoized rule evaluator. Filtered linear recursion is now
-  optimized, and primitive binding dedupe is map-backed, but mutual recursion
-  and other multi-step recursive bodies still use the generic depth/fixpoint
-  evaluator.
+  measured semi-naive/memoized rule evaluator. Filtered linear recursion and
+  alternating two-rule recursion are now optimized, and primitive binding
+  dedupe is map-backed, but arbitrary multi-step recursive bodies still use the
+  generic depth/fixpoint evaluator.
 - Continue result-projection work for simple distinct queries. The current
   `distinct-age` path is much better than generic row dedupe, but still behind
   DataScript because it still renders full `Result-Row`/`Value` structures for
