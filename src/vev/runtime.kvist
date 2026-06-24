@@ -6679,6 +6679,14 @@
     (arr.push! values second)
     (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
 
+(defn append-three-value-row! [rows: ^[dynamic]Result-Row, first: Value, second: Value, third: Value]
+  (let [values (make [dynamic]Value 0 3)
+        pulls (make [dynamic]Pull-Result)]
+    (arr.push! values first)
+    (arr.push! values second)
+    (arr.push! values third)
+    (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
+
 (defn query-single-entity-by-attr-value-clause [db: DB, query: Query] -> [clause-value: Clause, ok: bool]
   (let [empty-clause (Clause {})]
     (when (not (and (= (count query.find) 1)
@@ -6877,6 +6885,15 @@
   filters: [dynamic]Entity-Int-Pair-Filter
 })
 
+(defstruct Entity-Two-Value-Plan {
+  entity-var: string
+  first-var: string
+  first-attr: string
+  second-var: string
+  second-attr: string
+  filters: [dynamic]Entity-Int-Pair-Filter
+})
+
 (defn empty-two-attr-entity-projection [] -> Two-Attr-Entity-Projection
   (Two-Attr-Entity-Projection {}))
 
@@ -6885,6 +6902,9 @@
 
 (defn empty-entity-int-pair-plan [] -> Entity-Int-Pair-Plan
   (Entity-Int-Pair-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
+
+(defn empty-entity-two-value-plan [] -> Entity-Two-Value-Plan
+  (Entity-Two-Value-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
 
 (defn query-two-attr-entity-projection [query: Query] -> [projection: Two-Attr-Entity-Projection, ok: bool]
   (when (not (and (= (count query.find) 2)
@@ -7054,6 +7074,79 @@
       (set! out.entity-var entity-var)
       (set! out.value-var value-var)
       (set! out.value-attr value-attr)
+      (return out true))))
+
+(defn query-entity-two-value-plan [db: DB, query: Query] -> [plan: Entity-Two-Value-Plan, ok: bool]
+  (let [out (empty-entity-two-value-plan)]
+    (when (not (and (= (count query.find) 3)
+                    (= (count query.with) 0)
+                    (= (count query.inputs) 0)
+                    (= (count query.collection-inputs) 0)
+                    (= (count query.tuple-inputs) 0)
+                    (= (count query.relation-inputs) 0)
+                    (= (count query.input-specs) 0)
+                    (= (count query.pulls) 0)
+                    (= (count query.aggregates) 0)
+                    (= (count query.rules) 0)
+                    (= (count query.rule-calls) 0)
+                    (= (count query.predicates) 0)
+                    (= (count query.function-clauses) 0)
+                    (= (count query.get-elses) 0)
+                    (= (count query.get-somes) 0)
+                    (= (count query.grounds) 0)
+                    (= (count query.not-groups) 0)
+                    (= (count query.or-groups) 0)
+                    (>= (count query.clauses) 3)
+                    (= (count query.where-steps) (count query.clauses))))
+      (return out false))
+    (for [step query.where-steps]
+      (when (not (= step.kind .Clause))
+        (return out false)))
+    (let [entity-var query.find[0]
+          first-var query.find[1]
+          second-var query.find[2]
+          first-found false
+          second-found false
+          first-attr ""
+          second-attr ""]
+      (for [item (slice query.clauses 0)]
+        (when (or item.has-source
+                  (not (= item.e.kind .Var))
+                  (not (= item.e.name entity-var))
+                  (not (= item.a.kind .Value))
+                  (not (= item.a.value.kind .Keyword))
+                  (not (= item.tx-term.kind .Wildcard))
+                  (not (= item.op-term.kind .Wildcard))
+                  (not (schema-cardinality-one? db item.a.value.text)))
+          (return out false))
+        (if (= item.v.kind .Var)
+          (cond
+            (= item.v.name first-var)
+              (do
+                (when first-found
+                  (return out false))
+                (set! first-found true)
+                (set! first-attr item.a.value.text))
+            (= item.v.name second-var)
+              (do
+                (when second-found
+                  (return out false))
+                (set! second-found true)
+                (set! second-attr item.a.value.text))
+            :else (return out false))
+          (if (= item.v.kind .Value)
+            (arr.push! out.filters (Entity-Int-Pair-Filter {attr: item.a.value.text value: item.v.value}))
+            (return out false))))
+      (when (or (not first-found)
+                (not second-found)
+                (= (count out.filters) 0)
+                (not (all-datoms-current? db)))
+        (return out false))
+      (set! out.entity-var entity-var)
+      (set! out.first-var first-var)
+      (set! out.first-attr first-attr)
+      (set! out.second-var second-var)
+      (set! out.second-attr second-attr)
       (return out true))))
 
 (defn append-two-attr-projection-row! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), query: Query, projection: Two-Attr-Entity-Projection, first-value-source: Value, second-value-source: Value]
@@ -7230,6 +7323,47 @@
         (delete plan.filters)
         (return out true)))))
 
+(defn q-entity-two-value-plan-profiled [db: DB, query: Query, plan: Entity-Two-Value-Plan, stats: Query-Stats] -> Profiled-Result-Set
+  (let [out-stats stats
+        rows (make [dynamic]Result-Row)
+        filter-indexes (slice db.avet 0)
+        best-filter-index 0
+        best-low 0
+        best-high 0]
+    (defer (delete plan.filters))
+    (for [filter-i (arr.range 0 (count plan.filters))]
+      (let [filter plan.filters[filter-i]
+            low (lower-bound-index db filter-indexes "avet" 0 filter.attr filter.value)
+            high (upper-bound-index db filter-indexes "avet" 0 filter.attr filter.value)]
+        (when (or (= filter-i 0)
+                  (< (- high low) (- best-high best-low)))
+          (set! best-filter-index filter-i)
+          (set! best-low low)
+          (set! best-high high))))
+    (set! out-stats.steps 1)
+    (set! out-stats.clauses (count query.clauses))
+    (set! out-stats.clause-candidates (- best-high best-low))
+    (for [i (arr.range best-low best-high)]
+      (let [filter-datom-index filter-indexes[i]
+            filter-datom db.datoms[filter-datom-index]]
+        (when (datom-current-at? db filter-datom-index)
+          (let [filters-match true]
+            (for [filter-i (arr.range 0 (count plan.filters))]
+              (when (not (= filter-i best-filter-index))
+                (let [filter plan.filters[filter-i]]
+                  (set! out-stats.clause-candidates (+ out-stats.clause-candidates 1))
+                  (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
+                    (set! filters-match false)))))
+            (when filters-match
+              (let [[first-value first-ok] (current-cardinality-one-value-fast db filter-datom.e plan.first-attr)
+                    [second-value second-ok] (current-cardinality-one-value-fast db filter-datom.e plan.second-attr)]
+                (set! out-stats.clause-candidates (+ out-stats.clause-candidates 2))
+                (when (and first-ok second-ok)
+                  (append-three-value-row! (addr rows) (value-entity filter-datom.e) first-value second-value))))))))
+    (set! out-stats.max-intermediate-bindings (count rows))
+    (set! out-stats.output-rows (count rows))
+    (profiled-result-set (result-set-ok rows) out-stats)))
+
 (defn q-query-profiled-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Profiled-Result-Set
   (let [stats (query-stats-empty)
         [valid error] (validate-query-call-with-fns db query inputs sources registry)]
@@ -7244,6 +7378,10 @@
   (let [[entity-value-projection entity-value-ok] (query-entity-attr-value-projection db query)]
     (when entity-value-ok
       (return (q-entity-attr-value-projection-profiled db query entity-value-projection stats))))
+  (let [[entity-two-plan entity-two-ok] (query-entity-two-value-plan db query)]
+    (when entity-two-ok
+      (return (q-entity-two-value-plan-profiled db query entity-two-plan stats)))
+    (delete entity-two-plan.filters))
   (let [[projection projection-ok] (query-two-attr-entity-projection query)]
     (when projection-ok
       (return (q-two-attr-entity-projection-profiled db query projection stats))))
