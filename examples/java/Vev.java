@@ -35,6 +35,16 @@ public final class Vev {
     private final MethodHandle txReportFree;
     private final MethodHandle txReportValue;
     private final MethodHandle txReportEdn;
+    private final MethodHandle txCreate;
+    private final MethodHandle txFree;
+    private final MethodHandle txAddString;
+    private final MethodHandle txAddKeyword;
+    private final MethodHandle txAddSymbol;
+    private final MethodHandle txAddEntity;
+    private final MethodHandle txAddInt;
+    private final MethodHandle txAddBool;
+    private final MethodHandle txCommitReport;
+    private final MethodHandle txDbWith;
     private final MethodHandle queryEdnWithInputs;
     private final MethodHandle prepareQueryEdn;
     private final MethodHandle preparedQueryFree;
@@ -48,6 +58,18 @@ public final class Vev {
     private final MethodHandle queryDbStmtResult;
     private final MethodHandle queryPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedResultWithInputs;
+    private final MethodHandle queryDbPreparedEntityColumnWithInputs;
+    private final MethodHandle u64ArrayFree;
+    private final MethodHandle u64ArrayCount;
+    private final MethodHandle u64ArrayValue;
+    private final MethodHandle u64ArrayData;
+    private final MethodHandle queryDbPreparedEntityIntPairsWithInputs;
+    private final MethodHandle entityIntPairsFree;
+    private final MethodHandle entityIntPairsCount;
+    private final MethodHandle entityIntPairsEntity;
+    private final MethodHandle entityIntPairsValue;
+    private final MethodHandle entityIntPairsEntitiesData;
+    private final MethodHandle entityIntPairsValuesData;
     private final MethodHandle pullEdn;
     private final MethodHandle pullLookupRefStringEdn;
     private final MethodHandle pullManyEdn;
@@ -59,9 +81,11 @@ public final class Vev {
     private final MethodHandle resultError;
     private final MethodHandle resultRowCount;
     private final MethodHandle resultValueCount;
+    private final MethodHandle resultValueKind;
     private final MethodHandle resultValue;
     private final MethodHandle resultPullCount;
     private final MethodHandle resultPull;
+    private final MethodHandle resultValueEntity;
     private final MethodHandle valueKind;
     private final MethodHandle valueText;
     private final MethodHandle valueEntity;
@@ -98,6 +122,16 @@ public final class Vev {
         this.txReportFree = downcall("vev_tx_report_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.txReportValue = downcall("vev_tx_report_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.txReportEdn = downcall("vev_tx_report_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txCreate = downcall("vev_tx_create", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.txFree = downcall("vev_tx_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.txAddString = downcall("vev_tx_add_string", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txAddKeyword = downcall("vev_tx_add_keyword", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txAddSymbol = downcall("vev_tx_add_symbol", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txAddEntity = downcall("vev_tx_add_entity", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.txAddInt = downcall("vev_tx_add_int", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.txAddBool = downcall("vev_tx_add_bool", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_BOOLEAN));
+        this.txCommitReport = downcall("vev_tx_commit_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txDbWith = downcall("vev_tx_db_with", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.prepareQueryEdn = downcall("vev_prepare_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryFree = downcall("vev_prepared_query_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -111,6 +145,18 @@ public final class Vev {
         this.queryDbStmtResult = downcall("vev_query_db_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryPreparedResultWithInputs = downcall("vev_query_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedEntityColumnWithInputs = downcall("vev_query_db_prepared_entity_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.u64ArrayFree = downcall("vev_u64_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.u64ArrayCount = downcall("vev_u64_array_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.u64ArrayValue = downcall("vev_u64_array_value", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.u64ArrayData = downcall("vev_u64_array_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedEntityIntPairsWithInputs = downcall("vev_query_db_prepared_entity_int_pairs_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityIntPairsFree = downcall("vev_entity_int_pairs_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.entityIntPairsCount = downcall("vev_entity_int_pairs_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.entityIntPairsEntity = downcall("vev_entity_int_pairs_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.entityIntPairsValue = downcall("vev_entity_int_pairs_value", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.entityIntPairsEntitiesData = downcall("vev_entity_int_pairs_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityIntPairsValuesData = downcall("vev_entity_int_pairs_values_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullEdn = downcall("vev_pull_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
@@ -122,9 +168,11 @@ public final class Vev {
         this.resultError = downcall("vev_result_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.resultRowCount = downcall("vev_result_row_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.resultValueCount = downcall("vev_result_value_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.resultValueKind = downcall("vev_result_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultValue = downcall("vev_result_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultPullCount = downcall("vev_result_pull_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.resultPull = downcall("vev_result_pull", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueEntity = downcall("vev_result_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.valueKind = downcall("vev_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.valueText = downcall("vev_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.valueEntity = downcall("vev_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
@@ -161,6 +209,12 @@ public final class Vev {
             if (isNull(raw)) throw new IllegalStateException("failed to prepare query");
             return new PreparedQuery(raw);
         }
+    }
+
+    public TxBuilder txBuilder(int capacity) throws Throwable {
+        MemorySegment raw = (MemorySegment) txCreate.invoke(Math.max(0, capacity));
+        if (isNull(raw)) throw new IllegalStateException("failed to create transaction builder");
+        return new TxBuilder(raw);
     }
 
     public void close() {
@@ -319,6 +373,11 @@ public final class Vev {
             }
         }
 
+        public TxReport transactReport(TxBuilder tx) throws Throwable {
+            tx.requireOpen();
+            return new TxReport((MemorySegment) txCommitReport.invoke(raw, tx.raw));
+        }
+
         public String queryText(String query, String inputs) throws Throwable {
             try (Arena local = Arena.ofConfined()) {
                 return ownedString((MemorySegment) queryEdnWithInputs.invoke(raw, local.allocateUtf8String(query), local.allocateUtf8String(inputs)));
@@ -373,6 +432,77 @@ public final class Vev {
             }
         }
 
+        public long[] queryEntityColumn(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedEntityColumnWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) u64ArrayCount.invoke(raw);
+                    if (count == 0) return new long[0];
+                    MemorySegment data = (MemorySegment) u64ArrayData.invoke(raw);
+                    if (isNull(data)) return new long[0];
+                    return data.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                } finally {
+                    u64ArrayFree.invoke(raw);
+                }
+            }
+        }
+
+        public long[][] queryEntityIntPairs(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedEntityIntPairsWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) entityIntPairsCount.invoke(raw);
+                    if (count == 0) return new long[0][2];
+                    MemorySegment entityData = (MemorySegment) entityIntPairsEntitiesData.invoke(raw);
+                    MemorySegment valueData = (MemorySegment) entityIntPairsValuesData.invoke(raw);
+                    if (isNull(entityData) || isNull(valueData)) return new long[0][2];
+                    long[] entities = entityData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    long[] values = valueData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    long[][] out = new long[count][2];
+                    for (int index = 0; index < count; index++) {
+                        out[index][0] = entities[index];
+                        out[index][1] = values[index];
+                    }
+                    return out;
+                } finally {
+                    entityIntPairsFree.invoke(raw);
+                }
+            }
+        }
+
+        public long[][] queryEntityIntPairColumns(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedEntityIntPairsWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) entityIntPairsCount.invoke(raw);
+                    if (count == 0) return new long[][] { new long[0], new long[0] };
+                    MemorySegment entityData = (MemorySegment) entityIntPairsEntitiesData.invoke(raw);
+                    MemorySegment valueData = (MemorySegment) entityIntPairsValuesData.invoke(raw);
+                    if (isNull(entityData) || isNull(valueData)) return new long[][] { new long[0], new long[0] };
+                    long[] entities = entityData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    long[] values = valueData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    return new long[][] { entities, values };
+                } finally {
+                    entityIntPairsFree.invoke(raw);
+                }
+            }
+        }
+
         public ResultSet query(Statement stmt) throws Throwable {
             requireOpen();
             return new ResultSet((MemorySegment) queryDbStmtResult.invoke(handle.raw, stmt.raw));
@@ -399,6 +529,14 @@ public final class Vev {
                 if (isNull(db)) throw new IllegalStateException("failed to create DB snapshot");
                 return new DB(db);
             }
+        }
+
+        public DB dbWith(TxBuilder tx) throws Throwable {
+            requireOpen();
+            tx.requireOpen();
+            MemorySegment db = (MemorySegment) txDbWith.invoke(handle.raw, tx.raw);
+            if (isNull(db)) throw new IllegalStateException("failed to create DB snapshot");
+            return new DB(db);
         }
 
         public Object pull(String pattern, long entity) throws Throwable {
@@ -499,6 +637,74 @@ public final class Vev {
         }
     }
 
+    public final class TxBuilder implements AutoCloseable {
+        private MemorySegment raw;
+
+        private TxBuilder(MemorySegment raw) {
+            this.raw = raw;
+        }
+
+        public TxBuilder addString(long e, String attr, String value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddString.invoke(raw, e, local.allocateUtf8String(attr), local.allocateUtf8String(value));
+                if (!ok) throw new IllegalStateException("failed to add string tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addKeyword(long e, String attr, String value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddKeyword.invoke(raw, e, local.allocateUtf8String(attr), local.allocateUtf8String(value));
+                if (!ok) throw new IllegalStateException("failed to add keyword tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addSymbol(long e, String attr, String value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddSymbol.invoke(raw, e, local.allocateUtf8String(attr), local.allocateUtf8String(value));
+                if (!ok) throw new IllegalStateException("failed to add symbol tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addEntity(long e, String attr, long value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddEntity.invoke(raw, e, local.allocateUtf8String(attr), value);
+                if (!ok) throw new IllegalStateException("failed to add entity tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addInt(long e, String attr, long value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddInt.invoke(raw, e, local.allocateUtf8String(attr), value);
+                if (!ok) throw new IllegalStateException("failed to add int tx datom");
+                return this;
+            }
+        }
+
+        public TxBuilder addBool(long e, String attr, boolean value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                boolean ok = (boolean) txAddBool.invoke(raw, e, local.allocateUtf8String(attr), value);
+                if (!ok) throw new IllegalStateException("failed to add bool tx datom");
+                return this;
+            }
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("transaction builder is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(txFree, raw);
+                raw = MemorySegment.NULL;
+            }
+        }
+    }
+
     public final class Statement implements AutoCloseable {
         private MemorySegment raw;
 
@@ -564,9 +770,33 @@ public final class Vev {
             return (int) resultRowCount.invoke(raw);
         }
 
+        public long[] singleEntityColumn() throws Throwable {
+            int rowCount = rowCount();
+            if (rowCount == 0) return new long[0];
+            if ((int) resultValueCount.invoke(raw, 0) != 1
+                    || (int) resultPullCount.invoke(raw, 0) != 0
+                    || (int) resultValueKind.invoke(raw, 0, 0) != 1) {
+                return null;
+            }
+            long[] out = new long[rowCount];
+            for (int row = 0; row < rowCount; row++) {
+                out[row] = (long) resultValueEntity.invoke(raw, row, 0);
+            }
+            return out;
+        }
+
         public List<List<Object>> rows() throws Throwable {
             int rowCount = rowCount();
             List<List<Object>> rows = new ArrayList<>(rowCount);
+            long[] entityColumn = singleEntityColumn();
+            if (entityColumn != null && rowCount > 0) {
+                for (long entity : entityColumn) {
+                    List<Object> values = new ArrayList<>(1);
+                    values.add(new Entity(entity));
+                    rows.add(values);
+                }
+                return rows;
+            }
             for (int row = 0; row < rowCount; row++) {
                 List<Object> values = new ArrayList<>();
                 int valueCount = (int) resultValueCount.invoke(raw, row);

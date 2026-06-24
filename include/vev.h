@@ -11,8 +11,11 @@ typedef void *vev_conn_t;
 typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
+typedef void *vev_u64_array_t;
+typedef void *vev_entity_int_pairs_t;
 typedef void *vev_stmt_t;
 typedef void *vev_tx_report_t;
+typedef void *vev_tx_builder_t;
 typedef void *vev_tx_fn_registry_t;
 typedef const void *vev_tx_fn_args_t;
 typedef void *vev_value_handle_t;
@@ -90,6 +93,16 @@ vev_tx_report_t vev_with_edn_report_with_tx_fns(
 void vev_tx_report_free(vev_tx_report_t report);
 vev_value_t vev_tx_report_value(vev_tx_report_t report);
 const char *vev_tx_report_edn(vev_tx_report_t report);
+vev_tx_builder_t vev_tx_create(int capacity);
+void vev_tx_free(vev_tx_builder_t builder);
+bool vev_tx_add_string(vev_tx_builder_t builder, unsigned long long e, const char *attr, const char *value);
+bool vev_tx_add_keyword(vev_tx_builder_t builder, unsigned long long e, const char *attr, const char *value);
+bool vev_tx_add_symbol(vev_tx_builder_t builder, unsigned long long e, const char *attr, const char *value);
+bool vev_tx_add_entity(vev_tx_builder_t builder, unsigned long long e, const char *attr, unsigned long long value);
+bool vev_tx_add_int(vev_tx_builder_t builder, unsigned long long e, const char *attr, long long value);
+bool vev_tx_add_bool(vev_tx_builder_t builder, unsigned long long e, const char *attr, bool value);
+vev_tx_report_t vev_tx_commit_report(vev_conn_t conn, vev_tx_builder_t builder);
+vev_db_t vev_tx_db_with(vev_db_t db, vev_tx_builder_t builder);
 vev_tx_fn_registry_t vev_tx_fn_registry_create(void);
 void vev_tx_fn_registry_free(vev_tx_fn_registry_t registry);
 bool vev_tx_fn_registry_register_edn(
@@ -175,6 +188,24 @@ vev_result_t vev_query_db_prepared_result_with_inputs(
     vev_db_t db,
     vev_prepared_query_t query,
     const char *inputs_text);
+vev_u64_array_t vev_query_db_prepared_entity_column_with_inputs(
+    vev_db_t db,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+void vev_u64_array_free(vev_u64_array_t array);
+int vev_u64_array_count(vev_u64_array_t array);
+unsigned long long vev_u64_array_value(vev_u64_array_t array, int index);
+const unsigned long long *vev_u64_array_data(vev_u64_array_t array);
+vev_entity_int_pairs_t vev_query_db_prepared_entity_int_pairs_with_inputs(
+    vev_db_t db,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+void vev_entity_int_pairs_free(vev_entity_int_pairs_t pairs);
+int vev_entity_int_pairs_count(vev_entity_int_pairs_t pairs);
+unsigned long long vev_entity_int_pairs_entity(vev_entity_int_pairs_t pairs, int index);
+long long vev_entity_int_pairs_value(vev_entity_int_pairs_t pairs, int index);
+const unsigned long long *vev_entity_int_pairs_entities_data(vev_entity_int_pairs_t pairs);
+const long long *vev_entity_int_pairs_values_data(vev_entity_int_pairs_t pairs);
 
 vev_value_handle_t vev_pull_edn(vev_db_t db, const char *pattern_text, unsigned long long entity);
 vev_value_handle_t vev_pull_lookup_ref_string_edn(

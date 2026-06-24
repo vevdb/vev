@@ -2130,6 +2130,56 @@
         (set! latest db.datoms[datom-index].v)))
     (return latest (>= latest-index 0))))
 
+(defn eavt-ea-prefix-compare-direct [db: DB, datom-index: int, entity: u64, attr: string] -> int
+  (let [datom db.datoms[datom-index]]
+    (if (< datom.e entity)
+      -1
+      (if (> datom.e entity)
+        1
+        (strings.compare datom.a attr)))))
+
+(defn lower-bound-eavt-ea-direct [db: DB, indexes: []int, entity: u64, attr: string] -> int
+  (let [low 0
+        high (count indexes)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            compare (eavt-ea-prefix-compare-direct db indexes[mid] entity attr)]
+        (if (< compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
+(defn current-cardinality-one-int-value-fast [db: DB, entity: u64, attr: string] -> [value: i64, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
+    (when (>= index-pos (count indexes))
+      (return 0 false))
+    (let [datom-index indexes[index-pos]
+          datom db.datoms[datom-index]]
+      (when (and (= datom.e entity)
+                 (= datom.a attr)
+                 (= datom.v.kind .Int)
+                 (datom-current-at? db datom-index))
+        (return datom.v.int-value true))
+      (return 0 false))))
+
+(defn current-cardinality-one-value-fast [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
+    (when (>= index-pos (count indexes))
+      (return (Value {}) false))
+    (let [datom-index indexes[index-pos]
+          datom db.datoms[datom-index]]
+      (when (and (= datom.e entity)
+                 (= datom.a attr)
+                 (datom-current-at? db datom-index))
+        (return datom.v true))
+      (return (Value {}) false))))
+
+(defn current-cardinality-one-value-matches-fast? [db: DB, entity: u64, attr: string, expected: Value] -> bool
+  (let [[value ok] (current-cardinality-one-value-fast db entity attr)]
+    (and ok (value-equal? value expected))))
+
 (defn tuple-value-for-entity [db: DB, entity: u64, attrs: []string] -> [value: Value, ok: bool]
   (let [items (make [dynamic]Value 0 (count attrs))
         any false]
@@ -2186,7 +2236,41 @@
     (let [[tuple-value has-value] (tuple-value-for-entity db op.e (slice tuple-attrs 0))]
       (and has-value (value-equal? tuple-value op.v)))))
 
+(defn db-has-tuple-schema? [db: DB] -> bool
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Keyword)
+                   (= datom.v.text ":db.type/tuple"))
+          (return true)))))
+  false)
+
+(defn op-modifies-tuple-schema? [op: Tx-Op] -> bool
+  (and (= op.kind .Add)
+       (or (= op.a ":db/tupleAttrs")
+           (and (= op.a ":db/valueType")
+                (= op.v.kind .Keyword)
+                (= op.v.text ":db.type/tuple")))))
+
+(defn ops-modify-tuple-schema? [ops: []Tx-Op] -> bool
+  (for [op ops]
+    (when (op-modifies-tuple-schema? op)
+      (return true)))
+  false)
+
 (defn expand-tuple-ops [db: DB, ops: []Tx-Op] -> [dynamic]Tx-Op
+  (when (and (not (db-has-tuple-schema? db))
+             (not (ops-modify-tuple-schema? ops)))
+    (return (arr.into [dynamic]Tx-Op ops)))
   (let [out (make [dynamic]Tx-Op 0 (count ops))
         whole-tx-db (db-with-resolved-ops db ops)]
     (for [op ops]
@@ -2384,7 +2468,71 @@
     (return false "bad lookup attribute"))
   (return true ""))
 
+(defn tx-data-modifies-validation-schema? [data: Tx-Data] -> bool
+  (or (= data.a ":db/ident")
+      (= data.a ":db/valueType")
+      (= data.a ":db/cardinality")
+      (= data.a ":db/unique")
+      (= data.a ":db/tupleAttrs")
+      (= data.a ":db/index")
+      (= data.a ":db/isComponent")))
+
+(defn direct-tx-data-item? [db: DB, data: Tx-Data] -> bool
+  (when (not (or (= data.op ":db/add")
+                 (= data.op ":db/retract")))
+    (return false))
+  (when (or data.has-tempid
+            data.has-lookup-ref
+            data.has-ident
+            data.has-expected-lookup-ref
+            data.has-value-tempid
+            data.has-value-lookup-ref
+            data.has-nested-map
+            data.from-map-collection
+            (tx-data-modifies-validation-schema? data)
+            (current-tx-value? data.v)
+            (ref-string-value? db data.a data.v)
+            (ref-negative-int-value? db data.a data.v)
+            (schema-unique? db data.a)
+            (reverse-attr? data.a))
+    (return false))
+  true)
+
+(defn direct-tx-data? [db: DB, tx-data: []Tx-Data] -> bool
+  (when (db-has-tuple-schema? db)
+    (return false))
+  (for [data tx-data]
+    (when (not (direct-tx-data-item? db data))
+      (return false)))
+  true)
+
+(defn resolve-direct-tx-data-for-tx [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
+  (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
+        resolved-meta (make [dynamic]Tx-Meta)
+        resolved-tempids (make [dynamic]Tempid)]
+    (for [data tx-data]
+      (let [[shape-ok shape-error] (validate-tx-data-item data)]
+        (when (not shape-ok)
+          (return (Resolved-Tx {ok: false
+                                error: shape-error
+                                ops: resolved-ops
+                                tx-meta: resolved-meta
+                                tempids: resolved-tempids}))))
+      (let [[value value-ok value-error] (resolve-tx-value db data.a data.v)]
+        (when (not value-ok)
+          (return (Resolved-Tx {ok: false
+                                error: value-error
+                                ops: resolved-ops
+                                tx-meta: resolved-meta
+                                tempids: resolved-tempids})))
+        (if (= data.op ":db/retract")
+          (arr.push! resolved-ops (tx-retract data.e data.a value))
+          (arr.push! resolved-ops (tx-add data.e data.a value)))))
+    (Resolved-Tx {ok: true error: "" ops: resolved-ops tx-meta: resolved-meta tempids: resolved-tempids})))
+
 (defn resolve-tx-data-for-tx [db: DB, tx-data: []Tx-Data, tx: u64] -> Resolved-Tx
+  (when (direct-tx-data? db tx-data)
+    (return (resolve-direct-tx-data-for-tx db tx-data)))
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
@@ -2702,6 +2850,86 @@
         (return false value-error))))
   (return true ""))
 
+(defn op-modifies-validation-schema? [op: Tx-Op] -> bool
+  (or (= op.a ":db/ident")
+      (= op.a ":db/valueType")
+      (= op.a ":db/cardinality")
+      (= op.a ":db/unique")
+      (= op.a ":db/tupleAttrs")
+      (= op.a ":db/index")
+      (= op.a ":db/isComponent")))
+
+(defn ops-require-incremental-validation? [before: DB, ops: []Tx-Op] -> bool
+  (for [op ops]
+    (when (op-modifies-validation-schema? op)
+      (return true))
+    (when (and (= op.kind .Add)
+               (schema-unique? before op.a))
+      (return true)))
+  false)
+
+(defn validate-final-schema [scratch-datoms: []Datom] -> [ok: bool, error: string]
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-tuple-schema scratch)]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-ident-values scratch)]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-keyword-values scratch ":db/valueType")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-keyword-values scratch ":db/cardinality")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-keyword-values scratch ":db/unique")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-bool-values scratch ":db/index")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-schema-bool-values scratch ":db/isComponent")]
+    (when (not ok)
+      (return false error)))
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [ok error] (validate-component-schema scratch)]
+    (when (not ok)
+      (return false error)))
+  (return true ""))
+
+(defn validate-ops-batch-against-before [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
+  (let [scratch-datoms (clone-datoms before.datoms)]
+    (defer (delete scratch-datoms))
+    (for [op ops]
+      (let [[entity-ok entity-error] (validate-op-entity-ids op)]
+        (when (not entity-ok)
+          (return false entity-error)))
+      (when (= op.kind .Add)
+        (let [[ok error] (validate-add-op before op)]
+          (when (not ok)
+            (return false error))))
+      (arr.push! scratch-datoms
+        (Datom {e: op.e
+                a: op.a
+                v: op.v
+                tx: 0
+                added: (= op.kind .Add)})))
+    (validate-final-schema (slice scratch-datoms 0))))
+
 (defn validate-tuple-schema [db: DB] -> [ok: bool, error: string]
   (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 ":db/valueType" (Value {}))
@@ -2801,6 +3029,8 @@
   (return true ""))
 
 (defn validate-ops [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
+  (when (not (ops-require-incremental-validation? before ops))
+    (return (validate-ops-batch-against-before before ops)))
   (let [scratch-datoms (clone-datoms before.datoms)]
     (defer (delete scratch-datoms))
     (for [op ops]
@@ -2819,47 +3049,7 @@
                 v: op.v
                 tx: 0
                 added: (= op.kind .Add)})))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-tuple-schema scratch)]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-ident-values scratch)]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-keyword-values scratch ":db/valueType")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-keyword-values scratch ":db/cardinality")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-keyword-values scratch ":db/unique")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-bool-values scratch ":db/index")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-schema-bool-values scratch ":db/isComponent")]
-      (when (not ok)
-        (return false error)))
-    (let [scratch-owned (arr.into [dynamic]Datom (slice scratch-datoms 0)) :defer
-          scratch (build-db scratch-owned)
-          [ok error] (validate-component-schema scratch)]
-      (when (not ok)
-        (return false error)))
-    (return true "")))
+    (validate-final-schema (slice scratch-datoms 0))))
 
 (defn failed-tx-report [db: DB, error: string] -> Tx-Report
   (Tx-Report {ok: false
@@ -2934,10 +3124,32 @@
       (return true)))
   false)
 
-(defn append-cardinality-one-retractions! [after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
+(defn current-db-attr-exists? [db: DB, entity: u64, attr: string] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (when (datom-current-at? db datom-index)
+        (return true))))
+  false)
+
+(defn entity-attr-key [entity: u64, attr: string] -> string
+  (fmt.tprintf "%d:%d:%s" entity (count attr) attr))
+
+(defn entity-attr-seen? [seen: (ptr (map string bool)), entity: u64, attr: string] -> bool
+  (let [key (entity-attr-key entity attr)
+        [_ found] (mmap.get seen^ key)]
+    found))
+
+(defn mark-entity-attr-seen! [seen: (ptr (map string bool)), entity: u64, attr: string]
+  (let [key (entity-attr-key entity attr)]
+    (mmap.assoc! seen^ key true)))
+
+(defn append-cardinality-one-retractions! [before: DB, seen-ea: (ptr (map string bool)), after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
-  (when (not (current-log-attr-exists? (slice after-datoms^ 0) op.e op.a))
+  (when (not (or (current-db-attr-exists? before op.e op.a)
+                 (entity-attr-seen? seen-ea op.e op.a)))
     (return))
   (let [current (build-db (clone-datoms after-datoms^))]
     (when (not (tx-op-cardinality-one? current op))
@@ -2953,7 +3165,7 @@
                                   a: datom.a
                                   v: datom.v
                                   tx: tx
-                                  added: false})]
+                             added: false})]
               (arr.push! after-datoms^ retract)
               (arr.push! tx-data^ retract))))))))
 
@@ -2971,7 +3183,9 @@
         expanded-ops (expand-tuple-ops before ops)
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count expanded-ops))
+        seen-ea (make (map string bool))
         tx conn^.next-tx]
+    (defer (delete seen-ea))
     (let [[valid error] (validate-ops before (slice expanded-ops 0))]
       (when (not valid)
         (delete expanded-ops)
@@ -2981,14 +3195,16 @@
       (let [apply-op (or (= op.kind .Add)
                          (current-op-value-exists-in-log? (slice after-datoms 0) op))]
         (when apply-op
-          (append-cardinality-one-retractions! (addr after-datoms) (addr tx-data) op tx)
+          (append-cardinality-one-retractions! before (addr seen-ea) (addr after-datoms) (addr tx-data) op tx)
           (let [datom (Datom {e: op.e
                               a: op.a
                               v: op.v
                               tx: tx
                               added: (= op.kind .Add)})]
             (arr.push! after-datoms datom)
-            (arr.push! tx-data datom)))))
+            (arr.push! tx-data datom)))
+        (when (= op.kind .Add)
+          (mark-entity-attr-seen! (addr seen-ea) op.e op.a))))
     (delete expanded-ops)
     (let [after (build-db after-datoms)]
       (set! conn^.db after)
@@ -6463,6 +6679,113 @@
     (arr.push! values second)
     (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
 
+(defn append-three-value-row! [rows: ^[dynamic]Result-Row, first: Value, second: Value, third: Value]
+  (let [values (make [dynamic]Value 0 3)
+        pulls (make [dynamic]Pull-Result)]
+    (arr.push! values first)
+    (arr.push! values second)
+    (arr.push! values third)
+    (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
+
+(defn query-single-entity-by-attr-value-clause [db: DB, query: Query] -> [clause-value: Clause, ok: bool]
+  (let [empty-clause (Clause {})]
+    (when (not (and (= (count query.find) 1)
+                    (= (count query.with) 0)
+                    (= (count query.inputs) 0)
+                    (= (count query.collection-inputs) 0)
+                    (= (count query.tuple-inputs) 0)
+                    (= (count query.relation-inputs) 0)
+                    (= (count query.input-specs) 0)
+                    (= (count query.pulls) 0)
+                    (= (count query.aggregates) 0)
+                    (= (count query.rules) 0)
+                    (= (count query.rule-calls) 0)
+                    (= (count query.predicates) 0)
+                    (= (count query.function-clauses) 0)
+                    (= (count query.get-elses) 0)
+                    (= (count query.get-somes) 0)
+                    (= (count query.grounds) 0)
+                    (= (count query.not-groups) 0)
+                    (= (count query.or-groups) 0)
+                    (= (count query.clauses) 1)
+                    (= (count query.where-steps) 1)
+                    (= query.where-steps[0].kind .Clause)))
+      (return empty-clause false))
+    (let [candidate-clause query.clauses[0]]
+      (when (or candidate-clause.has-source
+                (not (= candidate-clause.e.kind .Var))
+                (not (= candidate-clause.e.name query.find[0]))
+                (not (= candidate-clause.a.kind .Value))
+                (not (= candidate-clause.a.value.kind .Keyword))
+                (tx-data-modifies-validation-schema? (Tx-Data {a: candidate-clause.a.value.text}))
+                (schema-ref-target? db candidate-clause.a.value.text)
+                (not (= candidate-clause.v.kind .Value))
+                (not (= candidate-clause.tx-term.kind .Wildcard))
+                (not (= candidate-clause.op-term.kind .Wildcard)))
+        (return empty-clause false))
+      (return candidate-clause true))))
+
+(defn append-entity-row! [rows: ^[dynamic]Result-Row, entity: u64]
+  (append-distinct-single-value-row! rows (value-entity entity)))
+
+(defn q-single-entity-by-attr-value-profiled [db: DB, clause-value: Clause, stats: Query-Stats] -> Profiled-Result-Set
+  (let [out-stats stats
+        attr clause-value.a.value.text
+        value clause-value.v.value
+        indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 attr value)
+        high (upper-bound-index db indexes "avet" 0 attr value)
+        rows (make [dynamic]Result-Row 0 (- high low))
+        all-current (all-datoms-current? db)]
+    (set! out-stats.steps 1)
+    (set! out-stats.clauses 1)
+    (set! out-stats.clause-candidates (- high low))
+    (set! out-stats.max-intermediate-bindings (- high low))
+    (if all-current
+      (for [i (arr.range low high)]
+        (let [datom db.datoms[indexes[i]]]
+          (append-entity-row! (addr rows) datom.e)))
+      (let [seen (make (map u64 bool))]
+        (defer (delete seen))
+        (for [i (arr.range low high)]
+          (let [datom-index indexes[i]
+                datom db.datoms[datom-index]]
+            (when (datom-current-at? db datom-index)
+              (let [[_ already-seen] (mmap.get seen datom.e)]
+                (when (not already-seen)
+                  (mmap.assoc! seen datom.e true)
+                  (append-entity-row! (addr rows) datom.e))))))))
+    (set! out-stats.output-rows (count rows))
+    (profiled-result-set (result-set-ok rows) out-stats)))
+
+(defn q-query-entity-column [db: DB, query: Query, inputs: []Query-Input] -> [entities: [dynamic]u64, ok: bool]
+  (let [out (make [dynamic]u64)]
+    (when (> (count inputs) 0)
+      (return out false))
+    (let [[clause-value clause-ok] (query-single-entity-by-attr-value-clause db query)]
+      (when (not clause-ok)
+        (return out false))
+      (let [attr clause-value.a.value.text
+            value clause-value.v.value
+            indexes (slice db.avet 0)
+            low (lower-bound-index db indexes "avet" 0 attr value)
+            high (upper-bound-index db indexes "avet" 0 attr value)
+            all-current (all-datoms-current? db)]
+        (if all-current
+          (for [i (arr.range low high)]
+            (arr.push! out db.datoms[indexes[i]].e))
+          (let [seen (make (map u64 bool))]
+            (defer (delete seen))
+            (for [i (arr.range low high)]
+              (let [datom-index indexes[i]
+                    datom db.datoms[datom-index]]
+                (when (datom-current-at? db datom-index)
+                  (let [[_ already-seen] (mmap.get seen datom.e)]
+                    (when (not already-seen)
+                      (mmap.assoc! seen datom.e true)
+                      (arr.push! out datom.e)))))))))
+      (return out true))))
+
 (defstruct Distinct-Attr-Value {
   first-e: u64
   value: Value
@@ -6537,8 +6860,78 @@
   second-var: string
 })
 
+(defstruct Entity-Attr-Value-Projection {
+  entity-var: string
+  filter-attr: string
+  filter-value: Value
+  value-attr: string
+  value-var: string
+})
+
+(defstruct Entity-Int-Pair {
+  entity: u64
+  value: i64
+})
+
+(defstruct Entity-Int-Pair-Columns {
+  entities: [dynamic]u64
+  values: [dynamic]i64
+})
+
+(defstruct Entity-Int-Pair-Filter {
+  attr: string
+  value: Value
+})
+
+(defstruct Entity-Int-Pair-Plan {
+  entity-var: string
+  value-var: string
+  value-attr: string
+  filters: [dynamic]Entity-Int-Pair-Filter
+})
+
+(defstruct Entity-Two-Value-Plan {
+  entity-var: string
+  first-var: string
+  first-attr: string
+  second-var: string
+  second-attr: string
+  filters: [dynamic]Entity-Int-Pair-Filter
+})
+
+(defstruct Entity-Int-Threshold-Plan {
+  entity-var: string
+  value-var: string
+  value-attr: string
+  threshold: i64
+})
+
 (defn empty-two-attr-entity-projection [] -> Two-Attr-Entity-Projection
   (Two-Attr-Entity-Projection {}))
+
+(defn empty-entity-attr-value-projection [] -> Entity-Attr-Value-Projection
+  (Entity-Attr-Value-Projection {}))
+
+(defn empty-entity-int-pair-plan [] -> Entity-Int-Pair-Plan
+  (Entity-Int-Pair-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
+
+(defn empty-entity-int-pair-columns [] -> Entity-Int-Pair-Columns
+  (Entity-Int-Pair-Columns {entities: (make [dynamic]u64)
+                            values: (make [dynamic]i64)}))
+
+(defn delete-entity-int-pair-columns [columns: Entity-Int-Pair-Columns]
+  (delete columns.entities)
+  (delete columns.values))
+
+(defn append-entity-int-pair-column! [columns: ^Entity-Int-Pair-Columns, entity: u64, value: i64]
+  (arr.push! columns^.entities entity)
+  (arr.push! columns^.values value))
+
+(defn empty-entity-two-value-plan [] -> Entity-Two-Value-Plan
+  (Entity-Two-Value-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
+
+(defn empty-entity-int-threshold-plan [] -> Entity-Int-Threshold-Plan
+  (Entity-Int-Threshold-Plan {}))
 
 (defn query-two-attr-entity-projection [query: Query] -> [projection: Two-Attr-Entity-Projection, ok: bool]
   (when (not (and (= (count query.find) 2)
@@ -6593,6 +6986,285 @@
                                          second-attr: second.a.value.text
                                          second-var: second.v.name})
             true)))
+
+(defn query-entity-attr-value-projection [db: DB, query: Query] -> [projection: Entity-Attr-Value-Projection, ok: bool]
+  (when (not (and (= (count query.find) 2)
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 0)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 2)
+                  (= (count query.where-steps) 2)
+                  (= query.where-steps[0].kind .Clause)
+                  (= query.where-steps[1].kind .Clause)))
+    (return (empty-entity-attr-value-projection) false))
+  (let [left query.clauses[0]
+        right query.clauses[1]]
+    (when (or left.has-source
+              right.has-source
+              (not (= left.e.kind .Var))
+              (not (= right.e.kind .Var))
+              (not (= left.e.name right.e.name))
+              (not (= left.a.kind .Value))
+              (not (= right.a.kind .Value))
+              (not (= left.a.value.kind .Keyword))
+              (not (= right.a.value.kind .Keyword))
+              (not (= left.tx-term.kind .Wildcard))
+              (not (= right.tx-term.kind .Wildcard))
+              (not (= left.op-term.kind .Wildcard))
+              (not (= right.op-term.kind .Wildcard)))
+      (return (empty-entity-attr-value-projection) false))
+    (let [filter-clause (if (= left.v.kind .Value) left right)
+          value-clause (if (= left.v.kind .Value) right left)]
+      (when (or (not (= filter-clause.v.kind .Value))
+                (not (= value-clause.v.kind .Var))
+                (tx-data-modifies-validation-schema? (Tx-Data {a: filter-clause.a.value.text}))
+                (schema-ref-target? db filter-clause.a.value.text)
+                (not (or (and (= query.find[0] filter-clause.e.name)
+                              (= query.find[1] value-clause.v.name))
+                         (and (= query.find[0] value-clause.v.name)
+                              (= query.find[1] filter-clause.e.name)))))
+        (return (empty-entity-attr-value-projection) false))
+      (return (Entity-Attr-Value-Projection {entity-var: filter-clause.e.name
+                                             filter-attr: filter-clause.a.value.text
+                                             filter-value: filter-clause.v.value
+                                             value-attr: value-clause.a.value.text
+                                             value-var: value-clause.v.name})
+              true))))
+
+(defn query-entity-int-pair-plan [db: DB, query: Query] -> [plan: Entity-Int-Pair-Plan, ok: bool]
+  (let [out (empty-entity-int-pair-plan)]
+    (when (not (and (= (count query.find) 2)
+                    (= (count query.with) 0)
+                    (= (count query.inputs) 0)
+                    (= (count query.collection-inputs) 0)
+                    (= (count query.tuple-inputs) 0)
+                    (= (count query.relation-inputs) 0)
+                    (= (count query.input-specs) 0)
+                    (= (count query.pulls) 0)
+                    (= (count query.aggregates) 0)
+                    (= (count query.rules) 0)
+                    (= (count query.rule-calls) 0)
+                    (= (count query.predicates) 0)
+                    (= (count query.function-clauses) 0)
+                    (= (count query.get-elses) 0)
+                    (= (count query.get-somes) 0)
+                    (= (count query.grounds) 0)
+                    (= (count query.not-groups) 0)
+                    (= (count query.or-groups) 0)
+                    (>= (count query.clauses) 2)
+                    (= (count query.where-steps) (count query.clauses))))
+      (return out false))
+    (for [step query.where-steps]
+      (when (not (= step.kind .Clause))
+        (return out false)))
+    (let [entity-var query.find[0]
+          value-var query.find[1]
+          value-clause-found false
+          value-attr ""]
+      (for [item (slice query.clauses 0)]
+        (when (or item.has-source
+                  (not (= item.e.kind .Var))
+                  (not (= item.e.name entity-var))
+                  (not (= item.a.kind .Value))
+                  (not (= item.a.value.kind .Keyword))
+                  (not (= item.tx-term.kind .Wildcard))
+                  (not (= item.op-term.kind .Wildcard))
+                  (not (schema-cardinality-one? db item.a.value.text)))
+          (return out false))
+        (if (= item.v.kind .Var)
+          (do
+            (when (or value-clause-found
+                      (not (= item.v.name value-var)))
+              (return out false))
+            (set! value-clause-found true)
+            (set! value-attr item.a.value.text))
+          (if (= item.v.kind .Value)
+            (arr.push! out.filters (Entity-Int-Pair-Filter {attr: item.a.value.text value: item.v.value}))
+            (return out false))))
+      (when (or (not value-clause-found)
+                (= (count out.filters) 0))
+        (return out false))
+      (set! out.entity-var entity-var)
+      (set! out.value-var value-var)
+      (set! out.value-attr value-attr)
+      (return out true))))
+
+(defn query-entity-two-value-plan [db: DB, query: Query] -> [plan: Entity-Two-Value-Plan, ok: bool]
+  (let [out (empty-entity-two-value-plan)]
+    (when (not (and (= (count query.find) 3)
+                    (= (count query.with) 0)
+                    (= (count query.inputs) 0)
+                    (= (count query.collection-inputs) 0)
+                    (= (count query.tuple-inputs) 0)
+                    (= (count query.relation-inputs) 0)
+                    (= (count query.input-specs) 0)
+                    (= (count query.pulls) 0)
+                    (= (count query.aggregates) 0)
+                    (= (count query.rules) 0)
+                    (= (count query.rule-calls) 0)
+                    (= (count query.predicates) 0)
+                    (= (count query.function-clauses) 0)
+                    (= (count query.get-elses) 0)
+                    (= (count query.get-somes) 0)
+                    (= (count query.grounds) 0)
+                    (= (count query.not-groups) 0)
+                    (= (count query.or-groups) 0)
+                    (>= (count query.clauses) 3)
+                    (= (count query.where-steps) (count query.clauses))))
+      (return out false))
+    (for [step query.where-steps]
+      (when (not (= step.kind .Clause))
+        (return out false)))
+    (let [entity-var query.find[0]
+          first-var query.find[1]
+          second-var query.find[2]
+          first-found false
+          second-found false
+          first-attr ""
+          second-attr ""]
+      (for [item (slice query.clauses 0)]
+        (when (or item.has-source
+                  (not (= item.e.kind .Var))
+                  (not (= item.e.name entity-var))
+                  (not (= item.a.kind .Value))
+                  (not (= item.a.value.kind .Keyword))
+                  (not (= item.tx-term.kind .Wildcard))
+                  (not (= item.op-term.kind .Wildcard))
+                  (not (schema-cardinality-one? db item.a.value.text)))
+          (return out false))
+        (if (= item.v.kind .Var)
+          (cond
+            (= item.v.name first-var)
+              (do
+                (when first-found
+                  (return out false))
+                (set! first-found true)
+                (set! first-attr item.a.value.text))
+            (= item.v.name second-var)
+              (do
+                (when second-found
+                  (return out false))
+                (set! second-found true)
+                (set! second-attr item.a.value.text))
+            :else (return out false))
+          (if (= item.v.kind .Value)
+            (arr.push! out.filters (Entity-Int-Pair-Filter {attr: item.a.value.text value: item.v.value}))
+            (return out false))))
+      (when (or (not first-found)
+                (not second-found)
+                (= (count out.filters) 0)
+                (not (all-datoms-current? db)))
+        (return out false))
+      (set! out.entity-var entity-var)
+      (set! out.first-var first-var)
+      (set! out.first-attr first-attr)
+      (set! out.second-var second-var)
+      (set! out.second-attr second-attr)
+      (return out true))))
+
+(defn query-input-by-name-scalar-value [query: Query, inputs: []Query-Input, name: string] -> [value: Value, ok: bool]
+  (for [input-name index (slice query.inputs 0)]
+    (when (= input-name name)
+      (when (>= index (count inputs))
+        (return (Value {}) false))
+      (let [input inputs[index]]
+        (when (= input.kind .Scalar)
+          (return input.value true))
+        (return (Value {}) false))))
+  (return (Value {}) false))
+
+(defn query-threshold-term-int [query: Query, inputs: []Query-Input, term: Term] -> [value: i64, ok: bool]
+  (when (= term.kind .Value)
+    (when (= term.value.kind .Int)
+      (return term.value.int-value true))
+    (return 0 false))
+  (when (= term.kind .Var)
+    (let [[input-value input-ok] (query-input-by-name-scalar-value query inputs term.name)]
+      (when (and input-ok (= input-value.kind .Int))
+        (return input-value.int-value true))))
+  (return 0 false))
+
+(defn query-entity-int-threshold-plan [db: DB, query: Query, inputs: []Query-Input] -> [plan: Entity-Int-Threshold-Plan, ok: bool]
+  (let [out (empty-entity-int-threshold-plan)]
+    (when (not (and (= (count query.find) 2)
+                    (= (count query.with) 0)
+                    (= (count query.collection-inputs) 0)
+                    (= (count query.tuple-inputs) 0)
+                    (= (count query.relation-inputs) 0)
+                    (= (count query.pulls) 0)
+                    (= (count query.aggregates) 0)
+                    (= (count query.rules) 0)
+                    (= (count query.rule-calls) 0)
+                    (= (count query.function-clauses) 0)
+                    (= (count query.get-elses) 0)
+                    (= (count query.get-somes) 0)
+                    (= (count query.grounds) 0)
+                    (= (count query.not-groups) 0)
+                    (= (count query.or-groups) 0)
+                    (= (count query.clauses) 1)
+                    (= (count query.predicates) 1)
+                    (= (count query.where-steps) 2)))
+      (return out false))
+    (when (not (and (= query.where-steps[0].kind .Clause)
+                    (= query.where-steps[1].kind .Predicate)))
+      (return out false))
+    (let [entity-var query.find[0]
+          value-var query.find[1]
+          query-clause query.clauses[0]
+          predicate query.predicates[0]]
+      (when (or query-clause.has-source
+                (not (= query-clause.e.kind .Var))
+                (not (= query-clause.e.name entity-var))
+                (not (= query-clause.a.kind .Value))
+                (not (= query-clause.a.value.kind .Keyword))
+                (not (= query-clause.v.kind .Var))
+                (not (= query-clause.v.name value-var))
+                (not (= query-clause.tx-term.kind .Wildcard))
+                (not (= query-clause.op-term.kind .Wildcard))
+                (not (schema-cardinality-one? db query-clause.a.value.text))
+                (not (= predicate.op ">"))
+                (not (= (count predicate.terms) 2))
+                (not (= predicate.terms[0].kind .Var))
+                (not (= predicate.terms[0].name value-var)))
+        (return out false))
+      (let [[threshold threshold-ok] (query-threshold-term-int query inputs predicate.terms[1])]
+        (when (not threshold-ok)
+          (return out false))
+        (set! out.entity-var entity-var)
+        (set! out.value-var value-var)
+        (set! out.value-attr query-clause.a.value.text)
+        (set! out.threshold threshold)
+        (return out true)))))
+
+(defn q-query-entity-int-threshold-pair-columns [db: DB, plan: Entity-Int-Threshold-Plan] -> Entity-Int-Pair-Columns
+  (let [out (empty-entity-int-pair-columns)
+        indexes (slice db.avet 0)
+        low (lower-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
+        attr-prefix ([]Value [(value-keyword plan.value-attr)])
+        high (upper-bound-index-values db indexes "avet" attr-prefix)]
+    (for [i (arr.range low high)]
+      (let [datom-index indexes[i]
+            datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.a plan.value-attr)
+                   (= datom.v.kind .Int)
+                   (> datom.v.int-value plan.threshold))
+          (append-entity-int-pair-column! (addr out) datom.e datom.v.int-value))))
+    out))
 
 (defn append-two-attr-projection-row! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), query: Query, projection: Two-Attr-Entity-Projection, first-value-source: Value, second-value-source: Value]
   (let [first-value (if (= query.find[0] projection.first-var) first-value-source second-value-source)
@@ -6665,6 +7337,154 @@
     (set! out-stats.output-rows (count rows))
     (profiled-result-set (result-set-ok rows) out-stats)))
 
+(defn append-entity-attr-value-projection-row! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), query: Query, projection: Entity-Attr-Value-Projection, entity: u64, value: Value]
+  (let [entity-value (value-entity entity)
+        first-value (if (= query.find[0] projection.entity-var) entity-value value)
+        second-value (if (= query.find[1] projection.value-var) value entity-value)
+        [key key-ok] (two-primitive-values-dedupe-key first-value second-value)]
+    (if key-ok
+      (let [[_ already-seen] (mmap.get seen^ key)]
+        (when (not already-seen)
+          (mmap.assoc! seen^ key true)
+          (append-two-value-row! rows first-value second-value)))
+      (let [dedupe-values ([]Value [first-value second-value])]
+        (when (not (row-values-exist? (slice rows^ 0) dedupe-values))
+          (append-two-value-row! rows first-value second-value))))))
+
+(defn append-entity-attr-value-projection-row-raw! [rows: ^[dynamic]Result-Row, query: Query, projection: Entity-Attr-Value-Projection, entity: u64, value: Value]
+  (let [entity-value (value-entity entity)
+        first-value (if (= query.find[0] projection.entity-var) entity-value value)
+        second-value (if (= query.find[1] projection.value-var) value entity-value)]
+    (append-two-value-row! rows first-value second-value)))
+
+(defn q-entity-attr-value-projection-profiled [db: DB, query: Query, projection: Entity-Attr-Value-Projection, stats: Query-Stats] -> Profiled-Result-Set
+  (let [out-stats stats
+        rows (make [dynamic]Result-Row)
+        seen (make (map string bool))
+        filter-indexes (slice db.avet 0)
+        low (lower-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)
+        high (upper-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)
+        dedupe-required (not (and (all-datoms-current? db)
+                                  (schema-cardinality-one? db projection.filter-attr)
+                                  (schema-cardinality-one? db projection.value-attr)))]
+    (defer (delete seen))
+    (set! out-stats.steps 1)
+    (set! out-stats.clauses 2)
+    (set! out-stats.clause-candidates (- high low))
+    (for [i (arr.range low high)]
+      (let [filter-index filter-indexes[i]
+            filter-datom db.datoms[filter-index]]
+        (when (datom-current-at? db filter-index)
+          (let [entity-indexes (slice db.eavt 0)
+                value-low (lower-bound-index db entity-indexes "eavt-ea" filter-datom.e projection.value-attr (Value {}))
+                value-high (upper-bound-index db entity-indexes "eavt-ea" filter-datom.e projection.value-attr (Value {}))]
+            (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- value-high value-low)))
+            (for [j (arr.range value-low value-high)]
+              (let [value-index entity-indexes[j]
+                    value-datom db.datoms[value-index]]
+                (when (datom-current-at? db value-index)
+                  (if dedupe-required
+                    (append-entity-attr-value-projection-row! (addr rows) (addr seen) query projection filter-datom.e value-datom.v)
+                    (append-entity-attr-value-projection-row-raw! (addr rows) query projection filter-datom.e value-datom.v)))))))))
+    (set! out-stats.max-intermediate-bindings (count rows))
+    (set! out-stats.output-rows (count rows))
+    (profiled-result-set (result-set-ok rows) out-stats)))
+
+(defn q-query-entity-int-pair-columns [db: DB, query: Query, inputs: []Query-Input] -> [columns: Entity-Int-Pair-Columns, ok: bool]
+  (let [out (empty-entity-int-pair-columns)]
+    (let [[threshold-plan threshold-ok] (query-entity-int-threshold-plan db query inputs)]
+      (when threshold-ok
+        (delete-entity-int-pair-columns out)
+        (return (q-query-entity-int-threshold-pair-columns db threshold-plan) true)))
+    (when (> (count inputs) 0)
+      (return out false))
+    (let [[plan plan-ok] (query-entity-int-pair-plan db query)]
+      (when (not plan-ok)
+        (delete plan.filters)
+        (return out false))
+      (let [filter-indexes (slice db.avet 0)
+            best-filter-index 0
+            best-low 0
+            best-high 0]
+        (for [filter-i (arr.range 0 (count plan.filters))]
+          (let [filter plan.filters[filter-i]
+                low (lower-bound-index db filter-indexes "avet" 0 filter.attr filter.value)
+                high (upper-bound-index db filter-indexes "avet" 0 filter.attr filter.value)]
+            (when (or (= filter-i 0)
+                      (< (- high low) (- best-high best-low)))
+              (set! best-filter-index filter-i)
+              (set! best-low low)
+              (set! best-high high))))
+        (when (= (count plan.filters) 0)
+          (delete plan.filters)
+          (return out false))
+        (let [direct-value-lookup (all-datoms-current? db)]
+          (for [i (arr.range best-low best-high)]
+            (let [filter-datom-index filter-indexes[i]
+                  filter-datom db.datoms[filter-datom-index]]
+              (when (datom-current-at? db filter-datom-index)
+                (let [filters-match true]
+                  (for [filter-i (arr.range 0 (count plan.filters))]
+                    (when (not (= filter-i best-filter-index))
+                      (let [filter plan.filters[filter-i]]
+                        (if direct-value-lookup
+                          (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
+                            (set! filters-match false))
+                          (let [[filter-value filter-ok] (latest-attr-value db filter-datom.e filter.attr)]
+                            (when (not (and filter-ok (value-equal? filter-value filter.value)))
+                              (set! filters-match false)))))))
+                  (when filters-match
+                    (if direct-value-lookup
+                      (let [[int-value int-ok] (current-cardinality-one-int-value-fast db filter-datom.e plan.value-attr)]
+                        (when int-ok
+                          (append-entity-int-pair-column! (addr out) filter-datom.e int-value)))
+                      (let [[value value-ok] (latest-attr-value db filter-datom.e plan.value-attr)]
+                        (when (and value-ok (= value.kind .Int))
+                          (append-entity-int-pair-column! (addr out) filter-datom.e value.int-value))))))))))
+        (delete plan.filters)
+        (return out true)))))
+
+(defn q-entity-two-value-plan-profiled [db: DB, query: Query, plan: Entity-Two-Value-Plan, stats: Query-Stats] -> Profiled-Result-Set
+  (let [out-stats stats
+        rows (make [dynamic]Result-Row)
+        filter-indexes (slice db.avet 0)
+        best-filter-index 0
+        best-low 0
+        best-high 0]
+    (defer (delete plan.filters))
+    (for [filter-i (arr.range 0 (count plan.filters))]
+      (let [filter plan.filters[filter-i]
+            low (lower-bound-index db filter-indexes "avet" 0 filter.attr filter.value)
+            high (upper-bound-index db filter-indexes "avet" 0 filter.attr filter.value)]
+        (when (or (= filter-i 0)
+                  (< (- high low) (- best-high best-low)))
+          (set! best-filter-index filter-i)
+          (set! best-low low)
+          (set! best-high high))))
+    (set! out-stats.steps 1)
+    (set! out-stats.clauses (count query.clauses))
+    (set! out-stats.clause-candidates (- best-high best-low))
+    (for [i (arr.range best-low best-high)]
+      (let [filter-datom-index filter-indexes[i]
+            filter-datom db.datoms[filter-datom-index]]
+        (when (datom-current-at? db filter-datom-index)
+          (let [filters-match true]
+            (for [filter-i (arr.range 0 (count plan.filters))]
+              (when (not (= filter-i best-filter-index))
+                (let [filter plan.filters[filter-i]]
+                  (set! out-stats.clause-candidates (+ out-stats.clause-candidates 1))
+                  (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
+                    (set! filters-match false)))))
+            (when filters-match
+              (let [[first-value first-ok] (current-cardinality-one-value-fast db filter-datom.e plan.first-attr)
+                    [second-value second-ok] (current-cardinality-one-value-fast db filter-datom.e plan.second-attr)]
+                (set! out-stats.clause-candidates (+ out-stats.clause-candidates 2))
+                (when (and first-ok second-ok)
+                  (append-three-value-row! (addr rows) (value-entity filter-datom.e) first-value second-value))))))))
+    (set! out-stats.max-intermediate-bindings (count rows))
+    (set! out-stats.output-rows (count rows))
+    (profiled-result-set (result-set-ok rows) out-stats)))
+
 (defn q-query-profiled-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Profiled-Result-Set
   (let [stats (query-stats-empty)
         [valid error] (validate-query-call-with-fns db query inputs sources registry)]
@@ -6673,6 +7493,16 @@
   (let [[distinct-clause distinct-ok] (query-single-attr-value-distinct-clause query)]
     (when distinct-ok
       (return (q-single-attr-value-distinct-profiled db distinct-clause stats))))
+  (let [[entity-clause entity-ok] (query-single-entity-by-attr-value-clause db query)]
+    (when entity-ok
+      (return (q-single-entity-by-attr-value-profiled db entity-clause stats))))
+  (let [[entity-value-projection entity-value-ok] (query-entity-attr-value-projection db query)]
+    (when entity-value-ok
+      (return (q-entity-attr-value-projection-profiled db query entity-value-projection stats))))
+  (let [[entity-two-plan entity-two-ok] (query-entity-two-value-plan db query)]
+    (when entity-two-ok
+      (return (q-entity-two-value-plan-profiled db query entity-two-plan stats)))
+    (delete entity-two-plan.filters))
   (let [[projection projection-ok] (query-two-attr-entity-projection query)]
     (when projection-ok
       (return (q-two-attr-entity-projection-profiled db query projection stats))))

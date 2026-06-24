@@ -15,10 +15,16 @@
       (System/getenv "VEV_LIB")
       "build/lib/libvev.dylib"))
 
+(defn db-with-bulk [db entities]
+  (let [datom-count (reduce + 0 (map #(dec (count %)) entities))]
+    (with-open [tx (v/tx-builder db datom-count)]
+      (v/bulk-add! tx entities)
+      (v/db-with db tx))))
+
 (defn people-db []
   (with-open [initial (v/empty-db (library-path))
-              schema-db (v/db-with initial schema-tx)]
-    (v/db-with schema-db @core/people20k)))
+              schema-db (db-with-bulk initial schema-tx)]
+    (db-with-bulk schema-db @core/people20k)))
 
 (def shared-db (delay (people-db)))
 

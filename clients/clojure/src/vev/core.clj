@@ -70,6 +70,13 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
+(defonce ^:private prepared-query-cache (atom {}))
+
+(defrecord TxBuilder [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
 (defn create-conn
   "Create an in-memory Vev connection.
 
@@ -107,7 +114,9 @@
 
   Returns a Clojure transaction report map."
   [^Conn conn tx]
-  (with-open [report (.transactReport (:native conn) (edn-text tx))]
+  (with-open [report (if (instance? TxBuilder tx)
+                       (.transactReport (:native conn) (:native tx))
+                       (.transactReport (:native conn) (edn-text tx)))]
     (clj-value (.value report))))
 
 (def transact transact!)
@@ -134,7 +143,61 @@
 (defn db-with
   "Apply tx data to an immutable DB and return the resulting immutable DB value."
   [^DB db tx]
-  (->DB (:engine db) (.dbWith (:native db) (edn-text tx))))
+  (if (instance? TxBuilder tx)
+    (->DB (:engine db) (.dbWith (:native db) (:native tx)))
+    (->DB (:engine db) (.dbWith (:native db) (edn-text tx)))))
+
+(defn tx-builder
+  "Create a native transaction builder for direct typed bulk tx construction."
+  ([source]
+   (tx-builder source 0))
+  ([source capacity]
+   (let [engine (:engine source)]
+     (->TxBuilder engine (.txBuilder engine (int capacity))))))
+
+(defn- attr-text [attr]
+  (cond
+    (keyword? attr) (str attr)
+    (string? attr) attr
+    :else (throw (ex-info "expected tx attr keyword or string" {:attr attr}))))
+
+(defn tx-add!
+  "Append one :db/add datom to a native transaction builder."
+  [^TxBuilder tx e attr value]
+  (let [native (:native tx)
+        e (long e)
+        attr (attr-text attr)]
+    (cond
+      (string? value)
+      (.addString native e attr value)
+
+      (keyword? value)
+      (.addKeyword native e attr (str value))
+
+      (integer? value)
+      (.addInt native e attr (long value))
+
+      (boolean? value)
+      (.addBool native e attr value)
+
+      (instance? Vev$Entity value)
+      (.addEntity native e attr (.id ^Vev$Entity value))
+
+      :else
+      (throw (ex-info "unsupported native tx builder value" {:value value}))))
+  tx)
+
+(defn bulk-add!
+  "Append Datomic/DataScript-style entity maps to a native transaction builder."
+  [^TxBuilder tx entities]
+  (doseq [entity entities]
+    (let [e (:db/id entity)]
+      (when-not (integer? e)
+        (throw (ex-info "bulk entity map requires integer :db/id" {:entity entity})))
+      (doseq [[attr value] entity]
+        (when-not (= attr :db/id)
+          (tx-add! tx e attr value)))))
+  tx)
 
 (defn init-db
   "Create an immutable DB initialized by applying tx data to an empty DB."
@@ -149,6 +212,14 @@
   [source query]
   (let [engine (:engine source)]
     (->PreparedQuery engine (.prepare engine (edn-text query)))))
+
+(defn- cached-prepare [source query]
+  (locking prepared-query-cache
+    (if-let [prepared (get @prepared-query-cache query)]
+      prepared
+      (let [prepared (prepare source query)]
+        (swap! prepared-query-cache assoc query prepared)
+        prepared))))
 
 (defn- source? [value]
   (or (instance? Conn value)
@@ -173,23 +244,110 @@
       :else
       (throw (ex-info "expected Vev connection or DB" {:source source})))))
 
+(defn- single-entity-rows [result]
+  (when-let [ids (.singleEntityColumn result)]
+    (mapv (fn [id] [(long id)]) ids)))
+
+(defn- rows-from-result [result]
+  (or (single-entity-rows result)
+      (mapv clj-value (.rows result))))
+
+(defn- q-from-result [result]
+  (if-let [ids (.singleEntityColumn result)]
+    (persistent!
+      (reduce
+        (fn [out id]
+          (conj! out [(long id)]))
+        (transient #{})
+        ids))
+    (set (mapv clj-value (.rows result)))))
+
+(defn- entity-column [source ^PreparedQuery prepared inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? DB source)
+      (.queryEntityColumn (:native source) (:native prepared) input-edn)
+
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityColumn (:native snapshot) (:native prepared) input-edn))
+
+      :else
+      nil)))
+
+(defn- entity-int-pair-columns [source ^PreparedQuery prepared inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? DB source)
+      (.queryEntityIntPairColumns (:native source) (:native prepared) input-edn)
+
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityIntPairColumns (:native snapshot) (:native prepared) input-edn))
+
+      :else
+      nil)))
+
+(defn- entity-column-rows [ids]
+  (mapv (fn [id] [(long id)]) ids))
+
+(defn- entity-column-set [ids]
+  (persistent!
+    (reduce
+      (fn [out id]
+        (conj! out [(long id)]))
+      (transient #{})
+      ids)))
+
+(defn- entity-int-pair-rows [columns]
+  (let [^objects columns columns
+        ^longs entities (aget columns 0)
+        ^longs values (aget columns 1)
+        n (alength entities)]
+    (mapv (fn [index] [(long (aget entities index)) (long (aget values index))])
+          (range n))))
+
+(defn- entity-int-pair-set [columns]
+  (let [^objects columns columns
+        ^longs entities (aget columns 0)
+        ^longs values (aget columns 1)
+        n (alength entities)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget entities index)) (long (aget values index))]))
+        (persistent! out)))))
+
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
 
   Accepts both DB-first Vev style and query-first Datomic/DataScript style."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
-    (if (instance? PreparedQuery query)
-      (with-open [result (apply query-result source query inputs)]
-        (mapv clj-value (.rows result)))
-      (with-open [prepared (prepare source query)
-                  result (apply query-result source prepared inputs)]
-        (mapv clj-value (.rows result))))))
+    (let [prepared (if (instance? PreparedQuery query)
+                     query
+                     (cached-prepare source query))]
+      (if-let [ids (entity-column source prepared inputs)]
+        (entity-column-rows ids)
+        (if-let [columns (entity-int-pair-columns source prepared inputs)]
+          (entity-int-pair-rows columns)
+          (with-open [result (apply query-result source prepared inputs)]
+            (rows-from-result result)))))))
 
 (defn q
   "Run a query and return a set of row vectors."
   [query source & inputs]
-  (set (apply rows query source inputs)))
+  (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
+    (let [prepared (if (instance? PreparedQuery query)
+                     query
+                     (cached-prepare source query))]
+      (if-let [ids (entity-column source prepared inputs)]
+        (entity-column-set ids)
+        (if-let [columns (entity-int-pair-columns source prepared inputs)]
+          (entity-int-pair-set columns)
+          (with-open [result (apply query-result source prepared inputs)]
+            (q-from-result result)))))))
 
 (defn scalar
   "Run a query expected to return one value."
@@ -198,8 +356,7 @@
     (if (instance? PreparedQuery query)
       (with-open [result (apply query-result source query inputs)]
         (clj-value (.scalar result)))
-      (with-open [prepared (prepare source query)
-                  result (apply query-result source prepared inputs)]
+      (with-open [result (apply query-result source (cached-prepare source query) inputs)]
         (clj-value (.scalar result))))))
 
 (defn- with-db-source [source f]
