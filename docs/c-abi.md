@@ -46,7 +46,9 @@ The script compiles `src/vev_abi/vev_abi.kvist` to Odin, builds
 `build/lib/libvev.dylib`, compiles `examples/c/smoke.c`, runs the C smoke
 program, and runs the Python smoke program through the thin
 `examples/python/vev.py` adapter. When `rustc` is available, it also compiles
-and runs `examples/rust/smoke.rs`.
+and runs `examples/rust/smoke.rs`. When Java 21 and Clojure are available, it
+also compiles the Java Foreign Function & Memory wrapper and runs Java and
+Clojure smoke programs against the same shared library.
 
 ## ABI Benchmark
 
@@ -253,6 +255,55 @@ a packaged crate yet. It mirrors the intended safe wrapper shape:
 The example covers transactions, rendered EDN query output, prepared statement
 bindings, homogeneous collection bindings, pull result traversal, DB snapshots,
 and querying a snapshot with a statement.
+
+## Java And Clojure Examples
+
+[Vev.java](../examples/java/Vev.java) is a small Java 21 Foreign Function &
+Memory wrapper over `libvev.dylib`. It is still an example wrapper, not a
+published artifact. The wrapper exposes the same core host shape as Python and
+Rust:
+
+- `Vev`, `Connection`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet`
+  close their native handles explicitly
+- transactions and ad hoc queries accept EDN strings
+- prepared queries can be reused with EDN input text or typed statement
+  bindings
+- typed results convert entity ids, scalar values, and pull maps into Java
+  values
+- immutable DB snapshots can be queried after the connection has advanced
+
+Because it uses the preview FFM API, the examples compile and run with:
+
+```sh
+javac --enable-preview --release 21 ...
+java --enable-preview --enable-native-access=ALL-UNNAMED ...
+```
+
+[smoke.clj](../examples/clojure/smoke.clj) uses that Java wrapper from Clojure.
+The current Clojure surface deliberately starts with EDN strings:
+
+```clojure
+(.queryText conn
+  "[:find ?name
+    :in [?email ...]
+    :where [?e :user/email ?email]
+           [?e :user/name ?name]]"
+  "[[\"ada@example.com\" \"grace@example.com\"]]")
+```
+
+That string API is the portable baseline for non-Kvist hosts and mirrors how
+SQL libraries start with query text. The intended Clojure layer above it is an
+idiomatic data API that accepts quoted Clojure forms and serializes them through
+the same EDN/query path, for example:
+
+```clojure
+(vev/q conn
+  '[:find ?name
+    :where [?e :user/name ?name]])
+```
+
+That Clojure data API should be implemented as a thin host adapter, not as a
+separate engine frontend.
 
 ## Ownership
 
