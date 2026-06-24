@@ -121,21 +121,21 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 19.4x | 58.1x |
-| `chain-root n=10` | 22.7x | 40.2x |
-| `chain-root n=30` | 48.8x | 63.5x |
-| `chain-root n=100` | 240.9x | 254.3x |
-| `chain-leaf n=10` | 19.0x | 32.8x |
-| `chain-leaf n=30` | 75.8x | 97.0x |
-| `chain-leaf n=100` | 521.5x | 570.5x |
-| `chain-all n=10` | 11.0x | 15.5x |
-| `chain-all n=30` | 15.3x | 16.4x |
-| `chain-all n=100` | 23.5x | 23.1x |
-| `tree-root n=4` | 3.4x | 8.5x |
-| `tree-root n=13` | 3.3x | 5.4x |
-| `tree-root n=40` | 2.5x | 3.0x |
-| `tree-root n=121` | 1.9x | 2.2x |
-| `bad-order-join n=1000` | 7.0x | 11.1x |
+| `chain-root n=3` | 19.0x | 57.0x |
+| `chain-root n=10` | 24.1x | 41.5x |
+| `chain-root n=30` | 50.2x | 61.4x |
+| `chain-root n=100` | 233.9x | 250.2x |
+| `chain-leaf n=10` | 17.9x | 29.9x |
+| `chain-leaf n=30` | 77.8x | 93.9x |
+| `chain-leaf n=100` | 529.9x | 568.9x |
+| `chain-all n=10` | 10.7x | 15.0x |
+| `chain-all n=30` | 15.6x | 16.0x |
+| `chain-all n=100` | 24.4x | 23.7x |
+| `tree-root n=4` | 3.1x | 8.0x |
+| `tree-root n=13` | 3.1x | 5.1x |
+| `tree-root n=40` | 2.8x | 3.3x |
+| `tree-root n=121` | 1.8x | 2.0x |
+| `bad-order-join n=1000` | 7.0x | 11.3x |
 | `distinct-age n=1000` | 0.6x | 0.6x |
 
 ## Stress Comparison
@@ -145,19 +145,19 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1359.4x | 1373.1x |
-| `stress-chain-leaf n=300` | 4032.8x | 4217.1x |
-| `stress-chain-all n=200` | 32.2x | 31.9x |
-| `stress-tree-root n=364` | 1.7x | 1.6x |
+| `stress-chain-root n=300` | 1341.0x | 1400.5x |
+| `stress-chain-leaf n=300` | 4566.9x | 4720.0x |
+| `stress-chain-all n=200` | 34.2x | 33.8x |
+| `stress-tree-root n=364` | 1.8x | 2.0x |
 
 The stress harness also emits Vev-only rows for workloads that are currently
 too expensive for routine DataScript comparison:
 
 | Workload | Vev text median | Vev prepared median | Notes |
 |---|---:|---:|---|
-| `stress-dense-root n=60` | 246us | 209us | Dense DAG, width 8 |
-| `stress-dense-root n=160` | 586us | 560us | Dense DAG, width 8 |
-| `stress-filtered-root n=10` | 957us | 871us | Generic recursive rule with an extra predicate/data filter |
+| `stress-dense-root n=60` | 227us | 204us | Dense DAG, width 8 |
+| `stress-dense-root n=160` | 568us | 557us | Dense DAG, width 8 |
+| `stress-filtered-root n=10` | 49us | 30us | Linear recursive rule with a target-node data filter |
 
 ## Current Findings
 
@@ -165,8 +165,8 @@ Ordered text queries now plan contiguous data-pattern runs. The initial
 `bad-order-join` shape materialized 1000 intermediate bindings; after planning
 the same query materializes 1 and inspects 3 candidates.
 
-Binary transitive closure now has a specialized rule path. It
-recognizes the common DataScript/Datomic reachability rule shape:
+Binary transitive closure now has a specialized rule path. It recognizes the
+common DataScript/Datomic reachability rule shape:
 
 ```clojure
 [[(reachable ?x ?y) [?x :follows ?y]]
@@ -187,6 +187,20 @@ compact entity-id ranges, bounded closure traversal uses dense boolean bitmaps
 for visited/emitted sets instead of repeated linear membership scans, improving
 larger chain and branching tree workloads without requiring sparse global
 entity-id arrays.
+
+The same recognizer also supports linear recursive rules with identical
+target-node data filters in the base and recursive branch, for example:
+
+```clojure
+[[(active-reachable ?x ?y) [?x :follows ?y] [?y :active true]]
+ [(active-reachable ?x ?y) [?x :follows ?t] [?t :active true]
+  (active-reachable ?t ?y)]]
+```
+
+Those filters are applied while constructing the adjacency view, so the
+filtered recursive stress row now executes as one rule iteration instead of one
+iteration per chain depth. In the latest local run, `stress-filtered-root n=10`
+moved from roughly 957us/871us text/prepared to 49us/30us.
 
 The large chain-root/chain-leaf gap should be read narrowly: it compares Vev's
 specialized bound transitive closure path against DataScript's general recursive
@@ -218,10 +232,10 @@ DataScript.
 
 Remaining performance work:
 
-- Generalize this from a shape-specific transitive closure path into a measured
-  semi-naive/memoized rule evaluator. The filtered recursive stress row is the
-  current regression target because it exercises the generic recursive-rule
-  evaluator instead of the optimized linear transitive-closure path.
+- Generalize this from the current linear transitive closure path into a
+  measured semi-naive/memoized rule evaluator. Filtered linear recursion is now
+  optimized, but mutual recursion and other multi-step recursive bodies still
+  use the generic depth/fixpoint evaluator.
 - Continue result-projection work for simple distinct queries. The current
   `distinct-age` path is much better than generic row dedupe, but still behind
   DataScript because it allocates full `Result-Row` structures and maintains
