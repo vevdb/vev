@@ -6220,69 +6220,64 @@
     (arr.push! values value)
     (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
 
+(defstruct Distinct-Attr-Value {
+  first-e: u64
+  value: Value
+})
+
+(defn distinct-attr-value-less? [left: Distinct-Attr-Value, right: Distinct-Attr-Value] -> bool
+  (if (not (= left.first-e right.first-e))
+    (< left.first-e right.first-e)
+    (value-less? left.value right.value)))
+
+(defn sort-distinct-attr-values! [values: ^[dynamic]Distinct-Attr-Value]
+  (for [i (arr.range 1 (count values^))]
+    (let [item values^[i]
+          j i]
+      (while (and (> j 0)
+                  (distinct-attr-value-less? item values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] item))))
+
 (defn q-single-attr-value-distinct-profiled [db: DB, clause-value: Clause, stats: Query-Stats] -> Profiled-Result-Set
-  (let [rows (make [dynamic]Result-Row)
-        out-stats stats
+  (let [out-stats stats
         attr clause-value.a.value.text
-        indexes (slice db.aevt 0)
-        low (lower-bound-index db indexes "aevt" 0 attr (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 attr (Value {}))
-        seen-entities (make (map u64 bool))
-        seen-ints (make (map i64 bool))
-        seen-strings (make (map string bool))
-        seen-keywords (make (map string bool))
-        seen-symbols (make (map string bool))
-        seen-nil false
-        seen-true false
-        seen-false false]
-    (defer (delete seen-entities))
-    (defer (delete seen-ints))
-    (defer (delete seen-strings))
-    (defer (delete seen-keywords))
-    (defer (delete seen-symbols))
+        indexes (slice db.avet 0)
+        attr-prefix ([]Value [(value-keyword attr)])
+        low (lower-bound-index-values db indexes "avet" attr-prefix)
+        high (upper-bound-index-values db indexes "avet" attr-prefix)
+        distinct-values (make [dynamic]Distinct-Attr-Value)]
+    (defer (delete distinct-values))
     (set! out-stats.steps 1)
     (set! out-stats.clauses 1)
     (set! out-stats.clause-candidates (- high low))
     (set! out-stats.max-intermediate-bindings (- high low))
-    (for [i (arr.range low high)]
-      (let [datom-index indexes[i]
-            datom db.datoms[datom-index]]
-        (when (datom-current-at? db datom-index)
-          (case datom.v.kind
-            .Entity (let [[_ already-seen] (mmap.get seen-entities datom.v.entity)]
-                      (when (not already-seen)
-                        (mmap.assoc! seen-entities datom.v.entity true)
-                        (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Int (let [[_ already-seen] (mmap.get seen-ints datom.v.int-value)]
-                   (when (not already-seen)
-                     (mmap.assoc! seen-ints datom.v.int-value true)
-                     (append-distinct-single-value-row! (addr rows) datom.v)))
-            .String (let [[_ already-seen] (mmap.get seen-strings datom.v.text)]
-                      (when (not already-seen)
-                        (mmap.assoc! seen-strings datom.v.text true)
-                        (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Keyword (let [[_ already-seen] (mmap.get seen-keywords datom.v.text)]
-                       (when (not already-seen)
-                         (mmap.assoc! seen-keywords datom.v.text true)
-                         (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Symbol (let [[_ already-seen] (mmap.get seen-symbols datom.v.text)]
-                      (when (not already-seen)
-                        (mmap.assoc! seen-symbols datom.v.text true)
-                        (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Bool (if datom.v.bool-value
-                    (when (not seen-true)
-                      (set! seen-true true)
-                      (append-distinct-single-value-row! (addr rows) datom.v))
-                    (when (not seen-false)
-                      (set! seen-false true)
-                      (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Nil (when (not seen-nil)
-                   (set! seen-nil true)
-                   (append-distinct-single-value-row! (addr rows) datom.v))
-            :else (when (not (row-values-exist? (slice rows 0) ([]Value [datom.v])))
-                    (append-distinct-single-value-row! (addr rows) datom.v))))))
-    (set! out-stats.output-rows (count rows))
-    (profiled-result-set (result-set-ok rows) out-stats)))
+    (let [i low]
+      (while (< i high)
+        (let [first-current-e: u64 0
+              first-current-value (Value {})
+              has-current false
+              datom db.datoms[indexes[i]]
+              value datom.v]
+          (while (and (< i high)
+                      (value-equal? db.datoms[indexes[i]].v value))
+            (let [candidate-index indexes[i]
+                  candidate db.datoms[candidate-index]]
+              (when (and (datom-current-at? db candidate-index)
+                         (not has-current))
+                (set! first-current-e candidate.e)
+                (set! first-current-value candidate.v)
+                (set! has-current true)))
+            (set! i (+ i 1)))
+          (when has-current
+            (arr.push! distinct-values (Distinct-Attr-Value {first-e: first-current-e value: first-current-value})))))
+    (sort-distinct-attr-values! (addr distinct-values))
+    (let [rows (make [dynamic]Result-Row 0 (count distinct-values))]
+      (for [item distinct-values]
+        (append-distinct-single-value-row! (addr rows) item.value))
+      (set! out-stats.output-rows (count rows))
+      (profiled-result-set (result-set-ok rows) out-stats)))))
 
 (defn q-query-profiled-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Profiled-Result-Set
   (let [stats (query-stats-empty)
