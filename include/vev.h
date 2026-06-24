@@ -84,10 +84,19 @@ bool vev_stmt_bind_symbol(vev_stmt_t stmt, const char *value);
 bool vev_stmt_bind_entity(vev_stmt_t stmt, unsigned long long value);
 bool vev_stmt_bind_int(vev_stmt_t stmt, long long value);
 bool vev_stmt_bind_bool(vev_stmt_t stmt, bool value);
+bool vev_stmt_bind_lookup_ref_string(vev_stmt_t stmt, const char *attr, const char *value);
+bool vev_stmt_bind_lookup_ref_keyword(vev_stmt_t stmt, const char *attr, const char *value);
+bool vev_stmt_bind_lookup_ref_entity(vev_stmt_t stmt, const char *attr, unsigned long long value);
+bool vev_stmt_bind_lookup_ref_int(vev_stmt_t stmt, const char *attr, long long value);
 bool vev_stmt_bind_string_collection(vev_stmt_t stmt, const char **values, int value_count);
 bool vev_stmt_bind_entity_collection(vev_stmt_t stmt, const unsigned long long *values, int value_count);
 bool vev_stmt_bind_int_collection(vev_stmt_t stmt, const long long *values, int value_count);
 bool vev_stmt_bind_bool_collection(vev_stmt_t stmt, const bool *values, int value_count);
+bool vev_stmt_bind_lookup_ref_string_collection(
+    vev_stmt_t stmt,
+    const char *attr,
+    const char **values,
+    int value_count);
 const char *vev_query_prepared(vev_conn_t conn, vev_prepared_query_t query);
 const char *vev_query_prepared_with_inputs(
     vev_conn_t conn,

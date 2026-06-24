@@ -165,6 +165,13 @@ int main(void) {
     vev_tx_report_free(tx_report);
 
     print_and_free(
+        "tx-email-unique",
+        vev_transact_edn(
+            conn,
+            "[[:db/add 90 :db/ident :user/email]"
+            " [:db/add 90 :db/unique :db.unique/identity]]"));
+
+    print_and_free(
         "query",
         vev_query_edn(
             conn,
@@ -325,6 +332,94 @@ int main(void) {
     }
     vev_stmt_free(collection_stmt);
     vev_prepared_query_free(collection_query);
+
+    vev_prepared_query_t lookup_query =
+        vev_prepare_query_edn("[:find ?name :in ?person :where [?person :user/name ?name]]");
+    if (lookup_query == NULL) {
+        fprintf(stderr, "failed to prepare lookup-ref query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t lookup_stmt = vev_stmt_create(lookup_query);
+    if (lookup_stmt == NULL) {
+        fprintf(stderr, "failed to create lookup-ref statement\n");
+        vev_prepared_query_free(lookup_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (!vev_stmt_bind_lookup_ref_string(lookup_stmt, ":user/email", "ada@example.com")) {
+        fprintf(stderr, "failed to bind lookup-ref statement\n");
+        vev_stmt_free(lookup_stmt);
+        vev_prepared_query_free(lookup_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t lookup_result = vev_query_stmt_result(conn, lookup_stmt);
+    int lookup_rows = result_row_count_or_error("stmt-lookup-ref", lookup_result);
+    vev_value_t lookup_name = vev_result_value(lookup_result, 0, 0);
+    printf("stmt-lookup-ref rows: %d\n", lookup_rows);
+    if (lookup_rows != 1 || !value_text_equals(lookup_name, "Ada")) {
+        fprintf(stderr, "unexpected lookup-ref statement result\n");
+        vev_result_free(lookup_result);
+        vev_stmt_free(lookup_stmt);
+        vev_prepared_query_free(lookup_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(lookup_result);
+    vev_stmt_free(lookup_stmt);
+    vev_prepared_query_free(lookup_query);
+
+    vev_prepared_query_t lookup_collection_query =
+        vev_prepare_query_edn("[:find ?name :in [?person ...] :where [?person :user/name ?name]]");
+    if (lookup_collection_query == NULL) {
+        fprintf(stderr, "failed to prepare lookup-ref collection query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t lookup_collection_stmt = vev_stmt_create(lookup_collection_query);
+    if (lookup_collection_stmt == NULL) {
+        fprintf(stderr, "failed to create lookup-ref collection statement\n");
+        vev_prepared_query_free(lookup_collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (!vev_stmt_bind_lookup_ref_string_collection(lookup_collection_stmt, ":user/email", emails, 2)) {
+        fprintf(stderr, "failed to bind lookup-ref collection statement\n");
+        vev_stmt_free(lookup_collection_stmt);
+        vev_prepared_query_free(lookup_collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t lookup_collection_result = vev_query_stmt_result(conn, lookup_collection_stmt);
+    int lookup_collection_rows = result_row_count_or_error("stmt-lookup-ref-collection", lookup_collection_result);
+    printf("stmt-lookup-ref-collection rows: %d\n", lookup_collection_rows);
+    vev_result_free(lookup_collection_result);
+    if (lookup_collection_rows != 2) {
+        fprintf(stderr, "unexpected lookup-ref collection statement row count\n");
+        vev_stmt_free(lookup_collection_stmt);
+        vev_prepared_query_free(lookup_collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_free(lookup_collection_stmt);
+    vev_prepared_query_free(lookup_collection_query);
 
     vev_prepared_query_t pull_query =
         vev_prepare_query_edn("[:find (pull ?e [:user/name {:user/friend [:user/name]}]) :where [?e :user/name \"Ada\"]]");

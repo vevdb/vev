@@ -468,6 +468,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- stmt-push-collection! [stmt: Vev-Stmt, values: [dynamic]vev.Value]
   (abi-stmt-push-input (rawptr stmt) (vev.Query-Input {kind: .Collection values: values})))
 
+(defn- stmt-push-lookup-ref! [stmt: Vev-Stmt, attr: string, value: vev.Value]
+  (abi-stmt-push-input (rawptr stmt) (vev.query-input-lookup-ref attr value)))
+
+(defn- stmt-push-lookup-ref-collection! [stmt: Vev-Stmt, attrs: [dynamic]string, values: [dynamic]vev.Value]
+  (abi-stmt-push-input (rawptr stmt) (vev.query-input-collection-lookup-refs (slice attrs 0) (slice values 0))))
+
 (defn- datom-owned [datom: vev.Datom] -> vev.Datom
   (vev.Datom {e: datom.e
               a: (string-owned datom.a)
@@ -808,6 +814,38 @@ abi_free_stmt :: proc(stmt: rawptr) {
   true)
 
 @export
+(defn vev_stmt_bind_lookup_ref_string :abi "c" [stmt: Vev-Stmt, attr: cstring, value: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= attr nil) (= value nil))
+    (return false))
+  (stmt-push-lookup-ref! stmt (text-from-c attr) (vev.value-string (text-from-c value)))
+  true)
+
+@export
+(defn vev_stmt_bind_lookup_ref_keyword :abi "c" [stmt: Vev-Stmt, attr: cstring, value: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= attr nil) (= value nil))
+    (return false))
+  (stmt-push-lookup-ref! stmt (text-from-c attr) (vev.value-keyword (text-from-c value)))
+  true)
+
+@export
+(defn vev_stmt_bind_lookup_ref_entity :abi "c" [stmt: Vev-Stmt, attr: cstring, value: u64] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= attr nil))
+    (return false))
+  (stmt-push-lookup-ref! stmt (text-from-c attr) (vev.value-entity value))
+  true)
+
+@export
+(defn vev_stmt_bind_lookup_ref_int :abi "c" [stmt: Vev-Stmt, attr: cstring, value: i64] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= attr nil))
+    (return false))
+  (stmt-push-lookup-ref! stmt (text-from-c attr) (vev.value-int value))
+  true)
+
+@export
 (defn vev_stmt_bind_string_collection :abi "c" [stmt: Vev-Stmt, values: rawptr, value-count: int] -> bool
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr stmt) nil)
@@ -863,6 +901,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (for [index (arr.range 0 value-count)]
       (arr.push! out (vev.value-bool (abi-bool-at values index))))
     (stmt-push-collection! stmt out)
+    true))
+
+@export
+(defn vev_stmt_bind_lookup_ref_string_collection :abi "c" [stmt: Vev-Stmt, attr: cstring, values: rawptr, value-count: int] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil)
+            (= attr nil)
+            (< value-count 0)
+            (and (> value-count 0) (= values nil)))
+    (return false))
+  (let [attrs (make [dynamic]string 0 value-count)
+        out (make [dynamic]vev.Value 0 value-count)]
+    (for [index (arr.range 0 value-count)]
+      (let [value (abi-cstring-at values index)]
+        (when (= value nil)
+          (for [item attrs]
+            (delete item))
+          (for [item out]
+            (delete-owned-value item))
+          (delete attrs)
+          (delete out)
+          (return false))
+        (arr.push! attrs (text-from-c attr))
+        (arr.push! out (vev.value-string (text-from-c value)))))
+    (stmt-push-lookup-ref-collection! stmt attrs out)
     true))
 
 @export

@@ -23,6 +23,12 @@ class Entity:
     id: int
 
 
+@dataclass(frozen=True)
+class LookupRef:
+    attr: str
+    value: object
+
+
 class VevError(RuntimeError):
     pass
 
@@ -101,6 +107,30 @@ class Library:
         lib.vev_stmt_bind_int.restype = ctypes.c_bool
         lib.vev_stmt_bind_bool.argtypes = [ctypes.c_void_p, ctypes.c_bool]
         lib.vev_stmt_bind_bool.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_string.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_stmt_bind_lookup_ref_string.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_keyword.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_stmt_bind_lookup_ref_keyword.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_entity.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_ulonglong,
+        ]
+        lib.vev_stmt_bind_lookup_ref_entity.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_int.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_longlong,
+        ]
+        lib.vev_stmt_bind_lookup_ref_int.restype = ctypes.c_bool
         lib.vev_stmt_bind_string_collection.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_char_p),
@@ -125,6 +155,13 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_stmt_bind_bool_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_string_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_lookup_ref_string_collection.restype = ctypes.c_bool
 
         lib.vev_query_prepared_with_inputs.argtypes = [
             ctypes.c_void_p,
@@ -516,6 +553,8 @@ class Statement:
         lib = self._library.lib
         if isinstance(value, Entity):
             ok = lib.vev_stmt_bind_entity(self._handle, value.id)
+        elif isinstance(value, LookupRef):
+            ok = self._bind_lookup_ref(value)
         elif isinstance(value, bool):
             ok = lib.vev_stmt_bind_bool(self._handle, value)
         elif isinstance(value, int):
@@ -533,10 +572,40 @@ class Statement:
         if not ok:
             raise VevError(f"failed to bind statement value: {value!r}")
 
+    def _bind_lookup_ref(self, ref: LookupRef) -> bool:
+        lib = self._library.lib
+        attr = _bytes(ref.attr)
+        value = ref.value
+        if isinstance(value, Entity):
+            return bool(lib.vev_stmt_bind_lookup_ref_entity(self._handle, attr, value.id))
+        if isinstance(value, int) and not isinstance(value, bool):
+            return bool(lib.vev_stmt_bind_lookup_ref_int(self._handle, attr, value))
+        if isinstance(value, Keyword):
+            return bool(
+                lib.vev_stmt_bind_lookup_ref_keyword(self._handle, attr, _bytes(value.text))
+            )
+        if isinstance(value, str):
+            return bool(lib.vev_stmt_bind_lookup_ref_string(self._handle, attr, _bytes(value)))
+        raise TypeError(f"unsupported Vev lookup-ref binding: {ref!r}")
+
     def _bind_collection(self, values: list[object] | tuple[object, ...]) -> bool:
         lib = self._library.lib
         if len(values) == 0:
             raise TypeError("empty collection bindings need an explicit typed wrapper")
+        if all(isinstance(value, LookupRef) for value in values):
+            attrs = {value.attr for value in values}
+            if len(attrs) != 1 or not all(isinstance(value.value, str) for value in values):
+                raise TypeError(
+                    "lookup-ref collection bindings currently require one attr and string values"
+                )
+            encoded = [_bytes(value.value) for value in values]
+            array_type = ctypes.c_char_p * len(encoded)
+            array = array_type(*encoded)
+            return bool(
+                lib.vev_stmt_bind_lookup_ref_string_collection(
+                    self._handle, _bytes(values[0].attr), array, len(encoded)
+                )
+            )
         if all(isinstance(value, Entity) for value in values):
             array_type = ctypes.c_ulonglong * len(values)
             array = array_type(*(value.id for value in values))

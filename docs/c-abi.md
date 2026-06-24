@@ -139,6 +139,11 @@ vev_result_t stmt_rows = vev_query_stmt_result(conn, stmt);
 vev_result_free(stmt_rows);
 vev_stmt_clear(stmt);
 
+vev_stmt_bind_lookup_ref_string(stmt, ":user/email", "ada@example.com");
+vev_result_t lookup_rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(lookup_rows);
+vev_stmt_clear(stmt);
+
 vev_stmt_bind_string(stmt, "grace@example.com");
 vev_result_t rebound_rows = vev_query_stmt_result(conn, stmt);
 vev_result_free(rebound_rows);
@@ -514,15 +519,21 @@ Current bind functions:
 - `vev_stmt_bind_entity`
 - `vev_stmt_bind_int`
 - `vev_stmt_bind_bool`
+- `vev_stmt_bind_lookup_ref_string`
+- `vev_stmt_bind_lookup_ref_keyword`
+- `vev_stmt_bind_lookup_ref_entity`
+- `vev_stmt_bind_lookup_ref_int`
 - `vev_stmt_bind_string_collection`
 - `vev_stmt_bind_entity_collection`
 - `vev_stmt_bind_int_collection`
 - `vev_stmt_bind_bool_collection`
+- `vev_stmt_bind_lookup_ref_string_collection`
 
 The statement API currently covers scalar bindings and homogeneous collection
-bindings. EDN input text still handles tuple, relation, lookup-ref, source, and
-pull-pattern inputs. Those should be added to statement bindings as typed APIs
-instead of forcing host wrappers to construct EDN strings.
+bindings, including same-attribute lookup-ref string collections. EDN input
+text still handles tuple, relation, source, and pull-pattern inputs. Those
+should be added to statement bindings as typed APIs instead of forcing host
+wrappers to construct EDN strings.
 
 ## Result Handles
 
@@ -620,8 +631,8 @@ The next useful steps are:
 - add direct query-execution callbacks so callers can consume very large query
   results without first materializing full result handles
 - add explicit error/result status APIs
-- add typed statement bindings for tuple, relation, lookup-ref, source, and
-  pull-pattern inputs
+- add typed statement bindings for tuple, relation, source, and pull-pattern
+  inputs
 - add pull-specific entry points
 - turn the Rust smoke wrapper into a small crate
 - add broader result-shape benchmarks for nested values, pull results, and

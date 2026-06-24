@@ -17,6 +17,13 @@ def main() -> int:
             if not tx_value.get(":ok") or len(tx_value.get(":tx-data", [])) != 4:
                 raise RuntimeError("unexpected typed transaction report")
 
+        conn.transact(
+            """
+            [[:db/add 90 :db/ident :user/email]
+             [:db/add 90 :db/unique :db.unique/identity]]
+            """
+        )
+
         collection = conn.query_text(
             """
             [:find ?name
@@ -75,6 +82,44 @@ def main() -> int:
                         raise RuntimeError("unexpected collection statement rows")
             finally:
                 collection_query.close()
+
+            lookup_query = conn.prepare(
+                """
+                [:find ?name
+                 :in ?person
+                 :where [?person :user/name ?name]]
+                """
+            )
+            try:
+                with lookup_query.statement() as stmt:
+                    rows = stmt.bind(vev.LookupRef(":user/email", "ada@example.com")).rows(conn)
+                    print(f"lookup-ref statement rows: {rows}")
+                    if rows != [["Ada"]]:
+                        raise RuntimeError("unexpected lookup-ref statement rows")
+            finally:
+                lookup_query.close()
+
+            lookup_collection_query = conn.prepare(
+                """
+                [:find ?name
+                 :in [?person ...]
+                 :where [?person :user/name ?name]]
+                """
+            )
+            try:
+                with lookup_collection_query.statement() as stmt:
+                    rows = stmt.bind(
+                        [
+                            vev.LookupRef(":user/email", "ada@example.com"),
+                            vev.LookupRef(":user/email", "grace@example.com"),
+                        ]
+                    ).rows(conn)
+                    names = sorted(row[0] for row in rows)
+                    print(f"lookup-ref collection statement names: {names}")
+                    if names != ["Ada", "Grace"]:
+                        raise RuntimeError("unexpected lookup-ref collection statement rows")
+            finally:
+                lookup_collection_query.close()
 
             pull_query = conn.prepare(
                 """
