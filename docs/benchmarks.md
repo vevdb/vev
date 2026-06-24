@@ -4,6 +4,31 @@ Vev has a small benchmark harness for comparing the native engine with the
 local DataScript checkout. These are not exhaustive microbenchmarks yet; they
 are a repeatable feedback loop for query planning and recursive rule work.
 
+## Benchmark Ladder
+
+Vev should use external benchmark shapes as compatibility and architecture
+checks, not only local microbenchmarks.
+
+Current order:
+
+1. Datalevin `datascript-bench`: add Vev beside Datomic, DataScript, and
+   Datalevin for the common in-memory read queries q1/q2/q2-switch/q3/q4 and
+   predicate variants. This exercises Vev through the public Clojure API and
+   native ABI, so it is a better host-language benchmark than direct Kvist
+   calls.
+2. Datalevin `JOB-bench`: use after Vev has a real planner/operator layer.
+   This benchmark stresses join ordering, predicates, ranges, aggregates, and
+   large import behavior over an IMDB-shaped dataset.
+3. Datalevin `write-bench`: use after durable SQLite-backed storage exists.
+   This benchmark should measure transaction throughput, commit latency,
+   batching, WAL/sync choices, and mixed read/write behavior.
+
+The q2/q2-switch rows from `datascript-bench` are especially important. They
+represent same-entity star queries where Datalevin wins by using a general
+merge-scan operator instead of clause-order-sensitive hash joins. Vev should
+use these rows to drive reusable star-query and planner work rather than adding
+query-name-specific fast paths.
+
 ## Query And Rule Baseline
 
 Run Vev from the Kvist repo root so macro loading uses the normal compiler
