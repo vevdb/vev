@@ -106,21 +106,21 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 20.8x | 62.5x |
-| `chain-root n=10` | 22.2x | 39.6x |
-| `chain-root n=30` | 48.4x | 58.5x |
-| `chain-root n=100` | 205.5x | 217.3x |
-| `chain-leaf n=10` | 11.5x | 15.4x |
-| `chain-leaf n=30` | 35.4x | 38.9x |
-| `chain-leaf n=100` | 205.3x | 211.7x |
-| `chain-all n=10` | 11.3x | 15.4x |
-| `chain-all n=30` | 15.6x | 15.9x |
-| `chain-all n=100` | 23.7x | 23.6x |
-| `tree-root n=4` | 3.3x | 8.3x |
-| `tree-root n=13` | 3.1x | 5.0x |
-| `tree-root n=40` | 2.4x | 3.0x |
-| `tree-root n=121` | 1.8x | 1.9x |
-| `bad-order-join n=1000` | 7.2x | 11.2x |
+| `chain-root n=3` | 18.6x | 55.9x |
+| `chain-root n=10` | 22.7x | 38.4x |
+| `chain-root n=30` | 51.3x | 62.8x |
+| `chain-root n=100` | 212.0x | 224.4x |
+| `chain-leaf n=10` | 19.0x | 32.8x |
+| `chain-leaf n=30` | 75.3x | 93.2x |
+| `chain-leaf n=100` | 485.8x | 518.8x |
+| `chain-all n=10` | 11.4x | 15.1x |
+| `chain-all n=30` | 16.6x | 15.9x |
+| `chain-all n=100` | 23.7x | 23.9x |
+| `tree-root n=4` | 3.4x | 8.9x |
+| `tree-root n=13` | 3.3x | 5.3x |
+| `tree-root n=40` | 2.4x | 3.1x |
+| `tree-root n=121` | 1.7x | 1.8x |
+| `bad-order-join n=1000` | 7.1x | 11.4x |
 | `distinct-age n=1000` | 0.6x | 0.6x |
 
 ## Current Findings
@@ -137,10 +137,11 @@ recognizes the common DataScript/Datomic reachability rule shape:
  [(reachable ?x ?y) [?x :follows ?t] (reachable ?t ?y)]]
 ```
 
-When the source argument is bound, Vev builds one adjacency view of the relation
-and walks it with a queue and compact traversal-local seen sets. When only the
-target is bound, Vev walks the same relation in reverse to find all sources that
-can reach it. Both avoid recursively re-running the rule body to a fixed depth.
+When the source argument is bound, Vev builds one forward adjacency view of the
+relation and walks it with a queue and compact traversal-local seen sets. When
+only the target is bound, Vev builds the corresponding reverse adjacency view
+and walks backward to find all sources that can reach it. Both avoid recursively
+re-running the rule body to a fixed depth.
 That turns the benchmarked chain-root and chain-leaf workloads into a single
 rule iteration with one output binding per reached entity. The adjacency view is
 built directly from the `aevt` index range for the relation attr, with traversal

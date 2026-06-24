@@ -3968,6 +3968,20 @@
           (append-transitive-adjacency-edge! (addr out) (addr index) datom.e datom.v.entity))))
     (Transitive-Adjacency-Index {items: out index: index})))
 
+(defn transitive-reverse-adjacency-from-db [db: DB, attr: string] -> Transitive-Adjacency-Index
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 attr (Value {}))
+        out (make [dynamic]Transitive-Adjacency 0 (- high low))
+        index (make (map u64 int))]
+    (for [i (arr.range low high)]
+      (let [datom-index indexes[i]
+            datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Entity))
+          (append-transitive-adjacency-edge! (addr out) (addr index) datom.v.entity datom.e))))
+    (Transitive-Adjacency-Index {items: out index: index})))
+
 (defn delete-transitive-adjacency [adjacency: Transitive-Adjacency-Index]
   (for [item adjacency.items]
     (delete item.targets))
@@ -4111,6 +4125,14 @@
     (for [start-entity starts]
       (append-linear-transitive-target-result! out db call binding rule initial start-entity target-value true target-entity))))
 
+(defn append-linear-transitive-to-target-adjacency! [out: ^[dynamic]Binding, db: DB, adjacency: Transitive-Adjacency-Index, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding, target-entity: u64]
+  (let [starts (make [dynamic]u64)
+        target-value (value-entity target-entity)]
+    (defer (delete starts))
+    (append-transitive-targets-with-adjacency! (addr starts) (slice adjacency.items 0) adjacency.index target-entity)
+    (for [start-entity starts]
+      (append-linear-transitive-target-result! out db call binding rule initial start-entity target-value true target-entity))))
+
 (defn append-linear-transitive-results! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule]
   (let [[initial initial-ok] (bind-rule-args binding call rule)]
     (when (not initial-ok)
@@ -4127,7 +4149,9 @@
           (if target-ok
             (let [[target-entity target-entity-ok] (value-as-entity db target)]
               (when target-entity-ok
-                (append-linear-transitive-to-target! out db attr call binding rule initial target-entity.entity)))
+                (let [adjacency (transitive-reverse-adjacency-from-db db attr)]
+                  (defer (delete-transitive-adjacency adjacency))
+                  (append-linear-transitive-to-target-adjacency! out db adjacency call binding rule initial target-entity.entity))))
             (append-linear-transitive-from-all-starts! out db attr call binding rule initial)))))))
 
 (defn bindings-after-linear-transitive-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
