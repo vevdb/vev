@@ -58,6 +58,18 @@ public final class Vev {
     private final MethodHandle queryDbStmtResult;
     private final MethodHandle queryPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedResultWithInputs;
+    private final MethodHandle queryDbPreparedEntityColumnWithInputs;
+    private final MethodHandle u64ArrayFree;
+    private final MethodHandle u64ArrayCount;
+    private final MethodHandle u64ArrayValue;
+    private final MethodHandle u64ArrayData;
+    private final MethodHandle queryDbPreparedEntityIntPairsWithInputs;
+    private final MethodHandle entityIntPairsFree;
+    private final MethodHandle entityIntPairsCount;
+    private final MethodHandle entityIntPairsEntity;
+    private final MethodHandle entityIntPairsValue;
+    private final MethodHandle entityIntPairsEntitiesData;
+    private final MethodHandle entityIntPairsValuesData;
     private final MethodHandle pullEdn;
     private final MethodHandle pullLookupRefStringEdn;
     private final MethodHandle pullManyEdn;
@@ -69,9 +81,11 @@ public final class Vev {
     private final MethodHandle resultError;
     private final MethodHandle resultRowCount;
     private final MethodHandle resultValueCount;
+    private final MethodHandle resultValueKind;
     private final MethodHandle resultValue;
     private final MethodHandle resultPullCount;
     private final MethodHandle resultPull;
+    private final MethodHandle resultValueEntity;
     private final MethodHandle valueKind;
     private final MethodHandle valueText;
     private final MethodHandle valueEntity;
@@ -131,6 +145,18 @@ public final class Vev {
         this.queryDbStmtResult = downcall("vev_query_db_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryPreparedResultWithInputs = downcall("vev_query_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedEntityColumnWithInputs = downcall("vev_query_db_prepared_entity_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.u64ArrayFree = downcall("vev_u64_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.u64ArrayCount = downcall("vev_u64_array_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.u64ArrayValue = downcall("vev_u64_array_value", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.u64ArrayData = downcall("vev_u64_array_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedEntityIntPairsWithInputs = downcall("vev_query_db_prepared_entity_int_pairs_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityIntPairsFree = downcall("vev_entity_int_pairs_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.entityIntPairsCount = downcall("vev_entity_int_pairs_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.entityIntPairsEntity = downcall("vev_entity_int_pairs_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.entityIntPairsValue = downcall("vev_entity_int_pairs_value", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.entityIntPairsEntitiesData = downcall("vev_entity_int_pairs_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityIntPairsValuesData = downcall("vev_entity_int_pairs_values_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullEdn = downcall("vev_pull_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
@@ -142,9 +168,11 @@ public final class Vev {
         this.resultError = downcall("vev_result_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.resultRowCount = downcall("vev_result_row_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.resultValueCount = downcall("vev_result_value_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.resultValueKind = downcall("vev_result_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultValue = downcall("vev_result_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultPullCount = downcall("vev_result_pull_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.resultPull = downcall("vev_result_pull", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueEntity = downcall("vev_result_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.valueKind = downcall("vev_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.valueText = downcall("vev_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.valueEntity = downcall("vev_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
@@ -401,6 +429,54 @@ public final class Vev {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 return new ResultSet((MemorySegment) queryDbPreparedResultWithInputs.invoke(handle.raw, query.raw, local.allocateUtf8String(inputs)));
+            }
+        }
+
+        public long[] queryEntityColumn(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedEntityColumnWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) u64ArrayCount.invoke(raw);
+                    if (count == 0) return new long[0];
+                    MemorySegment data = (MemorySegment) u64ArrayData.invoke(raw);
+                    if (isNull(data)) return new long[0];
+                    return data.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                } finally {
+                    u64ArrayFree.invoke(raw);
+                }
+            }
+        }
+
+        public long[][] queryEntityIntPairs(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedEntityIntPairsWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) entityIntPairsCount.invoke(raw);
+                    if (count == 0) return new long[0][2];
+                    MemorySegment entityData = (MemorySegment) entityIntPairsEntitiesData.invoke(raw);
+                    MemorySegment valueData = (MemorySegment) entityIntPairsValuesData.invoke(raw);
+                    if (isNull(entityData) || isNull(valueData)) return new long[0][2];
+                    long[] entities = entityData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    long[] values = valueData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    long[][] out = new long[count][2];
+                    for (int index = 0; index < count; index++) {
+                        out[index][0] = entities[index];
+                        out[index][1] = values[index];
+                    }
+                    return out;
+                } finally {
+                    entityIntPairsFree.invoke(raw);
+                }
             }
         }
 
@@ -671,9 +747,33 @@ public final class Vev {
             return (int) resultRowCount.invoke(raw);
         }
 
+        public long[] singleEntityColumn() throws Throwable {
+            int rowCount = rowCount();
+            if (rowCount == 0) return new long[0];
+            if ((int) resultValueCount.invoke(raw, 0) != 1
+                    || (int) resultPullCount.invoke(raw, 0) != 0
+                    || (int) resultValueKind.invoke(raw, 0, 0) != 1) {
+                return null;
+            }
+            long[] out = new long[rowCount];
+            for (int row = 0; row < rowCount; row++) {
+                out[row] = (long) resultValueEntity.invoke(raw, row, 0);
+            }
+            return out;
+        }
+
         public List<List<Object>> rows() throws Throwable {
             int rowCount = rowCount();
             List<List<Object>> rows = new ArrayList<>(rowCount);
+            long[] entityColumn = singleEntityColumn();
+            if (entityColumn != null && rowCount > 0) {
+                for (long entity : entityColumn) {
+                    List<Object> values = new ArrayList<>(1);
+                    values.add(new Entity(entity));
+                    rows.add(values);
+                }
+                return rows;
+            }
             for (int row = 0; row < rowCount; row++) {
                 List<Object> values = new ArrayList<>();
                 int valueCount = (int) resultValueCount.invoke(raw, row);

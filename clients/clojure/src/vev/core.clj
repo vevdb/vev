@@ -70,6 +70,8 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
+(defonce ^:private prepared-query-cache (atom {}))
+
 (defrecord TxBuilder [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
@@ -211,6 +213,14 @@
   (let [engine (:engine source)]
     (->PreparedQuery engine (.prepare engine (edn-text query)))))
 
+(defn- cached-prepare [source query]
+  (locking prepared-query-cache
+    (if-let [prepared (get @prepared-query-cache query)]
+      prepared
+      (let [prepared (prepare source query)]
+        (swap! prepared-query-cache assoc query prepared)
+        prepared))))
+
 (defn- source? [value]
   (or (instance? Conn value)
       (instance? DB value)))
@@ -234,23 +244,101 @@
       :else
       (throw (ex-info "expected Vev connection or DB" {:source source})))))
 
+(defn- single-entity-rows [result]
+  (when-let [ids (.singleEntityColumn result)]
+    (mapv (fn [id] [(long id)]) ids)))
+
+(defn- rows-from-result [result]
+  (or (single-entity-rows result)
+      (mapv clj-value (.rows result))))
+
+(defn- q-from-result [result]
+  (if-let [ids (.singleEntityColumn result)]
+    (persistent!
+      (reduce
+        (fn [out id]
+          (conj! out [(long id)]))
+        (transient #{})
+        ids))
+    (set (mapv clj-value (.rows result)))))
+
+(defn- entity-column [source ^PreparedQuery prepared inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? DB source)
+      (.queryEntityColumn (:native source) (:native prepared) input-edn)
+
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityColumn (:native snapshot) (:native prepared) input-edn))
+
+      :else
+      nil)))
+
+(defn- entity-int-pairs [source ^PreparedQuery prepared inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? DB source)
+      (.queryEntityIntPairs (:native source) (:native prepared) input-edn)
+
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityIntPairs (:native snapshot) (:native prepared) input-edn))
+
+      :else
+      nil)))
+
+(defn- entity-column-rows [ids]
+  (mapv (fn [id] [(long id)]) ids))
+
+(defn- entity-column-set [ids]
+  (persistent!
+    (reduce
+      (fn [out id]
+        (conj! out [(long id)]))
+      (transient #{})
+      ids)))
+
+(defn- entity-int-pair-rows [pairs]
+  (mapv (fn [pair] [(long (aget ^longs pair 0)) (long (aget ^longs pair 1))]) pairs))
+
+(defn- entity-int-pair-set [pairs]
+  (persistent!
+    (reduce
+      (fn [out pair]
+        (conj! out [(long (aget ^longs pair 0)) (long (aget ^longs pair 1))]))
+      (transient #{})
+      pairs)))
+
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
 
   Accepts both DB-first Vev style and query-first Datomic/DataScript style."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
-    (if (instance? PreparedQuery query)
-      (with-open [result (apply query-result source query inputs)]
-        (mapv clj-value (.rows result)))
-      (with-open [prepared (prepare source query)
-                  result (apply query-result source prepared inputs)]
-        (mapv clj-value (.rows result))))))
+    (let [prepared (if (instance? PreparedQuery query)
+                     query
+                     (cached-prepare source query))]
+      (if-let [ids (entity-column source prepared inputs)]
+        (entity-column-rows ids)
+        (if-let [pairs (entity-int-pairs source prepared inputs)]
+          (entity-int-pair-rows pairs)
+          (with-open [result (apply query-result source prepared inputs)]
+            (rows-from-result result)))))))
 
 (defn q
   "Run a query and return a set of row vectors."
   [query source & inputs]
-  (set (apply rows query source inputs)))
+  (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
+    (let [prepared (if (instance? PreparedQuery query)
+                     query
+                     (cached-prepare source query))]
+      (if-let [ids (entity-column source prepared inputs)]
+        (entity-column-set ids)
+        (if-let [pairs (entity-int-pairs source prepared inputs)]
+          (entity-int-pair-set pairs)
+          (with-open [result (apply query-result source prepared inputs)]
+            (q-from-result result)))))))
 
 (defn scalar
   "Run a query expected to return one value."
@@ -259,8 +347,7 @@
     (if (instance? PreparedQuery query)
       (with-open [result (apply query-result source query inputs)]
         (clj-value (.scalar result)))
-      (with-open [prepared (prepare source query)
-                  result (apply query-result source prepared inputs)]
+      (with-open [result (apply query-result source (cached-prepare source query) inputs)]
         (clj-value (.scalar result))))))
 
 (defn- with-db-source [source f]
