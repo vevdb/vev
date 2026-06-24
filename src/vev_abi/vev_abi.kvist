@@ -47,6 +47,7 @@ ABI_Stmt :: struct {
     pull_pattern_sources: [dynamic]string,
     sources: [dynamic]vev__DB_Source,
     source_handles: [dynamic]rawptr,
+    last_error: string,
 }
 
 abi_alloc_conn :: proc() -> rawptr {
@@ -333,6 +334,10 @@ abi_stmt_source_handles_ptr :: proc(stmt: rawptr) -> ^[dynamic]rawptr {
     return &((^ABI_Stmt)(stmt))^.source_handles
 }
 
+abi_stmt_error_ptr :: proc(stmt: rawptr) -> ^string {
+    return &((^ABI_Stmt)(stmt))^.last_error
+}
+
 abi_stmt_push_input :: proc(stmt: rawptr, input: vev__Query_Input) {
     append(&((^ABI_Stmt)(stmt))^.inputs, input)
 }
@@ -364,6 +369,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
     delete(wrapper.pull_pattern_sources)
     delete(wrapper.sources)
     delete(wrapper.source_handles)
+    if len(wrapper.last_error) > 0 {
+        delete(wrapper.last_error)
+    }
     free(wrapper)
 }
 ")
@@ -415,6 +423,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- stmt-source-handles-ptr [stmt: Vev-Stmt] -> ^[dynamic]rawptr
   (abi-stmt-source-handles-ptr (rawptr stmt)))
+
+(defn- stmt-error-ptr [stmt: Vev-Stmt] -> ^string
+  (abi-stmt-error-ptr (rawptr stmt)))
 
 (defn- text-from-c [text: cstring] -> string
   (let [[out err] (strings.clone_from_cstring text)]
@@ -552,7 +563,8 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (let [ptr (abi-db-storage-ptr storage)]
             (delete-db-owned ptr^)
             (abi-free-db-storage storage)))))
-    (resize source-handles 0)))
+    (resize source-handles 0)
+    (stmt-clear-error! stmt)))
 
 (defn- stmt-push-scalar! [stmt: Vev-Stmt, value: vev.Value]
   (abi-stmt-push-input (rawptr stmt) (vev.query-input-scalar value)))
@@ -645,12 +657,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (delete-result-shallow ptr^)
     (abi-free-result (rawptr result))))
 
-(defn- result-finish-visit-delete [result: Vev-Result, db: vev.DB, visitor: rawptr, user: rawptr] -> bool
+(defn- stmt-clear-error! [stmt: Vev-Stmt]
+  (let [error (stmt-error-ptr stmt)]
+    (when (> (count error^) 0)
+      (delete error^))
+    (set! error^ "")))
+
+(defn- stmt-set-error! [stmt: Vev-Stmt, message: string]
+  (stmt-clear-error! stmt)
+  (let [error (stmt-error-ptr stmt)]
+    (set! error^ (string-owned message))))
+
+(defn- result-finish-visit-delete [result: Vev-Result, db: vev.DB, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
   (result-finish result db)
-  (let [ptr (result-ptr result)
-        ok (and ptr^.ok (abi-result-visit (rawptr result) visitor user))]
+  (let [ptr (result-ptr result)]
+    (when (not ptr^.ok)
+      (stmt-set-error! stmt ptr^.error)
+      (result-delete-owned result)
+      (return false))
+    (when (not (abi-result-visit (rawptr result) visitor user))
+      (stmt-set-error! stmt "result visitor cancelled")
+      (result-delete-owned result)
+      (return false))
+    (stmt-clear-error! stmt)
     (result-delete-owned result)
-    ok))
+    true))
 
 (defn- result-value [result: Vev-Result, row: int, column: int] -> vev.Value
   (let [ptr (result-ptr result)]
@@ -888,6 +919,22 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (abi-free-prepared-query (rawptr query))))
 
 @export
+(defn vev_prepared_query_ok :abi "c" [query: Vev-Prepared-Query] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr query) nil)
+    (return false))
+  (let [ptr (prepared-query-ptr query)]
+    ptr^.ok))
+
+@export
+(defn vev_prepared_query_error :abi "c" [query: Vev-Prepared-Query] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr query) nil)
+    (return (c-string-owned "null prepared query")))
+  (let [ptr (prepared-query-ptr query)]
+    (c-string-owned ptr^.error)))
+
+@export
 (defn vev_stmt_create :abi "c" [query: Vev-Prepared-Query] -> Vev-Stmt
   (odin "context = runtime.default_context()")
   (when (= (rawptr query) nil)
@@ -908,6 +955,14 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return))
   (stmt-clear-owned stmt)
   (abi-free-stmt (rawptr stmt)))
+
+@export
+(defn vev_stmt_error :abi "c" [stmt: Vev-Stmt] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr stmt) nil)
+    (return (c-string-owned "null statement")))
+  (let [error (stmt-error-ptr stmt)]
+    (c-string-owned error^)))
 
 @export
 (defn vev_stmt_bind_string :abi "c" [stmt: Vev-Stmt, value: cstring] -> bool
@@ -1219,7 +1274,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
         result (abi-alloc-result)
         result-ptr-value (result-ptr (Vev-Result result))]
     (set! result-ptr-value^ (vev.q-prepared-with-sources conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
-    (result-finish-visit-delete (Vev-Result result) conn-ptr-value^.db visitor user)))
+    (result-finish-visit-delete (Vev-Result result) conn-ptr-value^.db stmt visitor user)))
 
 @export
 (defn vev_query_db_stmt_visit :abi "c" [db: Vev-DB, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
@@ -1233,7 +1288,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
         result (abi-alloc-result)
         result-ptr-value (result-ptr (Vev-Result result))]
     (set! result-ptr-value^ (vev.q-prepared-with-sources db-ptr-value^ query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
-    (result-finish-visit-delete (Vev-Result result) db-ptr-value^ visitor user)))
+    (result-finish-visit-delete (Vev-Result result) db-ptr-value^ stmt visitor user)))
 
 @export
 (defn vev_query_prepared :abi "c" [conn: Vev-Conn, query: Vev-Prepared-Query] -> cstring

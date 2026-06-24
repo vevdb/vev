@@ -127,6 +127,15 @@ static bool count_result_visit(void *user, int event, int row, int index, vev_va
     return true;
 }
 
+static bool cancel_result_visit(void *user, int event, int row, int index, vev_value_t value) {
+    (void)user;
+    (void)event;
+    (void)row;
+    (void)index;
+    (void)value;
+    return false;
+}
+
 static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
     if (report == NULL) {
         fprintf(stderr, "%s: null transaction report\n", label);
@@ -220,6 +229,35 @@ int main(void) {
         vev_conn_close(conn);
         return 1;
     }
+    if (!vev_prepared_query_ok(query)) {
+        const char *error = vev_prepared_query_error(query);
+        fprintf(stderr, "unexpected prepared query error: %s\n", error);
+        vev_string_free(error);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_prepared_query_t invalid_query = vev_prepare_query_edn("[:find ?e :where [?e");
+    if (invalid_query == NULL || vev_prepared_query_ok(invalid_query)) {
+        fprintf(stderr, "invalid prepared query unexpectedly succeeded\n");
+        if (invalid_query != NULL) {
+            vev_prepared_query_free(invalid_query);
+        }
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *invalid_error = vev_prepared_query_error(invalid_query);
+    if (invalid_error == NULL || strlen(invalid_error) == 0) {
+        fprintf(stderr, "invalid prepared query did not expose an error\n");
+        vev_string_free(invalid_error);
+        vev_prepared_query_free(invalid_query);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_string_free(invalid_error);
+    vev_prepared_query_free(invalid_query);
 
     print_and_free("prepared", vev_query_prepared_with_inputs(conn, query, "[\"grace@example.com\"]"));
 
@@ -278,6 +316,23 @@ int main(void) {
             streamed_stmt_stats.row_ends,
             streamed_stmt_stats.values,
             streamed_stmt_stats.pulls);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (vev_query_stmt_visit(conn, stmt, cancel_result_visit, NULL)) {
+        fprintf(stderr, "cancelled statement visitor unexpectedly succeeded\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *stmt_error = vev_stmt_error(stmt);
+    int cancelled = stmt_error != NULL && strstr(stmt_error, "cancelled") != NULL;
+    vev_string_free(stmt_error);
+    if (!cancelled) {
+        fprintf(stderr, "cancelled statement visitor did not expose an error\n");
         vev_stmt_free(stmt);
         vev_prepared_query_free(query);
         vev_conn_close(conn);

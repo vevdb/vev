@@ -79,10 +79,13 @@ vev_prepared_query_t vev_prepare_query_edn_with_sources(
     const char *query_text,
     const char **source_names,
     int source_count);
+bool vev_prepared_query_ok(vev_prepared_query_t query);
+const char *vev_prepared_query_error(vev_prepared_query_t query);
 void vev_prepared_query_free(vev_prepared_query_t query);
 vev_stmt_t vev_stmt_create(vev_prepared_query_t query);
 void vev_stmt_clear(vev_stmt_t stmt);
 void vev_stmt_free(vev_stmt_t stmt);
+const char *vev_stmt_error(vev_stmt_t stmt);
 bool vev_stmt_bind_string(vev_stmt_t stmt, const char *value);
 bool vev_stmt_bind_keyword(vev_stmt_t stmt, const char *value);
 bool vev_stmt_bind_symbol(vev_stmt_t stmt, const char *value);

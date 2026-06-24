@@ -45,6 +45,13 @@ def main() -> int:
             """
         )
 
+        try:
+            conn.prepare("[:find ?e :where [?e")
+            raise RuntimeError("invalid query unexpectedly prepared")
+        except vev.VevError as error:
+            if not str(error):
+                raise RuntimeError("invalid query did not expose an error") from error
+
         email_query = conn.prepare(
             """
             [:find ?e ?email
@@ -64,6 +71,13 @@ def main() -> int:
                 print(f"streamed statement rows: {streamed}")
                 if streamed != rows:
                     raise RuntimeError("unexpected streamed statement rows")
+
+                try:
+                    stmt.visit(conn, lambda event, row, index, value: False)
+                    raise RuntimeError("cancelled visitor unexpectedly succeeded")
+                except vev.VevError as error:
+                    if "cancelled" not in str(error):
+                        raise RuntimeError("unexpected visitor cancellation error") from error
 
                 rows = stmt.bind("ada@example.com").rows(conn)
                 print(f"statement rebound rows: {rows}")

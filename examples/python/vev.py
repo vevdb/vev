@@ -130,12 +130,18 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_prepare_query_edn_with_sources.restype = ctypes.c_void_p
+        lib.vev_prepared_query_ok.argtypes = [ctypes.c_void_p]
+        lib.vev_prepared_query_ok.restype = ctypes.c_bool
+        lib.vev_prepared_query_error.argtypes = [ctypes.c_void_p]
+        lib.vev_prepared_query_error.restype = ctypes.c_void_p
         lib.vev_prepared_query_free.argtypes = [ctypes.c_void_p]
 
         lib.vev_stmt_create.argtypes = [ctypes.c_void_p]
         lib.vev_stmt_create.restype = ctypes.c_void_p
         lib.vev_stmt_clear.argtypes = [ctypes.c_void_p]
         lib.vev_stmt_free.argtypes = [ctypes.c_void_p]
+        lib.vev_stmt_error.argtypes = [ctypes.c_void_p]
+        lib.vev_stmt_error.restype = ctypes.c_void_p
         lib.vev_stmt_bind_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_stmt_bind_string.restype = ctypes.c_bool
         lib.vev_stmt_bind_keyword.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -694,6 +700,15 @@ class PreparedQuery:
             )
         if not self._handle:
             raise VevError("failed to prepare query")
+        if not library.lib.vev_prepared_query_ok(self._handle):
+            try:
+                error = library.owned_text(
+                    library.lib.vev_prepared_query_error(self._handle)
+                )
+            finally:
+                library.lib.vev_prepared_query_free(self._handle)
+                self._handle = None
+            raise VevError(error)
 
     def close(self) -> None:
         if self._handle:
@@ -778,6 +793,10 @@ class Statement:
         with self.query(conn) as result:
             return result.scalar()
 
+    def error(self) -> str:
+        self._require_open()
+        return self._library.owned_text(self._library.lib.vev_stmt_error(self._handle))
+
     def visit(self, conn: Connection | DB, visitor: object) -> None:
         self._require_open()
         if isinstance(conn, Connection):
@@ -801,7 +820,7 @@ class Statement:
 
         c_callback = RESULT_VISIT_FN(callback)
         if not fn(owner, self._handle, c_callback, None):
-            raise VevError("statement visitor failed")
+            raise VevError(self.error() or "statement visitor failed")
 
     def stream_rows(self, conn: Connection | DB) -> list[list[Any]]:
         rows: list[list[Any]] = []

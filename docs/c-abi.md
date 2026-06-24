@@ -15,6 +15,7 @@ The current shape is intentionally narrow:
 - opaque result handles for typed row/value access
 - borrowed value handles for nested vector/map/pull traversal
 - owned value handles for direct pull entry points
+- explicit prepared-query and statement error accessors
 - callback traversal for nested value trees
 - callback traversal for typed result rows
 - direct statement query execution through typed result-row callbacks
@@ -131,6 +132,10 @@ vev_string_free(with_inputs);
 
 vev_prepared_query_t query =
     vev_prepare_query_edn("[:find ?e :in ?email :where [?e :user/email ?email]]");
+if (!vev_prepared_query_ok(query)) {
+    const char *error = vev_prepared_query_error(query);
+    vev_string_free(error);
+}
 const char *prepared_result =
     vev_query_prepared_with_inputs(conn, query, "[\"ada@example.com\"]");
 vev_string_free(prepared_result);
@@ -192,6 +197,10 @@ bool rows_ok = vev_result_visit(rows, visit_row, user_data);
 // the preferred shape for large result sets when the host does not need random
 // row access through a materialized result handle.
 bool streamed_ok = vev_query_stmt_visit(conn, stmt, visit_row, user_data);
+if (!streamed_ok) {
+    const char *error = vev_stmt_error(stmt);
+    vev_string_free(error);
+}
 
 vev_result_free(pull_rows);
 vev_stmt_free(pull_stmt);
@@ -581,6 +590,10 @@ source inputs. Source-aware prepared queries are created with
 `vev_prepare_query_edn_with_sources`, then statements bind actual immutable DB
 handles with `vev_stmt_bind_db_source`.
 
+Prepared query status is available through `vev_prepared_query_ok` and
+`vev_prepared_query_error`. Statement execution failures from direct visitor
+calls are available through `vev_stmt_error`.
+
 ## Result Handles
 
 The string-returning query helpers are convenient, but host libraries should use
@@ -690,6 +703,5 @@ model.
 
 The next useful steps are:
 
-- add explicit error/result status APIs
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets
