@@ -186,8 +186,8 @@ In the embedded use case, the intended application flow is:
 3. inspect `tx-data` and `tx-meta`
 4. do follow-up work in application code
 
-That means Vev does not need a built-in listener mechanism in the first
-phase to support post-commit reactions.
+Vev now supports post-commit reactions through named report sinks in the engine
+and raw C ABI transaction report callbacks for host code.
 
 It is not intended to model multiple distinct domain events inside one
 transaction. If Vev eventually needs first-class event streams, that

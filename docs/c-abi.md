@@ -20,6 +20,7 @@ The current shape is intentionally narrow:
 - callback traversal for typed result rows
 - direct statement query execution through typed result-row callbacks
 - registered transaction function callbacks that return EDN tx-data
+- transaction report listener callbacks on connection commits
 
 This is the portable baseline for Python, Rust, Java, Clojure, and other hosts.
 Host wrappers should build on this surface first instead of mirroring internal
@@ -490,6 +491,36 @@ report; release the handle with `vev_tx_report_free`. The older
 debugging. `vev_db_with_edn` returns a new owned DB handle. The source DB is not
 mutated.
 
+## Transaction Report Listeners
+
+Host code can register connection listeners that receive successful transaction
+reports after a commit. Failed transactions do not notify listeners. Listener
+callbacks receive a borrowed report handle that is valid only for the duration
+of the callback.
+
+```c
+struct listener_state {
+    int count;
+};
+
+static void tx_listener(void *user, vev_tx_report_t report) {
+    struct listener_state *state = (struct listener_state *)user;
+    state->count++;
+
+    const char *report_text = vev_tx_report_edn(report);
+    vev_string_free(report_text);
+}
+
+struct listener_state state = {0};
+vev_conn_listen_tx_report(conn, "app-listener", tx_listener, &state);
+vev_transact_edn(conn, "[{:db/id 1 :user/name \"Ada\"}]");
+vev_conn_unlisten_tx_report(conn, "app-listener");
+```
+
+The callback must copy any strings or values it wants to keep. It must not free
+the borrowed report handle. Listener callback failures do not roll back a
+transaction; application code should treat listeners as post-commit observers.
+
 ## Transaction Function Callbacks
 
 Host code can register transaction functions by ident and call them from EDN
@@ -768,7 +799,7 @@ model.
 The initial C ABI shape is now covered for C, Python, Rust, Java, and Clojure,
 including immutable DB handles, typed statement bindings, direct pull handles,
 direct row visitors, registered transaction function callbacks, status/error
-accessors, and baseline ABI-vs-native benchmarks. The next interop work should
-be driven by concrete host adapter needs, especially listener/report callbacks
-and higher-level host adapter APIs, rather than expanding the raw C surface
-speculatively.
+accessors, transaction report listeners, and baseline ABI-vs-native benchmarks.
+The next interop work should be driven by concrete host adapter needs,
+especially higher-level host adapter APIs, rather than expanding the raw C
+surface speculatively.

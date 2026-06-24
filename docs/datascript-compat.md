@@ -3,8 +3,8 @@
 Vev tracks the local `../datascript/test/datascript/test/*.cljc` namespaces as
 the in-memory compatibility checklist. Most engine-level namespaces now have
 local Vev coverage; remaining work is concentrated in exact parser/API shape,
-listener/report callbacks for host adapters, and measured performance for
-recursive rules and large queries.
+measured performance for recursive rules and large queries, MusicBrainz/Datomic
+workload coverage, and host wrapper ergonomics.
 
 See `docs/datascript-test-port-ledger.md` for namespace-by-namespace port
 status.
@@ -46,7 +46,7 @@ Status key:
 | `filter` | covered | Materialized `filter-db` covers DataScript-style predicate filtering, chained filters, filtered entity reads, index-backed queries, and semantic DB equivalence; Clojure hash/equality/runtime wrapper behavior is host |
 | `serialize` | covered | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
 | `issues` | covered | Engine-relevant regressions from `issues.cljc` are covered: vector result isolation, mixed-type DB diff, and schema inspection; Clojure metadata/pprint cases are host-specific |
-| `listen` | covered | Named report-sink listeners cover registration, tx-data reports, metadata reports, and unlisten; arbitrary closure callbacks are host/ABI design work |
+| `listen` | covered | Named report-sink listeners cover registration, tx-data reports, metadata reports, and unlisten; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
 | `storage`, `datafy` | later | API/package features after semantic core |
 | `tuples` | covered | Tuple attr schema, inferred tuple value type/cardinality metadata, final tuple schema validation independent of tx-data order, derived multi-tuple transaction maintenance, direct tuple attr rejection except redundant final-state tuple assertions, stale explicit direct tuple update rejection, unique tuple lookup refs including ref-component nested lookup refs, query lookup refs over tuple attrs in literal and EDN text APIs, tuple lookup-ref pull via literal/text/prepared APIs, tuple lookup-ref unique conflict/update paths through EDN text tx-data, component-based tuple upsert, direct tuple-value tempid upsert, tuple unique conflict and multi-component update shapes including DataScript's vector-sequential versus tx-map-atomic component updates, EDN text/prepared tx-data tuple component upsert, tuple lookup-ref entity refs, prepared direct tuple-value tempid upsert, conflict rollback, text/map tx-data direct tuple-value ignore cases, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation including invalid `:db/tupleAttrs` shapes, nested tuple dependency rejection, and cardinality-many tuple/component rejection covered; exact diagnostic text is Vev-shaped |
 
@@ -59,9 +59,8 @@ semantics or required native interop, not on already-covered syntax families.
 1. Tighten parser validation against the upstream parser namespaces. Query,
    pull, rule, return-map, and transaction text parsing are broad now, but
    malformed-shape handling still trails DataScript.
-2. Extend the native callback ABI to listener/report callbacks and refine the
-   final C ABI-facing registration shape for host adapters. Transaction
-   function callbacks now work through the raw C ABI.
+2. Add higher-level host wrapper ergonomics over the raw C ABI where concrete
+   Java/Clojure/Python/Rust usage needs them.
 3. Use the new query profile counters to optimize recursive rules, large
    relations, aggregates, and index-backed planning before starting durable
    storage.

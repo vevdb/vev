@@ -175,6 +175,26 @@ static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
     return 0;
 }
 
+struct tx_listener_stats {
+    int count;
+    int saw_listener_attr;
+};
+
+static void count_tx_listener(void *user, vev_tx_report_t report) {
+    struct tx_listener_stats *stats = (struct tx_listener_stats *)user;
+    stats->count++;
+    vev_value_t value = vev_tx_report_value(report);
+    vev_value_t ok = map_get(value, ":ok");
+    if (vev_value_kind(ok) != VEV_VALUE_BOOL || !vev_value_bool(ok)) {
+        return;
+    }
+    const char *edn = vev_tx_report_edn(report);
+    if (edn != NULL && strstr(edn, ":user/listener") != NULL) {
+        stats->saw_listener_attr = 1;
+    }
+    vev_string_free(edn);
+}
+
 int main(void) {
     printf("version: %s\n", vev_version());
 
@@ -195,6 +215,42 @@ int main(void) {
         return 1;
     }
     vev_tx_report_free(tx_report);
+
+    struct tx_listener_stats listener_stats = {0, 0};
+    if (!vev_conn_listen_tx_report(conn, "smoke-listener", count_tx_listener, &listener_stats)) {
+        fprintf(stderr, "failed to register tx report listener\n");
+        vev_conn_close(conn);
+        return 1;
+    }
+    print_and_free(
+        "listener-tx",
+        vev_transact_edn(conn, "[[:db/add 1 :user/listener \"heard\"]]"));
+    if (listener_stats.count != 1 || !listener_stats.saw_listener_attr) {
+        fprintf(stderr, "tx report listener did not observe successful transaction\n");
+        vev_conn_close(conn);
+        return 1;
+    }
+    print_and_free(
+        "listener-failed-tx",
+        vev_transact_edn(conn, "[[:db/add 1 123 \"bad\"]]"));
+    if (listener_stats.count != 1) {
+        fprintf(stderr, "tx report listener observed failed transaction\n");
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (!vev_conn_unlisten_tx_report(conn, "smoke-listener")) {
+        fprintf(stderr, "failed to unregister tx report listener\n");
+        vev_conn_close(conn);
+        return 1;
+    }
+    print_and_free(
+        "listener-after-unlisten",
+        vev_transact_edn(conn, "[[:db/add 1 :user/listener \"after-unlisten\"]]"));
+    if (listener_stats.count != 1) {
+        fprintf(stderr, "tx report listener observed transaction after unlisten\n");
+        vev_conn_close(conn);
+        return 1;
+    }
 
     print_and_free(
         "tx-email-unique",

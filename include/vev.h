@@ -55,11 +55,18 @@ typedef const char *(*vev_tx_fn_edn_callback)(
     vev_db_t db,
     int argc,
     vev_tx_fn_args_t args);
+typedef void (*vev_tx_report_listener_callback)(void *user, vev_tx_report_t report);
 
 const char *vev_version(void);
 
 vev_conn_t vev_conn_open_memory(void);
 void vev_conn_close(vev_conn_t conn);
+bool vev_conn_listen_tx_report(
+    vev_conn_t conn,
+    const char *name,
+    vev_tx_report_listener_callback callback,
+    void *user);
+bool vev_conn_unlisten_tx_report(vev_conn_t conn, const char *name);
 vev_db_t vev_conn_db(vev_conn_t conn);
 vev_conn_t vev_conn_from_db(vev_db_t db);
 vev_db_t vev_db_retain(vev_db_t db);

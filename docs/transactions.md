@@ -200,9 +200,9 @@ earlier segment operations are rolled back and listeners are not notified.
 
 ## Listener and derivation extension point
 
-Named report-sink listeners exist inside the engine. The remaining host-facing
-callback work is exposing transaction report/listener callbacks through the C
-ABI and wrappers.
+Named report-sink listeners exist inside the engine. Raw C ABI transaction
+report callbacks expose post-commit listeners to host code. Higher-level
+wrappers can add more idiomatic listener helpers as needed.
 
 If Vev later needs stronger same-transaction behavior than transaction
 functions provide, the next step should be deterministic transaction-time

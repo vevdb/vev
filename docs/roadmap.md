@@ -67,24 +67,23 @@ Non-goal:
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. Remaining work is
-concentrated in exact parser diagnostics/object rendering, listener/report
-callback registration for host adapters, and measured recursive-rule/large-query
-optimization.
+concentrated in exact parser diagnostics/object rendering, measured
+recursive-rule/large-query optimization, MusicBrainz/Datomic workload coverage,
+and higher-level host wrapper ergonomics.
 
 Current batch order:
 
 1. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
    tx-data shapes fail predictably through the portable text/prepared APIs.
-2. Host listener callbacks: expose transaction report callbacks through the C
-   ABI, then lift them into Java/Clojure/Python/Rust wrappers as needed.
+2. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
+   Java feel close to Datomic/DataScript for common tutorials, including
+   listener/report callbacks where useful.
 3. Rule/query performance: use query profile counters and ABI/native
    benchmarks to replace recursive rule and large relation hot paths with
    measured implementations.
 4. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
    dataset, run equivalent Datomic workshop queries against Vev and Datomic,
    compare result sets first and performance second.
-5. Wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and Java
-   feel close to Datomic/DataScript for common tutorials.
 
 ## Phase 4: Portable query frontend
 
@@ -152,9 +151,9 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: not started. Keep this postponed until parser/API exactness, host
-listener callbacks, and rule/query performance are stable enough that the
-storage layer can preserve semantics instead of reshaping them.
+Status: not started. Keep this postponed until parser/API exactness,
+MusicBrainz/Datomic workload coverage, and rule/query performance are stable
+enough that the storage layer can preserve semantics instead of reshaping them.
 
 ## Phase 7: Dogfood
 
@@ -193,7 +192,7 @@ smokes exercise the native library, and the ABI-vs-native benchmark covers
 small lookups, DB snapshots, transaction reports, many-row results, direct row
 visitors, nested pull-many values, and host-provided transaction function
 callbacks. Further interop work should be driven by specific adapter needs,
-especially listener/report callback registration and higher-level host wrappers.
+especially higher-level host wrappers over the raw C ABI.
 
 ## Phase 9: Optional packaging expansion
 
@@ -244,7 +243,6 @@ right first. The next durable-storage gate is not "all possible DataScript host
 details"; it is:
 
 - portable parser and tx-data APIs reject bad input predictably
-- report/listener callbacks work through host wrappers
 - recursive rules and large relation queries have measured, acceptable behavior
 - MusicBrainz/Datomic workshop queries have correctness coverage and comparison
   benchmarks

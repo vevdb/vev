@@ -9,6 +9,7 @@
 ABI_Conn :: struct {
     conn: vev__Conn,
     tx_sources: [dynamic]string,
+    listeners: [dynamic]ABI_Tx_Listener,
 }
 
 ABI_Prepared_Query :: struct {
@@ -46,6 +47,13 @@ ABI_Value_Handle :: struct {
 ABI_Value_Visit_Fn :: proc \"c\" (user: rawptr, event: int, value: rawptr) -> bool
 ABI_Result_Visit_Fn :: proc \"c\" (user: rawptr, event, row, index: int, value: rawptr) -> bool
 ABI_Tx_Fn_Edn_Callback :: proc \"c\" (user: rawptr, db: rawptr, argc: int, args: rawptr) -> cstring
+ABI_Tx_Listener_Callback :: proc \"c\" (user: rawptr, report: rawptr)
+
+ABI_Tx_Listener :: struct {
+    name: string,
+    callback: ABI_Tx_Listener_Callback,
+    user: rawptr,
+}
 
 ABI_TX_FN_SLOT_COUNT :: 16
 abi_tx_fn_callbacks: [ABI_TX_FN_SLOT_COUNT]ABI_Tx_Fn_Edn_Callback
@@ -64,6 +72,7 @@ ABI_Stmt :: struct {
 abi_alloc_conn :: proc() -> rawptr {
     wrapper := new(ABI_Conn)
     wrapper.tx_sources = make([dynamic]string)
+    wrapper.listeners = make([dynamic]ABI_Tx_Listener)
     return rawptr(wrapper)
 }
 
@@ -75,12 +84,72 @@ abi_conn_store_tx_source :: proc(conn: rawptr, source: string) {
     append(&((^ABI_Conn)(conn))^.tx_sources, source)
 }
 
+abi_tx_listener_entry :: proc(name: string, callback: rawptr, user: rawptr) -> ABI_Tx_Listener {
+    return ABI_Tx_Listener{
+        name = name,
+        callback = transmute(ABI_Tx_Listener_Callback)callback,
+        user = user,
+    }
+}
+
+abi_tx_listener_notify :: proc(listener: ABI_Tx_Listener, report: rawptr) {
+    if listener.callback == nil {
+        return
+    }
+    listener.callback(listener.user, report)
+}
+
+abi_conn_add_tx_listener :: proc(conn: rawptr, name: string, callback: rawptr, user: rawptr) -> bool {
+    if conn == nil || callback == nil {
+        return false
+    }
+    wrapper := (^ABI_Conn)(conn)
+    for &listener in wrapper.listeners {
+        if listener.name == name {
+            delete(listener.name)
+            listener = abi_tx_listener_entry(name, callback, user)
+            return true
+        }
+    }
+    append(&wrapper.listeners, abi_tx_listener_entry(name, callback, user))
+    return true
+}
+
+abi_conn_remove_tx_listener :: proc(conn: rawptr, name: string) -> bool {
+    if conn == nil {
+        return false
+    }
+    wrapper := (^ABI_Conn)(conn)
+    for &listener in wrapper.listeners {
+        if listener.callback != nil && listener.name == name {
+            listener.callback = nil
+            listener.user = nil
+            return true
+        }
+    }
+    return false
+}
+
+abi_conn_notify_tx_listeners :: proc(conn: rawptr, report: rawptr) {
+    if conn == nil || report == nil {
+        return
+    }
+    wrapper := (^ABI_Conn)(conn)
+    for listener in wrapper.listeners {
+        abi_tx_listener_notify(listener, report)
+    }
+}
+
 abi_free_conn :: proc(conn: rawptr) {
     wrapper := (^ABI_Conn)(conn)
     for source in wrapper.tx_sources {
         delete(source)
     }
+    for listener in wrapper.listeners {
+        delete(listener.name)
+    }
     delete(wrapper.tx_sources)
+    delete(wrapper.listeners)
     free(wrapper)
 }
 
@@ -588,6 +657,20 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- tx-report-handle-from-report [report: vev.Tx-Report] -> Vev-Tx-Report
   (tx-report-handle-from-value (vev.tx-report-value report)))
 
+(defn- tx-report-handle-free [report: Vev-Tx-Report]
+  (when (= (rawptr report) nil)
+    (return))
+  (let [ptr (tx-report-value-ptr report)]
+    (delete-owned-value ptr^)
+    (abi-free-tx-report (rawptr report))))
+
+(defn- notify-abi-tx-listeners! [conn: Vev-Conn, report: vev.Tx-Report]
+  (when (or (= (rawptr conn) nil) (not report.ok))
+    (return))
+  (let [handle (tx-report-handle-from-report report)]
+    (abi-conn-notify-tx-listeners (rawptr conn) (rawptr handle))
+    (tx-report-handle-free handle)))
+
 (defn- value-handle-from-value [value: vev.Value] -> Vev-Value-Handle
   (let [owned (value-owned value)]
     (delete-value-containers-shallow value)
@@ -863,6 +946,27 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (abi-free-conn (rawptr conn))))
 
 @export
+(defn vev_conn_listen_tx_report :abi "c" [conn: Vev-Conn, name: cstring, callback: rawptr, user: rawptr] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= name nil) (= callback nil))
+    (return false))
+  (let [name-text (text-from-c name)
+        ok (abi-conn-add-tx-listener (rawptr conn) name-text callback user)]
+    (when (not ok)
+      (delete name-text))
+    ok))
+
+@export
+(defn vev_conn_unlisten_tx_report :abi "c" [conn: Vev-Conn, name: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= name nil))
+    (return false))
+  (let [name-text (text-from-c name)
+        ok (abi-conn-remove-tx-listener (rawptr conn) name-text)]
+    (delete name-text)
+    ok))
+
+@export
 (defn vev_conn_db :abi "c" [conn: Vev-Conn] -> Vev-DB
   (odin "context = runtime.default_context()")
   (when (= (rawptr conn) nil)
@@ -949,11 +1053,13 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr conn) nil) (= tx-text nil))
     (return (c-string-owned "[:vev/error \"null conn or tx\"]")))
   (let [tx (text-from-c tx-text)
-        value (vev.transact-text-value (conn-ptr conn) tx)
-        text (vev.value-serializable-text value)
-        out (c-string-owned text)]
-    (abi-conn-store-tx-source (rawptr conn) tx)
-    out))
+        report (vev.transact-text (conn-ptr conn) tx)]
+    (notify-abi-tx-listeners! conn report)
+    (let [value (vev.tx-report-value report)
+          text (vev.value-serializable-text value)
+          out (c-string-owned text)]
+      (abi-conn-store-tx-source (rawptr conn) tx)
+      out)))
 
 @export
 (defn vev_transact_edn_report :abi "c" [conn: Vev-Conn, tx-text: cstring] -> Vev-Tx-Report
@@ -961,10 +1067,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr conn) nil) (= tx-text nil))
     (return (Vev-Tx-Report nil)))
   (let [tx (text-from-c tx-text)
-        report (vev.transact-text (conn-ptr conn) tx)
-        out (tx-report-handle-from-report report)]
+        report (vev.transact-text (conn-ptr conn) tx)]
+    (notify-abi-tx-listeners! conn report)
+    (let [out (tx-report-handle-from-report report)]
     (abi-conn-store-tx-source (rawptr conn) tx)
-    out))
+    out)))
 
 @export
 (defn vev_tx_fn_registry_create :abi "c" [] -> Vev-Tx-Fn-Registry
@@ -1003,10 +1110,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Tx-Report nil)))
   (let [tx (text-from-c tx-text)
         entries (tx-fn-registry-entries-ptr registry)
-        report (vev.transact-text-with-string-fns (conn-ptr conn) tx (slice entries^ 0))
-        out (tx-report-handle-from-report report)]
-    (abi-conn-store-tx-source (rawptr conn) tx)
-    out))
+        report (vev.transact-text-with-string-fns (conn-ptr conn) tx (slice entries^ 0))]
+    (notify-abi-tx-listeners! conn report)
+    (let [out (tx-report-handle-from-report report)]
+      (abi-conn-store-tx-source (rawptr conn) tx)
+      out)))
 
 @export
 (defn vev_with_edn_report_with_tx_fns :abi "c" [db: Vev-DB, tx-text: cstring, registry: Vev-Tx-Fn-Registry] -> Vev-Tx-Report

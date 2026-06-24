@@ -20,8 +20,7 @@ Status:
 Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 351
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
-listener/report callback design for host adapters, and semi-naive rule/query
-optimization.
+host wrapper ergonomics, and semi-naive rule/query optimization.
 
 ## Semantic Core
 
@@ -77,7 +76,7 @@ These are useful, but not the next engine-parity gate.
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
 | `conn.cljc` | 2 | passing | create/conn-from-db/conn-from-datoms and reset reports with tx-data, before/after snapshots, metadata, and listener delivery are covered; Clojure schema-map storage shape is host |
-| `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; arbitrary closure callbacks are host/ABI design work |
+| `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
 | `serialize.cljc` | 5 | passing | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
@@ -94,9 +93,8 @@ These are useful, but not the next engine-parity gate.
    `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
-2. Extend the native callback surface to listener/report callbacks and refine
-   the final C/Odin/non-Kvist registration shape. Transaction function
-   callbacks now work through the raw C ABI.
+2. Add higher-level host wrapper ergonomics over the raw C ABI where concrete
+   Java/Clojure/Python/Rust usage needs them.
 3. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript
    parity also needs predictable performance on recursive rules and large

@@ -40,7 +40,7 @@ compatibility gap.
 | `conn.cljc` | 2 | covered | create/conn-from-db/conn-from-datoms plus reset reports with before/after snapshots, tx-data, metadata, and listener delivery are covered; Clojure schema-map field shape is host |
 | `serialize.cljc` | 5 | covered | init-db from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
 | `filter.cljc` | 1 | covered | materialized `filter-db` covers predicate filters, chaining, entity reads, index-backed queries, and semantic DB equivalence; Clojure hash/equality/runtime wrapper behavior is host |
-| `listen.cljc` | 1 | covered | named report-sink listeners cover registration, tx-data reports, metadata reports, and unlisten; arbitrary closure callbacks are host/ABI design work |
+| `listen.cljc` | 1 | covered | named report-sink listeners cover registration, tx-data reports, metadata reports, and unlisten; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
 | `issues.cljc` | 5 | covered | issue-262 vector result isolation, issue-369 mixed-type DB diff, and issue-381 schema inspection covered; issue-330/331 are Clojure pprint/meta host behavior |
 | `storage.clj`, `datafy.cljc` | 6 | later | app/runtime APIs after core parity |
 
