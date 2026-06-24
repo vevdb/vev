@@ -313,8 +313,8 @@ report maps, while `transact` / `with_text` remain string helpers.
 
 ## Rust Example
 
-[smoke.rs](../examples/rust/smoke.rs) is a direct `rustc`-compiled example, not
-a packaged crate yet. It mirrors the intended safe wrapper shape:
+[examples/rust](../examples/rust) is a small Cargo package. It mirrors the
+intended safe wrapper shape:
 
 - raw FFI declarations stay private to the module
 - `Conn`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet` free their handles
@@ -325,9 +325,9 @@ a packaged crate yet. It mirrors the intended safe wrapper shape:
   traversal
 
 The example covers transactions, rendered EDN query output, prepared statement
-bindings, homogeneous collection bindings, pull result traversal, DB snapshots,
-querying a snapshot with a statement, immutable `db-with`, and deriving a
-connection from a DB value.
+bindings, homogeneous collection bindings, pull-pattern statement bindings,
+pull result traversal, direct pull APIs, DB snapshots, querying a snapshot with
+a statement, immutable `db-with`, and deriving a connection from a DB value.
 
 ## Java And Clojure Examples
 
@@ -677,6 +677,5 @@ The next useful steps are:
   results without first materializing full result handles
 - add explicit error/result status APIs
 - add typed statement bindings for source inputs
-- turn the Rust smoke wrapper into a small crate
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets
