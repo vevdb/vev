@@ -106,21 +106,22 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 18.7x | 56.0x |
-| `chain-root n=10` | 23.4x | 41.5x |
-| `chain-root n=30` | 43.8x | 53.1x |
-| `chain-root n=100` | 205.6x | 223.3x |
-| `chain-leaf n=10` | 11.2x | 15.2x |
-| `chain-leaf n=30` | 37.3x | 41.2x |
-| `chain-leaf n=100` | 207.4x | 219.8x |
-| `chain-all n=10` | 10.6x | 14.9x |
-| `chain-all n=30` | 14.4x | 15.4x |
-| `chain-all n=100` | 22.9x | 22.8x |
-| `tree-root n=4` | 3.2x | 8.2x |
-| `tree-root n=13` | 3.0x | 5.0x |
-| `tree-root n=40` | 2.3x | 2.9x |
-| `tree-root n=121` | 1.6x | 1.8x |
-| `bad-order-join n=1000` | 7.7x | 14.2x |
+| `chain-root n=3` | 18.8x | 56.5x |
+| `chain-root n=10` | 23.8x | 40.3x |
+| `chain-root n=30` | 48.2x | 59.0x |
+| `chain-root n=100` | 207.0x | 220.7x |
+| `chain-leaf n=10` | 11.3x | 14.8x |
+| `chain-leaf n=30` | 36.7x | 40.5x |
+| `chain-leaf n=100` | 222.7x | 231.4x |
+| `chain-all n=10` | 10.9x | 14.9x |
+| `chain-all n=30` | 15.8x | 16.5x |
+| `chain-all n=100` | 26.5x | 26.4x |
+| `tree-root n=4` | 3.2x | 8.4x |
+| `tree-root n=13` | 3.4x | 5.4x |
+| `tree-root n=40` | 2.4x | 2.9x |
+| `tree-root n=121` | 1.8x | 1.9x |
+| `bad-order-join n=1000` | 7.5x | 12.4x |
+| `distinct-age n=1000` | 0.6x | 0.6x |
 
 ## Current Findings
 
@@ -150,6 +151,22 @@ recognizer and avoids the generic O(rows squared) result dedupe path when the
 optimized rule shape guarantees unique bindings. That moves `chain-all n=100`
 from slower than DataScript to roughly 23x faster in this local harness.
 
+Non-rule result projection now has a primitive dedupe path. Single primitive
+find values use typed seen sets instead of repeatedly scanning already-emitted
+rows, and multi-column primitive rows use length-prefixed dedupe keys before
+falling back to structural row comparison. This keeps DataScript-style distinct
+find semantics while avoiding the worst quadratic behavior for common primitive
+results.
+
+The harness now includes `distinct-age`, a simple `[:find ?age :where [?e :age
+?age]]` projection over 1000 entities and 100 distinct ages. Vev has a narrow
+index-backed path for this shape that scans the `aevt` range directly,
+preserving normal clause result order while avoiding a separate candidate array.
+This brought the local Vev timing down from roughly 930us before the batch to
+roughly 210us, but DataScript is still faster on this specific workload in the
+latest comparison. Treat this as the next concrete projection-performance
+target.
+
 The benchmark installs `:db/cardinality :db.cardinality/many` and
 `:db/valueType :db.type/ref` for `:follows`; without that, Vev correctly applies
 unschematized cardinality-one semantics and the tree workload would not match
@@ -159,6 +176,10 @@ Remaining performance work:
 
 - Generalize this from a shape-specific transitive closure path into a measured
   semi-naive/memoized rule evaluator.
+- Continue result-projection work for simple distinct queries. The current
+  `distinct-age` path is much better than generic row dedupe, but still behind
+  DataScript because it allocates full `Result-Row` structures and maintains
+  order-preserving seen sets.
 - Add a separate stress harness for larger chain/tree workloads once default
   benchmark runs stay short.
 - Profile tree/branching closure, dense graphs, and non-transitive recursive
