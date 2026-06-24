@@ -2163,6 +2163,18 @@
         (return datom.v.int-value true))
       (return 0 false))))
 
+(defn cardinality-one-int-value-fast-all-current [db: DB, entity: u64, attr: string] -> [value: i64, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
+    (when (>= index-pos (count indexes))
+      (return 0 false))
+    (let [datom db.datoms[indexes[index-pos]]]
+      (when (and (= datom.e entity)
+                 (= datom.a attr)
+                 (= datom.v.kind .Int))
+        (return datom.v.int-value true))
+      (return 0 false))))
+
 (defn current-cardinality-one-value-fast [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
         index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
@@ -2176,8 +2188,23 @@
         (return datom.v true))
       (return (Value {}) false))))
 
+(defn cardinality-one-value-fast-all-current [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
+    (when (>= index-pos (count indexes))
+      (return (Value {}) false))
+    (let [datom db.datoms[indexes[index-pos]]]
+      (when (and (= datom.e entity)
+                 (= datom.a attr))
+        (return datom.v true))
+      (return (Value {}) false))))
+
 (defn current-cardinality-one-value-matches-fast? [db: DB, entity: u64, attr: string, expected: Value] -> bool
   (let [[value ok] (current-cardinality-one-value-fast db entity attr)]
+    (and ok (value-equal? value expected))))
+
+(defn cardinality-one-value-matches-fast-all-current? [db: DB, entity: u64, attr: string, expected: Value] -> bool
+  (let [[value ok] (cardinality-one-value-fast-all-current db entity attr)]
     (and ok (value-equal? value expected))))
 
 (defn tuple-value-for-entity [db: DB, entity: u64, attrs: []string] -> [value: Value, ok: bool]
@@ -7255,11 +7282,12 @@
         indexes (slice db.avet 0)
         low (lower-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
         attr-prefix ([]Value [(value-keyword plan.value-attr)])
-        high (upper-bound-index-values db indexes "avet" attr-prefix)]
+        high (upper-bound-index-values db indexes "avet" attr-prefix)
+        all-current (all-datoms-current? db)]
     (for [i (arr.range low high)]
       (let [datom-index indexes[i]
             datom db.datoms[datom-index]]
-        (when (and (datom-current-at? db datom-index)
+        (when (and (or all-current (datom-current-at? db datom-index))
                    (= datom.a plan.value-attr)
                    (= datom.v.kind .Int)
                    (> datom.v.int-value plan.threshold))
@@ -7422,20 +7450,20 @@
           (for [i (arr.range best-low best-high)]
             (let [filter-datom-index filter-indexes[i]
                   filter-datom db.datoms[filter-datom-index]]
-              (when (datom-current-at? db filter-datom-index)
+              (when (or direct-value-lookup (datom-current-at? db filter-datom-index))
                 (let [filters-match true]
                   (for [filter-i (arr.range 0 (count plan.filters))]
                     (when (not (= filter-i best-filter-index))
                       (let [filter plan.filters[filter-i]]
                         (if direct-value-lookup
-                          (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
+                          (when (not (cardinality-one-value-matches-fast-all-current? db filter-datom.e filter.attr filter.value))
                             (set! filters-match false))
                           (let [[filter-value filter-ok] (latest-attr-value db filter-datom.e filter.attr)]
                             (when (not (and filter-ok (value-equal? filter-value filter.value)))
                               (set! filters-match false)))))))
                   (when filters-match
                     (if direct-value-lookup
-                      (let [[int-value int-ok] (current-cardinality-one-int-value-fast db filter-datom.e plan.value-attr)]
+                      (let [[int-value int-ok] (cardinality-one-int-value-fast-all-current db filter-datom.e plan.value-attr)]
                         (when int-ok
                           (append-entity-int-pair-column! (addr out) filter-datom.e int-value)))
                       (let [[value value-ok] (latest-attr-value db filter-datom.e plan.value-attr)]
@@ -7450,7 +7478,8 @@
         filter-indexes (slice db.avet 0)
         best-filter-index 0
         best-low 0
-        best-high 0]
+        best-high 0
+        all-current (all-datoms-current? db)]
     (defer (delete plan.filters))
     (for [filter-i (arr.range 0 (count plan.filters))]
       (let [filter plan.filters[filter-i]
@@ -7467,20 +7496,29 @@
     (for [i (arr.range best-low best-high)]
       (let [filter-datom-index filter-indexes[i]
             filter-datom db.datoms[filter-datom-index]]
-        (when (datom-current-at? db filter-datom-index)
+        (when (or all-current (datom-current-at? db filter-datom-index))
           (let [filters-match true]
             (for [filter-i (arr.range 0 (count plan.filters))]
               (when (not (= filter-i best-filter-index))
                 (let [filter plan.filters[filter-i]]
                   (set! out-stats.clause-candidates (+ out-stats.clause-candidates 1))
-                  (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
-                    (set! filters-match false)))))
+                  (if all-current
+                    (when (not (cardinality-one-value-matches-fast-all-current? db filter-datom.e filter.attr filter.value))
+                      (set! filters-match false))
+                    (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
+                      (set! filters-match false))))))
             (when filters-match
-              (let [[first-value first-ok] (current-cardinality-one-value-fast db filter-datom.e plan.first-attr)
-                    [second-value second-ok] (current-cardinality-one-value-fast db filter-datom.e plan.second-attr)]
-                (set! out-stats.clause-candidates (+ out-stats.clause-candidates 2))
-                (when (and first-ok second-ok)
-                  (append-three-value-row! (addr rows) (value-entity filter-datom.e) first-value second-value))))))))
+              (if all-current
+                (let [[first-value first-ok] (cardinality-one-value-fast-all-current db filter-datom.e plan.first-attr)
+                      [second-value second-ok] (cardinality-one-value-fast-all-current db filter-datom.e plan.second-attr)]
+                  (set! out-stats.clause-candidates (+ out-stats.clause-candidates 2))
+                  (when (and first-ok second-ok)
+                    (append-three-value-row! (addr rows) (value-entity filter-datom.e) first-value second-value)))
+                (let [[first-value first-ok] (current-cardinality-one-value-fast db filter-datom.e plan.first-attr)
+                      [second-value second-ok] (current-cardinality-one-value-fast db filter-datom.e plan.second-attr)]
+                  (set! out-stats.clause-candidates (+ out-stats.clause-candidates 2))
+                  (when (and first-ok second-ok)
+                    (append-three-value-row! (addr rows) (value-entity filter-datom.e) first-value second-value)))))))))
     (set! out-stats.max-intermediate-bindings (count rows))
     (set! out-stats.output-rows (count rows))
     (profiled-result-set (result-set-ok rows) out-stats)))
