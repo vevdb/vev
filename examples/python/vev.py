@@ -247,6 +247,31 @@ class Library:
             ctypes.c_char_p,
         ]
         lib.vev_query_db_prepared_result_with_inputs.restype = ctypes.c_void_p
+        lib.vev_pull_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_ulonglong,
+        ]
+        lib.vev_pull_edn.restype = ctypes.c_void_p
+        lib.vev_pull_lookup_ref_string_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_pull_lookup_ref_string_edn.restype = ctypes.c_void_p
+        lib.vev_pull_many_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+        ]
+        lib.vev_pull_many_edn.restype = ctypes.c_void_p
+        lib.vev_value_handle_free.argtypes = [ctypes.c_void_p]
+        lib.vev_value_handle_value.argtypes = [ctypes.c_void_p]
+        lib.vev_value_handle_value.restype = ctypes.c_void_p
+        lib.vev_value_handle_edn.argtypes = [ctypes.c_void_p]
+        lib.vev_value_handle_edn.restype = ctypes.c_void_p
 
         lib.vev_result_free.argtypes = [ctypes.c_void_p]
         lib.vev_result_ok.argtypes = [ctypes.c_void_p]
@@ -480,9 +505,80 @@ class DB:
             raise VevError("failed to create DB snapshot")
         return DB(self._library, handle)
 
+    def pull(self, pattern_edn: str, entity: int | Entity) -> Any:
+        self._require_open()
+        entity_id = entity.id if isinstance(entity, Entity) else int(entity)
+        handle = self._library.lib.vev_pull_edn(
+            self._handle, _bytes(pattern_edn), entity_id
+        )
+        with ValueHandle(self._library, handle) as value:
+            return value.value()
+
+    def pull_lookup_ref(self, pattern_edn: str, ref: LookupRef) -> Any:
+        self._require_open()
+        if not isinstance(ref.value, str):
+            raise TypeError("pull_lookup_ref currently supports string lookup values")
+        handle = self._library.lib.vev_pull_lookup_ref_string_edn(
+            self._handle, _bytes(pattern_edn), _bytes(ref.attr), _bytes(ref.value)
+        )
+        with ValueHandle(self._library, handle) as value:
+            return value.value()
+
+    def pull_many(self, pattern_edn: str, entities: list[int | Entity]) -> list[Any]:
+        self._require_open()
+        ids = [entity.id if isinstance(entity, Entity) else int(entity) for entity in entities]
+        array_type = ctypes.c_ulonglong * len(ids)
+        array = array_type(*ids)
+        handle = self._library.lib.vev_pull_many_edn(
+            self._handle, _bytes(pattern_edn), array, len(ids)
+        )
+        with ValueHandle(self._library, handle) as value:
+            result = value.value()
+        if not isinstance(result, list):
+            raise VevError(f"expected pull_many vector, got {result!r}")
+        return result
+
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("DB snapshot is closed")
+
+
+class ValueHandle:
+    def __init__(self, library: Library, handle: int):
+        self._library = library
+        self._handle = handle
+        if not self._handle:
+            raise VevError("value handle is null")
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_value_handle_free(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "ValueHandle":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def value(self) -> Any:
+        self._require_open()
+        return self._library.value_to_python(
+            self._library.lib.vev_value_handle_value(self._handle)
+        )
+
+    def edn(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_value_handle_edn(self._handle)
+        )
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("value handle is closed")
 
 
 class TxReport:

@@ -179,6 +179,31 @@ def main() -> int:
             finally:
                 pull_query.close()
 
+            with conn.db() as pull_db:
+                direct_pull = pull_db.pull(
+                    "[:user/name {:user/friend [:user/name]}]", vev.Entity(1)
+                )
+                print(f"direct pull: {direct_pull}")
+                if (
+                    direct_pull.get(":user/name") != "Ada"
+                    or direct_pull.get(":user/friend", {}).get(":user/name") != "Grace"
+                ):
+                    raise RuntimeError("unexpected direct pull")
+
+                lookup_pull = pull_db.pull_lookup_ref(
+                    "[:user/name]",
+                    vev.LookupRef(":user/email", "ada@example.com"),
+                )
+                print(f"lookup pull: {lookup_pull}")
+                if lookup_pull.get(":user/name") != "Ada":
+                    raise RuntimeError("unexpected lookup-ref pull")
+
+                many_pull = pull_db.pull_many("[:user/name]", [vev.Entity(1), vev.Entity(2)])
+                print(f"pull many: {many_pull}")
+                names = sorted(item.get(":user/name") for item in many_pull)
+                if names != ["Ada", "Grace"]:
+                    raise RuntimeError("unexpected pull-many")
+
             all_emails = conn.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             )

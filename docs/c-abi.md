@@ -14,6 +14,7 @@ The current shape is intentionally narrow:
 - rendered result strings owned by the caller
 - opaque result handles for typed row/value access
 - borrowed value handles for nested vector/map/pull traversal
+- owned value handles for direct pull entry points
 - callback traversal for nested value trees
 - callback traversal for typed result rows
 
@@ -202,6 +203,26 @@ vev_result_free(old_rows);
 
 vev_result_t old_stmt_rows = vev_query_db_stmt_result(retained_snapshot, stmt);
 vev_result_free(old_stmt_rows);
+
+vev_value_handle_t direct_pull =
+    vev_pull_edn(retained_snapshot, "[:user/name]", 1);
+vev_value_t pull_value = vev_value_handle_value(direct_pull);
+const char *pull_edn = vev_value_handle_edn(direct_pull);
+vev_string_free(pull_edn);
+vev_value_handle_free(direct_pull);
+
+vev_value_handle_t lookup_pull =
+    vev_pull_lookup_ref_string_edn(
+        retained_snapshot,
+        "[:user/name]",
+        ":user/email",
+        "ada@example.com");
+vev_value_handle_free(lookup_pull);
+
+unsigned long long entity_ids[] = {1, 2};
+vev_value_handle_t many_pull =
+    vev_pull_many_edn(retained_snapshot, "[:user/name]", entity_ids, 2);
+vev_value_handle_free(many_pull);
 
 vev_tx_report_t with_report =
     vev_with_edn_report(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
@@ -407,6 +428,12 @@ free them, and do not use them after `vev_result_free`. Strings returned from
 `vev_value_text` and `vev_value_edn` are owned by the caller and must be released
 with `vev_string_free`.
 
+Direct pull entry points return owned `vev_value_handle_t` handles. Values
+borrowed from `vev_value_handle_value` are valid until `vev_value_handle_free`.
+This gives C and host wrappers the same DB-as-a-value shape as the Datomic-style
+API: retain a DB snapshot, pull against it, convert or copy the returned value,
+then free the pull handle.
+
 The current parser stores references into transaction and query source text in
 some internal structures. The ABI wrappers therefore keep transaction source
 strings alive on the connection and prepared-query source strings alive on the
@@ -590,6 +617,15 @@ Pull results are rendered into map-shaped values and stored on the result handle
 when the query runs. This keeps pull traversal independent of the original
 connection or DB snapshot lifetime.
 
+Direct pull entry points use owned value handles:
+
+- `vev_pull_edn`
+- `vev_pull_lookup_ref_string_edn`
+- `vev_pull_many_edn`
+- `vev_value_handle_value`
+- `vev_value_handle_edn`
+- `vev_value_handle_free`
+
 `vev_value_visit` streams any nested `vev_value_t` tree through a C callback.
 It emits `VEV_VALUE_VISIT_VALUE` for every node and `VEV_VALUE_VISIT_END` after
 each vector/map container. The callback receives borrowed handles; callers must
@@ -640,7 +676,6 @@ The next useful steps are:
   results without first materializing full result handles
 - add explicit error/result status APIs
 - add typed statement bindings for source and pull-pattern inputs
-- add pull-specific entry points
 - turn the Rust smoke wrapper into a small crate
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets

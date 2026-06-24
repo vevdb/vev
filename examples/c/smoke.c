@@ -594,6 +594,92 @@ int main(void) {
     vev_result_free(pull_result);
     vev_prepared_query_free(pull_query);
 
+    vev_db_t pull_db = vev_conn_db(conn);
+    if (pull_db == NULL) {
+        fprintf(stderr, "failed to retain DB for pull API\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+
+    vev_value_handle_t direct_pull =
+        vev_pull_edn(pull_db, "[:user/name {:user/friend [:user/name]}]", 1);
+    if (direct_pull == NULL) {
+        fprintf(stderr, "failed direct pull API\n");
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_t direct_value = vev_value_handle_value(direct_pull);
+    const char *direct_edn = vev_value_handle_edn(direct_pull);
+    printf("direct-pull: %s\n", direct_edn);
+    vev_string_free(direct_edn);
+    if (!value_text_equals(map_get(direct_value, ":user/name"), "Ada") ||
+        !value_text_equals(map_get(map_get(direct_value, ":user/friend"), ":user/name"), "Grace")) {
+        fprintf(stderr, "unexpected direct pull output\n");
+        vev_value_handle_free(direct_pull);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(direct_pull);
+
+    vev_value_handle_t lookup_pull =
+        vev_pull_lookup_ref_string_edn(pull_db, "[:user/name]", ":user/email", "ada@example.com");
+    if (lookup_pull == NULL) {
+        fprintf(stderr, "failed lookup-ref pull API\n");
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_t lookup_value = vev_value_handle_value(lookup_pull);
+    if (!value_text_equals(map_get(lookup_value, ":user/name"), "Ada")) {
+        fprintf(stderr, "unexpected lookup-ref pull output\n");
+        vev_value_handle_free(lookup_pull);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(lookup_pull);
+
+    unsigned long long pull_many_ids[] = {1, 2};
+    vev_value_handle_t many_pull =
+        vev_pull_many_edn(pull_db, "[:user/name]", pull_many_ids, 2);
+    if (many_pull == NULL) {
+        fprintf(stderr, "failed pull-many API\n");
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_t many_value = vev_value_handle_value(many_pull);
+    if (vev_value_kind(many_value) != VEV_VALUE_VECTOR ||
+        vev_value_item_count(many_value) != 2 ||
+        !value_text_equals(map_get(vev_value_item(many_value, 0), ":user/name"), "Ada") ||
+        !value_text_equals(map_get(vev_value_item(many_value, 1), ":user/name"), "Grace")) {
+        const char *many_edn = vev_value_handle_edn(many_pull);
+        fprintf(stderr, "unexpected pull-many output: %s\n", many_edn);
+        vev_string_free(many_edn);
+        vev_value_handle_free(many_pull);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(many_pull);
+    vev_db_release(pull_db);
+
     vev_prepared_query_t all_emails =
         vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");
     if (all_emails == NULL) {
