@@ -68,7 +68,7 @@ if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
     clojure \
       -J--enable-preview \
       -J--enable-native-access=ALL-UNNAMED \
-      -Sdeps "{:paths [\"$JAVA_EXAMPLE_DIR\"]}" \
+      -Sdeps "{:paths [\"$JAVA_EXAMPLE_DIR\" \"$ROOT/clients/clojure/src\"]}" \
       -M \
       "$ROOT/examples/clojure/smoke.clj" \
       "$LIB_DIR/libvev.dylib"

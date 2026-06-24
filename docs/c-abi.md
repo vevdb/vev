@@ -279,8 +279,34 @@ javac --enable-preview --release 21 ...
 java --enable-preview --enable-native-access=ALL-UNNAMED ...
 ```
 
-[smoke.clj](../examples/clojure/smoke.clj) uses that Java wrapper from Clojure.
-The current Clojure surface deliberately starts with EDN strings:
+[vev.core](../clients/clojure/src/vev/core.clj) is the first Clojure package
+layer on top of that Java wrapper. It accepts ordinary quoted Clojure forms and
+serializes them through the same EDN/query path:
+
+```clojure
+(require '[vev.core :as vev])
+
+(with-open [conn (vev/open "build/lib/libvev.dylib")]
+  (vev/transact! conn
+    [{:db/id 1 :user/name "Ada"}])
+
+  (vev/q conn
+    '[:find ?name
+      :where [?e :user/name ?name]]))
+```
+
+Inputs are ordinary Clojure arguments after the query:
+
+```clojure
+(vev/q conn
+  '[:find ?name
+    :in [?email ...]
+    :where [?e :user/email ?email]
+           [?e :user/name ?name]]
+  ["ada@example.com" "grace@example.com"])
+```
+
+The underlying Java wrapper still exposes EDN strings directly:
 
 ```clojure
 (.queryText conn
@@ -291,19 +317,9 @@ The current Clojure surface deliberately starts with EDN strings:
   "[[\"ada@example.com\" \"grace@example.com\"]]")
 ```
 
-That string API is the portable baseline for non-Kvist hosts and mirrors how
-SQL libraries start with query text. The intended Clojure layer above it is an
-idiomatic data API that accepts quoted Clojure forms and serializes them through
-the same EDN/query path, for example:
-
-```clojure
-(vev/q conn
-  '[:find ?name
-    :where [?e :user/name ?name]])
-```
-
-That Clojure data API should be implemented as a thin host adapter, not as a
-separate engine frontend.
+That string API remains the portable baseline for non-Kvist hosts and mirrors
+how SQL libraries start with query text. The Clojure data API is intentionally a
+thin host adapter, not a separate engine frontend.
 
 ## Ownership
 
