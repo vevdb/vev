@@ -3932,6 +3932,30 @@
       (return true)))
   false)
 
+(defn transitive-adjacency-max-entity [adjacency: []Transitive-Adjacency] -> u64
+  (let [max-entity: u64 0]
+    (for [entry adjacency]
+      (when (> entry.entity max-entity)
+        (set! max-entity entry.entity))
+      (for [target entry.targets]
+        (when (> target max-entity)
+          (set! max-entity target))))
+    max-entity))
+
+(defn transitive-adjacency-use-dense-seen? [adjacency: []Transitive-Adjacency] -> [max-entity: u64, ok: bool]
+  (let [max-value (transitive-adjacency-max-entity adjacency)
+        adjacency-count (count adjacency)]
+    (return max-value
+      (and (> adjacency-count 0)
+           (< max-value 1000000)
+           (<= (int max-value) (* adjacency-count 8))))))
+
+(defn make-bool-dense-index [size: int] -> [dynamic]bool
+  (let [out (make [dynamic]bool 0 size)]
+    (for [_ (arr.range 0 size)]
+      (arr.push! out false))
+    out))
+
 (defstruct Transitive-Adjacency {
   entity: u64
   targets: [dynamic]u64
@@ -4012,6 +4036,40 @@
                   (arr.push! out^ target-entity))
                 (when (not target-expanded)
                   (arr.push! frontier target-entity))))))))))
+
+(defn append-transitive-targets-with-dense-adjacency! [out: ^[dynamic]u64, adjacency: []Transitive-Adjacency, adjacency-index: map[u64]int, start: u64, max-entity: u64]
+  (let [dense-size (+ (int max-entity) 1)
+        expanded (make-bool-dense-index dense-size)
+        emitted (make-bool-dense-index dense-size)
+        frontier (make [dynamic]u64 0 (count adjacency))
+        frontier-index 0]
+    (defer (delete expanded))
+    (defer (delete emitted))
+    (defer (delete frontier))
+    (arr.push! frontier start)
+    (while (< frontier-index (count frontier))
+      (let [current frontier[frontier-index]
+            [adj-index has-edges] (transitive-adjacency-index adjacency-index current)
+            current-index (int current)]
+        (set! frontier-index (+ frontier-index 1))
+        (when (and has-edges
+                   (< current-index dense-size)
+                   (not expanded[current-index]))
+          (set! expanded[current-index] true)
+          (for [target-entity adjacency[adj-index].targets]
+            (let [target-index (int target-entity)]
+              (when (< target-index dense-size)
+                (when (not emitted[target-index])
+                  (set! emitted[target-index] true)
+                  (arr.push! out^ target-entity))
+                (when (not expanded[target-index])
+                  (arr.push! frontier target-entity))))))))))
+
+(defn append-transitive-targets-fast! [out: ^[dynamic]u64, adjacency: []Transitive-Adjacency, adjacency-index: map[u64]int, start: u64]
+  (let [[max-entity use-dense] (transitive-adjacency-use-dense-seen? adjacency)]
+    (if use-dense
+      (append-transitive-targets-with-dense-adjacency! out adjacency adjacency-index start max-entity)
+      (append-transitive-targets-with-adjacency! out adjacency adjacency-index start))))
 
 (defn append-linear-transitive-direct-result! [out: ^[dynamic]Binding, call: Rule-Call, binding: Binding, rule: Rule, start-entity: u64, target-entity: u64]
   (when (and (= (count binding.items) 0)
@@ -4107,7 +4165,7 @@
   (let [[target target-ok] (binding-lookup initial rule.params[1])
         targets (make [dynamic]u64)]
     (defer (delete targets))
-    (append-transitive-targets-with-adjacency! (addr targets) (slice adjacency.items 0) adjacency.index start-entity)
+    (append-transitive-targets-fast! (addr targets) (slice adjacency.items 0) adjacency.index start-entity)
     (for [target-entity targets]
       (append-linear-transitive-target-result! out db call binding rule initial start-entity target target-ok target-entity))))
 
@@ -4129,7 +4187,7 @@
   (let [starts (make [dynamic]u64)
         target-value (value-entity target-entity)]
     (defer (delete starts))
-    (append-transitive-targets-with-adjacency! (addr starts) (slice adjacency.items 0) adjacency.index target-entity)
+    (append-transitive-targets-fast! (addr starts) (slice adjacency.items 0) adjacency.index target-entity)
     (for [start-entity starts]
       (append-linear-transitive-target-result! out db call binding rule initial start-entity target-value true target-entity))))
 

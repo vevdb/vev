@@ -117,21 +117,21 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 18.6x | 55.9x |
-| `chain-root n=10` | 22.7x | 38.4x |
-| `chain-root n=30` | 51.3x | 62.8x |
-| `chain-root n=100` | 212.0x | 224.4x |
+| `chain-root n=3` | 19.4x | 58.1x |
+| `chain-root n=10` | 22.7x | 40.2x |
+| `chain-root n=30` | 48.8x | 63.5x |
+| `chain-root n=100` | 240.9x | 254.3x |
 | `chain-leaf n=10` | 19.0x | 32.8x |
-| `chain-leaf n=30` | 75.3x | 93.2x |
-| `chain-leaf n=100` | 485.8x | 518.8x |
-| `chain-all n=10` | 11.4x | 15.1x |
-| `chain-all n=30` | 16.6x | 15.9x |
-| `chain-all n=100` | 23.7x | 23.9x |
-| `tree-root n=4` | 3.4x | 8.9x |
-| `tree-root n=13` | 3.3x | 5.3x |
-| `tree-root n=40` | 2.4x | 3.1x |
-| `tree-root n=121` | 1.7x | 1.8x |
-| `bad-order-join n=1000` | 7.1x | 11.4x |
+| `chain-leaf n=30` | 75.8x | 97.0x |
+| `chain-leaf n=100` | 521.5x | 570.5x |
+| `chain-all n=10` | 11.0x | 15.5x |
+| `chain-all n=30` | 15.3x | 16.4x |
+| `chain-all n=100` | 23.5x | 23.1x |
+| `tree-root n=4` | 3.4x | 8.5x |
+| `tree-root n=13` | 3.3x | 5.4x |
+| `tree-root n=40` | 2.5x | 3.0x |
+| `tree-root n=121` | 1.9x | 2.2x |
+| `bad-order-join n=1000` | 7.0x | 11.1x |
 | `distinct-age n=1000` | 0.6x | 0.6x |
 
 ## Stress Comparison
@@ -141,10 +141,10 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1004.2x | 1014.1x |
-| `stress-chain-leaf n=300` | 2936.2x | 3070.6x |
-| `stress-chain-all n=200` | 33.7x | 32.9x |
-| `stress-tree-root n=364` | 1.4x | 1.4x |
+| `stress-chain-root n=300` | 1378.9x | 1369.9x |
+| `stress-chain-leaf n=300` | 4032.8x | 4246.1x |
+| `stress-chain-all n=200` | 32.4x | 32.0x |
+| `stress-tree-root n=364` | 1.8x | 1.7x |
 
 ## Current Findings
 
@@ -169,7 +169,11 @@ That turns the benchmarked chain-root and chain-leaf workloads into a single
 rule iteration with one output binding per reached entity. The adjacency view is
 built directly from the `aevt` index range for the relation attr, with traversal
 scratch arrays pre-sized from the adjacency size, so the specialized path no
-longer materializes a generic clause candidate vector during closure setup.
+longer materializes a generic clause candidate vector during closure setup. For
+compact entity-id ranges, bounded closure traversal uses dense boolean bitmaps
+for visited/emitted sets instead of repeated linear membership scans, improving
+larger chain and branching tree workloads without requiring sparse global
+entity-id arrays.
 
 The large chain-root/chain-leaf gap should be read narrowly: it compares Vev's
 specialized bound transitive closure path against DataScript's general recursive
