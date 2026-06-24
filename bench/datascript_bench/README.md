@@ -29,6 +29,34 @@ Run at the Datalevin benchmark scale:
 bench/datascript_bench/run_vev.sh
 ```
 
+Run Vev next to the upstream DataScript/Datalevin read benchmarks:
+
+```sh
+bench/datascript_bench/run_compare.sh
+```
+
+By default this runs the upstream benchmark namespaces from
+`/Users/andreas/Projects/datalevin/benchmarks/datascript-bench` with published
+DataScript/Datalevin dependencies, then runs Vev for the same query names.
+Useful options:
+
+```sh
+DATALEVIN_BENCH=/path/to/datalevin/benchmarks/datascript-bench \
+VEV_COMPARE_DATOMIC=1 \
+  bench/datascript_bench/run_compare.sh q1 q2 q2-switch
+
+VEV_COMPARE_SKIP_BASELINES=1 \
+VEV_BENCH_PEOPLE=1000 \
+VEV_BENCH_WARMUP_MS=10 \
+VEV_BENCH_MS=20 \
+VEV_BENCH_REPEATS=1 \
+VEV_BENCH_STEP=1 \
+  bench/datascript_bench/run_compare.sh
+
+VEV_COMPARE_USE_UPSTREAM_SCRIPT=1 \
+  bench/datascript_bench/run_compare.sh q1
+```
+
 Current caveat:
 
 - The query adapter is wired through the public Clojure API and native C ABI.
@@ -36,14 +64,14 @@ Current caveat:
   slow for tight iteration.
 - That setup cost is outside the measured query loop, but it blocks convenient
   full-scale comparison.
+- A 1k-person smoke through the Clojure API currently measures the read queries
+  in the low-millisecond range, while setup/import dominates wall-clock time.
 
 Near-term benchmark work:
 
 1. Add a faster benchmark import path, preferably a reusable bulk transaction
    path rather than a benchmark-only shortcut.
-2. Add a comparison runner that invokes Datalevin's original
-   `datascript-bench` for Datomic/DataScript/Datalevin and this Vev adapter for
-   Vev.
+2. Extend the comparison runner to capture and normalize output into a single
+   table with ratios against DataScript and Datalevin.
 3. Use `q2` and `q2-switch` to drive a general same-entity star / merge-scan
    physical operator in Vev.
-
