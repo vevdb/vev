@@ -66,9 +66,10 @@ Non-goal:
 
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
-and prepared APIs. Remaining work is concentrated in exact parser diagnostics
-and object rendering, final callback/registration shapes, and measured
-recursive-rule/large-query performance.
+prepared APIs, and host-facing EDN/C ABI query paths. Remaining work is
+concentrated in exact parser diagnostics/object rendering, C ABI callback
+registration shapes for host-provided transaction/listener behavior, and
+measured recursive-rule/large-query optimization.
 
 ## Phase 4: Portable query frontend
 
@@ -84,8 +85,9 @@ not create a second query engine.
 
 Status: substantially done and now part of the compatibility gate. EDN text and
 prepared query/tx/pull paths lower into the same typed structures as Kvist
-literals. The remaining work is exact parser API parity plus making every
-important host-language wrapper use this path cleanly.
+literals. C, Python, Rust, Java, and Clojure smokes now exercise the EDN path
+through the native library. The remaining work is exact parser API parity and
+any wrapper ergonomics demanded by real host usage.
 
 ## Phase 5: Durable proof
 
@@ -137,12 +139,16 @@ Non-goal:
 
 - making the CLI binary the only application integration path
 
-Status: pulled forward. Vev now has a C ABI with connection handles, immutable
-DB snapshot handles, EDN transaction/query entrypoints, prepared queries,
-typed result access, and DB-value retain/release. C, Python, Rust, Java, and
-Clojure smokes exercise the native library. The current batch is making the
-Clojure/Java API more Datomic-like on top of those primitives while keeping
-EDN strings as the portable baseline for non-Kvist consumers.
+Status: pulled forward and baseline complete. Vev now has a C ABI with
+connection handles, immutable DB snapshot handles, EDN transaction/query/pull
+entrypoints, prepared queries, typed statement bindings, named DB source
+bindings, typed result access, direct result-row visitors, status/error
+accessors, and DB-value retain/release. C, Python, Rust, Java, and Clojure
+smokes exercise the native library, and the ABI-vs-native benchmark covers
+small lookups, DB snapshots, transaction reports, many-row results, direct row
+visitors, and nested pull-many values. Further interop work should be driven by
+specific adapter needs, especially host-provided transaction function/listener
+callback registration.
 
 ## Phase 8: Optional packaging expansion
 

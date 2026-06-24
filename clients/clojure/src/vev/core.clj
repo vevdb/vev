@@ -202,18 +202,46 @@
                   result (apply query-result source prepared inputs)]
         (clj-value (.scalar result))))))
 
+(defn- with-db-source [source f]
+  (cond
+    (instance? DB source)
+    (f source)
+
+    (instance? Conn source)
+    (with-open [snapshot (db source)]
+      (f snapshot))
+
+    :else
+    (throw (ex-info "expected Vev connection or DB" {:source source}))))
+
 (defn pull
-  "Pull one entity from a DB or connection."
+  "Pull one entity or string lookup-ref from a DB or connection."
   [source pattern eid]
-  (scalar [:find (list 'pull '?e pattern)
-           :in '?e]
-          source
-          eid))
+  (with-db-source
+    source
+    (fn [db]
+      (clj-value
+        (if (and (vector? eid)
+                 (= 2 (count eid))
+                 (keyword? (first eid))
+                 (string? (second eid)))
+          (.pullLookupRefString (:native db)
+                                (edn-text pattern)
+                                (edn-text (first eid))
+                                (second eid))
+          (.pull (:native db) (edn-text pattern) (long eid)))))))
 
 (defn pull-many
   "Pull several entities, preserving input order."
   [source pattern eids]
-  (mapv #(pull source pattern %) eids))
+  (if (every? integer? eids)
+    (with-db-source
+      source
+      (fn [db]
+        (clj-value (.pullMany (:native db)
+                              (edn-text pattern)
+                              (long-array eids)))))
+    (mapv #(pull source pattern %) eids)))
 
 (defn rows-legacy
   "Deprecated connection-first row helper kept for early examples."

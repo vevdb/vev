@@ -17,6 +17,20 @@ VEV_VALUE_SYMBOL = 7
 VEV_VALUE_VECTOR = 8
 VEV_VALUE_MAP = 9
 
+VEV_RESULT_VISIT_ROW_BEGIN = 1
+VEV_RESULT_VISIT_VALUE = 2
+VEV_RESULT_VISIT_PULL = 3
+VEV_RESULT_VISIT_ROW_END = 4
+
+RESULT_VISIT_FN = ctypes.CFUNCTYPE(
+    ctypes.c_bool,
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_void_p,
+)
+
 
 @dataclass(frozen=True)
 class Entity:
@@ -37,6 +51,17 @@ class TupleInput:
 @dataclass(frozen=True)
 class Relation:
     rows: tuple[tuple[object, ...], ...]
+
+
+@dataclass(frozen=True)
+class PullPattern:
+    edn: str
+
+
+@dataclass(frozen=True)
+class DBSource:
+    name: str
+    db: "DB"
 
 
 class VevError(RuntimeError):
@@ -99,12 +124,24 @@ class Library:
 
         lib.vev_prepare_query_edn.argtypes = [ctypes.c_char_p]
         lib.vev_prepare_query_edn.restype = ctypes.c_void_p
+        lib.vev_prepare_query_edn_with_sources.argtypes = [
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_prepare_query_edn_with_sources.restype = ctypes.c_void_p
+        lib.vev_prepared_query_ok.argtypes = [ctypes.c_void_p]
+        lib.vev_prepared_query_ok.restype = ctypes.c_bool
+        lib.vev_prepared_query_error.argtypes = [ctypes.c_void_p]
+        lib.vev_prepared_query_error.restype = ctypes.c_void_p
         lib.vev_prepared_query_free.argtypes = [ctypes.c_void_p]
 
         lib.vev_stmt_create.argtypes = [ctypes.c_void_p]
         lib.vev_stmt_create.restype = ctypes.c_void_p
         lib.vev_stmt_clear.argtypes = [ctypes.c_void_p]
         lib.vev_stmt_free.argtypes = [ctypes.c_void_p]
+        lib.vev_stmt_error.argtypes = [ctypes.c_void_p]
+        lib.vev_stmt_error.restype = ctypes.c_void_p
         lib.vev_stmt_bind_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_stmt_bind_string.restype = ctypes.c_bool
         lib.vev_stmt_bind_keyword.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -224,6 +261,17 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_stmt_bind_lookup_ref_string_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_pull_pattern_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_stmt_bind_pull_pattern_edn.restype = ctypes.c_bool
+        lib.vev_stmt_bind_db_source.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+        ]
+        lib.vev_stmt_bind_db_source.restype = ctypes.c_bool
 
         lib.vev_query_prepared_with_inputs.argtypes = [
             ctypes.c_void_p,
@@ -241,12 +289,51 @@ class Library:
         lib.vev_query_stmt_result.restype = ctypes.c_void_p
         lib.vev_query_db_stmt_result.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         lib.vev_query_db_stmt_result.restype = ctypes.c_void_p
+        lib.vev_query_stmt_visit.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            RESULT_VISIT_FN,
+            ctypes.c_void_p,
+        ]
+        lib.vev_query_stmt_visit.restype = ctypes.c_bool
+        lib.vev_query_db_stmt_visit.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            RESULT_VISIT_FN,
+            ctypes.c_void_p,
+        ]
+        lib.vev_query_db_stmt_visit.restype = ctypes.c_bool
         lib.vev_query_db_prepared_result_with_inputs.argtypes = [
             ctypes.c_void_p,
             ctypes.c_void_p,
             ctypes.c_char_p,
         ]
         lib.vev_query_db_prepared_result_with_inputs.restype = ctypes.c_void_p
+        lib.vev_pull_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_ulonglong,
+        ]
+        lib.vev_pull_edn.restype = ctypes.c_void_p
+        lib.vev_pull_lookup_ref_string_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_pull_lookup_ref_string_edn.restype = ctypes.c_void_p
+        lib.vev_pull_many_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+        ]
+        lib.vev_pull_many_edn.restype = ctypes.c_void_p
+        lib.vev_value_handle_free.argtypes = [ctypes.c_void_p]
+        lib.vev_value_handle_value.argtypes = [ctypes.c_void_p]
+        lib.vev_value_handle_value.restype = ctypes.c_void_p
+        lib.vev_value_handle_edn.argtypes = [ctypes.c_void_p]
+        lib.vev_value_handle_edn.restype = ctypes.c_void_p
 
         lib.vev_result_free.argtypes = [ctypes.c_void_p]
         lib.vev_result_ok.argtypes = [ctypes.c_void_p]
@@ -394,8 +481,10 @@ class Connection:
             )
         )
 
-    def prepare(self, query_edn: str) -> "PreparedQuery":
-        return PreparedQuery(self._library, query_edn)
+    def prepare(
+        self, query_edn: str, source_names: list[str] | None = None
+    ) -> "PreparedQuery":
+        return PreparedQuery(self._library, query_edn, source_names)
 
     def db(self) -> "DB":
         self._require_open()
@@ -480,9 +569,80 @@ class DB:
             raise VevError("failed to create DB snapshot")
         return DB(self._library, handle)
 
+    def pull(self, pattern_edn: str, entity: int | Entity) -> Any:
+        self._require_open()
+        entity_id = entity.id if isinstance(entity, Entity) else int(entity)
+        handle = self._library.lib.vev_pull_edn(
+            self._handle, _bytes(pattern_edn), entity_id
+        )
+        with ValueHandle(self._library, handle) as value:
+            return value.value()
+
+    def pull_lookup_ref(self, pattern_edn: str, ref: LookupRef) -> Any:
+        self._require_open()
+        if not isinstance(ref.value, str):
+            raise TypeError("pull_lookup_ref currently supports string lookup values")
+        handle = self._library.lib.vev_pull_lookup_ref_string_edn(
+            self._handle, _bytes(pattern_edn), _bytes(ref.attr), _bytes(ref.value)
+        )
+        with ValueHandle(self._library, handle) as value:
+            return value.value()
+
+    def pull_many(self, pattern_edn: str, entities: list[int | Entity]) -> list[Any]:
+        self._require_open()
+        ids = [entity.id if isinstance(entity, Entity) else int(entity) for entity in entities]
+        array_type = ctypes.c_ulonglong * len(ids)
+        array = array_type(*ids)
+        handle = self._library.lib.vev_pull_many_edn(
+            self._handle, _bytes(pattern_edn), array, len(ids)
+        )
+        with ValueHandle(self._library, handle) as value:
+            result = value.value()
+        if not isinstance(result, list):
+            raise VevError(f"expected pull_many vector, got {result!r}")
+        return result
+
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("DB snapshot is closed")
+
+
+class ValueHandle:
+    def __init__(self, library: Library, handle: int):
+        self._library = library
+        self._handle = handle
+        if not self._handle:
+            raise VevError("value handle is null")
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_value_handle_free(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "ValueHandle":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def value(self) -> Any:
+        self._require_open()
+        return self._library.value_to_python(
+            self._library.lib.vev_value_handle_value(self._handle)
+        )
+
+    def edn(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_value_handle_edn(self._handle)
+        )
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("value handle is closed")
 
 
 class TxReport:
@@ -522,11 +682,33 @@ class TxReport:
 
 
 class PreparedQuery:
-    def __init__(self, library: Library, query_edn: str):
+    def __init__(
+        self,
+        library: Library,
+        query_edn: str,
+        source_names: list[str] | None = None,
+    ):
         self._library = library
-        self._handle = library.lib.vev_prepare_query_edn(_bytes(query_edn))
+        if source_names is None:
+            self._handle = library.lib.vev_prepare_query_edn(_bytes(query_edn))
+        else:
+            encoded = [_bytes(name) for name in source_names]
+            array_type = ctypes.c_char_p * len(encoded)
+            array = array_type(*encoded)
+            self._handle = library.lib.vev_prepare_query_edn_with_sources(
+                _bytes(query_edn), array, len(encoded)
+            )
         if not self._handle:
             raise VevError("failed to prepare query")
+        if not library.lib.vev_prepared_query_ok(self._handle):
+            try:
+                error = library.owned_text(
+                    library.lib.vev_prepared_query_error(self._handle)
+                )
+            finally:
+                library.lib.vev_prepared_query_free(self._handle)
+                self._handle = None
+            raise VevError(error)
 
     def close(self) -> None:
         if self._handle:
@@ -611,6 +793,52 @@ class Statement:
         with self.query(conn) as result:
             return result.scalar()
 
+    def error(self) -> str:
+        self._require_open()
+        return self._library.owned_text(self._library.lib.vev_stmt_error(self._handle))
+
+    def visit(self, conn: Connection | DB, visitor: object) -> None:
+        self._require_open()
+        if isinstance(conn, Connection):
+            conn._require_open()
+            fn = self._library.lib.vev_query_stmt_visit
+            owner = conn._handle
+        else:
+            conn._require_open()
+            fn = self._library.lib.vev_query_db_stmt_visit
+            owner = conn._handle
+
+        def callback(
+            _user: int, event: int, row: int, index: int, value: int
+        ) -> bool:
+            converted = (
+                self._library.value_to_python(value)
+                if event in (VEV_RESULT_VISIT_VALUE, VEV_RESULT_VISIT_PULL)
+                else None
+            )
+            return bool(visitor(event, row, index, converted))
+
+        c_callback = RESULT_VISIT_FN(callback)
+        if not fn(owner, self._handle, c_callback, None):
+            raise VevError(self.error() or "statement visitor failed")
+
+    def stream_rows(self, conn: Connection | DB) -> list[list[Any]]:
+        rows: list[list[Any]] = []
+        current: list[Any] = []
+
+        def collect(event: int, row: int, index: int, value: Any) -> bool:
+            nonlocal current
+            if event == VEV_RESULT_VISIT_ROW_BEGIN:
+                current = []
+            elif event in (VEV_RESULT_VISIT_VALUE, VEV_RESULT_VISIT_PULL):
+                current.append(value)
+            elif event == VEV_RESULT_VISIT_ROW_END:
+                rows.append(current)
+            return True
+
+        self.visit(conn, collect)
+        return rows
+
     def _bind_one(self, value: object) -> None:
         lib = self._library.lib
         if isinstance(value, Entity):
@@ -621,6 +849,13 @@ class Statement:
             ok = self._bind_tuple(value.values)
         elif isinstance(value, Relation):
             ok = self._bind_relation(value.rows)
+        elif isinstance(value, PullPattern):
+            ok = lib.vev_stmt_bind_pull_pattern_edn(self._handle, _bytes(value.edn))
+        elif isinstance(value, DBSource):
+            value.db._require_open()
+            ok = lib.vev_stmt_bind_db_source(
+                self._handle, _bytes(value.name), value.db._handle
+            )
         elif isinstance(value, bool):
             ok = lib.vev_stmt_bind_bool(self._handle, value)
         elif isinstance(value, int):

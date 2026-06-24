@@ -45,6 +45,13 @@ def main() -> int:
             """
         )
 
+        try:
+            conn.prepare("[:find ?e :where [?e")
+            raise RuntimeError("invalid query unexpectedly prepared")
+        except vev.VevError as error:
+            if not str(error):
+                raise RuntimeError("invalid query did not expose an error") from error
+
         email_query = conn.prepare(
             """
             [:find ?e ?email
@@ -59,6 +66,18 @@ def main() -> int:
                 print(f"statement rows: {rows}")
                 if rows != [[vev.Entity(2), "grace@example.com"]]:
                     raise RuntimeError("unexpected statement rows")
+
+                streamed = stmt.stream_rows(conn)
+                print(f"streamed statement rows: {streamed}")
+                if streamed != rows:
+                    raise RuntimeError("unexpected streamed statement rows")
+
+                try:
+                    stmt.visit(conn, lambda event, row, index, value: False)
+                    raise RuntimeError("cancelled visitor unexpectedly succeeded")
+                except vev.VevError as error:
+                    if "cancelled" not in str(error):
+                        raise RuntimeError("unexpected visitor cancellation error") from error
 
                 rows = stmt.bind("ada@example.com").rows(conn)
                 print(f"statement rebound rows: {rows}")
@@ -178,6 +197,88 @@ def main() -> int:
                     raise RuntimeError("unexpected pull result")
             finally:
                 pull_query.close()
+
+            with conn.db() as pull_db:
+                direct_pull = pull_db.pull(
+                    "[:user/name {:user/friend [:user/name]}]", vev.Entity(1)
+                )
+                print(f"direct pull: {direct_pull}")
+                if (
+                    direct_pull.get(":user/name") != "Ada"
+                    or direct_pull.get(":user/friend", {}).get(":user/name") != "Grace"
+                ):
+                    raise RuntimeError("unexpected direct pull")
+
+                lookup_pull = pull_db.pull_lookup_ref(
+                    "[:user/name]",
+                    vev.LookupRef(":user/email", "ada@example.com"),
+                )
+                print(f"lookup pull: {lookup_pull}")
+                if lookup_pull.get(":user/name") != "Ada":
+                    raise RuntimeError("unexpected lookup-ref pull")
+
+                many_pull = pull_db.pull_many("[:user/name]", [vev.Entity(1), vev.Entity(2)])
+                print(f"pull many: {many_pull}")
+                names = sorted(item.get(":user/name") for item in many_pull)
+                if names != ["Ada", "Grace"]:
+                    raise RuntimeError("unexpected pull-many")
+
+            pull_pattern_query = conn.prepare(
+                """
+                [:find (pull ?e ?pattern)
+                 :in ?pattern ?name
+                 :where [?e :user/name ?name]]
+                """
+            )
+            try:
+                with pull_pattern_query.statement() as stmt:
+                    pulled = stmt.bind(
+                        vev.PullPattern("[:user/name {:user/friend [:user/name]}]"),
+                        "Ada",
+                    ).scalar(conn)
+                    print(f"statement pull pattern: {pulled}")
+                    if (
+                        pulled.get(":user/name") != "Ada"
+                        or pulled.get(":user/friend", {}).get(":user/name") != "Grace"
+                    ):
+                        raise RuntimeError("unexpected statement pull pattern")
+            finally:
+                pull_pattern_query.close()
+
+            with vev.open_memory() as right_conn:
+                right_conn.transact(
+                    """
+                    [{:db/id 1 :user/name "Ada Right"}
+                     {:db/id 2 :user/name "Grace Right"}]
+                    """
+                )
+                with conn.db() as left_db, right_conn.db() as right_db:
+                    source_query = conn.prepare(
+                        """
+                        [:find ?e ?left-name ?right-name
+                         :in $left $right [?e ...]
+                         :where [$left ?e :user/name ?left-name]
+                                [$right ?e :user/name ?right-name]]
+                        """,
+                        ["$left", "$right"],
+                    )
+                    try:
+                        with source_query.statement() as stmt:
+                            rows = stmt.bind(
+                                vev.DBSource("$left", left_db),
+                                vev.DBSource("$right", right_db),
+                                [vev.Entity(1), vev.Entity(2)],
+                            ).rows(conn)
+                            print(f"statement DB sources: {rows}")
+                            first = rows[0]
+                            if (
+                                len(rows) != 2
+                                or first[1] != "Ada"
+                                or first[2] != "Ada Right"
+                            ):
+                                raise RuntimeError("unexpected statement DB sources")
+                    finally:
+                        source_query.close()
 
             all_emails = conn.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"

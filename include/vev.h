@@ -13,6 +13,7 @@ typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
 typedef void *vev_stmt_t;
 typedef void *vev_tx_report_t;
+typedef void *vev_value_handle_t;
 typedef const void *vev_value_t;
 
 enum {
@@ -74,10 +75,17 @@ const char *vev_query_edn_with_inputs(
     const char *inputs_text);
 
 vev_prepared_query_t vev_prepare_query_edn(const char *query_text);
+vev_prepared_query_t vev_prepare_query_edn_with_sources(
+    const char *query_text,
+    const char **source_names,
+    int source_count);
+bool vev_prepared_query_ok(vev_prepared_query_t query);
+const char *vev_prepared_query_error(vev_prepared_query_t query);
 void vev_prepared_query_free(vev_prepared_query_t query);
 vev_stmt_t vev_stmt_create(vev_prepared_query_t query);
 void vev_stmt_clear(vev_stmt_t stmt);
 void vev_stmt_free(vev_stmt_t stmt);
+const char *vev_stmt_error(vev_stmt_t stmt);
 bool vev_stmt_bind_string(vev_stmt_t stmt, const char *value);
 bool vev_stmt_bind_keyword(vev_stmt_t stmt, const char *value);
 bool vev_stmt_bind_symbol(vev_stmt_t stmt, const char *value);
@@ -105,6 +113,8 @@ bool vev_stmt_bind_lookup_ref_string_collection(
     const char *attr,
     const char **values,
     int value_count);
+bool vev_stmt_bind_pull_pattern_edn(vev_stmt_t stmt, const char *pattern_text);
+bool vev_stmt_bind_db_source(vev_stmt_t stmt, const char *name, vev_db_t db);
 const char *vev_query_prepared(vev_conn_t conn, vev_prepared_query_t query);
 const char *vev_query_prepared_with_inputs(
     vev_conn_t conn,
@@ -113,6 +123,16 @@ const char *vev_query_prepared_with_inputs(
 
 vev_result_t vev_query_stmt_result(vev_conn_t conn, vev_stmt_t stmt);
 vev_result_t vev_query_db_stmt_result(vev_db_t db, vev_stmt_t stmt);
+bool vev_query_stmt_visit(
+    vev_conn_t conn,
+    vev_stmt_t stmt,
+    vev_result_visit_fn visitor,
+    void *user);
+bool vev_query_db_stmt_visit(
+    vev_db_t db,
+    vev_stmt_t stmt,
+    vev_result_visit_fn visitor,
+    void *user);
 vev_result_t vev_query_prepared_result_with_inputs(
     vev_conn_t conn,
     vev_prepared_query_t query,
@@ -125,6 +145,22 @@ vev_result_t vev_query_db_prepared_result_with_inputs(
     vev_db_t db,
     vev_prepared_query_t query,
     const char *inputs_text);
+
+vev_value_handle_t vev_pull_edn(vev_db_t db, const char *pattern_text, unsigned long long entity);
+vev_value_handle_t vev_pull_lookup_ref_string_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_many_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const unsigned long long *entities,
+    int entity_count);
+void vev_value_handle_free(vev_value_handle_t handle);
+vev_value_t vev_value_handle_value(vev_value_handle_t handle);
+const char *vev_value_handle_edn(vev_value_handle_t handle);
+
 void vev_result_free(vev_result_t result);
 bool vev_result_ok(vev_result_t result);
 const char *vev_result_error(vev_result_t result);

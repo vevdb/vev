@@ -35,6 +35,10 @@
         (throw (ex-info "unexpected collection query output" {:rows names}))))
 
     (vev/transact! conn
+      [[:db/add 90 :db/ident :user/email]
+       [:db/add 90 :db/unique :db.unique/identity]])
+
+    (vev/transact! conn
       [[:db/add 100 :db/ident :user/friend]
        [:db/add 100 :db/valueType :db.type/ref]
        [:db/add 1 :user/friend 2]])
@@ -59,6 +63,18 @@
                       :user/friend {:user/name "Grace"}}
                      pulled)
           (throw (ex-info "unexpected pull result" {:pull pulled}))))
+
+      (let [db (vev/db conn)
+            lookup-pull (vev/pull db
+                          [:user/name]
+                          [:user/email "ada@example.com"])
+            many-pull (vev/pull-many db [:user/name] [1 2])]
+        (println "lookup pull:" lookup-pull)
+        (println "pull many:" many-pull)
+        (when-not (= {:user/name "Ada"} lookup-pull)
+          (throw (ex-info "unexpected lookup-ref pull" {:pull lookup-pull})))
+        (when-not (= #{"Ada" "Grace"} (set (map :user/name many-pull)))
+          (throw (ex-info "unexpected pull-many" {:pull many-pull}))))
 
       (let [db (vev/db conn)
             immutable-report (vev/with db [{:db/id 4 :user/name "Barbara"}])

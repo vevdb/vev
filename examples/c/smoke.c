@@ -127,6 +127,15 @@ static bool count_result_visit(void *user, int event, int row, int index, vev_va
     return true;
 }
 
+static bool cancel_result_visit(void *user, int event, int row, int index, vev_value_t value) {
+    (void)user;
+    (void)event;
+    (void)row;
+    (void)index;
+    (void)value;
+    return false;
+}
+
 static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
     if (report == NULL) {
         fprintf(stderr, "%s: null transaction report\n", label);
@@ -220,6 +229,35 @@ int main(void) {
         vev_conn_close(conn);
         return 1;
     }
+    if (!vev_prepared_query_ok(query)) {
+        const char *error = vev_prepared_query_error(query);
+        fprintf(stderr, "unexpected prepared query error: %s\n", error);
+        vev_string_free(error);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_prepared_query_t invalid_query = vev_prepare_query_edn("[:find ?e :where [?e");
+    if (invalid_query == NULL || vev_prepared_query_ok(invalid_query)) {
+        fprintf(stderr, "invalid prepared query unexpectedly succeeded\n");
+        if (invalid_query != NULL) {
+            vev_prepared_query_free(invalid_query);
+        }
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *invalid_error = vev_prepared_query_error(invalid_query);
+    if (invalid_error == NULL || strlen(invalid_error) == 0) {
+        fprintf(stderr, "invalid prepared query did not expose an error\n");
+        vev_string_free(invalid_error);
+        vev_prepared_query_free(invalid_query);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_string_free(invalid_error);
+    vev_prepared_query_free(invalid_query);
 
     print_and_free("prepared", vev_query_prepared_with_inputs(conn, query, "[\"grace@example.com\"]"));
 
@@ -260,6 +298,41 @@ int main(void) {
     }
     if (!vev_stmt_bind_string(stmt, "ada@example.com")) {
         fprintf(stderr, "failed to bind statement string\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    struct result_visit_stats streamed_stmt_stats = {0, 0, 0, 0};
+    if (!vev_query_stmt_visit(conn, stmt, count_result_visit, &streamed_stmt_stats) ||
+        streamed_stmt_stats.row_begins != 1 ||
+        streamed_stmt_stats.row_ends != 1 ||
+        streamed_stmt_stats.values != 2 ||
+        streamed_stmt_stats.pulls != 0) {
+        fprintf(
+            stderr,
+            "unexpected streamed statement stats: rows=%d/%d values=%d pulls=%d\n",
+            streamed_stmt_stats.row_begins,
+            streamed_stmt_stats.row_ends,
+            streamed_stmt_stats.values,
+            streamed_stmt_stats.pulls);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (vev_query_stmt_visit(conn, stmt, cancel_result_visit, NULL)) {
+        fprintf(stderr, "cancelled statement visitor unexpectedly succeeded\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *stmt_error = vev_stmt_error(stmt);
+    int cancelled = stmt_error != NULL && strstr(stmt_error, "cancelled") != NULL;
+    vev_string_free(stmt_error);
+    if (!cancelled) {
+        fprintf(stderr, "cancelled statement visitor did not expose an error\n");
         vev_stmt_free(stmt);
         vev_prepared_query_free(query);
         vev_conn_close(conn);
@@ -593,6 +666,208 @@ int main(void) {
     }
     vev_result_free(pull_result);
     vev_prepared_query_free(pull_query);
+
+    vev_db_t pull_db = vev_conn_db(conn);
+    if (pull_db == NULL) {
+        fprintf(stderr, "failed to retain DB for pull API\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+
+    vev_value_handle_t direct_pull =
+        vev_pull_edn(pull_db, "[:user/name {:user/friend [:user/name]}]", 1);
+    if (direct_pull == NULL) {
+        fprintf(stderr, "failed direct pull API\n");
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_t direct_value = vev_value_handle_value(direct_pull);
+    const char *direct_edn = vev_value_handle_edn(direct_pull);
+    printf("direct-pull: %s\n", direct_edn);
+    vev_string_free(direct_edn);
+    if (!value_text_equals(map_get(direct_value, ":user/name"), "Ada") ||
+        !value_text_equals(map_get(map_get(direct_value, ":user/friend"), ":user/name"), "Grace")) {
+        fprintf(stderr, "unexpected direct pull output\n");
+        vev_value_handle_free(direct_pull);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(direct_pull);
+
+    vev_value_handle_t lookup_pull =
+        vev_pull_lookup_ref_string_edn(pull_db, "[:user/name]", ":user/email", "ada@example.com");
+    if (lookup_pull == NULL) {
+        fprintf(stderr, "failed lookup-ref pull API\n");
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_t lookup_value = vev_value_handle_value(lookup_pull);
+    if (!value_text_equals(map_get(lookup_value, ":user/name"), "Ada")) {
+        fprintf(stderr, "unexpected lookup-ref pull output\n");
+        vev_value_handle_free(lookup_pull);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(lookup_pull);
+
+    unsigned long long pull_many_ids[] = {1, 2};
+    vev_value_handle_t many_pull =
+        vev_pull_many_edn(pull_db, "[:user/name]", pull_many_ids, 2);
+    if (many_pull == NULL) {
+        fprintf(stderr, "failed pull-many API\n");
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_t many_value = vev_value_handle_value(many_pull);
+    if (vev_value_kind(many_value) != VEV_VALUE_VECTOR ||
+        vev_value_item_count(many_value) != 2 ||
+        !value_text_equals(map_get(vev_value_item(many_value, 0), ":user/name"), "Ada") ||
+        !value_text_equals(map_get(vev_value_item(many_value, 1), ":user/name"), "Grace")) {
+        const char *many_edn = vev_value_handle_edn(many_pull);
+        fprintf(stderr, "unexpected pull-many output: %s\n", many_edn);
+        vev_string_free(many_edn);
+        vev_value_handle_free(many_pull);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(many_pull);
+    vev_db_release(pull_db);
+
+    vev_prepared_query_t pull_pattern_query =
+        vev_prepare_query_edn("[:find (pull ?e ?pattern) :in ?pattern ?name :where [?e :user/name ?name]]");
+    if (pull_pattern_query == NULL) {
+        fprintf(stderr, "failed to prepare pull-pattern statement query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t pull_pattern_stmt = vev_stmt_create(pull_pattern_query);
+    if (pull_pattern_stmt == NULL ||
+        !vev_stmt_bind_pull_pattern_edn(pull_pattern_stmt, "[:user/name {:user/friend [:user/name]}]") ||
+        !vev_stmt_bind_string(pull_pattern_stmt, "Ada")) {
+        fprintf(stderr, "failed to bind pull-pattern statement\n");
+        if (pull_pattern_stmt != NULL) vev_stmt_free(pull_pattern_stmt);
+        vev_prepared_query_free(pull_pattern_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t pull_pattern_result = vev_query_stmt_result(conn, pull_pattern_stmt);
+    int pull_pattern_rows = result_row_count_or_error("stmt-pull-pattern", pull_pattern_result);
+    int pull_pattern_count = vev_result_pull_count(pull_pattern_result, 0);
+    vev_value_t bound_pull = vev_result_pull(pull_pattern_result, 0, 0);
+    if (pull_pattern_rows != 1 ||
+        pull_pattern_count != 1 ||
+        !value_text_equals(map_get(bound_pull, ":user/name"), "Ada") ||
+        !value_text_equals(map_get(map_get(bound_pull, ":user/friend"), ":user/name"), "Grace")) {
+        const char *bound_edn = vev_value_edn(bound_pull);
+        fprintf(stderr, "unexpected pull-pattern statement output: %s\n", bound_edn);
+        vev_string_free(bound_edn);
+        vev_result_free(pull_pattern_result);
+        vev_stmt_free(pull_pattern_stmt);
+        vev_prepared_query_free(pull_pattern_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(pull_pattern_result);
+    vev_stmt_free(pull_pattern_stmt);
+    vev_prepared_query_free(pull_pattern_query);
+
+    vev_conn_t right_conn = vev_conn_open_memory();
+    if (right_conn == NULL) {
+        fprintf(stderr, "failed to open right source connection\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    print_and_free(
+        "right-source-tx",
+        vev_transact_edn(
+            right_conn,
+            "[{:db/id 1 :user/name \"Ada Right\"}"
+            " {:db/id 2 :user/name \"Grace Right\"}]"));
+    vev_db_t left_source = vev_conn_db(conn);
+    vev_db_t right_source = vev_conn_db(right_conn);
+    const char *source_names[] = {"$left", "$right"};
+    vev_prepared_query_t source_query =
+        vev_prepare_query_edn_with_sources(
+            "[:find ?e ?left-name ?right-name"
+            " :in $left $right [?e ...]"
+            " :where [$left ?e :user/name ?left-name]"
+            "        [$right ?e :user/name ?right-name]]",
+            source_names,
+            2);
+    vev_stmt_t source_stmt = source_query == NULL ? NULL : vev_stmt_create(source_query);
+    unsigned long long source_ids[] = {1, 2};
+    if (left_source == NULL ||
+        right_source == NULL ||
+        source_query == NULL ||
+        source_stmt == NULL ||
+        !vev_stmt_bind_db_source(source_stmt, "$left", left_source) ||
+        !vev_stmt_bind_db_source(source_stmt, "$right", right_source) ||
+        !vev_stmt_bind_entity_collection(source_stmt, source_ids, 2)) {
+        fprintf(stderr, "failed to bind source statement\n");
+        if (source_stmt != NULL) vev_stmt_free(source_stmt);
+        if (source_query != NULL) vev_prepared_query_free(source_query);
+        if (left_source != NULL) vev_db_release(left_source);
+        if (right_source != NULL) vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t source_result = vev_query_stmt_result(conn, source_stmt);
+    int source_rows = result_row_count_or_error("stmt-db-sources", source_result);
+    vev_value_t source_left_name = vev_result_value(source_result, 0, 1);
+    vev_value_t source_right_name = vev_result_value(source_result, 0, 2);
+    printf("stmt-db-sources rows: %d\n", source_rows);
+    if (source_rows != 2 ||
+        !value_text_equals(source_left_name, "Ada") ||
+        !value_text_equals(source_right_name, "Ada Right")) {
+        fprintf(stderr, "unexpected DB source statement output\n");
+        vev_result_free(source_result);
+        vev_stmt_free(source_stmt);
+        vev_prepared_query_free(source_query);
+        vev_db_release(left_source);
+        vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(source_result);
+    vev_stmt_free(source_stmt);
+    vev_prepared_query_free(source_query);
+    vev_db_release(left_source);
+    vev_db_release(right_source);
+    vev_conn_close(right_conn);
 
     vev_prepared_query_t all_emails =
         vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");

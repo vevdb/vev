@@ -34,7 +34,13 @@ clang \
 
 python3 "$ROOT/examples/python/smoke.py"
 
-if command -v rustc >/dev/null 2>&1; then
+if command -v cargo >/dev/null 2>&1; then
+  CARGO_TARGET_DIR="$RUST_EXAMPLE_DIR/target" \
+  RUSTFLAGS="-L native=$LIB_DIR -l dylib=vev -C link-arg=-Wl,-rpath,$LIB_DIR" \
+    cargo run \
+      --quiet \
+      --manifest-path "$ROOT/examples/rust/Cargo.toml"
+elif command -v rustc >/dev/null 2>&1; then
   rustc \
     "$ROOT/examples/rust/smoke.rs" \
     -L "$LIB_DIR" \
@@ -44,7 +50,7 @@ if command -v rustc >/dev/null 2>&1; then
 
   "$RUST_EXAMPLE_DIR/vev_rust_smoke"
 else
-  echo "rustc not found; skipping Rust smoke"
+  echo "cargo/rustc not found; skipping Rust smoke"
 fi
 
 if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then

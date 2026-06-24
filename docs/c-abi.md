@@ -14,8 +14,11 @@ The current shape is intentionally narrow:
 - rendered result strings owned by the caller
 - opaque result handles for typed row/value access
 - borrowed value handles for nested vector/map/pull traversal
+- owned value handles for direct pull entry points
+- explicit prepared-query and statement error accessors
 - callback traversal for nested value trees
 - callback traversal for typed result rows
+- direct statement query execution through typed result-row callbacks
 
 This is the portable baseline for Python, Rust, Java, Clojure, and other hosts.
 Host wrappers should build on this surface first instead of mirroring internal
@@ -72,6 +75,9 @@ Current workloads:
   handle
 - `prepared-email-bound-result`: prepared query plus typed statement binding,
   typed result handle
+- `many-row-result`: 300-row typed result handle materialization
+- `many-row-scan`: 300-row direct statement visitor scan
+- `pull-many-nested`: direct pull-many over nested pull-shaped values
 - `db-snapshot`: retaining a DB value through `vev_conn_db`
 - `prepared-email-db-result`: immutable DB value plus EDN input text, typed
   result handle
@@ -87,19 +93,23 @@ Latest local run:
 ```text
 comparison workload=prepared-email-input-text c_abi_over_native=1.13x
 comparison workload=prepared-email-result c_abi_over_native=1.00x
-comparison workload=prepared-email-bound-result c_abi_over_native=1.00x
-comparison workload=db-snapshot c_abi_over_native=1.06x
+comparison workload=prepared-email-bound-result c_abi_over_native=0.92x
+comparison workload=many-row-result c_abi_over_native=0.98x
+comparison workload=many-row-scan c_abi_over_native=0.98x
+comparison workload=pull-many-nested c_abi_over_native=1.02x
+comparison workload=db-snapshot c_abi_over_native=1.03x
 comparison workload=prepared-email-db-result c_abi_over_native=1.00x
-comparison workload=prepared-email-db-bound-result c_abi_over_native=1.00x
-comparison workload=with-tx-report-text c_abi_over_native=1.00x
-comparison workload=with-tx-report-value c_abi_over_native=1.15x
+comparison workload=prepared-email-db-bound-result c_abi_over_native=0.92x
+comparison workload=with-tx-report-text c_abi_over_native=0.95x
+comparison workload=with-tx-report-value c_abi_over_native=1.07x
 ```
 
 Statement bindings avoid parsing EDN input text on each call and currently
 measure at native parity in this small lookup benchmark. Snapshot creation is
 much more expensive than querying because the current ABI snapshot deep-copies
 datoms and owned strings to make the handle independent of the connection
-lifetime.
+lifetime. Direct statement visitors currently measure at native parity on the
+300-row scan workload, and nested direct pull-many is close to native.
 
 ## Current C Surface
 
@@ -129,6 +139,10 @@ vev_string_free(with_inputs);
 
 vev_prepared_query_t query =
     vev_prepare_query_edn("[:find ?e :in ?email :where [?e :user/email ?email]]");
+if (!vev_prepared_query_ok(query)) {
+    const char *error = vev_prepared_query_error(query);
+    vev_string_free(error);
+}
 const char *prepared_result =
     vev_query_prepared_with_inputs(conn, query, "[\"ada@example.com\"]");
 vev_string_free(prepared_result);
@@ -186,6 +200,15 @@ bool ok = vev_value_visit(pulled, visit_value, user_data);
 // boundaries and distinguish scalar find values from pull results.
 bool rows_ok = vev_result_visit(rows, visit_row, user_data);
 
+// Statements can also execute directly into the same visitor protocol. This is
+// the preferred shape for large result sets when the host does not need random
+// row access through a materialized result handle.
+bool streamed_ok = vev_query_stmt_visit(conn, stmt, visit_row, user_data);
+if (!streamed_ok) {
+    const char *error = vev_stmt_error(stmt);
+    vev_string_free(error);
+}
+
 vev_result_free(pull_rows);
 vev_stmt_free(pull_stmt);
 vev_prepared_query_free(pull_query);
@@ -202,6 +225,28 @@ vev_result_free(old_rows);
 
 vev_result_t old_stmt_rows = vev_query_db_stmt_result(retained_snapshot, stmt);
 vev_result_free(old_stmt_rows);
+bool old_streamed_ok =
+    vev_query_db_stmt_visit(retained_snapshot, stmt, visit_row, user_data);
+
+vev_value_handle_t direct_pull =
+    vev_pull_edn(retained_snapshot, "[:user/name]", 1);
+vev_value_t pull_value = vev_value_handle_value(direct_pull);
+const char *pull_edn = vev_value_handle_edn(direct_pull);
+vev_string_free(pull_edn);
+vev_value_handle_free(direct_pull);
+
+vev_value_handle_t lookup_pull =
+    vev_pull_lookup_ref_string_edn(
+        retained_snapshot,
+        "[:user/name]",
+        ":user/email",
+        "ada@example.com");
+vev_value_handle_free(lookup_pull);
+
+unsigned long long entity_ids[] = {1, 2};
+vev_value_handle_t many_pull =
+    vev_pull_many_edn(retained_snapshot, "[:user/name]", entity_ids, 2);
+vev_value_handle_free(many_pull);
 
 vev_tx_report_t with_report =
     vev_with_edn_report(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
@@ -292,8 +337,8 @@ report maps, while `transact` / `with_text` remain string helpers.
 
 ## Rust Example
 
-[smoke.rs](../examples/rust/smoke.rs) is a direct `rustc`-compiled example, not
-a packaged crate yet. It mirrors the intended safe wrapper shape:
+[examples/rust](../examples/rust) is a small Cargo package. It mirrors the
+intended safe wrapper shape:
 
 - raw FFI declarations stay private to the module
 - `Conn`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet` free their handles
@@ -304,9 +349,9 @@ a packaged crate yet. It mirrors the intended safe wrapper shape:
   traversal
 
 The example covers transactions, rendered EDN query output, prepared statement
-bindings, homogeneous collection bindings, pull result traversal, DB snapshots,
-querying a snapshot with a statement, immutable `db-with`, and deriving a
-connection from a DB value.
+bindings, homogeneous collection bindings, pull-pattern statement bindings,
+pull result traversal, direct pull APIs, DB snapshots, querying a snapshot with
+a statement, immutable `db-with`, and deriving a connection from a DB value.
 
 ## Java And Clojure Examples
 
@@ -406,6 +451,12 @@ released with `vev_string_free`.
 free them, and do not use them after `vev_result_free`. Strings returned from
 `vev_value_text` and `vev_value_edn` are owned by the caller and must be released
 with `vev_string_free`.
+
+Direct pull entry points return owned `vev_value_handle_t` handles. Values
+borrowed from `vev_value_handle_value` are valid until `vev_value_handle_free`.
+This gives C and host wrappers the same DB-as-a-value shape as the Datomic-style
+API: retain a DB snapshot, pull against it, convert or copy the returned value,
+then free the pull handle.
 
 The current parser stores references into transaction and query source text in
 some internal structures. The ABI wrappers therefore keep transaction source
@@ -536,12 +587,19 @@ Current bind functions:
 - `vev_stmt_bind_int_relation`
 - `vev_stmt_bind_bool_relation`
 - `vev_stmt_bind_lookup_ref_string_collection`
+- `vev_stmt_bind_pull_pattern_edn`
+- `vev_stmt_bind_db_source`
 
 The statement API currently covers scalar bindings and homogeneous collection
-bindings, homogeneous tuple bindings, homogeneous relation bindings, and
-same-attribute lookup-ref string collections. EDN input text still handles
-source and pull-pattern inputs. Those should be added to statement bindings as
-typed APIs instead of forcing host wrappers to construct EDN strings.
+bindings, homogeneous tuple bindings, homogeneous relation bindings,
+same-attribute lookup-ref string collections, pull-pattern inputs, and named DB
+source inputs. Source-aware prepared queries are created with
+`vev_prepare_query_edn_with_sources`, then statements bind actual immutable DB
+handles with `vev_stmt_bind_db_source`.
+
+Prepared query status is available through `vev_prepared_query_ok` and
+`vev_prepared_query_error`. Statement execution failures from direct visitor
+calls are available through `vev_stmt_error`.
 
 ## Result Handles
 
@@ -564,6 +622,8 @@ Current result-handle accessors:
 - `vev_result_pull_count`
 - `vev_result_pull`
 - `vev_result_visit`
+- `vev_query_stmt_visit`
+- `vev_query_db_stmt_visit`
 
 The `vev_result_value_*` scalar accessors are convenience functions for direct
 row values. New host wrappers should prefer `vev_result_value` plus the generic
@@ -590,6 +650,15 @@ Pull results are rendered into map-shaped values and stored on the result handle
 when the query runs. This keeps pull traversal independent of the original
 connection or DB snapshot lifetime.
 
+Direct pull entry points use owned value handles:
+
+- `vev_pull_edn`
+- `vev_pull_lookup_ref_string_edn`
+- `vev_pull_many_edn`
+- `vev_value_handle_value`
+- `vev_value_handle_edn`
+- `vev_value_handle_free`
+
 `vev_value_visit` streams any nested `vev_value_t` tree through a C callback.
 It emits `VEV_VALUE_VISIT_VALUE` for every node and `VEV_VALUE_VISIT_END` after
 each vector/map container. The callback receives borrowed handles; callers must
@@ -601,6 +670,11 @@ freed.
 `VEV_RESULT_VISIT_PULL`, and `VEV_RESULT_VISIT_ROW_END`. Value and pull events
 carry borrowed `vev_value_t` handles with the same lifetime as values returned
 by `vev_result_value` and `vev_result_pull`.
+
+`vev_query_stmt_visit` and `vev_query_db_stmt_visit` execute a typed statement
+and stream rows through the same event protocol. They return `false` for null
+handles, query errors, or visitor cancellation. Use materialized result handles
+when the host needs detailed error text until the explicit status API is added.
 
 ## DB Snapshots
 
@@ -634,13 +708,8 @@ model.
 
 ## Next ABI Work
 
-The next useful steps are:
-
-- add direct query-execution callbacks so callers can consume very large query
-  results without first materializing full result handles
-- add explicit error/result status APIs
-- add typed statement bindings for source and pull-pattern inputs
-- add pull-specific entry points
-- turn the Rust smoke wrapper into a small crate
-- add broader result-shape benchmarks for nested values, pull results, and
-  larger row sets
+The initial C ABI shape is now covered for C, Python, Rust, Java, and Clojure,
+including immutable DB handles, typed statement bindings, direct pull handles,
+direct row visitors, status/error accessors, and baseline ABI-vs-native
+benchmarks. The next interop work should be driven by concrete host adapter
+needs rather than expanding the raw C surface speculatively.

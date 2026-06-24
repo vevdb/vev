@@ -43,10 +43,17 @@ public final class Vev {
     private final MethodHandle stmtFree;
     private final MethodHandle stmtBindString;
     private final MethodHandle stmtBindStringCollection;
+    private final MethodHandle stmtBindPullPatternEdn;
     private final MethodHandle queryStmtResult;
     private final MethodHandle queryDbStmtResult;
     private final MethodHandle queryPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedResultWithInputs;
+    private final MethodHandle pullEdn;
+    private final MethodHandle pullLookupRefStringEdn;
+    private final MethodHandle pullManyEdn;
+    private final MethodHandle valueHandleFree;
+    private final MethodHandle valueHandleValue;
+    private final MethodHandle valueHandleEdn;
     private final MethodHandle resultFree;
     private final MethodHandle resultOk;
     private final MethodHandle resultError;
@@ -99,10 +106,17 @@ public final class Vev {
         this.stmtFree = downcall("vev_stmt_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.stmtBindString = downcall("vev_stmt_bind_string", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stmtBindStringCollection = downcall("vev_stmt_bind_string_collection", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.stmtBindPullPatternEdn = downcall("vev_stmt_bind_pull_pattern_edn", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryStmtResult = downcall("vev_query_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbStmtResult = downcall("vev_query_db_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryPreparedResultWithInputs = downcall("vev_query_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullEdn = downcall("vev_pull_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.valueHandleFree = downcall("vev_value_handle_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.valueHandleValue = downcall("vev_value_handle_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.valueHandleEdn = downcall("vev_value_handle_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.resultFree = downcall("vev_result_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.resultOk = downcall("vev_result_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
         this.resultError = downcall("vev_result_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -210,6 +224,14 @@ public final class Vev {
 
     private static boolean isNull(MemorySegment segment) {
         return segment == null || segment.equals(MemorySegment.NULL);
+    }
+
+    private static MemorySegment longArray(Arena arena, long[] values) {
+        MemorySegment array = arena.allocateArray(ValueLayout.JAVA_LONG, values.length);
+        for (int i = 0; i < values.length; i++) {
+            array.setAtIndex(ValueLayout.JAVA_LONG, i, values[i]);
+        }
+        return array;
     }
 
     private static final class NativeHandle implements Runnable {
@@ -379,6 +401,41 @@ public final class Vev {
             }
         }
 
+        public Object pull(String pattern, long entity) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle value = new ValueHandle((MemorySegment) pullEdn.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(pattern),
+                     entity))) {
+                return value.value();
+            }
+        }
+
+        public Object pullLookupRefString(String pattern, String attr, String value) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefStringEdn.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(pattern),
+                     local.allocateUtf8String(attr),
+                     local.allocateUtf8String(value)))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullMany(String pattern, long... entities) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle value = new ValueHandle((MemorySegment) pullManyEdn.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(pattern),
+                     longArray(local, entities),
+                     entities.length))) {
+                return value.value();
+            }
+        }
+
         private void requireOpen() {
             if (isNull(handle.raw)) throw new IllegalStateException("DB snapshot is closed");
         }
@@ -386,6 +443,37 @@ public final class Vev {
         @Override
         public void close() {
             cleanable.clean();
+        }
+    }
+
+    public final class ValueHandle implements AutoCloseable {
+        private MemorySegment raw;
+
+        private ValueHandle(MemorySegment raw) {
+            if (isNull(raw)) throw new IllegalStateException("value handle is null");
+            this.raw = raw;
+        }
+
+        public Object value() throws Throwable {
+            requireOpen();
+            return valueToJava((MemorySegment) valueHandleValue.invoke(raw));
+        }
+
+        public String edn() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) valueHandleEdn.invoke(raw));
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("value handle is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(valueHandleFree, raw);
+                raw = MemorySegment.NULL;
+            }
         }
     }
 
@@ -436,6 +524,16 @@ public final class Vev {
                 }
                 boolean ok = (boolean) stmtBindStringCollection.invoke(raw, array, values.length);
                 if (!ok) throw new IllegalStateException("failed to bind string collection");
+                return this;
+            }
+        }
+
+        public Statement bindPullPatternAndString(String pattern, String value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                stmtClear.invoke(raw);
+                boolean ok = (boolean) stmtBindPullPatternEdn.invoke(raw, local.allocateUtf8String(pattern));
+                ok = ok && (boolean) stmtBindString.invoke(raw, local.allocateUtf8String(value));
+                if (!ok) throw new IllegalStateException("failed to bind pull pattern and string");
                 return this;
             }
         }
