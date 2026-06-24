@@ -100,10 +100,13 @@ See [vev.h](../include/vev.h).
 ```c
 vev_conn_t conn = vev_conn_open_memory();
 
-const char *tx = vev_transact_edn(
+vev_tx_report_t tx = vev_transact_edn_report(
     conn,
     "[{:db/id 1 :user/name \"Ada\"}]");
-vev_string_free(tx);
+vev_value_t tx_value = vev_tx_report_value(tx);
+const char *tx_edn = vev_value_edn(tx_value);
+vev_string_free(tx_edn);
+vev_tx_report_free(tx);
 
 const char *result = vev_query_edn(
     conn,
@@ -168,7 +171,8 @@ vev_prepared_query_free(pull_query);
 vev_db_t snapshot = vev_conn_db(conn);
 vev_db_t retained_snapshot = vev_db_retain(snapshot);
 vev_db_release(snapshot);
-vev_transact_edn(conn, "[{:db/id 2 :user/name \"Grace\"}]");
+const char *new_tx = vev_transact_edn(conn, "[{:db/id 2 :user/name \"Grace\"}]");
+vev_string_free(new_tx);
 
 vev_result_t old_rows =
     vev_query_db_prepared_result_with_inputs(retained_snapshot, query, "[\"ada@example.com\"]");
@@ -177,9 +181,12 @@ vev_result_free(old_rows);
 vev_result_t old_stmt_rows = vev_query_db_stmt_result(retained_snapshot, stmt);
 vev_result_free(old_stmt_rows);
 
-const char *with_report =
-    vev_with_edn(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
-vev_string_free(with_report);
+vev_tx_report_t with_report =
+    vev_with_edn_report(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
+vev_value_t with_value = vev_tx_report_value(with_report);
+const char *with_edn = vev_value_edn(with_value);
+vev_string_free(with_edn);
+vev_tx_report_free(with_report);
 
 vev_db_t next_db =
     vev_db_with_edn(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
@@ -391,14 +398,20 @@ connection that produced them.
 DB values also support immutable transaction operations through the ABI:
 
 ```c
-const char *report = vev_with_edn(db, "[{:db/id 3 :user/name \"Barbara\"}]");
+vev_tx_report_t report = vev_with_edn_report(db, "[{:db/id 3 :user/name \"Barbara\"}]");
+vev_value_t report_value = vev_tx_report_value(report);
+/* Inspect report_value before freeing report. */
+vev_tx_report_free(report);
 vev_db_t next_db = vev_db_with_edn(db, "[{:db/id 3 :user/name \"Barbara\"}]");
 vev_conn_t derived = vev_conn_from_db(next_db);
 ```
 
-`vev_with_edn` returns an owned EDN report string that must be freed with
-`vev_string_free`. `vev_db_with_edn` returns a new owned DB handle. The source
-DB is not mutated.
+`vev_transact_edn_report` and `vev_with_edn_report` return owned report
+handles. `vev_tx_report_value` gives a borrowed typed `vev_value_t` map for the
+report; release the handle with `vev_tx_report_free`. The older
+`vev_transact_edn` and `vev_with_edn` string helpers remain useful for quick
+debugging. `vev_db_with_edn` returns a new owned DB handle. The source DB is not
+mutated.
 
 ## Query Inputs
 

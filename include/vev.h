@@ -12,6 +12,7 @@ typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
 typedef void *vev_stmt_t;
+typedef void *vev_tx_report_t;
 typedef const void *vev_value_t;
 
 enum {
@@ -36,11 +37,16 @@ vev_conn_t vev_conn_from_db(vev_db_t db);
 vev_db_t vev_db_retain(vev_db_t db);
 void vev_db_release(vev_db_t db);
 const char *vev_with_edn(vev_db_t db, const char *tx_text);
+vev_tx_report_t vev_with_edn_report(vev_db_t db, const char *tx_text);
 vev_db_t vev_db_with_edn(vev_db_t db, const char *tx_text);
 
 void vev_string_free(const char *text);
 
 const char *vev_transact_edn(vev_conn_t conn, const char *tx_text);
+vev_tx_report_t vev_transact_edn_report(vev_conn_t conn, const char *tx_text);
+void vev_tx_report_free(vev_tx_report_t report);
+vev_value_t vev_tx_report_value(vev_tx_report_t report);
+const char *vev_tx_report_edn(vev_tx_report_t report);
 const char *vev_query_edn(vev_conn_t conn, const char *query_text);
 const char *vev_query_edn_with_inputs(
     vev_conn_t conn,

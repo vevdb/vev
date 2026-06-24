@@ -83,7 +83,7 @@ A mutable connection can also be initialized from an immutable DB snapshot:
 
 The current package is deliberately thin:
 
-- `transact!` and `with` return parsed transaction report maps
+- `transact!` and `with` return transaction report maps from typed native report handles
 - `transact-text!` and `with-text` return raw EDN report strings
 - `q` returns a set of row vectors
 - `rows` returns an ordered vector of row vectors

@@ -73,6 +73,22 @@ static int value_text_equals(vev_value_t value, const char *expected) {
     return matches;
 }
 
+static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
+    if (report == NULL) {
+        fprintf(stderr, "%s: null transaction report\n", label);
+        return 0;
+    }
+    vev_value_t value = vev_tx_report_value(report);
+    vev_value_t ok = map_get(value, ":ok");
+    if (vev_value_kind(ok) == VEV_VALUE_BOOL && vev_value_bool(ok)) {
+        return 1;
+    }
+    const char *edn = vev_tx_report_edn(report);
+    fprintf(stderr, "%s: transaction failed: %s\n", label, edn);
+    vev_string_free(edn);
+    return 0;
+}
+
 int main(void) {
     printf("version: %s\n", vev_version());
 
@@ -82,12 +98,17 @@ int main(void) {
         return 1;
     }
 
-    print_and_free(
-        "tx",
-        vev_transact_edn(
-            conn,
-            "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}"
-            " {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\"}]"));
+    vev_tx_report_t tx_report = vev_transact_edn_report(
+        conn,
+        "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}"
+        " {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\"}]");
+    print_and_free("tx", vev_tx_report_edn(tx_report));
+    if (!tx_report_ok_or_error("tx", tx_report)) {
+        vev_tx_report_free(tx_report);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_tx_report_free(tx_report);
 
     print_and_free(
         "query",
@@ -342,9 +363,20 @@ int main(void) {
         return 1;
     }
 
-    print_and_free(
-        "with-db",
-        vev_with_edn(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]"));
+    vev_tx_report_t with_report =
+        vev_with_edn_report(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]");
+    print_and_free("with-db", vev_tx_report_edn(with_report));
+    if (!tx_report_ok_or_error("with-db", with_report)) {
+        vev_tx_report_free(with_report);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+    vev_tx_report_free(with_report);
 
     vev_db_t next_db = vev_db_with_edn(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]");
     if (next_db == NULL) {

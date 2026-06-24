@@ -1,6 +1,4 @@
 (ns vev.core
-  (:require [clojure.edn :as edn]
-            [clojure.walk :as walk])
   (:import [java.nio.file Path]
            [vev Vev Vev$Entity Vev$MapValue]))
 
@@ -51,23 +49,6 @@
 
     :else
     value))
-
-(defn- entity-tag? [value]
-  (and (vector? value)
-       (= 2 (count value))
-       (= :vev/entity (first value))
-       (integer? (second value))))
-
-(defn- report-value [value]
-  (walk/postwalk
-    (fn [item]
-      (if (entity-tag? item)
-        (second item)
-        item))
-    value))
-
-(defn- report-map [text]
-  (report-value (edn/read-string text)))
 
 (defrecord Conn [^Vev engine native]
   java.lang.AutoCloseable
@@ -126,7 +107,8 @@
 
   Returns a Clojure transaction report map."
   [^Conn conn tx]
-  (report-map (transact-text! conn tx)))
+  (with-open [report (.transactReport (:native conn) (edn-text tx))]
+    (clj-value (.value report))))
 
 (def transact transact!)
 
@@ -146,7 +128,8 @@
 (defn with
   "Apply tx data to an immutable DB and return a transaction report map."
   [^DB db tx]
-  (report-map (with-text db tx)))
+  (with-open [report (.withReport (:native db) (edn-text tx))]
+    (clj-value (.value report))))
 
 (defn db-with
   "Apply tx data to an immutable DB and return the resulting immutable DB value."

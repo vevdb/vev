@@ -30,6 +30,10 @@ ABI_Result :: struct {
     pull_values: [dynamic]vev__Value,
 }
 
+ABI_Tx_Report :: struct {
+    value: vev__Value,
+}
+
 ABI_Stmt :: struct {
     query: rawptr,
     inputs: [dynamic]vev__Query_Input,
@@ -137,6 +141,20 @@ abi_result_pull_values_ptr :: proc(result: rawptr) -> ^[dynamic]vev__Value {
 
 abi_value_ptr :: proc(value: rawptr) -> ^vev__Value {
     return (^vev__Value)(value)
+}
+
+abi_alloc_tx_report :: proc(value: vev__Value) -> rawptr {
+    wrapper := new(ABI_Tx_Report)
+    wrapper.value = value
+    return rawptr(wrapper)
+}
+
+abi_tx_report_value_ptr :: proc(report: rawptr) -> ^vev__Value {
+    return &((^ABI_Tx_Report)(report))^.value
+}
+
+abi_free_tx_report :: proc(report: rawptr) {
+    free((^ABI_Tx_Report)(report))
 }
 
 abi_free_result :: proc(result: rawptr) {
@@ -251,6 +269,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (def Vev-Prepared-Query (distinct rawptr))
 (def Vev-Result (distinct rawptr))
 (def Vev-Stmt (distinct rawptr))
+(def Vev-Tx-Report (distinct rawptr))
 (def Vev-Value (distinct rawptr))
 
 (defn- conn-ptr [conn: Vev-Conn] -> ^vev.Conn
@@ -270,6 +289,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- value-ptr [value: Vev-Value] -> ^vev.Value
   (abi-value-ptr (rawptr value)))
+
+(defn- tx-report-value-ptr [report: Vev-Tx-Report] -> ^vev.Value
+  (abi-tx-report-value-ptr (rawptr report)))
 
 (defn- stmt-query [stmt: Vev-Stmt] -> Vev-Prepared-Query
   (Vev-Prepared-Query (abi-stmt-query (rawptr stmt))))
@@ -342,6 +364,14 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (delete-value-containers-shallow item))
         (delete value.items))
     :else (do)))
+
+(defn- tx-report-handle-from-value [value: vev.Value] -> Vev-Tx-Report
+  (let [owned (value-owned value)]
+    (delete-value-containers-shallow value)
+    (Vev-Tx-Report (abi-alloc-tx-report owned))))
+
+(defn- tx-report-handle-from-report [report: vev.Tx-Report] -> Vev-Tx-Report
+  (tx-report-handle-from-value (vev.tx-report-value report)))
 
 (defn- delete-query-input-owned [input: vev.Query-Input]
   (case input.kind
@@ -522,6 +552,18 @@ abi_free_stmt :: proc(stmt: rawptr) {
     out))
 
 @export
+(defn vev_with_edn_report :abi "c" [db: Vev-DB, tx-text: cstring] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= tx-text nil))
+    (return (Vev-Tx-Report nil)))
+  (let [tx (text-from-c tx-text)
+        db-ptr (db-ptr db)
+        report (vev.with-text db-ptr^ tx)
+        out (tx-report-handle-from-report report)]
+    (delete tx)
+    out))
+
+@export
 (defn vev_db_with_edn :abi "c" [db: Vev-DB, tx-text: cstring] -> Vev-DB
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= tx-text nil))
@@ -551,6 +593,41 @@ abi_free_stmt :: proc(stmt: rawptr) {
         out (c-string-owned text)]
     (abi-conn-store-tx-source (rawptr conn) tx)
     out))
+
+@export
+(defn vev_transact_edn_report :abi "c" [conn: Vev-Conn, tx-text: cstring] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= tx-text nil))
+    (return (Vev-Tx-Report nil)))
+  (let [tx (text-from-c tx-text)
+        report (vev.transact-text (conn-ptr conn) tx)
+        out (tx-report-handle-from-report report)]
+    (abi-conn-store-tx-source (rawptr conn) tx)
+    out))
+
+@export
+(defn vev_tx_report_free :abi "c" [report: Vev-Tx-Report]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr report) nil)
+    (return))
+  (let [ptr (tx-report-value-ptr report)]
+    (delete-owned-value ptr^)
+    (abi-free-tx-report (rawptr report))))
+
+@export
+(defn vev_tx_report_value :abi "c" [report: Vev-Tx-Report] -> Vev-Value
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr report) nil)
+    (return (Vev-Value nil)))
+  (Vev-Value (rawptr (tx-report-value-ptr report))))
+
+@export
+(defn vev_tx_report_edn :abi "c" [report: Vev-Tx-Report] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr report) nil)
+    (return (c-string-owned "nil")))
+  (let [ptr (tx-report-value-ptr report)]
+    (c-string-owned (vev.value-serializable-text ptr^))))
 
 @export
 (defn vev_query_edn :abi "c" [conn: Vev-Conn, query-text: cstring] -> cstring
