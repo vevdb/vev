@@ -9,6 +9,7 @@ type VevResult = *mut c_void;
 type VevStmt = *mut c_void;
 type VevTxReport = *mut c_void;
 type VevValue = *const c_void;
+type VevValueHandle = *mut c_void;
 
 const VEV_VALUE_NIL: c_int = 0;
 const VEV_VALUE_ENTITY: c_int = 1;
@@ -71,6 +72,26 @@ unsafe extern "C" {
         query: VevPreparedQuery,
         inputs_text: *const c_char,
     ) -> VevResult;
+    fn vev_pull_edn(
+        db: VevDb,
+        pattern_text: *const c_char,
+        entity: c_ulonglong,
+    ) -> VevValueHandle;
+    fn vev_pull_lookup_ref_string_edn(
+        db: VevDb,
+        pattern_text: *const c_char,
+        attr: *const c_char,
+        value: *const c_char,
+    ) -> VevValueHandle;
+    fn vev_pull_many_edn(
+        db: VevDb,
+        pattern_text: *const c_char,
+        entities: *const c_ulonglong,
+        entity_count: c_int,
+    ) -> VevValueHandle;
+    fn vev_value_handle_free(handle: VevValueHandle);
+    fn vev_value_handle_value(handle: VevValueHandle) -> VevValue;
+    fn vev_value_handle_edn(handle: VevValueHandle) -> *const c_char;
 
     fn vev_result_free(result: VevResult);
     fn vev_result_ok(result: VevResult) -> bool;
@@ -276,12 +297,86 @@ impl Db {
             Ok(Db { raw })
         }
     }
+
+    fn pull(&self, pattern: &str, entity: u64) -> Result<Value, String> {
+        let pattern = cstring(pattern);
+        let raw = unsafe { vev_pull_edn(self.raw, pattern.as_ptr(), entity as c_ulonglong) };
+        let handle = ValueHandle::new(raw)?;
+        Ok(handle.value())
+    }
+
+    fn pull_lookup_ref_string(
+        &self,
+        pattern: &str,
+        attr: &str,
+        value: &str,
+    ) -> Result<Value, String> {
+        let pattern = cstring(pattern);
+        let attr = cstring(attr);
+        let value = cstring(value);
+        let raw = unsafe {
+            vev_pull_lookup_ref_string_edn(
+                self.raw,
+                pattern.as_ptr(),
+                attr.as_ptr(),
+                value.as_ptr(),
+            )
+        };
+        let handle = ValueHandle::new(raw)?;
+        Ok(handle.value())
+    }
+
+    fn pull_many(&self, pattern: &str, entities: &[u64]) -> Result<Value, String> {
+        let pattern = cstring(pattern);
+        let raw = unsafe {
+            vev_pull_many_edn(
+                self.raw,
+                pattern.as_ptr(),
+                entities.as_ptr(),
+                entities.len() as c_int,
+            )
+        };
+        let handle = ValueHandle::new(raw)?;
+        Ok(handle.value())
+    }
 }
 
 impl Drop for Db {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             unsafe { vev_db_release(self.raw) };
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
+struct ValueHandle {
+    raw: VevValueHandle,
+}
+
+impl ValueHandle {
+    fn new(raw: VevValueHandle) -> Result<Self, String> {
+        if raw.is_null() {
+            Err("pull returned null value handle".to_string())
+        } else {
+            Ok(Self { raw })
+        }
+    }
+
+    fn value(&self) -> Value {
+        unsafe { Library::value_to_rust(vev_value_handle_value(self.raw)) }
+    }
+
+    #[allow(dead_code)]
+    fn edn(&self) -> String {
+        unsafe { Library::owned_string(vev_value_handle_edn(self.raw)) }
+    }
+}
+
+impl Drop for ValueHandle {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { vev_value_handle_free(self.raw) };
             self.raw = ptr::null_mut();
         }
     }
@@ -503,6 +598,11 @@ fn main() -> Result<(), String> {
     }
 
     conn.transact(
+        r#"[[:db/add 90 :db/ident :user/email]
+            [:db/add 90 :db/unique :db.unique/identity]]"#,
+    );
+
+    conn.transact(
         r#"[[:db/add 100 :db/ident :user/friend]
             [:db/add 100 :db/valueType :db.type/ref]
             [:db/add 1 :user/friend 2]]"#,
@@ -558,6 +658,42 @@ fn main() -> Result<(), String> {
         || friend_name != Some(&Value::String("Grace".to_string()))
     {
         return Err("unexpected pull result".to_string());
+    }
+
+    let pull_db = conn.db()?;
+    let direct_pull = pull_db.pull("[:user/name {:user/friend [:user/name]}]", 1)?;
+    println!("direct pull: {direct_pull:?}");
+    let direct_friend = direct_pull
+        .map_get(":user/friend")
+        .and_then(|friend| friend.map_get(":user/name"));
+    if direct_pull.map_get(":user/name") != Some(&Value::String("Ada".to_string()))
+        || direct_friend != Some(&Value::String("Grace".to_string()))
+    {
+        return Err("unexpected direct pull".to_string());
+    }
+
+    let lookup_pull =
+        pull_db.pull_lookup_ref_string("[:user/name]", ":user/email", "ada@example.com")?;
+    println!("lookup pull: {lookup_pull:?}");
+    if lookup_pull.map_get(":user/name") != Some(&Value::String("Ada".to_string())) {
+        return Err("unexpected lookup-ref pull".to_string());
+    }
+
+    let many_pull = pull_db.pull_many("[:user/name]", &[1, 2])?;
+    println!("pull many: {many_pull:?}");
+    let mut many_names: Vec<String> = match many_pull {
+        Value::Vector(items) => items
+            .iter()
+            .filter_map(|item| match item.map_get(":user/name") {
+                Some(Value::String(name)) => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    many_names.sort();
+    if many_names != vec!["Ada".to_string(), "Grace".to_string()] {
+        return Err("unexpected pull-many".to_string());
     }
 
     let all_emails = conn.prepare(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;
