@@ -31,6 +31,11 @@ public final class Smoke {
             }
 
             conn.transact("""
+                [[:db/add 90 :db/ident :user/email]
+                 [:db/add 90 :db/unique :db.unique/identity]]
+                """);
+
+            conn.transact("""
                 [[:db/add 100 :db/ident :user/friend]
                  [:db/add 100 :db/valueType :db.type/ref]
                  [:db/add 1 :user/friend 2]]
@@ -86,6 +91,40 @@ public final class Smoke {
                             || !"Grace".equals(friendMap.get(":user/name"))) {
                             throw new IllegalStateException("unexpected pull result");
                         }
+                    }
+                }
+
+                try (Vev.DB pullDb = conn.db()) {
+                    Vev.MapValue directPull = (Vev.MapValue) pullDb.pull(
+                        "[:user/name {:user/friend [:user/name]}]",
+                        1);
+                    System.out.println("direct pull: " + directPull);
+                    Object friend = directPull.get(":user/friend");
+                    if (!"Ada".equals(directPull.get(":user/name"))
+                        || !(friend instanceof Vev.MapValue friendMap)
+                        || !"Grace".equals(friendMap.get(":user/name"))) {
+                        throw new IllegalStateException("unexpected direct pull");
+                    }
+
+                    Vev.MapValue lookupPull = (Vev.MapValue) pullDb.pullLookupRefString(
+                        "[:user/name]",
+                        ":user/email",
+                        "ada@example.com");
+                    System.out.println("lookup pull: " + lookupPull);
+                    if (!"Ada".equals(lookupPull.get(":user/name"))) {
+                        throw new IllegalStateException("unexpected lookup-ref pull");
+                    }
+
+                    @SuppressWarnings("unchecked")
+                    List<Object> manyPull = (List<Object>) pullDb.pullMany("[:user/name]", 1, 2);
+                    List<String> pullNames = new ArrayList<>();
+                    for (Object item : manyPull) {
+                        pullNames.add((String) ((Vev.MapValue) item).get(":user/name"));
+                    }
+                    Collections.sort(pullNames);
+                    System.out.println("pull many: " + manyPull);
+                    if (!pullNames.equals(List.of("Ada", "Grace"))) {
+                        throw new IllegalStateException("unexpected pull-many");
                     }
                 }
 
