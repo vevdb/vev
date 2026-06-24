@@ -70,6 +70,12 @@ public final class Vev {
     private final MethodHandle entityIntPairsValue;
     private final MethodHandle entityIntPairsEntitiesData;
     private final MethodHandle entityIntPairsValuesData;
+    private final MethodHandle queryDbPreparedEntityStringIntTriplesWithInputs;
+    private final MethodHandle entityStringIntTriplesFree;
+    private final MethodHandle entityStringIntTriplesCount;
+    private final MethodHandle entityStringIntTriplesEntitiesData;
+    private final MethodHandle entityStringIntTriplesIntsData;
+    private final MethodHandle entityStringIntTriplesString;
     private final MethodHandle pullEdn;
     private final MethodHandle pullLookupRefStringEdn;
     private final MethodHandle pullManyEdn;
@@ -86,6 +92,9 @@ public final class Vev {
     private final MethodHandle resultPullCount;
     private final MethodHandle resultPull;
     private final MethodHandle resultValueEntity;
+    private final MethodHandle resultValueInt;
+    private final MethodHandle resultValueBool;
+    private final MethodHandle resultValueText;
     private final MethodHandle valueKind;
     private final MethodHandle valueText;
     private final MethodHandle valueEntity;
@@ -157,6 +166,12 @@ public final class Vev {
         this.entityIntPairsValue = downcall("vev_entity_int_pairs_value", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.entityIntPairsEntitiesData = downcall("vev_entity_int_pairs_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityIntPairsValuesData = downcall("vev_entity_int_pairs_values_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedEntityStringIntTriplesWithInputs = downcall("vev_query_db_prepared_entity_string_int_triples_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityStringIntTriplesFree = downcall("vev_entity_string_int_triples_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.entityStringIntTriplesCount = downcall("vev_entity_string_int_triples_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.entityStringIntTriplesEntitiesData = downcall("vev_entity_string_int_triples_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityStringIntTriplesIntsData = downcall("vev_entity_string_int_triples_ints_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityStringIntTriplesString = downcall("vev_entity_string_int_triples_string", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.pullEdn = downcall("vev_pull_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
@@ -173,6 +188,9 @@ public final class Vev {
         this.resultPullCount = downcall("vev_result_pull_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.resultPull = downcall("vev_result_pull", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultValueEntity = downcall("vev_result_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueInt = downcall("vev_result_value_int", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueBool = downcall("vev_result_value_bool", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueText = downcall("vev_result_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.valueKind = downcall("vev_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.valueText = downcall("vev_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.valueEntity = downcall("vev_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
@@ -265,6 +283,17 @@ public final class Vev {
                 yield new MapValue(entries);
             }
             default -> textOf(value);
+        };
+    }
+
+    private Object resultValueToJava(MemorySegment result, int row, int column, int kind) throws Throwable {
+        return switch (kind) {
+            case 0 -> null;
+            case 1 -> new Entity((long) resultValueEntity.invoke(result, row, column));
+            case 2, 6, 7 -> ownedString((MemorySegment) resultValueText.invoke(result, row, column));
+            case 3 -> (long) resultValueInt.invoke(result, row, column);
+            case 5 -> (boolean) resultValueBool.invoke(result, row, column);
+            default -> valueToJava((MemorySegment) resultValue.invoke(result, row, column));
         };
     }
 
@@ -499,6 +528,33 @@ public final class Vev {
                     return new long[][] { entities, values };
                 } finally {
                     entityIntPairsFree.invoke(raw);
+                }
+            }
+        }
+
+        public Object[] queryEntityStringIntTripleColumns(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedEntityStringIntTriplesWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) entityStringIntTriplesCount.invoke(raw);
+                    if (count == 0) return new Object[] { new long[0], new String[0], new long[0] };
+                    MemorySegment entityData = (MemorySegment) entityStringIntTriplesEntitiesData.invoke(raw);
+                    MemorySegment intData = (MemorySegment) entityStringIntTriplesIntsData.invoke(raw);
+                    if (isNull(entityData) || isNull(intData)) return new Object[] { new long[0], new String[0], new long[0] };
+                    long[] entities = entityData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    long[] ints = intData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                    String[] strings = new String[count];
+                    for (int index = 0; index < count; index++) {
+                        strings[index] = ownedString((MemorySegment) entityStringIntTriplesString.invoke(raw, index));
+                    }
+                    return new Object[] { entities, strings, ints };
+                } finally {
+                    entityStringIntTriplesFree.invoke(raw);
                 }
             }
         }
@@ -801,7 +857,8 @@ public final class Vev {
                 List<Object> values = new ArrayList<>();
                 int valueCount = (int) resultValueCount.invoke(raw, row);
                 for (int column = 0; column < valueCount; column++) {
-                    values.add(valueToJava((MemorySegment) resultValue.invoke(raw, row, column)));
+                    int kind = (int) resultValueKind.invoke(raw, row, column);
+                    values.add(resultValueToJava(raw, row, column, kind));
                 }
                 int pullCount = (int) resultPullCount.invoke(raw, row);
                 for (int pull = 0; pull < pullCount; pull++) {

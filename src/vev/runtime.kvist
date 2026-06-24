@@ -6905,6 +6905,12 @@
   values: [dynamic]i64
 })
 
+(defstruct Entity-String-Int-Triples {
+  entities: [dynamic]u64
+  strings: [dynamic]string
+  ints: [dynamic]i64
+})
+
 (defstruct Entity-Int-Pair-Filter {
   attr: string
   value: Value
@@ -6953,6 +6959,21 @@
 (defn append-entity-int-pair-column! [columns: ^Entity-Int-Pair-Columns, entity: u64, value: i64]
   (arr.push! columns^.entities entity)
   (arr.push! columns^.values value))
+
+(defn empty-entity-string-int-triples [] -> Entity-String-Int-Triples
+  (Entity-String-Int-Triples {entities: (make [dynamic]u64)
+                              strings: (make [dynamic]string)
+                              ints: (make [dynamic]i64)}))
+
+(defn delete-entity-string-int-triples [columns: Entity-String-Int-Triples]
+  (delete columns.entities)
+  (delete columns.strings)
+  (delete columns.ints))
+
+(defn append-entity-string-int-triple! [columns: ^Entity-String-Int-Triples, entity: u64, text: string, value: i64]
+  (arr.push! columns^.entities entity)
+  (arr.push! columns^.strings text)
+  (arr.push! columns^.ints value))
 
 (defn empty-entity-two-value-plan [] -> Entity-Two-Value-Plan
   (Entity-Two-Value-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
@@ -7522,6 +7543,47 @@
     (set! out-stats.max-intermediate-bindings (count rows))
     (set! out-stats.output-rows (count rows))
     (profiled-result-set (result-set-ok rows) out-stats)))
+
+(defn q-query-entity-string-int-triples [db: DB, query: Query, inputs: []Query-Input] -> [columns: Entity-String-Int-Triples, ok: bool]
+  (let [out (empty-entity-string-int-triples)]
+    (when (> (count inputs) 0)
+      (return out false))
+    (let [[plan plan-ok] (query-entity-two-value-plan db query)]
+      (when (not plan-ok)
+        (delete plan.filters)
+        (return out false))
+      (let [filter-indexes (slice db.avet 0)
+            best-filter-index 0
+            best-low 0
+            best-high 0]
+        (for [filter-i (arr.range 0 (count plan.filters))]
+          (let [filter plan.filters[filter-i]
+                low (lower-bound-index db filter-indexes "avet" 0 filter.attr filter.value)
+                high (upper-bound-index db filter-indexes "avet" 0 filter.attr filter.value)]
+            (when (or (= filter-i 0)
+                      (< (- high low) (- best-high best-low)))
+              (set! best-filter-index filter-i)
+              (set! best-low low)
+              (set! best-high high))))
+        (for [i (arr.range best-low best-high)]
+          (let [filter-datom-index filter-indexes[i]
+                filter-datom db.datoms[filter-datom-index]]
+            (let [filters-match true]
+              (for [filter-i (arr.range 0 (count plan.filters))]
+                (when (not (= filter-i best-filter-index))
+                  (let [filter plan.filters[filter-i]]
+                    (when (not (cardinality-one-value-matches-fast-all-current? db filter-datom.e filter.attr filter.value))
+                      (set! filters-match false)))))
+              (when filters-match
+                (let [[first-value first-ok] (cardinality-one-value-fast-all-current db filter-datom.e plan.first-attr)
+                      [second-value second-ok] (cardinality-one-value-fast-all-current db filter-datom.e plan.second-attr)]
+                  (when (and first-ok
+                             second-ok
+                             (= first-value.kind .String)
+                             (= second-value.kind .Int))
+                    (append-entity-string-int-triple! (addr out) filter-datom.e first-value.text second-value.int-value)))))))
+        (delete plan.filters)
+        (return out true)))))
 
 (defn q-query-profiled-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Profiled-Result-Set
   (let [stats (query-stats-empty)
