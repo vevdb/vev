@@ -265,6 +265,82 @@ int main(void) {
         samples[sample_count / 2],
         sample_count);
 
+    vev_conn_t empty_conn = vev_conn_open_memory();
+    if (empty_conn == NULL) {
+        fprintf(stderr, "failed to open empty Vev connection\n");
+        vev_db_release(snapshot);
+        free(samples);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(prepared);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_db_t empty_db = vev_conn_db(empty_conn);
+    vev_conn_close(empty_conn);
+    if (empty_db == NULL) {
+        fprintf(stderr, "failed to retain empty DB snapshot\n");
+        vev_db_release(snapshot);
+        free(samples);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(prepared);
+        vev_conn_close(conn);
+        return 1;
+    }
+
+    const char *tx_text = "[{:db/id 1 :name \"Ada\"}]";
+    for (int i = 0; i < warmups; i++) {
+        const char *report = vev_with_edn(empty_db, tx_text);
+        vev_string_free(report);
+    }
+
+    for (int i = 0; i < sample_count; i++) {
+        double start = now_us();
+        const char *report = vev_with_edn(empty_db, tx_text);
+        double elapsed = now_us() - start;
+        vev_string_free(report);
+        samples[i] = elapsed;
+    }
+
+    qsort(samples, (size_t)sample_count, sizeof(double), compare_double);
+    printf(
+        "engine=c-abi workload=with-tx-report-text n=%d median_us=%.0f samples=%d\n",
+        1,
+        samples[sample_count / 2],
+        sample_count);
+
+    for (int i = 0; i < warmups; i++) {
+        vev_tx_report_t report = vev_with_edn_report(empty_db, tx_text);
+        vev_tx_report_free(report);
+    }
+
+    for (int i = 0; i < sample_count; i++) {
+        double start = now_us();
+        vev_tx_report_t report = vev_with_edn_report(empty_db, tx_text);
+        double elapsed = now_us() - start;
+        vev_value_t value = vev_tx_report_value(report);
+        if (vev_value_kind(value) != VEV_VALUE_MAP || vev_value_map_count(value) == 0) {
+            fprintf(stderr, "unexpected transaction report value\n");
+            vev_tx_report_free(report);
+            vev_db_release(empty_db);
+            vev_db_release(snapshot);
+            free(samples);
+            vev_stmt_free(stmt);
+            vev_prepared_query_free(prepared);
+            vev_conn_close(conn);
+            return 1;
+        }
+        vev_tx_report_free(report);
+        samples[i] = elapsed;
+    }
+
+    qsort(samples, (size_t)sample_count, sizeof(double), compare_double);
+    printf(
+        "engine=c-abi workload=with-tx-report-value n=%d median_us=%.0f samples=%d\n",
+        1,
+        samples[sample_count / 2],
+        sample_count);
+
+    vev_db_release(empty_db);
     vev_db_release(snapshot);
     free(samples);
     vev_stmt_free(stmt);

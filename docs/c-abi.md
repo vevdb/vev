@@ -75,6 +75,10 @@ Current workloads:
   result handle
 - `prepared-email-db-bound-result`: immutable DB value plus typed statement
   binding, typed result handle
+- `with-tx-report-text`: immutable DB value plus EDN transaction text, rendered
+  transaction report text
+- `with-tx-report-value`: immutable DB value plus EDN transaction text, typed
+  transaction report value handle
 
 Latest local run:
 
@@ -85,6 +89,8 @@ comparison workload=prepared-email-bound-result c_abi_over_native=1.00x
 comparison workload=db-snapshot c_abi_over_native=1.06x
 comparison workload=prepared-email-db-result c_abi_over_native=1.00x
 comparison workload=prepared-email-db-bound-result c_abi_over_native=1.00x
+comparison workload=with-tx-report-text c_abi_over_native=1.00x
+comparison workload=with-tx-report-value c_abi_over_native=1.15x
 ```
 
 Statement bindings avoid parsing EDN input text on each call and currently

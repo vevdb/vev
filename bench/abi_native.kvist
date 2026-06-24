@@ -47,13 +47,17 @@
         bound-result-samples (make [dynamic]f64 0 sample-count)
         snapshot-samples (make [dynamic]f64 0 sample-count)
         snapshot-query-samples (make [dynamic]f64 0 sample-count)
-        snapshot-bound-query-samples (make [dynamic]f64 0 sample-count)]
+        snapshot-bound-query-samples (make [dynamic]f64 0 sample-count)
+        with-text-samples (make [dynamic]f64 0 sample-count)
+        with-value-samples (make [dynamic]f64 0 sample-count)]
     (defer (delete value-samples))
     (defer (delete result-samples))
     (defer (delete bound-result-samples))
     (defer (delete snapshot-samples))
     (defer (delete snapshot-query-samples))
     (defer (delete snapshot-bound-query-samples))
+    (defer (delete with-text-samples))
+    (defer (delete with-value-samples))
     (seed-people (addr conn) n)
     (for [_ (arr.range 0 warmups)]
       (discard (vev.q-prepared-value-with-input-text conn.db prepared inputs)))
@@ -98,9 +102,33 @@
               elapsed (elapsed-us start)]
           (arr.push! snapshot-bound-query-samples elapsed)))
       (vev.delete-owned-db snapshot))
+    (let [empty-conn (vev.create-conn)
+          empty-db (vev.db (addr empty-conn))
+          tx-text "[{:db/id 1 :name \"Ada\"}]"]
+      (for [_ (arr.range 0 warmups)]
+        (let [value (vev.with-text-value empty-db tx-text)
+              rendered (vev.value-serializable-text value)]
+          (discard rendered)))
+      (for [_ (arr.range 0 sample-count)]
+        (let [start (time.now)
+              value (vev.with-text-value empty-db tx-text)
+              rendered (vev.value-serializable-text value)
+              elapsed (elapsed-us start)]
+          (discard rendered)
+          (arr.push! with-text-samples elapsed)))
+      (for [_ (arr.range 0 warmups)]
+        (discard (vev.tx-report-value (vev.with-text empty-db tx-text))))
+      (for [_ (arr.range 0 sample-count)]
+        (let [start (time.now)
+              _ (vev.tx-report-value (vev.with-text empty-db tx-text))
+              elapsed (elapsed-us start)]
+          (arr.push! with-value-samples elapsed)))
+      (vev.delete-owned-db empty-db))
     (print-median "vev-native" "prepared-email-input-text" n (slice value-samples 0))
     (print-median "vev-native" "prepared-email-result" n (slice result-samples 0))
     (print-median "vev-native" "prepared-email-bound-result" n (slice bound-result-samples 0))
     (print-median "vev-native" "db-snapshot" n (slice snapshot-samples 0))
     (print-median "vev-native" "prepared-email-db-result" n (slice snapshot-query-samples 0))
-    (print-median "vev-native" "prepared-email-db-bound-result" n (slice snapshot-bound-query-samples 0))))
+    (print-median "vev-native" "prepared-email-db-bound-result" n (slice snapshot-bound-query-samples 0))
+    (print-median "vev-native" "with-tx-report-text" 1 (slice with-text-samples 0))
+    (print-median "vev-native" "with-tx-report-value" 1 (slice with-value-samples 0))))
