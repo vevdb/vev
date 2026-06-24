@@ -18,20 +18,27 @@ text frontend used by C, Python, Rust, and Java callers.
 
   (let [db (vev/db conn)]
     (vev/q
+      db
       '[:find ?name
-        :where [?e :user/name ?name]]
-      db)))
+        :where [?e :user/name ?name]])))
 ```
 
-Inputs are passed as ordinary arguments after the query:
+`q` accepts both DB-first Vev style and query-first Datomic/DataScript style:
+
+```clojure
+(vev/q db '[:find ?name :where [?e :user/name ?name]])
+(vev/q '[:find ?name :where [?e :user/name ?name]] db)
+```
+
+Inputs are passed as ordinary arguments after the query and DB:
 
 ```clojure
 (vev/q
+  db
   '[:find ?name
     :in [?email ...]
     :where [?e :user/email ?email]
            [?e :user/name ?name]]
-  db
   ["ada@example.com" "grace@example.com"])
 ```
 
@@ -43,7 +50,7 @@ Prepared queries are reusable:
                       :in ?needle
                       :where [?e :user/email ?email]
                              [(= ?email ?needle)]])]
-  (vev/q query db "ada@example.com"))
+  (vev/q db query "ada@example.com"))
 ```
 
 Pull follows the same DB-value shape:
@@ -52,11 +59,32 @@ Pull follows the same DB-value shape:
 (vev/pull db
   [:user/name {:user/friend [:user/name]}]
   1)
+
+(vev/pull-many db [:user/name] [1 2])
+```
+
+Immutable DB values support Datomic/DataScript-style `with` operations:
+
+```clojure
+(let [report (vev/with db [{:db/id 3 :user/name "Barbara"}])
+      next-db (vev/db-with db [{:db/id 3 :user/name "Barbara"}])]
+  [(:ok report)
+   (vev/q db '[:find ?e :where [?e :user/name "Barbara"]])
+   (vev/q next-db '[:find ?e :where [?e :user/name "Barbara"]])])
+```
+
+A mutable connection can also be initialized from an immutable DB snapshot:
+
+```clojure
+(with-open [conn (vev/conn-from-db next-db)]
+  (vev/transact! conn [{:db/id 4 :user/name "Dorothy"}])
+  (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
 ```
 
 The current package is deliberately thin:
 
-- transaction reports are still returned as rendered EDN strings
+- `transact!` and `with` return transaction report maps from typed native report handles
+- `transact-text!` and `with-text` return raw EDN report strings
 - `q` returns a set of row vectors
 - `rows` returns an ordered vector of row vectors
 - entity ids are converted to integers

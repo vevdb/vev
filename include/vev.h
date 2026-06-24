@@ -12,6 +12,7 @@ typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
 typedef void *vev_stmt_t;
+typedef void *vev_tx_report_t;
 typedef const void *vev_value_t;
 
 enum {
@@ -27,17 +28,45 @@ enum {
     VEV_VALUE_MAP = 9,
 };
 
+enum {
+    VEV_VALUE_VISIT_VALUE = 1,
+    VEV_VALUE_VISIT_END = 2,
+};
+
+enum {
+    VEV_RESULT_VISIT_ROW_BEGIN = 1,
+    VEV_RESULT_VISIT_VALUE = 2,
+    VEV_RESULT_VISIT_PULL = 3,
+    VEV_RESULT_VISIT_ROW_END = 4,
+};
+
+typedef bool (*vev_value_visit_fn)(void *user, int event, vev_value_t value);
+typedef bool (*vev_result_visit_fn)(
+    void *user,
+    int event,
+    int row,
+    int index,
+    vev_value_t value);
+
 const char *vev_version(void);
 
 vev_conn_t vev_conn_open_memory(void);
 void vev_conn_close(vev_conn_t conn);
 vev_db_t vev_conn_db(vev_conn_t conn);
+vev_conn_t vev_conn_from_db(vev_db_t db);
 vev_db_t vev_db_retain(vev_db_t db);
 void vev_db_release(vev_db_t db);
+const char *vev_with_edn(vev_db_t db, const char *tx_text);
+vev_tx_report_t vev_with_edn_report(vev_db_t db, const char *tx_text);
+vev_db_t vev_db_with_edn(vev_db_t db, const char *tx_text);
 
 void vev_string_free(const char *text);
 
 const char *vev_transact_edn(vev_conn_t conn, const char *tx_text);
+vev_tx_report_t vev_transact_edn_report(vev_conn_t conn, const char *tx_text);
+void vev_tx_report_free(vev_tx_report_t report);
+vev_value_t vev_tx_report_value(vev_tx_report_t report);
+const char *vev_tx_report_edn(vev_tx_report_t report);
 const char *vev_query_edn(vev_conn_t conn, const char *query_text);
 const char *vev_query_edn_with_inputs(
     vev_conn_t conn,
@@ -55,10 +84,27 @@ bool vev_stmt_bind_symbol(vev_stmt_t stmt, const char *value);
 bool vev_stmt_bind_entity(vev_stmt_t stmt, unsigned long long value);
 bool vev_stmt_bind_int(vev_stmt_t stmt, long long value);
 bool vev_stmt_bind_bool(vev_stmt_t stmt, bool value);
+bool vev_stmt_bind_lookup_ref_string(vev_stmt_t stmt, const char *attr, const char *value);
+bool vev_stmt_bind_lookup_ref_keyword(vev_stmt_t stmt, const char *attr, const char *value);
+bool vev_stmt_bind_lookup_ref_entity(vev_stmt_t stmt, const char *attr, unsigned long long value);
+bool vev_stmt_bind_lookup_ref_int(vev_stmt_t stmt, const char *attr, long long value);
 bool vev_stmt_bind_string_collection(vev_stmt_t stmt, const char **values, int value_count);
 bool vev_stmt_bind_entity_collection(vev_stmt_t stmt, const unsigned long long *values, int value_count);
 bool vev_stmt_bind_int_collection(vev_stmt_t stmt, const long long *values, int value_count);
 bool vev_stmt_bind_bool_collection(vev_stmt_t stmt, const bool *values, int value_count);
+bool vev_stmt_bind_string_tuple(vev_stmt_t stmt, const char **values, int value_count);
+bool vev_stmt_bind_entity_tuple(vev_stmt_t stmt, const unsigned long long *values, int value_count);
+bool vev_stmt_bind_int_tuple(vev_stmt_t stmt, const long long *values, int value_count);
+bool vev_stmt_bind_bool_tuple(vev_stmt_t stmt, const bool *values, int value_count);
+bool vev_stmt_bind_string_relation(vev_stmt_t stmt, const char **values, int value_count, int width);
+bool vev_stmt_bind_entity_relation(vev_stmt_t stmt, const unsigned long long *values, int value_count, int width);
+bool vev_stmt_bind_int_relation(vev_stmt_t stmt, const long long *values, int value_count, int width);
+bool vev_stmt_bind_bool_relation(vev_stmt_t stmt, const bool *values, int value_count, int width);
+bool vev_stmt_bind_lookup_ref_string_collection(
+    vev_stmt_t stmt,
+    const char *attr,
+    const char **values,
+    int value_count);
 const char *vev_query_prepared(vev_conn_t conn, vev_prepared_query_t query);
 const char *vev_query_prepared_with_inputs(
     vev_conn_t conn,
@@ -88,6 +134,7 @@ int vev_result_value_kind(vev_result_t result, int row, int column);
 vev_value_t vev_result_value(vev_result_t result, int row, int column);
 int vev_result_pull_count(vev_result_t result, int row);
 vev_value_t vev_result_pull(vev_result_t result, int row, int pull);
+bool vev_result_visit(vev_result_t result, vev_result_visit_fn visitor, void *user);
 unsigned long long vev_result_value_entity(vev_result_t result, int row, int column);
 long long vev_result_value_int(vev_result_t result, int row, int column);
 bool vev_result_value_bool(vev_result_t result, int row, int column);
@@ -106,6 +153,7 @@ vev_value_t vev_value_item(vev_value_t value, int index);
 int vev_value_map_count(vev_value_t value);
 vev_value_t vev_value_map_key(vev_value_t value, int index);
 vev_value_t vev_value_map_value(vev_value_t value, int index);
+bool vev_value_visit(vev_value_t value, vev_value_visit_fn visitor, void *user);
 
 #ifdef __cplusplus
 }

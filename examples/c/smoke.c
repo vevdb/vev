@@ -73,6 +73,76 @@ static int value_text_equals(vev_value_t value, const char *expected) {
     return matches;
 }
 
+struct value_visit_stats {
+    int values;
+    int ends;
+    int depth;
+    int max_depth;
+};
+
+static bool count_value_visit(void *user, int event, vev_value_t value) {
+    struct value_visit_stats *stats = (struct value_visit_stats *)user;
+    if (event == VEV_VALUE_VISIT_VALUE) {
+        stats->values++;
+        int kind = vev_value_kind(value);
+        if (kind == VEV_VALUE_VECTOR || kind == VEV_VALUE_MAP) {
+            stats->depth++;
+            if (stats->depth > stats->max_depth) {
+                stats->max_depth = stats->depth;
+            }
+        }
+    } else if (event == VEV_VALUE_VISIT_END) {
+        stats->ends++;
+        stats->depth--;
+    }
+    return true;
+}
+
+struct result_visit_stats {
+    int row_begins;
+    int row_ends;
+    int values;
+    int pulls;
+};
+
+static bool count_result_visit(void *user, int event, int row, int index, vev_value_t value) {
+    (void)row;
+    (void)index;
+    struct result_visit_stats *stats = (struct result_visit_stats *)user;
+    if (event == VEV_RESULT_VISIT_ROW_BEGIN) {
+        stats->row_begins++;
+    } else if (event == VEV_RESULT_VISIT_ROW_END) {
+        stats->row_ends++;
+    } else if (event == VEV_RESULT_VISIT_VALUE) {
+        if (value == NULL) {
+            return false;
+        }
+        stats->values++;
+    } else if (event == VEV_RESULT_VISIT_PULL) {
+        if (value == NULL) {
+            return false;
+        }
+        stats->pulls++;
+    }
+    return true;
+}
+
+static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
+    if (report == NULL) {
+        fprintf(stderr, "%s: null transaction report\n", label);
+        return 0;
+    }
+    vev_value_t value = vev_tx_report_value(report);
+    vev_value_t ok = map_get(value, ":ok");
+    if (vev_value_kind(ok) == VEV_VALUE_BOOL && vev_value_bool(ok)) {
+        return 1;
+    }
+    const char *edn = vev_tx_report_edn(report);
+    fprintf(stderr, "%s: transaction failed: %s\n", label, edn);
+    vev_string_free(edn);
+    return 0;
+}
+
 int main(void) {
     printf("version: %s\n", vev_version());
 
@@ -82,12 +152,24 @@ int main(void) {
         return 1;
     }
 
+    vev_tx_report_t tx_report = vev_transact_edn_report(
+        conn,
+        "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}"
+        " {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\"}]");
+    print_and_free("tx", vev_tx_report_edn(tx_report));
+    if (!tx_report_ok_or_error("tx", tx_report)) {
+        vev_tx_report_free(tx_report);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_tx_report_free(tx_report);
+
     print_and_free(
-        "tx",
+        "tx-email-unique",
         vev_transact_edn(
             conn,
-            "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}"
-            " {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\"}]"));
+            "[[:db/add 90 :db/ident :user/email]"
+            " [:db/add 90 :db/unique :db.unique/identity]]"));
 
     print_and_free(
         "query",
@@ -149,6 +231,24 @@ int main(void) {
         return 1;
     }
     print_result_rows(result);
+    struct result_visit_stats result_stats = {0, 0, 0, 0};
+    if (!vev_result_visit(result, count_result_visit, &result_stats) ||
+        result_stats.row_begins != 1 ||
+        result_stats.row_ends != 1 ||
+        result_stats.values != 2 ||
+        result_stats.pulls != 0) {
+        fprintf(
+            stderr,
+            "unexpected result visitor stats: rows=%d/%d values=%d pulls=%d\n",
+            result_stats.row_begins,
+            result_stats.row_ends,
+            result_stats.values,
+            result_stats.pulls);
+        vev_result_free(result);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
     vev_result_free(result);
 
     vev_stmt_t stmt = vev_stmt_create(query);
@@ -233,6 +333,192 @@ int main(void) {
     vev_stmt_free(collection_stmt);
     vev_prepared_query_free(collection_query);
 
+    vev_prepared_query_t tuple_query =
+        vev_prepare_query_edn("[:find ?e :in [?name ?email] :where [?e :user/name ?name] [?e :user/email ?email]]");
+    if (tuple_query == NULL) {
+        fprintf(stderr, "failed to prepare tuple query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t tuple_stmt = vev_stmt_create(tuple_query);
+    if (tuple_stmt == NULL) {
+        fprintf(stderr, "failed to create tuple statement\n");
+        vev_prepared_query_free(tuple_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *tuple_values[] = {"Ada", "ada@example.com"};
+    if (!vev_stmt_bind_string_tuple(tuple_stmt, tuple_values, 2)) {
+        fprintf(stderr, "failed to bind tuple statement\n");
+        vev_stmt_free(tuple_stmt);
+        vev_prepared_query_free(tuple_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t tuple_result = vev_query_stmt_result(conn, tuple_stmt);
+    int tuple_rows = result_row_count_or_error("stmt-tuple", tuple_result);
+    printf("stmt-tuple rows: %d\n", tuple_rows);
+    vev_result_free(tuple_result);
+    if (tuple_rows != 1) {
+        fprintf(stderr, "unexpected tuple statement row count\n");
+        vev_stmt_free(tuple_stmt);
+        vev_prepared_query_free(tuple_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_free(tuple_stmt);
+    vev_prepared_query_free(tuple_query);
+
+    vev_prepared_query_t relation_query =
+        vev_prepare_query_edn("[:find ?name ?label :in [[?email ?label]] :where [?e :user/email ?email] [?e :user/name ?name]]");
+    if (relation_query == NULL) {
+        fprintf(stderr, "failed to prepare relation query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t relation_stmt = vev_stmt_create(relation_query);
+    if (relation_stmt == NULL) {
+        fprintf(stderr, "failed to create relation statement\n");
+        vev_prepared_query_free(relation_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *relation_values[] = {
+        "ada@example.com",
+        "primary",
+        "missing@example.com",
+        "missing",
+    };
+    if (!vev_stmt_bind_string_relation(relation_stmt, relation_values, 4, 2)) {
+        fprintf(stderr, "failed to bind relation statement\n");
+        vev_stmt_free(relation_stmt);
+        vev_prepared_query_free(relation_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t relation_result = vev_query_stmt_result(conn, relation_stmt);
+    int relation_rows = result_row_count_or_error("stmt-relation", relation_result);
+    vev_value_t relation_name = vev_result_value(relation_result, 0, 0);
+    vev_value_t relation_label = vev_result_value(relation_result, 0, 1);
+    printf("stmt-relation rows: %d\n", relation_rows);
+    if (relation_rows != 1 ||
+        !value_text_equals(relation_name, "Ada") ||
+        !value_text_equals(relation_label, "primary")) {
+        fprintf(stderr, "unexpected relation statement result\n");
+        vev_result_free(relation_result);
+        vev_stmt_free(relation_stmt);
+        vev_prepared_query_free(relation_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(relation_result);
+    vev_stmt_free(relation_stmt);
+    vev_prepared_query_free(relation_query);
+
+    vev_prepared_query_t lookup_query =
+        vev_prepare_query_edn("[:find ?name :in ?person :where [?person :user/name ?name]]");
+    if (lookup_query == NULL) {
+        fprintf(stderr, "failed to prepare lookup-ref query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t lookup_stmt = vev_stmt_create(lookup_query);
+    if (lookup_stmt == NULL) {
+        fprintf(stderr, "failed to create lookup-ref statement\n");
+        vev_prepared_query_free(lookup_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (!vev_stmt_bind_lookup_ref_string(lookup_stmt, ":user/email", "ada@example.com")) {
+        fprintf(stderr, "failed to bind lookup-ref statement\n");
+        vev_stmt_free(lookup_stmt);
+        vev_prepared_query_free(lookup_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t lookup_result = vev_query_stmt_result(conn, lookup_stmt);
+    int lookup_rows = result_row_count_or_error("stmt-lookup-ref", lookup_result);
+    vev_value_t lookup_name = vev_result_value(lookup_result, 0, 0);
+    printf("stmt-lookup-ref rows: %d\n", lookup_rows);
+    if (lookup_rows != 1 || !value_text_equals(lookup_name, "Ada")) {
+        fprintf(stderr, "unexpected lookup-ref statement result\n");
+        vev_result_free(lookup_result);
+        vev_stmt_free(lookup_stmt);
+        vev_prepared_query_free(lookup_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(lookup_result);
+    vev_stmt_free(lookup_stmt);
+    vev_prepared_query_free(lookup_query);
+
+    vev_prepared_query_t lookup_collection_query =
+        vev_prepare_query_edn("[:find ?name :in [?person ...] :where [?person :user/name ?name]]");
+    if (lookup_collection_query == NULL) {
+        fprintf(stderr, "failed to prepare lookup-ref collection query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t lookup_collection_stmt = vev_stmt_create(lookup_collection_query);
+    if (lookup_collection_stmt == NULL) {
+        fprintf(stderr, "failed to create lookup-ref collection statement\n");
+        vev_prepared_query_free(lookup_collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (!vev_stmt_bind_lookup_ref_string_collection(lookup_collection_stmt, ":user/email", emails, 2)) {
+        fprintf(stderr, "failed to bind lookup-ref collection statement\n");
+        vev_stmt_free(lookup_collection_stmt);
+        vev_prepared_query_free(lookup_collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t lookup_collection_result = vev_query_stmt_result(conn, lookup_collection_stmt);
+    int lookup_collection_rows = result_row_count_or_error("stmt-lookup-ref-collection", lookup_collection_result);
+    printf("stmt-lookup-ref-collection rows: %d\n", lookup_collection_rows);
+    vev_result_free(lookup_collection_result);
+    if (lookup_collection_rows != 2) {
+        fprintf(stderr, "unexpected lookup-ref collection statement row count\n");
+        vev_stmt_free(lookup_collection_stmt);
+        vev_prepared_query_free(lookup_collection_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_free(lookup_collection_stmt);
+    vev_prepared_query_free(lookup_collection_query);
+
     vev_prepared_query_t pull_query =
         vev_prepare_query_edn("[:find (pull ?e [:user/name {:user/friend [:user/name]}]) :where [?e :user/name \"Ada\"]]");
     if (pull_query == NULL) {
@@ -258,6 +544,46 @@ int main(void) {
         const char *edn = vev_value_edn(pulled);
         fprintf(stderr, "unexpected pull traversal output: %s\n", edn);
         vev_string_free(edn);
+        vev_result_free(pull_result);
+        vev_prepared_query_free(pull_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    struct value_visit_stats visit_stats = {0, 0, 0, 0};
+    if (!vev_value_visit(pulled, count_value_visit, &visit_stats) ||
+        visit_stats.values < 7 ||
+        visit_stats.ends != 2 ||
+        visit_stats.max_depth < 2 ||
+        visit_stats.depth != 0) {
+        fprintf(
+            stderr,
+            "unexpected pull visitor stats: values=%d ends=%d max_depth=%d depth=%d\n",
+            visit_stats.values,
+            visit_stats.ends,
+            visit_stats.max_depth,
+            visit_stats.depth);
+        vev_result_free(pull_result);
+        vev_prepared_query_free(pull_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    struct result_visit_stats pull_result_stats = {0, 0, 0, 0};
+    if (!vev_result_visit(pull_result, count_result_visit, &pull_result_stats) ||
+        pull_result_stats.row_begins != 1 ||
+        pull_result_stats.row_ends != 1 ||
+        pull_result_stats.values != 0 ||
+        pull_result_stats.pulls != 1) {
+        fprintf(
+            stderr,
+            "unexpected pull result visitor stats: rows=%d/%d values=%d pulls=%d\n",
+            pull_result_stats.row_begins,
+            pull_result_stats.row_ends,
+            pull_result_stats.values,
+            pull_result_stats.pulls);
         vev_result_free(pull_result);
         vev_prepared_query_free(pull_query);
         vev_stmt_free(stmt);
@@ -327,6 +653,103 @@ int main(void) {
         return 1;
     }
 
+    vev_prepared_query_t barbara_query =
+        vev_prepare_query_edn("[:find ?e :where [?e :user/name \"Barbara\"]]");
+    vev_prepared_query_t dorothy_query =
+        vev_prepare_query_edn("[:find ?e :where [?e :user/name \"Dorothy\"]]");
+    if (barbara_query == NULL || dorothy_query == NULL) {
+        fprintf(stderr, "failed to prepare DB value queries\n");
+        if (barbara_query != NULL) vev_prepared_query_free(barbara_query);
+        if (dorothy_query != NULL) vev_prepared_query_free(dorothy_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    vev_tx_report_t with_report =
+        vev_with_edn_report(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]");
+    print_and_free("with-db", vev_tx_report_edn(with_report));
+    if (!tx_report_ok_or_error("with-db", with_report)) {
+        vev_tx_report_free(with_report);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+    vev_tx_report_free(with_report);
+
+    vev_db_t next_db = vev_db_with_edn(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]");
+    if (next_db == NULL) {
+        fprintf(stderr, "failed to create DB value with tx data\n");
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    vev_result_t source_barbara = vev_query_db_prepared_result_with_inputs(snapshot, barbara_query, "[]");
+    vev_result_t next_barbara = vev_query_db_prepared_result_with_inputs(next_db, barbara_query, "[]");
+    int source_barbara_rows = result_row_count_or_error("source-barbara", source_barbara);
+    int next_barbara_rows = result_row_count_or_error("next-barbara", next_barbara);
+    vev_result_free(source_barbara);
+    vev_result_free(next_barbara);
+    if (source_barbara_rows != 0 || next_barbara_rows != 1) {
+        fprintf(stderr, "unexpected db-with rows: source=%d next=%d\n", source_barbara_rows, next_barbara_rows);
+        vev_db_release(next_db);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    vev_conn_t derived = vev_conn_from_db(next_db);
+    if (derived == NULL) {
+        fprintf(stderr, "failed to create derived connection\n");
+        vev_db_release(next_db);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+    print_and_free(
+        "derived-tx",
+        vev_transact_edn(derived, "[{:db/id 5 :user/name \"Dorothy\"}]"));
+    vev_result_t derived_barbara = vev_query_prepared_result_with_inputs(derived, barbara_query, "[]");
+    vev_result_t derived_dorothy = vev_query_prepared_result_with_inputs(derived, dorothy_query, "[]");
+    int derived_barbara_rows = result_row_count_or_error("derived-barbara", derived_barbara);
+    int derived_dorothy_rows = result_row_count_or_error("derived-dorothy", derived_dorothy);
+    vev_result_free(derived_barbara);
+    vev_result_free(derived_dorothy);
+    vev_conn_close(derived);
+    if (derived_barbara_rows != 1 || derived_dorothy_rows != 1) {
+        fprintf(stderr, "unexpected derived connection rows\n");
+        vev_db_release(next_db);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    vev_db_release(next_db);
+    vev_prepared_query_free(dorothy_query);
+    vev_prepared_query_free(barbara_query);
     vev_db_release(snapshot);
     vev_prepared_query_free(all_emails);
 

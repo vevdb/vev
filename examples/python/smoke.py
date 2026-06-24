@@ -6,13 +6,23 @@ import vev
 
 def main() -> int:
     with vev.open_memory() as conn:
-        tx = conn.transact(
+        with conn.transact_report(
             """
             [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
              {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}]
             """
+        ) as tx:
+            tx_value = tx.value()
+            print(f"tx: {tx.edn()}")
+            if not tx_value.get(":ok") or len(tx_value.get(":tx-data", [])) != 4:
+                raise RuntimeError("unexpected typed transaction report")
+
+        conn.transact(
+            """
+            [[:db/add 90 :db/ident :user/email]
+             [:db/add 90 :db/unique :db.unique/identity]]
+            """
         )
-        print(f"tx: {tx}")
 
         collection = conn.query_text(
             """
@@ -73,6 +83,85 @@ def main() -> int:
             finally:
                 collection_query.close()
 
+            tuple_query = conn.prepare(
+                """
+                [:find ?e
+                 :in [?name ?email]
+                 :where [?e :user/name ?name]
+                        [?e :user/email ?email]]
+                """
+            )
+            try:
+                with tuple_query.statement() as stmt:
+                    rows = stmt.bind(vev.TupleInput(("Ada", "ada@example.com"))).rows(conn)
+                    print(f"tuple statement rows: {rows}")
+                    if rows != [[vev.Entity(1)]]:
+                        raise RuntimeError("unexpected tuple statement rows")
+            finally:
+                tuple_query.close()
+
+            relation_query = conn.prepare(
+                """
+                [:find ?name ?label
+                 :in [[?email ?label]]
+                 :where [?e :user/email ?email]
+                        [?e :user/name ?name]]
+                """
+            )
+            try:
+                with relation_query.statement() as stmt:
+                    rows = stmt.bind(
+                        vev.Relation(
+                            (
+                                ("ada@example.com", "primary"),
+                                ("missing@example.com", "missing"),
+                            )
+                        )
+                    ).rows(conn)
+                    print(f"relation statement rows: {rows}")
+                    if rows != [["Ada", "primary"]]:
+                        raise RuntimeError("unexpected relation statement rows")
+            finally:
+                relation_query.close()
+
+            lookup_query = conn.prepare(
+                """
+                [:find ?name
+                 :in ?person
+                 :where [?person :user/name ?name]]
+                """
+            )
+            try:
+                with lookup_query.statement() as stmt:
+                    rows = stmt.bind(vev.LookupRef(":user/email", "ada@example.com")).rows(conn)
+                    print(f"lookup-ref statement rows: {rows}")
+                    if rows != [["Ada"]]:
+                        raise RuntimeError("unexpected lookup-ref statement rows")
+            finally:
+                lookup_query.close()
+
+            lookup_collection_query = conn.prepare(
+                """
+                [:find ?name
+                 :in [?person ...]
+                 :where [?person :user/name ?name]]
+                """
+            )
+            try:
+                with lookup_collection_query.statement() as stmt:
+                    rows = stmt.bind(
+                        [
+                            vev.LookupRef(":user/email", "ada@example.com"),
+                            vev.LookupRef(":user/email", "grace@example.com"),
+                        ]
+                    ).rows(conn)
+                    names = sorted(row[0] for row in rows)
+                    print(f"lookup-ref collection statement names: {names}")
+                    if names != ["Ada", "Grace"]:
+                        raise RuntimeError("unexpected lookup-ref collection statement rows")
+            finally:
+                lookup_collection_query.close()
+
             pull_query = conn.prepare(
                 """
                 [:find (pull ?e [:user/name {:user/friend [:user/name]}])
@@ -105,6 +194,37 @@ def main() -> int:
                     print(f"snapshot-db rows: {snapshot_rows}")
                     if current_rows != 3 or snapshot_rows != 2:
                         raise RuntimeError("unexpected snapshot row counts")
+
+                    with conn.prepare(
+                        '[:find ?e :where [?e :user/name "Barbara"]]'
+                    ) as barbara_query, conn.prepare(
+                        '[:find ?e :where [?e :user/name "Dorothy"]]'
+                    ) as dorothy_query:
+                        with snapshot.with_report(
+                            '[{:db/id 4 :user/name "Barbara"}]'
+                        ) as report:
+                            report_value = report.value()
+                            print(f"with-db: {report.edn()}")
+                            if not report_value.get(":ok"):
+                                raise RuntimeError("unexpected with report")
+                        with snapshot.db_with(
+                            '[{:db/id 4 :user/name "Barbara"}]'
+                        ) as next_db:
+                            if len(barbara_query.rows(snapshot)) != 0:
+                                raise RuntimeError("db-with mutated source DB")
+                            if len(barbara_query.rows(next_db)) != 1:
+                                raise RuntimeError("db-with missing new fact")
+                            with vev.Connection.from_db(next_db) as derived:
+                                derived.transact(
+                                    '[{:db/id 5 :user/name "Dorothy"}]'
+                                )
+                                if (
+                                    len(barbara_query.rows(derived)) != 1
+                                    or len(dorothy_query.rows(derived)) != 1
+                                ):
+                                    raise RuntimeError(
+                                        "conn-from-db did not initialize from DB"
+                                    )
             finally:
                 all_emails.close()
         finally:

@@ -23,10 +23,18 @@ public final class Vev {
     private final MethodHandle connOpenMemory;
     private final MethodHandle connClose;
     private final MethodHandle connDb;
+    private final MethodHandle connFromDb;
     private final MethodHandle dbRetain;
     private final MethodHandle dbRelease;
+    private final MethodHandle withEdn;
+    private final MethodHandle withEdnReport;
+    private final MethodHandle dbWithEdn;
     private final MethodHandle stringFree;
     private final MethodHandle transactEdn;
+    private final MethodHandle transactEdnReport;
+    private final MethodHandle txReportFree;
+    private final MethodHandle txReportValue;
+    private final MethodHandle txReportEdn;
     private final MethodHandle queryEdnWithInputs;
     private final MethodHandle prepareQueryEdn;
     private final MethodHandle preparedQueryFree;
@@ -50,6 +58,11 @@ public final class Vev {
     private final MethodHandle valueKind;
     private final MethodHandle valueText;
     private final MethodHandle valueEntity;
+    private final MethodHandle valueInt;
+    private final MethodHandle valueFloat;
+    private final MethodHandle valueBool;
+    private final MethodHandle valueItemCount;
+    private final MethodHandle valueItem;
     private final MethodHandle valueMapCount;
     private final MethodHandle valueMapKey;
     private final MethodHandle valueMapValue;
@@ -66,10 +79,18 @@ public final class Vev {
         this.connOpenMemory = downcall("vev_conn_open_memory", FunctionDescriptor.of(ValueLayout.ADDRESS));
         this.connClose = downcall("vev_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connDb = downcall("vev_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connFromDb = downcall("vev_conn_from_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRetain = downcall("vev_db_retain", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRelease = downcall("vev_db_release", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.withEdn = downcall("vev_with_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.withEdnReport = downcall("vev_with_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.dbWithEdn = downcall("vev_db_with_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stringFree = downcall("vev_string_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.transactEdn = downcall("vev_transact_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.transactEdnReport = downcall("vev_transact_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txReportFree = downcall("vev_tx_report_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.txReportValue = downcall("vev_tx_report_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txReportEdn = downcall("vev_tx_report_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.prepareQueryEdn = downcall("vev_prepare_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryFree = downcall("vev_prepared_query_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -93,6 +114,11 @@ public final class Vev {
         this.valueKind = downcall("vev_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.valueText = downcall("vev_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.valueEntity = downcall("vev_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
+        this.valueInt = downcall("vev_value_int", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
+        this.valueFloat = downcall("vev_value_float", FunctionDescriptor.of(ValueLayout.JAVA_DOUBLE, ValueLayout.ADDRESS));
+        this.valueBool = downcall("vev_value_bool", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
+        this.valueItemCount = downcall("vev_value_item_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.valueItem = downcall("vev_value_item", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.valueMapCount = downcall("vev_value_map_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.valueMapKey = downcall("vev_value_map_key", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.valueMapValue = downcall("vev_value_map_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
@@ -105,6 +131,13 @@ public final class Vev {
     public Connection createConn() throws Throwable {
         MemorySegment raw = (MemorySegment) connOpenMemory.invoke();
         if (isNull(raw)) throw new IllegalStateException("failed to open Vev connection");
+        return new Connection(raw);
+    }
+
+    public Connection connFromDb(DB db) throws Throwable {
+        db.requireOpen();
+        MemorySegment raw = (MemorySegment) connFromDb.invoke(db.handle.raw);
+        if (isNull(raw)) throw new IllegalStateException("failed to create Vev connection from DB");
         return new Connection(raw);
     }
 
@@ -141,7 +174,18 @@ public final class Vev {
         return switch (kind) {
             case 0 -> null;
             case 1 -> new Entity((long) valueEntity.invoke(value));
+            case 3 -> (long) valueInt.invoke(value);
+            case 4 -> (double) valueFloat.invoke(value);
+            case 5 -> (boolean) valueBool.invoke(value);
             case 2, 6, 7 -> textOf(value);
+            case 8 -> {
+                int count = (int) valueItemCount.invoke(value);
+                List<Object> items = new ArrayList<>(count);
+                for (int i = 0; i < count; i++) {
+                    items.add(valueToJava((MemorySegment) valueItem.invoke(value, i)));
+                }
+                yield items;
+            }
             case 9 -> {
                 int count = (int) valueMapCount.invoke(value);
                 List<Entry> entries = new ArrayList<>(count);
@@ -203,6 +247,37 @@ public final class Vev {
         }
     }
 
+    public final class TxReport implements AutoCloseable {
+        private MemorySegment raw;
+
+        private TxReport(MemorySegment raw) {
+            if (isNull(raw)) throw new IllegalStateException("transaction returned null report");
+            this.raw = raw;
+        }
+
+        public Object value() throws Throwable {
+            requireOpen();
+            return valueToJava((MemorySegment) txReportValue.invoke(raw));
+        }
+
+        public String edn() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) txReportEdn.invoke(raw));
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("transaction report is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(txReportFree, raw);
+                raw = MemorySegment.NULL;
+            }
+        }
+    }
+
     public final class Connection implements AutoCloseable {
         private MemorySegment raw;
 
@@ -213,6 +288,12 @@ public final class Vev {
         public String transact(String tx) throws Throwable {
             try (Arena local = Arena.ofConfined()) {
                 return ownedString((MemorySegment) transactEdn.invoke(raw, local.allocateUtf8String(tx)));
+            }
+        }
+
+        public TxReport transactReport(String tx) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                return new TxReport((MemorySegment) transactEdnReport.invoke(raw, local.allocateUtf8String(tx)));
             }
         }
 
@@ -273,6 +354,29 @@ public final class Vev {
         public ResultSet query(Statement stmt) throws Throwable {
             requireOpen();
             return new ResultSet((MemorySegment) queryDbStmtResult.invoke(handle.raw, stmt.raw));
+        }
+
+        public String with(String tx) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return ownedString((MemorySegment) withEdn.invoke(handle.raw, local.allocateUtf8String(tx)));
+            }
+        }
+
+        public TxReport withReport(String tx) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return new TxReport((MemorySegment) withEdnReport.invoke(handle.raw, local.allocateUtf8String(tx)));
+            }
+        }
+
+        public DB dbWith(String tx) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment db = (MemorySegment) dbWithEdn.invoke(handle.raw, local.allocateUtf8String(tx));
+                if (isNull(db)) throw new IllegalStateException("failed to create DB snapshot");
+                return new DB(db);
+            }
         }
 
         private void requireOpen() {

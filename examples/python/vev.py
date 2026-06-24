@@ -23,6 +23,22 @@ class Entity:
     id: int
 
 
+@dataclass(frozen=True)
+class LookupRef:
+    attr: str
+    value: object
+
+
+@dataclass(frozen=True)
+class TupleInput:
+    values: tuple[object, ...]
+
+
+@dataclass(frozen=True)
+class Relation:
+    rows: tuple[tuple[object, ...], ...]
+
+
 class VevError(RuntimeError):
     pass
 
@@ -51,12 +67,27 @@ class Library:
         lib.vev_conn_close.argtypes = [ctypes.c_void_p]
         lib.vev_conn_db.argtypes = [ctypes.c_void_p]
         lib.vev_conn_db.restype = ctypes.c_void_p
+        lib.vev_conn_from_db.argtypes = [ctypes.c_void_p]
+        lib.vev_conn_from_db.restype = ctypes.c_void_p
         lib.vev_db_release.argtypes = [ctypes.c_void_p]
+        lib.vev_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_with_edn.restype = ctypes.c_void_p
+        lib.vev_with_edn_report.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_with_edn_report.restype = ctypes.c_void_p
+        lib.vev_db_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_db_with_edn.restype = ctypes.c_void_p
 
         lib.vev_string_free.argtypes = [ctypes.c_void_p]
 
         lib.vev_transact_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_transact_edn.restype = ctypes.c_void_p
+        lib.vev_transact_edn_report.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_transact_edn_report.restype = ctypes.c_void_p
+        lib.vev_tx_report_free.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_value.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_value.restype = ctypes.c_void_p
+        lib.vev_tx_report_edn.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_edn.restype = ctypes.c_void_p
         lib.vev_query_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_query_edn.restype = ctypes.c_void_p
         lib.vev_query_edn_with_inputs.argtypes = [
@@ -86,6 +117,30 @@ class Library:
         lib.vev_stmt_bind_int.restype = ctypes.c_bool
         lib.vev_stmt_bind_bool.argtypes = [ctypes.c_void_p, ctypes.c_bool]
         lib.vev_stmt_bind_bool.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_string.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_stmt_bind_lookup_ref_string.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_keyword.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_stmt_bind_lookup_ref_keyword.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_entity.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_ulonglong,
+        ]
+        lib.vev_stmt_bind_lookup_ref_entity.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_int.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_longlong,
+        ]
+        lib.vev_stmt_bind_lookup_ref_int.restype = ctypes.c_bool
         lib.vev_stmt_bind_string_collection.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_char_p),
@@ -110,6 +165,65 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_stmt_bind_bool_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_string_tuple.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_string_tuple.restype = ctypes.c_bool
+        lib.vev_stmt_bind_entity_tuple.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_entity_tuple.restype = ctypes.c_bool
+        lib.vev_stmt_bind_int_tuple.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_longlong),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_int_tuple.restype = ctypes.c_bool
+        lib.vev_stmt_bind_bool_tuple.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_bool),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_bool_tuple.restype = ctypes.c_bool
+        lib.vev_stmt_bind_string_relation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_string_relation.restype = ctypes.c_bool
+        lib.vev_stmt_bind_entity_relation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_entity_relation.restype = ctypes.c_bool
+        lib.vev_stmt_bind_int_relation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_longlong),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_int_relation.restype = ctypes.c_bool
+        lib.vev_stmt_bind_bool_relation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_bool),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_bool_relation.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_string_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_lookup_ref_string_collection.restype = ctypes.c_bool
 
         lib.vev_query_prepared_with_inputs.argtypes = [
             ctypes.c_void_p,
@@ -233,9 +347,9 @@ def open_memory() -> "Connection":
 
 
 class Connection:
-    def __init__(self, library: Library):
+    def __init__(self, library: Library, handle: int | None = None):
         self._library = library
-        self._handle = library.lib.vev_conn_open_memory()
+        self._handle = handle if handle is not None else library.lib.vev_conn_open_memory()
         if not self._handle:
             raise VevError("failed to open Vev connection")
 
@@ -259,6 +373,15 @@ class Connection:
             self._library.lib.vev_transact_edn(self._handle, _bytes(tx_edn))
         )
 
+    def transact_report(self, tx_edn: str) -> "TxReport":
+        self._require_open()
+        handle = self._library.lib.vev_transact_edn_report(
+            self._handle, _bytes(tx_edn)
+        )
+        if not handle:
+            raise VevError("failed to transact")
+        return TxReport(self._library, handle)
+
     def query_text(self, query_edn: str, inputs_edn: str | None = None) -> str:
         self._require_open()
         if inputs_edn is None:
@@ -280,6 +403,14 @@ class Connection:
         if not handle:
             raise VevError("failed to retain DB snapshot")
         return DB(self._library, handle)
+
+    @classmethod
+    def from_db(cls, db: "DB") -> "Connection":
+        db._require_open()
+        handle = db._library.lib.vev_conn_from_db(db._handle)
+        if not handle:
+            raise VevError("failed to create connection from DB snapshot")
+        return cls(db._library, handle)
 
     def _query_result(self, prepared: "PreparedQuery", inputs_edn: str = "[]") -> "Result":
         self._require_open()
@@ -329,9 +460,65 @@ class DB:
         handle = self._library.lib.vev_query_db_stmt_result(self._handle, stmt._handle)
         return Result(self._library, handle)
 
+    def with_text(self, tx_edn: str) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_with_edn(self._handle, _bytes(tx_edn))
+        )
+
+    def with_report(self, tx_edn: str) -> "TxReport":
+        self._require_open()
+        handle = self._library.lib.vev_with_edn_report(self._handle, _bytes(tx_edn))
+        if not handle:
+            raise VevError("failed to transact against DB snapshot")
+        return TxReport(self._library, handle)
+
+    def db_with(self, tx_edn: str) -> "DB":
+        self._require_open()
+        handle = self._library.lib.vev_db_with_edn(self._handle, _bytes(tx_edn))
+        if not handle:
+            raise VevError("failed to create DB snapshot")
+        return DB(self._library, handle)
+
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("DB snapshot is closed")
+
+
+class TxReport:
+    def __init__(self, library: Library, handle: int):
+        self._library = library
+        self._handle = handle
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_tx_report_free(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "TxReport":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def value(self) -> Any:
+        self._require_open()
+        return self._library.value_to_python(
+            self._library.lib.vev_tx_report_value(self._handle)
+        )
+
+    def edn(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_tx_report_edn(self._handle)
+        )
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("transaction report is closed")
 
 
 class PreparedQuery:
@@ -428,6 +615,12 @@ class Statement:
         lib = self._library.lib
         if isinstance(value, Entity):
             ok = lib.vev_stmt_bind_entity(self._handle, value.id)
+        elif isinstance(value, LookupRef):
+            ok = self._bind_lookup_ref(value)
+        elif isinstance(value, TupleInput):
+            ok = self._bind_tuple(value.values)
+        elif isinstance(value, Relation):
+            ok = self._bind_relation(value.rows)
         elif isinstance(value, bool):
             ok = lib.vev_stmt_bind_bool(self._handle, value)
         elif isinstance(value, int):
@@ -445,10 +638,83 @@ class Statement:
         if not ok:
             raise VevError(f"failed to bind statement value: {value!r}")
 
+    def _bind_lookup_ref(self, ref: LookupRef) -> bool:
+        lib = self._library.lib
+        attr = _bytes(ref.attr)
+        value = ref.value
+        if isinstance(value, Entity):
+            return bool(lib.vev_stmt_bind_lookup_ref_entity(self._handle, attr, value.id))
+        if isinstance(value, int) and not isinstance(value, bool):
+            return bool(lib.vev_stmt_bind_lookup_ref_int(self._handle, attr, value))
+        if isinstance(value, Keyword):
+            return bool(
+                lib.vev_stmt_bind_lookup_ref_keyword(self._handle, attr, _bytes(value.text))
+            )
+        if isinstance(value, str):
+            return bool(lib.vev_stmt_bind_lookup_ref_string(self._handle, attr, _bytes(value)))
+        raise TypeError(f"unsupported Vev lookup-ref binding: {ref!r}")
+
+    def _bind_tuple(self, values: tuple[object, ...]) -> bool:
+        return self._bind_homogeneous_values(values, "tuple")
+
+    def _bind_relation(self, rows: tuple[tuple[object, ...], ...]) -> bool:
+        if len(rows) == 0:
+            raise TypeError("empty relation bindings need an explicit typed wrapper")
+        width = len(rows[0])
+        if width == 0 or any(len(row) != width for row in rows):
+            raise TypeError(f"relation rows must have a stable non-zero width: {rows!r}")
+        flat = tuple(value for row in rows for value in row)
+        return self._bind_homogeneous_values(flat, "relation", width)
+
+    def _bind_homogeneous_values(
+        self, values: tuple[object, ...], kind: str, width: int | None = None
+    ) -> bool:
+        lib = self._library.lib
+        suffix = "_relation" if kind == "relation" else f"_{kind}"
+        if len(values) == 0:
+            raise TypeError(f"empty {kind} bindings need an explicit typed wrapper")
+        if all(isinstance(value, Entity) for value in values):
+            array_type = ctypes.c_ulonglong * len(values)
+            array = array_type(*(value.id for value in values))
+            fn = getattr(lib, f"vev_stmt_bind_entity{suffix}")
+        elif all(isinstance(value, bool) for value in values):
+            array_type = ctypes.c_bool * len(values)
+            array = array_type(*values)
+            fn = getattr(lib, f"vev_stmt_bind_bool{suffix}")
+        elif all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            array_type = ctypes.c_longlong * len(values)
+            array = array_type(*values)
+            fn = getattr(lib, f"vev_stmt_bind_int{suffix}")
+        elif all(isinstance(value, str) for value in values):
+            encoded = [_bytes(value) for value in values]
+            array_type = ctypes.c_char_p * len(encoded)
+            array = array_type(*encoded)
+            fn = getattr(lib, f"vev_stmt_bind_string{suffix}")
+        else:
+            raise TypeError(f"unsupported homogeneous {kind} binding: {values!r}")
+        if kind == "relation":
+            assert width is not None
+            return bool(fn(self._handle, array, len(values), width))
+        return bool(fn(self._handle, array, len(values)))
+
     def _bind_collection(self, values: list[object] | tuple[object, ...]) -> bool:
         lib = self._library.lib
         if len(values) == 0:
             raise TypeError("empty collection bindings need an explicit typed wrapper")
+        if all(isinstance(value, LookupRef) for value in values):
+            attrs = {value.attr for value in values}
+            if len(attrs) != 1 or not all(isinstance(value.value, str) for value in values):
+                raise TypeError(
+                    "lookup-ref collection bindings currently require one attr and string values"
+                )
+            encoded = [_bytes(value.value) for value in values]
+            array_type = ctypes.c_char_p * len(encoded)
+            array = array_type(*encoded)
+            return bool(
+                lib.vev_stmt_bind_lookup_ref_string_collection(
+                    self._handle, _bytes(values[0].attr), array, len(encoded)
+                )
+            )
         if all(isinstance(value, Entity) for value in values):
             array_type = ctypes.c_ulonglong * len(values)
             array = array_type(*(value.id for value in values))

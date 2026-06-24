@@ -2,7 +2,7 @@
 
 ## Phase 0: Spec
 
-Current phase.
+Done.
 
 Outcomes:
 
@@ -32,6 +32,9 @@ Success shape:
 - one or two query forms work
 - transaction metadata exists in tx reports
 
+Status: done. Vev has a Kvist implementation, immutable DB values, sorted
+indexes, transaction reports, and a DataScript-shaped query surface.
+
 ## Phase 2: Pull and entity reads
 
 Goal:
@@ -43,6 +46,9 @@ Preferred boundary:
 
 - Datomic/DataScript-compatible pull syntax first
 - typed internal pull representation second
+
+Status: mostly done for the in-memory engine. Remaining work is host/API shape
+and callback/streaming polish, not the basic pull model.
 
 ## Phase 3: DataScript parity
 
@@ -58,6 +64,12 @@ Non-goal:
 - SQLite integration
 - server/transactor packaging
 
+Status: current compatibility gate. The broad in-memory surface is present:
+query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
+and prepared APIs. Remaining work is concentrated in exact parser diagnostics
+and object rendering, final callback/registration shapes, and measured
+recursive-rule/large-query performance.
+
 ## Phase 4: Portable query frontend
 
 Goal:
@@ -69,6 +81,11 @@ Goal:
 
 This phase is required for broad C/Odin/host-language consumption. It should
 not create a second query engine.
+
+Status: substantially done and now part of the compatibility gate. EDN text and
+prepared query/tx/pull paths lower into the same typed structures as Kvist
+literals. The remaining work is exact parser API parity plus making every
+important host-language wrapper use this path cleanly.
 
 ## Phase 5: Durable proof
 
@@ -88,6 +105,9 @@ Packaging:
 
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
+
+Status: not started. Keep this postponed until the in-memory compatibility,
+API, and performance baseline are stable.
 
 ## Phase 6: Dogfood
 
@@ -116,6 +136,13 @@ Goal:
 Non-goal:
 
 - making the CLI binary the only application integration path
+
+Status: pulled forward. Vev now has a C ABI with connection handles, immutable
+DB snapshot handles, EDN transaction/query entrypoints, prepared queries,
+typed result access, and DB-value retain/release. C, Python, Rust, Java, and
+Clojure smokes exercise the native library. The current batch is making the
+Clojure/Java API more Datomic-like on top of those primitives while keeping
+EDN strings as the portable baseline for non-Kvist consumers.
 
 ## Phase 8: Optional packaging expansion
 
@@ -155,11 +182,12 @@ Non-goal:
 
 ## Current rule
 
-Do not start by solving:
+Do not start durable storage by solving:
 
 - every backend
-- every query feature
 - every host language
 - every deployment story
 
-Get the in-memory semantic core right first.
+Get the in-memory semantic core, EDN/C ABI surface, and performance baseline
+right first. SQLite durability comes after DataScript-level behavior is stable
+enough that the storage layer can preserve semantics instead of reshaping them.
