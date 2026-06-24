@@ -4,6 +4,31 @@ Vev has a small benchmark harness for comparing the native engine with the
 local DataScript checkout. These are not exhaustive microbenchmarks yet; they
 are a repeatable feedback loop for query planning and recursive rule work.
 
+## Benchmark Ladder
+
+Vev should use external benchmark shapes as compatibility and architecture
+checks, not only local microbenchmarks.
+
+Current order:
+
+1. Datalevin `datascript-bench`: add Vev beside Datomic, DataScript, and
+   Datalevin for the common in-memory read queries q1/q2/q2-switch/q3/q4 and
+   predicate variants. This exercises Vev through the public Clojure API and
+   native ABI, so it is a better host-language benchmark than direct Kvist
+   calls.
+2. Datalevin `JOB-bench`: use after Vev has a real planner/operator layer.
+   This benchmark stresses join ordering, predicates, ranges, aggregates, and
+   large import behavior over an IMDB-shaped dataset.
+3. Datalevin `write-bench`: use after durable SQLite-backed storage exists.
+   This benchmark should measure transaction throughput, commit latency,
+   batching, WAL/sync choices, and mixed read/write behavior.
+
+The q2/q2-switch rows from `datascript-bench` are especially important. They
+represent same-entity star queries where Datalevin wins by using a general
+merge-scan operator instead of clause-order-sensitive hash joins. Vev should
+use these rows to drive reusable star-query and planner work rather than adding
+query-name-specific fast paths.
+
 ## Query And Rule Baseline
 
 Run Vev from the Kvist repo root so macro loading uses the normal compiler
@@ -32,6 +57,21 @@ bench/compare_query_rules.sh
 
 The comparison script accepts `KVIST_ROOT`, `KVIST_BIN`,
 `KVIST_PACKAGES_DIR`, and `DATASCRIPT_ROOT` environment overrides.
+
+For larger recursive-rule workloads, run the separate stress harness:
+
+```sh
+bench/compare_query_rules_stress.sh
+```
+
+The stress harness keeps the default benchmark short while still measuring
+larger chain/tree closures and one mutually recursive rule shape. The Vev side
+also includes larger Vev-only rows such as 1000-node bound chains, 1093-node
+trees, dense DAGs, and a filtered recursive rule. The DataScript comparison
+side uses smaller overlapping rows and fewer samples so the run stays
+practical. Dense DAG and filtered generic-recursion rows are kept out of the
+routine DataScript comparison for now because local DataScript/JVM runs either
+run out of memory or take too long at useful sizes.
 
 Current sample output on June 24, 2026:
 
@@ -106,22 +146,45 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 18.6x | 55.9x |
-| `chain-root n=10` | 22.7x | 38.4x |
-| `chain-root n=30` | 51.3x | 62.8x |
-| `chain-root n=100` | 212.0x | 224.4x |
-| `chain-leaf n=10` | 19.0x | 32.8x |
-| `chain-leaf n=30` | 75.3x | 93.2x |
-| `chain-leaf n=100` | 485.8x | 518.8x |
-| `chain-all n=10` | 11.4x | 15.1x |
-| `chain-all n=30` | 16.6x | 15.9x |
-| `chain-all n=100` | 23.7x | 23.9x |
-| `tree-root n=4` | 3.4x | 8.9x |
+| `chain-root n=3` | 19.1x | 54.9x |
+| `chain-root n=10` | 24.1x | 42.5x |
+| `chain-root n=30` | 50.2x | 65.2x |
+| `chain-root n=100` | 227.6x | 258.1x |
+| `chain-leaf n=10` | 18.2x | 33.1x |
+| `chain-leaf n=30` | 74.2x | 98.5x |
+| `chain-leaf n=100` | 537.7x | 540.2x |
+| `chain-all n=10` | 10.9x | 14.9x |
+| `chain-all n=30` | 16.0x | 17.1x |
+| `chain-all n=100` | 23.6x | 23.3x |
+| `tree-root n=4` | 3.2x | 8.4x |
 | `tree-root n=13` | 3.3x | 5.3x |
-| `tree-root n=40` | 2.4x | 3.1x |
-| `tree-root n=121` | 1.7x | 1.8x |
-| `bad-order-join n=1000` | 7.1x | 11.4x |
-| `distinct-age n=1000` | 0.6x | 0.6x |
+| `tree-root n=40` | 2.5x | 3.1x |
+| `tree-root n=121` | 1.9x | 2.0x |
+| `bad-order-join n=1000` | 7.3x | 11.7x |
+| `distinct-age n=1000` | 3.2x | 3.5x |
+| `people-name-age n=1000` | 0.2x | 0.2x |
+
+## Stress Comparison
+
+The stress comparison uses fewer samples and larger recursive-rule workloads.
+It is intended for scaling direction, not stable microbenchmark numbers.
+
+| Workload | Vev text | Vev prepared |
+|---|---:|---:|
+| `stress-chain-root n=300` | 1370.3x | 1411.0x |
+| `stress-chain-leaf n=300` | 3971.5x | 4167.7x |
+| `stress-chain-all n=200` | 32.9x | 32.4x |
+| `stress-tree-root n=364` | 1.8x | 2.0x |
+| `stress-mutual-root n=30` | 17.0x | 21.3x |
+
+The stress harness also emits Vev-only rows for workloads that are currently
+too expensive for routine DataScript comparison:
+
+| Workload | Vev text median | Vev prepared median | Notes |
+|---|---:|---:|---|
+| `stress-dense-root n=60` | 240us | 220us | Dense DAG, width 8 |
+| `stress-dense-root n=160` | 622us | 605us | Dense DAG, width 8 |
+| `stress-filtered-root n=10` | 71us | 44us | Linear recursive rule with a target-node data filter |
 
 ## Current Findings
 
@@ -129,8 +192,8 @@ Ordered text queries now plan contiguous data-pattern runs. The initial
 `bad-order-join` shape materialized 1000 intermediate bindings; after planning
 the same query materializes 1 and inspects 3 candidates.
 
-Binary transitive closure now has a specialized rule path. It
-recognizes the common DataScript/Datomic reachability rule shape:
+Binary transitive closure now has a specialized rule path. It recognizes the
+common DataScript/Datomic reachability rule shape:
 
 ```clojure
 [[(reachable ?x ?y) [?x :follows ?y]]
@@ -146,7 +209,25 @@ That turns the benchmarked chain-root and chain-leaf workloads into a single
 rule iteration with one output binding per reached entity. The adjacency view is
 built directly from the `aevt` index range for the relation attr, with traversal
 scratch arrays pre-sized from the adjacency size, so the specialized path no
-longer materializes a generic clause candidate vector during closure setup.
+longer materializes a generic clause candidate vector during closure setup. For
+compact entity-id ranges, bounded closure traversal uses dense boolean bitmaps
+for visited/emitted sets instead of repeated linear membership scans, improving
+larger chain and branching tree workloads without requiring sparse global
+entity-id arrays.
+
+The same recognizer also supports linear recursive rules with identical
+target-node data filters in the base and recursive branch, for example:
+
+```clojure
+[[(active-reachable ?x ?y) [?x :follows ?y] [?y :active true]]
+ [(active-reachable ?x ?y) [?x :follows ?t] [?t :active true]
+  (active-reachable ?t ?y)]]
+```
+
+Those filters are applied while constructing the adjacency view, so the
+filtered recursive stress row now executes as one rule iteration instead of one
+iteration per chain depth. In the latest local run, `stress-filtered-root n=10`
+moved from roughly 957us/871us text/prepared to 49us/30us.
 
 The large chain-root/chain-leaf gap should be read narrowly: it compares Vev's
 specialized bound transitive closure path against DataScript's general recursive
@@ -162,14 +243,40 @@ falling back to structural row comparison. This keeps DataScript-style distinct
 find semantics while avoiding the worst quadratic behavior for common primitive
 results.
 
-The harness now includes `distinct-age`, a simple `[:find ?age :where [?e :age
+Generic rule-result dedupe now has the same shape: primitive bindings get a
+stable binding key and use a map-backed seen set, while bindings containing
+complex values still fall back to structural comparison. This removes one
+avoidable O(rows squared) scan from recursive fixpoint accumulation, but it is
+not a full semi-naive evaluator.
+
+Two-rule alternating linear recursion now has its own graph path as well. It
+recognizes shapes like:
+
+```clojure
+[[(f1 ?x ?y) [?x :f1 ?y]]
+ [(f1 ?x ?y) [?x :f1 ?t] (f2 ?t ?y)]
+ [(f2 ?x ?y) [?x :f2 ?y]]
+ [(f2 ?x ?y) [?x :f2 ?t] (f1 ?t ?y)]]
+```
+
+For bound-start calls, Vev builds one adjacency per rule attr and traverses
+`(entity,next-rule)` states. That moves `stress-mutual-root n=30` from roughly
+29461us/29795us text/prepared on the generic fixpoint path to roughly
+112us/83us locally, and it is now part of the DataScript stress comparison.
+
+The harness includes `distinct-age`, a simple `[:find ?age :where [?e :age
 ?age]]` projection over 1000 entities and 100 distinct ages. Vev has a narrow
-index-backed path for this shape that scans the `aevt` range directly,
-preserving normal clause result order while avoiding a separate candidate array.
-This brought the local Vev timing down from roughly 930us before the batch to
-roughly 210us, but DataScript is still faster on this specific workload in the
-latest comparison. Treat this as the next concrete projection-performance
-target.
+index-backed path for this shape that walks the `avet` range to collect one row
+per distinct value, remembers the first current entity that produced each
+value, and sorts that smaller distinct set back into the existing
+entity/value-result order before rendering rows. This preserves the current
+observable result order while avoiding per-candidate result rows and map-based
+dedupe. For databases where every datom is current, the scan also skips the
+per-candidate current-index binary search and takes the first datom in each
+`avet` value group directly. Databases with retractions or shadowed facts keep
+the checked path. The local Vev timing is now roughly 37us text / 33us prepared,
+down from roughly 930us before projection-specific work, roughly 210us after
+the first fast path, and roughly 160us before the all-current scan branch.
 
 The benchmark installs `:db/cardinality :db.cardinality/many` and
 `:db/valueType :db.type/ref` for `:follows`; without that, Vev correctly applies
@@ -178,14 +285,17 @@ DataScript.
 
 Remaining performance work:
 
-- Generalize this from a shape-specific transitive closure path into a measured
-  semi-naive/memoized rule evaluator.
-- Continue result-projection work for simple distinct queries. The current
-  `distinct-age` path is much better than generic row dedupe, but still behind
-  DataScript because it allocates full `Result-Row` structures and maintains
-  order-preserving seen sets.
-- Add a separate stress harness for larger chain/tree workloads once default
-  benchmark runs stay short.
-- Profile tree/branching closure, dense graphs, and non-transitive recursive
-  rules separately; the current closure recognizer is useful, but it is not a
-  full recursive query planner.
+- Generalize this from the current linear transitive closure path into a
+  measured semi-naive/memoized rule evaluator. Filtered linear recursion and
+  alternating two-rule recursion are now optimized, and primitive binding
+  dedupe is map-backed, but arbitrary multi-step recursive bodies still use the
+  generic depth/fixpoint evaluator.
+- Continue result-projection work beyond the single-attr distinct fast path.
+  `distinct-age` is now faster than DataScript locally, but the new
+  `people-name-age` row shows broad two-column projection is still behind.
+  Vev now has a direct same-entity two-attr path with cardinality-one map join,
+  but final distinct tracking still needs typed pair-level dedupe instead of
+  formatted string keys.
+- Keep expanding benchmark coverage from real Datomic/DataScript-style
+  workloads, including MusicBrainz-shaped queries, so performance work stays
+  tied to database behavior rather than isolated microbenchmarks.

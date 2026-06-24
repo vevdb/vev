@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+KVIST_ROOT="${KVIST_ROOT:-/Users/andreas/Projects/kvist}"
+KVIST_BIN="${KVIST_BIN:-$KVIST_ROOT/.worktrees/codex-item-kvist-case-default/kvist}"
+KVIST_PACKAGES_DIR="${KVIST_PACKAGES_DIR:-$KVIST_ROOT/packages}"
+DATASCRIPT_ROOT="${DATASCRIPT_ROOT:-/Users/andreas/Projects/datascript}"
+
+VEV_OUT="$(mktemp)"
+DS_OUT="$(mktemp)"
+VEV_ERR="$(mktemp)"
+DS_ERR="$(mktemp)"
+trap 'rm -f "$VEV_OUT" "$DS_OUT" "$VEV_ERR" "$DS_ERR"' EXIT
+
+if ! (
+  cd "$KVIST_ROOT"
+  KVIST_PACKAGES_DIR="$KVIST_PACKAGES_DIR" "$KVIST_BIN" run "$REPO_ROOT/bench/query_rules_stress.kvist"
+) > "$VEV_OUT" 2> "$VEV_ERR"; then
+  cat "$VEV_ERR" >&2
+  exit 1
+fi
+
+if ! clojure \
+  -Sdeps "{:deps {datascript/datascript {:local/root \"$DATASCRIPT_ROOT\"}}}" \
+  -M "$REPO_ROOT/bench/datascript_query_rules_stress.clj" > "$DS_OUT" 2> "$DS_ERR"; then
+  cat "$DS_ERR" >&2
+  exit 1
+fi
+
+awk '
+function field_value(prefix,    i) {
+  for (i = 1; i <= NF; i++) {
+    if (index($i, prefix "=") == 1) {
+      return substr($i, length(prefix) + 2)
+    }
+  }
+  return ""
+}
+
+FNR == NR && /^engine=vev / {
+  workload = field_value("workload")
+  n = field_value("n")
+  median = field_value("median_us") + 0
+  vev[workload "|" n] = median
+  next
+}
+
+FNR != NR && /^engine=datascript / {
+  workload = field_value("workload")
+  n = field_value("n")
+  median = field_value("median_us") + 0
+  ds_order[++ds_count] = workload "|" n
+  ds_workload[ds_count] = workload
+  ds_n[ds_count] = n
+  ds_median[ds_count] = median
+}
+
+END {
+  printf "%-28s %8s %14s %14s\n", "workload", "n", "vev_text", "vev_prepared"
+  for (i = 1; i <= ds_count; i++) {
+    workload = ds_workload[i]
+    n = ds_n[i]
+    ds_value = ds_median[i]
+    text_key = workload "-text|" n
+    prepared_key = workload "-prepared|" n
+    text = "-"
+    prepared = "-"
+    if (text_key in vev && vev[text_key] > 0) {
+      text = sprintf("%.1fx", ds_value / vev[text_key])
+    }
+    if (prepared_key in vev && vev[prepared_key] > 0) {
+      prepared = sprintf("%.1fx", ds_value / vev[prepared_key])
+    }
+    printf "%-28s %8s %14s %14s\n", workload, n, text, prepared
+  }
+}
+' "$VEV_OUT" "$DS_OUT"

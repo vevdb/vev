@@ -677,6 +677,41 @@
         (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part))))
     (return (core-strings.concatenate (slice parts 0)) true)))
 
+(defn two-primitive-values-dedupe-key [first: Value, second: Value] -> [key: string, ok: bool]
+  (cond
+    (and (= first.kind .String) (= second.kind .Int))
+      (return (fmt.tprintf "si:%d:%s:%d" (count first.text) first.text second.int-value) true)
+    (and (= first.kind .Int) (= second.kind .String))
+      (return (fmt.tprintf "is:%d:%d:%s" first.int-value (count second.text) second.text) true)
+    (and (= first.kind .String) (= second.kind .String))
+      (return (fmt.tprintf "ss:%d:%s:%d:%s" (count first.text) first.text (count second.text) second.text) true)
+    (and (= first.kind .Int) (= second.kind .Int))
+      (return (fmt.tprintf "ii:%d:%d" first.int-value second.int-value) true)
+    :else
+      (let [values ([]Value [first second])]
+        (row-values-dedupe-key values))))
+
+(defn sort-strings! [values: ^[dynamic]string]
+  (for [i (arr.range 1 (count values^))]
+    (let [item values^[i]
+          j i]
+      (while (and (> j 0)
+                  (string-less? item values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] item))))
+
+(defn binding-dedupe-key [binding: Binding] -> [key: string, ok: bool]
+  (let [parts (make [dynamic]string 0 (count binding.items))]
+    (defer (delete parts))
+    (for [item binding.items]
+      (let [[value-key value-ok] (primitive-value-dedupe-key item.value)]
+        (when (not value-ok)
+          (return "" false))
+        (arr.push! parts (fmt.tprintf "%d:%s=%d:%s;" (count item.name) item.name (count value-key) value-key))))
+    (sort-strings! (addr parts))
+    (return (core-strings.concatenate (slice parts 0)) true)))
+
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
   (let [[op op-ok] (query-op-name predicate.op binding)]
     (when (not op-ok)
@@ -1143,6 +1178,9 @@
         found (int-lower-bound current index)]
     (and (< found (count current))
          (= current[found] index))))
+
+(defn all-datoms-current? [db: DB] -> bool
+  (= (count db.current) (count db.datoms)))
 
 (defn index-arg-value [db: DB, arg: Index-Arg] -> [value: Value, ok: bool]
   (when arg.has-lookup-ref
@@ -3781,11 +3819,26 @@
       (return true)))
   false)
 
+(defn append-unique-binding! [out: ^[dynamic]Binding, seen: (ptr (map string bool)), binding: Binding] -> bool
+  (let [[key key-ok] (binding-dedupe-key binding)]
+    (when key-ok
+      (let [[_ already-seen] (mmap.get seen^ key)]
+        (when already-seen
+          (return false))
+        (mmap.assoc! seen^ key true)
+        (arr.push! out^ binding)
+        (return true)))
+    (when (not (binding-exists? (slice out^ 0) binding))
+      (arr.push! out^ binding)
+      (return true))
+    false))
+
 (defn unique-bindings [bindings: []Binding] -> [dynamic]Binding
-  (let [out (make [dynamic]Binding 0 (count bindings))]
+  (let [out (make [dynamic]Binding 0 (count bindings))
+        seen (make (map string bool))]
+    (defer (delete seen))
     (for [binding bindings]
-      (when (not (binding-exists? (slice out 0) binding))
-        (arr.push! out binding)))
+      (discard (append-unique-binding! (addr out) (addr seen) binding)))
     out))
 
 (defn query-stats-observe-bindings! [stats: ^Query-Stats, count-value: int]
@@ -3795,6 +3848,9 @@
 (defn term-var-name? [term: Term, name: string] -> bool
   (and (= term.kind .Var)
        (= term.name name)))
+
+(defn term-wildcard? [term: Term] -> bool
+  (= term.kind .Wildcard))
 
 (defn clause-attr-keyword [clause: Clause] -> [attr: string, ok: bool]
   (when (and (= clause.a.kind .Value)
@@ -3811,49 +3867,218 @@
        (= (count rule.not-groups) 0)
        (= (count rule.or-groups) 0)))
 
-(defn linear-transitive-rule-attr [rules: []Rule, name: string] -> [attr: string, ok: bool]
+(defstruct Linear-Transitive-Plan {
+  attr: string
+  filters: [dynamic]Clause
+})
+
+(defn delete-linear-transitive-plan [plan: Linear-Transitive-Plan]
+  (delete plan.filters))
+
+(defn linear-transitive-filter-clause? [clause: Clause, node-var: string] -> bool
+  (and (not clause.has-source)
+       (term-wildcard? clause.tx-term)
+       (term-wildcard? clause.op-term)
+       (term-var-name? clause.e node-var)
+       (= clause.a.kind .Value)
+       (= clause.a.value.kind .Keyword)
+       (= clause.v.kind .Value)))
+
+(defn linear-transitive-filter-same? [left: Clause, right: Clause] -> bool
+  (and (= left.a.value.text right.a.value.text)
+       (value-equal? left.v.value right.v.value)))
+
+(defn linear-transitive-filter-exists? [filters: []Clause, filter: Clause] -> bool
+  (for [existing filters]
+    (when (linear-transitive-filter-same? existing filter)
+      (return true)))
+  false)
+
+(defn linear-transitive-filters-same? [left: []Clause, right: []Clause] -> bool
+  (when (not (= (count left) (count right)))
+    (return false))
+  (for [filter left]
+    (when (not (linear-transitive-filter-exists? right filter))
+      (return false)))
+  true)
+
+(defn linear-transitive-edge-and-filters [rule: Rule, from-var: string, to-var: string] -> [attr: string, filters: [dynamic]Clause, ok: bool]
+  (let [out-filters (make [dynamic]Clause)
+        attr ""
+        found-edge false]
+    (for [rule-clause rule.clauses]
+      (let [[clause-attr clause-attr-ok] (clause-attr-keyword rule-clause)]
+        (if (and clause-attr-ok
+                 (term-var-name? rule-clause.e from-var)
+                 (term-var-name? rule-clause.v to-var))
+          (do
+            (when found-edge
+              (delete out-filters)
+              (return "" (make [dynamic]Clause) false))
+            (set! attr clause-attr)
+            (set! found-edge true))
+          (if (linear-transitive-filter-clause? rule-clause to-var)
+            (arr.push! out-filters rule-clause)
+            (do
+              (delete out-filters)
+              (return "" (make [dynamic]Clause) false))))))
+    (return attr out-filters found-edge)))
+
+(defn empty-linear-transitive-plan [] -> Linear-Transitive-Plan
+  (Linear-Transitive-Plan {filters: (make [dynamic]Clause)}))
+
+(defn linear-transitive-rule-plan [rules: []Rule, name: string] -> [plan: Linear-Transitive-Plan, ok: bool]
   (let [found-base false
         found-recursive false
-        attr ""]
+        attr ""
+        filters (make [dynamic]Clause)]
     (for [rule rules]
       (when (= rule.name name)
         (when (not (and (= (count rule.params) 2)
                         (rule-has-only-plain-clauses-and-calls? rule)))
-          (return "" false))
-        (if (= (count rule.rule-calls) 0)
-          (do
-            (when (not (= (count rule.clauses) 1))
-              (return "" false))
-            (let [rule-clause rule.clauses[0]]
-              (let [[clause-attr clause-attr-ok] (clause-attr-keyword rule-clause)]
-              (when (not (and clause-attr-ok
-                              (term-var-name? rule-clause.e rule.params[0])
-                              (term-var-name? rule-clause.v rule.params[1])))
-                (return "" false))
-              (when (and found-base (not (= attr clause-attr)))
-                (return "" false))
-              (set! attr clause-attr)
-              (set! found-base true))))
-          (do
-            (when (not (and (= (count rule.clauses) 1)
-                            (= (count rule.rule-calls) 1)))
-              (return "" false))
-            (let [rule-clause rule.clauses[0]
-                  recursive-call rule.rule-calls[0]]
-              (let [[clause-attr clause-attr-ok] (clause-attr-keyword rule-clause)]
-              (when (not (and clause-attr-ok
-                              (= recursive-call.name name)
-                              (= (count recursive-call.args) 2)
-                              (term-var-name? rule-clause.e rule.params[0])
-                              (= rule-clause.v.kind .Var)
-                              (term-var-name? recursive-call.args[0] rule-clause.v.name)
-                              (term-var-name? recursive-call.args[1] rule.params[1])))
-                (return "" false))
-              (when (and found-base (not (= attr clause-attr)))
-                (return "" false))
-              (set! attr clause-attr)
-              (set! found-recursive true)))))))
-    (return attr (and found-base found-recursive))))
+          (delete filters)
+          (return (empty-linear-transitive-plan) false))
+        (when (= (count rule.rule-calls) 0)
+          (let [[base-attr base-filters base-ok] (linear-transitive-edge-and-filters rule rule.params[0] rule.params[1])]
+            (when (or (not base-ok)
+                      found-base
+                      (and (> (count attr) 0) (not (= attr base-attr))))
+              (delete filters)
+              (delete base-filters)
+              (return (empty-linear-transitive-plan) false))
+            (set! attr base-attr)
+            (delete filters)
+            (set! filters base-filters)
+            (set! found-base true)))
+        (when (> (count rule.rule-calls) 0)
+          (when (not (= (count rule.rule-calls) 1))
+            (delete filters)
+            (return (empty-linear-transitive-plan) false))
+          (let [recursive-call rule.rule-calls[0]]
+            (when (not (and (= recursive-call.name name)
+                            (= (count recursive-call.args) 2)
+                            (= recursive-call.args[0].kind .Var)
+                            (term-var-name? recursive-call.args[1] rule.params[1])))
+              (delete filters)
+              (return (empty-linear-transitive-plan) false))
+            (let [mid-var recursive-call.args[0].name]
+              (let [[recursive-attr recursive-filters recursive-ok] (linear-transitive-edge-and-filters rule rule.params[0] mid-var)]
+                (when (or (not recursive-ok)
+                          (and (> (count attr) 0) (not (= attr recursive-attr)))
+                          (and found-base (not (linear-transitive-filters-same? (slice filters 0) (slice recursive-filters 0)))))
+                  (delete filters)
+                  (delete recursive-filters)
+                  (return (empty-linear-transitive-plan) false))
+                (when (not found-base)
+                  (delete filters)
+                  (set! filters (arr.into [dynamic]Clause (slice recursive-filters 0))))
+                (set! attr recursive-attr)
+                (delete recursive-filters)
+                (set! found-recursive true)))))))
+    (return (Linear-Transitive-Plan {attr: attr filters: filters}) (and found-base found-recursive))))
+
+(defn linear-transitive-rule-attr [rules: []Rule, name: string] -> [attr: string, ok: bool]
+  (let [[plan plan-ok] (linear-transitive-rule-plan rules name)]
+    (defer (delete-linear-transitive-plan plan))
+    (return plan.attr plan-ok)))
+
+(defstruct Alternating-Transitive-Plan {
+  left-name: string
+  left-attr: string
+  right-name: string
+  right-attr: string
+})
+
+(defn empty-alternating-transitive-plan [] -> Alternating-Transitive-Plan
+  (Alternating-Transitive-Plan {}))
+
+(defn alternating-base-rule-attr [rule: Rule] -> [attr: string, ok: bool]
+  (when (not (and (= (count rule.params) 2)
+                  (rule-has-only-plain-clauses-and-calls? rule)
+                  (= (count rule.rule-calls) 0)
+                  (= (count rule.clauses) 1)))
+    (return "" false))
+  (let [rule-clause rule.clauses[0]
+        [attr attr-ok] (clause-attr-keyword rule-clause)]
+    (return attr
+      (and attr-ok
+           (not rule-clause.has-source)
+           (term-wildcard? rule-clause.tx-term)
+           (term-wildcard? rule-clause.op-term)
+           (term-var-name? rule-clause.e rule.params[0])
+           (term-var-name? rule-clause.v rule.params[1])))))
+
+(defn alternating-recursive-rule-shape [rule: Rule] -> [attr: string, next-name: string, ok: bool]
+  (when (not (and (= (count rule.params) 2)
+                  (rule-has-only-plain-clauses-and-calls? rule)
+                  (= (count rule.rule-calls) 1)
+                  (= (count rule.clauses) 1)))
+    (return "" "" false))
+  (let [call rule.rule-calls[0]]
+    (when (not (and (= (count call.args) 2)
+                    (= call.args[0].kind .Var)
+                    (= call.args[1].kind .Var)
+                    (= call.args[1].name rule.params[1])))
+      (return "" "" false))
+    (let [mid-var call.args[0].name
+          rule-clause rule.clauses[0]
+          [attr attr-ok] (clause-attr-keyword rule-clause)]
+      (return attr call.name
+        (and attr-ok
+             (not call.has-source)
+             (not rule-clause.has-source)
+             (term-wildcard? rule-clause.tx-term)
+             (term-wildcard? rule-clause.op-term)
+             (term-var-name? rule-clause.e rule.params[0])
+             (term-var-name? rule-clause.v mid-var))))))
+
+(defn alternating-rule-shape [rules: []Rule, name: string] -> [attr: string, next-name: string, ok: bool]
+  (let [attr ""
+        next-rule-name ""
+        found-base false
+        found-recursive false]
+    (for [rule rules]
+      (when (= rule.name name)
+        (let [branch-ok false]
+        (let [[base-attr base-ok] (alternating-base-rule-attr rule)]
+          (when base-ok
+            (set! branch-ok true)
+            (when (or found-base
+                      (and (> (count attr) 0) (not (= attr base-attr))))
+              (return "" "" false))
+            (set! attr base-attr)
+            (set! found-base true)))
+        (let [[recursive-attr recursive-next recursive-ok] (alternating-recursive-rule-shape rule)]
+          (when recursive-ok
+            (set! branch-ok true)
+            (when (or found-recursive
+                      (and (> (count attr) 0) (not (= attr recursive-attr))))
+              (return "" "" false))
+            (set! attr recursive-attr)
+            (set! next-rule-name recursive-next)
+            (set! found-recursive true)))
+        (when (not branch-ok)
+          (return "" "" false)))))
+    (return attr next-rule-name (and found-base found-recursive))))
+
+(defn alternating-transitive-rule-plan [rules: []Rule, name: string] -> [plan: Alternating-Transitive-Plan, ok: bool]
+  (let [[left-attr right-name left-ok] (alternating-rule-shape rules name)]
+    (when (not left-ok)
+      (return (empty-alternating-transitive-plan) false))
+    (let [[right-attr next-name right-ok] (alternating-rule-shape rules right-name)]
+      (when (not (and right-ok (= next-name name) (not (= name right-name))))
+        (return (empty-alternating-transitive-plan) false))
+      (return (Alternating-Transitive-Plan {left-name: name
+                                            left-attr: left-attr
+                                            right-name: right-name
+                                            right-attr: right-attr})
+              true))))
+
+(defn first-rule-by-name [rules: []Rule, name: string] -> [rule: Rule, ok: bool]
+  (for [rule rules]
+    (when (= rule.name name)
+      (return rule true)))
+  (return (Rule {}) false))
 
 (defn append-transitive-targets! [out: ^[dynamic]u64, db: DB, attr: string, start: u64]
   (let [expanded (make (map u64 bool))
@@ -3932,6 +4157,30 @@
       (return true)))
   false)
 
+(defn transitive-adjacency-max-entity [adjacency: []Transitive-Adjacency] -> u64
+  (let [max-entity: u64 0]
+    (for [entry adjacency]
+      (when (> entry.entity max-entity)
+        (set! max-entity entry.entity))
+      (for [target entry.targets]
+        (when (> target max-entity)
+          (set! max-entity target))))
+    max-entity))
+
+(defn transitive-adjacency-use-dense-seen? [adjacency: []Transitive-Adjacency] -> [max-entity: u64, ok: bool]
+  (let [max-value (transitive-adjacency-max-entity adjacency)
+        adjacency-count (count adjacency)]
+    (return max-value
+      (and (> adjacency-count 0)
+           (< max-value 1000000)
+           (<= (int max-value) (* adjacency-count 8))))))
+
+(defn make-bool-dense-index [size: int] -> [dynamic]bool
+  (let [out (make [dynamic]bool 0 size)]
+    (for [_ (arr.range 0 size)]
+      (arr.push! out false))
+    out))
+
 (defstruct Transitive-Adjacency {
   entity: u64
   targets: [dynamic]u64
@@ -3954,7 +4203,27 @@
         (mmap.assoc! index^ source (count out^))
         (arr.push! out^ (Transitive-Adjacency {entity: source targets: targets}))))))
 
-(defn transitive-adjacency-from-db [db: DB, attr: string] -> Transitive-Adjacency-Index
+(defn entity-matches-transitive-filter? [db: DB, entity: u64, filter: Clause] -> bool
+  (let [indexes (slice db.eavt 0)
+        attr filter.a.value.text
+        expected filter.v.value
+        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
+    (for [i (arr.range low high)]
+      (let [datom-index indexes[i]
+            datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (value-equal? datom.v expected))
+          (return true))))
+    false))
+
+(defn entity-matches-transitive-filters? [db: DB, entity: u64, filters: []Clause] -> bool
+  (for [filter filters]
+    (when (not (entity-matches-transitive-filter? db entity filter))
+      (return false)))
+  true)
+
+(defn transitive-adjacency-from-db-with-filters [db: DB, attr: string, filters: []Clause] -> Transitive-Adjacency-Index
   (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 attr (Value {}))
         high (upper-bound-index db indexes "aevt" 0 attr (Value {}))
@@ -3964,11 +4233,15 @@
       (let [datom-index indexes[i]
             datom db.datoms[datom-index]]
         (when (and (datom-current-at? db datom-index)
-                   (= datom.v.kind .Entity))
+                   (= datom.v.kind .Entity)
+                   (entity-matches-transitive-filters? db datom.v.entity filters))
           (append-transitive-adjacency-edge! (addr out) (addr index) datom.e datom.v.entity))))
     (Transitive-Adjacency-Index {items: out index: index})))
 
-(defn transitive-reverse-adjacency-from-db [db: DB, attr: string] -> Transitive-Adjacency-Index
+(defn transitive-adjacency-from-db [db: DB, attr: string] -> Transitive-Adjacency-Index
+  (transitive-adjacency-from-db-with-filters db attr ([]Clause [])))
+
+(defn transitive-reverse-adjacency-from-db-with-filters [db: DB, attr: string, filters: []Clause] -> Transitive-Adjacency-Index
   (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 attr (Value {}))
         high (upper-bound-index db indexes "aevt" 0 attr (Value {}))
@@ -3978,9 +4251,13 @@
       (let [datom-index indexes[i]
             datom db.datoms[datom-index]]
         (when (and (datom-current-at? db datom-index)
-                   (= datom.v.kind .Entity))
+                   (= datom.v.kind .Entity)
+                   (entity-matches-transitive-filters? db datom.v.entity filters))
           (append-transitive-adjacency-edge! (addr out) (addr index) datom.v.entity datom.e))))
     (Transitive-Adjacency-Index {items: out index: index})))
+
+(defn transitive-reverse-adjacency-from-db [db: DB, attr: string] -> Transitive-Adjacency-Index
+  (transitive-reverse-adjacency-from-db-with-filters db attr ([]Clause [])))
 
 (defn delete-transitive-adjacency [adjacency: Transitive-Adjacency-Index]
   (for [item adjacency.items]
@@ -4012,6 +4289,81 @@
                   (arr.push! out^ target-entity))
                 (when (not target-expanded)
                   (arr.push! frontier target-entity))))))))))
+
+(defn append-transitive-targets-with-dense-adjacency! [out: ^[dynamic]u64, adjacency: []Transitive-Adjacency, adjacency-index: map[u64]int, start: u64, max-entity: u64]
+  (let [dense-size (+ (int max-entity) 1)
+        expanded (make-bool-dense-index dense-size)
+        emitted (make-bool-dense-index dense-size)
+        frontier (make [dynamic]u64 0 (count adjacency))
+        frontier-index 0]
+    (defer (delete expanded))
+    (defer (delete emitted))
+    (defer (delete frontier))
+    (arr.push! frontier start)
+    (while (< frontier-index (count frontier))
+      (let [current frontier[frontier-index]
+            [adj-index has-edges] (transitive-adjacency-index adjacency-index current)
+            current-index (int current)]
+        (set! frontier-index (+ frontier-index 1))
+        (when (and has-edges
+                   (< current-index dense-size)
+                   (not expanded[current-index]))
+          (set! expanded[current-index] true)
+          (for [target-entity adjacency[adj-index].targets]
+            (let [target-index (int target-entity)]
+              (when (< target-index dense-size)
+                (when (not emitted[target-index])
+                  (set! emitted[target-index] true)
+                  (arr.push! out^ target-entity))
+                (when (not expanded[target-index])
+                  (arr.push! frontier target-entity))))))))))
+
+(defn append-transitive-targets-fast! [out: ^[dynamic]u64, adjacency: []Transitive-Adjacency, adjacency-index: map[u64]int, start: u64]
+  (let [[max-entity use-dense] (transitive-adjacency-use-dense-seen? adjacency)]
+    (if use-dense
+      (append-transitive-targets-with-dense-adjacency! out adjacency adjacency-index start max-entity)
+      (append-transitive-targets-with-adjacency! out adjacency adjacency-index start))))
+
+(defstruct Alternating-Frontier-State {
+  entity: u64
+  use-left: bool
+})
+
+(defn alternating-state-expanded? [left-expanded: []u64, right-expanded: []u64, entity: u64, use-left: bool] -> bool
+  (if use-left
+    (u64-slice-contains? left-expanded entity)
+    (u64-slice-contains? right-expanded entity)))
+
+(defn mark-alternating-state-expanded! [left-expanded: ^[dynamic]u64, right-expanded: ^[dynamic]u64, entity: u64, use-left: bool]
+  (if use-left
+    (arr.push! left-expanded^ entity)
+    (arr.push! right-expanded^ entity)))
+
+(defn append-alternating-targets! [out: ^[dynamic]u64, left-adjacency: Transitive-Adjacency-Index, right-adjacency: Transitive-Adjacency-Index, start: u64]
+  (let [left-expanded (make [dynamic]u64)
+        right-expanded (make [dynamic]u64)
+        emitted (make [dynamic]u64)
+        frontier (make [dynamic]Alternating-Frontier-State)
+        frontier-index 0]
+    (defer (delete left-expanded))
+    (defer (delete right-expanded))
+    (defer (delete emitted))
+    (defer (delete frontier))
+    (arr.push! frontier (Alternating-Frontier-State {entity: start use-left: true}))
+    (while (< frontier-index (count frontier))
+      (let [state frontier[frontier-index]]
+        (set! frontier-index (+ frontier-index 1))
+        (when (not (alternating-state-expanded? (slice left-expanded 0) (slice right-expanded 0) state.entity state.use-left))
+          (mark-alternating-state-expanded! (addr left-expanded) (addr right-expanded) state.entity state.use-left)
+          (let [adjacency (if state.use-left left-adjacency right-adjacency)
+                [adj-index has-edges] (transitive-adjacency-index adjacency.index state.entity)]
+            (when has-edges
+              (for [target-entity adjacency.items[adj-index].targets]
+                (when (not (u64-slice-contains? (slice emitted 0) target-entity))
+                  (arr.push! emitted target-entity)
+                  (arr.push! out^ target-entity))
+                (when (not (alternating-state-expanded? (slice left-expanded 0) (slice right-expanded 0) target-entity (not state.use-left)))
+                  (arr.push! frontier (Alternating-Frontier-State {entity: target-entity use-left: (not state.use-left)})))))))))))
 
 (defn append-linear-transitive-direct-result! [out: ^[dynamic]Binding, call: Rule-Call, binding: Binding, rule: Rule, start-entity: u64, target-entity: u64]
   (when (and (= (count binding.items) 0)
@@ -4107,12 +4459,12 @@
   (let [[target target-ok] (binding-lookup initial rule.params[1])
         targets (make [dynamic]u64)]
     (defer (delete targets))
-    (append-transitive-targets-with-adjacency! (addr targets) (slice adjacency.items 0) adjacency.index start-entity)
+    (append-transitive-targets-fast! (addr targets) (slice adjacency.items 0) adjacency.index start-entity)
     (for [target-entity targets]
       (append-linear-transitive-target-result! out db call binding rule initial start-entity target target-ok target-entity))))
 
-(defn append-linear-transitive-from-all-starts! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding]
-  (let [adjacency (transitive-adjacency-from-db db attr)]
+(defn append-linear-transitive-from-all-starts! [out: ^[dynamic]Binding, db: DB, plan: Linear-Transitive-Plan, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding]
+  (let [adjacency (transitive-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0))]
     (defer (delete-transitive-adjacency adjacency))
     (for [entry adjacency.items]
       (append-linear-transitive-unbound-from-start-adjacency! out (slice adjacency.items 0) adjacency.index call binding rule entry.entity))))
@@ -4129,11 +4481,11 @@
   (let [starts (make [dynamic]u64)
         target-value (value-entity target-entity)]
     (defer (delete starts))
-    (append-transitive-targets-with-adjacency! (addr starts) (slice adjacency.items 0) adjacency.index target-entity)
+    (append-transitive-targets-fast! (addr starts) (slice adjacency.items 0) adjacency.index target-entity)
     (for [start-entity starts]
       (append-linear-transitive-target-result! out db call binding rule initial start-entity target-value true target-entity))))
 
-(defn append-linear-transitive-results! [out: ^[dynamic]Binding, db: DB, attr: string, call: Rule-Call, binding: Binding, rule: Rule]
+(defn append-linear-transitive-results! [out: ^[dynamic]Binding, db: DB, plan: Linear-Transitive-Plan, call: Rule-Call, binding: Binding, rule: Rule]
   (let [[initial initial-ok] (bind-rule-args binding call rule)]
     (when (not initial-ok)
       (return))
@@ -4142,28 +4494,61 @@
         (let [[start-entity start-entity-ok] (value-as-entity db start)]
           (when (not start-entity-ok)
             (return))
-          (let [adjacency (transitive-adjacency-from-db db attr)]
+          (let [adjacency (transitive-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0))]
             (defer (delete-transitive-adjacency adjacency))
             (append-linear-transitive-from-start-adjacency! out db adjacency call binding rule initial start-entity.entity)))
         (let [[target target-ok] (binding-lookup initial rule.params[1])]
           (if target-ok
             (let [[target-entity target-entity-ok] (value-as-entity db target)]
               (when target-entity-ok
-                (let [adjacency (transitive-reverse-adjacency-from-db db attr)]
+                (let [adjacency (transitive-reverse-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0))]
                   (defer (delete-transitive-adjacency adjacency))
                   (append-linear-transitive-to-target-adjacency! out db adjacency call binding rule initial target-entity.entity))))
-            (append-linear-transitive-from-all-starts! out db attr call binding rule initial)))))))
+            (append-linear-transitive-from-all-starts! out db plan call binding rule initial)))))))
 
 (defn bindings-after-linear-transitive-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
   (let [result-bindings (make [dynamic]Binding)
-        [attr attr-ok] (linear-transitive-rule-attr rules call.name)]
-    (when (not attr-ok)
+        [plan plan-ok] (linear-transitive-rule-plan rules call.name)]
+    (defer (delete-linear-transitive-plan plan))
+    (when (not plan-ok)
       (return result-bindings false))
     (for [rule rules]
       (when (= rule.name call.name)
-        (append-linear-transitive-results! (addr result-bindings) db attr call binding rule)
+        (append-linear-transitive-results! (addr result-bindings) db plan call binding rule)
         (return result-bindings true)))
     (return result-bindings true)))
+
+(defn append-alternating-transitive-results! [out: ^[dynamic]Binding, db: DB, plan: Alternating-Transitive-Plan, call: Rule-Call, binding: Binding, rule: Rule]
+  (let [[initial initial-ok] (bind-rule-args binding call rule)]
+    (when (not initial-ok)
+      (return))
+    (let [[start start-ok] (binding-lookup initial rule.params[0])]
+      (when (not start-ok)
+        (return))
+      (let [[start-entity start-entity-ok] (value-as-entity db start)]
+        (when (not start-entity-ok)
+          (return))
+        (let [left-adjacency (transitive-adjacency-from-db db plan.left-attr)
+              right-adjacency (transitive-adjacency-from-db db plan.right-attr)
+              targets (make [dynamic]u64)]
+          (defer (delete-transitive-adjacency left-adjacency))
+          (defer (delete-transitive-adjacency right-adjacency))
+          (defer (delete targets))
+          (append-alternating-targets! (addr targets) left-adjacency right-adjacency start-entity.entity)
+          (let [[target target-ok] (binding-lookup initial rule.params[1])]
+            (for [target-entity targets]
+              (append-linear-transitive-target-result! out db call binding rule initial start-entity.entity target target-ok target-entity))))))))
+
+(defn bindings-after-alternating-transitive-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
+  (let [result-bindings (make [dynamic]Binding)
+        [plan plan-ok] (alternating-transitive-rule-plan rules call.name)]
+    (when (not plan-ok)
+      (return result-bindings false))
+    (let [[rule rule-ok] (first-rule-by-name rules call.name)]
+      (when (not rule-ok)
+        (return result-bindings false))
+      (append-alternating-transitive-results! (addr result-bindings) db plan call binding rule)
+      (return result-bindings true))))
 
 (defn bindings-after-rule-step-depth-with-fns [db: DB, rules: []Rule, rule: Rule, bindings: []Binding, step: Query-Step, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (case step.kind
@@ -4372,22 +4757,27 @@
     (when optimized-ok
       (return optimized))
     (delete optimized))
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db rules call binding)]
+    (when optimized-ok
+      (return optimized))
+    (delete optimized))
   (when (matching-rules-are-leaves? rules call)
     (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding 1 call.source call.has-source registry)
           out (unique-bindings (slice candidates 0))]
       (delete candidates)
       (return out)))
   (let [out (make [dynamic]Binding)
+        seen (make (map string bool))
         depth 1
         min-depth (+ (count rules) 1)
         changed true]
+    (defer (delete seen))
     (while (or changed (<= depth min-depth))
       (set! changed false)
       (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
-          (when (not (binding-exists? (slice out 0) candidate))
-            (arr.push! out candidate)
+          (when (append-unique-binding! (addr out) (addr seen) candidate)
             (set! changed true))))
       (set! depth (+ depth 1)))
     out))
@@ -4400,23 +4790,30 @@
       (query-stats-observe-bindings! stats (count optimized))
       (return optimized))
     (delete optimized))
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db rules call binding)]
+    (when optimized-ok
+      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+      (query-stats-observe-bindings! stats (count optimized))
+      (return optimized))
+    (delete optimized))
   (when (matching-rules-are-leaves? rules call)
     (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
     (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
       (query-stats-observe-bindings! stats (count out))
       (return out)))
   (let [out (make [dynamic]Binding)
+        seen (make (map string bool))
         depth 1
         min-depth (+ (count rules) 1)
         changed true]
+    (defer (delete seen))
     (while (or changed (<= depth min-depth))
       (set! changed false)
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
       (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
-          (when (not (binding-exists? (slice out 0) candidate))
-            (arr.push! out candidate)
+          (when (append-unique-binding! (addr out) (addr seen) candidate)
             (set! changed true))))
       (query-stats-observe-bindings! stats (count out))
       (set! depth (+ depth 1)))
@@ -6059,67 +6456,212 @@
     (arr.push! values value)
     (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
 
+(defn append-two-value-row! [rows: ^[dynamic]Result-Row, first: Value, second: Value]
+  (let [values (make [dynamic]Value 0 2)
+        pulls (make [dynamic]Pull-Result)]
+    (arr.push! values first)
+    (arr.push! values second)
+    (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
+
+(defstruct Distinct-Attr-Value {
+  first-e: u64
+  value: Value
+})
+
+(defn distinct-attr-value-less? [left: Distinct-Attr-Value, right: Distinct-Attr-Value] -> bool
+  (if (not (= left.first-e right.first-e))
+    (< left.first-e right.first-e)
+    (value-less? left.value right.value)))
+
+(defn sort-distinct-attr-values! [values: ^[dynamic]Distinct-Attr-Value]
+  (for [i (arr.range 1 (count values^))]
+    (let [item values^[i]
+          j i]
+      (while (and (> j 0)
+                  (distinct-attr-value-less? item values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] item))))
+
 (defn q-single-attr-value-distinct-profiled [db: DB, clause-value: Clause, stats: Query-Stats] -> Profiled-Result-Set
-  (let [rows (make [dynamic]Result-Row)
-        out-stats stats
+  (let [out-stats stats
         attr clause-value.a.value.text
-        indexes (slice db.aevt 0)
-        low (lower-bound-index db indexes "aevt" 0 attr (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 attr (Value {}))
-        seen-entities (make (map u64 bool))
-        seen-ints (make (map i64 bool))
-        seen-strings (make (map string bool))
-        seen-keywords (make (map string bool))
-        seen-symbols (make (map string bool))
-        seen-nil false
-        seen-true false
-        seen-false false]
-    (defer (delete seen-entities))
-    (defer (delete seen-ints))
-    (defer (delete seen-strings))
-    (defer (delete seen-keywords))
-    (defer (delete seen-symbols))
+        indexes (slice db.avet 0)
+        attr-prefix ([]Value [(value-keyword attr)])
+        low (lower-bound-index-values db indexes "avet" attr-prefix)
+        high (upper-bound-index-values db indexes "avet" attr-prefix)
+        distinct-values (make [dynamic]Distinct-Attr-Value)
+        all-current (all-datoms-current? db)]
+    (defer (delete distinct-values))
     (set! out-stats.steps 1)
     (set! out-stats.clauses 1)
     (set! out-stats.clause-candidates (- high low))
     (set! out-stats.max-intermediate-bindings (- high low))
+    (let [i low]
+      (while (< i high)
+        (let [first-index indexes[i]
+              datom db.datoms[first-index]
+              value datom.v]
+          (if all-current
+            (do
+              (while (and (< i high)
+                          (value-equal? db.datoms[indexes[i]].v value))
+                (set! i (+ i 1)))
+              (arr.push! distinct-values (Distinct-Attr-Value {first-e: datom.e value: value})))
+            (let [first-current-e: u64 0
+                  first-current-value (Value {})
+                  has-current false]
+              (while (and (< i high)
+                          (value-equal? db.datoms[indexes[i]].v value))
+                (let [candidate-index indexes[i]
+                      candidate db.datoms[candidate-index]]
+                  (when (and (datom-current-at? db candidate-index)
+                             (not has-current))
+                    (set! first-current-e candidate.e)
+                    (set! first-current-value candidate.v)
+                    (set! has-current true)))
+                (set! i (+ i 1)))
+              (when has-current
+                (arr.push! distinct-values (Distinct-Attr-Value {first-e: first-current-e value: first-current-value})))))))
+    (sort-distinct-attr-values! (addr distinct-values))
+    (let [rows (make [dynamic]Result-Row 0 (count distinct-values))]
+      (for [item distinct-values]
+        (append-distinct-single-value-row! (addr rows) item.value))
+      (set! out-stats.output-rows (count rows))
+      (profiled-result-set (result-set-ok rows) out-stats)))))
+
+(defstruct Two-Attr-Entity-Projection {
+  first-attr: string
+  first-var: string
+  second-attr: string
+  second-var: string
+})
+
+(defn empty-two-attr-entity-projection [] -> Two-Attr-Entity-Projection
+  (Two-Attr-Entity-Projection {}))
+
+(defn query-two-attr-entity-projection [query: Query] -> [projection: Two-Attr-Entity-Projection, ok: bool]
+  (when (not (and (= (count query.find) 2)
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 0)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 2)
+                  (= (count query.where-steps) 2)
+                  (= query.where-steps[0].kind .Clause)
+                  (= query.where-steps[1].kind .Clause)))
+    (return (empty-two-attr-entity-projection) false))
+  (let [first query.clauses[0]
+        second query.clauses[1]]
+    (when (or first.has-source
+              second.has-source
+              (not (= first.e.kind .Var))
+              (not (= second.e.kind .Var))
+              (not (= first.e.name second.e.name))
+              (not (= first.a.kind .Value))
+              (not (= second.a.kind .Value))
+              (not (= first.a.value.kind .Keyword))
+              (not (= second.a.value.kind .Keyword))
+              (not (= first.v.kind .Var))
+              (not (= second.v.kind .Var))
+              (= first.v.name second.v.name)
+              (not (= first.tx-term.kind .Wildcard))
+              (not (= second.tx-term.kind .Wildcard))
+              (not (= first.op-term.kind .Wildcard))
+              (not (= second.op-term.kind .Wildcard)))
+      (return (empty-two-attr-entity-projection) false))
+    (when (not (or (and (= query.find[0] first.v.name)
+                        (= query.find[1] second.v.name))
+                   (and (= query.find[0] second.v.name)
+                        (= query.find[1] first.v.name))))
+      (return (empty-two-attr-entity-projection) false))
+    (return (Two-Attr-Entity-Projection {first-attr: first.a.value.text
+                                         first-var: first.v.name
+                                         second-attr: second.a.value.text
+                                         second-var: second.v.name})
+            true)))
+
+(defn append-two-attr-projection-row! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), query: Query, projection: Two-Attr-Entity-Projection, first-value-source: Value, second-value-source: Value]
+  (let [first-value (if (= query.find[0] projection.first-var) first-value-source second-value-source)
+        second-value (if (= query.find[1] projection.second-var) second-value-source first-value-source)
+        [key key-ok] (two-primitive-values-dedupe-key first-value second-value)]
+    (if key-ok
+      (let [[_ already-seen] (mmap.get seen^ key)]
+        (when (not already-seen)
+          (mmap.assoc! seen^ key true)
+          (append-two-value-row! rows first-value second-value)))
+      (let [dedupe-values ([]Value [first-value second-value])]
+        (when (not (row-values-exist? (slice rows^ 0) dedupe-values))
+          (append-two-value-row! rows first-value second-value))))))
+
+(defn current-entity-attr-values [db: DB, attr: string, stats: ^Query-Stats] -> (map u64 Value)
+  (let [out (make (map u64 Value))
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 attr (Value {}))]
+    (set! stats^.clause-candidates (+ stats^.clause-candidates (- high low)))
     (for [i (arr.range low high)]
       (let [datom-index indexes[i]
             datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
-          (case datom.v.kind
-            .Entity (let [[_ already-seen] (mmap.get seen-entities datom.v.entity)]
-                      (when (not already-seen)
-                        (mmap.assoc! seen-entities datom.v.entity true)
-                        (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Int (let [[_ already-seen] (mmap.get seen-ints datom.v.int-value)]
-                   (when (not already-seen)
-                     (mmap.assoc! seen-ints datom.v.int-value true)
-                     (append-distinct-single-value-row! (addr rows) datom.v)))
-            .String (let [[_ already-seen] (mmap.get seen-strings datom.v.text)]
-                      (when (not already-seen)
-                        (mmap.assoc! seen-strings datom.v.text true)
-                        (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Keyword (let [[_ already-seen] (mmap.get seen-keywords datom.v.text)]
-                       (when (not already-seen)
-                         (mmap.assoc! seen-keywords datom.v.text true)
-                         (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Symbol (let [[_ already-seen] (mmap.get seen-symbols datom.v.text)]
-                      (when (not already-seen)
-                        (mmap.assoc! seen-symbols datom.v.text true)
-                        (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Bool (if datom.v.bool-value
-                    (when (not seen-true)
-                      (set! seen-true true)
-                      (append-distinct-single-value-row! (addr rows) datom.v))
-                    (when (not seen-false)
-                      (set! seen-false true)
-                      (append-distinct-single-value-row! (addr rows) datom.v)))
-            .Nil (when (not seen-nil)
-                   (set! seen-nil true)
-                   (append-distinct-single-value-row! (addr rows) datom.v))
-            :else (when (not (row-values-exist? (slice rows 0) ([]Value [datom.v])))
-                    (append-distinct-single-value-row! (addr rows) datom.v))))))
+          (mmap.assoc! out datom.e datom.v))))
+    out))
+
+(defn append-two-attr-entity-projection-cardinality-one! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: ^Query-Stats]
+  (let [second-values (current-entity-attr-values db projection.second-attr stats)
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))]
+    (defer (delete second-values))
+    (set! stats^.clause-candidates (+ stats^.clause-candidates (- high low)))
+    (for [i (arr.range low high)]
+      (let [first-index indexes[i]
+            first-datom db.datoms[first-index]]
+        (when (datom-current-at? db first-index)
+          (let [[second-value has-second] (mmap.get second-values first-datom.e)]
+            (when has-second
+              (append-two-attr-projection-row! rows seen query projection first-datom.v second-value))))))))
+
+(defn q-two-attr-entity-projection-profiled [db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: Query-Stats] -> Profiled-Result-Set
+  (let [out-stats stats
+        rows (make [dynamic]Result-Row)
+        seen (make (map string bool))
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))]
+    (defer (delete seen))
+    (set! out-stats.steps 1)
+    (set! out-stats.clauses 2)
+    (if (schema-cardinality-one? db projection.second-attr)
+      (append-two-attr-entity-projection-cardinality-one! (addr rows) (addr seen) db query projection (addr out-stats))
+      (for [i (arr.range low high)]
+        (let [first-index indexes[i]
+              first-datom db.datoms[first-index]]
+          (set! out-stats.clause-candidates (+ out-stats.clause-candidates 1))
+          (when (datom-current-at? db first-index)
+            (let [entity-indexes (slice db.eavt 0)
+                  second-low (lower-bound-index db entity-indexes "eavt-ea" first-datom.e projection.second-attr (Value {}))
+                  second-high (upper-bound-index db entity-indexes "eavt-ea" first-datom.e projection.second-attr (Value {}))]
+              (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- second-high second-low)))
+              (for [j (arr.range second-low second-high)]
+                (let [second-index entity-indexes[j]
+                      second-datom db.datoms[second-index]]
+                  (when (datom-current-at? db second-index)
+                    (append-two-attr-projection-row! (addr rows) (addr seen) query projection first-datom.v second-datom.v)))))))))
+    (set! out-stats.max-intermediate-bindings (count rows))
     (set! out-stats.output-rows (count rows))
     (profiled-result-set (result-set-ok rows) out-stats)))
 
@@ -6131,6 +6673,9 @@
   (let [[distinct-clause distinct-ok] (query-single-attr-value-distinct-clause query)]
     (when distinct-ok
       (return (q-single-attr-value-distinct-profiled db distinct-clause stats))))
+  (let [[projection projection-ok] (query-two-attr-entity-projection query)]
+    (when projection-ok
+      (return (q-two-attr-entity-projection-profiled db query projection stats))))
   (when (> (count query.where-steps) 0)
     (let [ordered-query query
           bindings (bindings-after-ordered-where-profiled-with-fns db sources (addr ordered-query) inputs registry (addr stats))]

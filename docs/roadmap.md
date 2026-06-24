@@ -78,10 +78,15 @@ Current batch order:
 2. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
    Java feel close to Datomic/DataScript for common tutorials, including
    listener/report callbacks where useful.
-3. Rule/query performance: use query profile counters and ABI/native
-   benchmarks to replace recursive rule and large relation hot paths with
-   measured implementations.
-4. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
+3. DataScript/Datalevin read benchmark integration: add Vev to the Datalevin
+   `benchmarks/datascript-bench` shape through the Clojure API, starting with
+   q1/q2/q2-switch/q3/q4/qpred1/qpred2. Use this to compare Vev against
+   Datomic, DataScript, and Datalevin on the same common read workloads.
+4. Rule/query performance: use query profile counters, ABI/native benchmarks,
+   and the DataScript/Datalevin read benchmark to replace recursive rule,
+   same-entity star, and large relation hot paths with planner/operator-based
+   implementations rather than benchmark-specific recognizers.
+5. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
    dataset, run equivalent Datomic workshop queries against Vev and Datomic,
    compare result sets first and performance second.
 
@@ -130,7 +135,38 @@ Initial scope:
 - report Datomic vs Vev timings as comparative ratios, not raw claims
 
 Status: not started. This should happen after the next parser/callback cleanup
-batch and before durable SQLite work.
+batch, after the DataScript/Datalevin read benchmark is running, and before
+durable SQLite work.
+
+## Phase 5b: External Optimizer Benchmarks
+
+Goal:
+
+- use established external benchmark shapes to check that Vev is moving toward
+  a real embedded Datomic-like database, not just passing local microbenchmarks
+- compare against Datomic, DataScript, Datalevin, PostgreSQL, and SQLite where
+  the benchmark already does that
+- use benchmark failures to drive general planner/operator work
+
+Order:
+
+1. DataScript bench: immediate. Add Vev to the Datalevin
+   `benchmarks/datascript-bench` shape. This is small, in-memory, and directly
+   exercises common Datomic/DataScript query forms through the Clojure API.
+2. JOB bench: after the query planner/operator layer is underway. This is a
+   large join-order benchmark and should validate costed planning, join
+   ordering, predicates, ranges, aggregates, and large import behavior.
+3. Write bench: after durable storage exists. This should measure transaction
+   throughput, commit latency, batching, sync/WAL behavior, and mixed
+   read/write behavior against SQLite and Datalevin.
+
+Current stance:
+
+- DataScript bench is a near-term development benchmark.
+- JOB bench is the planner milestone.
+- Write bench is the durability milestone.
+- None of these should be gamed with one-off recognizers; benchmark wins should
+  come from reusable physical operators and better planning.
 
 ## Phase 6: Durable proof
 
