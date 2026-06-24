@@ -10,25 +10,28 @@ text frontend used by C, Python, Rust, and Java callers.
 ```clojure
 (require '[vev.core :as vev])
 
-(with-open [conn (vev/open "build/lib/libvev.dylib")]
+(with-open [conn (vev/create-conn "build/lib/libvev.dylib")]
   (vev/transact! conn
     [{:db/id 1
       :user/name "Ada"
       :user/email "ada@example.com"}])
 
-  (vev/q conn
-    '[:find ?name
-      :where [?e :user/name ?name]]))
+  (with-open [db (vev/db conn)]
+    (vev/q
+      '[:find ?name
+        :where [?e :user/name ?name]]
+      db)))
 ```
 
 Inputs are passed as ordinary arguments after the query:
 
 ```clojure
-(vev/q conn
+(vev/q
   '[:find ?name
     :in [?email ...]
     :where [?e :user/email ?email]
            [?e :user/name ?name]]
+  db
   ["ada@example.com" "grace@example.com"])
 ```
 
@@ -40,13 +43,22 @@ Prepared queries are reusable:
                       :in ?needle
                       :where [?e :user/email ?email]
                              [(= ?email ?needle)]])]
-  (vev/q conn query "ada@example.com"))
+  (vev/q query db "ada@example.com"))
+```
+
+Pull follows the same DB-value shape:
+
+```clojure
+(vev/pull db
+  [:user/name {:user/friend [:user/name]}]
+  1)
 ```
 
 The current package is deliberately thin:
 
 - transaction reports are still returned as rendered EDN strings
-- query rows are converted to Clojure vectors
+- `q` returns a set of row vectors
+- `rows` returns an ordered vector of row vectors
 - entity ids are converted to integers
 - pull maps are converted to Clojure maps
 - immutable DB snapshots implement `AutoCloseable` and can be queried

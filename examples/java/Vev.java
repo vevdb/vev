@@ -50,6 +50,10 @@ public final class Vev {
     private final MethodHandle valueMapKey;
     private final MethodHandle valueMapValue;
 
+    public static Vev load(Path libraryPath) {
+        return new Vev(libraryPath);
+    }
+
     public Vev(Path libraryPath) {
         this.arena = Arena.ofShared();
         this.symbols = SymbolLookup.libraryLookup(libraryPath, arena);
@@ -89,6 +93,10 @@ public final class Vev {
     }
 
     public Connection openMemory() throws Throwable {
+        return createConn();
+    }
+
+    public Connection createConn() throws Throwable {
         MemorySegment raw = (MemorySegment) connOpenMemory.invoke();
         if (isNull(raw)) throw new IllegalStateException("failed to open Vev connection");
         return new Connection(raw);

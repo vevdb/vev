@@ -695,6 +695,69 @@
     (t.is (= result.rows[0].values[1].kind .String))
     (t.is (= result.rows[0].values[1].text "Ada"))))
 
+(t.deftest frontend-parity-kvist-literals-edn-text-and-prepared
+  (defer (free_all context.allocator))
+  (let [literal-conn (vev.create-conn)
+        text-conn (vev.create-conn)
+        literal-report (vev.transact
+                         (addr literal-conn)
+                         [[:db/add 100 :db/ident :user/friend]
+                          [:db/add 100 :db/valueType :db.type/ref]
+                          {:db/id 1 :user/name "Ada" :user/email "ada@example.com" :user/friend 2}
+                          {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}])
+        text-report (vev.transact-text
+                      (addr text-conn)
+                      "[[:db/add 100 :db/ident :user/friend] [:db/add 100 :db/valueType :db.type/ref] {:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\" :user/friend 2} {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\"}]")
+        literal-query (vev.q
+                        literal-conn.db
+                        [:find ?name
+                         :in [?email ...]
+                         :where [?e :user/email ?email]
+                                [?e :user/name ?name]]
+                        ["ada@example.com" "grace@example.com"])
+        text-query (vev.q-text-with-inputs
+                     text-conn.db
+                     "[:find ?name :in [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]"
+                     ([]vev.Query-Input
+                       [(vev.query-input-collection
+                          ([dynamic]vev.Value
+                            [(vev.value-string "ada@example.com")
+                             (vev.value-string "grace@example.com")]))]))
+        prepared (vev.prepare-query-text
+                   "[:find ?name :in [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]")
+        prepared-query (vev.q-prepared-with-input-text
+                         text-conn.db
+                         prepared
+                         "[[\"ada@example.com\" \"grace@example.com\"]]")
+        literal-pull (vev.pull
+                       literal-conn.db
+                       [:user/name {:user/friend [:user/name]}]
+                       1)
+        text-pull (vev.pull-text
+                    text-conn.db
+                    "[:user/name {:user/friend [:user/name]}]"
+                    1)
+        [literal-friend-index literal-friend-ok] (pull-attr-index (slice literal-pull.attrs 0) ":user/friend")
+        [text-friend-index text-friend-ok] (pull-attr-index (slice text-pull.attrs 0) ":user/friend")]
+    (t.is literal-report.ok)
+    (t.is text-report.ok)
+    (t.is literal-query.ok)
+    (t.is text-query.ok)
+    (t.is prepared-query.ok)
+    (t.is (= (count literal-query.rows) 2))
+    (t.is (= (count text-query.rows) 2))
+    (t.is (= (count prepared-query.rows) 2))
+    (t.is (= literal-query.rows[0].values[0].text text-query.rows[0].values[0].text))
+    (t.is (= text-query.rows[0].values[0].text prepared-query.rows[0].values[0].text))
+    (t.is (= literal-query.rows[1].values[0].text text-query.rows[1].values[0].text))
+    (t.is (= text-query.rows[1].values[0].text prepared-query.rows[1].values[0].text))
+    (t.is (= literal-pull.attrs[0].v.text "Ada"))
+    (t.is (= text-pull.attrs[0].v.text "Ada"))
+    (t.is literal-friend-ok)
+    (t.is text-friend-ok)
+    (t.is (= literal-pull.attrs[literal-friend-index].attrs[0].v.text "Grace"))
+    (t.is (= text-pull.attrs[text-friend-index].attrs[0].v.text "Grace"))))
+
 (t.deftest datascript-parser-binding-api-subset
   (defer (free_all context.allocator))
   (let [scalar (vev.parse-binding-text "?x")

@@ -11,8 +11,8 @@ public final class Smoke {
             throw new IllegalArgumentException("usage: Smoke <path-to-libvev.dylib>");
         }
 
-        Vev vev = new Vev(Path.of(args[0]));
-        try (Vev.Connection conn = vev.openMemory()) {
+        Vev vev = Vev.load(Path.of(args[0]));
+        try (Vev.Connection conn = vev.createConn()) {
             String tx = conn.transact("""
                 [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
                  {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}]
