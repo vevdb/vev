@@ -7,8 +7,10 @@ KVIST_BIN="${KVIST_BIN:-kvist}"
 GENERATED_DIR="$ROOT/build/generated/vev_abi"
 LIB_DIR="$ROOT/build/lib"
 EXAMPLE_DIR="$ROOT/build/examples/c"
+RUST_EXAMPLE_DIR="$ROOT/build/examples/rust"
+JAVA_EXAMPLE_DIR="$ROOT/build/examples/java"
 
-mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$EXAMPLE_DIR"
+mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR"
 
 if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
   (
@@ -31,3 +33,48 @@ clang \
 "$EXAMPLE_DIR/vev_c_smoke"
 
 python3 "$ROOT/examples/python/smoke.py"
+
+if command -v rustc >/dev/null 2>&1; then
+  rustc \
+    "$ROOT/examples/rust/smoke.rs" \
+    -L "$LIB_DIR" \
+    -l dylib=vev \
+    -C "link-arg=-Wl,-rpath,$LIB_DIR" \
+    -o "$RUST_EXAMPLE_DIR/vev_rust_smoke"
+
+  "$RUST_EXAMPLE_DIR/vev_rust_smoke"
+else
+  echo "rustc not found; skipping Rust smoke"
+fi
+
+if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
+  rm -rf "$JAVA_EXAMPLE_DIR"
+  mkdir -p "$JAVA_EXAMPLE_DIR"
+
+  javac \
+    --enable-preview \
+    --release 21 \
+    -d "$JAVA_EXAMPLE_DIR" \
+    "$ROOT/examples/java/Vev.java" \
+    "$ROOT/examples/java/Smoke.java"
+
+  java \
+    --enable-preview \
+    --enable-native-access=ALL-UNNAMED \
+    -cp "$JAVA_EXAMPLE_DIR" \
+    vev.Smoke "$LIB_DIR/libvev.dylib"
+
+  if command -v clojure >/dev/null 2>&1; then
+    clojure \
+      -J--enable-preview \
+      -J--enable-native-access=ALL-UNNAMED \
+      -Sdeps "{:paths [\"$JAVA_EXAMPLE_DIR\" \"$ROOT/clients/clojure/src\"]}" \
+      -M \
+      "$ROOT/examples/clojure/smoke.clj" \
+      "$LIB_DIR/libvev.dylib"
+  else
+    echo "clojure not found; skipping Clojure smoke"
+  fi
+else
+  echo "javac/java not found; skipping Java smoke"
+fi

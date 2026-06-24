@@ -10,8 +10,10 @@ The current shape is intentionally narrow:
 - EDN query strings
 - EDN input vectors for `:in` values
 - prepared query handles
+- reusable statement handles with typed scalar and collection bindings
 - rendered result strings owned by the caller
 - opaque result handles for typed row/value access
+- borrowed value handles for nested vector/map/pull traversal
 
 This is the portable baseline for Python, Rust, Java, Clojure, and other hosts.
 Host wrappers should build on this surface first instead of mirroring internal
@@ -42,37 +44,54 @@ scripts/build_c_abi.sh
 
 The script compiles `src/vev_abi/vev_abi.kvist` to Odin, builds
 `build/lib/libvev.dylib`, compiles `examples/c/smoke.c`, runs the C smoke
-program, and runs the Python ctypes smoke program.
+program, and runs the Python smoke program through the thin
+`examples/python/vev.py` adapter. When `rustc` is available, it also compiles
+and runs `examples/rust/smoke.rs`. When Java 21 and Clojure are available, it
+also compiles the Java Foreign Function & Memory wrapper and runs Java and
+Clojure smoke programs against the same shared library.
 
 ## ABI Benchmark
 
-The ABI benchmark compares a native Kvist prepared query using EDN input text
-against the C ABI prepared query using the same EDN input text:
+The ABI benchmark compares native Kvist prepared queries against equivalent C
+ABI calls:
 
 ```sh
 bench/compare_abi.sh
 ```
 
 The output includes both medians and a `c_abi_over_native` ratio for the
-boundary overhead. On the initial prepared email lookup workload, the C ABI path
-has been around `1.13x` the native Kvist path on this machine when rendering
-text results. Treat that as a smoke signal, not a stable performance claim.
+boundary overhead. Treat these as smoke signals, not stable performance claims.
 
-The benchmark also measures `prepared-email-result`, which returns an opaque
-result handle instead of rendering the whole result as text. On the same
-machine, that path measured around `1.00x` native for the initial prepared email
-lookup workload.
+Current workloads:
 
-It also measures DB snapshot creation and querying through `vev_db_t`:
+- `prepared-email-input-text`: prepared query plus EDN input text, rendered text
+  result
+- `prepared-email-result`: prepared query plus EDN input text, typed result
+  handle
+- `prepared-email-bound-result`: prepared query plus typed statement binding,
+  typed result handle
+- `db-snapshot`: retaining a DB value through `vev_conn_db`
+- `prepared-email-db-result`: immutable DB value plus EDN input text, typed
+  result handle
+- `prepared-email-db-bound-result`: immutable DB value plus typed statement
+  binding, typed result handle
 
-- `db-snapshot`
-- `prepared-email-db-result`
+Latest local run:
 
-On the initial 1000-entity benchmark, snapshot creation measured around `1.03x`
-native and prepared snapshot querying measured around `1.00x` native. Snapshot
-creation is much more expensive than querying because the current ABI snapshot
-deep-copies datoms and owned strings to make the handle independent of the
-connection lifetime.
+```text
+comparison workload=prepared-email-input-text c_abi_over_native=1.13x
+comparison workload=prepared-email-result c_abi_over_native=1.00x
+comparison workload=prepared-email-bound-result c_abi_over_native=1.00x
+comparison workload=db-snapshot c_abi_over_native=1.06x
+comparison workload=prepared-email-db-result c_abi_over_native=1.00x
+comparison workload=prepared-email-db-bound-result c_abi_over_native=1.00x
+```
+
+Statement bindings avoid parsing EDN input text on each call and currently
+measure at native parity in this small lookup benchmark. Snapshot creation is
+much more expensive than querying because the current ABI snapshot deep-copies
+datoms and owned strings to make the handle independent of the connection
+lifetime.
 
 ## Current C Surface
 
@@ -103,30 +122,213 @@ const char *prepared_result =
     vev_query_prepared_with_inputs(conn, query, "[\"ada@example.com\"]");
 vev_string_free(prepared_result);
 
+vev_stmt_t stmt = vev_stmt_create(query);
+vev_stmt_bind_string(stmt, "ada@example.com");
+vev_result_t stmt_rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(stmt_rows);
+vev_stmt_clear(stmt);
+
+vev_stmt_bind_string(stmt, "grace@example.com");
+vev_result_t rebound_rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(rebound_rows);
+
 vev_result_t rows =
     vev_query_prepared_result_with_inputs(conn, query, "[\"ada@example.com\"]");
 for (int row = 0; row < vev_result_row_count(rows); row++) {
     int values = vev_result_value_count(rows, row);
     for (int column = 0; column < values; column++) {
-        int kind = vev_result_value_kind(rows, row, column);
-        const char *text = vev_result_value_edn(rows, row, column);
+        vev_value_t value = vev_result_value(rows, row, column);
+        int kind = vev_value_kind(value);
+        const char *text = vev_value_edn(value);
         vev_string_free(text);
     }
 }
 vev_result_free(rows);
 
+vev_prepared_query_t pull_query =
+    vev_prepare_query_edn("[:find (pull ?e [:user/name]) :where [?e :user/email ?email]]");
+vev_stmt_t pull_stmt = vev_stmt_create(pull_query);
+vev_stmt_bind_string(pull_stmt, "ada@example.com");
+vev_result_t pull_rows = vev_query_stmt_result(conn, pull_stmt);
+
+vev_value_t pulled = vev_result_pull(pull_rows, 0, 0);
+for (int i = 0; i < vev_value_map_count(pulled); i++) {
+    vev_value_t key = vev_value_map_key(pulled, i);
+    vev_value_t value = vev_value_map_value(pulled, i);
+    const char *key_text = vev_value_text(key);
+    const char *value_text = vev_value_edn(value);
+    vev_string_free(key_text);
+    vev_string_free(value_text);
+}
+
+vev_result_free(pull_rows);
+vev_stmt_free(pull_stmt);
+vev_prepared_query_free(pull_query);
+
 vev_db_t snapshot = vev_conn_db(conn);
+vev_db_t retained_snapshot = vev_db_retain(snapshot);
+vev_db_release(snapshot);
 vev_transact_edn(conn, "[{:db/id 2 :user/name \"Grace\"}]");
 
 vev_result_t old_rows =
-    vev_query_db_prepared_result_with_inputs(snapshot, query, "[\"ada@example.com\"]");
+    vev_query_db_prepared_result_with_inputs(retained_snapshot, query, "[\"ada@example.com\"]");
 vev_result_free(old_rows);
-vev_db_release(snapshot);
 
+vev_result_t old_stmt_rows = vev_query_db_stmt_result(retained_snapshot, stmt);
+vev_result_free(old_stmt_rows);
+
+vev_db_release(retained_snapshot);
+
+vev_stmt_free(stmt);
 vev_prepared_query_free(query);
 
 vev_conn_close(conn);
 ```
+
+## Python Adapter
+
+The raw `ctypes` surface is intentionally hidden behind a small Python adapter
+in [vev.py](../examples/python/vev.py). It is still an example, not a packaged
+library, but it shows the intended host-language shape:
+
+```python
+import vev
+
+with vev.open_memory() as conn:
+    conn.transact("""
+    [{:db/id 1
+      :user/name "Ada"
+      :user/email "ada@example.com"}]
+    """)
+
+    query = conn.prepare("""
+    [:find ?e ?email
+     :in ?needle
+     :where [?e :user/email ?email]
+            [(= ?email ?needle)]]
+    """)
+
+    with query.statement() as stmt:
+        rows = stmt.bind("ada@example.com").query(conn).rows()
+```
+
+Collection inputs are ordinary homogeneous Python lists:
+
+```python
+query = conn.prepare("""
+[:find ?name
+ :in [?email ...]
+ :where [?e :user/email ?email]
+        [?e :user/name ?name]]
+""")
+
+with query.statement() as stmt:
+    rows = stmt.bind(["ada@example.com", "grace@example.com"]).rows(conn)
+```
+
+Pull results are converted to normal Python dictionaries:
+
+```python
+pull = conn.prepare("""
+[:find (pull ?e [:user/name {:user/friend [:user/name]}])
+ :where [?e :user/name "Ada"]]
+""")
+
+user = pull.query(conn).scalar()
+name = user[":user/name"]
+friend = user[":user/friend"][":user/name"]
+```
+
+`vev.Entity` is used for entity ids so Python callers can distinguish Vev
+entity values from ordinary integer values. Keywords and symbols currently
+convert to their EDN text strings, for example `":user/name"`.
+
+## Rust Example
+
+[smoke.rs](../examples/rust/smoke.rs) is a direct `rustc`-compiled example, not
+a packaged crate yet. It mirrors the intended safe wrapper shape:
+
+- raw FFI declarations stay private to the module
+- `Conn`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet` free their handles
+  with `Drop`
+- statement methods expose typed scalar and collection bindings
+- result values are converted into a small Rust `Value` enum
+
+The example covers transactions, rendered EDN query output, prepared statement
+bindings, homogeneous collection bindings, pull result traversal, DB snapshots,
+and querying a snapshot with a statement.
+
+## Java And Clojure Examples
+
+[Vev.java](../examples/java/Vev.java) is a small Java 21 Foreign Function &
+Memory wrapper over `libvev.dylib`. It is still an example wrapper, not a
+published artifact. The wrapper exposes the same core host shape as Python and
+Rust:
+
+- `Vev`, `Connection`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet`
+  close their native handles explicitly
+- transactions and ad hoc queries accept EDN strings
+- prepared queries can be reused with EDN input text or typed statement
+  bindings
+- typed results convert entity ids, scalar values, and pull maps into Java
+  values
+- immutable DB snapshots can be queried after the connection has advanced
+
+Because it uses the preview FFM API, the examples compile and run with:
+
+```sh
+javac --enable-preview --release 21 ...
+java --enable-preview --enable-native-access=ALL-UNNAMED ...
+```
+
+The Java wrapper exposes `Vev.load(path)` and `createConn()` as the public-ish
+example shape. `openMemory()` remains as a low-level compatibility alias for
+the underlying ABI operation.
+
+[vev.core](../clients/clojure/src/vev/core.clj) is the first Clojure package
+layer on top of that Java wrapper. It accepts ordinary quoted Clojure forms and
+serializes them through the same EDN/query path:
+
+```clojure
+(require '[vev.core :as vev])
+
+(with-open [conn (vev/create-conn "build/lib/libvev.dylib")]
+  (vev/transact! conn
+    [{:db/id 1 :user/name "Ada"}])
+
+  (let [db (vev/db conn)]
+    (vev/q
+      '[:find ?name
+        :where [?e :user/name ?name]]
+      db)))
+```
+
+Inputs are ordinary Clojure arguments after the query:
+
+```clojure
+(vev/q
+  '[:find ?name
+    :in [?email ...]
+    :where [?e :user/email ?email]
+           [?e :user/name ?name]]
+  db
+  ["ada@example.com" "grace@example.com"])
+```
+
+The underlying Java wrapper still exposes EDN strings directly:
+
+```clojure
+(.queryText conn
+  "[:find ?name
+    :in [?email ...]
+    :where [?e :user/email ?email]
+           [?e :user/name ?name]]"
+  "[[\"ada@example.com\" \"grace@example.com\"]]")
+```
+
+That string API remains the portable baseline for non-Kvist hosts and mirrors
+how SQL libraries start with query text. The Clojure data API is intentionally a
+thin host adapter, not a separate engine frontend.
 
 ## Ownership
 
@@ -134,13 +336,26 @@ Returned strings from `vev_transact_edn`, `vev_query_edn`, and
 `vev_query_prepared` must be released with `vev_string_free`. The same is true
 for strings returned by the input-bearing query functions.
 
-Connections are released with `vev_conn_close`. DB snapshots are released with
-`vev_db_release`. Prepared queries are released with `vev_prepared_query_free`.
+Connections are released with `vev_conn_close`. DB snapshots are immutable owned
+handles. `vev_conn_db` returns a new owned snapshot handle, `vev_db_retain`
+returns another owned handle for the same snapshot value, and every owned DB
+handle is released with `vev_db_release`. Prepared queries are released with
+`vev_prepared_query_free`. Statement handles are released with `vev_stmt_free`.
+
+Statement handles borrow their prepared query. Free statements before freeing
+the prepared query they were created from. Bound string, keyword, and symbol
+values are copied into the statement and released by `vev_stmt_clear` or
+`vev_stmt_free`.
 
 Result handles from `vev_query_prepared_result_with_inputs` are released with
 `vev_result_free`. Strings returned from result accessors such as
 `vev_result_error`, `vev_result_value_text`, and `vev_result_value_edn` are
 released with `vev_string_free`.
+
+`vev_value_t` handles are borrowed views into an owning `vev_result_t`. Do not
+free them, and do not use them after `vev_result_free`. Strings returned from
+`vev_value_text` and `vev_value_edn` are owned by the caller and must be released
+with `vev_string_free`.
 
 The current parser stores references into transaction and query source text in
 some internal structures. The ABI wrappers therefore keep transaction source
@@ -149,9 +364,12 @@ prepared-query handle. This should eventually be replaced by explicit engine
 copying or interned immutable values, but the ABI boundary already has the right
 handle ownership shape.
 
-DB snapshots returned by `vev_conn_db` deep-copy the current DB into an owned
-handle. They can be queried after later transactions on the connection, and they
-can outlive the connection that produced them.
+DB snapshots returned by `vev_conn_db` and `vev_db_retain` currently deep-copy
+the current DB into an owned handle. They can be queried after later
+transactions on the connection, and they can outlive the connection that
+produced them. The ABI contract is already value-like; the implementation can
+later replace deep copies with refcounted immutable snapshot storage without
+changing host wrappers.
 
 ## Query Inputs
 
@@ -186,6 +404,64 @@ The wrapper parses the query first and uses the query's `:in` shape to coerce
 each EDN input value into Vev's internal scalar, collection, tuple, or relation
 input representation.
 
+## Statement Bindings
+
+`vev_stmt_t` is the SQLite-like path for repeated inputs:
+
+```c
+vev_prepared_query_t query =
+    vev_prepare_query_edn("[:find ?name :in ?email :where [?e :user/email ?email] [?e :user/name ?name]]");
+
+vev_stmt_t stmt = vev_stmt_create(query);
+vev_stmt_bind_string(stmt, "ada@example.com");
+
+vev_result_t rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(rows);
+
+vev_stmt_clear(stmt);
+vev_stmt_bind_string(stmt, "grace@example.com");
+rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(rows);
+
+vev_stmt_free(stmt);
+vev_prepared_query_free(query);
+```
+
+Collection `:in` bindings use host arrays:
+
+```c
+vev_prepared_query_t query =
+    vev_prepare_query_edn("[:find ?name :in [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]");
+
+vev_stmt_t stmt = vev_stmt_create(query);
+const char *emails[] = {"ada@example.com", "grace@example.com"};
+vev_stmt_bind_string_collection(stmt, emails, 2);
+
+vev_result_t rows = vev_query_stmt_result(conn, stmt);
+vev_result_free(rows);
+
+vev_stmt_free(stmt);
+vev_prepared_query_free(query);
+```
+
+Current bind functions:
+
+- `vev_stmt_bind_string`
+- `vev_stmt_bind_keyword`
+- `vev_stmt_bind_symbol`
+- `vev_stmt_bind_entity`
+- `vev_stmt_bind_int`
+- `vev_stmt_bind_bool`
+- `vev_stmt_bind_string_collection`
+- `vev_stmt_bind_entity_collection`
+- `vev_stmt_bind_int_collection`
+- `vev_stmt_bind_bool_collection`
+
+The statement API currently covers scalar bindings and homogeneous collection
+bindings. EDN input text still handles tuple, relation, lookup-ref, source, and
+pull-pattern inputs. Those should be added to statement bindings as typed APIs
+instead of forcing host wrappers to construct EDN strings.
+
 ## Result Handles
 
 The string-returning query helpers are convenient, but host libraries should use
@@ -197,16 +473,39 @@ Current result-handle accessors:
 - `vev_result_error`
 - `vev_result_row_count`
 - `vev_result_value_count`
+- `vev_result_value`
 - `vev_result_value_kind`
 - `vev_result_value_entity`
 - `vev_result_value_int`
 - `vev_result_value_bool`
 - `vev_result_value_text`
 - `vev_result_value_edn`
+- `vev_result_pull_count`
+- `vev_result_pull`
 
-The first handle API intentionally starts with row values only. Pull results,
-aggregates that produce nested values, and efficient vector/map traversal should
-grow out of the same handle shape rather than adding a parallel API.
+The `vev_result_value_*` scalar accessors are convenience functions for direct
+row values. New host wrappers should prefer `vev_result_value` plus the generic
+`vev_value_*` traversal functions, because the same path works for nested values
+and rendered pull results.
+
+Current value-handle accessors:
+
+- `vev_value_kind`
+- `vev_value_entity`
+- `vev_value_int`
+- `vev_value_float`
+- `vev_value_bool`
+- `vev_value_text`
+- `vev_value_edn`
+- `vev_value_item_count`
+- `vev_value_item`
+- `vev_value_map_count`
+- `vev_value_map_key`
+- `vev_value_map_value`
+
+Pull results are rendered into map-shaped values and stored on the result handle
+when the query runs. This keeps pull traversal independent of the original
+connection or DB snapshot lifetime.
 
 ## DB Snapshots
 
@@ -242,10 +541,12 @@ model.
 
 The next useful steps are:
 
-- add nested value traversal and streaming callbacks so callers do not have to
-  render large or nested results as text
+- add streaming callbacks so callers can consume very large results without
+  materializing full result handles
 - add explicit error/result status APIs
+- add typed statement bindings for tuple, relation, lookup-ref, source, and
+  pull-pattern inputs
 - add pull-specific entry points
-- add Rust smoke wrapper
+- turn the Rust smoke wrapper into a small crate
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets

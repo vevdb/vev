@@ -56,6 +56,10 @@ These frontends must converge early into the same internal `Query`, tx data,
 and pull representations. Strings should not have separate semantics from
 Kvist literals.
 
+Frontend parity is tracked explicitly in `docs/frontend-parity.md`. New query,
+pull, or transaction syntax should update both the Kvist literal macro path and
+the EDN text path, then add a parity test.
+
 The EDN string API is required for broad consumption. It is the portable
 baseline: every host can pass text through a narrow ABI, queries can be logged
 and stored, and Datomic/DataScript examples stay recognizable.
