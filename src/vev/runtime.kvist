@@ -1165,6 +1165,9 @@
     (and (< found (count current))
          (= current[found] index))))
 
+(defn all-datoms-current? [db: DB] -> bool
+  (= (count db.current) (count db.datoms)))
+
 (defn index-arg-value [db: DB, arg: Index-Arg] -> [value: Value, ok: bool]
   (when arg.has-lookup-ref
     (let [[entity found] (resolve-lookup-ref db arg.lookup-attr arg.lookup-value)]
@@ -6466,7 +6469,8 @@
         attr-prefix ([]Value [(value-keyword attr)])
         low (lower-bound-index-values db indexes "avet" attr-prefix)
         high (upper-bound-index-values db indexes "avet" attr-prefix)
-        distinct-values (make [dynamic]Distinct-Attr-Value)]
+        distinct-values (make [dynamic]Distinct-Attr-Value)
+        all-current (all-datoms-current? db)]
     (defer (delete distinct-values))
     (set! out-stats.steps 1)
     (set! out-stats.clauses 1)
@@ -6474,23 +6478,30 @@
     (set! out-stats.max-intermediate-bindings (- high low))
     (let [i low]
       (while (< i high)
-        (let [first-current-e: u64 0
-              first-current-value (Value {})
-              has-current false
-              datom db.datoms[indexes[i]]
+        (let [first-index indexes[i]
+              datom db.datoms[first-index]
               value datom.v]
-          (while (and (< i high)
-                      (value-equal? db.datoms[indexes[i]].v value))
-            (let [candidate-index indexes[i]
-                  candidate db.datoms[candidate-index]]
-              (when (and (datom-current-at? db candidate-index)
-                         (not has-current))
-                (set! first-current-e candidate.e)
-                (set! first-current-value candidate.v)
-                (set! has-current true)))
-            (set! i (+ i 1)))
-          (when has-current
-            (arr.push! distinct-values (Distinct-Attr-Value {first-e: first-current-e value: first-current-value})))))
+          (if all-current
+            (do
+              (while (and (< i high)
+                          (value-equal? db.datoms[indexes[i]].v value))
+                (set! i (+ i 1)))
+              (arr.push! distinct-values (Distinct-Attr-Value {first-e: datom.e value: value})))
+            (let [first-current-e: u64 0
+                  first-current-value (Value {})
+                  has-current false]
+              (while (and (< i high)
+                          (value-equal? db.datoms[indexes[i]].v value))
+                (let [candidate-index indexes[i]
+                      candidate db.datoms[candidate-index]]
+                  (when (and (datom-current-at? db candidate-index)
+                             (not has-current))
+                    (set! first-current-e candidate.e)
+                    (set! first-current-value candidate.v)
+                    (set! has-current true)))
+                (set! i (+ i 1)))
+              (when has-current
+                (arr.push! distinct-values (Distinct-Attr-Value {first-e: first-current-e value: first-current-value})))))))
     (sort-distinct-attr-values! (addr distinct-values))
     (let [rows (make [dynamic]Result-Row 0 (count distinct-values))]
       (for [item distinct-values]

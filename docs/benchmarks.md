@@ -121,22 +121,22 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 17.2x | 47.8x |
-| `chain-root n=10` | 23.3x | 39.4x |
-| `chain-root n=30` | 50.5x | 62.3x |
-| `chain-root n=100` | 234.5x | 251.7x |
-| `chain-leaf n=10` | 18.1x | 30.2x |
-| `chain-leaf n=30` | 79.4x | 100.6x |
-| `chain-leaf n=100` | 537.6x | 563.7x |
-| `chain-all n=10` | 10.8x | 15.1x |
-| `chain-all n=30` | 15.3x | 15.7x |
-| `chain-all n=100` | 23.1x | 23.1x |
-| `tree-root n=4` | 3.0x | 8.1x |
-| `tree-root n=13` | 3.1x | 5.2x |
-| `tree-root n=40` | 2.4x | 2.9x |
-| `tree-root n=121` | 1.9x | 2.0x |
-| `bad-order-join n=1000` | 6.8x | 11.4x |
-| `distinct-age n=1000` | 0.7x | 0.8x |
+| `chain-root n=3` | 19.6x | 52.3x |
+| `chain-root n=10` | 23.9x | 43.3x |
+| `chain-root n=30` | 50.1x | 59.5x |
+| `chain-root n=100` | 236.4x | 250.8x |
+| `chain-leaf n=10` | 19.0x | 32.9x |
+| `chain-leaf n=30` | 74.2x | 92.8x |
+| `chain-leaf n=100` | 525.9x | 581.7x |
+| `chain-all n=10` | 11.3x | 15.3x |
+| `chain-all n=30` | 16.2x | 16.6x |
+| `chain-all n=100` | 23.9x | 23.8x |
+| `tree-root n=4` | 3.0x | 8.5x |
+| `tree-root n=13` | 3.2x | 5.2x |
+| `tree-root n=40` | 2.5x | 2.9x |
+| `tree-root n=121` | 1.9x | 2.1x |
+| `bad-order-join n=1000` | 6.6x | 11.1x |
+| `distinct-age n=1000` | 3.4x | 3.6x |
 
 ## Stress Comparison
 
@@ -245,10 +245,12 @@ per distinct value, remembers the first current entity that produced each
 value, and sorts that smaller distinct set back into the existing
 entity/value-result order before rendering rows. This preserves the current
 observable result order while avoiding per-candidate result rows and map-based
-dedupe. The local Vev timing is now roughly 165us text / 159us prepared, down
-from roughly 930us before projection-specific work and roughly 210us after the
-first fast path. DataScript is still faster on this specific workload in the
-latest comparison.
+dedupe. For databases where every datom is current, the scan also skips the
+per-candidate current-index binary search and takes the first datom in each
+`avet` value group directly. Databases with retractions or shadowed facts keep
+the checked path. The local Vev timing is now roughly 37us text / 33us prepared,
+down from roughly 930us before projection-specific work, roughly 210us after
+the first fast path, and roughly 160us before the all-current scan branch.
 
 The benchmark installs `:db/cardinality :db.cardinality/many` and
 `:db/valueType :db.type/ref` for `:follows`; without that, Vev correctly applies
@@ -262,10 +264,9 @@ Remaining performance work:
   alternating two-rule recursion are now optimized, and primitive binding
   dedupe is map-backed, but arbitrary multi-step recursive bodies still use the
   generic depth/fixpoint evaluator.
-- Continue result-projection work for simple distinct queries. The current
-  `distinct-age` path is much better than generic row dedupe, but still behind
-  DataScript because it still renders full `Result-Row`/`Value` structures for
-  the public result shape.
+- Continue result-projection work beyond the single-attr distinct fast path.
+  `distinct-age` is now faster than DataScript locally, but multi-column
+  distinct and richer projection shapes still use the generic row renderer.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.
