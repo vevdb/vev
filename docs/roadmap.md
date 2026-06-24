@@ -80,7 +80,10 @@ Current batch order:
 3. Rule/query performance: use query profile counters and ABI/native
    benchmarks to replace recursive rule and large relation hot paths with
    measured implementations.
-4. Wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and Java
+4. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
+   dataset, run equivalent Datomic workshop queries against Vev and Datomic,
+   compare result sets first and performance second.
+5. Wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and Java
    feel close to Datomic/DataScript for common tutorials.
 
 ## Phase 4: Portable query frontend
@@ -102,7 +105,35 @@ through the native library. The remaining work is exact malformed-input
 behavior, parser value rendering where host APIs expose it, and wrapper
 ergonomics demanded by real host usage.
 
-## Phase 5: Durable proof
+## Phase 5: MusicBrainz/Datomic Workload
+
+Goal:
+
+- load a Datomic MusicBrainz / Day of Datomic-shaped dataset into Vev
+- port workshop queries as a correctness suite
+- run the same queries against Datomic locally
+- compare result sets before comparing performance
+- use the workload to expose planner, rule, pull, aggregate, and API gaps
+
+Why before durability:
+
+- MusicBrainz is a real Datomic-shaped workload, not a synthetic microbench
+- it tests whether Vev can follow existing Datomic teaching material
+- it gives a shared correctness/performance target before SQLite storage
+- it exercises large in-memory indexes, immutable DB values, EDN text APIs, and
+  host wrappers under realistic pressure
+
+Initial scope:
+
+- start with the Day of Datomic dataset or a deterministic MusicBrainz slice
+- keep the import path simple and repeatable
+- store expected query results in Vev tests or benchmark fixtures
+- report Datomic vs Vev timings as comparative ratios, not raw claims
+
+Status: not started. This should happen after the next parser/callback cleanup
+batch and before durable SQLite work.
+
+## Phase 6: Durable proof
 
 Goal:
 
@@ -125,7 +156,7 @@ Status: not started. Keep this postponed until parser/API exactness, host
 listener callbacks, and rule/query performance are stable enough that the
 storage layer can preserve semantics instead of reshaping them.
 
-## Phase 6: Dogfood
+## Phase 7: Dogfood
 
 Goal:
 
@@ -140,7 +171,7 @@ Questions:
 - what debugging/inspection tools are immediately missing?
 - is a separate event layer still necessary once tx metadata is in use?
 
-## Phase 7: Interop boundary
+## Phase 8: Interop boundary
 
 Goal:
 
@@ -164,7 +195,7 @@ visitors, nested pull-many values, and host-provided transaction function
 callbacks. Further interop work should be driven by specific adapter needs,
 especially listener/report callback registration and higher-level host wrappers.
 
-## Phase 8: Optional packaging expansion
+## Phase 9: Optional packaging expansion
 
 Goal:
 
@@ -215,6 +246,8 @@ details"; it is:
 - portable parser and tx-data APIs reject bad input predictably
 - report/listener callbacks work through host wrappers
 - recursive rules and large relation queries have measured, acceptable behavior
+- MusicBrainz/Datomic workshop queries have correctness coverage and comparison
+  benchmarks
 - Clojure/Java examples can follow common Datomic/DataScript tutorial shapes
 
 SQLite durability comes after those gates, so storage preserves established
