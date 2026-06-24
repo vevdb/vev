@@ -59,6 +59,7 @@ unsafe extern "C" {
         values: *const *const c_char,
         value_count: c_int,
     ) -> bool;
+    fn vev_stmt_bind_pull_pattern_edn(stmt: VevStmt, pattern_text: *const c_char) -> bool;
 
     fn vev_query_stmt_result(conn: VevConn, stmt: VevStmt) -> VevResult;
     fn vev_query_db_stmt_result(db: VevDb, stmt: VevStmt) -> VevResult;
@@ -483,6 +484,24 @@ impl Statement<'_> {
         }
     }
 
+    fn bind_pull_pattern_and_string(
+        &mut self,
+        pattern: &str,
+        value: &str,
+    ) -> Result<&mut Self, String> {
+        unsafe { vev_stmt_clear(self.raw) };
+        let pattern = cstring(pattern);
+        let value = cstring(value);
+        if unsafe {
+            vev_stmt_bind_pull_pattern_edn(self.raw, pattern.as_ptr())
+                && vev_stmt_bind_string(self.raw, value.as_ptr())
+        } {
+            Ok(self)
+        } else {
+            Err("failed to bind pull pattern and string".to_string())
+        }
+    }
+
     fn query_conn(&self, conn: &Conn) -> Result<ResultSet, String> {
         let raw = unsafe { vev_query_stmt_result(conn.raw, self.raw) };
         ResultSet::new(raw)
@@ -694,6 +713,26 @@ fn main() -> Result<(), String> {
     many_names.sort();
     if many_names != vec!["Ada".to_string(), "Grace".to_string()] {
         return Err("unexpected pull-many".to_string());
+    }
+
+    let pull_pattern_query = conn.prepare(
+        r#"[:find (pull ?e ?pattern)
+           :in ?pattern ?name
+           :where [?e :user/name ?name]]"#,
+    )?;
+    let mut pull_pattern_stmt = pull_pattern_query.statement()?;
+    let bound_pull = pull_pattern_stmt
+        .bind_pull_pattern_and_string("[:user/name {:user/friend [:user/name]}]", "Ada")?
+        .query_conn(&conn)?
+        .scalar()?;
+    println!("statement pull pattern: {bound_pull:?}");
+    let bound_friend = bound_pull
+        .map_get(":user/friend")
+        .and_then(|friend| friend.map_get(":user/name"));
+    if bound_pull.map_get(":user/name") != Some(&Value::String("Ada".to_string()))
+        || bound_friend != Some(&Value::String("Grace".to_string()))
+    {
+        return Err("unexpected statement pull pattern".to_string());
     }
 
     let all_emails = conn.prepare(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;

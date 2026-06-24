@@ -43,6 +43,7 @@ public final class Vev {
     private final MethodHandle stmtFree;
     private final MethodHandle stmtBindString;
     private final MethodHandle stmtBindStringCollection;
+    private final MethodHandle stmtBindPullPatternEdn;
     private final MethodHandle queryStmtResult;
     private final MethodHandle queryDbStmtResult;
     private final MethodHandle queryPreparedResultWithInputs;
@@ -105,6 +106,7 @@ public final class Vev {
         this.stmtFree = downcall("vev_stmt_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.stmtBindString = downcall("vev_stmt_bind_string", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stmtBindStringCollection = downcall("vev_stmt_bind_string_collection", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.stmtBindPullPatternEdn = downcall("vev_stmt_bind_pull_pattern_edn", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryStmtResult = downcall("vev_query_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbStmtResult = downcall("vev_query_db_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryPreparedResultWithInputs = downcall("vev_query_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -522,6 +524,16 @@ public final class Vev {
                 }
                 boolean ok = (boolean) stmtBindStringCollection.invoke(raw, array, values.length);
                 if (!ok) throw new IllegalStateException("failed to bind string collection");
+                return this;
+            }
+        }
+
+        public Statement bindPullPatternAndString(String pattern, String value) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                stmtClear.invoke(raw);
+                boolean ok = (boolean) stmtBindPullPatternEdn.invoke(raw, local.allocateUtf8String(pattern));
+                ok = ok && (boolean) stmtBindString.invoke(raw, local.allocateUtf8String(value));
+                if (!ok) throw new IllegalStateException("failed to bind pull pattern and string");
                 return this;
             }
         }

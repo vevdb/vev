@@ -204,6 +204,28 @@ def main() -> int:
                 if names != ["Ada", "Grace"]:
                     raise RuntimeError("unexpected pull-many")
 
+            pull_pattern_query = conn.prepare(
+                """
+                [:find (pull ?e ?pattern)
+                 :in ?pattern ?name
+                 :where [?e :user/name ?name]]
+                """
+            )
+            try:
+                with pull_pattern_query.statement() as stmt:
+                    pulled = stmt.bind(
+                        vev.PullPattern("[:user/name {:user/friend [:user/name]}]"),
+                        "Ada",
+                    ).scalar(conn)
+                    print(f"statement pull pattern: {pulled}")
+                    if (
+                        pulled.get(":user/name") != "Ada"
+                        or pulled.get(":user/friend", {}).get(":user/name") != "Grace"
+                    ):
+                        raise RuntimeError("unexpected statement pull pattern")
+            finally:
+                pull_pattern_query.close()
+
             all_emails = conn.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             )

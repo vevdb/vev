@@ -44,6 +44,7 @@ ABI_Result_Visit_Fn :: proc \"c\" (user: rawptr, event, row, index: int, value: 
 ABI_Stmt :: struct {
     query: rawptr,
     inputs: [dynamic]vev__Query_Input,
+    pull_pattern_sources: [dynamic]string,
 }
 
 abi_alloc_conn :: proc() -> rawptr {
@@ -304,6 +305,7 @@ abi_alloc_stmt :: proc(query: rawptr) -> rawptr {
     wrapper := new(ABI_Stmt)
     wrapper.query = query
     wrapper.inputs = make([dynamic]vev__Query_Input)
+    wrapper.pull_pattern_sources = make([dynamic]string)
     return rawptr(wrapper)
 }
 
@@ -313,6 +315,10 @@ abi_stmt_query :: proc(stmt: rawptr) -> rawptr {
 
 abi_stmt_inputs_ptr :: proc(stmt: rawptr) -> ^[dynamic]vev__Query_Input {
     return &((^ABI_Stmt)(stmt))^.inputs
+}
+
+abi_stmt_pull_pattern_sources_ptr :: proc(stmt: rawptr) -> ^[dynamic]string {
+    return &((^ABI_Stmt)(stmt))^.pull_pattern_sources
 }
 
 abi_stmt_push_input :: proc(stmt: rawptr, input: vev__Query_Input) {
@@ -338,6 +344,7 @@ abi_bool_at :: proc(values: rawptr, index: int) -> bool {
 abi_free_stmt :: proc(stmt: rawptr) {
     wrapper := (^ABI_Stmt)(stmt)
     delete(wrapper.inputs)
+    delete(wrapper.pull_pattern_sources)
     free(wrapper)
 }
 ")
@@ -380,6 +387,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- stmt-inputs-ptr [stmt: Vev-Stmt] -> ^[dynamic]vev.Query-Input
   (abi-stmt-inputs-ptr (rawptr stmt)))
+
+(defn- stmt-pull-pattern-sources-ptr [stmt: Vev-Stmt] -> ^[dynamic]string
+  (abi-stmt-pull-pattern-sources-ptr (rawptr stmt)))
 
 (defn- text-from-c [text: cstring] -> string
   (let [[out err] (strings.clone_from_cstring text)]
@@ -447,6 +457,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (delete value.items))
     :else (do)))
 
+(defn- delete-pull-spec-containers [specs: []vev.Pull-Spec]
+  (for [spec specs]
+    (delete-pull-spec-containers spec.pattern)
+    (delete spec.pattern)))
+
 (defn- tx-report-handle-from-value [value: vev.Value] -> Vev-Tx-Report
   (let [owned (value-owned value)]
     (delete-value-containers-shallow value)
@@ -486,13 +501,21 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (delete-owned-value value))
         (delete input.lookup-attrs)
         (delete input.lookup-values))
+    .PullPattern
+      (do
+        (delete-pull-spec-containers input.pattern)
+        (delete input.pattern))
     :else (do)))
 
 (defn- stmt-clear-owned [stmt: Vev-Stmt]
-  (let [inputs (stmt-inputs-ptr stmt)]
+  (let [inputs (stmt-inputs-ptr stmt)
+        sources (stmt-pull-pattern-sources-ptr stmt)]
     (for [input inputs^]
       (delete-query-input-owned input))
-    (resize inputs 0)))
+    (resize inputs 0)
+    (for [source sources^]
+      (delete source))
+    (resize sources 0)))
 
 (defn- stmt-push-scalar! [stmt: Vev-Stmt, value: vev.Value]
   (abi-stmt-push-input (rawptr stmt) (vev.query-input-scalar value)))
@@ -508,6 +531,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- stmt-push-lookup-ref-collection! [stmt: Vev-Stmt, attrs: [dynamic]string, values: [dynamic]vev.Value]
   (abi-stmt-push-input (rawptr stmt) (vev.query-input-collection-lookup-refs (slice attrs 0) (slice values 0))))
+
+(defn- stmt-push-pull-pattern! [stmt: Vev-Stmt, pattern: [dynamic]vev.Pull-Spec]
+  (abi-stmt-push-input (rawptr stmt) (vev.query-input-pull-pattern (slice pattern 0))))
 
 (defn- datom-owned [datom: vev.Datom] -> vev.Datom
   (vev.Datom {e: datom.e
@@ -1043,6 +1069,23 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (arr.push! attrs (text-from-c attr))
         (arr.push! out (vev.value-string (text-from-c value)))))
     (stmt-push-lookup-ref-collection! stmt attrs out)
+    true))
+
+@export
+(defn vev_stmt_bind_pull_pattern_edn :abi "c" [stmt: Vev-Stmt, pattern-text: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= pattern-text nil))
+    (return false))
+  (let [pattern-source (text-from-c pattern-text)
+        [pattern ok _] (vev.parse-pull-pattern-text pattern-source)]
+    (when (not ok)
+      (delete-pull-spec-containers (slice pattern 0))
+      (delete pattern)
+      (delete pattern-source)
+      (return false))
+    (let [sources (stmt-pull-pattern-sources-ptr stmt)]
+      (arr.push! sources^ pattern-source))
+    (stmt-push-pull-pattern! stmt pattern)
     true))
 
 @export

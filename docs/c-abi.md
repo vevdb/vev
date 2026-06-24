@@ -563,12 +563,13 @@ Current bind functions:
 - `vev_stmt_bind_int_relation`
 - `vev_stmt_bind_bool_relation`
 - `vev_stmt_bind_lookup_ref_string_collection`
+- `vev_stmt_bind_pull_pattern_edn`
 
 The statement API currently covers scalar bindings and homogeneous collection
-bindings, homogeneous tuple bindings, homogeneous relation bindings, and
-same-attribute lookup-ref string collections. EDN input text still handles
-source and pull-pattern inputs. Those should be added to statement bindings as
-typed APIs instead of forcing host wrappers to construct EDN strings.
+bindings, homogeneous tuple bindings, homogeneous relation bindings,
+same-attribute lookup-ref string collections, and pull-pattern inputs. EDN input
+text still handles source inputs. Those should be added to statement bindings
+as typed APIs instead of forcing host wrappers to construct EDN strings.
 
 ## Result Handles
 
@@ -675,7 +676,7 @@ The next useful steps are:
 - add direct query-execution callbacks so callers can consume very large query
   results without first materializing full result handles
 - add explicit error/result status APIs
-- add typed statement bindings for source and pull-pattern inputs
+- add typed statement bindings for source inputs
 - turn the Rust smoke wrapper into a small crate
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets

@@ -680,6 +680,50 @@ int main(void) {
     vev_value_handle_free(many_pull);
     vev_db_release(pull_db);
 
+    vev_prepared_query_t pull_pattern_query =
+        vev_prepare_query_edn("[:find (pull ?e ?pattern) :in ?pattern ?name :where [?e :user/name ?name]]");
+    if (pull_pattern_query == NULL) {
+        fprintf(stderr, "failed to prepare pull-pattern statement query\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t pull_pattern_stmt = vev_stmt_create(pull_pattern_query);
+    if (pull_pattern_stmt == NULL ||
+        !vev_stmt_bind_pull_pattern_edn(pull_pattern_stmt, "[:user/name {:user/friend [:user/name]}]") ||
+        !vev_stmt_bind_string(pull_pattern_stmt, "Ada")) {
+        fprintf(stderr, "failed to bind pull-pattern statement\n");
+        if (pull_pattern_stmt != NULL) vev_stmt_free(pull_pattern_stmt);
+        vev_prepared_query_free(pull_pattern_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t pull_pattern_result = vev_query_stmt_result(conn, pull_pattern_stmt);
+    int pull_pattern_rows = result_row_count_or_error("stmt-pull-pattern", pull_pattern_result);
+    int pull_pattern_count = vev_result_pull_count(pull_pattern_result, 0);
+    vev_value_t bound_pull = vev_result_pull(pull_pattern_result, 0, 0);
+    if (pull_pattern_rows != 1 ||
+        pull_pattern_count != 1 ||
+        !value_text_equals(map_get(bound_pull, ":user/name"), "Ada") ||
+        !value_text_equals(map_get(map_get(bound_pull, ":user/friend"), ":user/name"), "Grace")) {
+        const char *bound_edn = vev_value_edn(bound_pull);
+        fprintf(stderr, "unexpected pull-pattern statement output: %s\n", bound_edn);
+        vev_string_free(bound_edn);
+        vev_result_free(pull_pattern_result);
+        vev_stmt_free(pull_pattern_stmt);
+        vev_prepared_query_free(pull_pattern_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(pull_pattern_result);
+    vev_stmt_free(pull_pattern_stmt);
+    vev_prepared_query_free(pull_pattern_query);
+
     vev_prepared_query_t all_emails =
         vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");
     if (all_emails == NULL) {

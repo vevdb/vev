@@ -39,6 +39,11 @@ class Relation:
     rows: tuple[tuple[object, ...], ...]
 
 
+@dataclass(frozen=True)
+class PullPattern:
+    edn: str
+
+
 class VevError(RuntimeError):
     pass
 
@@ -224,6 +229,11 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_stmt_bind_lookup_ref_string_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_pull_pattern_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_stmt_bind_pull_pattern_edn.restype = ctypes.c_bool
 
         lib.vev_query_prepared_with_inputs.argtypes = [
             ctypes.c_void_p,
@@ -717,6 +727,8 @@ class Statement:
             ok = self._bind_tuple(value.values)
         elif isinstance(value, Relation):
             ok = self._bind_relation(value.rows)
+        elif isinstance(value, PullPattern):
+            ok = lib.vev_stmt_bind_pull_pattern_edn(self._handle, _bytes(value.edn))
         elif isinstance(value, bool):
             ok = lib.vev_stmt_bind_bool(self._handle, value)
         elif isinstance(value, int):

@@ -128,6 +128,26 @@ public final class Smoke {
                     }
                 }
 
+                try (Vev.PreparedQuery pullPatternQuery = vev.prepare("""
+                        [:find (pull ?e ?pattern)
+                         :in ?pattern ?name
+                         :where [?e :user/name ?name]]
+                        """);
+                     Vev.Statement pullPatternStmt = pullPatternQuery.statement();
+                     Vev.ResultSet result = conn.query(
+                         pullPatternStmt.bindPullPatternAndString(
+                             "[:user/name {:user/friend [:user/name]}]",
+                             "Ada"))) {
+                    Vev.MapValue pulled = (Vev.MapValue) result.scalar();
+                    System.out.println("statement pull pattern: " + pulled);
+                    Object friend = pulled.get(":user/friend");
+                    if (!"Ada".equals(pulled.get(":user/name"))
+                        || !(friend instanceof Vev.MapValue friendMap)
+                        || !"Grace".equals(friendMap.get(":user/name"))) {
+                        throw new IllegalStateException("unexpected statement pull pattern");
+                    }
+                }
+
                 try (Vev.PreparedQuery allEmails = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                      Vev.DB snapshot = conn.db()) {
                     conn.transact("[{:db/id 3 :user/name \"Alan\" :user/email \"alan@example.com\"}]");
