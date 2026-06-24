@@ -183,10 +183,28 @@ In the embedded single-process case, this is usually enough:
 That keeps reaction logic in application code rather than introducing a
 subscription mechanism inside the database core.
 
-## Later extension point
+## Transaction functions
 
-If Vev later needs stronger same-transaction behavior, the next step should
-be deterministic transaction-time derivation configured as part of the
-connection or engine, not arbitrary user callbacks passed into `transact`.
+Vev supports DataScript/Datomic-shaped transaction functions through registered
+idents. A transaction can call a registered function with `:db.fn/call` or an
+ident shorthand form. The function receives the intermediate DB value at that
+point in the transaction and returns tx-data, which is parsed/resolved as part
+of the same transaction.
 
-That is a later design step, not a phase-1 requirement.
+Through the C ABI, host-provided transaction functions currently return EDN
+tx-data strings and receive borrowed typed argument values plus a borrowed DB
+snapshot handle. Vev copies the returned tx-data before the callback frame is
+released. This keeps the raw ABI simple while preserving normal transaction
+rollback semantics: if the callback fails or its returned tx-data is invalid,
+earlier segment operations are rolled back and listeners are not notified.
+
+## Listener and derivation extension point
+
+Named report-sink listeners exist inside the engine. The remaining host-facing
+callback work is exposing transaction report/listener callbacks through the C
+ABI and wrappers.
+
+If Vev later needs stronger same-transaction behavior than transaction
+functions provide, the next step should be deterministic transaction-time
+derivation configured as part of the connection or engine. That should be a
+deliberate semantic feature, not an ad hoc callback shape.

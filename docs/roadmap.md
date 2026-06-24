@@ -67,9 +67,21 @@ Non-goal:
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. Remaining work is
-concentrated in exact parser diagnostics/object rendering, C ABI callback
-registration shapes for host-provided transaction/listener behavior, and
-measured recursive-rule/large-query optimization.
+concentrated in exact parser diagnostics/object rendering, listener/report
+callback registration for host adapters, and measured recursive-rule/large-query
+optimization.
+
+Current batch order:
+
+1. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
+   tx-data shapes fail predictably through the portable text/prepared APIs.
+2. Host listener callbacks: expose transaction report callbacks through the C
+   ABI, then lift them into Java/Clojure/Python/Rust wrappers as needed.
+3. Rule/query performance: use query profile counters and ABI/native
+   benchmarks to replace recursive rule and large relation hot paths with
+   measured implementations.
+4. Wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and Java
+   feel close to Datomic/DataScript for common tutorials.
 
 ## Phase 4: Portable query frontend
 
@@ -85,9 +97,10 @@ not create a second query engine.
 
 Status: substantially done and now part of the compatibility gate. EDN text and
 prepared query/tx/pull paths lower into the same typed structures as Kvist
-literals. C, Python, Rust, Java, and Clojure smokes now exercise the EDN path
-through the native library. The remaining work is exact parser API parity and
-any wrapper ergonomics demanded by real host usage.
+literals. C, Python, Rust, Java, and Clojure smokes exercise the EDN path
+through the native library. The remaining work is exact malformed-input
+behavior, parser value rendering where host APIs expose it, and wrapper
+ergonomics demanded by real host usage.
 
 ## Phase 5: Durable proof
 
@@ -108,8 +121,9 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: not started. Keep this postponed until the in-memory compatibility,
-API, and performance baseline are stable.
+Status: not started. Keep this postponed until parser/API exactness, host
+listener callbacks, and rule/query performance are stable enough that the
+storage layer can preserve semantics instead of reshaping them.
 
 ## Phase 6: Dogfood
 
@@ -195,5 +209,13 @@ Do not start durable storage by solving:
 - every deployment story
 
 Get the in-memory semantic core, EDN/C ABI surface, and performance baseline
-right first. SQLite durability comes after DataScript-level behavior is stable
-enough that the storage layer can preserve semantics instead of reshaping them.
+right first. The next durable-storage gate is not "all possible DataScript host
+details"; it is:
+
+- portable parser and tx-data APIs reject bad input predictably
+- report/listener callbacks work through host wrappers
+- recursive rules and large relation queries have measured, acceptable behavior
+- Clojure/Java examples can follow common Datomic/DataScript tutorial shapes
+
+SQLite durability comes after those gates, so storage preserves established
+semantics instead of reshaping them.

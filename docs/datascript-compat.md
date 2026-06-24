@@ -1,8 +1,10 @@
 # DataScript Compatibility
 
-Vev has not ported the DataScript test suite yet. This file tracks the local
-`../datascript/test/datascript/test/*.cljc` namespaces as the compatibility
-checklist.
+Vev tracks the local `../datascript/test/datascript/test/*.cljc` namespaces as
+the in-memory compatibility checklist. Most engine-level namespaces now have
+local Vev coverage; remaining work is concentrated in exact parser/API shape,
+listener/report callbacks for host adapters, and measured performance for
+recursive rules and large queries.
 
 See `docs/datascript-test-port-ledger.md` for namespace-by-namespace port
 status.

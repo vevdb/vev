@@ -20,7 +20,8 @@ Status:
 Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 351
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
-remaining native callback design, and semi-naive rule/query optimization.
+listener/report callback design for host adapters, and semi-naive rule/query
+optimization.
 
 ## Semantic Core
 

@@ -190,22 +190,27 @@ The core query shape is:
  :where ...]
 ```
 
-Phase 1 should focus on the most tutorial-heavy subset first.
+Vev's current compatibility target is that common Datomic/DataScript tutorial
+queries should transfer through the EDN text/prepared API and, for Kvist
+callers, through literal query macros.
 
-### Phase 1 query subset
+### Query subset
 
-The first supported subset should be:
+The supported in-memory subset includes:
 
 - `:find`
+- scalar, tuple, collection, aggregate, pull, and return-map find specs
+- `:with`
 - `:in`
 - `:where`
 - data patterns
-- simple predicate expressions only if clearly needed
-- scalar, collection, and tuple inputs
-- simple `or` clauses
+- predicate and function expressions over the supported built-ins
+- scalar, collection, tuple, relation, relation-source, and named DB inputs
+- `not` / `not-join`
+- `or` / `or-join`
 - `and` branches inside `or`
-- top-level `and` over data clauses
-- `or-join`
+- rules, including recursive rules
+- multi-source queries
 
 ### Query data patterns
 
@@ -215,7 +220,7 @@ Datomic data patterns have the general shape:
 [src-var? (variable | constant | '_')+]
 ```
 
-The most important practical pattern for Vev phase 1 is:
+The most common practical pattern is:
 
 ```clojure
 [?e :attr ?v]
@@ -227,23 +232,20 @@ Attribute-existence shorthand is also accepted:
 [?e :attr]
 ```
 
-Phase 1 should also be prepared for these common variations:
+Common variations are also supported:
 
 ```clojure
 [?e :user/email "anna@example.com"]
 [?e :user/email _]
 ```
 
-### Deferred query features
+### Remaining query work
 
-These are part of Datomic's query language, but Vev should defer them until
-the core path is stable:
+Remaining query work is not broad syntax coverage. It is:
 
-- `:with`
-- rules
-- function expressions
-- aggregates beyond a very small starter subset
-- multiple result-shape conveniences beyond what is needed first
+- exact parser object/diagnostic parity where Vev exposes parser APIs
+- measured recursive-rule and large relation performance
+- wrapper ergonomics for host languages
 
 The important rule is:
 
@@ -270,14 +272,18 @@ Where `attr-spec` can be:
 - map spec
 - attribute expression
 
-### Phase 1/2 pull subset
+### Pull subset
 
-Start with the smallest useful Datomic-shaped subset:
+The supported in-memory subset includes:
 
 - plain attribute names
 - `:db/id`
+- wildcard attrs
 - nested map specs for refs
-- one entity at a time
+- reverse refs
+- lookup refs and idents
+- pull-many
+- defaults, limits, aliases, recursion, component expansion, and named xforms
 
 Examples:
 
