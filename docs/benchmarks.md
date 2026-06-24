@@ -121,22 +121,23 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 19.6x | 52.3x |
-| `chain-root n=10` | 23.9x | 43.3x |
-| `chain-root n=30` | 50.1x | 59.5x |
-| `chain-root n=100` | 236.4x | 250.8x |
-| `chain-leaf n=10` | 19.0x | 32.9x |
-| `chain-leaf n=30` | 74.2x | 92.8x |
-| `chain-leaf n=100` | 525.9x | 581.7x |
-| `chain-all n=10` | 11.3x | 15.3x |
-| `chain-all n=30` | 16.2x | 16.6x |
-| `chain-all n=100` | 23.9x | 23.8x |
-| `tree-root n=4` | 3.0x | 8.5x |
-| `tree-root n=13` | 3.2x | 5.2x |
-| `tree-root n=40` | 2.5x | 2.9x |
-| `tree-root n=121` | 1.9x | 2.1x |
-| `bad-order-join n=1000` | 6.6x | 11.1x |
-| `distinct-age n=1000` | 3.4x | 3.6x |
+| `chain-root n=3` | 19.1x | 54.9x |
+| `chain-root n=10` | 24.1x | 42.5x |
+| `chain-root n=30` | 50.2x | 65.2x |
+| `chain-root n=100` | 227.6x | 258.1x |
+| `chain-leaf n=10` | 18.2x | 33.1x |
+| `chain-leaf n=30` | 74.2x | 98.5x |
+| `chain-leaf n=100` | 537.7x | 540.2x |
+| `chain-all n=10` | 10.9x | 14.9x |
+| `chain-all n=30` | 16.0x | 17.1x |
+| `chain-all n=100` | 23.6x | 23.3x |
+| `tree-root n=4` | 3.2x | 8.4x |
+| `tree-root n=13` | 3.3x | 5.3x |
+| `tree-root n=40` | 2.5x | 3.1x |
+| `tree-root n=121` | 1.9x | 2.0x |
+| `bad-order-join n=1000` | 7.3x | 11.7x |
+| `distinct-age n=1000` | 3.2x | 3.5x |
+| `people-name-age n=1000` | 0.2x | 0.2x |
 
 ## Stress Comparison
 
@@ -265,8 +266,11 @@ Remaining performance work:
   dedupe is map-backed, but arbitrary multi-step recursive bodies still use the
   generic depth/fixpoint evaluator.
 - Continue result-projection work beyond the single-attr distinct fast path.
-  `distinct-age` is now faster than DataScript locally, but multi-column
-  distinct and richer projection shapes still use the generic row renderer.
+  `distinct-age` is now faster than DataScript locally, but the new
+  `people-name-age` row shows broad two-column projection is still behind.
+  Vev now has a direct same-entity two-attr path with cardinality-one map join,
+  but final distinct tracking still needs typed pair-level dedupe instead of
+  formatted string keys.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.

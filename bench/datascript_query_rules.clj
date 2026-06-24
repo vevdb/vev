@@ -137,6 +137,16 @@
                                     db)))]
     (print-result "distinct-age" n measured)))
 
+(defn run-people-name-age [n]
+  (let [db (db-with (seed-people n))
+        measured (time-query (fn []
+                               (d/q '[:find ?name ?age
+                                      :where
+                                      [?e :name ?name]
+                                      [?e :age ?age]]
+                                    db)))]
+    (print-result "people-name-age" n measured)))
+
 (doseq [n [3 10 30 100]]
   (run-chain-from-root n))
 (doseq [n [10 30 100]]
@@ -149,3 +159,5 @@
   (run-bad-order-join n))
 (doseq [n [1000]]
   (run-distinct-age n))
+(doseq [n [1000]]
+  (run-people-name-age n))
