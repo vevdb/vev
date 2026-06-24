@@ -53,13 +53,17 @@
 (defrecord Conn [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
-    (.close ^java.lang.AutoCloseable native)
-    (.close engine)))
+    (.close ^java.lang.AutoCloseable native)))
 
 (defrecord DB [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
+
+(defn retain-db
+  "Return another owned handle to the same immutable DB value."
+  [^DB db]
+  (->DB (:engine db) (.retain (:native db))))
 
 (defrecord PreparedQuery [^Vev engine native]
   java.lang.AutoCloseable

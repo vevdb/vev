@@ -16,7 +16,7 @@ text frontend used by C, Python, Rust, and Java callers.
       :user/name "Ada"
       :user/email "ada@example.com"}])
 
-  (with-open [db (vev/db conn)]
+  (let [db (vev/db conn)]
     (vev/q
       '[:find ?name
         :where [?e :user/name ?name]]
@@ -61,7 +61,8 @@ The current package is deliberately thin:
 - `rows` returns an ordered vector of row vectors
 - entity ids are converted to integers
 - pull maps are converted to Clojure maps
-- immutable DB snapshots implement `AutoCloseable` and can be queried
+- immutable DB snapshots are passable values with JVM cleaner fallback; they
+  still implement `AutoCloseable` for explicit cleanup in tight loops
 
 Run through the top-level ABI smoke script:
 

@@ -4,20 +4,30 @@
 (defn -main [& args]
   (when-not (= 1 (count args))
     (throw (ex-info "usage: smoke <path-to-libvev.dylib>" {})))
-  (with-open [conn (vev/create-conn (first args))]
+  (let [lib-path (first args)]
+    (with-open [closed-conn (vev/create-conn lib-path)]
+      (vev/transact! closed-conn [{:db/id 10 :user/name "Closed"}])
+      (let [closed-db (vev/db closed-conn)]
+        (.close closed-conn)
+        (when-not (= #{["Closed"]}
+                     (vev/q '[:find ?name :where [?e :user/name ?name]]
+                            closed-db))
+          (throw (ex-info "DB value did not survive connection close" {})))))
+
+  (with-open [conn (vev/create-conn lib-path)]
     (let [tx (vev/transact! conn
                [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
                 {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}])]
       (println "tx:" tx))
 
-    (let [names (with-open [db (vev/db conn)]
-                  (vev/q
-                    '[:find ?name
-                      :in [?email ...]
-                      :where [?e :user/email ?email]
-                             [?e :user/name ?name]]
-                    db
-                    ["ada@example.com" "grace@example.com"]))]
+    (let [db (vev/db conn)
+          names (vev/q
+                  '[:find ?name
+                    :in [?email ...]
+                    :where [?e :user/email ?email]
+                           [?e :user/name ?name]]
+                  db
+                  ["ada@example.com" "grace@example.com"])]
       (println "input-collection:" names)
       (when-not (= #{["Ada"] ["Grace"]} names)
         (throw (ex-info "unexpected collection query output" {:rows names}))))
@@ -32,16 +42,16 @@
                                :in ?needle
                                :where [?e :user/email ?email]
                                       [(= ?email ?needle)]])]
-      (let [rows (with-open [db (vev/db conn)]
-                   (vev/q email-query db "grace@example.com"))]
+      (let [db (vev/db conn)
+            rows (vev/q email-query db "grace@example.com")]
         (println "prepared rows:" rows)
         (when-not (= #{[2 "grace@example.com"]} rows)
           (throw (ex-info "unexpected prepared rows" {:rows rows}))))
 
-      (let [pulled (with-open [db (vev/db conn)]
-                     (vev/pull db
-                       [:user/name {:user/friend [:user/name]}]
-                       1))]
+      (let [db (vev/db conn)
+            pulled (vev/pull db
+                     [:user/name {:user/friend [:user/name]}]
+                     1)]
         (println "pull:" pulled)
         (when-not (= {:user/name "Ada"
                       :user/friend {:user/name "Grace"}}
@@ -54,13 +64,13 @@
                   snapshot (vev/db conn)]
         (vev/transact! conn
           [{:db/id 3 :user/name "Alan" :user/email "alan@example.com"}])
-        (let [current-rows (with-open [current (vev/db conn)]
-                             (count (vev/q all-emails current)))
+        (let [current (vev/db conn)
+              current-rows (count (vev/q all-emails current))
               snapshot-rows (count (vev/q all-emails snapshot))]
           (println "current-db rows:" current-rows)
           (println "snapshot-db rows:" snapshot-rows)
           (when-not (and (= 3 current-rows) (= 2 snapshot-rows))
             (throw (ex-info "unexpected snapshot row counts"
-                            {:current current-rows :snapshot snapshot-rows}))))))))
+                            {:current current-rows :snapshot snapshot-rows})))))))))
 
 (apply -main *command-line-args*)

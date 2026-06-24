@@ -166,16 +166,18 @@ vev_stmt_free(pull_stmt);
 vev_prepared_query_free(pull_query);
 
 vev_db_t snapshot = vev_conn_db(conn);
+vev_db_t retained_snapshot = vev_db_retain(snapshot);
+vev_db_release(snapshot);
 vev_transact_edn(conn, "[{:db/id 2 :user/name \"Grace\"}]");
 
 vev_result_t old_rows =
-    vev_query_db_prepared_result_with_inputs(snapshot, query, "[\"ada@example.com\"]");
+    vev_query_db_prepared_result_with_inputs(retained_snapshot, query, "[\"ada@example.com\"]");
 vev_result_free(old_rows);
 
-vev_result_t old_stmt_rows = vev_query_db_stmt_result(snapshot, stmt);
+vev_result_t old_stmt_rows = vev_query_db_stmt_result(retained_snapshot, stmt);
 vev_result_free(old_stmt_rows);
 
-vev_db_release(snapshot);
+vev_db_release(retained_snapshot);
 
 vev_stmt_free(stmt);
 vev_prepared_query_free(query);
@@ -294,7 +296,7 @@ serializes them through the same EDN/query path:
   (vev/transact! conn
     [{:db/id 1 :user/name "Ada"}])
 
-  (with-open [db (vev/db conn)]
+  (let [db (vev/db conn)]
     (vev/q
       '[:find ?name
         :where [?e :user/name ?name]]
@@ -334,9 +336,11 @@ Returned strings from `vev_transact_edn`, `vev_query_edn`, and
 `vev_query_prepared` must be released with `vev_string_free`. The same is true
 for strings returned by the input-bearing query functions.
 
-Connections are released with `vev_conn_close`. DB snapshots are released with
-`vev_db_release`. Prepared queries are released with `vev_prepared_query_free`.
-Statement handles are released with `vev_stmt_free`.
+Connections are released with `vev_conn_close`. DB snapshots are immutable owned
+handles. `vev_conn_db` returns a new owned snapshot handle, `vev_db_retain`
+returns another owned handle for the same snapshot value, and every owned DB
+handle is released with `vev_db_release`. Prepared queries are released with
+`vev_prepared_query_free`. Statement handles are released with `vev_stmt_free`.
 
 Statement handles borrow their prepared query. Free statements before freeing
 the prepared query they were created from. Bound string, keyword, and symbol
@@ -360,9 +364,12 @@ prepared-query handle. This should eventually be replaced by explicit engine
 copying or interned immutable values, but the ABI boundary already has the right
 handle ownership shape.
 
-DB snapshots returned by `vev_conn_db` deep-copy the current DB into an owned
-handle. They can be queried after later transactions on the connection, and they
-can outlive the connection that produced them.
+DB snapshots returned by `vev_conn_db` and `vev_db_retain` currently deep-copy
+the current DB into an owned handle. They can be queried after later
+transactions on the connection, and they can outlive the connection that
+produced them. The ABI contract is already value-like; the implementation can
+later replace deep copies with refcounted immutable snapshot storage without
+changing host wrappers.
 
 ## Query Inputs
 

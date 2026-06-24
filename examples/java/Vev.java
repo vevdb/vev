@@ -10,16 +10,20 @@ import java.lang.invoke.MethodHandle;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.lang.ref.Cleaner;
 
 public final class Vev {
     private static final Linker LINKER = Linker.nativeLinker();
+    private static final Cleaner CLEANER = Cleaner.create();
 
     private final Arena arena;
+    private final Cleaner.Cleanable cleanable;
     private final SymbolLookup symbols;
 
     private final MethodHandle connOpenMemory;
     private final MethodHandle connClose;
     private final MethodHandle connDb;
+    private final MethodHandle dbRetain;
     private final MethodHandle dbRelease;
     private final MethodHandle stringFree;
     private final MethodHandle transactEdn;
@@ -56,11 +60,13 @@ public final class Vev {
 
     public Vev(Path libraryPath) {
         this.arena = Arena.ofShared();
+        this.cleanable = CLEANER.register(this, arena::close);
         this.symbols = SymbolLookup.libraryLookup(libraryPath, arena);
 
         this.connOpenMemory = downcall("vev_conn_open_memory", FunctionDescriptor.of(ValueLayout.ADDRESS));
         this.connClose = downcall("vev_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connDb = downcall("vev_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.dbRetain = downcall("vev_db_retain", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRelease = downcall("vev_db_release", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.stringFree = downcall("vev_string_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.transactEdn = downcall("vev_transact_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -111,7 +117,7 @@ public final class Vev {
     }
 
     public void close() {
-        arena.close();
+        cleanable.clean();
     }
 
     private MethodHandle downcall(String name, FunctionDescriptor descriptor) {
@@ -160,6 +166,29 @@ public final class Vev {
 
     private static boolean isNull(MemorySegment segment) {
         return segment == null || segment.equals(MemorySegment.NULL);
+    }
+
+    private static final class NativeHandle implements Runnable {
+        private final MethodHandle closeHandle;
+        private MemorySegment raw;
+
+        private NativeHandle(MethodHandle closeHandle, MemorySegment raw) {
+            this.closeHandle = closeHandle;
+            this.raw = raw;
+        }
+
+        @Override
+        public void run() {
+            if (!isNull(raw)) {
+                try {
+                    closeHandle.invoke(raw);
+                } catch (Throwable error) {
+                    throw new RuntimeException(error);
+                } finally {
+                    raw = MemorySegment.NULL;
+                }
+            }
+        }
     }
 
     public record Entity(long id) {}
@@ -219,28 +248,40 @@ public final class Vev {
     }
 
     public final class DB implements AutoCloseable {
-        private MemorySegment raw;
+        private final NativeHandle handle;
+        private final Cleaner.Cleanable cleanable;
 
         private DB(MemorySegment raw) {
-            this.raw = raw;
+            this.handle = new NativeHandle(dbRelease, raw);
+            this.cleanable = CLEANER.register(this, handle);
+        }
+
+        public DB retain() throws Throwable {
+            requireOpen();
+            MemorySegment retained = (MemorySegment) dbRetain.invoke(handle.raw);
+            if (isNull(retained)) throw new IllegalStateException("failed to retain DB snapshot");
+            return new DB(retained);
         }
 
         public ResultSet query(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
             try (Arena local = Arena.ofConfined()) {
-                return new ResultSet((MemorySegment) queryDbPreparedResultWithInputs.invoke(raw, query.raw, local.allocateUtf8String(inputs)));
+                return new ResultSet((MemorySegment) queryDbPreparedResultWithInputs.invoke(handle.raw, query.raw, local.allocateUtf8String(inputs)));
             }
         }
 
         public ResultSet query(Statement stmt) throws Throwable {
-            return new ResultSet((MemorySegment) queryDbStmtResult.invoke(raw, stmt.raw));
+            requireOpen();
+            return new ResultSet((MemorySegment) queryDbStmtResult.invoke(handle.raw, stmt.raw));
+        }
+
+        private void requireOpen() {
+            if (isNull(handle.raw)) throw new IllegalStateException("DB snapshot is closed");
         }
 
         @Override
         public void close() {
-            if (!isNull(raw)) {
-                closeHandle(dbRelease, raw);
-                raw = MemorySegment.NULL;
-            }
+            cleanable.clean();
         }
     }
 

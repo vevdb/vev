@@ -287,6 +287,17 @@ int main(void) {
         vev_conn_close(conn);
         return 1;
     }
+    vev_db_t retained_snapshot = vev_db_retain(snapshot);
+    vev_db_release(snapshot);
+    snapshot = retained_snapshot;
+    if (snapshot == NULL) {
+        fprintf(stderr, "failed to retain DB snapshot copy\n");
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
 
     print_and_free(
         "tx-after-snapshot",

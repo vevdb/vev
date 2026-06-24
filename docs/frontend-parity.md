@@ -54,7 +54,7 @@ intended to feel close to Datomic/DataScript:
 ```clojure
 (with-open [conn (vev/create-conn "build/lib/libvev.dylib")]
   (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
-  (with-open [db (vev/db conn)]
+  (let [db (vev/db conn)]
     (vev/q '[:find ?name :where [?e :user/name ?name]] db)
     (vev/pull db [:user/name] 1)))
 ```
