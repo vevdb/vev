@@ -265,7 +265,8 @@ convert to their EDN text strings, for example `":user/name"`.
 
 The smoke also exercises DB-value `with`, `db-with`, and `conn-from-db` so the
 Python path follows the same immutable snapshot contract as C, Java, Clojure,
-and Rust.
+and Rust. Transactions can use `transact_report` / `with_report` for typed
+report maps, while `transact` / `with_text` remain string helpers.
 
 ## Rust Example
 
@@ -277,6 +278,8 @@ a packaged crate yet. It mirrors the intended safe wrapper shape:
   with `Drop`
 - statement methods expose typed scalar and collection bindings
 - result values are converted into a small Rust `Value` enum
+- transaction reports use an owned `TxReport` wrapper with typed `Value`
+  traversal
 
 The example covers transactions, rendered EDN query output, prepared statement
 bindings, homogeneous collection bindings, pull result traversal, DB snapshots,

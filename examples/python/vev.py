@@ -56,6 +56,8 @@ class Library:
         lib.vev_db_release.argtypes = [ctypes.c_void_p]
         lib.vev_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_with_edn.restype = ctypes.c_void_p
+        lib.vev_with_edn_report.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_with_edn_report.restype = ctypes.c_void_p
         lib.vev_db_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_db_with_edn.restype = ctypes.c_void_p
 
@@ -63,6 +65,13 @@ class Library:
 
         lib.vev_transact_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_transact_edn.restype = ctypes.c_void_p
+        lib.vev_transact_edn_report.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_transact_edn_report.restype = ctypes.c_void_p
+        lib.vev_tx_report_free.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_value.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_value.restype = ctypes.c_void_p
+        lib.vev_tx_report_edn.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_edn.restype = ctypes.c_void_p
         lib.vev_query_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_query_edn.restype = ctypes.c_void_p
         lib.vev_query_edn_with_inputs.argtypes = [
@@ -265,6 +274,15 @@ class Connection:
             self._library.lib.vev_transact_edn(self._handle, _bytes(tx_edn))
         )
 
+    def transact_report(self, tx_edn: str) -> "TxReport":
+        self._require_open()
+        handle = self._library.lib.vev_transact_edn_report(
+            self._handle, _bytes(tx_edn)
+        )
+        if not handle:
+            raise VevError("failed to transact")
+        return TxReport(self._library, handle)
+
     def query_text(self, query_edn: str, inputs_edn: str | None = None) -> str:
         self._require_open()
         if inputs_edn is None:
@@ -349,6 +367,13 @@ class DB:
             self._library.lib.vev_with_edn(self._handle, _bytes(tx_edn))
         )
 
+    def with_report(self, tx_edn: str) -> "TxReport":
+        self._require_open()
+        handle = self._library.lib.vev_with_edn_report(self._handle, _bytes(tx_edn))
+        if not handle:
+            raise VevError("failed to transact against DB snapshot")
+        return TxReport(self._library, handle)
+
     def db_with(self, tx_edn: str) -> "DB":
         self._require_open()
         handle = self._library.lib.vev_db_with_edn(self._handle, _bytes(tx_edn))
@@ -359,6 +384,42 @@ class DB:
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("DB snapshot is closed")
+
+
+class TxReport:
+    def __init__(self, library: Library, handle: int):
+        self._library = library
+        self._handle = handle
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_tx_report_free(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "TxReport":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def value(self) -> Any:
+        self._require_open()
+        return self._library.value_to_python(
+            self._library.lib.vev_tx_report_value(self._handle)
+        )
+
+    def edn(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_tx_report_edn(self._handle)
+        )
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("transaction report is closed")
 
 
 class PreparedQuery:

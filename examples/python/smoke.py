@@ -6,13 +6,16 @@ import vev
 
 def main() -> int:
     with vev.open_memory() as conn:
-        tx = conn.transact(
+        with conn.transact_report(
             """
             [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
              {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}]
             """
-        )
-        print(f"tx: {tx}")
+        ) as tx:
+            tx_value = tx.value()
+            print(f"tx: {tx.edn()}")
+            if not tx_value.get(":ok") or len(tx_value.get(":tx-data", [])) != 4:
+                raise RuntimeError("unexpected typed transaction report")
 
         collection = conn.query_text(
             """
@@ -111,10 +114,13 @@ def main() -> int:
                     ) as barbara_query, conn.prepare(
                         '[:find ?e :where [?e :user/name "Dorothy"]]'
                     ) as dorothy_query:
-                        report = snapshot.with_text(
+                        with snapshot.with_report(
                             '[{:db/id 4 :user/name "Barbara"}]'
-                        )
-                        print(f"with-db: {report}")
+                        ) as report:
+                            report_value = report.value()
+                            print(f"with-db: {report.edn()}")
+                            if not report_value.get(":ok"):
+                                raise RuntimeError("unexpected with report")
                         with snapshot.db_with(
                             '[{:db/id 4 :user/name "Barbara"}]'
                         ) as next_db:

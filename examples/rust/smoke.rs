@@ -7,6 +7,7 @@ type VevDb = *mut c_void;
 type VevPreparedQuery = *mut c_void;
 type VevResult = *mut c_void;
 type VevStmt = *mut c_void;
+type VevTxReport = *mut c_void;
 type VevValue = *const c_void;
 
 const VEV_VALUE_NIL: c_int = 0;
@@ -29,12 +30,16 @@ unsafe extern "C" {
     fn vev_conn_db(conn: VevConn) -> VevDb;
     fn vev_conn_from_db(db: VevDb) -> VevConn;
     fn vev_db_release(db: VevDb);
-    fn vev_with_edn(db: VevDb, tx_text: *const c_char) -> *const c_char;
+    fn vev_with_edn_report(db: VevDb, tx_text: *const c_char) -> VevTxReport;
     fn vev_db_with_edn(db: VevDb, tx_text: *const c_char) -> VevDb;
 
     fn vev_string_free(text: *const c_char);
 
     fn vev_transact_edn(conn: VevConn, tx_text: *const c_char) -> *const c_char;
+    fn vev_transact_edn_report(conn: VevConn, tx_text: *const c_char) -> VevTxReport;
+    fn vev_tx_report_free(report: VevTxReport);
+    fn vev_tx_report_value(report: VevTxReport) -> VevValue;
+    fn vev_tx_report_edn(report: VevTxReport) -> *const c_char;
     fn vev_query_edn_with_inputs(
         conn: VevConn,
         query_text: *const c_char,
@@ -202,6 +207,16 @@ impl Conn {
         unsafe { Library::owned_string(vev_transact_edn(self.raw, tx.as_ptr())) }
     }
 
+    fn transact_report(&self, tx: &str) -> Result<TxReport, String> {
+        let tx = cstring(tx);
+        let raw = unsafe { vev_transact_edn_report(self.raw, tx.as_ptr()) };
+        if raw.is_null() {
+            Err("failed to transact".to_string())
+        } else {
+            Ok(TxReport { raw })
+        }
+    }
+
     fn query_text_with_inputs(&self, query: &str, inputs: &str) -> String {
         let query = cstring(query);
         let inputs = cstring(inputs);
@@ -242,9 +257,14 @@ struct Db {
 }
 
 impl Db {
-    fn with_text(&self, tx: &str) -> String {
+    fn with_report(&self, tx: &str) -> Result<TxReport, String> {
         let tx = cstring(tx);
-        unsafe { Library::owned_string(vev_with_edn(self.raw, tx.as_ptr())) }
+        let raw = unsafe { vev_with_edn_report(self.raw, tx.as_ptr()) };
+        if raw.is_null() {
+            Err("failed to transact against DB snapshot".to_string())
+        } else {
+            Ok(TxReport { raw })
+        }
     }
 
     fn db_with(&self, tx: &str) -> Result<Db, String> {
@@ -262,6 +282,29 @@ impl Drop for Db {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             unsafe { vev_db_release(self.raw) };
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
+struct TxReport {
+    raw: VevTxReport,
+}
+
+impl TxReport {
+    fn value(&self) -> Value {
+        unsafe { Library::value_to_rust(vev_tx_report_value(self.raw)) }
+    }
+
+    fn edn(&self) -> String {
+        unsafe { Library::owned_string(vev_tx_report_edn(self.raw)) }
+    }
+}
+
+impl Drop for TxReport {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { vev_tx_report_free(self.raw) };
             self.raw = ptr::null_mut();
         }
     }
@@ -430,13 +473,22 @@ fn main() -> Result<(), String> {
     println!("version: {version}");
 
     let conn = Conn::open_memory()?;
-    println!(
-        "tx: {}",
-        conn.transact(
-            r#"[{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
-                {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}]"#
-        )
-    );
+    let tx = conn.transact_report(
+        r#"[{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
+            {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}]"#,
+    )?;
+    println!("tx: {}", tx.edn());
+    let tx_value = tx.value();
+    let tx_data_count = tx_value
+        .map_get(":tx-data")
+        .and_then(|value| match value {
+            Value::Vector(items) => Some(items.len()),
+            _ => None,
+        })
+        .unwrap_or(0);
+    if tx_value.map_get(":ok") != Some(&Value::Bool(true)) || tx_data_count != 4 {
+        return Err("unexpected typed transaction report".to_string());
+    }
 
     let collection_text = conn.query_text_with_inputs(
         r#"[:find ?name
@@ -530,10 +582,11 @@ fn main() -> Result<(), String> {
 
     let barbara_query = conn.prepare(r#"[:find ?e :where [?e :user/name "Barbara"]]"#)?;
     let dorothy_query = conn.prepare(r#"[:find ?e :where [?e :user/name "Dorothy"]]"#)?;
-    println!(
-        "with-db: {}",
-        snapshot.with_text(r#"[{:db/id 4 :user/name "Barbara"}]"#)
-    );
+    let with_report = snapshot.with_report(r#"[{:db/id 4 :user/name "Barbara"}]"#)?;
+    println!("with-db: {}", with_report.edn());
+    if with_report.value().map_get(":ok") != Some(&Value::Bool(true)) {
+        return Err("unexpected typed with report".to_string());
+    }
     let next_db = snapshot.db_with(r#"[{:db/id 4 :user/name "Barbara"}]"#)?;
     let source_barbara_rows = barbara_query.query_db(&snapshot, "[]")?.row_count();
     let next_barbara_rows = barbara_query.query_db(&next_db, "[]")?.row_count();
