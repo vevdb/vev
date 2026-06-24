@@ -44,6 +44,19 @@
             [{:db/id i :name (str "node-" i)}])))
       (range 1 (inc n)))))
 
+(defn seed-dense-dag [n width]
+  (vec
+    (map
+      (fn [i]
+        (let [targets (vec
+                        (filter #(<= % n)
+                                (map #(+ i %) (range 1 (inc width)))))]
+          (cond-> {:db/id i
+                   :name (str "node-" i)
+                   :active true}
+            (seq targets) (assoc :follows targets))))
+      (range 1 (inc n)))))
+
 (defn db-with [tx]
   (d/db-with (d/empty-db schema) tx))
 
@@ -112,6 +125,33 @@
                              3
                              5)]
     (print-result "stress-tree-root" n measured)))
+
+(defn run-dense-from-root [n]
+  (let [db (db-with (seed-dense-dag n 8))
+        measured (time-query (fn []
+                             (d/q '[:find ?y :in $ % ?x :where (reachable ?x ?y)]
+                                    db rules 1))
+                             3
+                             5)]
+    (print-result "stress-dense-root" n measured)))
+
+(def filtered-rules
+  '[[(filtered-reachable ?x ?y)
+     [?x :follows ?y]
+     [?y :active true]]
+    [(filtered-reachable ?x ?y)
+     [?x :follows ?t]
+     [?t :active true]
+     (filtered-reachable ?t ?y)]])
+
+(defn run-filtered-from-root [n]
+  (let [db (db-with (seed-dense-dag n 1))
+        measured (time-query (fn []
+                             (d/q '[:find ?y :in $ % ?x :where (filtered-reachable ?x ?y)]
+                                    db filtered-rules 1))
+                             1
+                             3)]
+    (print-result "stress-filtered-root" n measured)))
 
 (doseq [n [300]]
   (run-chain-from-root n)

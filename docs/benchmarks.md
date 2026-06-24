@@ -41,8 +41,12 @@ bench/compare_query_rules_stress.sh
 
 The stress harness keeps the default benchmark short while still measuring
 larger chain/tree closures. The Vev side includes larger Vev-only rows such as
-1000-node bound chains and 1093-node trees; the DataScript comparison side uses
-smaller overlapping rows and fewer samples so the run stays practical.
+1000-node bound chains, 1093-node trees, dense DAGs, and a filtered recursive
+rule that deliberately does not match the transitive-closure recognizer. The
+DataScript comparison side uses smaller overlapping rows and fewer samples so
+the run stays practical. Dense DAG and filtered generic-recursion rows are kept
+out of the routine DataScript comparison for now because local DataScript/JVM
+runs either run out of memory or take too long at useful sizes.
 
 Current sample output on June 24, 2026:
 
@@ -141,10 +145,19 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1378.9x | 1369.9x |
-| `stress-chain-leaf n=300` | 4032.8x | 4246.1x |
-| `stress-chain-all n=200` | 32.4x | 32.0x |
-| `stress-tree-root n=364` | 1.8x | 1.7x |
+| `stress-chain-root n=300` | 1359.4x | 1373.1x |
+| `stress-chain-leaf n=300` | 4032.8x | 4217.1x |
+| `stress-chain-all n=200` | 32.2x | 31.9x |
+| `stress-tree-root n=364` | 1.7x | 1.6x |
+
+The stress harness also emits Vev-only rows for workloads that are currently
+too expensive for routine DataScript comparison:
+
+| Workload | Vev text median | Vev prepared median | Notes |
+|---|---:|---:|---|
+| `stress-dense-root n=60` | 246us | 209us | Dense DAG, width 8 |
+| `stress-dense-root n=160` | 586us | 560us | Dense DAG, width 8 |
+| `stress-filtered-root n=10` | 957us | 871us | Generic recursive rule with an extra predicate/data filter |
 
 ## Current Findings
 
@@ -206,12 +219,13 @@ DataScript.
 Remaining performance work:
 
 - Generalize this from a shape-specific transitive closure path into a measured
-  semi-naive/memoized rule evaluator.
+  semi-naive/memoized rule evaluator. The filtered recursive stress row is the
+  current regression target because it exercises the generic recursive-rule
+  evaluator instead of the optimized linear transitive-closure path.
 - Continue result-projection work for simple distinct queries. The current
   `distinct-age` path is much better than generic row dedupe, but still behind
   DataScript because it allocates full `Result-Row` structures and maintains
   order-preserving seen sets.
-- Add dense graph and non-transitive recursive-rule stress workloads. The
-  current stress harness covers larger chain/tree closures, but the closure
-  recognizer is useful only for one common linear transitive shape; it is not a
-  full recursive query planner.
+- Keep expanding benchmark coverage from real Datomic/DataScript-style
+  workloads, including MusicBrainz-shaped queries, so performance work stays
+  tied to database behavior rather than isolated microbenchmarks.

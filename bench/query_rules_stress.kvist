@@ -111,6 +111,21 @@
             (arr.push! tx (vev.add (u64 i) ":follows" (vev.value-entity (u64 child))))))))
     (discard (vev.transact-tx-data conn (slice tx 0)))))
 
+(defn seed-dense-dag [conn: ^vev.Conn, n: int, width: int]
+  (let [tx (make [dynamic]vev.Tx-Data 0 (+ (* n (+ width 2)) 4))]
+    (defer (delete tx))
+    (arr.push! tx (vev.add 1000000 ":db/ident" (vev.value-keyword ":follows")))
+    (arr.push! tx (vev.add 1000000 ":db/valueType" (vev.value-keyword ":db.type/ref")))
+    (arr.push! tx (vev.add 1000000 ":db/cardinality" (vev.value-keyword ":db.cardinality/many")))
+    (for [i (arr.range 1 (+ n 1))]
+      (arr.push! tx (vev.add (u64 i) ":name" (vev.value-string (fmt.tprintf "node-%d" i))))
+      (arr.push! tx (vev.add (u64 i) ":active" (vev.value-bool true)))
+      (for [offset (arr.range 1 (+ width 1))]
+        (let [target (+ i offset)]
+          (when (<= target n)
+            (arr.push! tx (vev.add (u64 i) ":follows" (vev.value-entity (u64 target))))))))
+    (discard (vev.transact-tx-data conn (slice tx 0)))))
+
 (defn run-chain-from-root [n: int]
   (let [conn (vev.create-conn)]
     (seed-chain (addr conn) n)
@@ -159,15 +174,45 @@
       (print-profile "stress-tree-root-text" n text-measured.timing text-measured.profiled)
       (print-profile "stress-tree-root-prepared" n prepared-measured.timing prepared-measured.profiled))))
 
+(defn run-dense-from-root [n: int]
+  (let [conn (vev.create-conn)]
+    (seed-dense-dag (addr conn) n 8)
+    (let [query "[:find ?y :in $ % ?x :where (reachable ?x ?y)]"
+          rules "[[(reachable ?x ?y) [?x :follows ?y]] [(reachable ?x ?y) [?x :follows ?t] (reachable ?t ?y)]]"
+          inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))])
+          prepared (vev.prepare-query-text-with-rules query rules)
+          text-measured (time-profiled-rules-query conn.db query rules inputs 3 7)
+          prepared-measured (time-prepared-input-query conn.db prepared inputs 3 7)]
+      (print-profile "stress-dense-root-text" n text-measured.timing text-measured.profiled)
+      (print-profile "stress-dense-root-prepared" n prepared-measured.timing prepared-measured.profiled))))
+
+(defn run-filtered-from-root [n: int]
+  (let [conn (vev.create-conn)]
+    (seed-dense-dag (addr conn) n 1)
+    (let [query "[:find ?y :in $ % ?x :where (filtered-reachable ?x ?y)]"
+          rules "[[(filtered-reachable ?x ?y) [?x :follows ?y] [?y :active true]] [(filtered-reachable ?x ?y) [?x :follows ?t] [?t :active true] (filtered-reachable ?t ?y)]]"
+          inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))])
+          prepared (vev.prepare-query-text-with-rules query rules)
+          text-measured (time-profiled-rules-query conn.db query rules inputs 1 3)
+          prepared-measured (time-prepared-input-query conn.db prepared inputs 1 3)]
+      (print-profile "stress-filtered-root-text" n text-measured.timing text-measured.profiled)
+      (print-profile "stress-filtered-root-prepared" n prepared-measured.timing prepared-measured.profiled))))
+
 (defn main []
   (defer (free_all context.allocator))
   (let [bound-chain-sizes ([]int [300 1000])
         all-chain-sizes ([]int [200 300])
-        tree-sizes ([]int [364 1093])]
+        tree-sizes ([]int [364 1093])
+        dense-sizes ([]int [60 160])
+        filtered-sizes ([]int [10])]
     (for [n bound-chain-sizes]
       (run-chain-from-root n)
       (run-chain-to-leaf n))
     (for [n all-chain-sizes]
       (run-chain-all n))
     (for [n tree-sizes]
-      (run-tree-from-root n))))
+      (run-tree-from-root n))
+    (for [n dense-sizes]
+      (run-dense-from-root n))
+    (for [n filtered-sizes]
+      (run-filtered-from-root n))))
