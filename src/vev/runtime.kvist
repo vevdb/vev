@@ -174,6 +174,94 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn query-relation-empty [] -> Query-Relation
+  (Query-Relation {attrs: (make [dynamic]string)
+                   tuples: (make [dynamic]Binding)}))
+
+(defn query-relation-singleton [] -> Query-Relation
+  (let [tuples (make [dynamic]Binding)]
+    (arr.push! tuples (Binding {}))
+    (Query-Relation {attrs: (make [dynamic]string)
+                     tuples: tuples})))
+
+(defn query-relation-from-bindings [bindings: []Binding] -> Query-Relation
+  (let [attrs (make [dynamic]string)
+        tuples (make [dynamic]Binding 0 (count bindings))]
+    (for [binding bindings]
+      (for [item binding.items]
+        (when (not (string-slice-contains? (slice attrs 0) item.name))
+          (arr.push! attrs item.name)))
+      (arr.push! tuples (clone-binding binding)))
+    (Query-Relation {attrs: attrs tuples: tuples})))
+
+(defn delete-query-relation [rel: Query-Relation]
+  (delete rel.attrs)
+  (delete rel.tuples))
+
+(defn relation-common-attrs [left: Query-Relation, right: Query-Relation] -> [dynamic]string
+  (let [out (make [dynamic]string)]
+    (for [name left.attrs]
+      (when (string-slice-contains? (slice right.attrs 0) name)
+        (arr.push! out name)))
+    out))
+
+(defn binding-agrees-on-attrs? [left: Binding, right: Binding, attrs: []string] -> bool
+  (for [name attrs]
+    (let [[left-value left-ok] (binding-lookup left name)
+          [right-value right-ok] (binding-lookup right name)]
+      (when (not (and left-ok right-ok (predicate-value-equal? left-value right-value)))
+        (return false))))
+  true)
+
+(defn merge-relation-binding [base: Binding, extra: Binding] -> [binding: Binding, ok: bool]
+  (let [out (clone-binding base)]
+    (for [item extra.items]
+      (let [[existing exists] (binding-lookup out item.name)]
+        (if exists
+          (when (not (predicate-value-equal? existing item.value))
+            (return out false))
+          (binding-store! (addr out) item.name item.value))))
+    (return out true)))
+
+(defn query-relation-product [left: Query-Relation, right: Query-Relation] -> Query-Relation
+  (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+        tuples (make [dynamic]Binding 0 (* (count left.tuples) (count right.tuples)))]
+    (for [name right.attrs]
+      (arr.push! attrs name))
+    (for [left-tuple left.tuples]
+      (for [right-tuple right.tuples]
+        (let [[merged ok] (merge-relation-binding left-tuple right-tuple)]
+          (when ok
+            (arr.push! tuples merged)))))
+    (Query-Relation {attrs: attrs tuples: tuples})))
+
+(defn query-relation-join [left: Query-Relation, right: Query-Relation] -> Query-Relation
+  (let [common (relation-common-attrs left right) :defer]
+    (when (= (count common) 0)
+      (return (query-relation-product left right)))
+    (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+          tuples (make [dynamic]Binding)]
+      (for [name right.attrs]
+        (when (not (string-slice-contains? (slice attrs 0) name))
+          (arr.push! attrs name)))
+      (for [left-tuple left.tuples]
+        (for [right-tuple right.tuples]
+          (when (binding-agrees-on-attrs? left-tuple right-tuple (slice common 0))
+            (let [[merged ok] (merge-relation-binding left-tuple right-tuple)]
+              (when ok
+                (arr.push! tuples merged))))))
+      (Query-Relation {attrs: attrs tuples: tuples}))))
+
+(defn query-context-singleton [] -> Query-Context
+  (let [rels (make [dynamic]Query-Relation)]
+    (arr.push! rels (query-relation-singleton))
+    (Query-Context {rels: rels})))
+
+(defn delete-query-context [ctx: Query-Context]
+  (for [rel ctx.rels]
+    (delete-query-relation rel))
+  (delete ctx.rels))
+
 (defn lookup-ref-value [attr: string, value: Value] -> Value
   (value-vector2 (value-keyword attr) value))
 
@@ -6616,6 +6704,91 @@
         (arr.remove-ordered-at! remaining clause-index)))
     current))
 
+(defn query-steps-are-clauses? [query: Query] -> bool
+  (when (= (count query.where-steps) 0)
+    (return true))
+  (when (not (= (count query.where-steps) (count query.clauses)))
+    (return false))
+  (for [step query.where-steps]
+    (when (not (= step.kind .Clause))
+      (return false)))
+  true)
+
+(defn query-clause-uses-source-input? [query: Query, sources: []DB-Source, clause: Clause] -> bool
+  (and clause.has-source
+       (not (= clause.source "$"))
+       (not (query-source-db? sources clause.source))
+       (query-source-input? query clause.source)))
+
+(defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
+  (when (not (query-steps-are-clauses? query))
+    (return false))
+  (when (or (> (count query.predicates) 0)
+            (> (count query.function-clauses) 0)
+            (> (count query.rules) 0)
+            (> (count query.rule-calls) 0)
+            (> (count query.get-elses) 0)
+            (> (count query.get-somes) 0)
+            (> (count query.grounds) 0)
+            (> (count query.not-groups) 0)
+            (> (count query.or-groups) 0)
+            (> (count query.aggregates) 0))
+    (return false))
+  (when (or (> (count query.inputs) 0)
+            (> (count query.collection-inputs) 0)
+            (> (count query.tuple-inputs) 0)
+            (> (count query.relation-inputs) 0)
+            (> (count query.input-specs) 0))
+    (return false))
+  (for [clause-value query.clauses]
+    (when clause-value.has-source
+      (return false))
+    (when (query-clause-uses-source-input? query sources clause-value)
+      (return false)))
+  true)
+
+(defn query-relation-from-clause [db: DB, sources: []DB-Source, clause-value: Clause] -> Query-Relation
+  (let [out (make [dynamic]Binding)
+        empty (Binding {})]
+    (if clause-value.has-source
+      (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+        (when source-ok
+          (append-bindings-after-clause! (addr out) source-db (unsourced-clause clause-value) empty)))
+      (append-bindings-after-clause! (addr out) db clause-value empty))
+    (let [rel (query-relation-from-bindings (slice out 0))]
+      (delete out)
+      rel)))
+
+(defn query-relation-reduce [relations: []Query-Relation] -> Query-Relation
+  (let [current (query-relation-singleton)]
+    (for [rel relations]
+      (let [next (query-relation-join current rel)]
+        (delete-query-relation current)
+        (set! current next)))
+    current))
+
+(defn relation-engine-bindings-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, stats: ^Query-Stats] -> [dynamic]Binding
+  (let [relations (make [dynamic]Query-Relation)
+        input-bindings (bindings-from-inputs db query inputs)]
+    (set! stats^.input-bindings (count input-bindings))
+    (query-stats-observe-bindings! stats (count input-bindings))
+    (arr.push! relations (query-relation-from-bindings (slice input-bindings 0)))
+    (delete input-bindings)
+    (for [clause-value query.clauses]
+      (set! stats^.steps (+ stats^.steps 1))
+      (set! stats^.clauses (+ stats^.clauses 1))
+      (let [rel (query-relation-from-clause db sources clause-value)]
+        (set! stats^.clause-candidates (+ stats^.clause-candidates (count rel.tuples)))
+        (arr.push! relations rel)))
+    (let [joined (query-relation-reduce (slice relations 0))]
+      (for [rel relations]
+        (delete-query-relation rel))
+      (delete relations)
+      (let [bindings (clone-bindings (slice joined.tuples 0))]
+        (query-stats-observe-bindings! stats (count bindings))
+        (delete-query-relation joined)
+        bindings))))
+
 (defn bindings-after-ordered-where-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (bindings-from-inputs db query^ inputs)]
     (for [step query^.where-steps]
@@ -7590,6 +7763,12 @@
         [valid error] (validate-query-call-with-fns db query inputs sources registry)]
     (when (not valid)
       (return (profiled-result-set (result-set-error error) stats)))
+  (when (query-relation-engine-eligible? query sources)
+    (let [bindings (relation-engine-bindings-profiled db query inputs sources (addr stats))
+          rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice bindings 0) registry)]
+      (delete bindings)
+      (set! stats.output-rows (count rows))
+      (return (profiled-result-set (result-set-ok rows) stats))))
   (let [[distinct-clause distinct-ok] (query-single-attr-value-distinct-clause query)]
     (when distinct-ok
       (return (q-single-attr-value-distinct-profiled db distinct-clause stats))))

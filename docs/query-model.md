@@ -114,6 +114,52 @@ The current in-memory implementation has two query frontends:
 - a Kvist query literal macro that lowers Datomic-shaped data to the same typed
   `Query` representation
 
+## Query Engine Strategy
+
+Vev should follow DataScript's query architecture as the semantic baseline:
+
+- clauses produce relations
+- the query context is a set of relations, sources, and rules
+- repeated variables are resolved by relation joins
+- input bindings, DB datom patterns, predicates, functions, `or`, `not`, and
+  rules should all lower to relation operations
+- physical optimizations should live under that relation layer
+
+The first relation-engine path is now implemented for unsourced, no-input,
+data-clause-only queries. It builds one `Query-Relation` per datom pattern,
+joins those relations with generic relation product/join operations, and then
+uses the existing result renderer. This is intentionally conservative: scalar
+inputs, collection inputs, tuple inputs, relation inputs, named sources,
+predicates, functions, `not`, `or`, aggregates, and rules still use the older
+binding-expansion evaluator until their DataScript-style relation handlers are
+ported.
+
+The older query-shape recognizers are not the long-term query strategy. They
+are useful prototypes for physical operators that should be folded under the
+relation engine:
+
+- primitive entity/int/string result columns become typed relation/result
+  storage
+- same-entity star query paths become a generic star/merge-scan operator
+- threshold and predicate paths become generic predicate/filter operators
+- recursive rule fast paths become planned recursive/semi-naive relation
+  operators
+
+Near-term query work should expand the relation engine in this order:
+
+1. Input relations: scalar, collection, tuple, relation, and relation-source
+   `:in` bindings as first-class relations in the query context.
+2. Named DB sources: source-specific data patterns that produce relations from
+   the chosen DB source.
+3. Predicate/function clauses: relation filtering and relation extension over
+   bound argument variables.
+4. `not`/`or`: relation subtraction and union with DataScript-compatible free
+   variable checks.
+5. Rules: relation-oriented rule calls, then measured recursive/semi-naive
+   behavior.
+6. Physical storage: replace generic `Binding` tuples with compact typed
+   relation columns while keeping the same logical relation API.
+
 The transaction side has the same split:
 
 - a text API, `transact-text` / `parse-tx-text!`, that parses common
