@@ -10,8 +10,8 @@
       (let [closed-db (vev/db closed-conn)]
         (.close closed-conn)
         (when-not (= #{["Closed"]}
-                     (vev/q '[:find ?name :where [?e :user/name ?name]]
-                            closed-db))
+                     (vev/q closed-db
+                            '[:find ?name :where [?e :user/name ?name]]))
           (throw (ex-info "DB value did not survive connection close" {})))))
 
   (with-open [conn (vev/create-conn lib-path)]
@@ -22,11 +22,11 @@
 
     (let [db (vev/db conn)
           names (vev/q
+                  db
                   '[:find ?name
                     :in [?email ...]
                     :where [?e :user/email ?email]
                            [?e :user/name ?name]]
-                  db
                   ["ada@example.com" "grace@example.com"])]
       (println "input-collection:" names)
       (when-not (= #{["Ada"] ["Grace"]} names)
@@ -43,7 +43,7 @@
                                :where [?e :user/email ?email]
                                       [(= ?email ?needle)]])]
       (let [db (vev/db conn)
-            rows (vev/q email-query db "grace@example.com")]
+            rows (vev/q db email-query "grace@example.com")]
         (println "prepared rows:" rows)
         (when-not (= #{[2 "grace@example.com"]} rows)
           (throw (ex-info "unexpected prepared rows" {:rows rows}))))
@@ -65,8 +65,8 @@
         (vev/transact! conn
           [{:db/id 3 :user/name "Alan" :user/email "alan@example.com"}])
         (let [current (vev/db conn)
-              current-rows (count (vev/q all-emails current))
-              snapshot-rows (count (vev/q all-emails snapshot))]
+              current-rows (count (vev/q current all-emails))
+              snapshot-rows (count (vev/q snapshot all-emails))]
           (println "current-db rows:" current-rows)
           (println "snapshot-db rows:" snapshot-rows)
           (when-not (and (= 3 current-rows) (= 2 snapshot-rows))

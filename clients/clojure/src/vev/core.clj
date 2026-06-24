@@ -135,8 +135,7 @@
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
 
-  Preferred order follows Datomic/DataScript: query first, DB/connection second.
-  Connection-first order is accepted for the early Vev wrapper examples."
+  Accepts both DB-first Vev style and query-first Datomic/DataScript style."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
     (if (instance? PreparedQuery query)
@@ -147,7 +146,7 @@
         (mapv clj-value (.rows result))))))
 
 (defn q
-  "Run a query and return a set of row vectors, matching Datomic/DataScript."
+  "Run a query and return a set of row vectors."
   [query source & inputs]
   (set (apply rows query source inputs)))
 

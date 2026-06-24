@@ -18,20 +18,27 @@ text frontend used by C, Python, Rust, and Java callers.
 
   (let [db (vev/db conn)]
     (vev/q
+      db
       '[:find ?name
-        :where [?e :user/name ?name]]
-      db)))
+        :where [?e :user/name ?name]])))
 ```
 
-Inputs are passed as ordinary arguments after the query:
+`q` accepts both DB-first Vev style and query-first Datomic/DataScript style:
+
+```clojure
+(vev/q db '[:find ?name :where [?e :user/name ?name]])
+(vev/q '[:find ?name :where [?e :user/name ?name]] db)
+```
+
+Inputs are passed as ordinary arguments after the query and DB:
 
 ```clojure
 (vev/q
+  db
   '[:find ?name
     :in [?email ...]
     :where [?e :user/email ?email]
            [?e :user/name ?name]]
-  db
   ["ada@example.com" "grace@example.com"])
 ```
 
@@ -43,7 +50,7 @@ Prepared queries are reusable:
                       :in ?needle
                       :where [?e :user/email ?email]
                              [(= ?email ?needle)]])]
-  (vev/q query db "ada@example.com"))
+  (vev/q db query "ada@example.com"))
 ```
 
 Pull follows the same DB-value shape:

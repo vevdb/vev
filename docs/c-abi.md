@@ -298,20 +298,20 @@ serializes them through the same EDN/query path:
 
   (let [db (vev/db conn)]
     (vev/q
+      db
       '[:find ?name
-        :where [?e :user/name ?name]]
-      db)))
+        :where [?e :user/name ?name]])))
 ```
 
 Inputs are ordinary Clojure arguments after the query:
 
 ```clojure
 (vev/q
+  db
   '[:find ?name
     :in [?email ...]
     :where [?e :user/email ?email]
            [?e :user/name ?name]]
-  db
   ["ada@example.com" "grace@example.com"])
 ```
 
@@ -364,12 +364,11 @@ prepared-query handle. This should eventually be replaced by explicit engine
 copying or interned immutable values, but the ABI boundary already has the right
 handle ownership shape.
 
-DB snapshots returned by `vev_conn_db` and `vev_db_retain` currently deep-copy
-the current DB into an owned handle. They can be queried after later
-transactions on the connection, and they can outlive the connection that
-produced them. The ABI contract is already value-like; the implementation can
-later replace deep copies with refcounted immutable snapshot storage without
-changing host wrappers.
+DB snapshots returned by `vev_conn_db` copy the current DB into an owned
+immutable snapshot storage value. `vev_db_retain` is cheap: it increments the
+snapshot storage refcount and returns another owned handle. DB handles can be
+queried after later transactions on the connection, and they can outlive the
+connection that produced them.
 
 ## Query Inputs
 

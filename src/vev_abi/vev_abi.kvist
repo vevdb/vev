@@ -16,8 +16,13 @@ ABI_Prepared_Query :: struct {
     query: vev__Prepared_Query,
 }
 
-ABI_DB :: struct {
+ABI_DB_Storage :: struct {
     db: vev__DB,
+    refs: int,
+}
+
+ABI_DB :: struct {
+    storage: ^ABI_DB_Storage,
 }
 
 ABI_Result :: struct {
@@ -69,16 +74,51 @@ abi_free_prepared_query :: proc(query: rawptr) {
     free(wrapper)
 }
 
-abi_alloc_db :: proc() -> rawptr {
-    return rawptr(new(ABI_DB))
+abi_alloc_db :: proc(db: vev__DB) -> rawptr {
+    storage := new(ABI_DB_Storage)
+    storage.db = db
+    storage.refs = 1
+    wrapper := new(ABI_DB)
+    wrapper.storage = storage
+    return rawptr(wrapper)
+}
+
+abi_retain_db :: proc(db: rawptr) -> rawptr {
+    wrapper := (^ABI_DB)(db)
+    if wrapper == nil || wrapper.storage == nil {
+        return nil
+    }
+    wrapper.storage.refs += 1
+    retained := new(ABI_DB)
+    retained.storage = wrapper.storage
+    return rawptr(retained)
 }
 
 abi_db_ptr :: proc(db: rawptr) -> ^vev__DB {
-    return &((^ABI_DB)(db))^.db
+    return &((^ABI_DB)(db))^.storage.db
 }
 
-abi_free_db :: proc(db: rawptr) {
-    free((^ABI_DB)(db))
+abi_release_db :: proc(db: rawptr) -> rawptr {
+    wrapper := (^ABI_DB)(db)
+    if wrapper == nil || wrapper.storage == nil {
+        return nil
+    }
+    storage := wrapper.storage
+    storage.refs -= 1
+    free(wrapper)
+    if storage.refs == 0 {
+        return rawptr(storage)
+    }
+    return nil
+}
+
+abi_db_storage_ptr :: proc(storage: rawptr) -> ^vev__DB {
+    return &((^ABI_DB_Storage)(storage))^.db
+}
+
+abi_free_db_storage :: proc(storage: rawptr) {
+    storage := (^ABI_DB_Storage)(storage)
+    free(storage)
 }
 
 abi_alloc_result :: proc() -> rawptr {
@@ -436,31 +476,26 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (odin "context = runtime.default_context()")
   (when (= (rawptr conn) nil)
     (return (Vev-DB nil)))
-  (let [db (abi-alloc-db)
-        ptr (db-ptr (Vev-DB db))
-        conn-ptr-value (conn-ptr conn)]
-    (set! ptr^ (db-owned conn-ptr-value^.db))
-    (Vev-DB db)))
+  (let [conn-ptr-value (conn-ptr conn)]
+    (Vev-DB (abi-alloc-db (db-owned conn-ptr-value^.db)))))
 
 @export
 (defn vev_db_release :abi "c" [db: Vev-DB]
   (odin "context = runtime.default_context()")
   (when (= (rawptr db) nil)
     (return))
-  (let [ptr (db-ptr db)]
-    (delete-db-owned ptr^)
-    (abi-free-db (rawptr db))))
+  (let [storage (abi-release-db (rawptr db))]
+    (when (not (= storage nil))
+      (let [ptr (abi-db-storage-ptr storage)]
+        (delete-db-owned ptr^)
+        (abi-free-db-storage storage)))))
 
 @export
 (defn vev_db_retain :abi "c" [db: Vev-DB] -> Vev-DB
   (odin "context = runtime.default_context()")
   (when (= (rawptr db) nil)
     (return (Vev-DB nil)))
-  (let [retained (abi-alloc-db)
-        out (db-ptr (Vev-DB retained))
-        ptr (db-ptr db)]
-    (set! out^ (db-owned ptr^))
-    (Vev-DB retained)))
+  (Vev-DB (abi-retain-db (rawptr db))))
 
 @export
 (defn vev_string_free :abi "c" [text: cstring]

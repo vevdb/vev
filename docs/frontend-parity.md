@@ -55,7 +55,7 @@ intended to feel close to Datomic/DataScript:
 (with-open [conn (vev/create-conn "build/lib/libvev.dylib")]
   (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
   (let [db (vev/db conn)]
-    (vev/q '[:find ?name :where [?e :user/name ?name]] db)
+    (vev/q db '[:find ?name :where [?e :user/name ?name]])
     (vev/pull db [:user/name] 1)))
 ```
 
