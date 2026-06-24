@@ -34,12 +34,23 @@ ABI_Tx_Report :: struct {
     value: vev__Value,
 }
 
+ABI_Tx_Fn_Registry :: struct {
+    entries: [dynamic]vev__Tx_Fn_String,
+    slots: [dynamic]int,
+}
+
 ABI_Value_Handle :: struct {
     value: vev__Value,
 }
 
 ABI_Value_Visit_Fn :: proc \"c\" (user: rawptr, event: int, value: rawptr) -> bool
 ABI_Result_Visit_Fn :: proc \"c\" (user: rawptr, event, row, index: int, value: rawptr) -> bool
+ABI_Tx_Fn_Edn_Callback :: proc \"c\" (user: rawptr, db: rawptr, argc: int, args: rawptr) -> cstring
+
+ABI_TX_FN_SLOT_COUNT :: 16
+abi_tx_fn_callbacks: [ABI_TX_FN_SLOT_COUNT]ABI_Tx_Fn_Edn_Callback
+abi_tx_fn_users: [ABI_TX_FN_SLOT_COUNT]rawptr
+abi_tx_fn_used: [ABI_TX_FN_SLOT_COUNT]bool
 
 ABI_Stmt :: struct {
     query: rawptr,
@@ -166,6 +177,69 @@ abi_tx_report_value_ptr :: proc(report: rawptr) -> ^vev__Value {
 
 abi_free_tx_report :: proc(report: rawptr) {
     free((^ABI_Tx_Report)(report))
+}
+
+abi_alloc_tx_fn_registry :: proc() -> rawptr {
+    wrapper := new(ABI_Tx_Fn_Registry)
+    wrapper.entries = make([dynamic]vev__Tx_Fn_String)
+    wrapper.slots = make([dynamic]int)
+    return rawptr(wrapper)
+}
+
+abi_tx_fn_registry_entries_ptr :: proc(registry: rawptr) -> ^[dynamic]vev__Tx_Fn_String {
+    return &((^ABI_Tx_Fn_Registry)(registry))^.entries
+}
+
+abi_tx_fn_registry_slots_ptr :: proc(registry: rawptr) -> ^[dynamic]int {
+    return &((^ABI_Tx_Fn_Registry)(registry))^.slots
+}
+
+abi_tx_fn_alloc_slot :: proc(callback: rawptr, user: rawptr) -> int {
+    if callback == nil {
+        return -1
+    }
+    for i in 0..<ABI_TX_FN_SLOT_COUNT {
+        if !abi_tx_fn_used[i] {
+            abi_tx_fn_used[i] = true
+            abi_tx_fn_callbacks[i] = transmute(ABI_Tx_Fn_Edn_Callback)callback
+            abi_tx_fn_users[i] = user
+            return i
+        }
+    }
+    return -1
+}
+
+abi_tx_fn_free_slot :: proc(slot: int) {
+    if slot < 0 || slot >= ABI_TX_FN_SLOT_COUNT {
+        return
+    }
+    abi_tx_fn_used[slot] = false
+    abi_tx_fn_callbacks[slot] = nil
+    abi_tx_fn_users[slot] = nil
+}
+
+abi_tx_fn_call :: proc(slot: int, db: rawptr, argc: int, args: rawptr) -> cstring {
+    if slot < 0 || slot >= ABI_TX_FN_SLOT_COUNT || !abi_tx_fn_used[slot] || abi_tx_fn_callbacks[slot] == nil {
+        return nil
+    }
+    return abi_tx_fn_callbacks[slot](abi_tx_fn_users[slot], db, argc, args)
+}
+
+abi_tx_fn_arg_ptr :: proc(args: rawptr, index: int) -> rawptr {
+    if args == nil || index < 0 {
+        return nil
+    }
+    return rawptr(&(([^]vev__Value)(args))[index])
+}
+
+abi_free_tx_fn_registry :: proc(registry: rawptr) {
+    wrapper := (^ABI_Tx_Fn_Registry)(registry)
+    for slot in wrapper.slots {
+        abi_tx_fn_free_slot(slot)
+    }
+    delete(wrapper.entries)
+    delete(wrapper.slots)
+    free(wrapper)
 }
 
 abi_alloc_value_handle :: proc(value: vev__Value) -> rawptr {
@@ -382,6 +456,8 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (def Vev-Result (distinct rawptr))
 (def Vev-Stmt (distinct rawptr))
 (def Vev-Tx-Report (distinct rawptr))
+(def Vev-Tx-Fn-Registry (distinct rawptr))
+(def Vev-Tx-Fn-Args (distinct rawptr))
 (def Vev-Value-Handle (distinct rawptr))
 (def Vev-Value (distinct rawptr))
 
@@ -405,6 +481,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- tx-report-value-ptr [report: Vev-Tx-Report] -> ^vev.Value
   (abi-tx-report-value-ptr (rawptr report)))
+
+(defn- tx-fn-registry-entries-ptr [registry: Vev-Tx-Fn-Registry] -> ^[dynamic]vev.Tx-Fn-String
+  (abi-tx-fn-registry-entries-ptr (rawptr registry)))
+
+(defn- tx-fn-registry-slots-ptr [registry: Vev-Tx-Fn-Registry] -> ^[dynamic]int
+  (abi-tx-fn-registry-slots-ptr (rawptr registry)))
 
 (defn- value-handle-value-ptr [handle: Vev-Value-Handle] -> ^vev.Value
   (abi-value-handle-value-ptr (rawptr handle)))
@@ -589,6 +671,70 @@ abi_free_stmt :: proc(stmt: rawptr) {
         retained-db (Vev-DB retained)
         db-value (db-ptr retained-db)]
     (abi-stmt-push-source (rawptr stmt) (vev.db-source name db-value^) retained)))
+
+(defn- release-db-handle-owned [db: Vev-DB]
+  (let [storage (abi-release-db (rawptr db))]
+    (when (not (= storage nil))
+      (let [ptr (abi-db-storage-ptr storage)]
+        (delete-db-owned ptr^)
+        (abi-free-db-storage storage)))))
+
+(defn- tx-fn-args-ptr [args: []vev.Value] -> rawptr
+  (if (= (count args) 0)
+    nil
+    (rawptr (addr args[0]))))
+
+(defn- abi-tx-fn-dispatch [slot: int, db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result
+  (let [db-handle (Vev-DB (abi-alloc-db (db-owned db)))
+        result-c (abi-tx-fn-call slot (rawptr db-handle) (count args) (tx-fn-args-ptr args))]
+    (defer (release-db-handle-owned db-handle))
+    (when (= result-c nil)
+      (return (vev.tx-fn-error "transaction callback returned null")))
+    (let [result-text (text-from-c result-c)
+          tx-data (make [dynamic]vev.Tx-Data) :defer
+          [ok error] (vev.parse-tx-text! (addr tx-data) result-text)]
+      (when (not ok)
+        (delete result-text)
+        (return (vev.tx-fn-error error)))
+      (let [out (vev.tx-fn-ok (slice tx-data 0))]
+        (delete result-text)
+        out))))
+
+(defn- abi-tx-fn-slot-0 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 0 db args))
+(defn- abi-tx-fn-slot-1 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 1 db args))
+(defn- abi-tx-fn-slot-2 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 2 db args))
+(defn- abi-tx-fn-slot-3 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 3 db args))
+(defn- abi-tx-fn-slot-4 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 4 db args))
+(defn- abi-tx-fn-slot-5 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 5 db args))
+(defn- abi-tx-fn-slot-6 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 6 db args))
+(defn- abi-tx-fn-slot-7 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 7 db args))
+(defn- abi-tx-fn-slot-8 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 8 db args))
+(defn- abi-tx-fn-slot-9 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 9 db args))
+(defn- abi-tx-fn-slot-10 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 10 db args))
+(defn- abi-tx-fn-slot-11 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 11 db args))
+(defn- abi-tx-fn-slot-12 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 12 db args))
+(defn- abi-tx-fn-slot-13 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 13 db args))
+(defn- abi-tx-fn-slot-14 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 14 db args))
+(defn- abi-tx-fn-slot-15 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 15 db args))
+
+(defn- tx-fn-slot-entry [ident: string, slot: int] -> vev.Tx-Fn-String
+  (cond
+    (= slot 0) (vev.tx-fn-values ident abi-tx-fn-slot-0)
+    (= slot 1) (vev.tx-fn-values ident abi-tx-fn-slot-1)
+    (= slot 2) (vev.tx-fn-values ident abi-tx-fn-slot-2)
+    (= slot 3) (vev.tx-fn-values ident abi-tx-fn-slot-3)
+    (= slot 4) (vev.tx-fn-values ident abi-tx-fn-slot-4)
+    (= slot 5) (vev.tx-fn-values ident abi-tx-fn-slot-5)
+    (= slot 6) (vev.tx-fn-values ident abi-tx-fn-slot-6)
+    (= slot 7) (vev.tx-fn-values ident abi-tx-fn-slot-7)
+    (= slot 8) (vev.tx-fn-values ident abi-tx-fn-slot-8)
+    (= slot 9) (vev.tx-fn-values ident abi-tx-fn-slot-9)
+    (= slot 10) (vev.tx-fn-values ident abi-tx-fn-slot-10)
+    (= slot 11) (vev.tx-fn-values ident abi-tx-fn-slot-11)
+    (= slot 12) (vev.tx-fn-values ident abi-tx-fn-slot-12)
+    (= slot 13) (vev.tx-fn-values ident abi-tx-fn-slot-13)
+    (= slot 14) (vev.tx-fn-values ident abi-tx-fn-slot-14)
+    :else (vev.tx-fn-values ident abi-tx-fn-slot-15)))
 
 (defn- datom-owned [datom: vev.Datom] -> vev.Datom
   (vev.Datom {e: datom.e
@@ -821,6 +967,61 @@ abi_free_stmt :: proc(stmt: rawptr) {
     out))
 
 @export
+(defn vev_tx_fn_registry_create :abi "c" [] -> Vev-Tx-Fn-Registry
+  (odin "context = runtime.default_context()")
+  (Vev-Tx-Fn-Registry (abi-alloc-tx-fn-registry)))
+
+@export
+(defn vev_tx_fn_registry_free :abi "c" [registry: Vev-Tx-Fn-Registry]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr registry) nil)
+    (return))
+  (let [entries (tx-fn-registry-entries-ptr registry)]
+    (for [entry entries^]
+      (delete entry.ident)))
+  (abi-free-tx-fn-registry (rawptr registry)))
+
+@export
+(defn vev_tx_fn_registry_register_edn :abi "c" [registry: Vev-Tx-Fn-Registry, ident: cstring, callback: rawptr, user: rawptr] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr registry) nil) (= ident nil) (= callback nil))
+    (return false))
+  (let [slot (abi-tx-fn-alloc-slot callback user)]
+    (when (< slot 0)
+      (return false))
+    (let [ident-text (text-from-c ident)
+          entries (tx-fn-registry-entries-ptr registry)
+          slots (tx-fn-registry-slots-ptr registry)]
+      (arr.push! entries^ (tx-fn-slot-entry ident-text slot))
+      (arr.push! slots^ slot)
+      true)))
+
+@export
+(defn vev_transact_edn_report_with_tx_fns :abi "c" [conn: Vev-Conn, tx-text: cstring, registry: Vev-Tx-Fn-Registry] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= tx-text nil) (= (rawptr registry) nil))
+    (return (Vev-Tx-Report nil)))
+  (let [tx (text-from-c tx-text)
+        entries (tx-fn-registry-entries-ptr registry)
+        report (vev.transact-text-with-string-fns (conn-ptr conn) tx (slice entries^ 0))
+        out (tx-report-handle-from-report report)]
+    (abi-conn-store-tx-source (rawptr conn) tx)
+    out))
+
+@export
+(defn vev_with_edn_report_with_tx_fns :abi "c" [db: Vev-DB, tx-text: cstring, registry: Vev-Tx-Fn-Registry] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= tx-text nil) (= (rawptr registry) nil))
+    (return (Vev-Tx-Report nil)))
+  (let [tx (text-from-c tx-text)
+        db-ptr-value (db-ptr db)
+        entries (tx-fn-registry-entries-ptr registry)
+        report (vev.with-text-with-string-fns db-ptr-value^ tx (slice entries^ 0))
+        out (tx-report-handle-from-report report)]
+    (delete tx)
+    out))
+
+@export
 (defn vev_tx_report_free :abi "c" [report: Vev-Tx-Report]
   (odin "context = runtime.default_context()")
   (when (= (rawptr report) nil)
@@ -843,6 +1044,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (c-string-owned "nil")))
   (let [ptr (tx-report-value-ptr report)]
     (c-string-owned (vev.value-serializable-text ptr^))))
+
+@export
+(defn vev_tx_fn_arg :abi "c" [args: Vev-Tx-Fn-Args, index: int] -> Vev-Value
+  (odin "context = runtime.default_context()")
+  (Vev-Value (abi-tx-fn-arg-ptr (rawptr args) index)))
 
 @export
 (defn vev_query_edn :abi "c" [conn: Vev-Conn, query-text: cstring] -> cstring

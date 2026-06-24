@@ -57,9 +57,9 @@ semantics or required native interop, not on already-covered syntax families.
 1. Tighten parser validation against the upstream parser namespaces. Query,
    pull, rule, return-map, and transaction text parsing are broad now, but
    malformed-shape handling still trails DataScript.
-2. Extend the native callback ABI beyond query predicate/value/aggregate/pull
-   xform callbacks: transaction functions, listeners, and the final
-   C ABI-facing registration shape remain.
+2. Extend the native callback ABI to listener/report callbacks and refine the
+   final C ABI-facing registration shape for host adapters. Transaction
+   function callbacks now work through the raw C ABI.
 3. Use the new query profile counters to optimize recursive rules, large
    relations, aggregates, and index-backed planning before starting durable
    storage.

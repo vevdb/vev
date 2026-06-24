@@ -13,6 +13,8 @@ typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
 typedef void *vev_stmt_t;
 typedef void *vev_tx_report_t;
+typedef void *vev_tx_fn_registry_t;
+typedef const void *vev_tx_fn_args_t;
 typedef void *vev_value_handle_t;
 typedef const void *vev_value_t;
 
@@ -48,6 +50,11 @@ typedef bool (*vev_result_visit_fn)(
     int row,
     int index,
     vev_value_t value);
+typedef const char *(*vev_tx_fn_edn_callback)(
+    void *user,
+    vev_db_t db,
+    int argc,
+    vev_tx_fn_args_t args);
 
 const char *vev_version(void);
 
@@ -65,9 +72,25 @@ void vev_string_free(const char *text);
 
 const char *vev_transact_edn(vev_conn_t conn, const char *tx_text);
 vev_tx_report_t vev_transact_edn_report(vev_conn_t conn, const char *tx_text);
+vev_tx_report_t vev_transact_edn_report_with_tx_fns(
+    vev_conn_t conn,
+    const char *tx_text,
+    vev_tx_fn_registry_t registry);
+vev_tx_report_t vev_with_edn_report_with_tx_fns(
+    vev_db_t db,
+    const char *tx_text,
+    vev_tx_fn_registry_t registry);
 void vev_tx_report_free(vev_tx_report_t report);
 vev_value_t vev_tx_report_value(vev_tx_report_t report);
 const char *vev_tx_report_edn(vev_tx_report_t report);
+vev_tx_fn_registry_t vev_tx_fn_registry_create(void);
+void vev_tx_fn_registry_free(vev_tx_fn_registry_t registry);
+bool vev_tx_fn_registry_register_edn(
+    vev_tx_fn_registry_t registry,
+    const char *ident,
+    vev_tx_fn_edn_callback callback,
+    void *user);
+vev_value_t vev_tx_fn_arg(vev_tx_fn_args_t args, int index);
 const char *vev_query_edn(vev_conn_t conn, const char *query_text);
 const char *vev_query_edn_with_inputs(
     vev_conn_t conn,

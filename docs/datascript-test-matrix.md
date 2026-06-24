@@ -93,9 +93,9 @@ These are useful, but not the next engine-parity gate.
    `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
-2. Extend the native callback surface beyond query predicate/value/aggregate
-   and pull `:xform` callbacks: transaction functions, listeners, and final
-   C/Odin/non-Kvist registration shape.
+2. Extend the native callback surface to listener/report callbacks and refine
+   the final C/Odin/non-Kvist registration shape. Transaction function
+   callbacks now work through the raw C ABI.
 3. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript
    parity also needs predictable performance on recursive rules and large

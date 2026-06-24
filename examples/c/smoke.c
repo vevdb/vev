@@ -136,6 +136,29 @@ static bool cancel_result_visit(void *user, int event, int row, int index, vev_v
     return false;
 }
 
+static const char *mark_seen_tx_fn(void *user, vev_db_t db, int argc, vev_tx_fn_args_t args) {
+    (void)user;
+    (void)db;
+    static char out[256];
+    if (argc != 2) {
+        return NULL;
+    }
+    vev_value_t entity = vev_tx_fn_arg(args, 0);
+    vev_value_t label = vev_tx_fn_arg(args, 1);
+    if (vev_value_kind(entity) != VEV_VALUE_INT || vev_value_kind(label) != VEV_VALUE_STRING) {
+        return NULL;
+    }
+    const char *label_text = vev_value_text(label);
+    snprintf(
+        out,
+        sizeof(out),
+        "[:db/add %lld :user/seen-label \"%s\"]",
+        vev_value_int(entity),
+        label_text);
+    vev_string_free(label_text);
+    return out;
+}
+
 static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
     if (report == NULL) {
         fprintf(stderr, "%s: null transaction report\n", label);
@@ -221,6 +244,47 @@ int main(void) {
             "[[:db/add 100 :db/ident :user/friend]"
             " [:db/add 100 :db/valueType :db.type/ref]"
             " [:db/add 1 :user/friend 2]]"));
+
+    print_and_free(
+        "tx-fn-ident",
+        vev_transact_edn(
+            conn,
+            "[[:db/add 120 :db/ident :mark-seen]"
+            " [:db/add 121 :db/ident :user/seen-label]]"));
+    vev_tx_fn_registry_t tx_fns = vev_tx_fn_registry_create();
+    if (tx_fns == NULL ||
+        !vev_tx_fn_registry_register_edn(tx_fns, ":mark-seen", mark_seen_tx_fn, NULL)) {
+        fprintf(stderr, "failed to register transaction callback\n");
+        if (tx_fns != NULL) {
+            vev_tx_fn_registry_free(tx_fns);
+        }
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_tx_report_t tx_fn_report = vev_transact_edn_report_with_tx_fns(
+        conn,
+        "[[:db.fn/call :mark-seen 1 \"from-c\"]]",
+        tx_fns);
+    if (!tx_report_ok_or_error("tx-fn-callback", tx_fn_report)) {
+        vev_tx_report_free(tx_fn_report);
+        vev_tx_fn_registry_free(tx_fns);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_tx_report_free(tx_fn_report);
+    const char *tx_fn_check = vev_query_edn(
+        conn,
+        "[:find ?label :where [1 :user/seen-label ?label]]");
+    printf("tx-fn-callback-check: %s\n", tx_fn_check);
+    if (strstr(tx_fn_check, "from-c") == NULL) {
+        fprintf(stderr, "transaction callback did not apply returned tx-data\n");
+        vev_string_free(tx_fn_check);
+        vev_tx_fn_registry_free(tx_fns);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_string_free(tx_fn_check);
+    vev_tx_fn_registry_free(tx_fns);
 
     vev_prepared_query_t query =
         vev_prepare_query_edn("[:find ?e ?email :in ?needle :where [?e :user/email ?email] [(= ?email ?needle)]]");

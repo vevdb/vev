@@ -146,9 +146,9 @@ bindings, typed result access, direct result-row visitors, status/error
 accessors, and DB-value retain/release. C, Python, Rust, Java, and Clojure
 smokes exercise the native library, and the ABI-vs-native benchmark covers
 small lookups, DB snapshots, transaction reports, many-row results, direct row
-visitors, and nested pull-many values. Further interop work should be driven by
-specific adapter needs, especially host-provided transaction function/listener
-callback registration.
+visitors, nested pull-many values, and host-provided transaction function
+callbacks. Further interop work should be driven by specific adapter needs,
+especially listener/report callback registration and higher-level host wrappers.
 
 ## Phase 8: Optional packaging expansion
 
