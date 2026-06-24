@@ -42,28 +42,28 @@ engine=vev workload=chain-root-text n=10 ok=true rows=9 min_us=39 median_us=41 p
 engine=vev workload=chain-root-prepared n=10 ok=true rows=9 min_us=24 median_us=26 p90_us=28 max_us=29 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
 engine=vev workload=chain-root-text n=30 ok=true rows=29 min_us=91 median_us=94 p90_us=96 max_us=109 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
 engine=vev workload=chain-root-prepared n=30 ok=true rows=29 min_us=75 median_us=77 p90_us=80 max_us=91 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
-engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=349 median_us=354 p90_us=367 max_us=378 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
-engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=332 median_us=341 p90_us=350 max_us=358 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-root-text n=100 ok=true rows=99 min_us=236 median_us=244 p90_us=264 max_us=285 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-root-prepared n=100 ok=true rows=99 min_us=218 median_us=232 p90_us=237 max_us=244 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
 engine=vev workload=chain-leaf-text n=10 ok=true rows=9 min_us=64 median_us=65 p90_us=67 max_us=68 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
 engine=vev workload=chain-leaf-prepared n=10 ok=true rows=9 min_us=47 median_us=49 p90_us=54 max_us=55 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=9
 engine=vev workload=chain-leaf-text n=30 ok=true rows=29 min_us=173 median_us=176 p90_us=182 max_us=189 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
 engine=vev workload=chain-leaf-prepared n=30 ok=true rows=29 min_us=158 median_us=162 p90_us=164 max_us=167 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=29
-engine=vev workload=chain-leaf-text n=100 ok=true rows=99 min_us=625 median_us=655 p90_us=699 max_us=699 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
-engine=vev workload=chain-leaf-prepared n=100 ok=true rows=99 min_us=630 median_us=642 p90_us=664 max_us=689 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
-engine=vev workload=chain-all-text n=10 ok=true rows=45 min_us=113 median_us=117 p90_us=125 max_us=131 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
-engine=vev workload=chain-all-prepared n=10 ok=true rows=45 min_us=95 median_us=102 p90_us=105 max_us=108 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
-engine=vev workload=chain-all-text n=30 ok=true rows=435 min_us=2248 median_us=2352 p90_us=2473 max_us=2526 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
-engine=vev workload=chain-all-prepared n=30 ok=true rows=435 min_us=2138 median_us=2346 p90_us=2377 max_us=2504 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
-engine=vev workload=chain-all-text n=100 ok=true rows=4950 min_us=216210 median_us=219489 p90_us=228385 max_us=230385 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=4950
-engine=vev workload=chain-all-prepared n=100 ok=true rows=4950 min_us=201879 median_us=209913 p90_us=217967 max_us=224496 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=4950
+engine=vev workload=chain-leaf-text n=100 ok=true rows=99 min_us=547 median_us=559 p90_us=604 max_us=644 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-leaf-prepared n=100 ok=true rows=99 min_us=530 median_us=542 p90_us=561 max_us=588 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=99
+engine=vev workload=chain-all-text n=10 ok=true rows=45 min_us=52 median_us=56 p90_us=60 max_us=67 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
+engine=vev workload=chain-all-prepared n=10 ok=true rows=45 min_us=38 median_us=42 p90_us=44 max_us=50 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=45
+engine=vev workload=chain-all-text n=30 ok=true rows=435 min_us=332 median_us=342 p90_us=353 max_us=365 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
+engine=vev workload=chain-all-prepared n=30 ok=true rows=435 min_us=326 median_us=336 p90_us=358 max_us=367 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=435
+engine=vev workload=chain-all-text n=100 ok=true rows=4950 min_us=4139 median_us=4282 p90_us=4473 max_us=4552 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=4950
+engine=vev workload=chain-all-prepared n=100 ok=true rows=4950 min_us=4173 median_us=4349 p90_us=4465 max_us=4616 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=4950
 engine=vev workload=tree-root-text n=4 ok=true rows=3 min_us=25 median_us=27 p90_us=31 max_us=34 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
 engine=vev workload=tree-root-prepared n=4 ok=true rows=3 min_us=9 median_us=11 p90_us=12 max_us=15 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=3
 engine=vev workload=tree-root-text n=13 ok=true rows=12 min_us=45 median_us=49 p90_us=53 max_us=56 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
 engine=vev workload=tree-root-prepared n=13 ok=true rows=12 min_us=30 median_us=31 p90_us=34 max_us=46 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=12
 engine=vev workload=tree-root-text n=40 ok=true rows=39 min_us=118 median_us=123 p90_us=127 max_us=137 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
 engine=vev workload=tree-root-prepared n=40 ok=true rows=39 min_us=99 median_us=104 p90_us=112 max_us=122 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=39
-engine=vev workload=tree-root-text n=121 ok=true rows=120 min_us=362 median_us=370 p90_us=377 max_us=383 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=120
-engine=vev workload=tree-root-prepared n=121 ok=true rows=120 min_us=340 median_us=348 p90_us=364 max_us=374 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=120
+engine=vev workload=tree-root-text n=121 ok=true rows=120 min_us=241 median_us=254 p90_us=270 max_us=306 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=120
+engine=vev workload=tree-root-prepared n=121 ok=true rows=120 min_us=230 median_us=237 p90_us=256 max_us=289 steps=1 clauses=0 candidates=0 rule_calls=1 rule_iterations=1 max_bindings=120
 engine=vev workload=bad-order-join-text n=1000 ok=true rows=1 min_us=20 median_us=21 p90_us=22 max_us=23 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
 engine=vev workload=bad-order-join-prepared n=1000 ok=true rows=1 min_us=11 median_us=12 p90_us=13 max_us=14 steps=3 clauses=3 candidates=3 rule_calls=0 rule_iterations=0 max_bindings=1
 
@@ -106,21 +106,21 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 21.7x | 62.5x |
-| `chain-root n=10` | 22.5x | 38.1x |
-| `chain-root n=30` | 43.6x | 51.9x |
-| `chain-root n=100` | 150.8x | 158.1x |
-| `chain-leaf n=10` | 11.0x | 14.9x |
-| `chain-leaf n=30` | 33.8x | 36.5x |
-| `chain-leaf n=100` | 183.2x | 182.0x |
-| `chain-all n=10` | 5.0x | 5.7x |
-| `chain-all n=30` | 2.3x | 2.2x |
-| `chain-all n=100` | 0.5x | 0.5x |
-| `tree-root n=4` | 3.0x | 8.2x |
-| `tree-root n=13` | 3.0x | 5.1x |
-| `tree-root n=40` | 2.2x | 2.5x |
-| `tree-root n=121` | 1.2x | 1.2x |
-| `bad-order-join n=1000` | 7.2x | 13.8x |
+| `chain-root n=3` | 18.7x | 56.0x |
+| `chain-root n=10` | 23.4x | 41.5x |
+| `chain-root n=30` | 43.8x | 53.1x |
+| `chain-root n=100` | 205.6x | 223.3x |
+| `chain-leaf n=10` | 11.2x | 15.2x |
+| `chain-leaf n=30` | 37.3x | 41.2x |
+| `chain-leaf n=100` | 207.4x | 219.8x |
+| `chain-all n=10` | 10.6x | 14.9x |
+| `chain-all n=30` | 14.4x | 15.4x |
+| `chain-all n=100` | 22.9x | 22.8x |
+| `tree-root n=4` | 3.2x | 8.2x |
+| `tree-root n=13` | 3.0x | 5.0x |
+| `tree-root n=40` | 2.3x | 2.9x |
+| `tree-root n=121` | 1.6x | 1.8x |
+| `bad-order-join n=1000` | 7.7x | 14.2x |
 
 ## Current Findings
 
@@ -145,11 +145,10 @@ rule iteration with one output binding per reached entity.
 
 The large chain-root/chain-leaf gap should be read narrowly: it compares Vev's
 specialized bound transitive closure path against DataScript's general recursive
-rule evaluator. It is a useful signal for the native engine design, but not a
-broad claim that every Vev query is faster than every DataScript query. The
-`chain-all n=100` row is the important counterexample: Vev currently loses to
-DataScript on all-pairs transitive closure because it still materializes thousands
-of normal query bindings. That is the next recursive-rule performance target.
+rule evaluator. The all-pairs chain benchmark now uses the same closure
+recognizer and avoids the generic O(rows squared) result dedupe path when the
+optimized rule shape guarantees unique bindings. That moves `chain-all n=100`
+from slower than DataScript to roughly 23x faster in this local harness.
 
 The benchmark installs `:db/cardinality :db.cardinality/many` and
 `:db/valueType :db.type/ref` for `:follows`; without that, Vev correctly applies
@@ -162,6 +161,6 @@ Remaining performance work:
   semi-naive/memoized rule evaluator.
 - Add a separate stress harness for larger chain/tree workloads once default
   benchmark runs stay short.
-- Profile tree/branching closure and all-pairs closure separately; the current
-  root-bound path is good enough for baseline comparison, but it is not a full
-  recursive query planner.
+- Profile tree/branching closure, dense graphs, and non-transitive recursive
+  rules separately; the current closure recognizer is useful, but it is not a
+  full recursive query planner.
