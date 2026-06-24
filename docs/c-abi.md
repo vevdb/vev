@@ -45,7 +45,8 @@ scripts/build_c_abi.sh
 The script compiles `src/vev_abi/vev_abi.kvist` to Odin, builds
 `build/lib/libvev.dylib`, compiles `examples/c/smoke.c`, runs the C smoke
 program, and runs the Python smoke program through the thin
-`examples/python/vev.py` adapter.
+`examples/python/vev.py` adapter. When `rustc` is available, it also compiles
+and runs `examples/rust/smoke.rs`.
 
 ## ABI Benchmark
 
@@ -237,6 +238,21 @@ friend = user[":user/friend"][":user/name"]
 `vev.Entity` is used for entity ids so Python callers can distinguish Vev
 entity values from ordinary integer values. Keywords and symbols currently
 convert to their EDN text strings, for example `":user/name"`.
+
+## Rust Example
+
+[smoke.rs](../examples/rust/smoke.rs) is a direct `rustc`-compiled example, not
+a packaged crate yet. It mirrors the intended safe wrapper shape:
+
+- raw FFI declarations stay private to the module
+- `Conn`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet` free their handles
+  with `Drop`
+- statement methods expose typed scalar and collection bindings
+- result values are converted into a small Rust `Value` enum
+
+The example covers transactions, rendered EDN query output, prepared statement
+bindings, homogeneous collection bindings, pull result traversal, DB snapshots,
+and querying a snapshot with a statement.
 
 ## Ownership
 
@@ -450,6 +466,6 @@ The next useful steps are:
 - add typed statement bindings for tuple, relation, lookup-ref, source, and
   pull-pattern inputs
 - add pull-specific entry points
-- add Rust smoke wrapper using the same shape as the Python adapter
+- turn the Rust smoke wrapper into a small crate
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets
