@@ -33,6 +33,17 @@ bench/compare_query_rules.sh
 The comparison script accepts `KVIST_ROOT`, `KVIST_BIN`,
 `KVIST_PACKAGES_DIR`, and `DATASCRIPT_ROOT` environment overrides.
 
+For larger recursive-rule workloads, run the separate stress harness:
+
+```sh
+bench/compare_query_rules_stress.sh
+```
+
+The stress harness keeps the default benchmark short while still measuring
+larger chain/tree closures. The Vev side includes larger Vev-only rows such as
+1000-node bound chains and 1093-node trees; the DataScript comparison side uses
+smaller overlapping rows and fewer samples so the run stays practical.
+
 Current sample output on June 24, 2026:
 
 ```text
@@ -123,6 +134,18 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 | `bad-order-join n=1000` | 7.1x | 11.4x |
 | `distinct-age n=1000` | 0.6x | 0.6x |
 
+## Stress Comparison
+
+The stress comparison uses fewer samples and larger recursive-rule workloads.
+It is intended for scaling direction, not stable microbenchmark numbers.
+
+| Workload | Vev text | Vev prepared |
+|---|---:|---:|
+| `stress-chain-root n=300` | 1004.2x | 1014.1x |
+| `stress-chain-leaf n=300` | 2936.2x | 3070.6x |
+| `stress-chain-all n=200` | 33.7x | 32.9x |
+| `stress-tree-root n=364` | 1.4x | 1.4x |
+
 ## Current Findings
 
 Ordered text queries now plan contiguous data-pattern runs. The initial
@@ -184,8 +207,7 @@ Remaining performance work:
   `distinct-age` path is much better than generic row dedupe, but still behind
   DataScript because it allocates full `Result-Row` structures and maintains
   order-preserving seen sets.
-- Add a separate stress harness for larger chain/tree workloads once default
-  benchmark runs stay short.
-- Profile tree/branching closure, dense graphs, and non-transitive recursive
-  rules separately; the current closure recognizer is useful, but it is not a
+- Add dense graph and non-transitive recursive-rule stress workloads. The
+  current stress harness covers larger chain/tree closures, but the closure
+  recognizer is useful only for one common linear transitive shape; it is not a
   full recursive query planner.
