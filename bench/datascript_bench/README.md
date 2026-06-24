@@ -29,6 +29,25 @@ Run at the Datalevin benchmark scale:
 bench/datascript_bench/run_vev.sh
 ```
 
+Run one query against Vev and DataScript. This is the recommended inner-loop
+workflow while optimizing one query shape:
+
+```sh
+VEV_COMPARE_BASELINES=datascript \
+VEV_BENCH_PEOPLE=1000 \
+VEV_BENCH_WARMUP_MS=10 \
+VEV_BENCH_MS=20 \
+VEV_BENCH_REPEATS=1 \
+  bench/datascript_bench/run_compare.sh q1
+```
+
+Run one query against Vev only:
+
+```sh
+VEV_COMPARE_SKIP_BASELINES=1 \
+  bench/datascript_bench/run_compare.sh q1
+```
+
 Run Vev next to the upstream DataScript/Datalevin read benchmarks:
 
 ```sh
@@ -42,6 +61,7 @@ Useful options:
 
 ```sh
 DATALEVIN_BENCH=/path/to/datalevin/benchmarks/datascript-bench \
+VEV_COMPARE_BASELINES="datascript datalevin" \
 VEV_COMPARE_DATOMIC=1 \
   bench/datascript_bench/run_compare.sh q1 q2 q2-switch
 
@@ -60,6 +80,9 @@ VEV_COMPARE_USE_UPSTREAM_SCRIPT=1 \
 Current status:
 
 - The query adapter is wired through the public Clojure API and native C ABI.
+- `run_compare.sh` accepts query names, so `run_compare.sh q1` runs only `q1`.
+- Use `VEV_COMPARE_BASELINES=datascript`, `datalevin`, or `datomic` to keep
+  comparison runs scoped during optimization work.
 - Bulk setup uses the native transaction builder exposed through the C ABI,
   Java wrapper, and Clojure wrapper.
 - Direct non-schema, non-unique, non-tuple add/retract batches use a one-pass
@@ -71,9 +94,9 @@ Current status:
 
 Near-term benchmark work:
 
-1. Extend the comparison runner to capture and normalize output into a single
-   table with ratios against DataScript and Datalevin.
-2. Investigate why long baseline comparison runs can stall on local external
+1. Investigate why long baseline comparison runs can stall on local external
    DataScript/Datalevin/Datomic processes even when the Vev row completes.
+2. Use `q1` to drive bound AVET lookup overhead down until it is at least
+   DataScript-competitive.
 3. Use `q2` and `q2-switch` to drive a general same-entity star / merge-scan
    physical operator in Vev.
