@@ -121,22 +121,22 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 18.7x | 56.1x |
-| `chain-root n=10` | 23.2x | 41.1x |
-| `chain-root n=30` | 49.3x | 62.1x |
-| `chain-root n=100` | 234.4x | 254.9x |
-| `chain-leaf n=10` | 18.0x | 30.5x |
-| `chain-leaf n=30` | 72.9x | 92.2x |
-| `chain-leaf n=100` | 540.5x | 590.1x |
-| `chain-all n=10` | 10.9x | 15.4x |
-| `chain-all n=30` | 15.8x | 16.4x |
-| `chain-all n=100` | 23.9x | 23.8x |
-| `tree-root n=4` | 3.2x | 8.3x |
-| `tree-root n=13` | 3.3x | 5.4x |
-| `tree-root n=40` | 2.3x | 3.0x |
-| `tree-root n=121` | 2.0x | 2.1x |
-| `bad-order-join n=1000` | 6.8x | 10.7x |
-| `distinct-age n=1000` | 0.7x | 0.7x |
+| `chain-root n=3` | 17.2x | 47.8x |
+| `chain-root n=10` | 23.3x | 39.4x |
+| `chain-root n=30` | 50.5x | 62.3x |
+| `chain-root n=100` | 234.5x | 251.7x |
+| `chain-leaf n=10` | 18.1x | 30.2x |
+| `chain-leaf n=30` | 79.4x | 100.6x |
+| `chain-leaf n=100` | 537.6x | 563.7x |
+| `chain-all n=10` | 10.8x | 15.1x |
+| `chain-all n=30` | 15.3x | 15.7x |
+| `chain-all n=100` | 23.1x | 23.1x |
+| `tree-root n=4` | 3.0x | 8.1x |
+| `tree-root n=13` | 3.1x | 5.2x |
+| `tree-root n=40` | 2.4x | 2.9x |
+| `tree-root n=121` | 1.9x | 2.0x |
+| `bad-order-join n=1000` | 6.8x | 11.4x |
+| `distinct-age n=1000` | 0.7x | 0.8x |
 
 ## Stress Comparison
 
@@ -145,10 +145,10 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1341.0x | 1400.5x |
-| `stress-chain-leaf n=300` | 4566.9x | 4720.0x |
-| `stress-chain-all n=200` | 34.2x | 33.8x |
-| `stress-tree-root n=364` | 1.8x | 2.0x |
+| `stress-chain-root n=300` | 1386.7x | 1395.8x |
+| `stress-chain-leaf n=300` | 4425.0x | 4531.1x |
+| `stress-chain-all n=200` | 34.0x | 34.0x |
+| `stress-tree-root n=364` | 1.6x | 1.9x |
 
 The stress harness also emits Vev-only rows for workloads that are currently
 too expensive for routine DataScript comparison:
@@ -158,6 +158,7 @@ too expensive for routine DataScript comparison:
 | `stress-dense-root n=60` | 227us | 204us | Dense DAG, width 8 |
 | `stress-dense-root n=160` | 568us | 557us | Dense DAG, width 8 |
 | `stress-filtered-root n=10` | 49us | 30us | Linear recursive rule with a target-node data filter |
+| `stress-mutual-root n=30` | 29461us | 29795us | Generic mutual recursion, not handled by the linear closure recognizer |
 
 ## Current Findings
 
@@ -216,6 +217,14 @@ falling back to structural row comparison. This keeps DataScript-style distinct
 find semantics while avoiding the worst quadratic behavior for common primitive
 results.
 
+Generic rule-result dedupe now has the same shape: primitive bindings get a
+stable binding key and use a map-backed seen set, while bindings containing
+complex values still fall back to structural comparison. This removes one
+avoidable O(rows squared) scan from recursive fixpoint accumulation, but it is
+not a full semi-naive evaluator. The new `stress-mutual-root` row is deliberately
+not recognized as linear transitive closure and currently remains the main
+generic-recursion performance target.
+
 The harness includes `distinct-age`, a simple `[:find ?age :where [?e :age
 ?age]]` projection over 1000 entities and 100 distinct ages. Vev has a narrow
 index-backed path for this shape that walks the `avet` range to collect one row
@@ -237,8 +246,9 @@ Remaining performance work:
 
 - Generalize this from the current linear transitive closure path into a
   measured semi-naive/memoized rule evaluator. Filtered linear recursion is now
-  optimized, but mutual recursion and other multi-step recursive bodies still
-  use the generic depth/fixpoint evaluator.
+  optimized, and primitive binding dedupe is map-backed, but mutual recursion
+  and other multi-step recursive bodies still use the generic depth/fixpoint
+  evaluator.
 - Continue result-projection work for simple distinct queries. The current
   `distinct-age` path is much better than generic row dedupe, but still behind
   DataScript because it still renders full `Result-Row`/`Value` structures for

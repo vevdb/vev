@@ -677,6 +677,27 @@
         (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part))))
     (return (core-strings.concatenate (slice parts 0)) true)))
 
+(defn sort-strings! [values: ^[dynamic]string]
+  (for [i (arr.range 1 (count values^))]
+    (let [item values^[i]
+          j i]
+      (while (and (> j 0)
+                  (string-less? item values^[(- j 1)]))
+        (set! values^[j] values^[(- j 1)])
+        (set! j (- j 1)))
+      (set! values^[j] item))))
+
+(defn binding-dedupe-key [binding: Binding] -> [key: string, ok: bool]
+  (let [parts (make [dynamic]string 0 (count binding.items))]
+    (defer (delete parts))
+    (for [item binding.items]
+      (let [[value-key value-ok] (primitive-value-dedupe-key item.value)]
+        (when (not value-ok)
+          (return "" false))
+        (arr.push! parts (fmt.tprintf "%d:%s=%d:%s;" (count item.name) item.name (count value-key) value-key))))
+    (sort-strings! (addr parts))
+    (return (core-strings.concatenate (slice parts 0)) true)))
+
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
   (let [[op op-ok] (query-op-name predicate.op binding)]
     (when (not op-ok)
@@ -3781,11 +3802,26 @@
       (return true)))
   false)
 
+(defn append-unique-binding! [out: ^[dynamic]Binding, seen: (ptr (map string bool)), binding: Binding] -> bool
+  (let [[key key-ok] (binding-dedupe-key binding)]
+    (when key-ok
+      (let [[_ already-seen] (mmap.get seen^ key)]
+        (when already-seen
+          (return false))
+        (mmap.assoc! seen^ key true)
+        (arr.push! out^ binding)
+        (return true)))
+    (when (not (binding-exists? (slice out^ 0) binding))
+      (arr.push! out^ binding)
+      (return true))
+    false))
+
 (defn unique-bindings [bindings: []Binding] -> [dynamic]Binding
-  (let [out (make [dynamic]Binding 0 (count bindings))]
+  (let [out (make [dynamic]Binding 0 (count bindings))
+        seen (make (map string bool))]
+    (defer (delete seen))
     (for [binding bindings]
-      (when (not (binding-exists? (slice out 0) binding))
-        (arr.push! out binding)))
+      (discard (append-unique-binding! (addr out) (addr seen) binding)))
     out))
 
 (defn query-stats-observe-bindings! [stats: ^Query-Stats, count-value: int]
@@ -4539,16 +4575,17 @@
       (delete candidates)
       (return out)))
   (let [out (make [dynamic]Binding)
+        seen (make (map string bool))
         depth 1
         min-depth (+ (count rules) 1)
         changed true]
+    (defer (delete seen))
     (while (or changed (<= depth min-depth))
       (set! changed false)
       (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
-          (when (not (binding-exists? (slice out 0) candidate))
-            (arr.push! out candidate)
+          (when (append-unique-binding! (addr out) (addr seen) candidate)
             (set! changed true))))
       (set! depth (+ depth 1)))
     out))
@@ -4567,17 +4604,18 @@
       (query-stats-observe-bindings! stats (count out))
       (return out)))
   (let [out (make [dynamic]Binding)
+        seen (make (map string bool))
         depth 1
         min-depth (+ (count rules) 1)
         changed true]
+    (defer (delete seen))
     (while (or changed (<= depth min-depth))
       (set! changed false)
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
       (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
-          (when (not (binding-exists? (slice out 0) candidate))
-            (arr.push! out candidate)
+          (when (append-unique-binding! (addr out) (addr seen) candidate)
             (set! changed true))))
       (query-stats-observe-bindings! stats (count out))
       (set! depth (+ depth 1)))

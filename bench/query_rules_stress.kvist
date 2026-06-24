@@ -126,6 +126,22 @@
             (arr.push! tx (vev.add (u64 i) ":follows" (vev.value-entity (u64 target))))))))
     (discard (vev.transact-tx-data conn (slice tx 0)))))
 
+(defn seed-mutual-chain [conn: ^vev.Conn, n: int]
+  (let [tx (make [dynamic]vev.Tx-Data 0 (+ (* n 3) 8))]
+    (defer (delete tx))
+    (arr.push! tx (vev.add 1000001 ":db/ident" (vev.value-keyword ":f1")))
+    (arr.push! tx (vev.add 1000001 ":db/valueType" (vev.value-keyword ":db.type/ref")))
+    (arr.push! tx (vev.add 1000001 ":db/cardinality" (vev.value-keyword ":db.cardinality/many")))
+    (arr.push! tx (vev.add 1000002 ":db/ident" (vev.value-keyword ":f2")))
+    (arr.push! tx (vev.add 1000002 ":db/valueType" (vev.value-keyword ":db.type/ref")))
+    (arr.push! tx (vev.add 1000002 ":db/cardinality" (vev.value-keyword ":db.cardinality/many")))
+    (for [i (arr.range 1 n)]
+      (arr.push! tx (vev.add (u64 i) ":name" (vev.value-string (fmt.tprintf "node-%d" i))))
+      (arr.push! tx (vev.add (u64 i) ":f1" (vev.value-entity (u64 (+ i 1)))))
+      (arr.push! tx (vev.add (u64 i) ":f2" (vev.value-entity (u64 (+ i 1))))))
+    (arr.push! tx (vev.add (u64 n) ":name" (vev.value-string (fmt.tprintf "node-%d" n))))
+    (discard (vev.transact-tx-data conn (slice tx 0)))))
+
 (defn run-chain-from-root [n: int]
   (let [conn (vev.create-conn)]
     (seed-chain (addr conn) n)
@@ -198,13 +214,26 @@
       (print-profile "stress-filtered-root-text" n text-measured.timing text-measured.profiled)
       (print-profile "stress-filtered-root-prepared" n prepared-measured.timing prepared-measured.profiled))))
 
+(defn run-mutual-from-root [n: int]
+  (let [conn (vev.create-conn)]
+    (seed-mutual-chain (addr conn) n)
+    (let [query "[:find ?y :in $ % ?x :where (f1 ?x ?y)]"
+          rules "[[(f1 ?x ?y) [?x :f1 ?y]] [(f1 ?x ?y) [?x :f1 ?t] (f2 ?t ?y)] [(f2 ?x ?y) [?x :f2 ?y]] [(f2 ?x ?y) [?x :f2 ?t] (f1 ?t ?y)]]"
+          inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-entity 1))])
+          prepared (vev.prepare-query-text-with-rules query rules)
+          text-measured (time-profiled-rules-query conn.db query rules inputs 1 3)
+          prepared-measured (time-prepared-input-query conn.db prepared inputs 1 3)]
+      (print-profile "stress-mutual-root-text" n text-measured.timing text-measured.profiled)
+      (print-profile "stress-mutual-root-prepared" n prepared-measured.timing prepared-measured.profiled))))
+
 (defn main []
   (defer (free_all context.allocator))
   (let [bound-chain-sizes ([]int [300 1000])
         all-chain-sizes ([]int [200 300])
         tree-sizes ([]int [364 1093])
         dense-sizes ([]int [60 160])
-        filtered-sizes ([]int [10])]
+        filtered-sizes ([]int [10])
+        mutual-sizes ([]int [30])]
     (for [n bound-chain-sizes]
       (run-chain-from-root n)
       (run-chain-to-leaf n))
@@ -215,4 +244,6 @@
     (for [n dense-sizes]
       (run-dense-from-root n))
     (for [n filtered-sizes]
-      (run-filtered-from-root n))))
+      (run-filtered-from-root n))
+    (for [n mutual-sizes]
+      (run-mutual-from-root n))))
