@@ -18,7 +18,9 @@
     (let [tx (vev/transact! conn
                [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
                 {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}])]
-      (println "tx:" tx))
+      (println "tx:" tx)
+      (when-not (and (:ok tx) (integer? (:tx tx)) (map? (:tempids tx)))
+        (throw (ex-info "unexpected transaction report" {:report tx}))))
 
     (let [db (vev/db conn)
           names (vev/q
@@ -57,6 +59,32 @@
                       :user/friend {:user/name "Grace"}}
                      pulled)
           (throw (ex-info "unexpected pull result" {:pull pulled}))))
+
+      (let [db (vev/db conn)
+            immutable-report (vev/with db [{:db/id 4 :user/name "Barbara"}])
+            immutable-next (vev/db-with db [{:db/id 4 :user/name "Barbara"}])]
+        (println "with tx:" immutable-report)
+        (when-not (and (:ok immutable-report)
+                       (= #{} (vev/q db
+                                      '[:find ?e
+                                        :where [?e :user/name "Barbara"]])))
+          (throw (ex-info "immutable with mutated source DB" {:report immutable-report})))
+        (when-not (= #{[4]}
+                     (vev/q immutable-next
+                            '[:find ?e
+                              :where [?e :user/name "Barbara"]]))
+          (throw (ex-info "db-with did not produce expected DB" {})))
+        (with-open [derived-conn (vev/conn-from-db immutable-next)]
+          (vev/transact! derived-conn [{:db/id 5 :user/name "Dorothy"}])
+          (when-not (and (= #{[4]}
+                       (vev/q (vev/db derived-conn)
+                              '[:find ?e
+                                :where [?e :user/name "Barbara"]]))
+                         (= #{[5]}
+                            (vev/q (vev/db derived-conn)
+                                   '[:find ?e
+                                     :where [?e :user/name "Dorothy"]])))
+            (throw (ex-info "conn-from-db did not initialize from DB value" {})))))
 
       (with-open [all-emails (vev/prepare conn
                               '[:find ?e ?email

@@ -59,11 +59,32 @@ Pull follows the same DB-value shape:
 (vev/pull db
   [:user/name {:user/friend [:user/name]}]
   1)
+
+(vev/pull-many db [:user/name] [1 2])
+```
+
+Immutable DB values support Datomic/DataScript-style `with` operations:
+
+```clojure
+(let [report (vev/with db [{:db/id 3 :user/name "Barbara"}])
+      next-db (vev/db-with db [{:db/id 3 :user/name "Barbara"}])]
+  [(:ok report)
+   (vev/q db '[:find ?e :where [?e :user/name "Barbara"]])
+   (vev/q next-db '[:find ?e :where [?e :user/name "Barbara"]])])
+```
+
+A mutable connection can also be initialized from an immutable DB snapshot:
+
+```clojure
+(with-open [conn (vev/conn-from-db next-db)]
+  (vev/transact! conn [{:db/id 4 :user/name "Dorothy"}])
+  (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
 ```
 
 The current package is deliberately thin:
 
-- transaction reports are still returned as rendered EDN strings
+- `transact!` and `with` return parsed transaction report maps
+- `transact-text!` and `with-text` return raw EDN report strings
 - `q` returns a set of row vectors
 - `rows` returns an ordered vector of row vectors
 - entity ids are converted to integers

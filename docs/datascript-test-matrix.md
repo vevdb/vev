@@ -17,7 +17,7 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 350
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 351
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
 remaining native callback design, and semi-naive rule/query optimization.

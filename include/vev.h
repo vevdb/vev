@@ -32,8 +32,11 @@ const char *vev_version(void);
 vev_conn_t vev_conn_open_memory(void);
 void vev_conn_close(vev_conn_t conn);
 vev_db_t vev_conn_db(vev_conn_t conn);
+vev_conn_t vev_conn_from_db(vev_db_t db);
 vev_db_t vev_db_retain(vev_db_t db);
 void vev_db_release(vev_db_t db);
+const char *vev_with_edn(vev_db_t db, const char *tx_text);
+vev_db_t vev_db_with_edn(vev_db_t db, const char *tx_text);
 
 void vev_string_free(const char *text);
 

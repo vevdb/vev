@@ -1,4 +1,6 @@
 (ns vev.core
+  (:require [clojure.edn :as edn]
+            [clojure.walk :as walk])
   (:import [java.nio.file Path]
            [vev Vev Vev$Entity Vev$MapValue]))
 
@@ -50,6 +52,23 @@
     :else
     value))
 
+(defn- entity-tag? [value]
+  (and (vector? value)
+       (= 2 (count value))
+       (= :vev/entity (first value))
+       (integer? (second value))))
+
+(defn- report-value [value]
+  (walk/postwalk
+    (fn [item]
+      (if (entity-tag? item)
+        (second item)
+        item))
+    value))
+
+(defn- report-map [text]
+  (report-value (edn/read-string text)))
+
 (defrecord Conn [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
@@ -78,12 +97,12 @@
   ([]
    (create-conn (default-library-path)))
   ([lib-path]
-  (let [engine (Vev. (path lib-path))]
-    (try
-      (->Conn engine (.createConn engine))
-      (catch Throwable error
-        (.close engine)
-        (throw error))))))
+   (let [engine (Vev. (path lib-path))]
+     (try
+       (->Conn engine (.createConn engine))
+       (catch Throwable error
+         (.close engine)
+         (throw error))))))
 
 (def open create-conn)
 
@@ -92,16 +111,55 @@
   [^Conn conn]
   (->DB (:engine conn) (.db (:native conn))))
 
-(defn transact!
-  "Transact Clojure data or EDN text against a connection.
+(defn conn-from-db
+  "Create a mutable connection initialized from an immutable DB value."
+  [^DB db]
+  (->Conn (:engine db) (.connFromDb (:engine db) (:native db))))
 
-  This currently returns Vev's rendered transaction report string. A later
-  wrapper pass should parse this into a Clojure report map once the ABI exposes
-  typed transaction reports."
+(defn transact-text!
+  "Transact Clojure data or EDN text and return the raw EDN report text."
   [^Conn conn tx]
   (.transact (:native conn) (edn-text tx)))
 
+(defn transact!
+  "Transact Clojure data or EDN text against a connection.
+
+  Returns a Clojure transaction report map."
+  [^Conn conn tx]
+  (report-map (transact-text! conn tx)))
+
 (def transact transact!)
+
+(defn empty-db
+  "Return an owned immutable empty DB value."
+  ([]
+   (empty-db (default-library-path)))
+  ([lib-path]
+   (with-open [conn (create-conn lib-path)]
+     (db conn))))
+
+(defn with-text
+  "Apply EDN tx text to an immutable DB and return the raw EDN report text."
+  [^DB db tx]
+  (.with (:native db) (edn-text tx)))
+
+(defn with
+  "Apply tx data to an immutable DB and return a transaction report map."
+  [^DB db tx]
+  (report-map (with-text db tx)))
+
+(defn db-with
+  "Apply tx data to an immutable DB and return the resulting immutable DB value."
+  [^DB db tx]
+  (->DB (:engine db) (.dbWith (:native db) (edn-text tx))))
+
+(defn init-db
+  "Create an immutable DB initialized by applying tx data to an empty DB."
+  ([tx]
+   (init-db (default-library-path) tx))
+  ([lib-path tx]
+   (with-open [initial (empty-db lib-path)]
+     (db-with initial tx))))
 
 (defn prepare
   "Prepare a query from Clojure data or EDN text."
@@ -168,6 +226,11 @@
            :in '?e]
           source
           eid))
+
+(defn pull-many
+  "Pull several entities, preserving input order."
+  [source pattern eids]
+  (mapv #(pull source pattern %) eids))
 
 (defn rows-legacy
   "Deprecated connection-first row helper kept for early examples."

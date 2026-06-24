@@ -23,8 +23,11 @@ public final class Vev {
     private final MethodHandle connOpenMemory;
     private final MethodHandle connClose;
     private final MethodHandle connDb;
+    private final MethodHandle connFromDb;
     private final MethodHandle dbRetain;
     private final MethodHandle dbRelease;
+    private final MethodHandle withEdn;
+    private final MethodHandle dbWithEdn;
     private final MethodHandle stringFree;
     private final MethodHandle transactEdn;
     private final MethodHandle queryEdnWithInputs;
@@ -66,8 +69,11 @@ public final class Vev {
         this.connOpenMemory = downcall("vev_conn_open_memory", FunctionDescriptor.of(ValueLayout.ADDRESS));
         this.connClose = downcall("vev_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connDb = downcall("vev_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connFromDb = downcall("vev_conn_from_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRetain = downcall("vev_db_retain", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRelease = downcall("vev_db_release", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.withEdn = downcall("vev_with_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.dbWithEdn = downcall("vev_db_with_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stringFree = downcall("vev_string_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.transactEdn = downcall("vev_transact_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -105,6 +111,13 @@ public final class Vev {
     public Connection createConn() throws Throwable {
         MemorySegment raw = (MemorySegment) connOpenMemory.invoke();
         if (isNull(raw)) throw new IllegalStateException("failed to open Vev connection");
+        return new Connection(raw);
+    }
+
+    public Connection connFromDb(DB db) throws Throwable {
+        db.requireOpen();
+        MemorySegment raw = (MemorySegment) connFromDb.invoke(db.handle.raw);
+        if (isNull(raw)) throw new IllegalStateException("failed to create Vev connection from DB");
         return new Connection(raw);
     }
 
@@ -273,6 +286,22 @@ public final class Vev {
         public ResultSet query(Statement stmt) throws Throwable {
             requireOpen();
             return new ResultSet((MemorySegment) queryDbStmtResult.invoke(handle.raw, stmt.raw));
+        }
+
+        public String with(String tx) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return ownedString((MemorySegment) withEdn.invoke(handle.raw, local.allocateUtf8String(tx)));
+            }
+        }
+
+        public DB dbWith(String tx) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment db = (MemorySegment) dbWithEdn.invoke(handle.raw, local.allocateUtf8String(tx));
+                if (isNull(db)) throw new IllegalStateException("failed to create DB snapshot");
+                return new DB(db);
+            }
         }
 
         private void requireOpen() {

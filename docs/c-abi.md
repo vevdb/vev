@@ -370,6 +370,18 @@ snapshot storage refcount and returns another owned handle. DB handles can be
 queried after later transactions on the connection, and they can outlive the
 connection that produced them.
 
+DB values also support immutable transaction operations through the ABI:
+
+```c
+const char *report = vev_with_edn(db, "[{:db/id 3 :user/name \"Barbara\"}]");
+vev_db_t next_db = vev_db_with_edn(db, "[{:db/id 3 :user/name \"Barbara\"}]");
+vev_conn_t derived = vev_conn_from_db(next_db);
+```
+
+`vev_with_edn` returns an owned EDN report string that must be freed with
+`vev_string_free`. `vev_db_with_edn` returns a new owned DB handle. The source
+DB is not mutated.
+
 ## Query Inputs
 
 The input-bearing functions take an EDN vector whose elements correspond to the
