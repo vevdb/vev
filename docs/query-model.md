@@ -77,28 +77,33 @@ is Datomic/DataScript Datalog data instead of SQL text.
 
 ## Query scope for phase 1
 
-Start with a tight slice:
+The current in-memory query surface supports the Datomic/DataScript-shaped
+forms that appear in common tutorials and most upstream semantic tests:
 
 - `:find`
+- scalar, tuple, collection, aggregate, pull, and return-map find specs
+- `:with`
 - `:in`
 - `:where`
 - queries with no `:where`, for input-only find/aggregate cases
 - simple clauses `[?e :attr ?v]`
 - attr-existence shorthand clauses `[?e :attr]`
-- scalar equality/predicate clauses as needed
-- rules only after base query flow works
-- pull after basic query/transact is stable
+- predicate and function clauses over the supported built-ins
+- scalar, collection, tuple, relation, relation-source, and named DB inputs
+- pull find expressions
+- `not` / `not-join`
+- `or` / `or-join`
+- rules, including recursive rules
 
-Phase 1 should bias toward the subset most commonly shown in Datomic/DataScript
-examples so learning material transfers early.
+The remaining query work is parser/API exactness and measured performance for
+recursive rules, large relation sources, aggregates, and index-backed planning.
 
 ## Current implementation
 
 The current in-memory implementation has two query frontends:
 
 - a text API, `q-text` / `q-text-with-inputs` / `q-text-with-sources` /
-  `parse-query-text!`, that parses a growing `[:find ... :in ... :where ...]`
-  EDN subset for portable callers
+  `parse-query-text!`, that parses the portable EDN query surface
 - prepared text query values, `prepare-query-text` /
   `prepare-query-text-with-sources`, plus `q-prepared` /
   `q-prepared-with-inputs` / `q-prepared-with-sources`, for callers that want
@@ -461,31 +466,27 @@ keyed rows:
           [?e :user/email ?label]))])
 ```
 
-Basic clauses now use in-memory indexes. Text parsing, rules, and advanced
-predicates remain later work. Results are deduped by returned values, with
-`:with` vars included in the dedupe key but not returned.
+Basic clauses use in-memory indexes. Text parsing, rules, and predicate/function
+clauses share the same typed query representation as Kvist literals. Results
+are deduped by returned values, with `:with` vars included in the dedupe key
+but not returned.
 Aggregates currently support `count`, `count-distinct`, `min`, `max`, `sum`,
 `avg`, `median`, `variance`, `stddev`, and named custom aggregate functions
-through `(aggregate ?f ?x)`. `sum` and `avg` are currently integer-only; `avg`
-uses integer division.
+through `(aggregate ?f ?x)`.
 
 ## Pull model
 
-Pull should be supported, but query and transact come first.
-The sequence should be:
-
-1. transact
-2. query
-3. pull
-4. rules/advanced features
+Pull is part of the active query surface, including pull find expressions,
+pattern inputs, lookup refs, reverse refs, recursion, defaults, limits, aliases,
+component expansion, and named xforms.
 
 The pull syntax itself should stay close to Datomic/DataScript pull syntax.
 The preferred project stance is:
 
 - pull patterns at the boundary should look like familiar Datomic/DataScript patterns
 - internal representation can be a typed pull AST
-- any unsupported pull feature should be documented as "not implemented yet",
-  not replaced with a different surface syntax
+- any unsupported pull feature should be documented explicitly, not replaced
+  with a different surface syntax
 
 ## Literal Syntax Role
 

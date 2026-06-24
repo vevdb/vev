@@ -104,28 +104,18 @@ The connection is the handle through which new database values are produced.
 
 ## Schema
 
-Phase 1 should keep schema simple but explicit.
+Schema is explicit and stored as ordinary datoms on schema entities identified
+by `:db/ident`.
 
-The engine should support:
+The engine supports:
 
 - empty schema
-- schema passed at DB creation/open time
-- schema attributes that affect indexing and transaction behavior
-
-First schema features worth supporting:
-
-- `cardinality/one`
-- `cardinality/many`
-- `value-type/ref`
-- uniqueness
-- maybe component refs later
-
-Current Vev supports schema as ordinary datoms on schema entities identified by
-`:db/ident`. The first enforced subset is:
-
+- schema introduced through normal transactions
 - `:db/valueType`
 - `:db/cardinality`
 - `:db/unique`
+- `:db/isComponent`
+- tuple schema attributes
 
 Supported value types are `:db.type/string`, `:db.type/long`,
 `:db.type/boolean`, `:db.type/ref`, and `:db.type/keyword`.
@@ -143,17 +133,23 @@ The semantic rule should match mainstream Datomic/DataScript expectations:
 This matters because it keeps transaction authoring pleasant even when internal
 entity ids are engine-assigned.
 
-## Transaction shape
+## Transaction Shape
 
-The first transaction syntax should stay close to Datomic/DataScript:
+Transaction syntax stays close to Datomic/DataScript:
 
 ```text
 [:db/add e a v]
 [:db/retract e a v]
+[:db/retract e a]
+[:db/retractEntity e]
+[:db.fn/retractAttribute e a]
+[:db.fn/cas e a old new]
+[:db.fn/call ident arg...]
 ```
 
-Map/entity shorthand can be later if it helps ergonomics, but should not block
-the first proof.
+Map tx-data, lookup refs, tempids, reverse attrs, nested maps, current-tx
+metadata aliases, and registered transaction functions are part of the current
+in-memory engine and EDN text API.
 
 ## Transaction metadata
 
@@ -190,8 +186,8 @@ In the embedded use case, the intended application flow is:
 3. inspect `tx-data` and `tx-meta`
 4. do follow-up work in application code
 
-That means Vev does not need a built-in listener mechanism in the first
-phase to support post-commit reactions.
+Vev now supports post-commit reactions through named report sinks in the engine
+and raw C ABI transaction report callbacks for host code.
 
 It is not intended to model multiple distinct domain events inside one
 transaction. If Vev eventually needs first-class event streams, that

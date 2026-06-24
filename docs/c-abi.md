@@ -19,6 +19,8 @@ The current shape is intentionally narrow:
 - callback traversal for nested value trees
 - callback traversal for typed result rows
 - direct statement query execution through typed result-row callbacks
+- registered transaction function callbacks that return EDN tx-data
+- transaction report listener callbacks on connection commits
 
 This is the portable baseline for Python, Rust, Java, Clojure, and other hosts.
 Host wrappers should build on this surface first instead of mirroring internal
@@ -489,6 +491,92 @@ report; release the handle with `vev_tx_report_free`. The older
 debugging. `vev_db_with_edn` returns a new owned DB handle. The source DB is not
 mutated.
 
+## Transaction Report Listeners
+
+Host code can register connection listeners that receive successful transaction
+reports after a commit. Failed transactions do not notify listeners. Listener
+callbacks receive a borrowed report handle that is valid only for the duration
+of the callback.
+
+```c
+struct listener_state {
+    int count;
+};
+
+static void tx_listener(void *user, vev_tx_report_t report) {
+    struct listener_state *state = (struct listener_state *)user;
+    state->count++;
+
+    const char *report_text = vev_tx_report_edn(report);
+    vev_string_free(report_text);
+}
+
+struct listener_state state = {0};
+vev_conn_listen_tx_report(conn, "app-listener", tx_listener, &state);
+vev_transact_edn(conn, "[{:db/id 1 :user/name \"Ada\"}]");
+vev_conn_unlisten_tx_report(conn, "app-listener");
+```
+
+The callback must copy any strings or values it wants to keep. It must not free
+the borrowed report handle. Listener callback failures do not roll back a
+transaction; application code should treat listeners as post-commit observers.
+
+## Transaction Function Callbacks
+
+Host code can register transaction functions by ident and call them from EDN
+tx-data with `:db.fn/call` or shorthand ident transaction forms.
+
+```c
+static const char *mark_seen(void *user, vev_db_t db, int argc, vev_tx_fn_args_t args) {
+    (void)user;
+    (void)db;
+    if (argc != 2) {
+        return NULL;
+    }
+
+    vev_value_t entity = vev_tx_fn_arg(args, 0);
+    vev_value_t label = vev_tx_fn_arg(args, 1);
+    if (vev_value_kind(entity) != VEV_VALUE_INT ||
+        vev_value_kind(label) != VEV_VALUE_STRING) {
+        return NULL;
+    }
+
+    const char *label_text = vev_value_text(label);
+    static char out[256];
+    snprintf(
+        out,
+        sizeof(out),
+        "[:db/add %lld :user/seen-label \"%s\"]",
+        vev_value_int(entity),
+        label_text);
+    vev_string_free(label_text);
+    return out;
+}
+
+vev_tx_fn_registry_t registry = vev_tx_fn_registry_create();
+vev_tx_fn_registry_register_edn(registry, ":mark-seen", mark_seen, NULL);
+
+vev_tx_report_t report = vev_transact_edn_report_with_tx_fns(
+    conn,
+    "[[:db.fn/call :mark-seen 1 \"from-c\"]]",
+    registry);
+
+vev_tx_report_free(report);
+vev_tx_fn_registry_free(registry);
+```
+
+The callback receives a borrowed immutable DB snapshot handle for the
+transaction point and borrowed argument value handles. `vev_tx_fn_arg` returns
+borrowed handles valid only during the callback. Text returned by
+`vev_value_text` is caller-owned and must be released with `vev_string_free`.
+
+The callback returns an EDN tx-data string. Vev parses and copies the returned
+tx-data before the callback frame is released, so returning a stable static
+buffer or a user-managed buffer is enough for the current call. Returning
+`NULL` fails the transaction. The current raw ABI implementation has 16 global
+callback slots; host adapters should treat that as an implementation limit, not
+as the long-term API shape.
+
 ## Query Inputs
 
 The input-bearing functions take an EDN vector whose elements correspond to the
@@ -710,6 +798,8 @@ model.
 
 The initial C ABI shape is now covered for C, Python, Rust, Java, and Clojure,
 including immutable DB handles, typed statement bindings, direct pull handles,
-direct row visitors, status/error accessors, and baseline ABI-vs-native
-benchmarks. The next interop work should be driven by concrete host adapter
-needs rather than expanding the raw C surface speculatively.
+direct row visitors, registered transaction function callbacks, status/error
+accessors, transaction report listeners, and baseline ABI-vs-native benchmarks.
+The next interop work should be driven by concrete host adapter needs,
+especially higher-level host adapter APIs, rather than expanding the raw C
+surface speculatively.

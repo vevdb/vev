@@ -128,13 +128,24 @@
                                     db email)))]
     (print-result "bad-order-join" n measured)))
 
+(defn run-distinct-age [n]
+  (let [db (db-with (seed-people n))
+        measured (time-query (fn []
+                               (d/q '[:find ?age
+                                      :where
+                                      [?e :age ?age]]
+                                    db)))]
+    (print-result "distinct-age" n measured)))
+
 (doseq [n [3 10 30 100]]
   (run-chain-from-root n))
 (doseq [n [10 30 100]]
   (run-chain-to-leaf n))
-(doseq [n [10 30]]
+(doseq [n [10 30 100]]
   (run-chain-all n))
-(doseq [n [4 13 40]]
+(doseq [n [4 13 40 121]]
   (run-tree-from-root n))
 (doseq [n [1000]]
   (run-bad-order-join n))
+(doseq [n [1000]]
+  (run-distinct-age n))

@@ -75,13 +75,19 @@ pull_text(db, text, eid) -> Value
 `pull_text` is convenience.
 `pull` with a parsed pattern should be the core path.
 
-## Phase 1/2 supported subset
+## Supported Subset
 
-Start with the smallest useful subset that matches common tutorials:
+The current in-memory pull surface covers the common Datomic/DataScript tutorial
+shape plus the main DataScript pull API semantics:
 
 - plain attribute names
 - `:db/id`
 - one entity id, lookup ref, or ident at a time
+- wildcard attrs
+- nested ref maps
+- reverse refs
+- pull-many
+- defaults, aliases, limits, recursion, component expansion, and named xforms
 
 Current Kvist proof:
 
@@ -172,12 +178,8 @@ Use `pull-many` for the same pattern over multiple entity ids:
 (v.pull-many db [:db/id :user/name] ([]u64 [1 2]))
 ```
 
-Delay these until later unless they become immediately necessary:
-
-- recursion limits
-- richer attribute options such as `:xform`
-
-This keeps the early implementation small while preserving syntax direction.
+Remaining pull work is exact edge rendering and host API shape, not the basic
+pull model.
 
 ## Pull semantics
 

@@ -67,9 +67,23 @@ Non-goal:
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. Remaining work is
-concentrated in exact parser diagnostics/object rendering, C ABI callback
-registration shapes for host-provided transaction/listener behavior, and
-measured recursive-rule/large-query optimization.
+concentrated in exact parser diagnostics/object rendering, measured
+recursive-rule/large-query optimization, MusicBrainz/Datomic workload coverage,
+and higher-level host wrapper ergonomics.
+
+Current batch order:
+
+1. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
+   tx-data shapes fail predictably through the portable text/prepared APIs.
+2. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
+   Java feel close to Datomic/DataScript for common tutorials, including
+   listener/report callbacks where useful.
+3. Rule/query performance: use query profile counters and ABI/native
+   benchmarks to replace recursive rule and large relation hot paths with
+   measured implementations.
+4. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
+   dataset, run equivalent Datomic workshop queries against Vev and Datomic,
+   compare result sets first and performance second.
 
 ## Phase 4: Portable query frontend
 
@@ -85,11 +99,40 @@ not create a second query engine.
 
 Status: substantially done and now part of the compatibility gate. EDN text and
 prepared query/tx/pull paths lower into the same typed structures as Kvist
-literals. C, Python, Rust, Java, and Clojure smokes now exercise the EDN path
-through the native library. The remaining work is exact parser API parity and
-any wrapper ergonomics demanded by real host usage.
+literals. C, Python, Rust, Java, and Clojure smokes exercise the EDN path
+through the native library. The remaining work is exact malformed-input
+behavior, parser value rendering where host APIs expose it, and wrapper
+ergonomics demanded by real host usage.
 
-## Phase 5: Durable proof
+## Phase 5: MusicBrainz/Datomic Workload
+
+Goal:
+
+- load a Datomic MusicBrainz / Day of Datomic-shaped dataset into Vev
+- port workshop queries as a correctness suite
+- run the same queries against Datomic locally
+- compare result sets before comparing performance
+- use the workload to expose planner, rule, pull, aggregate, and API gaps
+
+Why before durability:
+
+- MusicBrainz is a real Datomic-shaped workload, not a synthetic microbench
+- it tests whether Vev can follow existing Datomic teaching material
+- it gives a shared correctness/performance target before SQLite storage
+- it exercises large in-memory indexes, immutable DB values, EDN text APIs, and
+  host wrappers under realistic pressure
+
+Initial scope:
+
+- start with the Day of Datomic dataset or a deterministic MusicBrainz slice
+- keep the import path simple and repeatable
+- store expected query results in Vev tests or benchmark fixtures
+- report Datomic vs Vev timings as comparative ratios, not raw claims
+
+Status: not started. This should happen after the next parser/callback cleanup
+batch and before durable SQLite work.
+
+## Phase 6: Durable proof
 
 Goal:
 
@@ -108,10 +151,11 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: not started. Keep this postponed until the in-memory compatibility,
-API, and performance baseline are stable.
+Status: not started. Keep this postponed until parser/API exactness,
+MusicBrainz/Datomic workload coverage, and rule/query performance are stable
+enough that the storage layer can preserve semantics instead of reshaping them.
 
-## Phase 6: Dogfood
+## Phase 7: Dogfood
 
 Goal:
 
@@ -126,7 +170,7 @@ Questions:
 - what debugging/inspection tools are immediately missing?
 - is a separate event layer still necessary once tx metadata is in use?
 
-## Phase 7: Interop boundary
+## Phase 8: Interop boundary
 
 Goal:
 
@@ -146,11 +190,11 @@ bindings, typed result access, direct result-row visitors, status/error
 accessors, and DB-value retain/release. C, Python, Rust, Java, and Clojure
 smokes exercise the native library, and the ABI-vs-native benchmark covers
 small lookups, DB snapshots, transaction reports, many-row results, direct row
-visitors, and nested pull-many values. Further interop work should be driven by
-specific adapter needs, especially host-provided transaction function/listener
-callback registration.
+visitors, nested pull-many values, and host-provided transaction function
+callbacks. Further interop work should be driven by specific adapter needs,
+especially higher-level host wrappers over the raw C ABI.
 
-## Phase 8: Optional packaging expansion
+## Phase 9: Optional packaging expansion
 
 Goal:
 
@@ -195,5 +239,14 @@ Do not start durable storage by solving:
 - every deployment story
 
 Get the in-memory semantic core, EDN/C ABI surface, and performance baseline
-right first. SQLite durability comes after DataScript-level behavior is stable
-enough that the storage layer can preserve semantics instead of reshaping them.
+right first. The next durable-storage gate is not "all possible DataScript host
+details"; it is:
+
+- portable parser and tx-data APIs reject bad input predictably
+- recursive rules and large relation queries have measured, acceptable behavior
+- MusicBrainz/Datomic workshop queries have correctness coverage and comparison
+  benchmarks
+- Clojure/Java examples can follow common Datomic/DataScript tutorial shapes
+
+SQLite durability comes after those gates, so storage preserves established
+semantics instead of reshaping them.

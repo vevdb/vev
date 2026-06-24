@@ -2,7 +2,10 @@
 
 ## Principle
 
-Interop should come after the semantic engine is coherent.
+Interop is now part of the active compatibility gate, because Vev's primary
+long-term consumers are non-Kvist callers. Durable storage still waits, but the
+native ABI, EDN text APIs, prepared handles, and host wrappers must stay current
+with the semantic engine.
 
 Vev's primary source language is Kvist, with readable Odin output as a quality
 gate. Kvist users may consume Vev as a source package when that is the most
@@ -16,14 +19,14 @@ main application integration model.
 Future server packaging, if it exists, should wrap the same semantic core
 rather than force a different internal model.
 
-The right order is:
+The current integration stack is:
 
 1. native Kvist API
 2. stable internal semantic model
-3. native library packaging
-4. narrow C ABI
-5. CLI binary over the same engine
-6. host-specific wrappers
+3. native library packaging through a narrow C ABI
+4. EDN text and prepared handles for portable query/tx/pull
+5. host-specific wrappers for Python, Rust, Java, and Clojure
+6. CLI binary over the same engine when tooling needs it
 7. only later, if justified, server/daemon packaging
 8. only later, if justified, transactor/peer-style packaging
 
@@ -128,38 +131,44 @@ Avoid exposing:
 - backend-specific details
 - pointer ownership rules that leak deep engine internals
 
-An initial implementation exists in `src/vev_abi` with the public header in
-`include/vev.h`. It currently proves the basic foreign-consumer path:
+The implementation lives in `src/vev_abi` with the public header in
+`include/vev.h`. It currently proves the foreign-consumer path:
 
 - open an in-memory connection
 - transact EDN text
 - query EDN text
 - prepare a query
 - run a prepared query
+- retain immutable DB values
+- run pull APIs
+- bind statement inputs without reparsing EDN
+- stream result rows and nested values through callbacks
+- register transaction functions that return EDN tx-data
 - free returned strings and handles
 
-See `docs/c-abi.md` and `examples/c/smoke.c`.
+See `docs/c-abi.md`, `examples/c/smoke.c`, and the Python/Rust/Java/Clojure
+smoke examples.
 
-## Clojure/JVM future
+## Clojure/JVM
 
-If future Clojure consumption matters, the easiest path is likely:
+Clojure consumption is active. The intended stack is:
 
 - native engine
-- C ABI or stable native shared library boundary
-- thin JVM wrapper
-- Clojure library on top of the JVM wrapper
+- stable C ABI/native shared library boundary
+- Java Foreign Function & Memory wrapper
+- Clojure namespace layer on top of the Java wrapper
 
-That is easier to reason about than making Java/JNI the engine architecture
-from day one.
+This keeps Clojure ergonomic without making the engine JVM-shaped internally.
 
-## Java-side options later
+## Java-side options
 
-Likely candidates:
+Current direction:
 
 - Java Foreign Function & Memory API wrapper
-- JNI wrapper if needed for compatibility
 - a small Java library exposing a friendlier object API
 - a Clojure namespace layer on top of that Java library
+
+JNI remains a fallback only if FFM compatibility becomes a real blocker.
 
 The important point is:
 

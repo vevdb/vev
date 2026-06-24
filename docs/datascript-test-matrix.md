@@ -17,10 +17,10 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 351
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 352
 tests successfully. The most important remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
-remaining native callback design, and semi-naive rule/query optimization.
+host wrapper ergonomics, and semi-naive rule/query optimization.
 
 ## Semantic Core
 
@@ -62,7 +62,7 @@ EDN/text coverage first and add Kvist macro coverage as a convenience layer.
 | --- | ---: | --- | --- |
 | `parser.cljc` | 3 | partial | direct parser APIs now cover DataScript binding, `:in`, and `:with` shapes including scalar vars, `_`, collection, tuple, nested collection/tuple bindings, source vars, and `%`; flat EDN node reader also feeds query/pull/tx/rules text subsets; prepared binding/`:in`/`:with` values have portable EDN-ish `Value.Map` rendering. Exact Clojure parser record rendering and diagnostics remain Vev-shaped |
 | `parser_find.cljc` | 4 | passing | scalar, collection, tuple, pull, aggregate, custom aggregate, top-n aggregate, and multi-argument aggregate find elements including constants and source-symbol args covered through EDN text/prepared query parsing |
-| `parser_query.cljc` | 1 | passing | vector and map query forms, map-form inline `:rules`, `:find`, `:with`, `:in`, named DB sources, ignored `_` input placeholders, optional ordered `:where`, direct map-as-relation inputs, float constants, nested input/result destructuring, reusable prepared query values, and checked validation for unknown `:find`/`:with` vars, `:find`/`:with` overlap, duplicate inputs/`:with`, unknown source vars, and missing `%` for rule calls covered; exact diagnostic text is Vev-shaped |
+| `parser_query.cljc` | 1 | passing | vector and map query forms, map-form inline `:rules`, `:find`, `:with`, `:in`, named DB sources, ignored `_` input placeholders, optional ordered `:where`, direct map-as-relation inputs, float constants, nested input/result destructuring, reusable prepared query values, and checked validation for duplicate/out-of-order vector sections, unsupported and duplicate map query sections, duplicate return-map markers, unknown `:find`/`:with` vars, `:find`/`:with` overlap, duplicate inputs/`:with`, unknown source vars, and missing `%` for rule calls covered; exact diagnostic text is Vev-shaped |
 | `parser_return_map.cljc` | 1 | passing | `:keys`/`:strs`/`:syms`, keyed text helpers, tuple return-map shape, and marker-specific duplicate/count/collection/scalar validation for vector and map query forms covered; exact API rendering is Vev-shaped |
 | `parser_rules.cljc` | 3 | partial | direct `parse-rules-text` API plus query text paths cover ordinary and source-qualified rule calls including wildcard arguments, plain and required rule vars, multiple branches, inline map-query `:rules`, ordered text rule bodies, rule-body `get-else`/`get-some`, and empty/duplicate/arity rule validation; prepared rules, queries, and tx-data have portable EDN-ish `Value.Map` rendering. Remaining exact Clojure parser record rendering remains Vev-shaped |
 | `parser_where.cljc` | 6 | passing | data patterns including placeholders, symbol constants, `$`-prefixed symbol constants in non-source positions, lookup-ref entity terms, named DB source patterns, 1/2/3/4/5-wide relation-source rows, zero-arg and normal predicate/function syntax, custom predicate/function vars, missing?, not/not-join, or/or-join, source-qualified `not`/`not-join`/`or`/`or-join`, `and` branches, ordinary/source-qualified rule clauses, nested text `not`, and malformed pattern/group validation covered; exact parser object rendering is Vev-shaped |
@@ -76,7 +76,7 @@ These are useful, but not the next engine-parity gate.
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
 | `conn.cljc` | 2 | passing | create/conn-from-db/conn-from-datoms and reset reports with tx-data, before/after snapshots, metadata, and listener delivery are covered; Clojure schema-map storage shape is host |
-| `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; arbitrary closure callbacks are host/ABI design work |
+| `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
 | `serialize.cljc` | 5 | passing | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
 | `storage.clj` | 5 | planned | durable/storage work later |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
@@ -93,9 +93,8 @@ These are useful, but not the next engine-parity gate.
    `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
-2. Extend the native callback surface beyond query predicate/value/aggregate
-   and pull `:xform` callbacks: transaction functions, listeners, and final
-   C/Odin/non-Kvist registration shape.
+2. Add higher-level host wrapper ergonomics over the raw C ABI where concrete
+   Java/Clojure/Python/Rust usage needs them.
 3. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript
    parity also needs predictable performance on recursive rules and large
