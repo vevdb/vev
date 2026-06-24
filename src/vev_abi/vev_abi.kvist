@@ -45,6 +45,8 @@ ABI_Stmt :: struct {
     query: rawptr,
     inputs: [dynamic]vev__Query_Input,
     pull_pattern_sources: [dynamic]string,
+    sources: [dynamic]vev__DB_Source,
+    source_handles: [dynamic]rawptr,
 }
 
 abi_alloc_conn :: proc() -> rawptr {
@@ -306,6 +308,8 @@ abi_alloc_stmt :: proc(query: rawptr) -> rawptr {
     wrapper.query = query
     wrapper.inputs = make([dynamic]vev__Query_Input)
     wrapper.pull_pattern_sources = make([dynamic]string)
+    wrapper.sources = make([dynamic]vev__DB_Source)
+    wrapper.source_handles = make([dynamic]rawptr)
     return rawptr(wrapper)
 }
 
@@ -321,8 +325,21 @@ abi_stmt_pull_pattern_sources_ptr :: proc(stmt: rawptr) -> ^[dynamic]string {
     return &((^ABI_Stmt)(stmt))^.pull_pattern_sources
 }
 
+abi_stmt_sources_ptr :: proc(stmt: rawptr) -> ^[dynamic]vev__DB_Source {
+    return &((^ABI_Stmt)(stmt))^.sources
+}
+
+abi_stmt_source_handles_ptr :: proc(stmt: rawptr) -> ^[dynamic]rawptr {
+    return &((^ABI_Stmt)(stmt))^.source_handles
+}
+
 abi_stmt_push_input :: proc(stmt: rawptr, input: vev__Query_Input) {
     append(&((^ABI_Stmt)(stmt))^.inputs, input)
+}
+
+abi_stmt_push_source :: proc(stmt: rawptr, source: vev__DB_Source, handle: rawptr) {
+    append(&((^ABI_Stmt)(stmt))^.sources, source)
+    append(&((^ABI_Stmt)(stmt))^.source_handles, handle)
 }
 
 abi_cstring_at :: proc(values: rawptr, index: int) -> cstring {
@@ -345,6 +362,8 @@ abi_free_stmt :: proc(stmt: rawptr) {
     wrapper := (^ABI_Stmt)(stmt)
     delete(wrapper.inputs)
     delete(wrapper.pull_pattern_sources)
+    delete(wrapper.sources)
+    delete(wrapper.source_handles)
     free(wrapper)
 }
 ")
@@ -390,6 +409,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- stmt-pull-pattern-sources-ptr [stmt: Vev-Stmt] -> ^[dynamic]string
   (abi-stmt-pull-pattern-sources-ptr (rawptr stmt)))
+
+(defn- stmt-sources-ptr [stmt: Vev-Stmt] -> ^[dynamic]vev.DB-Source
+  (abi-stmt-sources-ptr (rawptr stmt)))
+
+(defn- stmt-source-handles-ptr [stmt: Vev-Stmt] -> ^[dynamic]rawptr
+  (abi-stmt-source-handles-ptr (rawptr stmt)))
 
 (defn- text-from-c [text: cstring] -> string
   (let [[out err] (strings.clone_from_cstring text)]
@@ -509,13 +534,25 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- stmt-clear-owned [stmt: Vev-Stmt]
   (let [inputs (stmt-inputs-ptr stmt)
-        sources (stmt-pull-pattern-sources-ptr stmt)]
+        pattern-sources (stmt-pull-pattern-sources-ptr stmt)
+        sources (stmt-sources-ptr stmt)
+        source-handles (stmt-source-handles-ptr stmt)]
     (for [input inputs^]
       (delete-query-input-owned input))
     (resize inputs 0)
-    (for [source sources^]
+    (for [source pattern-sources^]
       (delete source))
-    (resize sources 0)))
+    (resize pattern-sources 0)
+    (for [source sources^]
+      (delete source.name))
+    (resize sources 0)
+    (for [handle source-handles^]
+      (let [storage (abi-release-db handle)]
+        (when (not (= storage nil))
+          (let [ptr (abi-db-storage-ptr storage)]
+            (delete-db-owned ptr^)
+            (abi-free-db-storage storage)))))
+    (resize source-handles 0)))
 
 (defn- stmt-push-scalar! [stmt: Vev-Stmt, value: vev.Value]
   (abi-stmt-push-input (rawptr stmt) (vev.query-input-scalar value)))
@@ -534,6 +571,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- stmt-push-pull-pattern! [stmt: Vev-Stmt, pattern: [dynamic]vev.Pull-Spec]
   (abi-stmt-push-input (rawptr stmt) (vev.query-input-pull-pattern (slice pattern 0))))
+
+(defn- stmt-push-db-source! [stmt: Vev-Stmt, name: string, db: Vev-DB]
+  (let [retained (abi-retain-db (rawptr db))
+        retained-db (Vev-DB retained)
+        db-value (db-ptr retained-db)]
+    (abi-stmt-push-source (rawptr stmt) (vev.db-source name db-value^) retained)))
 
 (defn- datom-owned [datom: vev.Datom] -> vev.Datom
   (vev.Datom {e: datom.e
@@ -794,6 +837,32 @@ abi_free_stmt :: proc(stmt: rawptr) {
         ptr (prepared-query-ptr (Vev-Prepared-Query prepared))]
     (set! ptr^ (vev.prepare-query-text query))
     (Vev-Prepared-Query prepared)))
+
+@export
+(defn vev_prepare_query_edn_with_sources :abi "c" [query-text: cstring, source-names: rawptr, source-count: int] -> Vev-Prepared-Query
+  (odin "context = runtime.default_context()")
+  (when (or (= query-text nil)
+            (< source-count 0)
+            (and (> source-count 0) (= source-names nil)))
+    (return (Vev-Prepared-Query nil)))
+  (let [query (text-from-c query-text)
+        sources (make [dynamic]vev.DB-Source 0 source-count)]
+    (for [index (arr.range 0 source-count)]
+      (let [name (abi-cstring-at source-names index)]
+        (when (= name nil)
+          (for [source sources]
+            (delete source.name))
+          (delete sources)
+          (delete query)
+          (return (Vev-Prepared-Query nil)))
+        (arr.push! sources (vev.db-source (text-from-c name) (vev.DB {})))))
+    (let [prepared (abi-alloc-prepared-query query)
+          ptr (prepared-query-ptr (Vev-Prepared-Query prepared))]
+      (set! ptr^ (vev.prepare-query-text-with-sources query (slice sources 0)))
+      (for [source sources]
+        (delete source.name))
+      (delete sources)
+      (Vev-Prepared-Query prepared))))
 
 @export
 (defn vev_prepared_query_free :abi "c" [query: Vev-Prepared-Query]
@@ -1089,6 +1158,14 @@ abi_free_stmt :: proc(stmt: rawptr) {
     true))
 
 @export
+(defn vev_stmt_bind_db_source :abi "c" [stmt: Vev-Stmt, name: cstring, db: Vev-DB] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr stmt) nil) (= name nil) (= (rawptr db) nil))
+    (return false))
+  (stmt-push-db-source! stmt (text-from-c name) db)
+  true)
+
+@export
 (defn vev_query_stmt_result :abi "c" [conn: Vev-Conn, stmt: Vev-Stmt] -> Vev-Result
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr conn) nil) (= (rawptr stmt) nil))
@@ -1096,9 +1173,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [conn-ptr-value (conn-ptr conn)
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
+        sources (stmt-sources-ptr stmt)
         result (abi-alloc-result)
         result-ptr-value (result-ptr (Vev-Result result))]
-    (set! result-ptr-value^ (vev.q-prepared-with-inputs conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0)))
+    (set! result-ptr-value^ (vev.q-prepared-with-sources conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
     (result-finish (Vev-Result result) conn-ptr-value^.db)))
 
 @export
@@ -1109,9 +1187,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [db-ptr-value (db-ptr db)
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
+        sources (stmt-sources-ptr stmt)
         result (abi-alloc-result)
         result-ptr-value (result-ptr (Vev-Result result))]
-    (set! result-ptr-value^ (vev.q-prepared-with-inputs db-ptr-value^ query-ptr-value^ (slice inputs^ 0)))
+    (set! result-ptr-value^ (vev.q-prepared-with-sources db-ptr-value^ query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
     (result-finish (Vev-Result result) db-ptr-value^)))
 
 @export

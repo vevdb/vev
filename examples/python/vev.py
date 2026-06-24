@@ -44,6 +44,12 @@ class PullPattern:
     edn: str
 
 
+@dataclass(frozen=True)
+class DBSource:
+    name: str
+    db: "DB"
+
+
 class VevError(RuntimeError):
     pass
 
@@ -104,6 +110,12 @@ class Library:
 
         lib.vev_prepare_query_edn.argtypes = [ctypes.c_char_p]
         lib.vev_prepare_query_edn.restype = ctypes.c_void_p
+        lib.vev_prepare_query_edn_with_sources.argtypes = [
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_prepare_query_edn_with_sources.restype = ctypes.c_void_p
         lib.vev_prepared_query_free.argtypes = [ctypes.c_void_p]
 
         lib.vev_stmt_create.argtypes = [ctypes.c_void_p]
@@ -234,6 +246,12 @@ class Library:
             ctypes.c_char_p,
         ]
         lib.vev_stmt_bind_pull_pattern_edn.restype = ctypes.c_bool
+        lib.vev_stmt_bind_db_source.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+        ]
+        lib.vev_stmt_bind_db_source.restype = ctypes.c_bool
 
         lib.vev_query_prepared_with_inputs.argtypes = [
             ctypes.c_void_p,
@@ -429,8 +447,10 @@ class Connection:
             )
         )
 
-    def prepare(self, query_edn: str) -> "PreparedQuery":
-        return PreparedQuery(self._library, query_edn)
+    def prepare(
+        self, query_edn: str, source_names: list[str] | None = None
+    ) -> "PreparedQuery":
+        return PreparedQuery(self._library, query_edn, source_names)
 
     def db(self) -> "DB":
         self._require_open()
@@ -628,9 +648,22 @@ class TxReport:
 
 
 class PreparedQuery:
-    def __init__(self, library: Library, query_edn: str):
+    def __init__(
+        self,
+        library: Library,
+        query_edn: str,
+        source_names: list[str] | None = None,
+    ):
         self._library = library
-        self._handle = library.lib.vev_prepare_query_edn(_bytes(query_edn))
+        if source_names is None:
+            self._handle = library.lib.vev_prepare_query_edn(_bytes(query_edn))
+        else:
+            encoded = [_bytes(name) for name in source_names]
+            array_type = ctypes.c_char_p * len(encoded)
+            array = array_type(*encoded)
+            self._handle = library.lib.vev_prepare_query_edn_with_sources(
+                _bytes(query_edn), array, len(encoded)
+            )
         if not self._handle:
             raise VevError("failed to prepare query")
 
@@ -729,6 +762,11 @@ class Statement:
             ok = self._bind_relation(value.rows)
         elif isinstance(value, PullPattern):
             ok = lib.vev_stmt_bind_pull_pattern_edn(self._handle, _bytes(value.edn))
+        elif isinstance(value, DBSource):
+            value.db._require_open()
+            ok = lib.vev_stmt_bind_db_source(
+                self._handle, _bytes(value.name), value.db._handle
+            )
         elif isinstance(value, bool):
             ok = lib.vev_stmt_bind_bool(self._handle, value)
         elif isinstance(value, int):

@@ -724,6 +724,78 @@ int main(void) {
     vev_stmt_free(pull_pattern_stmt);
     vev_prepared_query_free(pull_pattern_query);
 
+    vev_conn_t right_conn = vev_conn_open_memory();
+    if (right_conn == NULL) {
+        fprintf(stderr, "failed to open right source connection\n");
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    print_and_free(
+        "right-source-tx",
+        vev_transact_edn(
+            right_conn,
+            "[{:db/id 1 :user/name \"Ada Right\"}"
+            " {:db/id 2 :user/name \"Grace Right\"}]"));
+    vev_db_t left_source = vev_conn_db(conn);
+    vev_db_t right_source = vev_conn_db(right_conn);
+    const char *source_names[] = {"$left", "$right"};
+    vev_prepared_query_t source_query =
+        vev_prepare_query_edn_with_sources(
+            "[:find ?e ?left-name ?right-name"
+            " :in $left $right [?e ...]"
+            " :where [$left ?e :user/name ?left-name]"
+            "        [$right ?e :user/name ?right-name]]",
+            source_names,
+            2);
+    vev_stmt_t source_stmt = source_query == NULL ? NULL : vev_stmt_create(source_query);
+    unsigned long long source_ids[] = {1, 2};
+    if (left_source == NULL ||
+        right_source == NULL ||
+        source_query == NULL ||
+        source_stmt == NULL ||
+        !vev_stmt_bind_db_source(source_stmt, "$left", left_source) ||
+        !vev_stmt_bind_db_source(source_stmt, "$right", right_source) ||
+        !vev_stmt_bind_entity_collection(source_stmt, source_ids, 2)) {
+        fprintf(stderr, "failed to bind source statement\n");
+        if (source_stmt != NULL) vev_stmt_free(source_stmt);
+        if (source_query != NULL) vev_prepared_query_free(source_query);
+        if (left_source != NULL) vev_db_release(left_source);
+        if (right_source != NULL) vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_t source_result = vev_query_stmt_result(conn, source_stmt);
+    int source_rows = result_row_count_or_error("stmt-db-sources", source_result);
+    vev_value_t source_left_name = vev_result_value(source_result, 0, 1);
+    vev_value_t source_right_name = vev_result_value(source_result, 0, 2);
+    printf("stmt-db-sources rows: %d\n", source_rows);
+    if (source_rows != 2 ||
+        !value_text_equals(source_left_name, "Ada") ||
+        !value_text_equals(source_right_name, "Ada Right")) {
+        fprintf(stderr, "unexpected DB source statement output\n");
+        vev_result_free(source_result);
+        vev_stmt_free(source_stmt);
+        vev_prepared_query_free(source_query);
+        vev_db_release(left_source);
+        vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_result_free(source_result);
+    vev_stmt_free(source_stmt);
+    vev_prepared_query_free(source_query);
+    vev_db_release(left_source);
+    vev_db_release(right_source);
+    vev_conn_close(right_conn);
+
     vev_prepared_query_t all_emails =
         vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");
     if (all_emails == NULL) {

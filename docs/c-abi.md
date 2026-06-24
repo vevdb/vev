@@ -564,12 +564,14 @@ Current bind functions:
 - `vev_stmt_bind_bool_relation`
 - `vev_stmt_bind_lookup_ref_string_collection`
 - `vev_stmt_bind_pull_pattern_edn`
+- `vev_stmt_bind_db_source`
 
 The statement API currently covers scalar bindings and homogeneous collection
 bindings, homogeneous tuple bindings, homogeneous relation bindings,
-same-attribute lookup-ref string collections, and pull-pattern inputs. EDN input
-text still handles source inputs. Those should be added to statement bindings
-as typed APIs instead of forcing host wrappers to construct EDN strings.
+same-attribute lookup-ref string collections, pull-pattern inputs, and named DB
+source inputs. Source-aware prepared queries are created with
+`vev_prepare_query_edn_with_sources`, then statements bind actual immutable DB
+handles with `vev_stmt_bind_db_source`.
 
 ## Result Handles
 
@@ -676,6 +678,5 @@ The next useful steps are:
 - add direct query-execution callbacks so callers can consume very large query
   results without first materializing full result handles
 - add explicit error/result status APIs
-- add typed statement bindings for source inputs
 - add broader result-shape benchmarks for nested values, pull results, and
   larger row sets

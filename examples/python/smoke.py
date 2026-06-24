@@ -226,6 +226,41 @@ def main() -> int:
             finally:
                 pull_pattern_query.close()
 
+            with vev.open_memory() as right_conn:
+                right_conn.transact(
+                    """
+                    [{:db/id 1 :user/name "Ada Right"}
+                     {:db/id 2 :user/name "Grace Right"}]
+                    """
+                )
+                with conn.db() as left_db, right_conn.db() as right_db:
+                    source_query = conn.prepare(
+                        """
+                        [:find ?e ?left-name ?right-name
+                         :in $left $right [?e ...]
+                         :where [$left ?e :user/name ?left-name]
+                                [$right ?e :user/name ?right-name]]
+                        """,
+                        ["$left", "$right"],
+                    )
+                    try:
+                        with source_query.statement() as stmt:
+                            rows = stmt.bind(
+                                vev.DBSource("$left", left_db),
+                                vev.DBSource("$right", right_db),
+                                [vev.Entity(1), vev.Entity(2)],
+                            ).rows(conn)
+                            print(f"statement DB sources: {rows}")
+                            first = rows[0]
+                            if (
+                                len(rows) != 2
+                                or first[1] != "Ada"
+                                or first[2] != "Ada Right"
+                            ):
+                                raise RuntimeError("unexpected statement DB sources")
+                    finally:
+                        source_query.close()
+
             all_emails = conn.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             )

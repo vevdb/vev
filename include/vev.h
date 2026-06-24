@@ -75,6 +75,10 @@ const char *vev_query_edn_with_inputs(
     const char *inputs_text);
 
 vev_prepared_query_t vev_prepare_query_edn(const char *query_text);
+vev_prepared_query_t vev_prepare_query_edn_with_sources(
+    const char *query_text,
+    const char **source_names,
+    int source_count);
 void vev_prepared_query_free(vev_prepared_query_t query);
 vev_stmt_t vev_stmt_create(vev_prepared_query_t query);
 void vev_stmt_clear(vev_stmt_t stmt);
@@ -107,6 +111,7 @@ bool vev_stmt_bind_lookup_ref_string_collection(
     const char **values,
     int value_count);
 bool vev_stmt_bind_pull_pattern_edn(vev_stmt_t stmt, const char *pattern_text);
+bool vev_stmt_bind_db_source(vev_stmt_t stmt, const char *name, vev_db_t db);
 const char *vev_query_prepared(vev_conn_t conn, vev_prepared_query_t query);
 const char *vev_query_prepared_with_inputs(
     vev_conn_t conn,
