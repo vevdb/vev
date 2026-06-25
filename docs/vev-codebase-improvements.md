@@ -153,8 +153,8 @@ Status labels:
 - `todo` Add structured parser diagnostics and malformed-input suites.
   Parser parity work is now broad enough that tests should assert portable structured error categories for malformed query, pull, rule, return-map, and tx-data shapes instead of only checking `not ok` or exact strings.
 
-- `todo` Add test support helpers for Vev values and results.
-  Tests build verbose nested `Value` fixtures and carry local result/pull search helpers. EDN-to-`Value` fixture helpers, `value-get-in`, and row/pull matchers would make compatibility tests easier to read and extend.
+- `done` Add test support helpers for Vev values and results.
+  Vev tests now have row-level `Value` matchers for entity, string, integer, and arbitrary expected values. Existing result search helpers delegate through those matchers, giving compatibility tests a less verbose pattern for result-row assertions without introducing a larger fixture DSL.
 
 - `todo` Materialize pull values more cleanly for ABI results.
   ABI results currently keep pull structures in the result plus a side array of rendered pull `Value`s. A single owned materialized result representation would simplify pull result access and cleanup.
