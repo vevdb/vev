@@ -6719,7 +6719,9 @@
     (return true))
   (let [clause-count 0
         predicate-count 0
-        function-count 0]
+        function-count 0
+        not-count 0
+        or-count 0]
     (for [step query.where-steps]
       (if (= step.kind .Clause)
         (set! clause-count (+ clause-count 1))
@@ -6727,10 +6729,16 @@
           (set! predicate-count (+ predicate-count 1))
           (if (= step.kind .Function)
             (set! function-count (+ function-count 1))
-            (return false)))))
+            (if (= step.kind .Not)
+              (set! not-count (+ not-count 1))
+              (if (= step.kind .Or)
+                (set! or-count (+ or-count 1))
+                (return false)))))))
     (and (= clause-count (count query.clauses))
          (= predicate-count (count query.predicates))
-         (= function-count (count query.function-clauses)))))
+         (= function-count (count query.function-clauses))
+         (= not-count (count query.not-groups))
+         (= or-count (count query.or-groups)))))
 
 (defn query-clause-uses-source-input? [query: Query, sources: []DB-Source, clause: Clause] -> bool
   (and clause.has-source
@@ -6771,8 +6779,6 @@
             (> (count query.get-elses) 0)
             (> (count query.get-somes) 0)
             (> (count query.grounds) 0)
-            (> (count query.not-groups) 0)
-            (> (count query.or-groups) 0)
             (> (count query.aggregates) 0))
     (return false))
   (for [clause-value query.clauses]
@@ -6805,7 +6811,19 @@
     (delete bindings)
     out))
 
-(defn query-relation-apply-where-ops [db: DB, query: Query, rel: Query-Relation, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+(defn query-relation-apply-not [db: DB, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> Query-Relation
+  (let [bindings (bindings-after-not-group-step-with-fns db sources (slice rel.tuples 0) group registry)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-or [db: DB, sources: []DB-Source, rel: Query-Relation, group: Or-Group, registry: []Native-Query-Fn] -> Query-Relation
+  (let [bindings (bindings-after-or-group-step-with-fns db sources (slice rel.tuples 0) group registry)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-where-ops [db: DB, sources: []DB-Source, query: Query, rel: Query-Relation, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
   (let [current (query-relation-copy rel)]
     (for [step query.where-steps]
       (when (= step.kind .Predicate)
@@ -6816,6 +6834,18 @@
           (query-stats-observe-bindings! stats (count current.tuples))))
       (when (= step.kind .Function)
         (let [next (query-relation-extend-function current query.function-clauses[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Not)
+        (let [next (query-relation-apply-not db sources current query.not-groups[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Or)
+        (let [next (query-relation-apply-or db sources current query.or-groups[step.index] registry)]
           (set! stats^.steps (+ stats^.steps 1))
           (delete-query-relation current)
           (set! current next)
@@ -6869,7 +6899,7 @@
         (set! stats^.clause-candidates (+ stats^.clause-candidates (count rel.tuples)))
         (arr.push! relations rel)))
     (let [joined (query-relation-reduce db (slice relations 0))
-          post-rel (query-relation-apply-where-ops db query joined registry stats)]
+          post-rel (query-relation-apply-where-ops db sources query joined registry stats)]
       (for [rel relations]
         (delete-query-relation rel))
       (delete relations)
