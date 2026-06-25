@@ -840,6 +840,70 @@
       (let [values ([]Value [first second])]
         (row-values-dedupe-key values))))
 
+(defstruct Two-Primitive-Seen {
+  generic: map[string]bool
+  string-int: map[string]i64
+  string-int-extra: map[string]bool
+  int-string: map[i64]string
+  int-string-extra: map[string]bool
+})
+
+(defn two-primitive-seen [] -> Two-Primitive-Seen
+  (Two-Primitive-Seen {generic: (make (map string bool))
+                       string-int: (make (map string i64))
+                       string-int-extra: (make (map string bool))
+                       int-string: (make (map i64 string))
+                       int-string-extra: (make (map string bool))}))
+
+(defn delete-two-primitive-seen [seen: Two-Primitive-Seen]
+  (delete seen.generic)
+  (delete seen.string-int)
+  (delete seen.string-int-extra)
+  (delete seen.int-string)
+  (delete seen.int-string-extra))
+
+(defn two-value-seen-add [seen: ^Two-Primitive-Seen, first: Value, second: Value] -> [added: bool, ok: bool]
+  (cond
+    (and (= first.kind .String) (= second.kind .Int))
+      (let [[existing found] (mmap.get seen^.string-int first.text)]
+        (when (not found)
+          (mmap.assoc! seen^.string-int first.text second.int-value)
+          (return true true))
+        (when (= existing second.int-value)
+          (return false true))
+        (let [[key key-ok] (two-primitive-values-dedupe-key first second)]
+          (when (not key-ok)
+            (return false false))
+          (let [[_ already-seen] (mmap.get seen^.string-int-extra key)]
+            (when already-seen
+              (return false true))
+            (mmap.assoc! seen^.string-int-extra key true)
+            (return true true))))
+    (and (= first.kind .Int) (= second.kind .String))
+      (let [[existing found] (mmap.get seen^.int-string first.int-value)]
+        (when (not found)
+          (mmap.assoc! seen^.int-string first.int-value second.text)
+          (return true true))
+        (when (= existing second.text)
+          (return false true))
+        (let [[key key-ok] (two-primitive-values-dedupe-key first second)]
+          (when (not key-ok)
+            (return false false))
+          (let [[_ already-seen] (mmap.get seen^.int-string-extra key)]
+            (when already-seen
+              (return false true))
+            (mmap.assoc! seen^.int-string-extra key true)
+            (return true true))))
+    :else
+      (let [[key key-ok] (two-primitive-values-dedupe-key first second)]
+        (when (not key-ok)
+          (return false false))
+        (let [[_ already-seen] (mmap.get seen^.generic key)]
+          (when already-seen
+            (return false true))
+          (mmap.assoc! seen^.generic key true)
+          (return true true)))))
+
 (defn sort-strings! [values: ^[dynamic]string]
   (for [i (arr.range 1 (count values^))]
     (let [item values^[i]
@@ -7114,6 +7178,9 @@
 (defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
   (when (not (query-steps-are-relation-engine-supported? query))
     (return false))
+  (when (and (= (count sources) 0)
+             (query-steps-are-clauses? query))
+    (return false))
   (when (and (query-uses-primary-relation-db-source? query)
              (or (> (count query.predicates) 0)
                  (> (count query.function-clauses) 0)
@@ -8005,15 +8072,13 @@
           (append-entity-int-pair-column! (addr out) datom.e datom.v.int-value))))
     out))
 
-(defn append-two-attr-projection-row! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), query: Query, projection: Two-Attr-Entity-Projection, first-value-source: Value, second-value-source: Value]
+(defn append-two-attr-projection-row! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, query: Query, projection: Two-Attr-Entity-Projection, first-value-source: Value, second-value-source: Value]
   (let [first-value (if (= query.find[0] projection.first-var) first-value-source second-value-source)
         second-value (if (= query.find[1] projection.second-var) second-value-source first-value-source)
-        [key key-ok] (two-primitive-values-dedupe-key first-value second-value)]
-    (if key-ok
-      (let [[_ already-seen] (mmap.get seen^ key)]
-        (when (not already-seen)
-          (mmap.assoc! seen^ key true)
-          (append-two-value-row! rows first-value second-value)))
+        [added added-ok] (two-value-seen-add seen first-value second-value)]
+    (if added-ok
+      (when added
+        (append-two-value-row! rows first-value second-value))
       (let [dedupe-values ([]Value [first-value second-value])]
         (when (not (row-values-exist? (slice rows^ 0) dedupe-values))
           (append-two-value-row! rows first-value second-value))))))
@@ -8031,29 +8096,38 @@
           (mmap.assoc! out datom.e datom.v))))
     out))
 
-(defn append-two-attr-entity-projection-cardinality-one! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: ^Query-Stats]
-  (let [second-values (current-entity-attr-values db projection.second-attr stats)
-        indexes (slice db.aevt 0)
+(defn append-two-attr-entity-projection-cardinality-one! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: ^Query-Stats]
+  (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))]
-    (defer (delete second-values))
+        high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
+        all-current (all-datoms-current? db)]
     (set! stats^.clause-candidates (+ stats^.clause-candidates (- high low)))
-    (for [i (arr.range low high)]
-      (let [first-index indexes[i]
-            first-datom db.datoms[first-index]]
-        (when (datom-current-at? db first-index)
-          (let [[second-value has-second] (mmap.get second-values first-datom.e)]
-            (when has-second
-              (append-two-attr-projection-row! rows seen query projection first-datom.v second-value))))))))
+    (if all-current
+      (for [i (arr.range low high)]
+        (let [first-index indexes[i]
+              first-datom db.datoms[first-index]
+              [second-value has-second] (cardinality-one-value-fast-all-current db first-datom.e projection.second-attr)]
+          (set! stats^.clause-candidates (+ stats^.clause-candidates 1))
+          (when has-second
+            (append-two-attr-projection-row! rows seen query projection first-datom.v second-value))))
+      (let [second-values (current-entity-attr-values db projection.second-attr stats)]
+        (defer (delete second-values))
+        (for [i (arr.range low high)]
+          (let [first-index indexes[i]
+                first-datom db.datoms[first-index]]
+            (when (datom-current-at? db first-index)
+              (let [[second-value has-second] (mmap.get second-values first-datom.e)]
+                (when has-second
+                  (append-two-attr-projection-row! rows seen query projection first-datom.v second-value))))))))))
 
 (defn q-two-attr-entity-projection-profiled [db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: Query-Stats] -> Profiled-Result-Set
   (let [out-stats stats
         rows (make [dynamic]Result-Row)
-        seen (make (map string bool))
+        seen (two-primitive-seen)
         indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
         high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))]
-    (defer (delete seen))
+    (defer (delete-two-primitive-seen seen))
     (set! out-stats.steps 1)
     (set! out-stats.clauses 2)
     (if (schema-cardinality-one? db projection.second-attr)
@@ -8076,16 +8150,14 @@
     (set! out-stats.output-rows (count rows))
     (profiled-result-set (result-set-ok rows) out-stats)))
 
-(defn append-entity-attr-value-projection-row! [rows: ^[dynamic]Result-Row, seen: (ptr (map string bool)), query: Query, projection: Entity-Attr-Value-Projection, entity: u64, value: Value]
+(defn append-entity-attr-value-projection-row! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, query: Query, projection: Entity-Attr-Value-Projection, entity: u64, value: Value]
   (let [entity-value (value-entity entity)
         first-value (if (= query.find[0] projection.entity-var) entity-value value)
         second-value (if (= query.find[1] projection.value-var) value entity-value)
-        [key key-ok] (two-primitive-values-dedupe-key first-value second-value)]
-    (if key-ok
-      (let [[_ already-seen] (mmap.get seen^ key)]
-        (when (not already-seen)
-          (mmap.assoc! seen^ key true)
-          (append-two-value-row! rows first-value second-value)))
+        [added added-ok] (two-value-seen-add seen first-value second-value)]
+    (if added-ok
+      (when added
+        (append-two-value-row! rows first-value second-value))
       (let [dedupe-values ([]Value [first-value second-value])]
         (when (not (row-values-exist? (slice rows^ 0) dedupe-values))
           (append-two-value-row! rows first-value second-value))))))
@@ -8099,14 +8171,14 @@
 (defn q-entity-attr-value-projection-profiled [db: DB, query: Query, projection: Entity-Attr-Value-Projection, stats: Query-Stats] -> Profiled-Result-Set
   (let [out-stats stats
         rows (make [dynamic]Result-Row)
-        seen (make (map string bool))
+        seen (two-primitive-seen)
         filter-indexes (slice db.avet 0)
         low (lower-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)
         high (upper-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)
         dedupe-required (not (and (all-datoms-current? db)
                                   (schema-cardinality-one? db projection.filter-attr)
                                   (schema-cardinality-one? db projection.value-attr)))]
-    (defer (delete seen))
+    (defer (delete-two-primitive-seen seen))
     (set! out-stats.steps 1)
     (set! out-stats.clauses 2)
     (set! out-stats.clause-candidates (- high low))

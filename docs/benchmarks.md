@@ -184,7 +184,7 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 | `tree-root n=121` | 1.9x | 2.0x |
 | `bad-order-join n=1000` | 7.3x | 11.7x |
 | `distinct-age n=1000` | 3.2x | 3.5x |
-| `people-name-age n=1000` | 0.2x | 0.2x |
+| `people-name-age n=1000` | 0.5x | 0.4x |
 
 ## Stress Comparison
 
@@ -313,11 +313,14 @@ Remaining performance work:
   dedupe is map-backed, but arbitrary multi-step recursive bodies still use the
   generic depth/fixpoint evaluator.
 - Continue result-projection work beyond the single-attr distinct fast path.
-  `distinct-age` is now faster than DataScript locally, but the new
-  `people-name-age` row shows broad two-column projection is still behind.
-  Vev now has a direct same-entity two-attr path with cardinality-one map join,
-  but final distinct tracking still needs typed pair-level dedupe instead of
-  formatted string keys.
+  `distinct-age` is now faster than DataScript locally, but
+  `people-name-age` still shows broad two-column projection behind
+  DataScript. Vev now keeps pure DB-clause queries on the indexed planner
+  rather than the relation-engine path, has typed pair-level dedupe for common
+  primitive pairs, and uses direct all-current cardinality-one lookup for the
+  second attr. The remaining work is to turn same-entity star projections into
+  a reusable physical operator that avoids per-row `Result-Row` materialization
+  overhead where possible.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.
