@@ -13,21 +13,43 @@ Current order:
 
 1. Datalevin `datascript-bench`: add Vev beside Datomic, DataScript, and
    Datalevin for the common in-memory read queries q1/q2/q2-switch/q3/q4 and
-   predicate variants. This exercises Vev through the public Clojure API and
-   native ABI, so it is a better host-language benchmark than direct Kvist
+   predicate variants, plus the inherited DataScript write/rule workloads when
+   the API shape is ready. This exercises Vev through the public Clojure API
+   and native ABI, so it is a better host-language benchmark than direct Kvist
    calls.
-2. Datalevin `JOB-bench`: use after Vev has a real planner/operator layer.
+2. Datalevin `math-bench`: use next for realistic Datalog rule processing over
+   the Math Genealogy dataset. This is the most relevant external benchmark for
+   validating the generic recursive rule engine after the current synthetic
+   reachability stress harness.
+3. Datalevin `openrulebench`: use after the component/SCC-local semi-naive rule
+   engine exists. This should stress a broader set of Datalog rule workloads
+   and help keep rule work general instead of reachability-specific.
+4. Datalevin `JOB-bench`: use after Vev has a real planner/operator layer.
    This benchmark stresses join ordering, predicates, ranges, aggregates, and
    large import behavior over an IMDB-shaped dataset.
-3. Datalevin `write-bench`: use after durable SQLite-backed storage exists.
+5. Datalevin `LDBC-SNB-bench`: use after planner/import work can support large
+   graph-shaped datasets. This should validate interactive short reads and
+   complex graph queries against a recognized graph workload.
+6. Datalevin `idoc-bench`: use if Vev leans into document-style nested values
+   and query shapes. It stresses YCSB-style A/C/F workloads, nested paths,
+   ranges, wildcards, and arrays.
+7. Datalevin `write-bench`: use after durable SQLite-backed storage exists.
    This benchmark should measure transaction throughput, commit latency,
    batching, WAL/sync choices, and mixed read/write behavior.
+8. Datalevin `search-bench`: use only if Vev owns a full-text search story.
+   Otherwise full-text should likely be delegated to SQLite FTS or external
+   indexes, and this benchmark remains optional.
 
 The q2/q2-switch rows from `datascript-bench` are especially important. They
 represent same-entity star queries where Datalevin wins by using a general
 merge-scan operator instead of clause-order-sensitive hash joins. Vev should
 use these rows to drive reusable star-query and planner work rather than adding
 query-name-specific fast paths.
+
+The rule benchmark order is `datascript-bench`, then `math-bench`, then
+`openrulebench`. `datascript-bench` keeps Vev honest against the DataScript API
+surface; `math-bench` introduces realistic recursive data; `openrulebench`
+should validate the generic semi-naive engine once it exists.
 
 ## Query And Rule Baseline
 
