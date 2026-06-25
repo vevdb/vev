@@ -114,6 +114,55 @@ The current in-memory implementation has two query frontends:
 - a Kvist query literal macro that lowers Datomic-shaped data to the same typed
   `Query` representation
 
+## Query Engine Strategy
+
+Vev should follow DataScript's query architecture as the semantic baseline:
+
+- clauses produce relations
+- the query context is a set of relations, sources, and rules
+- repeated variables are resolved by relation joins
+- input bindings, DB datom patterns, predicates, functions, `or`, `not`, and
+  rules should all lower to relation operations
+- physical optimizations should live under that relation layer
+
+The first relation-engine path is now implemented for the main DataScript query
+operators: data clauses, predicates, function clauses, `not`, `or`, rule calls,
+`ground`, `get-else`, `get-some`, and aggregates. This includes ordinary
+scalar, collection, tuple, relation `:in` inputs, and relation-source clauses
+over `:in` sources such as `$rows`. It builds one `Query-Relation` per input
+binding and datom/source pattern, joins those relations with generic relation
+product/join operations, applies non-clause operators as relation transforms,
+applies rule calls through the existing recursive rule evaluator, groups
+aggregate bindings through the existing aggregate renderer, and then uses the
+existing result renderer. Joins use DB-aware entity equality so entity ids,
+ints, and lookup refs compare the same way the older evaluator does. This is
+intentionally conservative: named DB sources and source-qualified synthetic
+primary collection DB rule/predicate/function queries still use the older
+binding-expansion evaluator until their DataScript-style source-aware relation
+handlers are ported.
+
+The older query-shape recognizers are not the long-term query strategy. They
+are useful prototypes for physical operators that should be folded under the
+relation engine:
+
+- primitive entity/int/string result columns become typed relation/result
+  storage
+- same-entity star query paths become a generic star/merge-scan operator
+- threshold and predicate paths become generic predicate/filter operators
+- recursive rule fast paths become planned recursive/semi-naive relation
+  operators
+
+Near-term query work should expand the relation engine in this order:
+
+1. Named DB sources: source-specific data patterns that produce relations from
+   the chosen DB source.
+2. Rules: replace the current wrapped recursive rule evaluator with measured
+   relation-native recursive/semi-naive behavior.
+3. Source-aware joins: named DB source relations need source-specific lookup-ref
+   equality instead of a single query DB equality context.
+4. Physical storage: replace generic `Binding` tuples with compact typed
+   relation columns while keeping the same logical relation API.
+
 The transaction side has the same split:
 
 - a text API, `transact-text` / `parse-tx-text!`, that parses common

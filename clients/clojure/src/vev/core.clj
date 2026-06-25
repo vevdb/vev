@@ -288,6 +288,19 @@
       :else
       nil)))
 
+(defn- entity-string-int-triples [source ^PreparedQuery prepared inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? DB source)
+      (.queryEntityStringIntTripleColumns (:native source) (:native prepared) input-edn)
+
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityStringIntTripleColumns (:native snapshot) (:native prepared) input-edn))
+
+      :else
+      nil)))
+
 (defn- entity-column-rows [ids]
   (mapv (fn [id] [(long id)]) ids))
 
@@ -319,6 +332,32 @@
                (conj! out [(long (aget entities index)) (long (aget values index))]))
         (persistent! out)))))
 
+(defn- entity-string-int-triple-rows [columns]
+  (let [^objects columns columns
+        ^longs entities (aget columns 0)
+        ^objects strings (aget columns 1)
+        ^longs values (aget columns 2)
+        n (alength entities)]
+    (mapv (fn [index] [(long (aget entities index))
+                       (aget strings index)
+                       (long (aget values index))])
+          (range n))))
+
+(defn- entity-string-int-triple-set [columns]
+  (let [^objects columns columns
+        ^longs entities (aget columns 0)
+        ^objects strings (aget columns 1)
+        ^longs values (aget columns 2)
+        n (alength entities)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget entities index))
+                           (aget strings index)
+                           (long (aget values index))]))
+        (persistent! out)))))
+
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
 
@@ -332,8 +371,10 @@
         (entity-column-rows ids)
         (if-let [columns (entity-int-pair-columns source prepared inputs)]
           (entity-int-pair-rows columns)
-          (with-open [result (apply query-result source prepared inputs)]
-            (rows-from-result result)))))))
+          (if-let [columns (entity-string-int-triples source prepared inputs)]
+            (entity-string-int-triple-rows columns)
+            (with-open [result (apply query-result source prepared inputs)]
+              (rows-from-result result))))))))
 
 (defn q
   "Run a query and return a set of row vectors."
@@ -346,8 +387,10 @@
         (entity-column-set ids)
         (if-let [columns (entity-int-pair-columns source prepared inputs)]
           (entity-int-pair-set columns)
-          (with-open [result (apply query-result source prepared inputs)]
-            (q-from-result result)))))))
+          (if-let [columns (entity-string-int-triples source prepared inputs)]
+            (entity-string-int-triple-set columns)
+            (with-open [result (apply query-result source prepared inputs)]
+              (q-from-result result))))))))
 
 (defn scalar
   "Run a query expected to return one value."

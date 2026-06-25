@@ -174,6 +174,94 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn query-relation-empty [] -> Query-Relation
+  (Query-Relation {attrs: (make [dynamic]string)
+                   tuples: (make [dynamic]Binding)}))
+
+(defn query-relation-singleton [] -> Query-Relation
+  (let [tuples (make [dynamic]Binding)]
+    (arr.push! tuples (Binding {}))
+    (Query-Relation {attrs: (make [dynamic]string)
+                     tuples: tuples})))
+
+(defn query-relation-from-bindings [bindings: []Binding] -> Query-Relation
+  (let [attrs (make [dynamic]string)
+        tuples (make [dynamic]Binding 0 (count bindings))]
+    (for [binding bindings]
+      (for [item binding.items]
+        (when (not (string-slice-contains? (slice attrs 0) item.name))
+          (arr.push! attrs item.name)))
+      (arr.push! tuples (clone-binding binding)))
+    (Query-Relation {attrs: attrs tuples: tuples})))
+
+(defn delete-query-relation [rel: Query-Relation]
+  (delete rel.attrs)
+  (delete rel.tuples))
+
+(defn relation-common-attrs [left: Query-Relation, right: Query-Relation] -> [dynamic]string
+  (let [out (make [dynamic]string)]
+    (for [name left.attrs]
+      (when (string-slice-contains? (slice right.attrs 0) name)
+        (arr.push! out name)))
+    out))
+
+(defn binding-agrees-on-attrs? [db: DB, left: Binding, right: Binding, attrs: []string] -> bool
+  (for [name attrs]
+    (let [[left-value left-ok] (binding-lookup left name)
+          [right-value right-ok] (binding-lookup right name)]
+      (when (not (and left-ok right-ok (entity-value-equal? db left-value right-value)))
+        (return false))))
+  true)
+
+(defn merge-relation-binding [db: DB, base: Binding, extra: Binding] -> [binding: Binding, ok: bool]
+  (let [out (clone-binding base)]
+    (for [item extra.items]
+      (let [[existing exists] (binding-lookup out item.name)]
+        (if exists
+          (when (not (entity-value-equal? db existing item.value))
+            (return out false))
+          (binding-store! (addr out) item.name item.value))))
+    (return out true)))
+
+(defn query-relation-product [db: DB, left: Query-Relation, right: Query-Relation] -> Query-Relation
+  (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+        tuples (make [dynamic]Binding 0 (* (count left.tuples) (count right.tuples)))]
+    (for [name right.attrs]
+      (arr.push! attrs name))
+    (for [left-tuple left.tuples]
+      (for [right-tuple right.tuples]
+        (let [[merged ok] (merge-relation-binding db left-tuple right-tuple)]
+          (when ok
+            (arr.push! tuples merged)))))
+    (Query-Relation {attrs: attrs tuples: tuples})))
+
+(defn query-relation-join [db: DB, left: Query-Relation, right: Query-Relation] -> Query-Relation
+  (let [common (relation-common-attrs left right) :defer]
+    (when (= (count common) 0)
+      (return (query-relation-product db left right)))
+    (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+          tuples (make [dynamic]Binding)]
+      (for [name right.attrs]
+        (when (not (string-slice-contains? (slice attrs 0) name))
+          (arr.push! attrs name)))
+      (for [left-tuple left.tuples]
+        (for [right-tuple right.tuples]
+          (when (binding-agrees-on-attrs? db left-tuple right-tuple (slice common 0))
+            (let [[merged ok] (merge-relation-binding db left-tuple right-tuple)]
+              (when ok
+                (arr.push! tuples merged))))))
+      (Query-Relation {attrs: attrs tuples: tuples}))))
+
+(defn query-context-singleton [] -> Query-Context
+  (let [rels (make [dynamic]Query-Relation)]
+    (arr.push! rels (query-relation-singleton))
+    (Query-Context {rels: rels})))
+
+(defn delete-query-context [ctx: Query-Context]
+  (for [rel ctx.rels]
+    (delete-query-relation rel))
+  (delete ctx.rels))
+
 (defn lookup-ref-value [attr: string, value: Value] -> Value
   (value-vector2 (value-keyword attr) value))
 
@@ -2163,6 +2251,18 @@
         (return datom.v.int-value true))
       (return 0 false))))
 
+(defn cardinality-one-int-value-fast-all-current [db: DB, entity: u64, attr: string] -> [value: i64, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
+    (when (>= index-pos (count indexes))
+      (return 0 false))
+    (let [datom db.datoms[indexes[index-pos]]]
+      (when (and (= datom.e entity)
+                 (= datom.a attr)
+                 (= datom.v.kind .Int))
+        (return datom.v.int-value true))
+      (return 0 false))))
+
 (defn current-cardinality-one-value-fast [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
         index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
@@ -2176,8 +2276,23 @@
         (return datom.v true))
       (return (Value {}) false))))
 
+(defn cardinality-one-value-fast-all-current [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
+  (let [indexes (slice db.eavt 0)
+        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
+    (when (>= index-pos (count indexes))
+      (return (Value {}) false))
+    (let [datom db.datoms[indexes[index-pos]]]
+      (when (and (= datom.e entity)
+                 (= datom.a attr))
+        (return datom.v true))
+      (return (Value {}) false))))
+
 (defn current-cardinality-one-value-matches-fast? [db: DB, entity: u64, attr: string, expected: Value] -> bool
   (let [[value ok] (current-cardinality-one-value-fast db entity attr)]
+    (and ok (value-equal? value expected))))
+
+(defn cardinality-one-value-matches-fast-all-current? [db: DB, entity: u64, attr: string, expected: Value] -> bool
+  (let [[value ok] (cardinality-one-value-fast-all-current db entity attr)]
     (and ok (value-equal? value expected))))
 
 (defn tuple-value-for-entity [db: DB, entity: u64, attrs: []string] -> [value: Value, ok: bool]
@@ -6589,6 +6704,270 @@
         (arr.remove-ordered-at! remaining clause-index)))
     current))
 
+(defn query-steps-are-clauses? [query: Query] -> bool
+  (when (= (count query.where-steps) 0)
+    (return true))
+  (when (not (= (count query.where-steps) (count query.clauses)))
+    (return false))
+  (for [step query.where-steps]
+    (when (not (= step.kind .Clause))
+      (return false)))
+  true)
+
+(defn query-steps-are-relation-engine-supported? [query: Query] -> bool
+  (when (= (count query.where-steps) 0)
+    (return true))
+  (let [clause-count 0
+        predicate-count 0
+        function-count 0
+        not-count 0
+        or-count 0
+        rule-call-count 0
+        ground-count 0
+        get-else-count 0
+        get-some-count 0]
+    (for [step query.where-steps]
+      (cond
+        (= step.kind .Clause) (set! clause-count (+ clause-count 1))
+        (= step.kind .Predicate) (set! predicate-count (+ predicate-count 1))
+        (= step.kind .Function) (set! function-count (+ function-count 1))
+        (= step.kind .Not) (set! not-count (+ not-count 1))
+        (= step.kind .Or) (set! or-count (+ or-count 1))
+        (= step.kind .RuleCall) (set! rule-call-count (+ rule-call-count 1))
+        (= step.kind .Ground) (set! ground-count (+ ground-count 1))
+        (= step.kind .GetElse) (set! get-else-count (+ get-else-count 1))
+        (= step.kind .GetSome) (set! get-some-count (+ get-some-count 1))
+        :else (return false)))
+    (and (= clause-count (count query.clauses))
+         (= predicate-count (count query.predicates))
+         (= function-count (count query.function-clauses))
+         (= not-count (count query.not-groups))
+         (= or-count (count query.or-groups))
+         (= rule-call-count (count query.rule-calls))
+         (= ground-count (count query.grounds))
+         (= get-else-count (count query.get-elses))
+         (= get-some-count (count query.get-somes)))))
+
+(defn query-clause-uses-source-input? [query: Query, sources: []DB-Source, clause: Clause] -> bool
+  (and clause.has-source
+       (not (= clause.source "$"))
+       (not (query-source-db? sources clause.source))
+       (query-source-input? query clause.source)))
+
+(defn query-source-input-binding [query: Query, inputs: []Query-Input, source: string] -> [binding: Binding, ok: bool]
+  (let [[index found] (query-input-index-for-source query source)]
+    (when (not found)
+      (return (Binding {}) false))
+    (when (>= index (count inputs))
+      (return (Binding {}) false))
+    (let [[value value-ok] (query-input-source-value inputs[index])]
+      (when (not value-ok)
+        (return (Binding {}) false))
+      (let [source-binding (Binding {})]
+        (binding-store! (addr source-binding) source value)
+        (return source-binding true)))))
+
+(defn query-uses-primary-relation-db-source? [query: Query] -> bool
+  (let [primary (primary-relation-db-source-name)]
+    (for [clause-value query.clauses]
+      (when (and clause-value.has-source
+                 (= clause-value.source primary))
+        (return true)))
+    (for [call query.rule-calls]
+      (when (and call.has-source
+                 (= call.source primary))
+        (return true)))
+    false))
+
+(defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
+  (when (not (query-steps-are-relation-engine-supported? query))
+    (return false))
+  (when (and (query-uses-primary-relation-db-source? query)
+             (or (> (count query.predicates) 0)
+                 (> (count query.function-clauses) 0)
+                 (> (count query.rule-calls) 0)))
+    (return false))
+  (for [clause-value query.clauses]
+    (when (and clause-value.has-source
+               (not (= clause-value.source "$"))
+               (not (query-source-input? query clause-value.source)))
+      (return false))
+    (when (and clause-value.has-source
+               (not (= clause-value.source "$"))
+               (query-source-db? sources clause-value.source))
+      (return false)))
+  true)
+
+(defn query-relation-copy [rel: Query-Relation] -> Query-Relation
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        tuples (clone-bindings (slice rel.tuples 0))]
+    (Query-Relation {attrs: attrs tuples: tuples})))
+
+(defn query-relation-filter-predicate [db: DB, rel: Query-Relation, predicate: Predicate, registry: []Native-Query-Fn] -> Query-Relation
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        tuples (make [dynamic]Binding)]
+    (for [tuple rel.tuples]
+      (when (predicate-matches-with-db-and-fns? db predicate tuple registry)
+        (arr.push! tuples (clone-binding tuple))))
+    (Query-Relation {attrs: attrs tuples: tuples})))
+
+(defn query-relation-extend-function [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> Query-Relation
+  (let [bindings (bindings-after-function-with-fns (slice rel.tuples 0) function registry)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-not [db: DB, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> Query-Relation
+  (let [bindings (bindings-after-not-group-step-with-fns db sources (slice rel.tuples 0) group registry)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-or [db: DB, sources: []DB-Source, rel: Query-Relation, group: Or-Group, registry: []Native-Query-Fn] -> Query-Relation
+  (let [bindings (bindings-after-or-group-step-with-fns db sources (slice rel.tuples 0) group registry)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-rule-call [db: DB, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+  (let [bindings (make [dynamic]Binding)]
+    (for [tuple rel.tuples]
+      (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db rules call tuple registry stats)]
+        (for [rule-binding rule-bindings]
+          (arr.push! bindings rule-binding))
+        (delete rule-bindings)))
+    (let [out (query-relation-from-bindings (slice bindings 0))]
+      (delete bindings)
+      out)))
+
+(defn query-relation-apply-ground [rel: Query-Relation, ground: Ground] -> Query-Relation
+  (let [bindings (apply-ground (slice rel.tuples 0) ground)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-get-else [db: DB, rel: Query-Relation, get-else: Get-Else] -> Query-Relation
+  (let [bindings (bindings-after-get-else-step db (slice rel.tuples 0) get-else)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-get-some [db: DB, rel: Query-Relation, get-some: Get-Some] -> Query-Relation
+  (let [bindings (bindings-after-get-some-step db (slice rel.tuples 0) get-some)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-where-ops [db: DB, sources: []DB-Source, query: Query, rel: Query-Relation, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+  (let [current (query-relation-copy rel)]
+    (for [step query.where-steps]
+      (when (= step.kind .Predicate)
+        (let [next (query-relation-filter-predicate db current query.predicates[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Function)
+        (let [next (query-relation-extend-function current query.function-clauses[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Not)
+        (let [next (query-relation-apply-not db sources current query.not-groups[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Or)
+        (let [next (query-relation-apply-or db sources current query.or-groups[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .RuleCall)
+        (let [next (query-relation-apply-rule-call db (slice query.rules 0) current query.rule-calls[step.index] registry stats)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Ground)
+        (let [next (query-relation-apply-ground current query.grounds[step.index])]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .GetElse)
+        (let [next (query-relation-apply-get-else db current query.get-elses[step.index])]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .GetSome)
+        (let [next (query-relation-apply-get-some db current query.get-somes[step.index])]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples)))))
+    current))
+
+(defn query-relation-from-source-input-clause [query: Query, inputs: []Query-Input, clause-value: Clause] -> Query-Relation
+  (let [[binding binding-ok] (query-source-input-binding query inputs clause-value.source)]
+    (when (not binding-ok)
+      (return (query-relation-empty)))
+    (let [out (bindings-after-relation-source-clause clause-value binding)
+          rel (query-relation-from-bindings (slice out 0))]
+      (delete out)
+      rel)))
+
+(defn query-relation-from-clause [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, clause-value: Clause] -> Query-Relation
+  (let [out (make [dynamic]Binding)
+        empty (Binding {})]
+    (if clause-value.has-source
+      (if (query-source-input? query clause-value.source)
+        (do
+          (delete out)
+          (return (query-relation-from-source-input-clause query inputs clause-value)))
+        (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+          (when source-ok
+            (append-bindings-after-clause! (addr out) source-db (unsourced-clause clause-value) empty))))
+      (append-bindings-after-clause! (addr out) db clause-value empty))
+    (let [rel (query-relation-from-bindings (slice out 0))]
+      (delete out)
+      rel)))
+
+(defn query-relation-reduce [db: DB, relations: []Query-Relation] -> Query-Relation
+  (let [current (query-relation-singleton)]
+    (for [rel relations]
+      (let [next (query-relation-join db current rel)]
+        (delete-query-relation current)
+        (set! current next)))
+    current))
+
+(defn relation-engine-bindings-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (let [relations (make [dynamic]Query-Relation)
+        input-bindings (bindings-from-inputs db query inputs)]
+    (set! stats^.input-bindings (count input-bindings))
+    (query-stats-observe-bindings! stats (count input-bindings))
+    (arr.push! relations (query-relation-from-bindings (slice input-bindings 0)))
+    (delete input-bindings)
+    (for [clause-value query.clauses]
+      (set! stats^.steps (+ stats^.steps 1))
+      (set! stats^.clauses (+ stats^.clauses 1))
+      (let [rel (query-relation-from-clause db query inputs sources clause-value)]
+        (set! stats^.clause-candidates (+ stats^.clause-candidates (count rel.tuples)))
+        (arr.push! relations rel)))
+    (let [joined (query-relation-reduce db (slice relations 0))
+          post-rel (query-relation-apply-where-ops db sources query joined registry stats)]
+      (for [rel relations]
+        (delete-query-relation rel))
+      (delete relations)
+      (let [bindings (clone-bindings (slice post-rel.tuples 0))]
+        (query-stats-observe-bindings! stats (count bindings))
+        (delete-query-relation post-rel)
+        (delete-query-relation joined)
+        bindings))))
+
 (defn bindings-after-ordered-where-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (bindings-from-inputs db query^ inputs)]
     (for [step query^.where-steps]
@@ -6878,6 +7257,12 @@
   values: [dynamic]i64
 })
 
+(defstruct Entity-String-Int-Triples {
+  entities: [dynamic]u64
+  strings: [dynamic]string
+  ints: [dynamic]i64
+})
+
 (defstruct Entity-Int-Pair-Filter {
   attr: string
   value: Value
@@ -6926,6 +7311,21 @@
 (defn append-entity-int-pair-column! [columns: ^Entity-Int-Pair-Columns, entity: u64, value: i64]
   (arr.push! columns^.entities entity)
   (arr.push! columns^.values value))
+
+(defn empty-entity-string-int-triples [] -> Entity-String-Int-Triples
+  (Entity-String-Int-Triples {entities: (make [dynamic]u64)
+                              strings: (make [dynamic]string)
+                              ints: (make [dynamic]i64)}))
+
+(defn delete-entity-string-int-triples [columns: Entity-String-Int-Triples]
+  (delete columns.entities)
+  (delete columns.strings)
+  (delete columns.ints))
+
+(defn append-entity-string-int-triple! [columns: ^Entity-String-Int-Triples, entity: u64, text: string, value: i64]
+  (arr.push! columns^.entities entity)
+  (arr.push! columns^.strings text)
+  (arr.push! columns^.ints value))
 
 (defn empty-entity-two-value-plan [] -> Entity-Two-Value-Plan
   (Entity-Two-Value-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
@@ -7255,11 +7655,12 @@
         indexes (slice db.avet 0)
         low (lower-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
         attr-prefix ([]Value [(value-keyword plan.value-attr)])
-        high (upper-bound-index-values db indexes "avet" attr-prefix)]
+        high (upper-bound-index-values db indexes "avet" attr-prefix)
+        all-current (all-datoms-current? db)]
     (for [i (arr.range low high)]
       (let [datom-index indexes[i]
             datom db.datoms[datom-index]]
-        (when (and (datom-current-at? db datom-index)
+        (when (and (or all-current (datom-current-at? db datom-index))
                    (= datom.a plan.value-attr)
                    (= datom.v.kind .Int)
                    (> datom.v.int-value plan.threshold))
@@ -7422,20 +7823,20 @@
           (for [i (arr.range best-low best-high)]
             (let [filter-datom-index filter-indexes[i]
                   filter-datom db.datoms[filter-datom-index]]
-              (when (datom-current-at? db filter-datom-index)
+              (when (or direct-value-lookup (datom-current-at? db filter-datom-index))
                 (let [filters-match true]
                   (for [filter-i (arr.range 0 (count plan.filters))]
                     (when (not (= filter-i best-filter-index))
                       (let [filter plan.filters[filter-i]]
                         (if direct-value-lookup
-                          (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
+                          (when (not (cardinality-one-value-matches-fast-all-current? db filter-datom.e filter.attr filter.value))
                             (set! filters-match false))
                           (let [[filter-value filter-ok] (latest-attr-value db filter-datom.e filter.attr)]
                             (when (not (and filter-ok (value-equal? filter-value filter.value)))
                               (set! filters-match false)))))))
                   (when filters-match
                     (if direct-value-lookup
-                      (let [[int-value int-ok] (current-cardinality-one-int-value-fast db filter-datom.e plan.value-attr)]
+                      (let [[int-value int-ok] (cardinality-one-int-value-fast-all-current db filter-datom.e plan.value-attr)]
                         (when int-ok
                           (append-entity-int-pair-column! (addr out) filter-datom.e int-value)))
                       (let [[value value-ok] (latest-attr-value db filter-datom.e plan.value-attr)]
@@ -7450,7 +7851,8 @@
         filter-indexes (slice db.avet 0)
         best-filter-index 0
         best-low 0
-        best-high 0]
+        best-high 0
+        all-current (all-datoms-current? db)]
     (defer (delete plan.filters))
     (for [filter-i (arr.range 0 (count plan.filters))]
       (let [filter plan.filters[filter-i]
@@ -7467,29 +7869,96 @@
     (for [i (arr.range best-low best-high)]
       (let [filter-datom-index filter-indexes[i]
             filter-datom db.datoms[filter-datom-index]]
-        (when (datom-current-at? db filter-datom-index)
+        (when (or all-current (datom-current-at? db filter-datom-index))
           (let [filters-match true]
             (for [filter-i (arr.range 0 (count plan.filters))]
               (when (not (= filter-i best-filter-index))
                 (let [filter plan.filters[filter-i]]
                   (set! out-stats.clause-candidates (+ out-stats.clause-candidates 1))
-                  (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
-                    (set! filters-match false)))))
+                  (if all-current
+                    (when (not (cardinality-one-value-matches-fast-all-current? db filter-datom.e filter.attr filter.value))
+                      (set! filters-match false))
+                    (when (not (current-cardinality-one-value-matches-fast? db filter-datom.e filter.attr filter.value))
+                      (set! filters-match false))))))
             (when filters-match
-              (let [[first-value first-ok] (current-cardinality-one-value-fast db filter-datom.e plan.first-attr)
-                    [second-value second-ok] (current-cardinality-one-value-fast db filter-datom.e plan.second-attr)]
-                (set! out-stats.clause-candidates (+ out-stats.clause-candidates 2))
-                (when (and first-ok second-ok)
-                  (append-three-value-row! (addr rows) (value-entity filter-datom.e) first-value second-value))))))))
+              (if all-current
+                (let [[first-value first-ok] (cardinality-one-value-fast-all-current db filter-datom.e plan.first-attr)
+                      [second-value second-ok] (cardinality-one-value-fast-all-current db filter-datom.e plan.second-attr)]
+                  (set! out-stats.clause-candidates (+ out-stats.clause-candidates 2))
+                  (when (and first-ok second-ok)
+                    (append-three-value-row! (addr rows) (value-entity filter-datom.e) first-value second-value)))
+                (let [[first-value first-ok] (current-cardinality-one-value-fast db filter-datom.e plan.first-attr)
+                      [second-value second-ok] (current-cardinality-one-value-fast db filter-datom.e plan.second-attr)]
+                  (set! out-stats.clause-candidates (+ out-stats.clause-candidates 2))
+                  (when (and first-ok second-ok)
+                    (append-three-value-row! (addr rows) (value-entity filter-datom.e) first-value second-value)))))))))
     (set! out-stats.max-intermediate-bindings (count rows))
     (set! out-stats.output-rows (count rows))
     (profiled-result-set (result-set-ok rows) out-stats)))
+
+(defn q-query-entity-string-int-triples [db: DB, query: Query, inputs: []Query-Input] -> [columns: Entity-String-Int-Triples, ok: bool]
+  (let [out (empty-entity-string-int-triples)]
+    (when (> (count inputs) 0)
+      (return out false))
+    (let [[plan plan-ok] (query-entity-two-value-plan db query)]
+      (when (not plan-ok)
+        (delete plan.filters)
+        (return out false))
+      (let [filter-indexes (slice db.avet 0)
+            best-filter-index 0
+            best-low 0
+            best-high 0]
+        (for [filter-i (arr.range 0 (count plan.filters))]
+          (let [filter plan.filters[filter-i]
+                low (lower-bound-index db filter-indexes "avet" 0 filter.attr filter.value)
+                high (upper-bound-index db filter-indexes "avet" 0 filter.attr filter.value)]
+            (when (or (= filter-i 0)
+                      (< (- high low) (- best-high best-low)))
+              (set! best-filter-index filter-i)
+              (set! best-low low)
+              (set! best-high high))))
+        (for [i (arr.range best-low best-high)]
+          (let [filter-datom-index filter-indexes[i]
+                filter-datom db.datoms[filter-datom-index]]
+            (let [filters-match true]
+              (for [filter-i (arr.range 0 (count plan.filters))]
+                (when (not (= filter-i best-filter-index))
+                  (let [filter plan.filters[filter-i]]
+                    (when (not (cardinality-one-value-matches-fast-all-current? db filter-datom.e filter.attr filter.value))
+                      (set! filters-match false)))))
+              (when filters-match
+                (let [[first-value first-ok] (cardinality-one-value-fast-all-current db filter-datom.e plan.first-attr)
+                      [second-value second-ok] (cardinality-one-value-fast-all-current db filter-datom.e plan.second-attr)]
+                  (when (and first-ok
+                             second-ok
+                             (= first-value.kind .String)
+                             (= second-value.kind .Int))
+                    (append-entity-string-int-triple! (addr out) filter-datom.e first-value.text second-value.int-value)))))))
+        (delete plan.filters)
+        (return out true)))))
 
 (defn q-query-profiled-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Profiled-Result-Set
   (let [stats (query-stats-empty)
         [valid error] (validate-query-call-with-fns db query inputs sources registry)]
     (when (not valid)
       (return (profiled-result-set (result-set-error error) stats)))
+  (when (query-relation-engine-eligible? query sources)
+    (let [bindings (relation-engine-bindings-profiled db query inputs sources registry (addr stats))
+          rows (make [dynamic]Result-Row)]
+      (if (> (count query.aggregates) 0)
+        (if (= (count query.find) 0)
+          (let [values (make [dynamic]Value 0 (count query.aggregates))
+                pulls (make [dynamic]Pull-Result)]
+            (for [aggregate query.aggregates]
+              (arr.push! values (aggregate-value-for-group-with-fns (slice bindings 0) query aggregate ([]Value []) registry)))
+            (arr.push! rows (Result-Row {values: values pulls: pulls})))
+          (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice bindings 0) registry))
+        (do
+          (delete rows)
+          (set! rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice bindings 0) registry))))
+      (delete bindings)
+      (set! stats.output-rows (count rows))
+      (return (profiled-result-set (result-set-ok rows) stats))))
   (let [[distinct-clause distinct-ok] (query-single-attr-value-distinct-clause query)]
     (when distinct-ok
       (return (q-single-attr-value-distinct-profiled db distinct-clause stats))))
