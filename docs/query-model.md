@@ -152,6 +152,13 @@ relation engine:
 - recursive rule fast paths become planned recursive/semi-naive relation
   operators
 
+Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
+graphs are recognized and evaluated with a single bounded pass instead of the
+generic recursive fixpoint loop. Recursive rule groups are still handled by the
+existing evaluator and specialized transitive paths. The next rule-engine step
+is to replace that recursive path with a relation-native semi-naive evaluator,
+using the dependency components as the stratification input.
+
 Near-term query work should expand the relation engine in this order:
 
 1. Rules: replace the current wrapped recursive rule evaluator with measured

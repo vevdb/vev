@@ -5144,6 +5144,119 @@
           (return false))))
     matched))
 
+(defn string-push-unique! [out: ^[dynamic]string, value: string]
+  (when (not (string-slice-contains? (slice out^ 0) value))
+    (arr.push! out^ value)))
+
+(defn rule-name-exists? [rules: []Rule, name: string] -> bool
+  (for [rule rules]
+    (when (= rule.name name)
+      (return true)))
+  false)
+
+(defn rule-name-dependency-exists? [deps: []Rule-Dependency, from: string, target: string] -> bool
+  (for [dep deps]
+    (when (= dep.name from)
+      (return (string-slice-contains? (slice dep.deps 0) target))))
+  false)
+
+(defn rule-unique-names [rules: []Rule] -> [dynamic]string
+  (let [out (make [dynamic]string)]
+    (for [rule rules]
+      (string-push-unique! (addr out) rule.name))
+    out))
+
+(defn rule-direct-dependencies [rules: []Rule, name: string] -> [dynamic]string
+  (let [out (make [dynamic]string)]
+    (for [rule rules]
+      (when (= rule.name name)
+        (for [call rule.rule-calls]
+          (when (rule-name-exists? rules call.name)
+            (string-push-unique! (addr out) call.name)))))
+    out))
+
+(defn rules-dependency-graph [rules: []Rule] -> [dynamic]Rule-Dependency
+  (let [out (make [dynamic]Rule-Dependency)
+        names (rule-unique-names rules)]
+    (defer (delete names))
+    (for [name names]
+      (arr.push! out (Rule-Dependency {name: name deps: (rule-direct-dependencies rules name)})))
+    out))
+
+(defn delete-rule-dependency-graph [deps: [dynamic]Rule-Dependency]
+  (for [dep deps]
+    (delete dep.deps))
+  (delete deps))
+
+(defn rule-reaches-name? [deps: []Rule-Dependency, from: string, target: string] -> bool
+  (let [seen (make [dynamic]string)]
+    (defer (delete seen))
+    (let [visit (make [dynamic]string)]
+      (defer (delete visit))
+      (arr.push! visit from)
+      (while (> (count visit) 0)
+        (let [last-index (- (count visit) 1)
+              current visit[last-index]]
+          (arr.remove-ordered-at! visit last-index)
+          (when (= current target)
+            (return true))
+          (when (not (string-slice-contains? (slice seen 0) current))
+            (arr.push! seen current)
+            (for [dep deps]
+              (when (= dep.name current)
+                (for [next dep.deps]
+                  (when (not (string-slice-contains? (slice seen 0) next))
+                    (arr.push! visit next)))))))))
+    false))
+
+(defn rule-name-recursive? [rules: []Rule, name: string] -> bool
+  (let [deps (rules-dependency-graph rules)]
+    (defer (delete-rule-dependency-graph deps))
+    (when (rule-name-dependency-exists? (slice deps 0) name name)
+      (return true))
+    (for [dep deps]
+      (when (and (not (= dep.name name))
+                 (rule-reaches-name? (slice deps 0) name dep.name)
+                 (rule-reaches-name? (slice deps 0) dep.name name))
+        (return true)))
+    false))
+
+(defn rule-components [rules: []Rule] -> [dynamic]Rule-Component
+  (let [deps (rules-dependency-graph rules)
+        names (rule-unique-names rules)
+        assigned (make [dynamic]string)
+        out (make [dynamic]Rule-Component)]
+    (defer (delete-rule-dependency-graph deps))
+    (defer (delete names))
+    (defer (delete assigned))
+    (for [name names]
+      (when (not (string-slice-contains? (slice assigned 0) name))
+        (let [component-names (make [dynamic]string)
+              recursive (rule-name-dependency-exists? (slice deps 0) name name)]
+          (for [candidate names]
+            (when (and (rule-reaches-name? (slice deps 0) name candidate)
+                       (rule-reaches-name? (slice deps 0) candidate name))
+              (string-push-unique! (addr component-names) candidate)
+              (string-push-unique! (addr assigned) candidate)))
+          (when (> (count component-names) 1)
+            (set! recursive true))
+          (arr.push! out (Rule-Component {names: component-names recursive: recursive})))))
+    out))
+
+(defn delete-rule-components [components: [dynamic]Rule-Component]
+  (for [component components]
+    (delete component.names))
+  (delete components))
+
+(defn non-recursive-rule-depth [rules: []Rule, name: string] -> int
+  (let [deps (rules-dependency-graph rules)
+        max-depth 1]
+    (defer (delete-rule-dependency-graph deps))
+    (for [dep deps]
+      (when (rule-reaches-name? (slice deps 0) name dep.name)
+        (set! max-depth (+ max-depth 1))))
+    max-depth))
+
 (defn bindings-after-rule-call-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
     (when optimized-ok
@@ -5155,6 +5268,12 @@
     (delete optimized))
   (when (matching-rules-are-leaves? rules call)
     (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding 1 call.source call.has-source registry)
+          out (unique-bindings (slice candidates 0))]
+      (delete candidates)
+      (return out)))
+  (when (not (rule-name-recursive? rules call.name))
+    (let [depth (non-recursive-rule-depth rules call.name)
+          candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)
           out (unique-bindings (slice candidates 0))]
       (delete candidates)
       (return out)))
@@ -5191,6 +5310,14 @@
   (when (matching-rules-are-leaves? rules call)
     (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
     (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
+      (query-stats-observe-bindings! stats (count out))
+      (return out)))
+  (when (not (rule-name-recursive? rules call.name))
+    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+    (let [depth (non-recursive-rule-depth rules call.name)
+          candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)
+          out (unique-bindings (slice candidates 0))]
+      (delete candidates)
       (query-stats-observe-bindings! stats (count out))
       (return out)))
   (let [out (make [dynamic]Binding)
