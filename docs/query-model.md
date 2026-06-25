@@ -125,21 +125,21 @@ Vev should follow DataScript's query architecture as the semantic baseline:
   rules should all lower to relation operations
 - physical optimizations should live under that relation layer
 
-The first relation-engine path is now implemented for data-clause, predicate,
-function-clause, `not`, `or`, rule-call, and aggregate queries, including
-ordinary scalar, collection, tuple, relation `:in` inputs, and relation-source
-clauses over `:in` sources such as `$rows`. It builds one `Query-Relation` per
-input binding and datom/source pattern, joins those relations with generic
-relation product/join operations, applies predicates as relation filters,
-applies function clauses as relation extensions, applies `not` as relation
-subtraction, applies `or` as relation union, applies rule calls through the
-existing recursive rule evaluator, groups aggregate bindings through the
-existing aggregate renderer, and then uses the existing result renderer. Joins
-use DB-aware entity equality so entity ids, ints, and lookup refs compare the
-same way the older evaluator does. This is intentionally conservative: named
-DB sources and source-qualified synthetic primary collection DB rule/predicate/
-function queries still use the older binding-expansion evaluator until their
-DataScript-style source-aware relation handlers are ported.
+The first relation-engine path is now implemented for the main DataScript query
+operators: data clauses, predicates, function clauses, `not`, `or`, rule calls,
+`ground`, `get-else`, `get-some`, and aggregates. This includes ordinary
+scalar, collection, tuple, relation `:in` inputs, and relation-source clauses
+over `:in` sources such as `$rows`. It builds one `Query-Relation` per input
+binding and datom/source pattern, joins those relations with generic relation
+product/join operations, applies non-clause operators as relation transforms,
+applies rule calls through the existing recursive rule evaluator, groups
+aggregate bindings through the existing aggregate renderer, and then uses the
+existing result renderer. Joins use DB-aware entity equality so entity ids,
+ints, and lookup refs compare the same way the older evaluator does. This is
+intentionally conservative: named DB sources and source-qualified synthetic
+primary collection DB rule/predicate/function queries still use the older
+binding-expansion evaluator until their DataScript-style source-aware relation
+handlers are ported.
 
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the

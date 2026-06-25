@@ -6722,27 +6722,31 @@
         function-count 0
         not-count 0
         or-count 0
-        rule-call-count 0]
+        rule-call-count 0
+        ground-count 0
+        get-else-count 0
+        get-some-count 0]
     (for [step query.where-steps]
-      (if (= step.kind .Clause)
-        (set! clause-count (+ clause-count 1))
-        (if (= step.kind .Predicate)
-          (set! predicate-count (+ predicate-count 1))
-          (if (= step.kind .Function)
-            (set! function-count (+ function-count 1))
-            (if (= step.kind .Not)
-              (set! not-count (+ not-count 1))
-              (if (= step.kind .Or)
-                (set! or-count (+ or-count 1))
-                (if (= step.kind .RuleCall)
-                  (set! rule-call-count (+ rule-call-count 1))
-                  (return false))))))))
+      (cond
+        (= step.kind .Clause) (set! clause-count (+ clause-count 1))
+        (= step.kind .Predicate) (set! predicate-count (+ predicate-count 1))
+        (= step.kind .Function) (set! function-count (+ function-count 1))
+        (= step.kind .Not) (set! not-count (+ not-count 1))
+        (= step.kind .Or) (set! or-count (+ or-count 1))
+        (= step.kind .RuleCall) (set! rule-call-count (+ rule-call-count 1))
+        (= step.kind .Ground) (set! ground-count (+ ground-count 1))
+        (= step.kind .GetElse) (set! get-else-count (+ get-else-count 1))
+        (= step.kind .GetSome) (set! get-some-count (+ get-some-count 1))
+        :else (return false)))
     (and (= clause-count (count query.clauses))
          (= predicate-count (count query.predicates))
          (= function-count (count query.function-clauses))
          (= not-count (count query.not-groups))
          (= or-count (count query.or-groups))
-         (= rule-call-count (count query.rule-calls)))))
+         (= rule-call-count (count query.rule-calls))
+         (= ground-count (count query.grounds))
+         (= get-else-count (count query.get-elses))
+         (= get-some-count (count query.get-somes)))))
 
 (defn query-clause-uses-source-input? [query: Query, sources: []DB-Source, clause: Clause] -> bool
   (and clause.has-source
@@ -6782,10 +6786,6 @@
              (or (> (count query.predicates) 0)
                  (> (count query.function-clauses) 0)
                  (> (count query.rule-calls) 0)))
-    (return false))
-  (when (or (> (count query.get-elses) 0)
-            (> (count query.get-somes) 0)
-            (> (count query.grounds) 0))
     (return false))
   (for [clause-value query.clauses]
     (when (and clause-value.has-source
@@ -6840,6 +6840,24 @@
       (delete bindings)
       out)))
 
+(defn query-relation-apply-ground [rel: Query-Relation, ground: Ground] -> Query-Relation
+  (let [bindings (apply-ground (slice rel.tuples 0) ground)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-get-else [db: DB, rel: Query-Relation, get-else: Get-Else] -> Query-Relation
+  (let [bindings (bindings-after-get-else-step db (slice rel.tuples 0) get-else)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-get-some [db: DB, rel: Query-Relation, get-some: Get-Some] -> Query-Relation
+  (let [bindings (bindings-after-get-some-step db (slice rel.tuples 0) get-some)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
 (defn query-relation-apply-where-ops [db: DB, sources: []DB-Source, query: Query, rel: Query-Relation, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
   (let [current (query-relation-copy rel)]
     (for [step query.where-steps]
@@ -6869,6 +6887,24 @@
           (query-stats-observe-bindings! stats (count current.tuples))))
       (when (= step.kind .RuleCall)
         (let [next (query-relation-apply-rule-call db (slice query.rules 0) current query.rule-calls[step.index] registry stats)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Ground)
+        (let [next (query-relation-apply-ground current query.grounds[step.index])]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .GetElse)
+        (let [next (query-relation-apply-get-else db current query.get-elses[step.index])]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .GetSome)
+        (let [next (query-relation-apply-get-some db current query.get-somes[step.index])]
           (set! stats^.steps (+ stats^.steps 1))
           (delete-query-relation current)
           (set! current next)
