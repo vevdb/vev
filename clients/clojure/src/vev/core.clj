@@ -225,6 +225,42 @@
     {:source first-arg :query second-arg :inputs inputs}
     {:source second-arg :query first-arg :inputs inputs}))
 
+(defn- query-in-forms [query]
+  (cond
+    (map? query)
+    (:in query)
+
+    (vector? query)
+    (let [tail (drop-while #(not= :in %) query)]
+      (when (seq tail)
+        (take-while #(not (#{:where :with :keys :strs :syms} %)) (rest tail))))
+
+    :else
+    nil))
+
+(defn- split-rules-input [query inputs]
+  (let [in-forms (query-in-forms query)
+        inputv (vec inputs)]
+    (if-not (seq in-forms)
+      {:inputs inputs}
+      (loop [forms in-forms
+             input-index 0]
+        (if-let [form (first forms)]
+          (cond
+            (= '$ form)
+            (recur (rest forms) input-index)
+
+            (= '% form)
+            (if (< input-index (count inputv))
+              {:rules (nth inputv input-index)
+               :inputs (vec (concat (subvec inputv 0 input-index)
+                                    (subvec inputv (inc input-index))))}
+              {:inputs inputs})
+
+            :else
+            (recur (rest forms) (inc input-index)))
+          {:inputs inputs})))))
+
 (defn query-result
   "Run a prepared query and return the native result handle. Caller owns it."
   [source ^PreparedQuery prepared & inputs]
@@ -235,6 +271,21 @@
 
       (instance? DB source)
       (.query (:native source) (:native prepared) input-edn)
+
+      :else
+      (throw (ex-info "expected Vev connection or DB" {:source source})))))
+
+(defn query-result-with-rules
+  "Run a prepared query with rules and return the native result handle. Caller owns it."
+  [source ^PreparedQuery prepared rules & inputs]
+  (let [rules-edn (edn-text rules)
+        input-edn (inputs-text inputs)]
+    (cond
+      (instance? Conn source)
+      (.query (:native source) (:native prepared) rules-edn input-edn)
+
+      (instance? DB source)
+      (.query (:native source) (:native prepared) rules-edn input-edn)
 
       :else
       (throw (ex-info "expected Vev connection or DB" {:source source})))))
@@ -366,17 +417,21 @@
           (entity-int-pair-rows columns)
           (if-let [columns (entity-string-int-triples source query inputs)]
             (entity-string-int-triple-rows columns)
-            (with-open [result (apply query-result source query inputs)]
-              (rows-from-result result)))))
-      (with-open [prepared (prepare source query)]
-        (if-let [ids (entity-column source prepared inputs)]
-          (entity-column-rows ids)
-          (if-let [columns (entity-int-pair-columns source prepared inputs)]
-            (entity-int-pair-rows columns)
-            (if-let [columns (entity-string-int-triples source prepared inputs)]
-              (entity-string-int-triple-rows columns)
-              (with-open [result (apply query-result source prepared inputs)]
-                (rows-from-result result)))))))))
+              (with-open [result (apply query-result source query inputs)]
+                (rows-from-result result)))))
+      (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+        (with-open [prepared (prepare source query)]
+          (if rules
+            (with-open [result (apply query-result-with-rules source prepared rules inputs)]
+              (rows-from-result result))
+            (if-let [ids (entity-column source prepared inputs)]
+              (entity-column-rows ids)
+              (if-let [columns (entity-int-pair-columns source prepared inputs)]
+                (entity-int-pair-rows columns)
+                (if-let [columns (entity-string-int-triples source prepared inputs)]
+                  (entity-string-int-triple-rows columns)
+                  (with-open [result (apply query-result source prepared inputs)]
+                    (rows-from-result result)))))))))))
 
 (defn q
   "Run a query and return a set of row vectors."
@@ -391,15 +446,19 @@
             (entity-string-int-triple-set columns)
             (with-open [result (apply query-result source query inputs)]
               (q-from-result result)))))
-      (with-open [prepared (prepare source query)]
-        (if-let [ids (entity-column source prepared inputs)]
-          (entity-column-set ids)
-          (if-let [columns (entity-int-pair-columns source prepared inputs)]
-            (entity-int-pair-set columns)
-            (if-let [columns (entity-string-int-triples source prepared inputs)]
-              (entity-string-int-triple-set columns)
-              (with-open [result (apply query-result source prepared inputs)]
-                (q-from-result result)))))))))
+      (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+        (with-open [prepared (prepare source query)]
+          (if rules
+            (with-open [result (apply query-result-with-rules source prepared rules inputs)]
+              (q-from-result result))
+            (if-let [ids (entity-column source prepared inputs)]
+              (entity-column-set ids)
+              (if-let [columns (entity-int-pair-columns source prepared inputs)]
+                (entity-int-pair-set columns)
+                (if-let [columns (entity-string-int-triples source prepared inputs)]
+                  (entity-string-int-triple-set columns)
+                  (with-open [result (apply query-result source prepared inputs)]
+                    (q-from-result result)))))))))))
 
 (defn scalar
   "Run a query expected to return one value."
@@ -408,9 +467,13 @@
     (if (instance? PreparedQuery query)
       (with-open [result (apply query-result source query inputs)]
         (clj-value (.scalar result)))
-      (with-open [prepared (prepare source query)
-                  result (apply query-result source prepared inputs)]
-        (clj-value (.scalar result))))))
+      (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+        (with-open [prepared (prepare source query)]
+          (if rules
+            (with-open [result (apply query-result-with-rules source prepared rules inputs)]
+              (clj-value (.scalar result)))
+            (with-open [result (apply query-result source prepared inputs)]
+              (clj-value (.scalar result)))))))))
 
 (defn- with-db-source [source f]
   (cond

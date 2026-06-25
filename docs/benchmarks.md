@@ -12,11 +12,11 @@ checks, not only local microbenchmarks.
 Current order:
 
 1. Datalevin `datascript-bench`: add Vev beside Datomic, DataScript, and
-   Datalevin for the common in-memory read queries q1/q2/q2-switch/q3/q4 and
-   predicate variants, plus the inherited DataScript write/rule workloads when
-   the API shape is ready. This exercises Vev through the public Clojure API
-   and native ABI, so it is a better host-language benchmark than direct Kvist
-   calls.
+   Datalevin for the common in-memory read queries q1/q2/q2-switch/q3/q4/q5
+   and predicate variants, plus the inherited DataScript write/rule workloads
+   when the API shape is ready. This exercises Vev through the public Clojure
+   API and native ABI, so it is a better host-language benchmark than direct
+   Kvist calls.
 2. Datalevin `math-bench`: use next for realistic Datalog rule processing over
    the Math Genealogy dataset. This is the most relevant external benchmark for
    validating the generic recursive rule engine after the current synthetic
@@ -46,10 +46,18 @@ merge-scan operator instead of clause-order-sensitive hash joins. Vev should
 use these rows to drive reusable star-query and planner work rather than adding
 query-name-specific fast paths.
 
+The q5 row is the next read-query pressure point. It joins two entity variables
+through a shared value (`:age`) and should drive reusable hash/merge join
+operators rather than another star-query recognizer.
+
 The rule benchmark order is `datascript-bench`, then `math-bench`, then
 `openrulebench`. `datascript-bench` keeps Vev honest against the DataScript API
 surface; `math-bench` introduces realistic recursive data; `openrulebench`
 should validate the generic semi-naive engine once it exists.
+
+Vev now exposes the optional `datascript-bench` rule rows by name through the
+Clojure adapter using the same DataScript-style `:in $ %` rules input shape as
+the upstream benchmark.
 
 ## Query And Rule Baseline
 

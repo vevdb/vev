@@ -265,24 +265,7 @@
     out))
 
 (defn edn-unescaped-string-text [text: string, start: int, end: int] -> string
-  (let [parts (make [dynamic]string) :defer
-        cursor start]
-    (while (< cursor end)
-      (let [ch (kstr.get text cursor)]
-        (if (and (= ch 92) (< (+ cursor 1) end))
-          (let [escaped (kstr.get text (+ cursor 1))]
-            (cond
-              (= escaped 34) (arr.push! parts "\"")
-              (= escaped 92) (arr.push! parts "\\")
-              (= escaped 110) (arr.push! parts "\n")
-              (= escaped 114) (arr.push! parts "\r")
-              (= escaped 116) (arr.push! parts "\t")
-              :else (arr.push! parts (kstr.slice text (+ cursor 1) (+ cursor 2))))
-            (set! cursor (+ cursor 2)))
-          (do
-            (arr.push! parts (kstr.slice text cursor (+ cursor 1)))
-            (set! cursor (+ cursor 1))))))
-    (strings.concatenate (slice parts 0))))
+  (kstr.unescape (kstr.slice text start end)))
 
 (defn read-edn-string! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
   (let [start (+ i 1)
@@ -396,6 +379,49 @@
       (set! current (+ current 1)))
     child))
 
+(defstruct EDN-Sibling-Source {
+  doc: EDN-Doc
+  cursor: int
+})
+
+(defstruct EDN-Child-Pair {
+  key: int
+  value: int
+})
+
+(defn edn-open-siblings [doc: EDN-Doc, first: int] -> EDN-Sibling-Source
+  (EDN-Sibling-Source {doc: doc cursor: first}))
+
+(defn edn-next-sibling [src: ^EDN-Sibling-Source] -> [node: int ok: bool]
+  (when (= src.cursor -1)
+    (return -1 false))
+  (let [current src.cursor]
+    (set! src.cursor src.doc.nodes[current].next-sibling)
+    (return current true)))
+
+(defiter edn-siblings [doc: EDN-Doc, first: int] -> EDN-Sibling-Source :yield int
+  :next edn-next-sibling
+  (edn-open-siblings doc first))
+
+(defn edn-open-children [doc: EDN-Doc, parent: int] -> EDN-Sibling-Source
+  (edn-open-siblings doc doc.nodes[parent].first-child))
+
+(defiter edn-children [doc: EDN-Doc, parent: int] -> EDN-Sibling-Source :yield int
+  :next edn-next-sibling
+  (edn-open-children doc parent))
+
+(defn edn-next-child-pair [src: ^EDN-Sibling-Source] -> [pair: EDN-Child-Pair ok: bool]
+  (when (= src.cursor -1)
+    (return (EDN-Child-Pair {}) false))
+  (let [key src.cursor
+        value src.doc.nodes[key].next-sibling]
+    (set! src.cursor (if (= value -1) -1 src.doc.nodes[value].next-sibling))
+    (return (EDN-Child-Pair {key: key value: value}) true)))
+
+(defiter edn-child-pairs [doc: EDN-Doc, parent: int] -> EDN-Sibling-Source :yield EDN-Child-Pair
+  :next edn-next-child-pair
+  (edn-open-children doc parent))
+
 (defn edn-symbol-text? [doc: EDN-Doc, node-index: int, text: string] -> bool
   (and (not (= node-index -1))
        (= doc.nodes[node-index].kind .Symbol)
@@ -500,16 +526,15 @@
 
 (defn edn-terms-from-list-tail [doc: EDN-Doc, list-node: int] -> [dynamic]Term
   (let [out (make [dynamic]Term)
-        child doc.nodes[doc.nodes[list-node].first-child].next-sibling]
-    (while (not (= child -1))
-      (arr.push! out (value-term-from-edn-node doc child))
-      (set! child doc.nodes[child].next-sibling))
+        first doc.nodes[list-node].first-child
+        tail (if (= first -1) -1 doc.nodes[first].next-sibling)]
+    (for [child (edn-siblings doc tail)]
+      (arr.push! out (value-term-from-edn-node doc child)))
     out))
 
 (defn edn-vars-from-vector [doc: EDN-Doc, vector-node: int] -> [dynamic]string
-  (let [out (make [dynamic]string)
-        child doc.nodes[vector-node].first-child]
-    (while (not (= child -1))
+  (let [out (make [dynamic]string)]
+    (for [child (edn-children doc vector-node)]
       (cond
         (edn-var? doc child)
           (arr.push! out doc.nodes[child].text)
@@ -518,8 +543,7 @@
             (for [name nested]
               (arr.push! out name)))
         :else
-          (arr.push! out ""))
-      (set! child doc.nodes[child].next-sibling))
+          (arr.push! out "")))
     out))
 
 (defn input-binding-none [] -> Input-Binding

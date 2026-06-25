@@ -41,8 +41,52 @@
 (def db100k-2s (bench-db))
 (def db100k-3 (bench-db))
 (def db100k-4 (bench-db))
+(def db100k-5 (bench-db))
 (def db100k-p1 (bench-db))
 (def db100k-p2 (bench-db))
+
+(defn wide-entities
+  ([depth width]
+   (wide-entities 1 depth width))
+  ([id depth width]
+   (if (pos? depth)
+     (let [children (map #(+ (* id width) %) (range width))]
+       (concat
+         (map (fn [child]
+                {:db/id id
+                 :name "Ivan"
+                 :follows (v/entity child)})
+              children)
+         (mapcat #(wide-entities % (dec depth) width) children)))
+     [{:db/id id :name "Ivan"}])))
+
+(defn long-entities [depth width]
+  (apply concat
+         (for [x (range width)
+               y (range depth)
+               :let [from (+ (* x (inc depth)) y)
+                     to (+ (* x (inc depth)) y 1)]]
+           [{:db/id (inc from)
+             :name "Ivan"
+             :follows (v/entity (inc to))}
+            {:db/id (inc to)
+             :name "Ivan"}])))
+
+(defn rule-db [entities]
+  (with-open [initial (v/empty-db (library-path))
+              schema-db (db-with-bulk initial schema-tx)]
+    (db-with-bulk schema-db entities)))
+
+(defn bench-rules [db]
+  (v/q '[:find ?e ?e2
+         :in $ %
+         :where (follows ?e ?e2)]
+       db
+       '[[(follows ?x ?y)
+          [?x :follows ?y]]
+         [(follows ?x ?y)
+          [?x :follows ?t]
+          (follows ?t ?y)]]))
 
 (defn q1 []
   (core/bench
@@ -85,6 +129,16 @@
            [?e :sex :male]]
          @db100k-4)))
 
+(defn q5 []
+  (core/bench
+    (v/q '[:find ?e1 ?l ?a
+           :where
+           [?e :name "Ivan"]
+           [?e :age ?a]
+           [?e1 :age ?a]
+           [?e1 :last-name ?l]]
+         @db100k-5)))
+
 (defn qpred1 []
   (core/bench
     (v/q '[:find ?e ?s
@@ -102,6 +156,41 @@
            [(> ?s ?min-s)]]
          @db100k-p2
          50000)))
+
+(defn rules-wide-3x3 []
+  (with-open [db (rule-db (wide-entities 3 3))]
+    (core/bench
+      (bench-rules db))))
+
+(defn rules-wide-5x3 []
+  (with-open [db (rule-db (wide-entities 5 3))]
+    (core/bench
+      (bench-rules db))))
+
+(defn rules-wide-7x3 []
+  (with-open [db (rule-db (wide-entities 7 3))]
+    (core/bench
+      (bench-rules db))))
+
+(defn rules-wide-4x6 []
+  (with-open [db (rule-db (wide-entities 4 6))]
+    (core/bench
+      (bench-rules db))))
+
+(defn rules-long-10x3 []
+  (with-open [db (rule-db (long-entities 10 3))]
+    (core/bench
+      (bench-rules db))))
+
+(defn rules-long-30x3 []
+  (with-open [db (rule-db (long-entities 30 3))]
+    (core/bench
+      (bench-rules db))))
+
+(defn rules-long-30x5 []
+  (with-open [db (rule-db (long-entities 30 5))]
+    (core/bench
+      (bench-rules db))))
 
 (def default-benchmarks
   ["q1" "q2" "q2-switch" "q3" "q4" "qpred1" "qpred2"])
