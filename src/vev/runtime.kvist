@@ -6721,7 +6721,8 @@
         predicate-count 0
         function-count 0
         not-count 0
-        or-count 0]
+        or-count 0
+        rule-call-count 0]
     (for [step query.where-steps]
       (if (= step.kind .Clause)
         (set! clause-count (+ clause-count 1))
@@ -6733,12 +6734,15 @@
               (set! not-count (+ not-count 1))
               (if (= step.kind .Or)
                 (set! or-count (+ or-count 1))
-                (return false)))))))
+                (if (= step.kind .RuleCall)
+                  (set! rule-call-count (+ rule-call-count 1))
+                  (return false))))))))
     (and (= clause-count (count query.clauses))
          (= predicate-count (count query.predicates))
          (= function-count (count query.function-clauses))
          (= not-count (count query.not-groups))
-         (= or-count (count query.or-groups)))))
+         (= or-count (count query.or-groups))
+         (= rule-call-count (count query.rule-calls)))))
 
 (defn query-clause-uses-source-input? [query: Query, sources: []DB-Source, clause: Clause] -> bool
   (and clause.has-source
@@ -6765,6 +6769,10 @@
       (when (and clause-value.has-source
                  (= clause-value.source primary))
         (return true)))
+    (for [call query.rule-calls]
+      (when (and call.has-source
+                 (= call.source primary))
+        (return true)))
     false))
 
 (defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
@@ -6772,11 +6780,10 @@
     (return false))
   (when (and (query-uses-primary-relation-db-source? query)
              (or (> (count query.predicates) 0)
-                 (> (count query.function-clauses) 0)))
+                 (> (count query.function-clauses) 0)
+                 (> (count query.rule-calls) 0)))
     (return false))
-  (when (or (> (count query.rules) 0)
-            (> (count query.rule-calls) 0)
-            (> (count query.get-elses) 0)
+  (when (or (> (count query.get-elses) 0)
             (> (count query.get-somes) 0)
             (> (count query.grounds) 0))
     (return false))
@@ -6822,6 +6829,17 @@
     (delete bindings)
     out))
 
+(defn query-relation-apply-rule-call [db: DB, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+  (let [bindings (make [dynamic]Binding)]
+    (for [tuple rel.tuples]
+      (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db rules call tuple registry stats)]
+        (for [rule-binding rule-bindings]
+          (arr.push! bindings rule-binding))
+        (delete rule-bindings)))
+    (let [out (query-relation-from-bindings (slice bindings 0))]
+      (delete bindings)
+      out)))
+
 (defn query-relation-apply-where-ops [db: DB, sources: []DB-Source, query: Query, rel: Query-Relation, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
   (let [current (query-relation-copy rel)]
     (for [step query.where-steps]
@@ -6845,6 +6863,12 @@
           (query-stats-observe-bindings! stats (count current.tuples))))
       (when (= step.kind .Or)
         (let [next (query-relation-apply-or db sources current query.or-groups[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .RuleCall)
+        (let [next (query-relation-apply-rule-call db (slice query.rules 0) current query.rule-calls[step.index] registry stats)]
           (set! stats^.steps (+ stats^.steps 1))
           (delete-query-relation current)
           (set! current next)
