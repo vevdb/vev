@@ -92,11 +92,37 @@ Current status:
 - A local full 20k-person Vev-only run completes in about 11s wall time,
   including setup, with the default seven read queries.
 
+Latest checked local comparison:
+
+```sh
+VEV_COMPARE_BASELINES=datascript \
+VEV_BENCH_PEOPLE=1000 \
+VEV_BENCH_WARMUP_MS=10 \
+VEV_BENCH_MS=20 \
+VEV_BENCH_REPEATS=1 \
+  bench/datascript_bench/run_compare.sh q1 q2 q2-switch q3 q4 qpred1 qpred2
+```
+
+| Query | DataScript ms | Vev ms | DataScript / Vev |
+|---|---:|---:|---:|
+| `q1` | 0.28 | 0.05 | 5.60x |
+| `q2` | 1.4 | 0.10 | 14.00x |
+| `q2-switch` | 3.0 | 0.08 | 37.50x |
+| `q3` | 2.1 | 0.11 | 19.09x |
+| `q4` | 3.2 | 0.21 | 15.24x |
+| `qpred1` | 4.2 | 0.09 | 46.67x |
+| `qpred2` | 8.0 | 0.12 | 66.67x |
+
+The Datalevin baseline process can still take a long time or stall locally in
+this wrapper; the latest verified table above is DataScript-only. Datalevin's
+published numbers remain useful for direction, but they are not yet part of a
+fresh automated Vev table.
+
 Near-term benchmark work:
 
-1. Investigate why long baseline comparison runs can stall on local external
-   DataScript/Datalevin/Datomic processes even when the Vev row completes.
-2. Use `q1` to drive bound AVET lookup overhead down until it is at least
-   DataScript-competitive.
-3. Use `q2` and `q2-switch` to drive a general same-entity star / merge-scan
-   physical operator in Vev.
+1. Investigate why long Datalevin/Datomic baseline comparison runs can stall
+   locally even when the Vev and DataScript rows complete.
+2. Run the same q1/q2/q2-switch/q3/q4/qpred rows at the Datalevin 20k-person
+   scale and record stable comparison tables.
+3. Continue using `q2` and `q2-switch` to drive a general same-entity star /
+   merge-scan physical operator in Vev.
