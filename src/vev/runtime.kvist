@@ -9042,13 +9042,37 @@
       (return (not (schema-component? db forward)))))
   (schema-cardinality-many? db pulled.a))
 
-(defn pull-render-append-key-value! [items: ^[dynamic]Value, key: string, value: Value]
-  (arr.push! items^ (value-keyword key))
-  (arr.push! items^ value))
+(defstruct Value-Map-Builder {
+  items: [dynamic]Value
+})
 
-(defn pull-render-append-attr-value! [items: ^[dynamic]Value, pulled: Pull-Attr, value: Value]
-  (arr.push! items^ (pull-render-attr-key pulled))
-  (arr.push! items^ value))
+(defn value-map-builder [capacity: int] -> Value-Map-Builder
+  (Value-Map-Builder {items: (make [dynamic]Value 0 capacity)}))
+
+(defn delete-value-map-builder [builder: Value-Map-Builder]
+  (delete builder.items))
+
+(defn value-map-builder-key-index [builder: Value-Map-Builder, key: Value] -> [index: int, ok: bool]
+  (let [i 0]
+    (while (< i (count builder.items))
+      (when (value-equal? builder.items[i] key)
+        (return i true))
+      (set! i (+ i 2))))
+  (return 0 false))
+
+(defn value-map-builder-has-key? [builder: Value-Map-Builder, key: Value] -> bool
+  (let [[_ ok] (value-map-builder-key-index builder key)]
+    ok))
+
+(defn value-map-builder-put-new! [builder: ^Value-Map-Builder, key: Value, value: Value] -> bool
+  (when (value-map-builder-has-key? builder^ key)
+    (return false))
+  (arr.push! builder^.items key)
+  (arr.push! builder^.items value)
+  true)
+
+(defn value-map-builder-value [builder: Value-Map-Builder] -> Value
+  (value-map (slice builder.items 0)))
 
 (defn pull-render-group-values [db: DB, attrs: []Pull-Attr, attr-name: string] -> [dynamic]Value
   (let [values (make [dynamic]Value)]
@@ -9058,29 +9082,21 @@
     values))
 
 (defn pull-render-attrs-map [db: DB, attrs: []Pull-Attr] -> Value
-  (let [items (make [dynamic]Value)
+  (let [builder (value-map-builder (* (count attrs) 2))
         i 0]
+    (defer (delete-value-map-builder builder))
     (while (< i (count attrs))
       (let [pulled attrs[i]
-            seen false
-            key (pull-render-attr-key pulled)
-            j 0]
-        (while (< j (count items))
-          (when (and (= (% j 2) 0)
-                     (value-equal? items[j] key))
-            (set! seen true))
-          (set! j (+ j 1)))
-        (when (not seen)
+            key (pull-render-attr-key pulled)]
+        (when (not (value-map-builder-has-key? builder key))
           (let [values (pull-render-group-values db attrs pulled.a)
                 rendered (if (pull-render-attr-is-many? db pulled (count values))
                            (value-vector (slice values 0))
                            values[0])]
-            (pull-render-append-attr-value! (addr items) pulled rendered)
+            (discard (value-map-builder-put-new! (addr builder) key rendered))
             (delete values))))
       (set! i (+ i 1)))
-    (let [result (value-map (slice items 0))]
-      (delete items)
-      result)))
+    (value-map-builder-value builder)))
 
 (defn pull-result-value [db: DB, result: Pull-Result] -> Value
   (if (= (count result.attrs) 0)

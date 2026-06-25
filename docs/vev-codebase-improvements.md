@@ -91,6 +91,9 @@ Status labels:
 - `done` Avoid repeated reachability scans in rule-call planning.
   Rule planning now computes the reachable rule-name set once per call plan and reuses it for call-rule filtering, recursive dependency detection, and acyclic depth. This keeps the general dependency-graph path while removing repeated `rule-reaches-name?` scans from the hot planning path.
 
+- `done` Add a `Value-Map-Builder` for pull rendering.
+  Pull map rendering now uses a small builder to centralize duplicate-key checks and map materialization instead of open-coding key scans against the raw `Value` item array.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -113,9 +116,6 @@ Status labels:
 
 - `todo` Add explicit SCC metadata for rule components.
   Rule planning now reuses single-start reachability, but recursive component detection still checks mutual reachability on demand. A Tarjan/Kosaraju pass would make component recursion, rule grouping, and future semi-naive planning more direct.
-
-- `todo` Add a `Value-Map-Builder`.
-  Pull/result rendering manually tracks duplicate map keys by scanning `Value` pairs. A builder can centralize duplicate handling and ownership.
 
 - `todo` Normalize transaction macro entity dispatch.
   Literal transaction macros repeat the same entity-ref matrix for lookup refs, idents, tempids, and ints. A macro helper should classify and emit it once.
