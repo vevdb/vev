@@ -87,10 +87,58 @@ Status labels:
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
 
 - `todo` Scope Clojure prepared-query caching to native library/connection lifetime.
-  The current cache key is query form only. Prepared native handles should not be shared across unrelated native engine/library instances.
+  The current cache key is query form only, with no explicit eviction/close path. Prepared native handles should not be shared across unrelated native engine/library instances or leaked for the wrapper lifetime.
 
 - `todo` Add benchmark helper code.
-  Query/rule and ABI benchmarks repeat timing, warmup, sample collection, and reporting loops. A small benchmark helper package would make further benchmark work cheaper.
+  Query/rule and ABI benchmarks repeat timing, warmup, sample collection, reporting loops, sample-vector ownership, and schema/data fixture setup. A small benchmark helper package would make further benchmark work cheaper.
+
+- `todo` Add generic query/parser AST visitors.
+  Source validation, source-input validation, relation-DB query rewriting, and EDN query section parsing all hand-walk the same query or EDN shapes. A reusable visitor/mapper plus single-pass section indexing would reduce duplicate traversal logic.
+
+- `todo` Build reusable physical query operators.
+  Entity-column scans, profiled row rendering, same-entity star plans, relation-source row matching, and specialized typed result paths duplicate scan/filter/project logic. Indexed scan, row matcher, star/merge-scan, and column materialization operators should feed both rows and typed columns.
+
+- `todo` Cache prepared rule planning data.
+  Rule-call planning still rebuilds dependency graphs, reachable rule sets, recursion classification, and transitive-shape recognition from raw rules. Prepared queries should own reusable rule plans instead of deriving them during execution.
+
+- `todo` Add a rule lookup/index structure.
+  Rule validation, arity checks, required-binding checks, and planning repeatedly scan all rules by name and arity. A rule index keyed by name and arity would centralize those checks and avoid repeated scans.
+
+- `todo` Improve schema property access.
+  Schema extraction and hot schema predicates repeat similar EAVT probes for keyword and boolean properties. A schema property accessor or cached schema map/view would centralize these scans and make predicate paths cheaper.
+
+- `todo` Add a tempid lookup table during transaction resolution.
+  Tempid resolution repeatedly scans the ordered tempid report vector. Keep the ordered report shape, but maintain a `map[string]u64` alongside it for lookup-heavy transaction paths.
+
+- `todo` Make tuple schema transaction helpers slice-based.
+  Runtime tuple schema parsing supports arbitrary-length tuple attr vectors, but helper constructors are still specialized for two component attrs. Slice-based helpers would avoid custom assembly for 3+ tuple attrs.
+
+- `todo` Make index order a typed helper.
+  Seek/rseek/range paths repeatedly branch on string index names to select `eavt`, `aevt`, `avet`, or `vaet`. A typed index-order value plus `db-index-slice` helper would remove string dispatch from core scan code.
+
+- `todo` Validate negative integer query terms.
+  EDN query integer terms can be cast into `u64` entity ids. Query parsing should reject negative entity terms or preserve signedness until validation, matching the more explicit transaction parser behavior.
+
+- `todo` Add direct entity read helpers.
+  `entity-get`, `entity-contains?`, and `entity-ref` currently build full value/ref arrays when the caller only needs the first value or existence. Direct `entity-first-value?`, `entity-has-value?`, and first-ref helpers would avoid allocation and clarify intent.
+
+- `todo` Fix partial owned cleanup on parse failures.
+  EDN value conversion, serialized DB parsing, and datom parsing delete container arrays shallowly on some error paths. Previously parsed nested `Value` containers and datoms need owned cleanup helpers on failure.
+
+- `todo` Add structured parser diagnostics and malformed-input suites.
+  Parser parity work is now broad enough that tests should assert portable structured error categories for malformed query, pull, rule, return-map, and tx-data shapes instead of only checking `not ok` or exact strings.
+
+- `todo` Add test support helpers for Vev values and results.
+  Tests build verbose nested `Value` fixtures and carry local result/pull search helpers. EDN-to-`Value` fixture helpers, `value-get-in`, and row/pull matchers would make compatibility tests easier to read and extend.
+
+- `todo` Tighten ABI owned-builder cleanup.
+  Some ABI builder/free paths own cloned strings and values but free only the outer dynamic array. Add owned cleanup helpers for ABI transaction builders and similar owned-struct containers.
+
+- `todo` Improve C ABI value inspection helpers.
+  C clients currently hand-roll map lookup and text comparison/ownership patterns. ABI helpers for map lookup by key and borrowed/owned text extraction would reduce client boilerplate.
+
+- `todo` Materialize pull values more cleanly for ABI results.
+  ABI results currently keep pull structures in the result plus a side array of rendered pull `Value`s. A single owned materialized result representation would simplify pull result access and cleanup.
 
 ## Kvist / Compiler / Package Work
 
@@ -130,10 +178,22 @@ Status labels:
 - `kvist` String builder/unescape helpers.
   EDN rendering and string unescaping build arrays of string parts. A standard builder/unescape package would be a cleaner long-term fit.
 
+- `kvist` Standard Option/Maybe type.
+  Vev uses value-plus-`has-*` fields and raw sentinel values in schema attrs, index args, input binding parsing, and absent `Value` results. A standard option type would make those shapes explicit.
+
+- `kvist` Array fill/repeat helpers.
+  Dense indexes and benchmark/sample setup still need manual loops to initialize arrays with repeated values. `arr.repeat`, `arr.fill!`, or similar helpers would remove small but recurring boilerplate.
+
+- `kvist` Better macro-time collection utilities.
+  Literal tx and pull macros still enumerate option orderings and shape cases by hand where runtime EDN parsing can fold over data. Macro-time iteration/folding/splicing helpers would help keep literal and runtime frontends aligned.
+
+- `kvist` Scoped owned aggregate helpers.
+  Benchmarks and ABI execution paths often allocate several related owned arrays/values and then carry long `defer delete` blocks. Language or package support for scoped owned aggregate records would make this pattern less fragile.
+
 ## Later Architecture
 
 - `later` Revisit manual tagged structs.
-  `Term`, tx EDN entities, input bindings, query inputs, pull visits, and native query functions use kind enums plus payload flags. Some can become `defunion`, but broad conversion is not urgent and may affect ABI or serialization expectations.
+  `Term`, tx EDN entities, input bindings, query inputs, pull visits, native query functions, rule call strategies, ground clauses, aggregate find specs, tx function callbacks, index args, and EDN nodes use kind enums plus payload flags. Some can become `defunion`, but broad conversion is not urgent and may affect ABI or serialization expectations.
 
 - `later` Add stronger tx data invariants.
   `Tx-Data` is a wide struct with `op` string and many flags. At minimum it wants an op enum; longer-term it may want smaller entity/value-ref variants.
@@ -146,6 +206,24 @@ Status labels:
 
 - `later` Use an EDN writer/builder.
   Serialization currently builds string parts and concatenates. This is real cleanup, but not on the critical path unless serialization becomes hot or harder to maintain.
+
+- `later` Revisit `DB` and entity borrow semantics.
+  `DB`, `DB-Source`, and `Entity` are value structs carrying dynamic-array headers. A distinct borrowed DB handle/reference type could make owner vs view semantics clearer, but this needs an API-wide ownership decision.
+
+- `later` Revisit EDN document child storage.
+  `EDN-Doc` stores children as linked sibling indexes in one node array, which forces linear `edn-child-at` and cursor loops. Child spans or child-index arrays would better match Kvist slice-heavy traversal.
+
+- `later` Add generic typed result/column batches.
+  Typed fast paths and ABI wrappers are currently shape-specific for entity columns, entity/int pairs, and entity/string/int triples. A generic column batch or typed relation result would age better than adding benchmark-shaped accessors.
+
+- `later` Consolidate transitive graph execution.
+  Forward/reverse adjacency construction, sparse/dense BFS, unbound-start emission, and alternating traversal all carry similar graph-walk logic. A graph traversal helper should come with the broader physical-operator layer.
+
+- `later` Normalize EDN value decoding modes.
+  Normal EDN value conversion and serialized-value conversion are nearly the same recursive decoder with a few tag hooks. A parameterized decoder mode would reduce duplication once the parser surface stabilizes.
+
+- `later` Decide canonical map ordering.
+  Map equality is order-insensitive, while map ordering compares stored item arrays. Canonical map storage or a map-specific comparator would make equality and ordering semantics line up.
 
 - `later` Generate ABI handle/accessor declarations.
   The handle/accessor pairs are mechanical. This is a good macro-generation target once the ABI shape stabilizes further.
@@ -166,3 +244,6 @@ Status labels:
 
 - `not-now` Broad wrapper-matrix collapse.
   Query and pull variants are intentionally explicit while the API is still being shaped for C, Java, Python, Clojure, Rust, and Kvist. Macro generation should come after the final public API settles.
+
+- `not-now` Replace all raw `core:strings` calls with `kvist:str`.
+  Prefer `kvist:str` where it makes code clearer, but mixed `core:strings` usage is not worth a dedicated cleanup pass unless the surrounding code is already changing.
