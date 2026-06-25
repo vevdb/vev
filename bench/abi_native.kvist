@@ -3,16 +3,8 @@
 (import arr "kvist:arr")
 (import fmt "core:fmt")
 (import time "core:time")
+(import bench "./support")
 (import vev "../src/vev")
-
-(defn elapsed-us [start: time.Time] -> f64
-  (time.duration_microseconds (time.since start)))
-
-(defn median-us [samples: []f64] -> f64
-  (let [sorted (arr.into [dynamic]f64 samples)]
-    (defer (delete sorted))
-    (arr.sort! sorted)
-    sorted[(/ (count sorted) 2)]))
 
 (defn seed-people [conn: ^vev.Conn, n: int]
   (let [tx (make [dynamic]vev.Tx-Data 0 (+ (* n 4) 2))]
@@ -38,7 +30,7 @@
     engine
     workload
     n
-    (median-us samples)
+    (bench.timing-from-samples samples).median-us
     (count samples)))
 
 (defn main []
@@ -83,28 +75,28 @@
     (for [_ (arr.range 0 sample-count)]
       (let [start (time.now)
             _ (vev.q-prepared-value-with-input-text conn.db prepared inputs)
-            elapsed (elapsed-us start)]
+            elapsed (bench.elapsed-us start)]
         (arr.push! value-samples elapsed)))
     (for [_ (arr.range 0 warmups)]
       (discard (vev.q-prepared-with-input-text conn.db prepared inputs)))
     (for [_ (arr.range 0 sample-count)]
       (let [start (time.now)
             _ (vev.q-prepared-with-input-text conn.db prepared inputs)
-            elapsed (elapsed-us start)]
+            elapsed (bench.elapsed-us start)]
         (arr.push! result-samples elapsed)))
     (for [_ (arr.range 0 warmups)]
       (discard (vev.q-prepared-with-inputs conn.db prepared bound-inputs)))
     (for [_ (arr.range 0 sample-count)]
       (let [start (time.now)
             _ (vev.q-prepared-with-inputs conn.db prepared bound-inputs)
-            elapsed (elapsed-us start)]
+            elapsed (bench.elapsed-us start)]
         (arr.push! bound-result-samples elapsed)))
     (for [_ (arr.range 0 warmups)]
       (discard (vev.q-prepared conn.db many-prepared)))
     (for [_ (arr.range 0 sample-count)]
       (let [start (time.now)
             result (vev.q-prepared conn.db many-prepared)
-            elapsed (elapsed-us start)]
+            elapsed (bench.elapsed-us start)]
         (when (not (= (count result.rows) n))
           (fmt.printf "unexpected native many-row result count: %d\n" (count result.rows)))
         (arr.push! many-result-samples elapsed)))
@@ -113,7 +105,7 @@
     (for [_ (arr.range 0 sample-count)]
       (let [start (time.now)
             total (scan-result (vev.q-prepared conn.db many-prepared))
-            elapsed (elapsed-us start)]
+            elapsed (bench.elapsed-us start)]
         (when (not (= total (* n 3)))
           (fmt.printf "unexpected native scan count: %d\n" total))
         (arr.push! many-scan-samples elapsed)))
@@ -122,14 +114,14 @@
     (for [_ (arr.range 0 sample-count)]
       (let [start (time.now)
             value (vev.pull-many-text-value conn.db pull-pattern pull-ids)
-            elapsed (elapsed-us start)]
+            elapsed (bench.elapsed-us start)]
         (when (not (= (count value.items) (count pull-ids)))
           (fmt.printf "unexpected native pull-many count: %d\n" (count value.items)))
         (arr.push! pull-many-samples elapsed)))
     (for [_ (arr.range 0 sample-count)]
       (let [start (time.now)
             snapshot (vev.db (addr conn))
-            elapsed (elapsed-us start)]
+            elapsed (bench.elapsed-us start)]
         (vev.delete-owned-db snapshot)
         (arr.push! snapshot-samples elapsed)))
     (let [snapshot (vev.db (addr conn))]
@@ -138,14 +130,14 @@
       (for [_ (arr.range 0 sample-count)]
         (let [start (time.now)
               _ (vev.q-prepared-with-input-text snapshot prepared inputs)
-              elapsed (elapsed-us start)]
+              elapsed (bench.elapsed-us start)]
           (arr.push! snapshot-query-samples elapsed)))
       (for [_ (arr.range 0 warmups)]
         (discard (vev.q-prepared-with-inputs snapshot prepared bound-inputs)))
       (for [_ (arr.range 0 sample-count)]
         (let [start (time.now)
               _ (vev.q-prepared-with-inputs snapshot prepared bound-inputs)
-              elapsed (elapsed-us start)]
+              elapsed (bench.elapsed-us start)]
           (arr.push! snapshot-bound-query-samples elapsed)))
       (vev.delete-owned-db snapshot))
     (let [empty-conn (vev.create-conn)
@@ -159,7 +151,7 @@
         (let [start (time.now)
               value (vev.with-text-value empty-db tx-text)
               rendered (vev.value-serializable-text value)
-              elapsed (elapsed-us start)]
+              elapsed (bench.elapsed-us start)]
           (discard rendered)
           (arr.push! with-text-samples elapsed)))
       (for [_ (arr.range 0 warmups)]
@@ -167,7 +159,7 @@
       (for [_ (arr.range 0 sample-count)]
         (let [start (time.now)
               _ (vev.tx-report-value (vev.with-text empty-db tx-text))
-              elapsed (elapsed-us start)]
+              elapsed (bench.elapsed-us start)]
           (arr.push! with-value-samples elapsed)))
       (vev.delete-owned-db empty-db))
     (print-median "vev-native" "prepared-email-input-text" n (slice value-samples 0))

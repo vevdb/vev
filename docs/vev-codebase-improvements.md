@@ -79,6 +79,9 @@ Status labels:
 - `done` Remove global Clojure prepared-query cache.
   Ad hoc Clojure `q`, `rows`, and `scalar` calls now prepare a temporary native query handle and close it after use. Explicit `vev/prepare` remains the reuse path, avoiding cross-engine prepared handle sharing and unbounded native cache lifetime.
 
+- `done` Add shared benchmark timing helpers.
+  `bench/support` now owns elapsed-time and sample percentile helpers. Query-rule, stress, ABI-native, and index benchmarks use the shared `Timing` helpers instead of carrying local copies.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -113,9 +116,6 @@ Status labels:
 
 - `todo` Consolidate ABI exported query/bind variants.
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
-
-- `todo` Add benchmark helper code.
-  Query/rule and ABI benchmarks repeat timing, warmup, sample collection, reporting loops, sample-vector ownership, and schema/data fixture setup. A small benchmark helper package would make further benchmark work cheaper.
 
 - `todo` Add generic query/parser AST visitors.
   Source validation, source-input validation, relation-DB query rewriting, and EDN query section parsing all hand-walk the same query or EDN shapes. A reusable visitor/mapper plus single-pass section indexing would reduce duplicate traversal logic.
