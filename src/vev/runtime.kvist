@@ -176,27 +176,56 @@
 
 (defn query-relation-empty [] -> Query-Relation
   (Query-Relation {attrs: (make [dynamic]string)
+                   attr-sources: (make [dynamic]string)
                    tuples: (make [dynamic]Binding)}))
 
 (defn query-relation-singleton [] -> Query-Relation
   (let [tuples (make [dynamic]Binding)]
     (arr.push! tuples (Binding {}))
     (Query-Relation {attrs: (make [dynamic]string)
+                     attr-sources: (make [dynamic]string)
                      tuples: tuples})))
 
 (defn query-relation-from-bindings [bindings: []Binding] -> Query-Relation
+  (query-relation-from-bindings-with-source bindings ""))
+
+(defn query-relation-from-bindings-with-source [bindings: []Binding, source: string] -> Query-Relation
   (let [attrs (make [dynamic]string)
+        attr-sources (make [dynamic]string)
         tuples (make [dynamic]Binding 0 (count bindings))]
     (for [binding bindings]
       (for [item binding.items]
         (when (not (string-slice-contains? (slice attrs 0) item.name))
-          (arr.push! attrs item.name)))
+          (arr.push! attrs item.name)
+          (arr.push! attr-sources source)))
       (arr.push! tuples (clone-binding binding)))
-    (Query-Relation {attrs: attrs tuples: tuples})))
+    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+
+(defn query-relation-from-bindings-inheriting-sources [bindings: []Binding, parent: Query-Relation] -> Query-Relation
+  (let [attrs (make [dynamic]string)
+        attr-sources (make [dynamic]string)
+        tuples (make [dynamic]Binding 0 (count bindings))]
+    (for [binding bindings]
+      (for [item binding.items]
+        (when (not (string-slice-contains? (slice attrs 0) item.name))
+          (let [[source source-ok] (relation-attr-source parent item.name)]
+            (arr.push! attrs item.name)
+            (if source-ok
+              (arr.push! attr-sources source)
+              (arr.push! attr-sources "")))))
+      (arr.push! tuples (clone-binding binding)))
+    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
 
 (defn delete-query-relation [rel: Query-Relation]
   (delete rel.attrs)
+  (delete rel.attr-sources)
   (delete rel.tuples))
+
+(defn relation-attr-source [rel: Query-Relation, name: string] -> [source: string, ok: bool]
+  (for [attr index rel.attrs]
+    (when (= attr name)
+      (return rel.attr-sources[index] true)))
+  (return "" false))
 
 (defn relation-common-attrs [left: Query-Relation, right: Query-Relation] -> [dynamic]string
   (let [out (make [dynamic]string)]
@@ -205,52 +234,84 @@
         (arr.push! out name)))
     out))
 
-(defn binding-agrees-on-attrs? [db: DB, left: Binding, right: Binding, attrs: []string] -> bool
+(defn db-for-relation-source [db: DB, sources: []DB-Source, source: string] -> DB
+  (when (> (count source) 0)
+    (let [[source-db found] (source-db-lookup db sources source)]
+      (when found
+        (return source-db))))
+  db)
+
+(defn relation-entity-values-equal? [db: DB, sources: []DB-Source, left-rel: Query-Relation, right-rel: Query-Relation, name: string, left-value: Value, right-value: Value] -> bool
+  (let [[left-source left-source-ok] (relation-attr-source left-rel name)
+        [right-source right-source-ok] (relation-attr-source right-rel name)
+        left-effective-source (if (and left-source-ok (> (count left-source) 0))
+                                left-source
+                                (if right-source-ok right-source ""))
+        right-effective-source (if (and right-source-ok (> (count right-source) 0))
+                                 right-source
+                                 (if left-source-ok left-source ""))
+        left-db (db-for-relation-source db sources left-effective-source)
+        right-db (db-for-relation-source db sources right-effective-source)]
+    (when (predicate-value-equal? left-value right-value)
+      (return true))
+    (let [[left-entity left-ok] (lookup-ref-value-as-entity left-db left-value)]
+      (when left-ok
+        (return (predicate-value-equal? left-entity right-value))))
+    (let [[right-entity right-ok] (lookup-ref-value-as-entity right-db right-value)]
+      (when right-ok
+        (return (predicate-value-equal? left-value right-entity))))
+    false))
+
+(defn binding-agrees-on-attrs? [db: DB, sources: []DB-Source, left-rel: Query-Relation, right-rel: Query-Relation, left: Binding, right: Binding, attrs: []string] -> bool
   (for [name attrs]
     (let [[left-value left-ok] (binding-lookup left name)
           [right-value right-ok] (binding-lookup right name)]
-      (when (not (and left-ok right-ok (entity-value-equal? db left-value right-value)))
+      (when (not (and left-ok right-ok (relation-entity-values-equal? db sources left-rel right-rel name left-value right-value)))
         (return false))))
   true)
 
-(defn merge-relation-binding [db: DB, base: Binding, extra: Binding] -> [binding: Binding, ok: bool]
+(defn merge-relation-binding [db: DB, sources: []DB-Source, base-rel: Query-Relation, extra-rel: Query-Relation, base: Binding, extra: Binding] -> [binding: Binding, ok: bool]
   (let [out (clone-binding base)]
     (for [item extra.items]
       (let [[existing exists] (binding-lookup out item.name)]
         (if exists
-          (when (not (entity-value-equal? db existing item.value))
+          (when (not (relation-entity-values-equal? db sources base-rel extra-rel item.name existing item.value))
             (return out false))
           (binding-store! (addr out) item.name item.value))))
     (return out true)))
 
-(defn query-relation-product [db: DB, left: Query-Relation, right: Query-Relation] -> Query-Relation
+(defn query-relation-product [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
         tuples (make [dynamic]Binding 0 (* (count left.tuples) (count right.tuples)))]
-    (for [name right.attrs]
-      (arr.push! attrs name))
+    (for [name index right.attrs]
+      (arr.push! attrs name)
+      (arr.push! attr-sources right.attr-sources[index]))
     (for [left-tuple left.tuples]
       (for [right-tuple right.tuples]
-        (let [[merged ok] (merge-relation-binding db left-tuple right-tuple)]
+        (let [[merged ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
           (when ok
             (arr.push! tuples merged)))))
-    (Query-Relation {attrs: attrs tuples: tuples})))
+    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
 
-(defn query-relation-join [db: DB, left: Query-Relation, right: Query-Relation] -> Query-Relation
+(defn query-relation-join [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [common (relation-common-attrs left right) :defer]
     (when (= (count common) 0)
-      (return (query-relation-product db left right)))
+      (return (query-relation-product db sources left right)))
     (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+          attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
           tuples (make [dynamic]Binding)]
-      (for [name right.attrs]
+      (for [name index right.attrs]
         (when (not (string-slice-contains? (slice attrs 0) name))
-          (arr.push! attrs name)))
+          (arr.push! attrs name)
+          (arr.push! attr-sources right.attr-sources[index])))
       (for [left-tuple left.tuples]
         (for [right-tuple right.tuples]
-          (when (binding-agrees-on-attrs? db left-tuple right-tuple (slice common 0))
-            (let [[merged ok] (merge-relation-binding db left-tuple right-tuple)]
+          (when (binding-agrees-on-attrs? db sources left right left-tuple right-tuple (slice common 0))
+            (let [[merged ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
               (when ok
                 (arr.push! tuples merged))))))
-      (Query-Relation {attrs: attrs tuples: tuples}))))
+      (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples}))))
 
 (defn query-context-singleton [] -> Query-Context
   (let [rels (make [dynamic]Query-Relation)]
@@ -4756,6 +4817,18 @@
 (defn append-linear-transitive-target-result! [out: ^[dynamic]Binding, db: DB, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding, start-entity: u64, target: Value, target-ok: bool, target-entity: u64]
   (when (not (transitive-target-matches? db target target-ok target-entity))
     (return))
+  (when (and (= (count rule.params) 2)
+             (= (count call.args) 2)
+             (= call.args[0].kind .Var)
+             (= call.args[1].kind .Var)
+             (not (= call.args[0].name call.args[1].name)))
+    (let [[_ start-bound] (binding-lookup binding call.args[0].name)
+          [_ target-bound] (binding-lookup binding call.args[1].name)]
+      (when (and start-bound (not target-bound))
+        (let [fast-result (clone-binding binding)]
+          (binding-store! (addr fast-result) call.args[1].name (value-entity target-entity))
+          (arr.push! out^ fast-result)
+          (return)))))
   (let [[_ start-bound] (binding-lookup initial rule.params[0])
         with-start initial
         with-start-ok true]
@@ -5083,29 +5156,262 @@
           (return false))))
     matched))
 
-(defn bindings-after-rule-call-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
-  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
+(defn string-push-unique! [out: ^[dynamic]string, value: string]
+  (when (not (string-slice-contains? (slice out^ 0) value))
+    (arr.push! out^ value)))
+
+(defn rule-name-exists? [rules: []Rule, name: string] -> bool
+  (for [rule rules]
+    (when (= rule.name name)
+      (return true)))
+  false)
+
+(defn rule-name-dependency-exists? [deps: []Rule-Dependency, from: string, target: string] -> bool
+  (for [dep deps]
+    (when (= dep.name from)
+      (return (string-slice-contains? (slice dep.deps 0) target))))
+  false)
+
+(defn rule-unique-names [rules: []Rule] -> [dynamic]string
+  (let [out (make [dynamic]string)]
+    (for [rule rules]
+      (string-push-unique! (addr out) rule.name))
+    out))
+
+(defn rule-direct-dependencies [rules: []Rule, name: string] -> [dynamic]string
+  (let [out (make [dynamic]string)]
+    (for [rule rules]
+      (when (= rule.name name)
+        (for [call rule.rule-calls]
+          (when (rule-name-exists? rules call.name)
+            (string-push-unique! (addr out) call.name)))))
+    out))
+
+(defn rules-dependency-graph [rules: []Rule] -> [dynamic]Rule-Dependency
+  (let [out (make [dynamic]Rule-Dependency)
+        names (rule-unique-names rules)]
+    (defer (delete names))
+    (for [name names]
+      (arr.push! out (Rule-Dependency {name: name deps: (rule-direct-dependencies rules name)})))
+    out))
+
+(defn delete-rule-dependency-graph [deps: [dynamic]Rule-Dependency]
+  (for [dep deps]
+    (delete dep.deps))
+  (delete deps))
+
+(defn rule-reaches-name? [deps: []Rule-Dependency, from: string, target: string] -> bool
+  (let [seen (make [dynamic]string)]
+    (defer (delete seen))
+    (let [visit (make [dynamic]string)]
+      (defer (delete visit))
+      (arr.push! visit from)
+      (while (> (count visit) 0)
+        (let [last-index (- (count visit) 1)
+              current visit[last-index]]
+          (arr.remove-ordered-at! visit last-index)
+          (when (= current target)
+            (return true))
+          (when (not (string-slice-contains? (slice seen 0) current))
+            (arr.push! seen current)
+            (for [dep deps]
+              (when (= dep.name current)
+                (for [next dep.deps]
+                  (when (not (string-slice-contains? (slice seen 0) next))
+                    (arr.push! visit next)))))))))
+    false))
+
+(defn rule-name-recursive? [rules: []Rule, name: string] -> bool
+  (let [deps (rules-dependency-graph rules)]
+    (defer (delete-rule-dependency-graph deps))
+    (when (rule-name-dependency-exists? (slice deps 0) name name)
+      (return true))
+    (for [dep deps]
+      (when (and (not (= dep.name name))
+                 (rule-reaches-name? (slice deps 0) name dep.name)
+                 (rule-reaches-name? (slice deps 0) dep.name name))
+        (return true)))
+    false))
+
+(defn rule-name-recursive-in-deps? [deps: []Rule-Dependency, name: string] -> bool
+  (when (rule-name-dependency-exists? deps name name)
+    (return true))
+  (for [other deps]
+    (when (and (not (= other.name name))
+               (rule-reaches-name? deps name other.name)
+               (rule-reaches-name? deps other.name name))
+      (return true)))
+  false)
+
+(defn rule-name-depends-on-recursive? [rules: []Rule, name: string] -> bool
+  (let [deps (rules-dependency-graph rules)]
+    (defer (delete-rule-dependency-graph deps))
+    (for [dep deps]
+      (when (and (rule-reaches-name? (slice deps 0) name dep.name)
+                 (rule-name-recursive-in-deps? (slice deps 0) dep.name))
+        (return true)))
+    false))
+
+(defn rule-call-can-use-acyclic-depth? [rules: []Rule, name: string] -> bool
+  (not (rule-name-depends-on-recursive? rules name)))
+
+(defn rule-name-depends-on-recursive-in-deps? [deps: []Rule-Dependency, name: string] -> bool
+  (for [dep deps]
+    (when (and (rule-reaches-name? deps name dep.name)
+               (rule-name-recursive-in-deps? deps dep.name))
+      (return true)))
+  false)
+
+(defn rule-components [rules: []Rule] -> [dynamic]Rule-Component
+  (let [deps (rules-dependency-graph rules)
+        names (rule-unique-names rules)
+        assigned (make [dynamic]string)
+        out (make [dynamic]Rule-Component)]
+    (defer (delete-rule-dependency-graph deps))
+    (defer (delete names))
+    (defer (delete assigned))
+    (for [name names]
+      (when (not (string-slice-contains? (slice assigned 0) name))
+        (let [component-names (make [dynamic]string)
+              recursive (rule-name-dependency-exists? (slice deps 0) name name)]
+          (for [candidate names]
+            (when (and (rule-reaches-name? (slice deps 0) name candidate)
+                       (rule-reaches-name? (slice deps 0) candidate name))
+              (string-push-unique! (addr component-names) candidate)
+              (string-push-unique! (addr assigned) candidate)))
+          (when (> (count component-names) 1)
+            (set! recursive true))
+          (arr.push! out (Rule-Component {names: component-names recursive: recursive})))))
+    out))
+
+(defn delete-rule-components [components: [dynamic]Rule-Component]
+  (for [component components]
+    (delete component.names))
+  (delete components))
+
+(defn non-recursive-rule-depth [rules: []Rule, name: string] -> int
+  (let [deps (rules-dependency-graph rules)
+        max-depth 1]
+    (defer (delete-rule-dependency-graph deps))
+    (for [dep deps]
+      (when (rule-reaches-name? (slice deps 0) name dep.name)
+        (set! max-depth (+ max-depth 1))))
+    max-depth))
+
+(defn non-recursive-rule-depth-in-deps [deps: []Rule-Dependency, name: string] -> int
+  (let [max-depth 1]
+    (for [dep deps]
+      (when (rule-reaches-name? deps name dep.name)
+        (set! max-depth (+ max-depth 1))))
+    max-depth))
+
+(defn rules-reachable-from-name [rules: []Rule, name: string] -> [dynamic]string
+  (let [deps (rules-dependency-graph rules)
+        out (make [dynamic]string)]
+    (defer (delete-rule-dependency-graph deps))
+    (for [dep deps]
+      (when (rule-reaches-name? (slice deps 0) name dep.name)
+        (string-push-unique! (addr out) dep.name)))
+    out))
+
+(defn rules-filter-by-names [rules: []Rule, names: []string] -> [dynamic]Rule
+  (let [out (make [dynamic]Rule)]
+    (for [rule rules]
+      (when (string-slice-contains? names rule.name)
+        (arr.push! out rule)))
+    out))
+
+(defn rules-for-call [rules: []Rule, name: string] -> [dynamic]Rule
+  (let [names (rules-reachable-from-name rules name)
+        out (rules-filter-by-names rules (slice names 0))]
+    (delete names)
+    out))
+
+(defn rule-call-plan [rules: []Rule, name: string] -> Rule-Call-Plan
+  (let [deps (rules-dependency-graph rules)
+        names (make [dynamic]string)]
+    (defer (delete-rule-dependency-graph deps))
+    (defer (delete names))
+    (for [dep deps]
+      (when (rule-reaches-name? (slice deps 0) name dep.name)
+        (string-push-unique! (addr names) dep.name)))
+    (let [call-rules (rules-filter-by-names rules (slice names 0))
+          recursive (rule-name-depends-on-recursive-in-deps? (slice deps 0) name)
+          acyclic-depth (if recursive 0 (non-recursive-rule-depth-in-deps (slice deps 0) name))
+          [linear-plan linear-ok] (linear-transitive-rule-plan (slice call-rules 0) name)
+          linear-filters (make [dynamic]Clause)
+          [alternating-plan alternating-ok] (alternating-transitive-rule-plan (slice call-rules 0) name)]
+      (defer (delete-linear-transitive-plan linear-plan))
+      (when linear-ok
+        (delete linear-filters)
+        (set! linear-filters (arr.into [dynamic]Clause (slice linear-plan.filters 0))))
+      (Rule-Call-Plan {rules: call-rules
+                       recursive: recursive
+                       acyclic-depth: acyclic-depth
+                       linear-transitive: linear-ok
+                       linear-attr: linear-plan.attr
+                       linear-filters: linear-filters
+                       alternating-transitive: alternating-ok
+                       alternating-left-name: alternating-plan.left-name
+                       alternating-left-attr: alternating-plan.left-attr
+                       alternating-right-name: alternating-plan.right-name
+                       alternating-right-attr: alternating-plan.right-attr}))))
+
+(defn delete-rule-call-plan [plan: Rule-Call-Plan]
+  (delete plan.rules)
+  (delete plan.linear-filters))
+
+(defn bindings-after-linear-transitive-rule-call-with-plan [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
+  (let [result-bindings (make [dynamic]Binding)]
+    (when (not plan.linear-transitive)
+      (return result-bindings false))
+    (let [[rule rule-ok] (first-rule-by-name (slice plan.rules 0) call.name)]
+      (when rule-ok
+        (let [linear-plan (Linear-Transitive-Plan {attr: plan.linear-attr filters: plan.linear-filters})]
+          (append-linear-transitive-results! (addr result-bindings) db linear-plan call binding rule)))
+      (return result-bindings true))))
+
+(defn bindings-after-alternating-transitive-rule-call-with-plan [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
+  (let [result-bindings (make [dynamic]Binding)]
+    (when (not plan.alternating-transitive)
+      (return result-bindings false))
+    (let [[rule rule-ok] (first-rule-by-name (slice plan.rules 0) call.name)]
+      (when rule-ok
+        (let [alternating-plan (Alternating-Transitive-Plan {left-name: plan.alternating-left-name
+                                                             left-attr: plan.alternating-left-attr
+                                                             right-name: plan.alternating-right-name
+                                                             right-attr: plan.alternating-right-attr})]
+          (append-alternating-transitive-results! (addr result-bindings) db alternating-plan call binding rule)))
+      (return result-bindings true))))
+
+(defn bindings-after-rule-call-planned-with-fns [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call-with-plan db plan call binding)]
     (when optimized-ok
       (return optimized))
     (delete optimized))
-  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db rules call binding)]
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call-with-plan db plan call binding)]
     (when optimized-ok
       (return optimized))
     (delete optimized))
-  (when (matching-rules-are-leaves? rules call)
-    (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding 1 call.source call.has-source registry)
+  (when (matching-rules-are-leaves? (slice plan.rules 0) call)
+    (let [candidates (bindings-after-rule-call-depth-with-fns db (slice plan.rules 0) call binding 1 call.source call.has-source registry)
+          out (unique-bindings (slice candidates 0))]
+      (delete candidates)
+      (return out)))
+  (when (not plan.recursive)
+    (let [candidates (bindings-after-rule-call-depth-with-fns db (slice plan.rules 0) call binding plan.acyclic-depth call.source call.has-source registry)
           out (unique-bindings (slice candidates 0))]
       (delete candidates)
       (return out)))
   (let [out (make [dynamic]Binding)
         seen (make (map string bool))
         depth 1
-        min-depth (+ (count rules) 1)
+        min-depth (+ (count plan.rules) 1)
         changed true]
     (defer (delete seen))
     (while (or changed (<= depth min-depth))
       (set! changed false)
-      (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
+      (let [candidates (bindings-after-rule-call-depth-with-fns db (slice plan.rules 0) call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
           (when (append-unique-binding! (addr out) (addr seen) candidate)
@@ -5113,35 +5419,54 @@
       (set! depth (+ depth 1)))
     out))
 
+(defn bindings-after-rule-call-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (let [plan (rule-call-plan rules call.name)]
+    (defer (delete-rule-call-plan plan))
+    (bindings-after-rule-call-planned-with-fns db plan call binding registry)))
+
 (defn bindings-after-rule-call-profiled-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (let [plan (rule-call-plan rules call.name)]
+    (defer (delete-rule-call-plan plan))
+    (bindings-after-rule-call-profiled-with-plan db plan call binding registry stats)))
+
+(defn bindings-after-rule-call-profiled-with-plan [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
   (set! stats^.rule-calls (+ stats^.rule-calls 1))
-  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
+  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call-with-plan db plan call binding)]
     (when optimized-ok
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
       (query-stats-observe-bindings! stats (count optimized))
       (return optimized))
     (delete optimized))
-  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db rules call binding)]
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call-with-plan db plan call binding)]
     (when optimized-ok
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
       (query-stats-observe-bindings! stats (count optimized))
       (return optimized))
     (delete optimized))
-  (when (matching-rules-are-leaves? rules call)
+  (when (matching-rules-are-leaves? (slice plan.rules 0) call)
     (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-    (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
+    (let [candidates (bindings-after-rule-call-depth-with-fns db (slice plan.rules 0) call binding 1 call.source call.has-source registry)
+          out (unique-bindings (slice candidates 0))]
+      (delete candidates)
+      (query-stats-observe-bindings! stats (count out))
+      (return out)))
+  (when (not plan.recursive)
+    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+    (let [candidates (bindings-after-rule-call-depth-with-fns db (slice plan.rules 0) call binding plan.acyclic-depth call.source call.has-source registry)
+          out (unique-bindings (slice candidates 0))]
+      (delete candidates)
       (query-stats-observe-bindings! stats (count out))
       (return out)))
   (let [out (make [dynamic]Binding)
         seen (make (map string bool))
         depth 1
-        min-depth (+ (count rules) 1)
+        min-depth (+ (count plan.rules) 1)
         changed true]
     (defer (delete seen))
     (while (or changed (<= depth min-depth))
       (set! changed false)
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-      (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
+      (let [candidates (bindings-after-rule-call-depth-with-fns db (slice plan.rules 0) call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
           (when (append-unique-binding! (addr out) (addr seen) candidate)
@@ -6581,9 +6906,14 @@
   (bindings-after-rule-call-step-with-fns db rules bindings call ([]Native-Query-Fn [])))
 
 (defn bindings-after-rule-call-step-with-fns [db: DB, rules: []Rule, bindings: []Binding, call: Rule-Call, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (let [plan (rule-call-plan rules call.name)]
+    (defer (delete-rule-call-plan plan))
+    (bindings-after-rule-call-step-with-plan db plan bindings call registry)))
+
+(defn bindings-after-rule-call-step-with-plan [db: DB, plan: Rule-Call-Plan, bindings: []Binding, call: Rule-Call, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
-      (let [rule-bindings (bindings-after-rule-call-with-fns db rules call binding registry)]
+      (let [rule-bindings (bindings-after-rule-call-planned-with-fns db plan call binding registry)]
         (for [rule-binding rule-bindings]
           (arr.push! out rule-binding))
         (delete rule-bindings)))
@@ -6665,12 +6995,14 @@
         out)
     .RuleCall
       (let [out (make [dynamic]Binding)
-            call query^.rule-calls[step.index]]
+            call query^.rule-calls[step.index]
+            plan (rule-call-plan (slice query^.rules 0) call.name)]
         (for [binding bindings]
-          (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db (slice query^.rules 0) call binding registry stats)]
+          (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call binding registry stats)]
             (for [rule-binding rule-bindings]
               (arr.push! out rule-binding))
             (delete rule-bindings)))
+        (delete-rule-call-plan plan)
         out)
     .Ground
       (apply-ground bindings query^.grounds[step.index])
@@ -6790,71 +7122,72 @@
   (for [clause-value query.clauses]
     (when (and clause-value.has-source
                (not (= clause-value.source "$"))
-               (not (query-source-input? query clause-value.source)))
-      (return false))
-    (when (and clause-value.has-source
-               (not (= clause-value.source "$"))
-               (query-source-db? sources clause-value.source))
+               (not (query-source-input? query clause-value.source))
+               (not (query-source-db? sources clause-value.source)))
       (return false)))
   true)
 
 (defn query-relation-copy [rel: Query-Relation] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
         tuples (clone-bindings (slice rel.tuples 0))]
-    (Query-Relation {attrs: attrs tuples: tuples})))
+    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
 
 (defn query-relation-filter-predicate [db: DB, rel: Query-Relation, predicate: Predicate, registry: []Native-Query-Fn] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
         tuples (make [dynamic]Binding)]
     (for [tuple rel.tuples]
       (when (predicate-matches-with-db-and-fns? db predicate tuple registry)
         (arr.push! tuples (clone-binding tuple))))
-    (Query-Relation {attrs: attrs tuples: tuples})))
+    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
 
 (defn query-relation-extend-function [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> Query-Relation
   (let [bindings (bindings-after-function-with-fns (slice rel.tuples 0) function registry)
-        out (query-relation-from-bindings (slice bindings 0))]
+        out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
 (defn query-relation-apply-not [db: DB, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> Query-Relation
   (let [bindings (bindings-after-not-group-step-with-fns db sources (slice rel.tuples 0) group registry)
-        out (query-relation-from-bindings (slice bindings 0))]
+        out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
 (defn query-relation-apply-or [db: DB, sources: []DB-Source, rel: Query-Relation, group: Or-Group, registry: []Native-Query-Fn] -> Query-Relation
   (let [bindings (bindings-after-or-group-step-with-fns db sources (slice rel.tuples 0) group registry)
-        out (query-relation-from-bindings (slice bindings 0))]
+        out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
 (defn query-relation-apply-rule-call [db: DB, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
-  (let [bindings (make [dynamic]Binding)]
+  (let [bindings (make [dynamic]Binding)
+        plan (rule-call-plan rules call.name)]
     (for [tuple rel.tuples]
-      (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db rules call tuple registry stats)]
+      (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call tuple registry stats)]
         (for [rule-binding rule-bindings]
           (arr.push! bindings rule-binding))
         (delete rule-bindings)))
-    (let [out (query-relation-from-bindings (slice bindings 0))]
+    (delete-rule-call-plan plan)
+    (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
       (delete bindings)
       out)))
 
 (defn query-relation-apply-ground [rel: Query-Relation, ground: Ground] -> Query-Relation
   (let [bindings (apply-ground (slice rel.tuples 0) ground)
-        out (query-relation-from-bindings (slice bindings 0))]
+        out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
 (defn query-relation-apply-get-else [db: DB, rel: Query-Relation, get-else: Get-Else] -> Query-Relation
   (let [bindings (bindings-after-get-else-step db (slice rel.tuples 0) get-else)
-        out (query-relation-from-bindings (slice bindings 0))]
+        out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
 (defn query-relation-apply-get-some [db: DB, rel: Query-Relation, get-some: Get-Some] -> Query-Relation
   (let [bindings (bindings-after-get-some-step db (slice rel.tuples 0) get-some)
-        out (query-relation-from-bindings (slice bindings 0))]
+        out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
@@ -6932,14 +7265,19 @@
           (when source-ok
             (append-bindings-after-clause! (addr out) source-db (unsourced-clause clause-value) empty))))
       (append-bindings-after-clause! (addr out) db clause-value empty))
-    (let [rel (query-relation-from-bindings (slice out 0))]
+    (let [source (if (and clause-value.has-source
+                          (not (= clause-value.source "$"))
+                          (query-source-db? sources clause-value.source))
+                   clause-value.source
+                   "")
+          rel (query-relation-from-bindings-with-source (slice out 0) source)]
       (delete out)
       rel)))
 
-(defn query-relation-reduce [db: DB, relations: []Query-Relation] -> Query-Relation
+(defn query-relation-reduce [db: DB, sources: []DB-Source, relations: []Query-Relation] -> Query-Relation
   (let [current (query-relation-singleton)]
     (for [rel relations]
-      (let [next (query-relation-join db current rel)]
+      (let [next (query-relation-join db sources current rel)]
         (delete-query-relation current)
         (set! current next)))
     current))
@@ -6957,7 +7295,7 @@
       (let [rel (query-relation-from-clause db query inputs sources clause-value)]
         (set! stats^.clause-candidates (+ stats^.clause-candidates (count rel.tuples)))
         (arr.push! relations rel)))
-    (let [joined (query-relation-reduce db (slice relations 0))
+    (let [joined (query-relation-reduce db sources (slice relations 0))
           post-rel (query-relation-apply-where-ops db sources query joined registry stats)]
       (for [rel relations]
         (delete-query-relation rel))
@@ -8011,13 +8349,15 @@
         (query-stats-observe-bindings! (addr stats) (count bindings))
         (arr.remove-ordered-at! remaining clause-index)))
     (for [call query.rule-calls]
-      (let [next-bindings (make [dynamic]Binding)]
+      (let [next-bindings (make [dynamic]Binding)
+            plan (rule-call-plan (slice query.rules 0) call.name)]
         (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
-          (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db (slice query.rules 0) call binding registry (addr stats))]
+          (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call binding registry (addr stats))]
             (for [rule-binding rule-bindings]
               (arr.push! next-bindings rule-binding))
             (delete rule-bindings)))
+        (delete-rule-call-plan plan)
         (delete bindings)
         (set! bindings next-bindings)
         (query-stats-observe-bindings! (addr stats) (count bindings))))
