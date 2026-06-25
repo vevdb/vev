@@ -5338,6 +5338,50 @@
       (set! depth (+ depth 1)))
     out))
 
+(defn bindings-after-rule-call-profiled-with-analysis [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats, recursive: bool, acyclic-depth: int] -> [dynamic]Binding
+  (set! stats^.rule-calls (+ stats^.rule-calls 1))
+  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
+    (when optimized-ok
+      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+      (query-stats-observe-bindings! stats (count optimized))
+      (return optimized))
+    (delete optimized))
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db rules call binding)]
+    (when optimized-ok
+      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+      (query-stats-observe-bindings! stats (count optimized))
+      (return optimized))
+    (delete optimized))
+  (when (matching-rules-are-leaves? rules call)
+    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+    (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
+      (query-stats-observe-bindings! stats (count out))
+      (return out)))
+  (when (not recursive)
+    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+    (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding acyclic-depth call.source call.has-source registry)
+          out (unique-bindings (slice candidates 0))]
+      (delete candidates)
+      (query-stats-observe-bindings! stats (count out))
+      (return out)))
+  (let [out (make [dynamic]Binding)
+        seen (make (map string bool))
+        depth 1
+        min-depth (+ (count rules) 1)
+        changed true]
+    (defer (delete seen))
+    (while (or changed (<= depth min-depth))
+      (set! changed false)
+      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+      (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
+        (defer (delete candidates))
+        (for [candidate candidates]
+          (when (append-unique-binding! (addr out) (addr seen) candidate)
+            (set! changed true))))
+      (query-stats-observe-bindings! stats (count out))
+      (set! depth (+ depth 1)))
+    out))
+
 (defn bindings-after-rule-call [db: DB, rules: []Rule, call: Rule-Call, binding: Binding] -> [dynamic]Binding
   (bindings-after-rule-call-with-fns db rules call binding ([]Native-Query-Fn [])))
 
@@ -7017,9 +7061,11 @@
     out))
 
 (defn query-relation-apply-rule-call [db: DB, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
-  (let [bindings (make [dynamic]Binding)]
+  (let [bindings (make [dynamic]Binding)
+        recursive (rule-name-recursive? rules call.name)
+        acyclic-depth (if recursive 0 (non-recursive-rule-depth rules call.name))]
     (for [tuple rel.tuples]
-      (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db rules call tuple registry stats)]
+      (let [rule-bindings (bindings-after-rule-call-profiled-with-analysis db rules call tuple registry stats recursive acyclic-depth)]
         (for [rule-binding rule-bindings]
           (arr.push! bindings rule-binding))
         (delete rule-bindings)))
