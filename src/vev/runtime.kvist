@@ -5221,6 +5221,28 @@
         (return true)))
     false))
 
+(defn rule-name-recursive-in-deps? [deps: []Rule-Dependency, name: string] -> bool
+  (when (rule-name-dependency-exists? deps name name)
+    (return true))
+  (for [other deps]
+    (when (and (not (= other.name name))
+               (rule-reaches-name? deps name other.name)
+               (rule-reaches-name? deps other.name name))
+      (return true)))
+  false)
+
+(defn rule-name-depends-on-recursive? [rules: []Rule, name: string] -> bool
+  (let [deps (rules-dependency-graph rules)]
+    (defer (delete-rule-dependency-graph deps))
+    (for [dep deps]
+      (when (and (rule-reaches-name? (slice deps 0) name dep.name)
+                 (rule-name-recursive-in-deps? (slice deps 0) dep.name))
+        (return true)))
+    false))
+
+(defn rule-call-can-use-acyclic-depth? [rules: []Rule, name: string] -> bool
+  (not (rule-name-depends-on-recursive? rules name)))
+
 (defn rule-components [rules: []Rule] -> [dynamic]Rule-Component
   (let [deps (rules-dependency-graph rules)
         names (rule-unique-names rules)
@@ -5271,7 +5293,7 @@
           out (unique-bindings (slice candidates 0))]
       (delete candidates)
       (return out)))
-  (when (not (rule-name-recursive? rules call.name))
+  (when (rule-call-can-use-acyclic-depth? rules call.name)
     (let [depth (non-recursive-rule-depth rules call.name)
           candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)
           out (unique-bindings (slice candidates 0))]
@@ -5312,7 +5334,7 @@
     (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
       (query-stats-observe-bindings! stats (count out))
       (return out)))
-  (when (not (rule-name-recursive? rules call.name))
+  (when (rule-call-can-use-acyclic-depth? rules call.name)
     (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
     (let [depth (non-recursive-rule-depth rules call.name)
           candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)
@@ -7062,7 +7084,7 @@
 
 (defn query-relation-apply-rule-call [db: DB, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
   (let [bindings (make [dynamic]Binding)
-        recursive (rule-name-recursive? rules call.name)
+        recursive (not (rule-call-can-use-acyclic-depth? rules call.name))
         acyclic-depth (if recursive 0 (non-recursive-rule-depth rules call.name))]
     (for [tuple rel.tuples]
       (let [rule-bindings (bindings-after-rule-call-profiled-with-analysis db rules call tuple registry stats recursive acyclic-depth)]
