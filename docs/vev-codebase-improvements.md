@@ -170,8 +170,8 @@ Status labels:
 - `kvist-done` Comparator/key sorting with captures.
   Kvist now supports captured inline `fn` key functions for `arr.sort-by` and `arr.sort-by!`, using explicit capture-aware sort helpers. Vev may still keep custom datom and `Value` sorting where it needs non-key comparator semantics, but captured key sorting no longer blocks ordinary package use.
 
-- `kvist` ABI metadata/header generation.
-  `include/vev.h`, Python signatures, Java/JNA bindings, and Rust declarations mirror the Kvist ABI manually. A sidecar generator from exported declarations would reduce drift.
+- `not-now` ABI metadata/header generation.
+  `include/vev.h`, Python signatures, Java/JNA bindings, and Rust declarations mirror the Kvist ABI manually. A sidecar generator from exported declarations would reduce drift, but the current manual surface is acceptable unless drift becomes a concrete maintenance problem.
 
 - `kvist` Better C ABI glue ergonomics.
   Vev's ABI layer needs raw Odin for wrapper structs, callback proc types, pointer casts, and repeated `runtime.default_context()` setup.
@@ -188,8 +188,8 @@ Status labels:
 - `kvist-done` Ownership-transfer annotations for consuming helper functions.
   Kvist now supports `(consumes param-name...)` in `defn` declarations. An ordinary helper like `value-vector-owned(items: [dynamic]Value) -> Value` can mark `(consumes items)`, and call sites transfer ownership when passing an owned local to that parameter.
 
-- `kvist` Static lookup tables shared between macro and runtime code.
-  Predicate/function/aggregate operator tables exist as macro allow-lists and runtime string dispatch.
+- `not-now` Static lookup tables shared between macro and runtime code.
+  Predicate/function/aggregate operator tables exist as macro allow-lists and runtime string dispatch. A Vev-local macro source of truth could reduce recognition-list drift, but it would not remove the runtime behavior dispatch and is not worth the extra abstraction right now.
 
 - `kvist-done` Macro string/number helpers for source parsing.
   Kvist macros now have `parse-int` / `str.parse-int` and `digit?` / `str.digit?` helpers for source-string parsing. `parse-int` returns an integer on success and `nil` on failure, preserving `0` as a truthy parsed value in macro conditionals.
@@ -197,8 +197,8 @@ Status labels:
 - `kvist-done` String builder/unescape helpers.
   `kvist:str` now has `str.builder`, `str.write!`, `str.finish`, `str.destroy!`, and `str.unescape`. Vev uses these for EDN string escape decoding and scalar string rendering; broader recursive value rendering should wait for a clearer owned-string result convention.
 
-- `kvist` Standard Option/Maybe type.
-  Vev uses value-plus-`has-*` fields and raw sentinel values in schema attrs, index args, input binding parsing, and absent `Value` results. A standard option type would make those shapes explicit.
+- `not-now` Standard Option/Maybe type.
+  Vev uses value-plus-`has-*` fields and raw sentinel values in schema attrs, index args, input binding parsing, and absent `Value` results. Do not introduce a standard Option/Maybe abstraction for this now; Kvist's existing multi-return `[value ok]` style and explicit fields are acceptable.
 
 - `kvist-done` Array fill/repeat helpers.
   `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Vev uses `arr.repeat` for dense boolean index initialization.
