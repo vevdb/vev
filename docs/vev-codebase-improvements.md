@@ -147,8 +147,8 @@ Status labels:
 - `todo` Add a rule lookup/index structure.
   Rule validation, arity checks, required-binding checks, and planning repeatedly scan all rules by name and arity. A rule index keyed by name and arity would centralize those checks and avoid repeated scans.
 
-- `todo` Make index order a typed helper.
-  Seek/rseek/range paths repeatedly branch on string index names to select `eavt`, `aevt`, `avet`, or `vaet`. A typed index-order value plus `db-index-slice` helper would remove string dispatch from core scan code.
+- `done` Make index order a typed helper.
+  Public datom index APIs now convert order strings once to a typed `Public-Index-Order` and use `db-index-slice` to select `eavt`, `aevt`, `avet`, or `vaet`. Datoms, seek, and reverse-seek share the same typed dispatch path while preserving the public `:eavt`/`:aevt`/`:avet`/`:vaet` API.
 
 - `todo` Add structured parser diagnostics and malformed-input suites.
   Parser parity work is now broad enough that tests should assert portable structured error categories for malformed query, pull, rule, return-map, and tx-data shapes instead of only checking `not ok` or exact strings.

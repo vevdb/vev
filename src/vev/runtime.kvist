@@ -1569,6 +1569,34 @@
         (arr.push! resolved value)))
     (return resolved true)))
 
+(defenum Public-Index-Order [
+  EAVT
+  AEVT
+  AVET
+  VAET
+])
+
+(defn public-index-order [order: string] -> Public-Index-Order
+  (cond
+    (= order ":eavt") .EAVT
+    (= order ":aevt") .AEVT
+    (= order ":avet") .AVET
+    :else .VAET))
+
+(defn public-index-order-text [order: Public-Index-Order] -> string
+  (cond
+    (= order .EAVT) ":eavt"
+    (= order .AEVT) ":aevt"
+    (= order .AVET) ":avet"
+    :else ":vaet"))
+
+(defn db-index-slice [db: DB, order: Public-Index-Order] -> []int
+  (cond
+    (= order .EAVT) (slice db.eavt 0)
+    (= order .AEVT) (slice db.aevt 0)
+    (= order .AVET) (slice db.avet 0)
+    :else (slice db.vaet 0)))
+
 (defn datom-index-position-value [datom: Datom, order: string, position: int] -> Value
   (if (= order ":eavt")
     (if (= position 0)
@@ -1640,8 +1668,8 @@
     (delete tuple-attrs)
     visible))
 
-(defn public-index-datom-visible? [db: DB, order: string, datom: Datom] -> bool
-  (if (= order ":avet")
+(defn public-index-datom-visible? [db: DB, order: Public-Index-Order, datom: Datom] -> bool
+  (if (= order .AVET)
     (public-avet-attr? db datom.a)
     true))
 
@@ -1654,11 +1682,11 @@
       (return value.text true))
     (return "" false)))
 
-(defn validate-public-index-args [db: DB, order: string, args: []Index-Arg] -> [ok: bool, error: string]
+(defn validate-public-index-args [db: DB, order: Public-Index-Order, args: []Index-Arg] -> [ok: bool, error: string]
   (let [[lookup-ok lookup-error] (validate-index-lookup-refs db args)]
     (when (not lookup-ok)
       (return false lookup-error)))
-  (when (not (= order ":avet"))
+  (when (not (= order .AVET))
     (return true ""))
   (when (= (count args) 0)
     (return true ""))
@@ -1669,21 +1697,22 @@
       (return false (fmt.tprintf "Attribute %s should be marked as :db/index true" attr))))
   (return true ""))
 
-(defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (let [low (lower-bound-index-values db indexes order values)
-        high (upper-bound-index-values db indexes order values)
+(defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
+  (let [order-text (public-index-order-text order)
+        low (lower-bound-index-values db indexes order-text values)
+        high (upper-bound-index-values db indexes order-text values)
         i low]
     (while (< i high)
       (let [datom-index indexes[i]]
         (when (datom-current-at? db datom-index)
           (let [datom db.datoms[datom-index]]
             (when (and (public-index-datom-visible? db order datom)
-                       (datom-matches-index-values? datom order values))
+                       (datom-matches-index-values? datom order-text values))
               (arr.push! out^ datom)))))
       (set! i (+ i 1)))))
 
-(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (let [low (lower-bound-index-values db indexes order values)
+(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
+  (let [low (lower-bound-index-values db indexes (public-index-order-text order) values)
         i low]
     (while (< i (count indexes))
       (let [datom-index indexes[i]]
@@ -1693,8 +1722,8 @@
               (arr.push! out^ datom)))))
       (set! i (+ i 1)))))
 
-(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (let [i (upper-bound-index-values db indexes order values)]
+(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
+  (let [i (upper-bound-index-values db indexes (public-index-order-text order) values)]
     (while (> i 0)
       (set! i (- i 1))
       (let [datom-index indexes[i]]
@@ -1725,69 +1754,60 @@
           (when (datom-current-at? db datom-index)
             (let [datom db.datoms[datom-index]]
               (when (and (= datom.a attr)
-                         (public-index-datom-visible? db ":avet" datom))
+                         (public-index-datom-visible? db .AVET datom))
                 (arr.push! out^ datom)))))
         (set! i (+ i 1))))))
 
 (defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
+        index-order (public-index-order order)
+        indexes (db-index-slice db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (if (= order ":eavt")
-      (append-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
-      (if (= order ":aevt")
-        (append-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
-        (if (= order ":avet")
-          (append-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
-          (append-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    (append-index-datoms! (addr out) db index-order indexes (slice values 0))
     out))
 
 (defn datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
-  (let [[valid error] (validate-public-index-args db order args)]
+  (let [index-order (public-index-order order)
+        [valid error] (validate-public-index-args db index-order args)]
     (when (not valid)
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (datoms-with-args db order args)})))
 
 (defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
+        index-order (public-index-order order)
+        indexes (db-index-slice db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (if (= order ":eavt")
-      (append-seek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
-      (if (= order ":aevt")
-        (append-seek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
-        (if (= order ":avet")
-          (append-seek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
-          (append-seek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    (append-seek-index-datoms! (addr out) db index-order indexes (slice values 0))
     out))
 
 (defn seek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
-  (let [[valid error] (validate-public-index-args db order args)]
+  (let [index-order (public-index-order order)
+        [valid error] (validate-public-index-args db index-order args)]
     (when (not valid)
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (seek-datoms-with-args db order args)})))
 
 (defn rseek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
+        index-order (public-index-order order)
+        indexes (db-index-slice db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (if (= order ":eavt")
-      (append-rseek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
-      (if (= order ":aevt")
-        (append-rseek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
-        (if (= order ":avet")
-          (append-rseek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
-          (append-rseek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    (append-rseek-index-datoms! (addr out) db index-order indexes (slice values 0))
     out))
 
 (defn rseek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
-  (let [[valid error] (validate-public-index-args db order args)]
+  (let [index-order (public-index-order order)
+        [valid error] (validate-public-index-args db index-order args)]
     (when (not valid)
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (rseek-datoms-with-args db order args)})))
