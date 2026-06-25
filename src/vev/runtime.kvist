@@ -5339,7 +5339,8 @@
           recursive (rule-name-depends-on-recursive-in-deps? (slice deps 0) name)
           acyclic-depth (if recursive 0 (non-recursive-rule-depth-in-deps (slice deps 0) name))
           [linear-plan linear-ok] (linear-transitive-rule-plan (slice call-rules 0) name)
-          linear-filters (make [dynamic]Clause)]
+          linear-filters (make [dynamic]Clause)
+          [alternating-plan alternating-ok] (alternating-transitive-rule-plan (slice call-rules 0) name)]
       (defer (delete-linear-transitive-plan linear-plan))
       (when linear-ok
         (delete linear-filters)
@@ -5349,7 +5350,12 @@
                        acyclic-depth: acyclic-depth
                        linear-transitive: linear-ok
                        linear-attr: linear-plan.attr
-                       linear-filters: linear-filters}))))
+                       linear-filters: linear-filters
+                       alternating-transitive: alternating-ok
+                       alternating-left-name: alternating-plan.left-name
+                       alternating-left-attr: alternating-plan.left-attr
+                       alternating-right-name: alternating-plan.right-name
+                       alternating-right-attr: alternating-plan.right-attr}))))
 
 (defn delete-rule-call-plan [plan: Rule-Call-Plan]
   (delete plan.rules)
@@ -5365,12 +5371,25 @@
           (append-linear-transitive-results! (addr result-bindings) db linear-plan call binding rule)))
       (return result-bindings true))))
 
+(defn bindings-after-alternating-transitive-rule-call-with-plan [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
+  (let [result-bindings (make [dynamic]Binding)]
+    (when (not plan.alternating-transitive)
+      (return result-bindings false))
+    (let [[rule rule-ok] (first-rule-by-name (slice plan.rules 0) call.name)]
+      (when rule-ok
+        (let [alternating-plan (Alternating-Transitive-Plan {left-name: plan.alternating-left-name
+                                                             left-attr: plan.alternating-left-attr
+                                                             right-name: plan.alternating-right-name
+                                                             right-attr: plan.alternating-right-attr})]
+          (append-alternating-transitive-results! (addr result-bindings) db alternating-plan call binding rule)))
+      (return result-bindings true))))
+
 (defn bindings-after-rule-call-planned-with-fns [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call-with-plan db plan call binding)]
     (when optimized-ok
       (return optimized))
     (delete optimized))
-  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db (slice plan.rules 0) call binding)]
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call-with-plan db plan call binding)]
     (when optimized-ok
       (return optimized))
     (delete optimized))
@@ -5418,7 +5437,7 @@
       (query-stats-observe-bindings! stats (count optimized))
       (return optimized))
     (delete optimized))
-  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db (slice plan.rules 0) call binding)]
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call-with-plan db plan call binding)]
     (when optimized-ok
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
       (query-stats-observe-bindings! stats (count optimized))
