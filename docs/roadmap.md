@@ -66,29 +66,75 @@ Non-goal:
 
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
-prepared APIs, and host-facing EDN/C ABI query paths. Remaining work is
-concentrated in exact parser diagnostics/object rendering, measured
-recursive-rule/large-query optimization, MusicBrainz/Datomic workload coverage,
-and higher-level host wrapper ergonomics.
+prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
+suite currently passes 355 tests. Remaining work is concentrated in exact
+parser diagnostics/object rendering, query/rule planner maturity,
+MusicBrainz/Datomic workload coverage, and higher-level host wrapper
+ergonomics.
 
 Current batch order:
 
-1. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
+1. Query planner/operator layer: replace local heuristic planning and isolated
+   fast paths with reusable physical operators for indexed scan, bind join,
+   hash/semi join, anti join, rule calls, projection, and aggregation.
+2. Generic recursive rules: build component/SCC-local semi-naive evaluation,
+   reusable/materialized rule relations where appropriate, and bound-recursive
+   query support that can later grow toward magic-set-style rewriting.
+3. Datalevin benchmark integration: start with `datascript-bench` through the
+   Clojure API, then move to `math-bench` and `openrulebench` for rule-engine
+   validation. Use these to compare Vev against Datomic, DataScript, and
+   Datalevin on shared workloads before moving to larger planner benchmarks.
+4. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
    tx-data shapes fail predictably through the portable text/prepared APIs.
-2. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
+5. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
    Java feel close to Datomic/DataScript for common tutorials, including
    listener/report callbacks where useful.
-3. DataScript/Datalevin read benchmark integration: add Vev to the Datalevin
-   `benchmarks/datascript-bench` shape through the Clojure API, starting with
-   q1/q2/q2-switch/q3/q4/qpred1/qpred2. Use this to compare Vev against
-   Datomic, DataScript, and Datalevin on the same common read workloads.
-4. Rule/query performance: use query profile counters, ABI/native benchmarks,
-   and the DataScript/Datalevin read benchmark to replace recursive rule,
-   same-entity star, and large relation hot paths with planner/operator-based
-   implementations rather than benchmark-specific recognizers.
-5. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
+6. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
    dataset, run equivalent Datomic workshop queries against Vev and Datomic,
    compare result sets first and performance second.
+
+## Current Query Engine State
+
+Vev has enough query machinery to pass most DataScript-level semantic tests:
+sorted datom indexes, binary seek/range access, candidate selection per data
+clause, relation-engine execution for supported query shapes, prepared queries,
+text/EDN lowering, and profiling counters for candidates, intermediate binding
+sizes, rule calls, and rule iterations.
+
+The planner is still primitive. It mostly chooses the next clause from current
+bindings, with additional specialized paths for common indexed projections and
+relation-engine-supported queries. It does not yet have a full cost model,
+histograms, global join ordering across all operator kinds, or a reusable
+physical operator layer. This is the main query-engine gap before large
+real-world Datomic-shaped workloads.
+
+The desired direction is not to add benchmark-specific recognizers. The next
+planner work should introduce reusable operators and make benchmark wins fall
+out of better generic planning: indexed scans, bind joins, hash/semi joins,
+anti joins, rule operators, projection, aggregate, and pull integration.
+
+## Current Rules Engine State
+
+Rules are semantically useful now. Vev supports DataScript-style rule branches,
+required rule vars, source-qualified rule calls, recursive and mutual recursive
+rules, rule bodies with data clauses/predicates/functions/ground/not/or, text
+and prepared rule APIs, and rule profiling counters.
+
+Recent work added the foundation for serious rule planning:
+
+- dependency graph analysis
+- dependency-closure filtering per called rule
+- acyclic-vs-recursive classification
+- reusable `Rule-Call-Plan` values
+- cached recognition of linear transitive rule operators
+- cached recognition of alternating mutual-recursive transitive operators
+- bound-source transitive result fast path
+
+The remaining rules milestone is a generic semi-naive engine. Specialized
+transitive operators should remain as fast physical operators, but the fallback
+recursive path should become component/SCC-local, delta-driven, and predictable
+for large recursive workloads. Datalevin is the main implementation reference
+for this direction; DataScript remains the semantic compatibility floor.
 
 ## Phase 4: Portable query frontend
 
@@ -135,7 +181,7 @@ Initial scope:
 - report Datomic vs Vev timings as comparative ratios, not raw claims
 
 Status: not started. This should happen after the next parser/callback cleanup
-batch, after the DataScript/Datalevin read benchmark is running, and before
+batch, after the first Datalevin benchmark ladder steps are running, and before
 durable SQLite work.
 
 ## Phase 5b: External Optimizer Benchmarks
@@ -148,23 +194,43 @@ Goal:
   the benchmark already does that
 - use benchmark failures to drive general planner/operator work
 
-Order:
+Datalevin benchmark ladder:
 
-1. DataScript bench: immediate. Add Vev to the Datalevin
-   `benchmarks/datascript-bench` shape. This is small, in-memory, and directly
-   exercises common Datomic/DataScript query forms through the Clojure API.
-2. JOB bench: after the query planner/operator layer is underway. This is a
-   large join-order benchmark and should validate costed planning, join
-   ordering, predicates, ranges, aggregates, and large import behavior.
-3. Write bench: after durable storage exists. This should measure transaction
-   throughput, commit latency, batching, sync/WAL behavior, and mixed
-   read/write behavior against SQLite and Datalevin.
+1. `datascript-bench`: immediate. Add Vev beside Datomic, DataScript, and
+   Datalevin for the inherited DataScript read/write/rule workload. This is
+   small, in-memory, and directly exercises common Datomic/DataScript query
+   forms through the Clojure API.
+2. `math-bench`: near-term rules benchmark. This uses a realistic Math
+   Genealogy dataset and compares Datalog rule processing across DataScript,
+   Datomic, and Datalevin. It is the best next external workload after
+   `datascript-bench` for validating recursive rules beyond synthetic
+   reachability.
+3. `openrulebench`: rule-engine milestone. Use after the generic recursive
+   rule engine is underway. It should validate component/SCC-local semi-naive
+   behavior and expose rule workloads that are not just graph reachability.
+4. `JOB-bench`: query planner milestone. This benchmark stresses join ordering,
+   predicates, ranges, aggregates, and large import behavior over an
+   IMDB-shaped dataset.
+5. `LDBC-SNB-bench`: graph/read workload milestone. Use after the planner and
+   larger import path can handle realistic graph-shaped data. It should
+   validate interactive short reads and more complex graph queries.
+6. `idoc-bench`: document/nested-value milestone. Relevant if Vev leans into
+   document-ish nested values, arrays, ranges, wildcards, and YCSB-style query
+   mixes.
+7. `write-bench`: durability milestone. Use after durable SQLite-backed
+   storage exists. This should measure transaction throughput, commit latency,
+   batching, WAL/sync choices, and mixed read/write behavior.
+8. `search-bench`: optional/full-text milestone. Relevant only if Vev owns a
+   full-text search story instead of delegating to SQLite FTS or external
+   indexes.
 
 Current stance:
 
-- DataScript bench is a near-term development benchmark.
-- JOB bench is the planner milestone.
-- Write bench is the durability milestone.
+- `datascript-bench`, `math-bench`, and `openrulebench` are the near-term
+  semantic/rule-engine benchmark path.
+- `JOB-bench` and `LDBC-SNB-bench` are planner and large-read milestones.
+- `idoc-bench`, `write-bench`, and `search-bench` are phase-specific later
+  benchmarks.
 - None of these should be gamed with one-off recognizers; benchmark wins should
   come from reusable physical operators and better planning.
 

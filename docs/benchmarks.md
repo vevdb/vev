@@ -13,21 +13,43 @@ Current order:
 
 1. Datalevin `datascript-bench`: add Vev beside Datomic, DataScript, and
    Datalevin for the common in-memory read queries q1/q2/q2-switch/q3/q4 and
-   predicate variants. This exercises Vev through the public Clojure API and
-   native ABI, so it is a better host-language benchmark than direct Kvist
+   predicate variants, plus the inherited DataScript write/rule workloads when
+   the API shape is ready. This exercises Vev through the public Clojure API
+   and native ABI, so it is a better host-language benchmark than direct Kvist
    calls.
-2. Datalevin `JOB-bench`: use after Vev has a real planner/operator layer.
+2. Datalevin `math-bench`: use next for realistic Datalog rule processing over
+   the Math Genealogy dataset. This is the most relevant external benchmark for
+   validating the generic recursive rule engine after the current synthetic
+   reachability stress harness.
+3. Datalevin `openrulebench`: use after the component/SCC-local semi-naive rule
+   engine exists. This should stress a broader set of Datalog rule workloads
+   and help keep rule work general instead of reachability-specific.
+4. Datalevin `JOB-bench`: use after Vev has a real planner/operator layer.
    This benchmark stresses join ordering, predicates, ranges, aggregates, and
    large import behavior over an IMDB-shaped dataset.
-3. Datalevin `write-bench`: use after durable SQLite-backed storage exists.
+5. Datalevin `LDBC-SNB-bench`: use after planner/import work can support large
+   graph-shaped datasets. This should validate interactive short reads and
+   complex graph queries against a recognized graph workload.
+6. Datalevin `idoc-bench`: use if Vev leans into document-style nested values
+   and query shapes. It stresses YCSB-style A/C/F workloads, nested paths,
+   ranges, wildcards, and arrays.
+7. Datalevin `write-bench`: use after durable SQLite-backed storage exists.
    This benchmark should measure transaction throughput, commit latency,
    batching, WAL/sync choices, and mixed read/write behavior.
+8. Datalevin `search-bench`: use only if Vev owns a full-text search story.
+   Otherwise full-text should likely be delegated to SQLite FTS or external
+   indexes, and this benchmark remains optional.
 
 The q2/q2-switch rows from `datascript-bench` are especially important. They
 represent same-entity star queries where Datalevin wins by using a general
 merge-scan operator instead of clause-order-sensitive hash joins. Vev should
 use these rows to drive reusable star-query and planner work rather than adding
 query-name-specific fast paths.
+
+The rule benchmark order is `datascript-bench`, then `math-bench`, then
+`openrulebench`. `datascript-bench` keeps Vev honest against the DataScript API
+surface; `math-bench` introduces realistic recursive data; `openrulebench`
+should validate the generic semi-naive engine once it exists.
 
 ## Query And Rule Baseline
 
@@ -146,23 +168,23 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 19.1x | 54.9x |
-| `chain-root n=10` | 24.1x | 42.5x |
-| `chain-root n=30` | 50.2x | 65.2x |
-| `chain-root n=100` | 227.6x | 258.1x |
-| `chain-leaf n=10` | 18.2x | 33.1x |
-| `chain-leaf n=30` | 74.2x | 98.5x |
-| `chain-leaf n=100` | 537.7x | 540.2x |
-| `chain-all n=10` | 10.9x | 14.9x |
-| `chain-all n=30` | 16.0x | 17.1x |
-| `chain-all n=100` | 23.6x | 23.3x |
-| `tree-root n=4` | 3.2x | 8.4x |
-| `tree-root n=13` | 3.3x | 5.3x |
-| `tree-root n=40` | 2.5x | 3.1x |
-| `tree-root n=121` | 1.9x | 2.0x |
-| `bad-order-join n=1000` | 7.3x | 11.7x |
-| `distinct-age n=1000` | 3.2x | 3.5x |
-| `people-name-age n=1000` | 0.2x | 0.2x |
+| `chain-root n=3` | 16.7x | 41.0x |
+| `chain-root n=10` | 23.6x | 40.8x |
+| `chain-root n=30` | 54.9x | 72.5x |
+| `chain-root n=100` | 270.7x | 288.1x |
+| `chain-leaf n=10` | 16.1x | 24.4x |
+| `chain-leaf n=30` | 66.9x | 83.3x |
+| `chain-leaf n=100` | 497.1x | 535.6x |
+| `chain-all n=10` | 8.8x | 11.9x |
+| `chain-all n=30` | 12.6x | 12.8x |
+| `chain-all n=100` | 19.9x | 19.1x |
+| `tree-root n=4` | 2.9x | 7.1x |
+| `tree-root n=13` | 3.2x | 5.4x |
+| `tree-root n=40` | 2.9x | 3.5x |
+| `tree-root n=121` | 2.4x | 2.6x |
+| `bad-order-join n=1000` | 7.0x | 11.3x |
+| `distinct-age n=1000` | 3.4x | 4.1x |
+| `people-name-age n=1000` | 0.8x | 0.8x |
 
 ## Stress Comparison
 
@@ -291,11 +313,16 @@ Remaining performance work:
   dedupe is map-backed, but arbitrary multi-step recursive bodies still use the
   generic depth/fixpoint evaluator.
 - Continue result-projection work beyond the single-attr distinct fast path.
-  `distinct-age` is now faster than DataScript locally, but the new
-  `people-name-age` row shows broad two-column projection is still behind.
-  Vev now has a direct same-entity two-attr path with cardinality-one map join,
-  but final distinct tracking still needs typed pair-level dedupe instead of
-  formatted string keys.
+  `distinct-age` is now faster than DataScript locally, but
+  `people-name-age` still shows broad two-column projection behind
+  DataScript. Vev now keeps pure DB-clause queries on the indexed planner
+  rather than the relation-engine path, has typed pair-level dedupe for common
+  primitive pairs, and uses a same-entity merge operator over two `aevt` attr
+  ranges for all-current cardinality-one projections. Non-pull result rows now
+  also avoid allocating an empty pull-result array per row. The remaining work
+  is to reduce generic per-row value materialization overhead and make this
+  style of star projection available through the broader physical operator
+  layer, not only the current two-attr projection path.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.
