@@ -6714,6 +6714,20 @@
       (return false)))
   true)
 
+(defn query-steps-are-clauses-or-predicates? [query: Query] -> bool
+  (when (= (count query.where-steps) 0)
+    (return true))
+  (let [clause-count 0
+        predicate-count 0]
+    (for [step query.where-steps]
+      (if (= step.kind .Clause)
+        (set! clause-count (+ clause-count 1))
+        (if (= step.kind .Predicate)
+          (set! predicate-count (+ predicate-count 1))
+          (return false))))
+    (and (= clause-count (count query.clauses))
+         (= predicate-count (count query.predicates)))))
+
 (defn query-clause-uses-source-input? [query: Query, sources: []DB-Source, clause: Clause] -> bool
   (and clause.has-source
        (not (= clause.source "$"))
@@ -6734,10 +6748,9 @@
         (return source-binding true)))))
 
 (defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
-  (when (not (query-steps-are-clauses? query))
+  (when (not (query-steps-are-clauses-or-predicates? query))
     (return false))
-  (when (or (> (count query.predicates) 0)
-            (> (count query.function-clauses) 0)
+  (when (or (> (count query.function-clauses) 0)
             (> (count query.rules) 0)
             (> (count query.rule-calls) 0)
             (> (count query.get-elses) 0)
@@ -6757,6 +6770,24 @@
                (query-source-db? sources clause-value.source))
       (return false)))
   true)
+
+(defn query-relation-filter-predicates [db: DB, rel: Query-Relation, predicates: []Predicate, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+  (when (= (count predicates) 0)
+    (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+          tuples (clone-bindings (slice rel.tuples 0))]
+      (return (Query-Relation {attrs: attrs tuples: tuples}))))
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        tuples (make [dynamic]Binding)]
+    (for [tuple rel.tuples]
+      (let [matches true]
+        (for [predicate predicates]
+          (set! stats^.steps (+ stats^.steps 1))
+          (when (not (predicate-matches-with-db-and-fns? db predicate tuple registry))
+            (set! matches false)
+            (break)))
+        (when matches
+          (arr.push! tuples (clone-binding tuple)))))
+    (Query-Relation {attrs: attrs tuples: tuples})))
 
 (defn query-relation-from-source-input-clause [query: Query, inputs: []Query-Input, clause-value: Clause] -> Query-Relation
   (let [[binding binding-ok] (query-source-input-binding query inputs clause-value.source)]
@@ -6791,7 +6822,7 @@
         (set! current next)))
     current))
 
-(defn relation-engine-bindings-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, stats: ^Query-Stats] -> [dynamic]Binding
+(defn relation-engine-bindings-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
   (let [relations (make [dynamic]Query-Relation)
         input-bindings (bindings-from-inputs db query inputs)]
     (set! stats^.input-bindings (count input-bindings))
@@ -6804,12 +6835,14 @@
       (let [rel (query-relation-from-clause db query inputs sources clause-value)]
         (set! stats^.clause-candidates (+ stats^.clause-candidates (count rel.tuples)))
         (arr.push! relations rel)))
-    (let [joined (query-relation-reduce db (slice relations 0))]
+    (let [joined (query-relation-reduce db (slice relations 0))
+          filtered (query-relation-filter-predicates db joined (slice query.predicates 0) registry stats)]
       (for [rel relations]
         (delete-query-relation rel))
       (delete relations)
-      (let [bindings (clone-bindings (slice joined.tuples 0))]
+      (let [bindings (clone-bindings (slice filtered.tuples 0))]
         (query-stats-observe-bindings! stats (count bindings))
+        (delete-query-relation filtered)
         (delete-query-relation joined)
         bindings))))
 
@@ -7788,7 +7821,7 @@
     (when (not valid)
       (return (profiled-result-set (result-set-error error) stats)))
   (when (query-relation-engine-eligible? query sources)
-    (let [bindings (relation-engine-bindings-profiled db query inputs sources (addr stats))
+    (let [bindings (relation-engine-bindings-profiled db query inputs sources registry (addr stats))
           rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice bindings 0) registry)]
       (delete bindings)
       (set! stats.output-rows (count rows))

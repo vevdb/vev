@@ -125,16 +125,17 @@ Vev should follow DataScript's query architecture as the semantic baseline:
   rules should all lower to relation operations
 - physical optimizations should live under that relation layer
 
-The first relation-engine path is now implemented for data-clause-only queries,
-including ordinary scalar, collection, tuple, relation `:in` inputs, and
-relation-source clauses over `:in` sources such as `$rows`. It builds one
+The first relation-engine path is now implemented for data-clause/predicate
+queries, including ordinary scalar, collection, tuple, relation `:in` inputs,
+and relation-source clauses over `:in` sources such as `$rows`. It builds one
 `Query-Relation` per input binding and datom/source pattern, joins those
-relations with generic relation product/join operations, and then uses the
-existing result renderer. Joins use DB-aware entity equality so entity ids,
-ints, and lookup refs compare the same way the older evaluator does. This is
-intentionally conservative: named DB sources, predicates, functions, `not`,
-`or`, aggregates, and rules still use the older binding-expansion evaluator
-until their DataScript-style relation handlers are ported.
+relations with generic relation product/join operations, applies predicates as
+relation filters, and then uses the existing result renderer. Joins use
+DB-aware entity equality so entity ids, ints, and lookup refs compare the same
+way the older evaluator does. This is intentionally conservative: named DB
+sources, functions, `not`, `or`, aggregates, and rules still use the older
+binding-expansion evaluator until their DataScript-style relation handlers are
+ported.
 
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the
@@ -151,7 +152,7 @@ Near-term query work should expand the relation engine in this order:
 
 1. Named DB sources: source-specific data patterns that produce relations from
    the chosen DB source.
-2. Predicate/function clauses: relation filtering and relation extension over
+2. Function clauses: relation extension over
    bound argument variables.
 3. `not`/`or`: relation subtraction and union with DataScript-compatible free
    variable checks.
