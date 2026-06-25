@@ -111,8 +111,8 @@ Status labels:
 
 ## Vev TODO
 
-- `todo` Finish parser-owned AST/value cleanup.
-  The current EDN parser still stores many AST strings as borrowed slices from source text, while container values can own nested arrays. The next cleanup step is an explicit parser ownership model: either clone AST strings and provide deep destructors for `Query`, `Rule`, pull specs, tx data, and parsed inputs, or keep borrowed text handles deliberately and only deep-delete value containers known not to escape into results.
+- `done` Finish parser-owned AST/value cleanup.
+  The EDN parser keeps AST strings as borrowed source text deliberately and now cleans parser-owned nested value containers on failed recursive value, serialized DB, datom, transaction argument, lookup-ref, CAS, and partial tx-data parse paths. Failed tx text parsing also rolls back entries appended to the caller's output array.
 
 - `todo` Make host result decoding less duplicated.
   Java and Clojure duplicate scalar conversion and optimized result projection cascades. Prefer `vev_result_value` plus value accessors as the primary path, then generate or de-emphasize narrow compatibility accessors.
