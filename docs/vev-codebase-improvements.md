@@ -82,6 +82,9 @@ Status labels:
 - `done` Add shared benchmark timing helpers.
   `bench/support` now owns elapsed-time and sample percentile helpers. Query-rule, stress, ABI-native, and index benchmarks use the shared `Timing` helpers instead of carrying local copies.
 
+- `done` Add local builders for pull spec option variants.
+  Pull spec constructors, EDN pull option parsing, and recursion-depth rewriting now use shared `pull-spec-with-*` helpers instead of manually copying every `Pull-Spec` field for each option variant.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -107,9 +110,6 @@ Status labels:
 
 - `todo` Add a `Value-Map-Builder`.
   Pull/result rendering manually tracks duplicate map keys by scanning `Value` pairs. A builder can centralize duplicate handling and ownership.
-
-- `todo` Add local builders for pull spec option variants.
-  `Pull-Spec` construction repeats full records for small field changes. Until Kvist has record update syntax, local `pull-spec-with-*` helpers would reduce drift.
 
 - `todo` Normalize transaction macro entity dispatch.
   Literal transaction macros repeat the same entity-ref matrix for lookup refs, idents, tempids, and ints. A macro helper should classify and emit it once.
@@ -191,8 +191,8 @@ Status labels:
 - `kvist-done` Array fill/repeat helpers.
   `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Dense indexes and benchmark/sample setup can use the package helper instead of manual fill loops where it improves readability.
 
-- `kvist` Pointer-to-set helper signatures.
-  Vev can use local `set[T]` values directly, but helper parameters shaped like `seen: ^set[string]` or `seen: (ptr (set string))` currently fail in this code path with poor source locations. Until that is fixed, ordered query-variable collection keeps a `map[string]bool` index.
+- `kvist-done` Pointer-to-set helper signatures.
+  Kvist now accepts helper parameters shaped like `seen: ^set[string]` and `seen: (ptr (set string))`; the compiler also recognizes caret-prefixed compact collection type tokens such as `^map[...]`, `^set[...]`, `^bit_set[...]`, and `^matrix[...]`. Vev can revisit ordered query-variable collection and use a local set helper without the previous type-parser workaround.
 
 - `kvist` Better macro-time collection utilities.
   Literal tx and pull macros still enumerate option orderings and shape cases by hand where runtime EDN parsing can fold over data. Macro-time iteration/folding/splicing helpers would help keep literal and runtime frontends aligned.
