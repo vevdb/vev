@@ -39,6 +39,9 @@ Status labels:
 - `done` Remove ABI transaction listener tombstones.
   ABI `unlisten` now deletes the owned listener name and removes the listener entry, matching pure Kvist listener behavior.
 
+- `done` Add typed empty statement collections and lookup-ref collection binds.
+  The C ABI now exposes string, keyword, entity, and int lookup-ref collection bind functions. Python statement bindings support explicit typed empty collections/tuples/relations and non-string lookup-ref collections.
+
 ## Vev TODO
 
 - `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
@@ -47,8 +50,8 @@ Status labels:
 - `todo` Tighten prepared/query lifecycle cleanup in text APIs.
   Text query execution parses owned `Query` containers, then delegates. The ownership split between shallow and deep cleanup should be explicit.
 
-- `todo` Add typed empty sequence and lookup-ref sequence support to the ABI.
-  Python/Clojure wrappers expose a real limitation: empty typed collections cannot be represented, and lookup-ref collection binding is string-only.
+- `todo` Broaden Clojure/Java pull lookup-ref API shapes beyond string values.
+  Statement lookup-ref collection binding now has typed ABI coverage, but direct pull lookup-ref helpers are still string-focused in host wrappers.
 
 - `todo` Make host result decoding less duplicated.
   Java and Clojure duplicate scalar conversion and optimized result projection cascades. Prefer `vev_result_value` plus value accessors as the primary path, then generate or de-emphasize narrow compatibility accessors.

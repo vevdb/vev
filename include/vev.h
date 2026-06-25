@@ -156,6 +156,21 @@ bool vev_stmt_bind_lookup_ref_string_collection(
     const char *attr,
     const char **values,
     int value_count);
+bool vev_stmt_bind_lookup_ref_keyword_collection(
+    vev_stmt_t stmt,
+    const char *attr,
+    const char **values,
+    int value_count);
+bool vev_stmt_bind_lookup_ref_entity_collection(
+    vev_stmt_t stmt,
+    const char *attr,
+    const unsigned long long *values,
+    int value_count);
+bool vev_stmt_bind_lookup_ref_int_collection(
+    vev_stmt_t stmt,
+    const char *attr,
+    const long long *values,
+    int value_count);
 bool vev_stmt_bind_pull_pattern_edn(vev_stmt_t stmt, const char *pattern_text);
 bool vev_stmt_bind_db_source(vev_stmt_t stmt, const char *name, vev_db_t db);
 const char *vev_query_prepared(vev_conn_t conn, vev_prepared_query_t query);
