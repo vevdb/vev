@@ -5372,9 +5372,12 @@
     (bindings-after-rule-call-planned-with-fns db plan call binding registry)))
 
 (defn bindings-after-rule-call-profiled-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
-  (set! stats^.rule-calls (+ stats^.rule-calls 1))
   (let [plan (rule-call-plan rules call.name)]
     (defer (delete-rule-call-plan plan))
+    (bindings-after-rule-call-profiled-with-plan db plan call binding registry stats)))
+
+(defn bindings-after-rule-call-profiled-with-plan [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (set! stats^.rule-calls (+ stats^.rule-calls 1))
   (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db (slice plan.rules 0) call binding)]
     (when optimized-ok
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
@@ -5411,50 +5414,6 @@
       (set! changed false)
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
       (let [candidates (bindings-after-rule-call-depth-with-fns db (slice plan.rules 0) call binding depth call.source call.has-source registry)]
-        (defer (delete candidates))
-        (for [candidate candidates]
-          (when (append-unique-binding! (addr out) (addr seen) candidate)
-            (set! changed true))))
-      (query-stats-observe-bindings! stats (count out))
-      (set! depth (+ depth 1)))
-    out)))
-
-(defn bindings-after-rule-call-profiled-with-analysis [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats, recursive: bool, acyclic-depth: int] -> [dynamic]Binding
-  (set! stats^.rule-calls (+ stats^.rule-calls 1))
-  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
-    (when optimized-ok
-      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-      (query-stats-observe-bindings! stats (count optimized))
-      (return optimized))
-    (delete optimized))
-  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db rules call binding)]
-    (when optimized-ok
-      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-      (query-stats-observe-bindings! stats (count optimized))
-      (return optimized))
-    (delete optimized))
-  (when (matching-rules-are-leaves? rules call)
-    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-    (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
-      (query-stats-observe-bindings! stats (count out))
-      (return out)))
-  (when (not recursive)
-    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-    (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding acyclic-depth call.source call.has-source registry)
-          out (unique-bindings (slice candidates 0))]
-      (delete candidates)
-      (query-stats-observe-bindings! stats (count out))
-      (return out)))
-  (let [out (make [dynamic]Binding)
-        seen (make (map string bool))
-        depth 1
-        min-depth (+ (count rules) 1)
-        changed true]
-    (defer (delete seen))
-    (while (or changed (<= depth min-depth))
-      (set! changed false)
-      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-      (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
           (when (append-unique-binding! (addr out) (addr seen) candidate)
@@ -6894,9 +6853,14 @@
   (bindings-after-rule-call-step-with-fns db rules bindings call ([]Native-Query-Fn [])))
 
 (defn bindings-after-rule-call-step-with-fns [db: DB, rules: []Rule, bindings: []Binding, call: Rule-Call, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (let [plan (rule-call-plan rules call.name)]
+    (defer (delete-rule-call-plan plan))
+    (bindings-after-rule-call-step-with-plan db plan bindings call registry)))
+
+(defn bindings-after-rule-call-step-with-plan [db: DB, plan: Rule-Call-Plan, bindings: []Binding, call: Rule-Call, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
-      (let [rule-bindings (bindings-after-rule-call-with-fns db rules call binding registry)]
+      (let [rule-bindings (bindings-after-rule-call-planned-with-fns db plan call binding registry)]
         (for [rule-binding rule-bindings]
           (arr.push! out rule-binding))
         (delete rule-bindings)))
@@ -6978,12 +6942,14 @@
         out)
     .RuleCall
       (let [out (make [dynamic]Binding)
-            call query^.rule-calls[step.index]]
+            call query^.rule-calls[step.index]
+            plan (rule-call-plan (slice query^.rules 0) call.name)]
         (for [binding bindings]
-          (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db (slice query^.rules 0) call binding registry stats)]
+          (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call binding registry stats)]
             (for [rule-binding rule-bindings]
               (arr.push! out rule-binding))
             (delete rule-bindings)))
+        (delete-rule-call-plan plan)
         out)
     .Ground
       (apply-ground bindings query^.grounds[step.index])
@@ -7145,7 +7111,7 @@
   (let [bindings (make [dynamic]Binding)
         plan (rule-call-plan rules call.name)]
     (for [tuple rel.tuples]
-      (let [rule-bindings (bindings-after-rule-call-profiled-with-analysis db (slice plan.rules 0) call tuple registry stats plan.recursive plan.acyclic-depth)]
+      (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call tuple registry stats)]
         (for [rule-binding rule-bindings]
           (arr.push! bindings rule-binding))
         (delete rule-bindings)))
@@ -8330,13 +8296,15 @@
         (query-stats-observe-bindings! (addr stats) (count bindings))
         (arr.remove-ordered-at! remaining clause-index)))
     (for [call query.rule-calls]
-      (let [next-bindings (make [dynamic]Binding)]
+      (let [next-bindings (make [dynamic]Binding)
+            plan (rule-call-plan (slice query.rules 0) call.name)]
         (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
-          (let [rule-bindings (bindings-after-rule-call-profiled-with-fns db (slice query.rules 0) call binding registry (addr stats))]
+          (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call binding registry (addr stats))]
             (for [rule-binding rule-bindings]
               (arr.push! next-bindings rule-binding))
             (delete rule-bindings)))
+        (delete-rule-call-plan plan)
         (delete bindings)
         (set! bindings next-bindings)
         (query-stats-observe-bindings! (addr stats) (count bindings))))
