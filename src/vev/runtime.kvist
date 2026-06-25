@@ -931,19 +931,19 @@
         (row-values-dedupe-key values))))
 
 (defstruct Two-Primitive-Seen {
-  generic: map[string]bool
+  generic: set[string]
   string-int: map[string]i64
-  string-int-extra: map[string]bool
+  string-int-extra: set[string]
   int-string: map[i64]string
-  int-string-extra: map[string]bool
+  int-string-extra: set[string]
 })
 
 (defn two-primitive-seen [] -> Two-Primitive-Seen
-  (Two-Primitive-Seen {generic: (make (map string bool))
+  (Two-Primitive-Seen {generic: (set.empty string)
                        string-int: (make (map string i64))
-                       string-int-extra: (make (map string bool))
+                       string-int-extra: (set.empty string)
                        int-string: (make (map i64 string))
-                       int-string-extra: (make (map string bool))}))
+                       int-string-extra: (set.empty string)}))
 
 (defn delete-two-primitive-seen [seen: Two-Primitive-Seen]
   (delete seen.generic)
@@ -964,10 +964,10 @@
         (let [[key key-ok] (two-primitive-values-dedupe-key first second)]
           (when (not key-ok)
             (return false false))
-          (let [[_ already-seen] (mmap.get seen^.string-int-extra key)]
+          (let [already-seen (set.contains? seen^.string-int-extra key)]
             (when already-seen
               (return false true))
-            (mmap.assoc! seen^.string-int-extra key true)
+            (set.add! seen^.string-int-extra key)
             (return true true))))
     (and (= first.kind .Int) (= second.kind .String))
       (let [[existing found] (mmap.get seen^.int-string first.int-value)]
@@ -979,19 +979,19 @@
         (let [[key key-ok] (two-primitive-values-dedupe-key first second)]
           (when (not key-ok)
             (return false false))
-          (let [[_ already-seen] (mmap.get seen^.int-string-extra key)]
+          (let [already-seen (set.contains? seen^.int-string-extra key)]
             (when already-seen
               (return false true))
-            (mmap.assoc! seen^.int-string-extra key true)
+            (set.add! seen^.int-string-extra key)
             (return true true))))
     :else
       (let [[key key-ok] (two-primitive-values-dedupe-key first second)]
         (when (not key-ok)
           (return false false))
-        (let [[_ already-seen] (mmap.get seen^.generic key)]
+        (let [already-seen (set.contains? seen^.generic key)]
           (when already-seen
             (return false true))
-          (mmap.assoc! seen^.generic key true)
+          (set.add! seen^.generic key)
           (return true true)))))
 
 (defn sort-strings! [values: ^[dynamic]string]
@@ -4377,13 +4377,13 @@
       (return true)))
   false)
 
-(defn append-unique-binding! [out: ^[dynamic]Binding, seen: (ptr (map string bool)), binding: Binding] -> bool
+(defn append-unique-binding! [out: ^[dynamic]Binding, seen: ^set[string], binding: Binding] -> bool
   (let [[key key-ok] (binding-dedupe-key binding)]
     (when key-ok
-      (let [[_ already-seen] (mmap.get seen^ key)]
+      (let [already-seen (set.contains? seen^ key)]
         (when already-seen
           (return false))
-        (mmap.assoc! seen^ key true)
+        (set.add! seen key)
         (arr.push! out^ binding)
         (return true)))
     (when (not (binding-exists? (slice out^ 0) binding))
@@ -4393,7 +4393,7 @@
 
 (defn unique-bindings [bindings: []Binding] -> [dynamic]Binding
   (let [out (make [dynamic]Binding 0 (count bindings))
-        seen (make (map string bool))]
+        seen (set.empty string)]
     (defer (delete seen))
     (for [binding bindings]
       (discard (append-unique-binding! (addr out) (addr seen) binding)))
@@ -4734,12 +4734,7 @@
            (<= (int max-value) (* adjacency-count 8))))))
 
 (defn make-bool-dense-index [size: int] -> [dynamic]bool
-  (let [out (make [dynamic]bool 0 size)
-        i 0]
-    (while (< i size)
-      (arr.push! out false)
-      (set! i (+ i 1)))
-    out))
+  (arr.repeat size false))
 
 (defstruct Transitive-Adjacency {
   entity: u64
@@ -5588,7 +5583,7 @@
       (delete candidates)
       (return out)))
   (let [out (make [dynamic]Binding)
-        seen (make (map string bool))
+        seen (set.empty string)
         depth 1
         min-depth (+ (count plan.rules) 1)
         changed true]
@@ -5642,7 +5637,7 @@
       (query-stats-observe-bindings! stats (count out))
       (return out)))
   (let [out (make [dynamic]Binding)
-        seen (make (map string bool))
+        seen (set.empty string)
         depth 1
         min-depth (+ (count plan.rules) 1)
         changed true]
@@ -6009,19 +6004,19 @@
   (when (not (string-slice-contains? (slice vars^ 0) name))
     (arr.push! vars^ name)))
 
-(defn append-var-once-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), name: string]
+(defn append-var-once-indexed! [vars: ^[dynamic]string, seen: ^set[string], name: string]
   (when (= name "")
     (return))
-  (let [[_ found] (mmap.get seen^ name)]
+  (let [found (set.contains? seen^ name)]
     (when (not found)
-      (mmap.assoc! seen^ name true)
+      (set.add! seen name)
       (arr.push! vars^ name))))
 
 (defn append-term-var! [vars: ^[dynamic]string, term: Term]
   (when (= term.kind .Var)
     (append-var-once! vars term.name)))
 
-(defn append-term-var-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), term: Term]
+(defn append-term-var-indexed! [vars: ^[dynamic]string, seen: ^set[string], term: Term]
   (when (= term.kind .Var)
     (append-var-once-indexed! vars seen term.name)))
 
@@ -6030,7 +6025,7 @@
     (for [name names]
       (append-var-once! vars name))))
 
-(defn append-input-binding-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), binding: Input-Binding]
+(defn append-input-binding-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], binding: Input-Binding]
   (let [names (input-binding-vars binding) :defer]
     (for [name names]
       (append-var-once-indexed! vars seen name))))
@@ -6063,7 +6058,7 @@
       .Ignore (do)
       :else (do))))
 
-(defn append-query-input-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), query-value: Query]
+(defn append-query-input-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], query-value: Query]
   (for [name query-value.inputs]
     (append-var-once-indexed! vars seen name))
   (for [name query-value.collection-inputs]
@@ -6098,7 +6093,7 @@
   (append-term-var! vars clause.tx-term)
   (append-term-var! vars clause.op-term))
 
-(defn append-clause-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), clause: Clause]
+(defn append-clause-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], clause: Clause]
   (append-term-var-indexed! vars seen clause.e)
   (append-term-var-indexed! vars seen clause.a)
   (append-term-var-indexed! vars seen clause.v)
@@ -6113,7 +6108,7 @@
   (for [name group.join-vars]
     (append-var-once! vars name)))
 
-(defn append-not-group-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), group: Not-Group]
+(defn append-not-group-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], group: Not-Group]
   (for [clause group.clauses]
     (append-clause-vars-indexed! vars seen clause))
   (for [child group.not-groups]
@@ -6127,7 +6122,7 @@
   (for [name group.join-vars]
     (append-var-once! vars name)))
 
-(defn append-or-group-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), group: Or-Group]
+(defn append-or-group-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], group: Or-Group]
   (for [branch group.branches]
     (append-not-group-vars-indexed! vars seen branch))
   (for [name group.join-vars]
@@ -6137,7 +6132,7 @@
   (for [arg call.args]
     (append-term-var! vars arg)))
 
-(defn append-rule-call-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), call: Rule-Call]
+(defn append-rule-call-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], call: Rule-Call]
   (for [arg call.args]
     (append-term-var-indexed! vars seen arg)))
 
@@ -6147,7 +6142,7 @@
     (append-var-once! vars name))
   (append-input-binding-vars! vars ground.binding))
 
-(defn append-ground-output-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), ground: Ground]
+(defn append-ground-output-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], ground: Ground]
   (append-var-once-indexed! vars seen ground.out)
   (for [name ground.tuple-vars]
     (append-var-once-indexed! vars seen name))
@@ -6159,7 +6154,7 @@
     (append-var-once! vars name))
   (append-input-binding-vars! vars function.out-binding))
 
-(defn append-function-output-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), function: Function-Clause]
+(defn append-function-output-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], function: Function-Clause]
   (append-var-once-indexed! vars seen function.out)
   (for [name function.out-vars]
     (append-var-once-indexed! vars seen name))
@@ -6171,7 +6166,7 @@
   (for [term predicate.terms]
     (append-term-var! vars term)))
 
-(defn append-predicate-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), predicate: Predicate]
+(defn append-predicate-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], predicate: Predicate]
   (when (query-var-name? predicate.op)
     (append-var-once-indexed! vars seen predicate.op))
   (for [term predicate.terms]
@@ -6184,7 +6179,7 @@
     (append-term-var! vars term))
   (append-function-output-vars! vars function))
 
-(defn append-function-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), function: Function-Clause]
+(defn append-function-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], function: Function-Clause]
   (when (query-var-name? function.op)
     (append-var-once-indexed! vars seen function.op))
   (for [term function.terms]
@@ -6195,7 +6190,7 @@
   (append-term-var! vars clause.e)
   (append-var-once! vars clause.out))
 
-(defn append-get-else-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), clause: Get-Else]
+(defn append-get-else-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], clause: Get-Else]
   (append-term-var-indexed! vars seen clause.e)
   (append-var-once-indexed! vars seen clause.out))
 
@@ -6204,7 +6199,7 @@
   (append-var-once! vars clause.out-attr)
   (append-var-once! vars clause.out-value))
 
-(defn append-get-some-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), clause: Get-Some]
+(defn append-get-some-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], clause: Get-Some]
   (append-term-var-indexed! vars seen clause.e)
   (append-var-once-indexed! vars seen clause.out-attr)
   (append-var-once-indexed! vars seen clause.out-value))
@@ -6225,7 +6220,7 @@
     (when aggregate.has-limit-var
       (append-var-once! vars aggregate.limit-var))))
 
-(defn append-find-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), query-value: Query]
+(defn append-find-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], query-value: Query]
   (for [name query-value.find]
     (append-var-once-indexed! vars seen name))
   (for [pull-find query-value.pulls]
@@ -6250,7 +6245,7 @@
 
 (defn query-potential-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)
-        seen (make (map string bool)) :defer]
+        seen (set.empty string) :defer]
     (append-query-input-vars-indexed! (addr vars) (addr seen) query-value)
     (for [clause query-value.clauses]
       (append-clause-vars-indexed! (addr vars) (addr seen) clause))
@@ -6274,7 +6269,7 @@
 
 (defn query-positive-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)
-        seen (make (map string bool)) :defer]
+        seen (set.empty string) :defer]
     (append-query-input-vars-indexed! (addr vars) (addr seen) query-value)
     (for [clause query-value.clauses]
       (append-clause-vars-indexed! (addr vars) (addr seen) clause))
@@ -6292,7 +6287,7 @@
 
 (defn query-input-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)
-        seen (make (map string bool)) :defer]
+        seen (set.empty string) :defer]
     (append-query-input-vars-indexed! (addr vars) (addr seen) query-value)
     vars))
 
@@ -6336,7 +6331,7 @@
 
 (defn query-find-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)
-        seen (make (map string bool)) :defer]
+        seen (set.empty string) :defer]
     (append-find-vars-indexed! (addr vars) (addr seen) query-value)
     vars))
 
