@@ -114,8 +114,8 @@ Status labels:
 - `done` Finish parser-owned AST/value cleanup.
   The EDN parser keeps AST strings as borrowed source text deliberately and now cleans parser-owned nested value containers on failed recursive value, serialized DB, datom, transaction argument, lookup-ref, CAS, and partial tx-data parse paths. Failed tx text parsing also rolls back entries appended to the caller's output array.
 
-- `todo` Make host result decoding less duplicated.
-  Java and Clojure duplicate scalar conversion and optimized result projection cascades. Prefer `vev_result_value` plus value accessors as the primary path, then generate or de-emphasize narrow compatibility accessors.
+- `done` Make host result decoding less duplicated.
+  The Clojure wrapper now funnels `rows` and `q` through shared optimized-result dispatch helpers instead of repeating the entity-column, entity/int-pair, entity/string/int-triple, and generic result fallback cascade in each call shape. Java and C ABI compatibility accessors remain intentionally available.
 
 - `todo` Use set-backed visited state where linear arrays are still used for cycle tracking.
   Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
@@ -149,9 +149,6 @@ Status labels:
 
 - `todo` Make index order a typed helper.
   Seek/rseek/range paths repeatedly branch on string index names to select `eavt`, `aevt`, `avet`, or `vaet`. A typed index-order value plus `db-index-slice` helper would remove string dispatch from core scan code.
-
-- `todo` Fix partial owned cleanup on parse failures.
-  EDN value conversion, serialized DB parsing, and datom parsing delete container arrays shallowly on some error paths. Previously parsed nested `Value` containers and datoms need owned cleanup helpers on failure.
 
 - `todo` Add structured parser diagnostics and malformed-input suites.
   Parser parity work is now broad enough that tests should assert portable structured error categories for malformed query, pull, rule, return-map, and tx-data shapes instead of only checking `not ok` or exact strings.
