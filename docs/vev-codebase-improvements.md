@@ -185,8 +185,8 @@ Status labels:
 - `kvist-done` Record update syntax.
   Kvist already has `assoc` and `update` for shallow struct copy-with-field-changed code, including threaded forms such as `(-> spec (assoc .children children))`. Pull spec variants and similar record updates can use those helpers instead of hand-copying records.
 
-- `kvist` Ownership-transfer annotations or inference for consuming helper functions.
-  An ordinary helper like `value-vector-owned(items: [dynamic]Value) -> Value` is the shape Vev wants, but today it triggers owned-local warnings at call sites. Direct `Value` literals work because the compiler can see the ownership move.
+- `kvist-done` Ownership-transfer annotations for consuming helper functions.
+  Kvist now supports `(consumes param-name...)` in `defn` declarations. An ordinary helper like `value-vector-owned(items: [dynamic]Value) -> Value` can mark `(consumes items)`, and call sites transfer ownership when passing an owned local to that parameter.
 
 - `kvist` Static lookup tables shared between macro and runtime code.
   Predicate/function/aggregate operator tables exist as macro allow-lists and runtime string dispatch.
