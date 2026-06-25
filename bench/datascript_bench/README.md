@@ -158,14 +158,14 @@ VEV_BENCH_REPEATS=3 \
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q1` | 0.28 | 0.31 | 0.90x |
+| `q1` | 0.29 | 0.30 | 0.97x |
 | `q2` | 1.3 | 1.3 | 1.00x |
 | `q2-switch` | 2.9 | 1.1 | 2.64x |
-| `q3` | 2.1 | 1.6 | 1.31x |
-| `q4` | 3.2 | 2.4 | 1.33x |
-| `q5` | 141.4 | 97.7 | 1.45x |
-| `qpred1` | 3.9 | 2.6 | 1.50x |
-| `qpred2` | 7.7 | 2.8 | 2.75x |
+| `q3` | 2.1 | 1.7 | 1.24x |
+| `q4` | 3.1 | 2.5 | 1.24x |
+| `q5` | 143.6 | 100.2 | 1.43x |
+| `qpred1` | 3.8 | 2.5 | 1.52x |
+| `qpred2` | 7.2 | 2.6 | 2.77x |
 
 Diagnostic prepared/row variants are available for the Vev rows, for example:
 
@@ -196,6 +196,12 @@ general entity-local EAV span lookup inspired by Datalevin's sorted
 entity-local scans: Vev records each entity's contiguous range in `eavt`, then
 same-entity cardinality-one attr lookups search that small range instead of
 running a global `(entity, attr)` lower-bound for every candidate.
+
+The relation engine also has a DataScript-shaped compound primitive hash join:
+when two relations share one or more primitive variables, Vev builds a
+length-prefixed compound join key and probes buckets instead of falling back to
+nested loops. Non-primitive or lookup-ref-sensitive joins still use the older
+semantic fallback.
 
 `q5` is now handled by an indexed equality self-join operator: it collects
 distinct left-side join values, then scans the right `avet` range once per

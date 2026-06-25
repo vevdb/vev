@@ -365,13 +365,33 @@
             (arr.push! tuples merged)))))
     (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
 
+(defn primitive-value-join-key [value: Value] -> [key: string, ok: bool]
+  (case value.kind
+    .Entity (return (fmt.tprintf "n:%d" value.entity) true)
+    .Int (return (fmt.tprintf "n:%d" value.int-value) true)
+    :else (primitive-value-dedupe-key value)))
+
 (defn binding-primitive-join-key [binding: Binding, name: string] -> [key: string, ok: bool]
   (let [[value found] (binding-lookup binding name)]
     (when (not found)
       (return "" false))
-    (primitive-value-dedupe-key value)))
+    (primitive-value-join-key value)))
 
-(defn query-relation-hash-join-one-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common-name: string] -> [rel: Query-Relation, ok: bool]
+(defn binding-primitive-join-key-many [binding: Binding, names: []string] -> [key: string, ok: bool]
+  (when (= (count names) 1)
+    (return (binding-primitive-join-key binding names[0])))
+  (let [parts (make [dynamic]string 0 (count names)) :defer]
+    (for [name names]
+      (let [[value found] (binding-lookup binding name)]
+        (when (not found)
+          (return "" false))
+        (let [[part part-ok] (primitive-value-join-key value)]
+          (when (not part-ok)
+            (return "" false))
+          (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part)))))
+    (return (core-strings.concatenate (slice parts 0)) true)))
+
+(defn query-relation-hash-join-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
         attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
         tuples (make [dynamic]Binding)
@@ -382,7 +402,7 @@
         (arr.push! attrs name)
         (arr.push! attr-sources right.attr-sources[index])))
     (for [right-tuple right-index right.tuples]
-      (let [[key key-ok] (binding-primitive-join-key right-tuple common-name)]
+      (let [[key key-ok] (binding-primitive-join-key-many right-tuple common)]
         (when (not key-ok)
           (delete attrs)
           (delete attr-sources)
@@ -396,7 +416,7 @@
             (arr.push! next-indexes -1))
           (mmap.assoc! bucket-heads key right-index))))
     (for [left-tuple left.tuples]
-      (let [[key key-ok] (binding-primitive-join-key left-tuple common-name)]
+      (let [[key key-ok] (binding-primitive-join-key-many left-tuple common)]
         (when (not key-ok)
           (delete attrs)
           (delete attr-sources)
@@ -421,11 +441,10 @@
   (let [common (relation-common-attrs left right) :defer]
     (when (= (count common) 0)
       (return (query-relation-product db sources left right)))
-    (when (= (count common) 1)
-      (let [[hash-joined hash-ok] (query-relation-hash-join-one-primitive db sources left right common[0])]
-        (when hash-ok
-          (return hash-joined))
-        (delete-query-relation hash-joined)))
+    (let [[hash-joined hash-ok] (query-relation-hash-join-primitive db sources left right (slice common 0))]
+      (when hash-ok
+        (return hash-joined))
+      (delete-query-relation hash-joined))
     (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
           attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
           tuples (make [dynamic]Binding)]
