@@ -48,6 +48,9 @@ Status labels:
 - `done` Use `set[T]` in high-volume pure membership paths.
   Recursive transitive traversal, entity-column de-duplication, and result-row de-duplication now use Kvist sets instead of `map[T]bool` where no boolean payload exists.
 
+- `done` Add a tempid lookup table during transaction resolution.
+  Transaction resolution now keeps a parallel `map[string]u64` while preserving the ordered tempid report vector, avoiding repeated scans for resolved tempids in larger transactions.
+
 ## Vev TODO
 
 - `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
@@ -109,9 +112,6 @@ Status labels:
 
 - `todo` Improve schema property access.
   Schema extraction and hot schema predicates repeat similar EAVT probes for keyword and boolean properties. A schema property accessor or cached schema map/view would centralize these scans and make predicate paths cheaper.
-
-- `todo` Add a tempid lookup table during transaction resolution.
-  Tempid resolution repeatedly scans the ordered tempid report vector. Keep the ordered report shape, but maintain a `map[string]u64` alongside it for lookup-heavy transaction paths.
 
 - `todo` Make tuple schema transaction helpers slice-based.
   Runtime tuple schema parsing supports arbitrary-length tuple attr vectors, but helper constructors are still specialized for two component attrs. Slice-based helpers would avoid custom assembly for 3+ tuple attrs.

@@ -2358,6 +2358,27 @@
   (remap-resolved-ops! ops from to)
   (remap-resolved-tempids! tempids from to))
 
+(defn resolved-tempid-lookup [index: (ptr (map string u64)), tempid: string] -> [e: u64, ok: bool]
+  (mmap.get index^ tempid))
+
+(defn push-resolved-tempid! [tempids: ^[dynamic]Tempid, index: (ptr (map string u64)), tempid: string, e: u64]
+  (arr.push! tempids^ (Tempid {tempid: tempid e: e}))
+  (mmap.assoc! index^ tempid e))
+
+(defn ensure-resolved-tempid! [tempids: ^[dynamic]Tempid, index: (ptr (map string u64)), tempid: string, e: u64]
+  (let [[_ ok] (resolved-tempid-lookup index tempid)]
+    (when (not ok)
+      (push-resolved-tempid! tempids index tempid e))))
+
+(defn remap-resolved-tempid-entity-indexed! [ops: ^[dynamic]Tx-Op, tempids: ^[dynamic]Tempid, index: (ptr (map string u64)), from: u64, to: u64]
+  (when (= from to)
+    (return))
+  (remap-resolved-ops! ops from to)
+  (for [entry item-index tempids^]
+    (when (= entry.e from)
+      (set! tempids^[item-index] (Tempid {tempid: entry.tempid e: to}))
+      (mmap.assoc! index^ entry.tempid to))))
+
 (defn tempid-existing-upsert-target [db: DB, data: Tx-Data, existing: u64] -> [target: u64, ok: bool, conflict: bool]
   (when (not (and (= data.op ":db/add")
                   (schema-unique-identity? db data.a)))
@@ -2829,11 +2850,13 @@
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
+        tempid-index (make (map string u64))
         pending (arr.into [dynamic]Tx-Data tx-data)
         next-e (next-entity-id (slice db.datoms 0))
         current-tx-e tx
         current-tx-reserved false
         data-index 0]
+    (defer (delete tempid-index))
     (defer (delete pending))
     (for [data pending]
       (when (and (not data.has-tempid)
@@ -2860,7 +2883,7 @@
               (when (not current-tx-reserved)
                 (set! current-tx-reserved true))
               (set! e current-tx-e)
-              (ensure-tempid! (addr resolved-tempids) data.tempid current-tx-e)
+              (ensure-resolved-tempid! (addr resolved-tempids) (addr tempid-index) data.tempid current-tx-e)
               (when (current-tx-upsert-conflict? current-db data current-tx-e)
                 (return (Resolved-Tx {ok: false
                                       error: "conflicting upsert"
@@ -2869,7 +2892,7 @@
                                       tempids: resolved-tempids})))
               (when (= data.op ":db/add")
                 (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v}))))
-          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
+          (let [[existing ok] (resolved-tempid-lookup (addr tempid-index) data.tempid)]
             (if ok
               (let [[target target-ok _] (tempid-existing-upsert-target current-db data existing)]
                 (if target-ok
@@ -2880,7 +2903,7 @@
                                           tx-meta: resolved-meta
                                           tempids: resolved-tempids}))
                     (do
-                      (remap-resolved-tempid-entity! (addr resolved-ops) (addr resolved-tempids) existing target)
+                      (remap-resolved-tempid-entity-indexed! (addr resolved-ops) (addr resolved-tempids) (addr tempid-index) existing target)
                       (set! e target)))
                   (set! e existing)))
               (do
@@ -2896,7 +2919,7 @@
                     (do
                       (set! e next-e)
                       (set! next-e (+ next-e 1)))))
-                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e})))))))
+                (push-resolved-tempid! (addr resolved-tempids) (addr tempid-index) data.tempid e))))))
         (when data.has-lookup-ref
           (let [[lookup-e lookup-ok lookup-error] (resolve-lookup-ref-checked current-db data.lookup-attr data.lookup-value)]
             (if lookup-ok
@@ -3047,7 +3070,7 @@
               (when (not current-tx-reserved)
                 (set! current-tx-reserved true))
               (set! v (value-entity current-tx-e))
-              (ensure-tempid! (addr resolved-tempids) current-tx-tempid current-tx-e)))
+              (ensure-resolved-tempid! (addr resolved-tempids) (addr tempid-index) current-tx-tempid current-tx-e)))
           (when (or data.has-value-tempid
                     (ref-string-value? current-db data.a v)
                     (ref-negative-int-value? current-db data.a v))
@@ -3059,14 +3082,14 @@
                   (when (not current-tx-reserved)
                     (set! current-tx-reserved true))
                   (set! v (value-entity current-tx-e))
-                  (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
+                  (ensure-resolved-tempid! (addr resolved-tempids) (addr tempid-index) value-tempid current-tx-e))
               (if (not (tx-data-has-tempid? current-db (slice pending 0) value-tempid))
                 (return (Resolved-Tx {ok: false
                                       error: "tempid used only as value"
                                       ops: resolved-ops
                                       tx-meta: resolved-meta
                                       tempids: resolved-tempids}))
-              (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
+              (let [[existing ok] (resolved-tempid-lookup (addr tempid-index) value-tempid)]
               (if ok
                 (set! v (value-entity existing))
                 (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db (slice pending 0) value-tempid)]
@@ -3079,10 +3102,10 @@
                   (if upsert-ok
                     (do
                       (set! v (value-entity upsert-e))
-                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: upsert-e})))
+                      (push-resolved-tempid! (addr resolved-tempids) (addr tempid-index) value-tempid upsert-e))
                     (do
                       (set! v (value-entity next-e))
-                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: next-e}))
+                      (push-resolved-tempid! (addr resolved-tempids) (addr tempid-index) value-tempid next-e)
                       (set! next-e (+ next-e 1)))))))))))
           (when (not value-ok)
             (return (Resolved-Tx {ok: false
