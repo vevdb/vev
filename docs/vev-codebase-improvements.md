@@ -173,11 +173,11 @@ Status labels:
 - `not-now` ABI metadata/header generation.
   `include/vev.h`, Python signatures, Java/JNA bindings, and Rust declarations mirror the Kvist ABI manually. A sidecar generator from exported declarations would reduce drift, but the current manual surface is acceptable unless drift becomes a concrete maintenance problem.
 
-- `kvist` Better C ABI glue ergonomics.
-  Vev's ABI layer needs raw Odin for wrapper structs, callback proc types, pointer casts, and repeated `runtime.default_context()` setup.
+- `not-now` Better C ABI glue ergonomics.
+  Vev's ABI layer needs raw Odin for wrapper structs, callback proc types, pointer casts, and repeated `runtime.default_context()` setup. This is genuine friction, but the current cases are mostly Odin interop surface area and exported-ABI boilerplate rather than a small package/compiler improvement. Prefer Vev-local helper macros or code generation if the ABI layer keeps growing; do not add new Kvist interop syntax without a separate design.
 
-- `kvist` Captured C callback ergonomics.
-  ABI transaction callbacks currently need a fixed trampoline table. First-class host callback wrapping would remove this limit.
+- `not-now` Captured C callback ergonomics.
+  ABI transaction callbacks currently need a fixed trampoline table, while tx listeners already store callback/user pairs directly in raw Odin. Removing the tx-function slot limit is a Vev ABI/runtime representation change unless Kvist gets first-class host callback wrapping. Leave this as-is unless the fixed slot count becomes a concrete product limit.
 
 - `kvist` Shared macro/runtime parser descriptions.
   Query, pull, and tx syntax must exist both as Kvist literal macros and runtime EDN text parsing. A shared parser description or codegen story would reduce parity drift.
@@ -209,8 +209,8 @@ Status labels:
 - `kvist-done` Better macro-time collection utilities.
   Kvist macros now have a macro-time `reduce` helper over source form collections, plus macro-time `+` for numeric accumulators. Literal tx/pull-style macros can fold over option and clause forms instead of enumerating every ordering by hand.
 
-- `kvist` Scoped owned aggregate helpers.
-  Benchmarks and ABI execution paths often allocate several related owned arrays/values and then carry long `defer delete` blocks. Language or package support for scoped owned aggregate records would make this pattern less fragile.
+- `not-now` Scoped owned aggregate helpers.
+  Benchmarks and ABI execution paths often allocate several related owned arrays/values and then carry long cleanup blocks. Kvist already has `:defer` and `:defer-with` for local cleanup, and the remaining hard cases are Vev-specific ownership-transfer paths where arrays are handed to result/statement handles. Prefer small Vev-local builder structs and cleanup functions if a concrete cluster becomes painful; do not add general Kvist support now.
 
 ## Later Architecture
 

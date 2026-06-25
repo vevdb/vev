@@ -13,7 +13,7 @@ DataScript, and Datalevin query shapes:
 - `q5`: shared-value join over two entity variables
 - `qpred1` / `qpred2`: predicate filtering with and without `:in`
 - `rules-wide-*` / `rules-long-*`: optional recursive rule rows from the
-  upstream benchmark, using inline map-query `:rules`
+  upstream benchmark, using DataScript-style `:in $ %` rules input
 
 Run a quick smoke:
 
@@ -132,13 +132,13 @@ VEV_BENCH_REPEATS=1 \
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q5` | 139.8 | 9.9 | 14.12x |
-| `rules-wide-3x3` | 0.44 | 0.29 | 1.52x |
-| `rules-long-10x3` | 0.94 | 0.34 | 2.76x |
+| `q5` | 133.4 | 10.1 | 13.21x |
+| `rules-wide-3x3` | 0.46 | 0.27 | 1.70x |
+| `rules-long-10x3` | 0.96 | 0.36 | 2.67x |
 
-The rule rows use inline map-query `:rules` for Vev because the current Clojure
-wrapper does not yet expose DataScript's `%` rules input path as a first-class
-host API shape.
+The rule rows now use the same DataScript-style `%` rules input shape through
+the Clojure wrapper:
+`(v/q '[:find ... :in $ % :where ...] db rules)`.
 
 The Datalevin baseline process can still take a long time or stall locally in
 this wrapper; the latest verified table above is DataScript-only. Datalevin's
@@ -151,7 +151,5 @@ Near-term benchmark work:
    locally even when the Vev and DataScript rows complete.
 2. Run the same q1/q2/q2-switch/q3/q4/q5/qpred rows at the Datalevin 20k-person
    scale and record stable comparison tables.
-3. Add a Clojure `%` rules input API path so the rule rows can use the exact
-   upstream query shape, not only inline map-query `:rules`.
-4. Continue using `q2` and `q2-switch` to drive a general same-entity star /
+3. Continue using `q2` and `q2-switch` to drive a general same-entity star /
    merge-scan physical operator in Vev.

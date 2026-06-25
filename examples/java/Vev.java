@@ -48,6 +48,8 @@ public final class Vev {
     private final MethodHandle queryEdnWithInputs;
     private final MethodHandle prepareQueryEdn;
     private final MethodHandle preparedQueryFree;
+    private final MethodHandle queryPreparedResultWithRulesTextAndInputs;
+    private final MethodHandle queryDbPreparedResultWithRulesTextAndInputs;
     private final MethodHandle stmtCreate;
     private final MethodHandle stmtClear;
     private final MethodHandle stmtFree;
@@ -147,6 +149,8 @@ public final class Vev {
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.prepareQueryEdn = downcall("vev_prepare_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryFree = downcall("vev_prepared_query_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.queryPreparedResultWithRulesTextAndInputs = downcall("vev_query_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedResultWithRulesTextAndInputs = downcall("vev_query_db_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stmtCreate = downcall("vev_stmt_create", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stmtClear = downcall("vev_stmt_clear", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.stmtFree = downcall("vev_stmt_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -425,6 +429,16 @@ public final class Vev {
             }
         }
 
+        public ResultSet query(PreparedQuery query, String rules, String inputs) throws Throwable {
+            try (Arena local = Arena.ofConfined()) {
+                return new ResultSet((MemorySegment) queryPreparedResultWithRulesTextAndInputs.invoke(
+                    raw,
+                    query.raw,
+                    local.allocateUtf8String(rules),
+                    local.allocateUtf8String(inputs)));
+            }
+        }
+
         public ResultSet query(Statement stmt) throws Throwable {
             return new ResultSet((MemorySegment) queryStmtResult.invoke(raw, stmt.raw));
         }
@@ -464,6 +478,17 @@ public final class Vev {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 return new ResultSet((MemorySegment) queryDbPreparedResultWithInputs.invoke(handle.raw, query.raw, local.allocateUtf8String(inputs)));
+            }
+        }
+
+        public ResultSet query(PreparedQuery query, String rules, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return new ResultSet((MemorySegment) queryDbPreparedResultWithRulesTextAndInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(rules),
+                    local.allocateUtf8String(inputs)));
             }
         }
 

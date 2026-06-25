@@ -78,14 +78,15 @@
     (db-with-bulk schema-db entities)))
 
 (defn bench-rules [db]
-  (v/q '{:find [?e ?e2]
-         :where [(follows ?e ?e2)]
-         :rules [[(follows ?x ?y)
-                  [?x :follows ?y]]
-                 [(follows ?x ?y)
-                  [?x :follows ?t]
-                  (follows ?t ?y)]]}
-       db))
+  (v/q '[:find ?e ?e2
+         :in $ %
+         :where (follows ?e ?e2)]
+       db
+       '[[(follows ?x ?y)
+          [?x :follows ?y]]
+         [(follows ?x ?y)
+          [?x :follows ?t]
+          (follows ?t ?y)]]))
 
 (defn q1 []
   (core/bench

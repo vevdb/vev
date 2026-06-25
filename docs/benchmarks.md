@@ -56,9 +56,8 @@ surface; `math-bench` introduces realistic recursive data; `openrulebench`
 should validate the generic semi-naive engine once it exists.
 
 Vev now exposes the optional `datascript-bench` rule rows by name through the
-Clojure adapter. They currently use inline map-query `:rules`; adding exact
-DataScript-style `%` rules input support to the Clojure wrapper remains a host
-API parity task.
+Clojure adapter using the same DataScript-style `:in $ %` rules input shape as
+the upstream benchmark.
 
 ## Query And Rule Baseline
 
