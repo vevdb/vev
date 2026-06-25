@@ -42,6 +42,12 @@ Status labels:
 - `done` Add typed empty statement collections and lookup-ref collection binds.
   The C ABI now exposes string, keyword, entity, and int lookup-ref collection bind functions. Python statement bindings support explicit typed empty collections/tuples/relations and non-string lookup-ref collections.
 
+- `done` Introduce ordered, indexed query variable collection.
+  The main query variable collectors now preserve stable order while using a temporary string membership index. The older linear `append-var-once!` remains for smaller validation/update paths where carrying an index would add more complexity than it removes.
+
+- `done` Use `set[T]` in high-volume pure membership paths.
+  Recursive transitive traversal, entity-column de-duplication, and result-row de-duplication now use Kvist sets instead of `map[T]bool` where no boolean payload exists.
+
 ## Vev TODO
 
 - `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
@@ -56,14 +62,11 @@ Status labels:
 - `todo` Make host result decoding less duplicated.
   Java and Clojure duplicate scalar conversion and optimized result projection cascades. Prefer `vev_result_value` plus value accessors as the primary path, then generate or de-emphasize narrow compatibility accessors.
 
-- `todo` Introduce an `Ordered-String-Set` helper.
-  Query variable collection and similar visitors need stable order plus fast membership. This should replace repeated `append-var-once!` / linear `contains?` loops.
-
 - `todo` Use set-backed visited state where linear arrays are still used for cycle tracking.
   Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
 
-- `todo` Replace `map[T]bool` set emulation where semantics are pure membership.
-  Use Kvist `set[T]` when no stored boolean meaning exists.
+- `todo` Replace remaining `map[T]bool` set emulation where semantics are pure membership.
+  Remaining cases are mostly composite string keys, binding de-dupe keys, and the ordered query-variable index. Use `set[T]` where the type shape is simple and the compiler accepts the required helper signatures.
 
 - `todo` Consider a map-backed `Binding` index.
   Binding lookup is order-preserving but scan-heavy. A binding could keep ordered items plus `map[string]int`, or relation join code could build a temporary lookup map for join keys.
@@ -183,6 +186,9 @@ Status labels:
 
 - `kvist` Array fill/repeat helpers.
   Dense indexes and benchmark/sample setup still need manual loops to initialize arrays with repeated values. `arr.repeat`, `arr.fill!`, or similar helpers would remove small but recurring boilerplate.
+
+- `kvist` Pointer-to-set helper signatures.
+  Vev can use local `set[T]` values directly, but helper parameters shaped like `seen: ^set[string]` or `seen: (ptr (set string))` currently fail in this code path with poor source locations. Until that is fixed, ordered query-variable collection keeps a `map[string]bool` index.
 
 - `kvist` Better macro-time collection utilities.
   Literal tx and pull macros still enumerate option orderings and shape cases by hand where runtime EDN parsing can fold over data. Macro-time iteration/folding/splicing helpers would help keep literal and runtime frontends aligned.
