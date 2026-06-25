@@ -5279,65 +5279,91 @@
         (set! max-depth (+ max-depth 1))))
     max-depth))
 
+(defn rules-reachable-from-name [rules: []Rule, name: string] -> [dynamic]string
+  (let [deps (rules-dependency-graph rules)
+        out (make [dynamic]string)]
+    (defer (delete-rule-dependency-graph deps))
+    (for [dep deps]
+      (when (rule-reaches-name? (slice deps 0) name dep.name)
+        (string-push-unique! (addr out) dep.name)))
+    out))
+
+(defn rules-filter-by-names [rules: []Rule, names: []string] -> [dynamic]Rule
+  (let [out (make [dynamic]Rule)]
+    (for [rule rules]
+      (when (string-slice-contains? names rule.name)
+        (arr.push! out rule)))
+    out))
+
+(defn rules-for-call [rules: []Rule, name: string] -> [dynamic]Rule
+  (let [names (rules-reachable-from-name rules name)
+        out (rules-filter-by-names rules (slice names 0))]
+    (delete names)
+    out))
+
 (defn bindings-after-rule-call-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
-  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
+  (let [call-rules (rules-for-call rules call.name)]
+    (defer (delete call-rules))
+  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db (slice call-rules 0) call binding)]
     (when optimized-ok
       (return optimized))
     (delete optimized))
-  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db rules call binding)]
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db (slice call-rules 0) call binding)]
     (when optimized-ok
       (return optimized))
     (delete optimized))
-  (when (matching-rules-are-leaves? rules call)
-    (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding 1 call.source call.has-source registry)
+  (when (matching-rules-are-leaves? (slice call-rules 0) call)
+    (let [candidates (bindings-after-rule-call-depth-with-fns db (slice call-rules 0) call binding 1 call.source call.has-source registry)
           out (unique-bindings (slice candidates 0))]
       (delete candidates)
       (return out)))
-  (when (rule-call-can-use-acyclic-depth? rules call.name)
-    (let [depth (non-recursive-rule-depth rules call.name)
-          candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)
+  (when (rule-call-can-use-acyclic-depth? (slice call-rules 0) call.name)
+    (let [depth (non-recursive-rule-depth (slice call-rules 0) call.name)
+          candidates (bindings-after-rule-call-depth-with-fns db (slice call-rules 0) call binding depth call.source call.has-source registry)
           out (unique-bindings (slice candidates 0))]
       (delete candidates)
       (return out)))
   (let [out (make [dynamic]Binding)
         seen (make (map string bool))
         depth 1
-        min-depth (+ (count rules) 1)
+        min-depth (+ (count call-rules) 1)
         changed true]
     (defer (delete seen))
     (while (or changed (<= depth min-depth))
       (set! changed false)
-      (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
+      (let [candidates (bindings-after-rule-call-depth-with-fns db (slice call-rules 0) call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
           (when (append-unique-binding! (addr out) (addr seen) candidate)
             (set! changed true))))
       (set! depth (+ depth 1)))
-    out))
+    out)))
 
 (defn bindings-after-rule-call-profiled-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
   (set! stats^.rule-calls (+ stats^.rule-calls 1))
-  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db rules call binding)]
+  (let [call-rules (rules-for-call rules call.name)]
+    (defer (delete call-rules))
+  (let [[optimized optimized-ok] (bindings-after-linear-transitive-rule-call db (slice call-rules 0) call binding)]
     (when optimized-ok
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
       (query-stats-observe-bindings! stats (count optimized))
       (return optimized))
     (delete optimized))
-  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db rules call binding)]
+  (let [[optimized optimized-ok] (bindings-after-alternating-transitive-rule-call db (slice call-rules 0) call binding)]
     (when optimized-ok
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
       (query-stats-observe-bindings! stats (count optimized))
       (return optimized))
     (delete optimized))
-  (when (matching-rules-are-leaves? rules call)
+  (when (matching-rules-are-leaves? (slice call-rules 0) call)
     (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-    (let [out (bindings-after-rule-call-with-fns db rules call binding registry)]
+    (let [out (bindings-after-rule-call-with-fns db (slice call-rules 0) call binding registry)]
       (query-stats-observe-bindings! stats (count out))
       (return out)))
-  (when (rule-call-can-use-acyclic-depth? rules call.name)
+  (when (rule-call-can-use-acyclic-depth? (slice call-rules 0) call.name)
     (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-    (let [depth (non-recursive-rule-depth rules call.name)
-          candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)
+    (let [depth (non-recursive-rule-depth (slice call-rules 0) call.name)
+          candidates (bindings-after-rule-call-depth-with-fns db (slice call-rules 0) call binding depth call.source call.has-source registry)
           out (unique-bindings (slice candidates 0))]
       (delete candidates)
       (query-stats-observe-bindings! stats (count out))
@@ -5345,20 +5371,20 @@
   (let [out (make [dynamic]Binding)
         seen (make (map string bool))
         depth 1
-        min-depth (+ (count rules) 1)
+        min-depth (+ (count call-rules) 1)
         changed true]
     (defer (delete seen))
     (while (or changed (<= depth min-depth))
       (set! changed false)
       (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
-      (let [candidates (bindings-after-rule-call-depth-with-fns db rules call binding depth call.source call.has-source registry)]
+      (let [candidates (bindings-after-rule-call-depth-with-fns db (slice call-rules 0) call binding depth call.source call.has-source registry)]
         (defer (delete candidates))
         (for [candidate candidates]
           (when (append-unique-binding! (addr out) (addr seen) candidate)
             (set! changed true))))
       (query-stats-observe-bindings! stats (count out))
       (set! depth (+ depth 1)))
-    out))
+    out)))
 
 (defn bindings-after-rule-call-profiled-with-analysis [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, registry: []Native-Query-Fn, stats: ^Query-Stats, recursive: bool, acyclic-depth: int] -> [dynamic]Binding
   (set! stats^.rule-calls (+ stats^.rule-calls 1))
@@ -7084,10 +7110,11 @@
 
 (defn query-relation-apply-rule-call [db: DB, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
   (let [bindings (make [dynamic]Binding)
-        recursive (not (rule-call-can-use-acyclic-depth? rules call.name))
-        acyclic-depth (if recursive 0 (non-recursive-rule-depth rules call.name))]
+        call-rules (rules-for-call rules call.name) :defer
+        recursive (not (rule-call-can-use-acyclic-depth? (slice call-rules 0) call.name))
+        acyclic-depth (if recursive 0 (non-recursive-rule-depth (slice call-rules 0) call.name))]
     (for [tuple rel.tuples]
-      (let [rule-bindings (bindings-after-rule-call-profiled-with-analysis db rules call tuple registry stats recursive acyclic-depth)]
+      (let [rule-bindings (bindings-after-rule-call-profiled-with-analysis db (slice call-rules 0) call tuple registry stats recursive acyclic-depth)]
         (for [rule-binding rule-bindings]
           (arr.push! bindings rule-binding))
         (delete rule-bindings)))
