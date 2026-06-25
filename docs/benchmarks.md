@@ -168,23 +168,23 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 17.3x | 42.5x |
-| `chain-root n=10` | 22.3x | 36.3x |
-| `chain-root n=30` | 54.0x | 69.7x |
-| `chain-root n=100` | 268.9x | 292.7x |
-| `chain-leaf n=10` | 15.4x | 22.9x |
-| `chain-leaf n=30` | 64.3x | 79.1x |
-| `chain-leaf n=100` | 460.7x | 498.6x |
-| `chain-all n=10` | 8.7x | 11.4x |
-| `chain-all n=30` | 11.6x | 11.8x |
-| `chain-all n=100` | 18.4x | 17.9x |
-| `tree-root n=4` | 2.8x | 6.3x |
-| `tree-root n=13` | 3.3x | 5.4x |
-| `tree-root n=40` | 2.8x | 3.4x |
-| `tree-root n=121` | 2.2x | 2.4x |
-| `bad-order-join n=1000` | 6.9x | 10.8x |
-| `distinct-age n=1000` | 3.4x | 3.9x |
-| `people-name-age n=1000` | 0.8x | 0.7x |
+| `chain-root n=3` | 16.7x | 41.0x |
+| `chain-root n=10` | 23.6x | 40.8x |
+| `chain-root n=30` | 54.9x | 72.5x |
+| `chain-root n=100` | 270.7x | 288.1x |
+| `chain-leaf n=10` | 16.1x | 24.4x |
+| `chain-leaf n=30` | 66.9x | 83.3x |
+| `chain-leaf n=100` | 497.1x | 535.6x |
+| `chain-all n=10` | 8.8x | 11.9x |
+| `chain-all n=30` | 12.6x | 12.8x |
+| `chain-all n=100` | 19.9x | 19.1x |
+| `tree-root n=4` | 2.9x | 7.1x |
+| `tree-root n=13` | 3.2x | 5.4x |
+| `tree-root n=40` | 2.9x | 3.5x |
+| `tree-root n=121` | 2.4x | 2.6x |
+| `bad-order-join n=1000` | 7.0x | 11.3x |
+| `distinct-age n=1000` | 3.4x | 4.1x |
+| `people-name-age n=1000` | 0.8x | 0.8x |
 
 ## Stress Comparison
 
