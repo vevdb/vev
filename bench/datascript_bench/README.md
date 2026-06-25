@@ -158,14 +158,14 @@ VEV_BENCH_REPEATS=3 \
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q1` | 0.27 | 0.35 | 0.77x |
+| `q1` | 0.28 | 0.31 | 0.90x |
 | `q2` | 1.3 | 1.3 | 1.00x |
 | `q2-switch` | 2.9 | 1.1 | 2.64x |
 | `q3` | 2.1 | 1.6 | 1.31x |
-| `q4` | 3.1 | 2.3 | 1.35x |
-| `q5` | 141.1 | 100.0 | 1.41x |
-| `qpred1` | 4.0 | 2.5 | 1.60x |
-| `qpred2` | 7.8 | 2.7 | 2.89x |
+| `q4` | 3.2 | 2.4 | 1.33x |
+| `q5` | 141.4 | 97.7 | 1.45x |
+| `qpred1` | 3.9 | 2.6 | 1.50x |
+| `qpred2` | 7.7 | 2.8 | 2.75x |
 
 Diagnostic prepared/row variants are available for the Vev rows, for example:
 
@@ -183,9 +183,9 @@ Latest short diagnostic result:
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q1` | 0.27 | 0.35 | 0.77x |
-| `q1-prepared` | --- | 0.30 | --- |
-| `q1-rows-prepared` | --- | 0.11 | --- |
+| `q1` | 0.28 | 0.30 | 0.93x |
+| `q1-prepared` | --- | 0.26 | --- |
+| `q1-rows-prepared` | --- | 0.09 | --- |
 | `q2` | 1.3 | 1.3 | 1.00x |
 | `q2-prepared` | --- | 1.2 | --- |
 | `q2-rows-prepared` | --- | 0.98 | --- |

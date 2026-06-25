@@ -344,11 +344,11 @@ Remaining performance work:
   that small range instead of running a global `(entity, attr)` lower-bound for
   every candidate. In the latest 20k local `datascript-bench` comparison, q2 is
   at DataScript parity, q2-switch/q3/q4/q5/qpred1/qpred2 are ahead of
-  DataScript, and q1 is the remaining normal-`q` regression at roughly 0.35 ms
-  versus DataScript at roughly 0.27 ms.
+  DataScript, and q1 is the remaining normal-`q` regression at roughly 0.31 ms
+  versus DataScript at roughly 0.28 ms.
 - The remaining q1 lag is mostly host result-shape overhead. Prepared
-  diagnostic rows show q1 improves from roughly 0.35 ms for
-  Datomic/DataScript-style `q` to roughly 0.11 ms for prepared `rows`, so the
+  diagnostic rows show q1 improves from roughly 0.30 ms for
+  Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`, so the
   next q1 work should target set/vector materialization through the Clojure
   adapter and native result API, not index lookup.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
