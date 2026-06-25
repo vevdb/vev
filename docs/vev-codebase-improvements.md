@@ -94,6 +94,9 @@ Status labels:
 - `done` Add a `Value-Map-Builder` for pull rendering.
   Pull map rendering now uses a small builder to centralize duplicate-key checks and map materialization instead of open-coding key scans against the raw `Value` item array.
 
+- `done` Centralize schema property lookup.
+  Keyword, boolean, and ident schema helpers now share `schema-property-value-for-entity`, giving hot schema predicate paths one EAVT property accessor that can later be backed by a cached schema view.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -134,9 +137,6 @@ Status labels:
 
 - `todo` Add a rule lookup/index structure.
   Rule validation, arity checks, required-binding checks, and planning repeatedly scan all rules by name and arity. A rule index keyed by name and arity would centralize those checks and avoid repeated scans.
-
-- `todo` Improve schema property access.
-  Schema extraction and hot schema predicates repeat similar EAVT probes for keyword and boolean properties. A schema property accessor or cached schema map/view would centralize these scans and make predicate paths cheaper.
 
 - `todo` Make index order a typed helper.
   Seek/rseek/range paths repeatedly branch on string index names to select `eavt`, `aevt`, `avet`, or `vaet`. A typed index-order value plus `db-index-slice` helper would remove string dispatch from core scan code.
