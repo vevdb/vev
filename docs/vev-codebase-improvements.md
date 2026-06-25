@@ -88,6 +88,9 @@ Status labels:
 - `done` Use a local set for cardinality-one entity/attr tracking.
   The transaction path now uses `set[string]` for the local entity/attr membership table. Helper-heavy membership paths still use `map[string]bool` until pointer-shaped set mutation is usable end-to-end in Vev.
 
+- `done` Avoid repeated reachability scans in rule-call planning.
+  Rule planning now computes the reachable rule-name set once per call plan and reuses it for call-rule filtering, recursive dependency detection, and acyclic depth. This keeps the general dependency-graph path while removing repeated `rule-reaches-name?` scans from the hot planning path.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -108,8 +111,8 @@ Status labels:
 - `todo` Consider reshaping `Query-Relation` attrs.
   Parallel `attrs` / `attr-sources` arrays couple indexes manually. A small `{name source}` record or an auxiliary source map would be clearer.
 
-- `todo` Replace rule dependency repeated reachability with a graph/SCC pass.
-  Current dependency checks recompute reachability over array graphs. This is likely a correctness-preserving performance win for larger rule sets.
+- `todo` Add explicit SCC metadata for rule components.
+  Rule planning now reuses single-start reachability, but recursive component detection still checks mutual reachability on demand. A Tarjan/Kosaraju pass would make component recursion, rule grouping, and future semi-naive planning more direct.
 
 - `todo` Add a `Value-Map-Builder`.
   Pull/result rendering manually tracks duplicate map keys by scanning `Value` pairs. A builder can centralize duplicate handling and ownership.
