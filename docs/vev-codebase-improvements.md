@@ -73,6 +73,9 @@ Status labels:
 - `done` Improve C ABI value inspection helpers.
   `vev_value_map_get` and `vev_value_text_equals` now cover the common C-client map lookup/text comparison boilerplate used by pull and tx-report inspection. The C smoke delegates to those helpers instead of hand-scanning map entries.
 
+- `done` Tighten ABI transaction builder cleanup.
+  `vev_tx_free` now deletes the C-owned attr strings and value payloads held by `vev_tx_create` builders before releasing the raw wrapper array. The cleanup stays builder-specific because generic `Tx-Data` can contain borrowed package literals.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -141,9 +144,6 @@ Status labels:
 - `todo` Add test support helpers for Vev values and results.
   Tests build verbose nested `Value` fixtures and carry local result/pull search helpers. EDN-to-`Value` fixture helpers, `value-get-in`, and row/pull matchers would make compatibility tests easier to read and extend.
 
-- `todo` Tighten ABI owned-builder cleanup.
-  Some ABI builder/free paths own cloned strings and values but free only the outer dynamic array. Add owned cleanup helpers for ABI transaction builders and similar owned-struct containers.
-
 - `todo` Materialize pull values more cleanly for ABI results.
   ABI results currently keep pull structures in the result plus a side array of rendered pull `Value`s. A single owned materialized result representation would simplify pull result access and cleanup.
 
@@ -152,8 +152,8 @@ Status labels:
 - `kvist-done` Optimize ordinary `for` over eager bounded `arr` producers.
   Kvist now lowers ordinary direct `for` sources over `arr.range`, `arr.repeat`, `arr.repeatedly`, `arr.iterate`, `arr.cycle`, and `arr.take-nth` to direct loops without allocating helper arrays. Vev's existing `while` workarounds can stay where they are clearer, but new ordinary loops no longer pay the eager-array cost for these source forms.
 
-- `kvist` Comparator/key sorting with captures.
-  Vev still needs custom datom and `Value` sorting because `arr.sort-by!` cannot close over comparator context.
+- `kvist-done` Comparator/key sorting with captures.
+  Kvist now supports captured inline `fn` key functions for `arr.sort-by` and `arr.sort-by!`, using explicit capture-aware sort helpers. Vev may still keep custom datom and `Value` sorting where it needs non-key comparator semantics, but captured key sorting no longer blocks ordinary package use.
 
 - `kvist` ABI metadata/header generation.
   `include/vev.h`, Python signatures, Java/JNA bindings, and Rust declarations mirror the Kvist ABI manually. A sidecar generator from exported declarations would reduce drift.
