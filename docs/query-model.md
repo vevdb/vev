@@ -129,17 +129,17 @@ The first relation-engine path is now implemented for the main DataScript query
 operators: data clauses, predicates, function clauses, `not`, `or`, rule calls,
 `ground`, `get-else`, `get-some`, and aggregates. This includes ordinary
 scalar, collection, tuple, relation `:in` inputs, and relation-source clauses
-over `:in` sources such as `$rows`. It builds one `Query-Relation` per input
-binding and datom/source pattern, joins those relations with generic relation
-product/join operations, applies non-clause operators as relation transforms,
-applies rule calls through the existing recursive rule evaluator, groups
-aggregate bindings through the existing aggregate renderer, and then uses the
-existing result renderer. Joins use DB-aware entity equality so entity ids,
-ints, and lookup refs compare the same way the older evaluator does. This is
-intentionally conservative: named DB sources and source-qualified synthetic
-primary collection DB rule/predicate/function queries still use the older
-binding-expansion evaluator until their DataScript-style source-aware relation
-handlers are ported.
+over `:in` sources such as `$rows`, and named DB source clauses. It builds one
+`Query-Relation` per input binding and datom/source pattern, joins those
+relations with generic relation product/join operations, applies non-clause
+operators as relation transforms, applies rule calls through the existing
+recursive rule evaluator, groups aggregate bindings through the existing
+aggregate renderer, and then uses the existing result renderer. Relations carry
+per-attribute source metadata so lookup refs in joins resolve against the
+appropriate named DB source when needed. This is intentionally conservative:
+source-qualified synthetic primary collection DB rule/predicate/function
+queries still use the older binding-expansion evaluator until their
+DataScript-style source-aware relation handlers are ported.
 
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the
@@ -154,13 +154,12 @@ relation engine:
 
 Near-term query work should expand the relation engine in this order:
 
-1. Named DB sources: source-specific data patterns that produce relations from
-   the chosen DB source.
-2. Rules: replace the current wrapped recursive rule evaluator with measured
+1. Rules: replace the current wrapped recursive rule evaluator with measured
    relation-native recursive/semi-naive behavior.
-3. Source-aware joins: named DB source relations need source-specific lookup-ref
-   equality instead of a single query DB equality context.
-4. Physical storage: replace generic `Binding` tuples with compact typed
+2. Source-qualified synthetic primary collection DB operators: move the
+   remaining collection-backed rule/predicate/function cases into the same
+   source-aware relation representation.
+3. Physical storage: replace generic `Binding` tuples with compact typed
    relation columns while keeping the same logical relation API.
 
 The transaction side has the same split:
