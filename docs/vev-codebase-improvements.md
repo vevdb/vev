@@ -204,7 +204,7 @@ Status labels:
   `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Vev uses `arr.repeat` for dense boolean index initialization.
 
 - `kvist-done` Pointer-to-set helper signatures usable for mutation.
-  Kvist now lowers `core.get`, `core.delete!`, `map.dissoc!`, and `contains?` correctly for pointer-to-map targets, which also covers `^set[T]` after set lowering. Vev uses `^set[string]` helper signatures for ordered query-variable and binding membership indexes. `set.contains?` still takes a value set, so current Vev code explicitly reads through `seen^` for membership checks and mutates through pointer-shaped `set.add!`.
+  Kvist now lowers `core.get`, `core.delete!`, `map.dissoc!`, and `contains?` correctly for pointer-to-map targets, which also covers `^set[T]` after set lowering. `set.contains?` forwards through the pointer-aware core membership form, so Vev can use ordinary `set.contains?` spelling with value sets and pointer-shaped helper signatures.
 
 - `kvist-done` Better macro-time collection utilities.
   Kvist macros now have a macro-time `reduce` helper over source form collections, plus macro-time `+` for numeric accumulators. Literal tx/pull-style macros can fold over option and clause forms instead of enumerating every ordering by hand.
