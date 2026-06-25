@@ -51,6 +51,9 @@ Status labels:
 - `done` Add a tempid lookup table during transaction resolution.
   Transaction resolution now keeps a parallel `map[string]u64` while preserving the ordered tempid report vector, avoiding repeated scans for resolved tempids in larger transactions.
 
+- `done` Add direct entity read helpers.
+  `entity-first-value`, `entity-first-value-kw`, `entity-has-value?`, `entity-has-value-kw?`, `entity-first-ref`, and `entity-first-ref-kw` provide allocation-free first/existence reads. `entity-get`, `entity-contains?`, and `entity-ref` now delegate to those helpers instead of building full arrays.
+
 ## Vev TODO
 
 - `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
@@ -121,9 +124,6 @@ Status labels:
 
 - `todo` Validate negative integer query terms.
   EDN query integer terms can be cast into `u64` entity ids. Query parsing should reject negative entity terms or preserve signedness until validation, matching the more explicit transaction parser behavior.
-
-- `todo` Add direct entity read helpers.
-  `entity-get`, `entity-contains?`, and `entity-ref` currently build full value/ref arrays when the caller only needs the first value or existence. Direct `entity-first-value?`, `entity-has-value?`, and first-ref helpers would avoid allocation and clarify intent.
 
 - `todo` Fix partial owned cleanup on parse failures.
   EDN value conversion, serialized DB parsing, and datom parsing delete container arrays shallowly on some error paths. Previously parsed nested `Value` containers and datoms need owned cleanup helpers on failure.

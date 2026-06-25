@@ -9868,26 +9868,63 @@
     (entity-reverse-values entity attr)
     (entity-forward-values entity attr)))
 
-(defn entity-get [entity: Entity, attr: string] -> Value
+(defn entity-first-forward-value [entity: Entity, attr: string] -> [value: Value, ok: bool]
+  (when (not entity.found)
+    (return (Value {}) false))
+  (let [indexes (slice entity.db.eavt 0)
+        low (lower-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))
+        high (upper-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom entity.db.datoms[datom-index]]
+        (when (datom-current-at? entity.db datom-index)
+          (return datom.v true)))))
+  (return (Value {}) false))
+
+(defn entity-first-reverse-value [entity: Entity, attr: string] -> [value: Value, ok: bool]
+  (when (not entity.found)
+    (return (Value {}) false))
+  (let [forward-attr (forward-attr-for-reverse attr)
+        ref-value (value-entity entity.e)
+        indexes (slice entity.db.vaet 0)
+        low (lower-bound-index entity.db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index entity.db indexes "vaet" 0 "" ref-value)]
+    (for [datom-index (slice indexes low high)]
+      (let [datom entity.db.datoms[datom-index]]
+        (when (and (= datom.a forward-attr)
+                   (datom-current-at? entity.db datom-index))
+          (return (value-entity datom.e) true)))))
+  (return (Value {}) false))
+
+(defn entity-first-value [entity: Entity, attr: string] -> [value: Value, ok: bool]
   (when (= attr ":db/id")
-    (when entity.found
-      (return (value-entity entity.e)))
-    (return (value-nil)))
-  (let [values (entity-values entity attr)]
-    (defer (delete values))
-    (if (> (count values) 0)
-      values[0]
+    (if entity.found
+      (return (value-entity entity.e) true)
+      (return (Value {}) false)))
+  (if (reverse-attr? attr)
+    (entity-first-reverse-value entity attr)
+    (entity-first-forward-value entity attr)))
+
+(defn entity-first-value-kw [entity: Entity, attr: keyword] -> [value: Value, ok: bool]
+  (entity-first-value entity (keyword-text attr)))
+
+(defn entity-get [entity: Entity, attr: string] -> Value
+  (let [[value ok] (entity-first-value entity attr)]
+    (if ok
+      value
       (value-nil))))
 
 (defn entity-get-kw [entity: Entity, attr: keyword] -> Value
   (entity-get entity (keyword-text attr)))
 
 (defn entity-contains? [entity: Entity, attr: string] -> bool
-  (when (= attr ":db/id")
-    (return entity.found))
-  (let [values (entity-values entity attr)]
-    (defer (delete values))
-    (> (count values) 0)))
+  (let [[_ ok] (entity-first-value entity attr)]
+    ok))
+
+(defn entity-has-value? [entity: Entity, attr: string] -> bool
+  (entity-contains? entity attr))
+
+(defn entity-has-value-kw? [entity: Entity, attr: keyword] -> bool
+  (entity-has-value? entity (keyword-text attr)))
 
 (defn entity-refs [entity: Entity, attr: string] -> [dynamic]Entity
   (let [out (make [dynamic]Entity)
@@ -9901,14 +9938,24 @@
     out))
 
 (defn entity-ref [entity: Entity, attr: string] -> Entity
-  (let [refs (entity-refs entity attr)]
-    (defer (delete refs))
-    (if (> (count refs) 0)
-      refs[0]
+  (let [[ref ok] (entity-first-ref entity attr)]
+    (if ok
+      ref
       (Entity {db: entity.db e: 0 found: false}))))
 
 (defn entity-ref-kw [entity: Entity, attr: keyword] -> Entity
   (entity-ref entity (keyword-text attr)))
+
+(defn entity-first-ref [entity: Entity, attr: string] -> [ref: Entity, ok: bool]
+  (let [[value value-ok] (entity-first-value entity attr)]
+    (when (and value-ok (= value.kind .Entity))
+      (let [ref (db-entity entity.db value.entity)]
+        (when ref.found
+          (return ref true)))))
+  (return (Entity {db: entity.db e: 0 found: false}) false))
+
+(defn entity-first-ref-kw [entity: Entity, attr: keyword] -> [ref: Entity, ok: bool]
+  (entity-first-ref entity (keyword-text attr)))
 
 (defn touch [entity: Entity] -> Pull-Result
   (if entity.found
