@@ -76,6 +76,9 @@ Status labels:
 - `done` Tighten ABI transaction builder cleanup.
   `vev_tx_free` now deletes the C-owned attr strings and value payloads held by `vev_tx_create` builders before releasing the raw wrapper array. The cleanup stays builder-specific because generic `Tx-Data` can contain borrowed package literals.
 
+- `done` Remove global Clojure prepared-query cache.
+  Ad hoc Clojure `q`, `rows`, and `scalar` calls now prepare a temporary native query handle and close it after use. Explicit `vev/prepare` remains the reuse path, avoiding cross-engine prepared handle sharing and unbounded native cache lifetime.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -110,9 +113,6 @@ Status labels:
 
 - `todo` Consolidate ABI exported query/bind variants.
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
-
-- `todo` Scope Clojure prepared-query caching to native library/connection lifetime.
-  The current cache key is query form only, with no explicit eviction/close path. Prepared native handles should not be shared across unrelated native engine/library instances or leaked for the wrapper lifetime.
 
 - `todo` Add benchmark helper code.
   Query/rule and ABI benchmarks repeat timing, warmup, sample collection, reporting loops, sample-vector ownership, and schema/data fixture setup. A small benchmark helper package would make further benchmark work cheaper.
@@ -188,8 +188,8 @@ Status labels:
 - `kvist` Standard Option/Maybe type.
   Vev uses value-plus-`has-*` fields and raw sentinel values in schema attrs, index args, input binding parsing, and absent `Value` results. A standard option type would make those shapes explicit.
 
-- `kvist` Array fill/repeat helpers.
-  Dense indexes and benchmark/sample setup still need manual loops to initialize arrays with repeated values. `arr.repeat`, `arr.fill!`, or similar helpers would remove small but recurring boilerplate.
+- `kvist-done` Array fill/repeat helpers.
+  `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Dense indexes and benchmark/sample setup can use the package helper instead of manual fill loops where it improves readability.
 
 - `kvist` Pointer-to-set helper signatures.
   Vev can use local `set[T]` values directly, but helper parameters shaped like `seen: ^set[string]` or `seen: (ptr (set string))` currently fail in this code path with poor source locations. Until that is fixed, ordered query-variable collection keeps a `map[string]bool` index.

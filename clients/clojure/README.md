@@ -42,7 +42,8 @@ Inputs are passed as ordinary arguments after the query and DB:
   ["ada@example.com" "grace@example.com"])
 ```
 
-Prepared queries are reusable:
+Plain `q`/`rows` calls prepare a temporary native query handle and close it after
+the call. Use `prepare` when the same query should be reused:
 
 ```clojure
 (with-open [query (vev/prepare conn

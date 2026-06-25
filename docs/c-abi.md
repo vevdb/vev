@@ -420,6 +420,9 @@ Inputs are ordinary Clojure arguments after the query:
   ["ada@example.com" "grace@example.com"])
 ```
 
+Plain Clojure `q`/`rows` calls prepare and close a temporary native query
+handle. Use `vev/prepare` with `with-open` when a query should be reused.
+
 The underlying Java wrapper still exposes EDN strings directly:
 
 ```clojure

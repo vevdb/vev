@@ -70,8 +70,6 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
-(defonce ^:private prepared-query-cache (atom {}))
-
 (defrecord TxBuilder [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
@@ -218,14 +216,6 @@
   (let [engine (:engine source)]
     (->PreparedQuery engine (.prepare engine (edn-text query)))))
 
-(defn- cached-prepare [source query]
-  (locking prepared-query-cache
-    (if-let [prepared (get @prepared-query-cache query)]
-      prepared
-      (let [prepared (prepare source query)]
-        (swap! prepared-query-cache assoc query prepared)
-        prepared))))
-
 (defn- source? [value]
   (or (instance? Conn value)
       (instance? DB value)))
@@ -369,33 +359,47 @@
   Accepts both DB-first Vev style and query-first Datomic/DataScript style."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
-    (let [prepared (if (instance? PreparedQuery query)
-                     query
-                     (cached-prepare source query))]
-      (if-let [ids (entity-column source prepared inputs)]
+    (if (instance? PreparedQuery query)
+      (if-let [ids (entity-column source query inputs)]
         (entity-column-rows ids)
-        (if-let [columns (entity-int-pair-columns source prepared inputs)]
+        (if-let [columns (entity-int-pair-columns source query inputs)]
           (entity-int-pair-rows columns)
-          (if-let [columns (entity-string-int-triples source prepared inputs)]
+          (if-let [columns (entity-string-int-triples source query inputs)]
             (entity-string-int-triple-rows columns)
-            (with-open [result (apply query-result source prepared inputs)]
-              (rows-from-result result))))))))
+            (with-open [result (apply query-result source query inputs)]
+              (rows-from-result result)))))
+      (with-open [prepared (prepare source query)]
+        (if-let [ids (entity-column source prepared inputs)]
+          (entity-column-rows ids)
+          (if-let [columns (entity-int-pair-columns source prepared inputs)]
+            (entity-int-pair-rows columns)
+            (if-let [columns (entity-string-int-triples source prepared inputs)]
+              (entity-string-int-triple-rows columns)
+              (with-open [result (apply query-result source prepared inputs)]
+                (rows-from-result result)))))))))
 
 (defn q
   "Run a query and return a set of row vectors."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
-    (let [prepared (if (instance? PreparedQuery query)
-                     query
-                     (cached-prepare source query))]
-      (if-let [ids (entity-column source prepared inputs)]
+    (if (instance? PreparedQuery query)
+      (if-let [ids (entity-column source query inputs)]
         (entity-column-set ids)
-        (if-let [columns (entity-int-pair-columns source prepared inputs)]
+        (if-let [columns (entity-int-pair-columns source query inputs)]
           (entity-int-pair-set columns)
-          (if-let [columns (entity-string-int-triples source prepared inputs)]
+          (if-let [columns (entity-string-int-triples source query inputs)]
             (entity-string-int-triple-set columns)
-            (with-open [result (apply query-result source prepared inputs)]
-              (q-from-result result))))))))
+            (with-open [result (apply query-result source query inputs)]
+              (q-from-result result)))))
+      (with-open [prepared (prepare source query)]
+        (if-let [ids (entity-column source prepared inputs)]
+          (entity-column-set ids)
+          (if-let [columns (entity-int-pair-columns source prepared inputs)]
+            (entity-int-pair-set columns)
+            (if-let [columns (entity-string-int-triples source prepared inputs)]
+              (entity-string-int-triple-set columns)
+              (with-open [result (apply query-result source prepared inputs)]
+                (q-from-result result)))))))))
 
 (defn scalar
   "Run a query expected to return one value."
@@ -404,7 +408,8 @@
     (if (instance? PreparedQuery query)
       (with-open [result (apply query-result source query inputs)]
         (clj-value (.scalar result)))
-      (with-open [result (apply query-result source (cached-prepare source query) inputs)]
+      (with-open [prepared (prepare source query)
+                  result (apply query-result source prepared inputs)]
         (clj-value (.scalar result))))))
 
 (defn- with-db-source [source f]
