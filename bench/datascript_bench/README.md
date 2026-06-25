@@ -149,22 +149,23 @@ Latest checked 20k local comparison:
 
 ```sh
 VEV_COMPARE_BASELINES=datascript \
-VEV_BENCH_WARMUP_MS=2 \
-VEV_BENCH_MS=5 \
-VEV_BENCH_REPEATS=1 \
+VEV_COMPARE_RAW=1 \
+VEV_BENCH_WARMUP_MS=10 \
+VEV_BENCH_MS=50 \
+VEV_BENCH_REPEATS=3 \
   bench/datascript_bench/run_compare.sh q1 q2 q2-switch q3 q4 q5 qpred1 qpred2
 ```
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q1` | 0.28 | 0.65 | 0.43x |
-| `q2` | 1.3 | 2.5 | 0.52x |
-| `q2-switch` | 2.9 | 2.1 | 1.38x |
-| `q3` | 2.2 | 2.4 | 0.92x |
-| `q4` | 3.1 | 3.4 | 0.91x |
-| `q5` | 138.9 | 106.0 | 1.31x |
-| `qpred1` | 3.9 | 2.5 | 1.56x |
-| `qpred2` | 7.8 | 3.2 | 2.44x |
+| `q1` | 0.27 | 0.35 | 0.77x |
+| `q2` | 1.3 | 1.3 | 1.00x |
+| `q2-switch` | 2.9 | 1.1 | 2.64x |
+| `q3` | 2.1 | 1.6 | 1.31x |
+| `q4` | 3.1 | 2.3 | 1.35x |
+| `q5` | 141.1 | 100.0 | 1.41x |
+| `qpred1` | 4.0 | 2.5 | 1.60x |
+| `qpred2` | 7.8 | 2.7 | 2.89x |
 
 Diagnostic prepared/row variants are available for the Vev rows, for example:
 
@@ -185,15 +186,16 @@ Latest short diagnostic result:
 | `q1` | 0.27 | 0.35 | 0.77x |
 | `q1-prepared` | --- | 0.30 | --- |
 | `q1-rows-prepared` | --- | 0.11 | --- |
-| `q2` | 1.4 | 2.1 | 0.67x |
-| `q2-prepared` | --- | 2.1 | --- |
-| `q2-rows-prepared` | --- | 1.9 | --- |
+| `q2` | 1.3 | 1.3 | 1.00x |
+| `q2-prepared` | --- | 1.2 | --- |
+| `q2-rows-prepared` | --- | 0.98 | --- |
 
 Interpretation: q1 is mostly host result-shape overhead; the prepared row path
-is much faster than DataScript's set-returning q row. q2 is different: direct
-measurement showed Clojure set construction from typed columns at about 0.22
-ms, while the Java typed-column call itself is about 1.8 ms. The native typed
-q2 operator is therefore the next target, not Clojure vector/set construction.
+is much faster than DataScript's set-returning q row. q2/q3/q4 now use a
+general entity-local EAV span lookup inspired by Datalevin's sorted
+entity-local scans: Vev records each entity's contiguous range in `eavt`, then
+same-entity cardinality-one attr lookups search that small range instead of
+running a global `(entity, attr)` lower-bound for every candidate.
 
 `q5` is now handled by an indexed equality self-join operator: it collects
 distinct left-side join values, then scans the right `avet` range once per
@@ -205,9 +207,9 @@ Near-term benchmark work:
 
 1. Investigate why long Datalevin/Datomic baseline comparison runs can stall
    locally even when the Vev and DataScript rows complete.
-2. Continue using q1/q2/q3/q4 to drive same-entity star/projection work at the
-   full 20k scale. Those rows still show Vev behind DataScript despite the
-   native backend.
+2. Use q1 to drive the remaining full `q` host result-shape overhead. The
+   engine/row path is already fast; the slower path is Datomic/DataScript-style
+   set materialization through the Clojure adapter.
 3. Keep broadening equality-join planning from the current self-join operator
    into the general relation planner, including multi-common-variable joins and
    non-all-current DBs.

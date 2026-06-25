@@ -338,19 +338,19 @@ Remaining performance work:
   139 ms in the short local harness. General relation hash joins are also in
   place for one primitive common variable, with fallback to the older nested
   join when lookup-ref/source semantics require it.
-- The 20k `datascript-bench` matrix is now mixed rather than uniformly ahead:
-  q5, q2-switch, and predicate rows are ahead of DataScript, while q1/q2/q3/q4
-  still lag. The next query-engine work should focus on full-scale same-entity
-  star/projection costs instead of recursive rules, which are already in a
-  better local position.
-- The q1/q2 lag is not one problem. Prepared diagnostic rows show q1 improves
-  from roughly 0.35 ms for Datomic/DataScript-style `q` to roughly 0.11 ms for
-  prepared `rows`, so q1 is mostly host result-shape overhead. q2 stays around
-  1.9-2.1 ms even through prepared rows; direct measurement showed Clojure set
-  construction from the typed columns at roughly 0.22 ms and the Java
-  typed-column query call at roughly 1.8 ms. The q2 target is therefore the
-  native typed same-entity projection operator and its ABI materialization, not
-  the outer Clojure set builder.
+- Same-entity star/projection queries now use a general entity-local EAV span
+  lookup inspired by Datalevin's sorted entity-local scans. Vev records each
+  entity's contiguous range in `eavt`, then cardinality-one attr fetches search
+  that small range instead of running a global `(entity, attr)` lower-bound for
+  every candidate. In the latest 20k local `datascript-bench` comparison, q2 is
+  at DataScript parity, q2-switch/q3/q4/q5/qpred1/qpred2 are ahead of
+  DataScript, and q1 is the remaining normal-`q` regression at roughly 0.35 ms
+  versus DataScript at roughly 0.27 ms.
+- The remaining q1 lag is mostly host result-shape overhead. Prepared
+  diagnostic rows show q1 improves from roughly 0.35 ms for
+  Datomic/DataScript-style `q` to roughly 0.11 ms for prepared `rows`, so the
+  next q1 work should target set/vector materialization through the Clojure
+  adapter and native result API, not index lookup.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.

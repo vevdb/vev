@@ -2535,10 +2535,48 @@
           (set! high mid))))
     low))
 
+(defn u64-lower-bound [xs: []u64, value: u64] -> int
+  (let [low 0
+        high (count xs)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)]
+        (if (< xs[mid] value)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
+(defn eavt-entity-range [db: DB, entity: u64] -> [low: int, high: int, ok: bool]
+  (let [entities (slice db.eavt-entities 0)
+        pos (u64-lower-bound entities entity)]
+    (when (or (>= pos (count entities))
+              (not (= entities[pos] entity)))
+      (return 0 0 false))
+    (let [starts (slice db.eavt-entity-starts 0)
+          range-low starts[pos]
+          range-high (if (< (+ pos 1) (count starts))
+                       starts[(+ pos 1)]
+                       (count db.eavt))]
+      (return range-low range-high true))))
+
+(defn eavt-entity-attr-position [db: DB, entity: u64, attr: string] -> [pos: int, ok: bool]
+  (let [[low high range-ok] (eavt-entity-range db entity)]
+    (when (not range-ok)
+      (return 0 false))
+    (let [indexes (slice db.eavt 0)
+          i low]
+      (while (< i high)
+        (let [datom db.datoms[indexes[i]]
+              compare (strings.compare datom.a attr)]
+          (cond
+            (= compare 0) (return i true)
+            (> compare 0) (return 0 false)
+            :else (set! i (+ i 1)))))
+      (return 0 false))))
+
 (defn current-cardinality-one-int-value-fast [db: DB, entity: u64, attr: string] -> [value: i64, ok: bool]
   (let [indexes (slice db.eavt 0)
-        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
-    (when (>= index-pos (count indexes))
+        [index-pos pos-ok] (eavt-entity-attr-position db entity attr)]
+    (when (not pos-ok)
       (return 0 false))
     (let [datom-index indexes[index-pos]
           datom db.datoms[datom-index]]
@@ -2551,8 +2589,8 @@
 
 (defn cardinality-one-int-value-fast-all-current [db: DB, entity: u64, attr: string] -> [value: i64, ok: bool]
   (let [indexes (slice db.eavt 0)
-        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
-    (when (>= index-pos (count indexes))
+        [index-pos pos-ok] (eavt-entity-attr-position db entity attr)]
+    (when (not pos-ok)
       (return 0 false))
     (let [datom db.datoms[indexes[index-pos]]]
       (when (and (= datom.e entity)
@@ -2563,8 +2601,8 @@
 
 (defn current-cardinality-one-value-fast [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
-        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
-    (when (>= index-pos (count indexes))
+        [index-pos pos-ok] (eavt-entity-attr-position db entity attr)]
+    (when (not pos-ok)
       (return (Value {}) false))
     (let [datom-index indexes[index-pos]
           datom db.datoms[datom-index]]
@@ -2576,8 +2614,8 @@
 
 (defn cardinality-one-value-fast-all-current [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
-        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
-    (when (>= index-pos (count indexes))
+        [index-pos pos-ok] (eavt-entity-attr-position db entity attr)]
+    (when (not pos-ok)
       (return (Value {}) false))
     (let [datom db.datoms[indexes[index-pos]]]
       (when (and (= datom.e entity)
@@ -3740,6 +3778,8 @@
 (defn delete-owned-db [db: DB]
   (delete db.current)
   (delete db.eavt)
+  (delete db.eavt-entities)
+  (delete db.eavt-entity-starts)
   (delete db.aevt)
   (delete db.avet)
   (delete db.vaet)
