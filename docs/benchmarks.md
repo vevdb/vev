@@ -168,23 +168,23 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 15.8x | 36.8x |
-| `chain-root n=10` | 23.4x | 39.7x |
-| `chain-root n=30` | 52.9x | 69.2x |
-| `chain-root n=100` | 262.2x | 290.3x |
-| `chain-leaf n=10` | 14.8x | 23.2x |
-| `chain-leaf n=30` | 64.9x | 76.7x |
-| `chain-leaf n=100` | 451.9x | 505.6x |
-| `chain-all n=10` | 8.9x | 11.5x |
-| `chain-all n=30` | 12.0x | 12.6x |
-| `chain-all n=100` | 18.1x | 17.5x |
-| `tree-root n=4` | 2.8x | 6.2x |
-| `tree-root n=13` | 3.1x | 5.1x |
-| `tree-root n=40` | 2.7x | 3.4x |
-| `tree-root n=121` | 2.2x | 2.6x |
-| `bad-order-join n=1000` | 6.7x | 11.2x |
-| `distinct-age n=1000` | 3.2x | 3.7x |
-| `people-name-age n=1000` | 0.7x | 0.7x |
+| `chain-root n=3` | 17.3x | 42.5x |
+| `chain-root n=10` | 22.3x | 36.3x |
+| `chain-root n=30` | 54.0x | 69.7x |
+| `chain-root n=100` | 268.9x | 292.7x |
+| `chain-leaf n=10` | 15.4x | 22.9x |
+| `chain-leaf n=30` | 64.3x | 79.1x |
+| `chain-leaf n=100` | 460.7x | 498.6x |
+| `chain-all n=10` | 8.7x | 11.4x |
+| `chain-all n=30` | 11.6x | 11.8x |
+| `chain-all n=100` | 18.4x | 17.9x |
+| `tree-root n=4` | 2.8x | 6.3x |
+| `tree-root n=13` | 3.3x | 5.4x |
+| `tree-root n=40` | 2.8x | 3.4x |
+| `tree-root n=121` | 2.2x | 2.4x |
+| `bad-order-join n=1000` | 6.9x | 10.8x |
+| `distinct-age n=1000` | 3.4x | 3.9x |
+| `people-name-age n=1000` | 0.8x | 0.7x |
 
 ## Stress Comparison
 
@@ -318,8 +318,9 @@ Remaining performance work:
   DataScript. Vev now keeps pure DB-clause queries on the indexed planner
   rather than the relation-engine path, has typed pair-level dedupe for common
   primitive pairs, and uses a same-entity merge operator over two `aevt` attr
-  ranges for all-current cardinality-one projections. The remaining work is to
-  reduce generic per-row `Result-Row` materialization overhead and make this
+  ranges for all-current cardinality-one projections. Non-pull result rows now
+  also avoid allocating an empty pull-result array per row. The remaining work
+  is to reduce generic per-row value materialization overhead and make this
   style of star projection available through the broader physical operator
   layer, not only the current two-attr projection path.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
