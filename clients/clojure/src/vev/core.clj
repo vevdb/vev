@@ -1,4 +1,5 @@
 (ns vev.core
+  (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
            [vev Vev Vev$Entity Vev$MapValue]))
 
@@ -404,6 +405,30 @@
                            (long (aget values index))]))
         (persistent! out)))))
 
+(defn- optimized-query-output [source prepared inputs entity-fn pair-fn triple-fn]
+  (if-let [ids (entity-column source prepared inputs)]
+    (entity-fn ids)
+    (if-let [columns (entity-int-pair-columns source prepared inputs)]
+      (pair-fn columns)
+      (when-let [columns (entity-string-int-triples source prepared inputs)]
+        (triple-fn columns)))))
+
+(defn- prepared-query-output [source prepared inputs result-fn entity-fn pair-fn triple-fn]
+  (or (optimized-query-output source prepared inputs entity-fn pair-fn triple-fn)
+      (with-open [result (apply query-result source prepared inputs)]
+        (result-fn result))))
+
+(defn profile
+  "Run a prepared query against a DB and return Vev's native query stats."
+  [^PreparedQuery prepared ^DB db & inputs]
+  (edn/read-string (.profileEdn (:native db) (:native prepared) (inputs-text inputs))))
+
+(defn- query-output [source prepared rules inputs result-fn entity-fn pair-fn triple-fn]
+  (if rules
+    (with-open [result (apply query-result-with-rules source prepared rules inputs)]
+      (result-fn result))
+    (prepared-query-output source prepared inputs result-fn entity-fn pair-fn triple-fn)))
+
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
 
@@ -411,54 +436,36 @@
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
     (if (instance? PreparedQuery query)
-      (if-let [ids (entity-column source query inputs)]
-        (entity-column-rows ids)
-        (if-let [columns (entity-int-pair-columns source query inputs)]
-          (entity-int-pair-rows columns)
-          (if-let [columns (entity-string-int-triples source query inputs)]
-            (entity-string-int-triple-rows columns)
-              (with-open [result (apply query-result source query inputs)]
-                (rows-from-result result)))))
+      (prepared-query-output source query inputs
+                             rows-from-result
+                             entity-column-rows
+                             entity-int-pair-rows
+                             entity-string-int-triple-rows)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
-          (if rules
-            (with-open [result (apply query-result-with-rules source prepared rules inputs)]
-              (rows-from-result result))
-            (if-let [ids (entity-column source prepared inputs)]
-              (entity-column-rows ids)
-              (if-let [columns (entity-int-pair-columns source prepared inputs)]
-                (entity-int-pair-rows columns)
-                (if-let [columns (entity-string-int-triples source prepared inputs)]
-                  (entity-string-int-triple-rows columns)
-                  (with-open [result (apply query-result source prepared inputs)]
-                    (rows-from-result result)))))))))))
+          (query-output source prepared rules inputs
+                        rows-from-result
+                        entity-column-rows
+                        entity-int-pair-rows
+                        entity-string-int-triple-rows))))))
 
 (defn q
   "Run a query and return a set of row vectors."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
     (if (instance? PreparedQuery query)
-      (if-let [ids (entity-column source query inputs)]
-        (entity-column-set ids)
-        (if-let [columns (entity-int-pair-columns source query inputs)]
-          (entity-int-pair-set columns)
-          (if-let [columns (entity-string-int-triples source query inputs)]
-            (entity-string-int-triple-set columns)
-            (with-open [result (apply query-result source query inputs)]
-              (q-from-result result)))))
+      (prepared-query-output source query inputs
+                             q-from-result
+                             entity-column-set
+                             entity-int-pair-set
+                             entity-string-int-triple-set)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
-          (if rules
-            (with-open [result (apply query-result-with-rules source prepared rules inputs)]
-              (q-from-result result))
-            (if-let [ids (entity-column source prepared inputs)]
-              (entity-column-set ids)
-              (if-let [columns (entity-int-pair-columns source prepared inputs)]
-                (entity-int-pair-set columns)
-                (if-let [columns (entity-string-int-triples source prepared inputs)]
-                  (entity-string-int-triple-set columns)
-                  (with-open [result (apply query-result source prepared inputs)]
-                    (q-from-result result)))))))))))
+          (query-output source prepared rules inputs
+                        q-from-result
+                        entity-column-set
+                        entity-int-pair-set
+                        entity-string-int-triple-set))))))
 
 (defn scalar
   "Run a query expected to return one value."

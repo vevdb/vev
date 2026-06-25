@@ -331,6 +331,26 @@ Remaining performance work:
   is to reduce generic per-row value materialization overhead and make this
   style of star projection available through the broader physical operator
   layer, not only the current two-attr projection path.
+- Equality self-join planning has a first indexed operator for the
+  `datascript-bench` q5 shape: filter the left side, collect distinct join
+  values, then scan the right `avet` range once per join value. On the 20k
+  benchmark row this brings Vev to roughly 106 ms versus DataScript at roughly
+  139 ms in the short local harness. General relation hash joins are also in
+  place for one primitive common variable, with fallback to the older nested
+  join when lookup-ref/source semantics require it.
+- Same-entity star/projection queries now use a general entity-local EAV span
+  lookup inspired by Datalevin's sorted entity-local scans. Vev records each
+  entity's contiguous range in `eavt`, then cardinality-one attr fetches search
+  that small range instead of running a global `(entity, attr)` lower-bound for
+  every candidate. In the latest 20k local `datascript-bench` comparison, q2 is
+  at DataScript parity, q2-switch/q3/q4/q5/qpred1/qpred2 are ahead of
+  DataScript, and q1 is the remaining normal-`q` regression at roughly 0.35 ms
+  versus DataScript at roughly 0.27 ms.
+- The remaining q1 lag is mostly host result-shape overhead. Prepared
+  diagnostic rows show q1 improves from roughly 0.35 ms for
+  Datomic/DataScript-style `q` to roughly 0.11 ms for prepared `rows`, so the
+  next q1 work should target set/vector materialization through the Clojure
+  adapter and native result API, not index lookup.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.

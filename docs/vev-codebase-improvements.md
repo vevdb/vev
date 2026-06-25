@@ -111,11 +111,11 @@ Status labels:
 
 ## Vev TODO
 
-- `todo` Finish parser-owned AST/value cleanup.
-  The current EDN parser still stores many AST strings as borrowed slices from source text, while container values can own nested arrays. The next cleanup step is an explicit parser ownership model: either clone AST strings and provide deep destructors for `Query`, `Rule`, pull specs, tx data, and parsed inputs, or keep borrowed text handles deliberately and only deep-delete value containers known not to escape into results.
+- `done` Finish parser-owned AST/value cleanup.
+  The EDN parser keeps AST strings as borrowed source text deliberately and now cleans parser-owned nested value containers on failed recursive value, serialized DB, datom, transaction argument, lookup-ref, CAS, and partial tx-data parse paths. Failed tx text parsing also rolls back entries appended to the caller's output array.
 
-- `todo` Make host result decoding less duplicated.
-  Java and Clojure duplicate scalar conversion and optimized result projection cascades. Prefer `vev_result_value` plus value accessors as the primary path, then generate or de-emphasize narrow compatibility accessors.
+- `done` Make host result decoding less duplicated.
+  The Clojure wrapper now funnels `rows` and `q` through shared optimized-result dispatch helpers instead of repeating the entity-column, entity/int-pair, entity/string/int-triple, and generic result fallback cascade in each call shape. Java and C ABI compatibility accessors remain intentionally available.
 
 - `todo` Use set-backed visited state where linear arrays are still used for cycle tracking.
   Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
@@ -129,8 +129,8 @@ Status labels:
 - `todo` Add explicit SCC metadata for rule components.
   Rule planning now reuses single-start reachability, but recursive component detection still checks mutual reachability on demand. A Tarjan/Kosaraju pass would make component recursion, rule grouping, and future semi-naive planning more direct.
 
-- `todo` Normalize transaction macro entity dispatch.
-  Literal transaction macros repeat the same entity-ref matrix for lookup refs, idents, tempids, and ints. A macro helper should classify and emit it once.
+- `done` Normalize transaction macro entity dispatch.
+  Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
 
 - `todo` Consolidate ABI exported query/bind variants.
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
@@ -147,17 +147,14 @@ Status labels:
 - `todo` Add a rule lookup/index structure.
   Rule validation, arity checks, required-binding checks, and planning repeatedly scan all rules by name and arity. A rule index keyed by name and arity would centralize those checks and avoid repeated scans.
 
-- `todo` Make index order a typed helper.
-  Seek/rseek/range paths repeatedly branch on string index names to select `eavt`, `aevt`, `avet`, or `vaet`. A typed index-order value plus `db-index-slice` helper would remove string dispatch from core scan code.
-
-- `todo` Fix partial owned cleanup on parse failures.
-  EDN value conversion, serialized DB parsing, and datom parsing delete container arrays shallowly on some error paths. Previously parsed nested `Value` containers and datoms need owned cleanup helpers on failure.
+- `done` Make index order a typed helper.
+  Public datom index APIs now convert order strings once to a typed `Public-Index-Order` and use `db-index-slice` to select `eavt`, `aevt`, `avet`, or `vaet`. Datoms, seek, and reverse-seek share the same typed dispatch path while preserving the public `:eavt`/`:aevt`/`:avet`/`:vaet` API.
 
 - `todo` Add structured parser diagnostics and malformed-input suites.
   Parser parity work is now broad enough that tests should assert portable structured error categories for malformed query, pull, rule, return-map, and tx-data shapes instead of only checking `not ok` or exact strings.
 
-- `todo` Add test support helpers for Vev values and results.
-  Tests build verbose nested `Value` fixtures and carry local result/pull search helpers. EDN-to-`Value` fixture helpers, `value-get-in`, and row/pull matchers would make compatibility tests easier to read and extend.
+- `done` Add test support helpers for Vev values and results.
+  Vev tests now have row-level `Value` matchers for entity, string, integer, and arbitrary expected values. Existing result search helpers delegate through those matchers, giving compatibility tests a less verbose pattern for result-row assertions without introducing a larger fixture DSL.
 
 - `todo` Materialize pull values more cleanly for ABI results.
   ABI results currently keep pull structures in the result plus a side array of rendered pull `Value`s. A single owned materialized result representation would simplify pull result access and cleanup.
@@ -179,8 +176,8 @@ Status labels:
 - `not-now` Captured C callback ergonomics.
   ABI transaction callbacks currently need a fixed trampoline table, while tx listeners already store callback/user pairs directly in raw Odin. Removing the tx-function slot limit is a Vev ABI/runtime representation change unless Kvist gets first-class host callback wrapping. Leave this as-is unless the fixed slot count becomes a concrete product limit.
 
-- `kvist` Shared macro/runtime parser descriptions.
-  Query, pull, and tx syntax must exist both as Kvist literal macros and runtime EDN text parsing. A shared parser description or codegen story would reduce parity drift.
+- `not-now` Shared macro/runtime parser descriptions.
+  Query, pull, and tx syntax must exist both as Kvist literal macros over source forms and runtime EDN text parsing over `EDN-Doc` nodes. A shared parser description or codegen story could reduce parity drift, but it would be a new language/tooling design rather than a small compiler/package cleanup. Leave this alone unless concrete parity bugs show that tests are not enough.
 
 - `kvist-done` Record update syntax.
   Kvist already has `assoc` and `update` for shallow struct copy-with-field-changed code, including threaded forms such as `(-> spec (assoc .children children))`. Pull spec variants and similar record updates can use those helpers instead of hand-copying records.

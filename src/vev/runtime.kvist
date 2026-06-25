@@ -365,10 +365,67 @@
             (arr.push! tuples merged)))))
     (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
 
+(defn binding-primitive-join-key [binding: Binding, name: string] -> [key: string, ok: bool]
+  (let [[value found] (binding-lookup binding name)]
+    (when (not found)
+      (return "" false))
+    (primitive-value-dedupe-key value)))
+
+(defn query-relation-hash-join-one-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common-name: string] -> [rel: Query-Relation, ok: bool]
+  (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
+        tuples (make [dynamic]Binding)
+        bucket-heads (make (map string int))
+        next-indexes (make [dynamic]int 0 (count right.tuples))]
+    (for [name index right.attrs]
+      (when (not (string-slice-contains? (slice attrs 0) name))
+        (arr.push! attrs name)
+        (arr.push! attr-sources right.attr-sources[index])))
+    (for [right-tuple right-index right.tuples]
+      (let [[key key-ok] (binding-primitive-join-key right-tuple common-name)]
+        (when (not key-ok)
+          (delete attrs)
+          (delete attr-sources)
+          (delete tuples)
+          (delete bucket-heads)
+          (delete next-indexes)
+          (return (query-relation-empty) false))
+        (let [[head found] (mmap.get bucket-heads key)]
+          (if found
+            (arr.push! next-indexes head)
+            (arr.push! next-indexes -1))
+          (mmap.assoc! bucket-heads key right-index))))
+    (for [left-tuple left.tuples]
+      (let [[key key-ok] (binding-primitive-join-key left-tuple common-name)]
+        (when (not key-ok)
+          (delete attrs)
+          (delete attr-sources)
+          (delete tuples)
+          (delete bucket-heads)
+          (delete next-indexes)
+          (return (query-relation-empty) false))
+        (let [[head found] (mmap.get bucket-heads key)]
+          (when found
+            (let [right-index head]
+              (while (>= right-index 0)
+                (let [right-tuple right.tuples[right-index]
+                      [merged merge-ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
+                  (when merge-ok
+                    (arr.push! tuples merged)))
+                (set! right-index next-indexes[right-index])))))))
+    (delete bucket-heads)
+    (delete next-indexes)
+    (return (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples}) true)))
+
 (defn query-relation-join [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [common (relation-common-attrs left right) :defer]
     (when (= (count common) 0)
       (return (query-relation-product db sources left right)))
+    (when (= (count common) 1)
+      (let [[hash-joined hash-ok] (query-relation-hash-join-one-primitive db sources left right common[0])]
+        (when hash-ok
+          (return hash-joined))
+        (delete-query-relation hash-joined)))
     (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
           attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
           tuples (make [dynamic]Binding)]
@@ -1008,6 +1065,12 @@
     (sort-strings! (addr parts))
     (return (core-strings.concatenate (slice parts 0)) true)))
 
+(defn value-slice-contains? [values: []Value, target: Value] -> bool
+  (for [value values]
+    (when (value-equal? value target)
+      (return true)))
+  false)
+
 (defn predicate-matches? [predicate: Predicate, binding: Binding] -> bool
   (let [[op op-ok] (query-op-name predicate.op binding)]
     (when (not op-ok)
@@ -1506,6 +1569,34 @@
         (arr.push! resolved value)))
     (return resolved true)))
 
+(defenum Public-Index-Order [
+  EAVT
+  AEVT
+  AVET
+  VAET
+])
+
+(defn public-index-order [order: string] -> Public-Index-Order
+  (cond
+    (= order ":eavt") .EAVT
+    (= order ":aevt") .AEVT
+    (= order ":avet") .AVET
+    :else .VAET))
+
+(defn public-index-order-text [order: Public-Index-Order] -> string
+  (cond
+    (= order .EAVT) ":eavt"
+    (= order .AEVT) ":aevt"
+    (= order .AVET) ":avet"
+    :else ":vaet"))
+
+(defn db-index-slice [db: DB, order: Public-Index-Order] -> []int
+  (cond
+    (= order .EAVT) (slice db.eavt 0)
+    (= order .AEVT) (slice db.aevt 0)
+    (= order .AVET) (slice db.avet 0)
+    :else (slice db.vaet 0)))
+
 (defn datom-index-position-value [datom: Datom, order: string, position: int] -> Value
   (if (= order ":eavt")
     (if (= position 0)
@@ -1577,8 +1668,8 @@
     (delete tuple-attrs)
     visible))
 
-(defn public-index-datom-visible? [db: DB, order: string, datom: Datom] -> bool
-  (if (= order ":avet")
+(defn public-index-datom-visible? [db: DB, order: Public-Index-Order, datom: Datom] -> bool
+  (if (= order .AVET)
     (public-avet-attr? db datom.a)
     true))
 
@@ -1591,11 +1682,11 @@
       (return value.text true))
     (return "" false)))
 
-(defn validate-public-index-args [db: DB, order: string, args: []Index-Arg] -> [ok: bool, error: string]
+(defn validate-public-index-args [db: DB, order: Public-Index-Order, args: []Index-Arg] -> [ok: bool, error: string]
   (let [[lookup-ok lookup-error] (validate-index-lookup-refs db args)]
     (when (not lookup-ok)
       (return false lookup-error)))
-  (when (not (= order ":avet"))
+  (when (not (= order .AVET))
     (return true ""))
   (when (= (count args) 0)
     (return true ""))
@@ -1606,21 +1697,22 @@
       (return false (fmt.tprintf "Attribute %s should be marked as :db/index true" attr))))
   (return true ""))
 
-(defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (let [low (lower-bound-index-values db indexes order values)
-        high (upper-bound-index-values db indexes order values)
+(defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
+  (let [order-text (public-index-order-text order)
+        low (lower-bound-index-values db indexes order-text values)
+        high (upper-bound-index-values db indexes order-text values)
         i low]
     (while (< i high)
       (let [datom-index indexes[i]]
         (when (datom-current-at? db datom-index)
           (let [datom db.datoms[datom-index]]
             (when (and (public-index-datom-visible? db order datom)
-                       (datom-matches-index-values? datom order values))
+                       (datom-matches-index-values? datom order-text values))
               (arr.push! out^ datom)))))
       (set! i (+ i 1)))))
 
-(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (let [low (lower-bound-index-values db indexes order values)
+(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
+  (let [low (lower-bound-index-values db indexes (public-index-order-text order) values)
         i low]
     (while (< i (count indexes))
       (let [datom-index indexes[i]]
@@ -1630,8 +1722,8 @@
               (arr.push! out^ datom)))))
       (set! i (+ i 1)))))
 
-(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: string, indexes: []int, values: []Value]
-  (let [i (upper-bound-index-values db indexes order values)]
+(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
+  (let [i (upper-bound-index-values db indexes (public-index-order-text order) values)]
     (while (> i 0)
       (set! i (- i 1))
       (let [datom-index indexes[i]]
@@ -1662,69 +1754,60 @@
           (when (datom-current-at? db datom-index)
             (let [datom db.datoms[datom-index]]
               (when (and (= datom.a attr)
-                         (public-index-datom-visible? db ":avet" datom))
+                         (public-index-datom-visible? db .AVET datom))
                 (arr.push! out^ datom)))))
         (set! i (+ i 1))))))
 
 (defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
+        index-order (public-index-order order)
+        indexes (db-index-slice db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (if (= order ":eavt")
-      (append-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
-      (if (= order ":aevt")
-        (append-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
-        (if (= order ":avet")
-          (append-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
-          (append-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    (append-index-datoms! (addr out) db index-order indexes (slice values 0))
     out))
 
 (defn datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
-  (let [[valid error] (validate-public-index-args db order args)]
+  (let [index-order (public-index-order order)
+        [valid error] (validate-public-index-args db index-order args)]
     (when (not valid)
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (datoms-with-args db order args)})))
 
 (defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
+        index-order (public-index-order order)
+        indexes (db-index-slice db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (if (= order ":eavt")
-      (append-seek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
-      (if (= order ":aevt")
-        (append-seek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
-        (if (= order ":avet")
-          (append-seek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
-          (append-seek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    (append-seek-index-datoms! (addr out) db index-order indexes (slice values 0))
     out))
 
 (defn seek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
-  (let [[valid error] (validate-public-index-args db order args)]
+  (let [index-order (public-index-order order)
+        [valid error] (validate-public-index-args db index-order args)]
     (when (not valid)
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (seek-datoms-with-args db order args)})))
 
 (defn rseek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
+        index-order (public-index-order order)
+        indexes (db-index-slice db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (if (= order ":eavt")
-      (append-rseek-index-datoms! (addr out) db order (slice db.eavt 0) (slice values 0))
-      (if (= order ":aevt")
-        (append-rseek-index-datoms! (addr out) db order (slice db.aevt 0) (slice values 0))
-        (if (= order ":avet")
-          (append-rseek-index-datoms! (addr out) db order (slice db.avet 0) (slice values 0))
-          (append-rseek-index-datoms! (addr out) db order (slice db.vaet 0) (slice values 0)))))
+    (append-rseek-index-datoms! (addr out) db index-order indexes (slice values 0))
     out))
 
 (defn rseek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
-  (let [[valid error] (validate-public-index-args db order args)]
+  (let [index-order (public-index-order order)
+        [valid error] (validate-public-index-args db index-order args)]
     (when (not valid)
       (return (Datoms-Result {ok: false error: error datoms: (make [dynamic]Datom)})))
     (Datoms-Result {ok: true error: "" datoms: (rseek-datoms-with-args db order args)})))
@@ -2452,10 +2535,48 @@
           (set! high mid))))
     low))
 
+(defn u64-lower-bound [xs: []u64, value: u64] -> int
+  (let [low 0
+        high (count xs)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)]
+        (if (< xs[mid] value)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
+
+(defn eavt-entity-range [db: DB, entity: u64] -> [low: int, high: int, ok: bool]
+  (let [entities (slice db.eavt-entities 0)
+        pos (u64-lower-bound entities entity)]
+    (when (or (>= pos (count entities))
+              (not (= entities[pos] entity)))
+      (return 0 0 false))
+    (let [starts (slice db.eavt-entity-starts 0)
+          range-low starts[pos]
+          range-high (if (< (+ pos 1) (count starts))
+                       starts[(+ pos 1)]
+                       (count db.eavt))]
+      (return range-low range-high true))))
+
+(defn eavt-entity-attr-position [db: DB, entity: u64, attr: string] -> [pos: int, ok: bool]
+  (let [[low high range-ok] (eavt-entity-range db entity)]
+    (when (not range-ok)
+      (return 0 false))
+    (let [indexes (slice db.eavt 0)
+          i low]
+      (while (< i high)
+        (let [datom db.datoms[indexes[i]]
+              compare (strings.compare datom.a attr)]
+          (cond
+            (= compare 0) (return i true)
+            (> compare 0) (return 0 false)
+            :else (set! i (+ i 1)))))
+      (return 0 false))))
+
 (defn current-cardinality-one-int-value-fast [db: DB, entity: u64, attr: string] -> [value: i64, ok: bool]
   (let [indexes (slice db.eavt 0)
-        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
-    (when (>= index-pos (count indexes))
+        [index-pos pos-ok] (eavt-entity-attr-position db entity attr)]
+    (when (not pos-ok)
       (return 0 false))
     (let [datom-index indexes[index-pos]
           datom db.datoms[datom-index]]
@@ -2468,8 +2589,8 @@
 
 (defn cardinality-one-int-value-fast-all-current [db: DB, entity: u64, attr: string] -> [value: i64, ok: bool]
   (let [indexes (slice db.eavt 0)
-        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
-    (when (>= index-pos (count indexes))
+        [index-pos pos-ok] (eavt-entity-attr-position db entity attr)]
+    (when (not pos-ok)
       (return 0 false))
     (let [datom db.datoms[indexes[index-pos]]]
       (when (and (= datom.e entity)
@@ -2480,8 +2601,8 @@
 
 (defn current-cardinality-one-value-fast [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
-        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
-    (when (>= index-pos (count indexes))
+        [index-pos pos-ok] (eavt-entity-attr-position db entity attr)]
+    (when (not pos-ok)
       (return (Value {}) false))
     (let [datom-index indexes[index-pos]
           datom db.datoms[datom-index]]
@@ -2493,8 +2614,8 @@
 
 (defn cardinality-one-value-fast-all-current [db: DB, entity: u64, attr: string] -> [value: Value, ok: bool]
   (let [indexes (slice db.eavt 0)
-        index-pos (lower-bound-eavt-ea-direct db indexes entity attr)]
-    (when (>= index-pos (count indexes))
+        [index-pos pos-ok] (eavt-entity-attr-position db entity attr)]
+    (when (not pos-ok)
       (return (Value {}) false))
     (let [datom db.datoms[indexes[index-pos]]]
       (when (and (= datom.e entity)
@@ -3657,6 +3778,8 @@
 (defn delete-owned-db [db: DB]
   (delete db.current)
   (delete db.eavt)
+  (delete db.eavt-entities)
+  (delete db.eavt-entity-starts)
   (delete db.aevt)
   (delete db.avet)
   (delete db.vaet)
@@ -7946,6 +8069,17 @@
   threshold: i64
 })
 
+(defstruct Entity-Value-Self-Join-Plan {
+  left-entity-var: string
+  right-entity-var: string
+  join-var: string
+  join-attr: string
+  left-filter-attr: string
+  left-filter-value: Value
+  output-var: string
+  output-attr: string
+})
+
 (defn empty-two-attr-entity-projection [] -> Two-Attr-Entity-Projection
   (Two-Attr-Entity-Projection {}))
 
@@ -7987,6 +8121,9 @@
 
 (defn empty-entity-int-threshold-plan [] -> Entity-Int-Threshold-Plan
   (Entity-Int-Threshold-Plan {}))
+
+(defn empty-entity-value-self-join-plan [] -> Entity-Value-Self-Join-Plan
+  (Entity-Value-Self-Join-Plan {}))
 
 (defn query-two-attr-entity-projection [query: Query] -> [projection: Two-Attr-Entity-Projection, ok: bool]
   (when (not (and (= (count query.find) 2)
@@ -8305,6 +8442,115 @@
         (set! out.threshold threshold)
         (return out true)))))
 
+(defn query-entity-value-self-join-plan [db: DB, query: Query] -> [plan: Entity-Value-Self-Join-Plan, ok: bool]
+  (let [out (empty-entity-value-self-join-plan)]
+    (when (not (and (= (count query.find) 3)
+                    (= (count query.with) 0)
+                    (= (count query.inputs) 0)
+                    (= (count query.collection-inputs) 0)
+                    (= (count query.tuple-inputs) 0)
+                    (= (count query.relation-inputs) 0)
+                    (= (count query.input-specs) 0)
+                    (= (count query.pulls) 0)
+                    (= (count query.aggregates) 0)
+                    (= (count query.rules) 0)
+                    (= (count query.rule-calls) 0)
+                    (= (count query.predicates) 0)
+                    (= (count query.function-clauses) 0)
+                    (= (count query.get-elses) 0)
+                    (= (count query.get-somes) 0)
+                    (= (count query.grounds) 0)
+                    (= (count query.not-groups) 0)
+                    (= (count query.or-groups) 0)
+                    (= (count query.clauses) 4)
+                    (= (count query.where-steps) 4)
+                    (all-datoms-current? db)))
+      (return out false))
+    (for [step query.where-steps]
+      (when (not (= step.kind .Clause))
+        (return out false)))
+    (let [right-entity-var query.find[0]
+          output-var query.find[1]
+          join-var query.find[2]
+          left-entity-var ""
+          join-attr ""
+          left-filter-attr ""
+          left-filter-value (Value {})
+          output-attr ""
+          right-join-found false
+          left-join-found false
+          left-filter-found false
+          output-found false]
+      (for [item query.clauses]
+        (when (or item.has-source
+                  (not (= item.e.kind .Var))
+                  (not (= item.a.kind .Value))
+                  (not (= item.a.value.kind .Keyword))
+                  (not (= item.tx-term.kind .Wildcard))
+                  (not (= item.op-term.kind .Wildcard))
+                  (not (schema-cardinality-one? db item.a.value.text)))
+          (return out false))
+        (cond
+          (and (= item.e.name right-entity-var)
+               (= item.v.kind .Var)
+               (= item.v.name output-var))
+            (do
+              (when output-found
+                (return out false))
+              (set! output-found true)
+              (set! output-attr item.a.value.text))
+          (and (= item.e.name right-entity-var)
+               (= item.v.kind .Var)
+               (= item.v.name join-var))
+            (do
+              (when right-join-found
+                (return out false))
+              (set! right-join-found true)
+              (set! join-attr item.a.value.text))
+          (and (= item.v.kind .Var)
+               (= item.v.name join-var))
+            (do
+              (when left-join-found
+                (return out false))
+              (when (= item.e.name right-entity-var)
+                (return out false))
+              (when (and (> (count left-entity-var) 0)
+                         (not (= left-entity-var item.e.name)))
+                (return out false))
+              (set! left-join-found true)
+              (set! left-entity-var item.e.name)
+              (when (> (count join-attr) 0)
+                (when (not (= join-attr item.a.value.text))
+                  (return out false)))
+              (set! join-attr item.a.value.text))
+          (= item.v.kind .Value)
+            (do
+              (when (or left-filter-found
+                        (= item.e.name right-entity-var))
+                (return out false))
+              (when (and (> (count left-entity-var) 0)
+                         (not (= left-entity-var item.e.name)))
+                (return out false))
+              (set! left-filter-found true)
+              (set! left-entity-var item.e.name)
+              (set! left-filter-attr item.a.value.text)
+              (set! left-filter-value item.v.value))
+          :else (return out false)))
+      (when (or (not right-join-found)
+                (not left-join-found)
+                (not left-filter-found)
+                (not output-found))
+        (return out false))
+      (return (Entity-Value-Self-Join-Plan {left-entity-var: left-entity-var
+                                            right-entity-var: right-entity-var
+                                            join-var: join-var
+                                            join-attr: join-attr
+                                            left-filter-attr: left-filter-attr
+                                            left-filter-value: left-filter-value
+                                            output-var: output-var
+                                            output-attr: output-attr})
+              true))))
+
 (defn q-query-entity-int-threshold-pair-columns [db: DB, plan: Entity-Int-Threshold-Plan] -> Entity-Int-Pair-Columns
   (let [out (empty-entity-int-pair-columns)
         indexes (slice db.avet 0)
@@ -8323,6 +8569,62 @@
           (append-entity-int-pair-column! (addr out) datom.e datom.v.int-value)))
       (set! i (+ i 1)))
     out))
+
+(defn append-entity-value-self-join-row! [rows: ^[dynamic]Result-Row, seen: ^set[string], entity: u64, output: Value, join-value: Value]
+  (let [entity-value (value-entity entity)
+        values ([]Value [entity-value output join-value])
+        [key key-ok] (row-values-dedupe-key values)]
+    (if key-ok
+      (let [already-seen (set.contains? seen^ key)]
+        (when (not already-seen)
+          (set.add! seen^ key)
+          (append-three-value-row! rows entity-value output join-value)))
+      (when (not (row-values-exist? (slice rows^ 0) values))
+        (append-three-value-row! rows entity-value output join-value)))))
+
+(defn q-entity-value-self-join-profiled [db: DB, plan: Entity-Value-Self-Join-Plan, stats: Query-Stats] -> Profiled-Result-Set
+  (let [out-stats stats
+        rows (make [dynamic]Result-Row)
+        seen (set.empty string)
+        seen-join-values (set.empty string)
+        join-values (make [dynamic]Value)
+        indexes (slice db.avet 0)
+        left-low (lower-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        left-high (upper-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)]
+    (defer (delete seen))
+    (defer (delete seen-join-values))
+    (defer (delete join-values))
+    (set! out-stats.steps 1)
+    (set! out-stats.clauses 4)
+    (set! out-stats.clause-candidates (- left-high left-low))
+    (let [left-index left-low]
+      (while (< left-index left-high)
+        (let [left-datom db.datoms[indexes[left-index]]
+              [join-value join-ok] (cardinality-one-value-fast-all-current db left-datom.e plan.join-attr)]
+          (when join-ok
+            (let [[join-key join-key-ok] (primitive-value-dedupe-key join-value)]
+              (if join-key-ok
+                (let [already-seen (set.contains? seen-join-values join-key)]
+                  (when (not already-seen)
+                    (set.add! seen-join-values join-key)
+                    (arr.push! join-values join-value)))
+                (when (not (value-slice-contains? (slice join-values 0) join-value))
+                  (arr.push! join-values join-value))))))
+        (set! left-index (+ left-index 1))))
+    (for [join-value join-values]
+      (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
+            right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)
+            right-index right-low]
+        (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- right-high right-low)))
+        (while (< right-index right-high)
+          (let [right-datom db.datoms[indexes[right-index]]
+                [output output-ok] (cardinality-one-value-fast-all-current db right-datom.e plan.output-attr)]
+            (when output-ok
+              (append-entity-value-self-join-row! (addr rows) (addr seen) right-datom.e output join-value)))
+          (set! right-index (+ right-index 1)))))
+    (set! out-stats.max-intermediate-bindings (count rows))
+    (set! out-stats.output-rows (count rows))
+    (profiled-result-set (result-set-ok rows) out-stats)))
 
 (defn append-two-attr-projection-row! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, query: Query, projection: Two-Attr-Entity-Projection, first-value-source: Value, second-value-source: Value]
   (let [first-value (if (= query.find[0] projection.first-var) first-value-source second-value-source)
@@ -8653,6 +8955,9 @@
         [valid error] (validate-query-call-with-fns db query inputs sources registry)]
     (when (not valid)
       (return (profiled-result-set (result-set-error error) stats)))
+  (let [[self-join-plan self-join-ok] (query-entity-value-self-join-plan db query)]
+    (when self-join-ok
+      (return (q-entity-value-self-join-profiled db self-join-plan stats))))
   (when (query-relation-engine-eligible? query sources)
     (let [bindings (relation-engine-bindings-profiled db query inputs sources registry (addr stats))
           rows (make [dynamic]Result-Row)]

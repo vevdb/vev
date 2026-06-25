@@ -2567,6 +2567,8 @@
                 (for [child (edn-children doc node-index)]
                   (let [[item item-ok item-error] (edn-value-from-node doc child)]
                     (when (not item-ok)
+                      (for [parsed items]
+                        (delete-value-containers-shallow parsed))
                       (return (Value {}) false item-error))
                     (arr.push! items item)))
                 (return (value-vector (slice items 0)) true ""))
@@ -2574,21 +2576,30 @@
              (for [child (edn-children doc node-index)]
                (let [[item item-ok item-error] (edn-value-from-node doc child)]
                  (when (not item-ok)
+                   (for [parsed items]
+                     (delete-value-containers-shallow parsed))
                    (return (Value {}) false item-error))
                  (arr.push! items item)))
              (return (value-vector (slice items 0)) true ""))
       .Map (let [items (make [dynamic]Value) :defer]
              (for [entry (edn-child-pairs doc node-index)]
                (when (= entry.value -1)
+                 (for [parsed items]
+                   (delete-value-containers-shallow parsed))
                  (return (Value {}) false "EDN map value missing"))
-               (let [[key key-ok key-error] (edn-value-from-node doc entry.key)
-                     [value value-ok value-error] (edn-value-from-node doc entry.value)]
+               (let [[key key-ok key-error] (edn-value-from-node doc entry.key)]
                  (when (not key-ok)
+                   (for [parsed items]
+                     (delete-value-containers-shallow parsed))
                    (return (Value {}) false key-error))
-                 (when (not value-ok)
-                   (return (Value {}) false value-error))
-                 (arr.push! items key)
-                 (arr.push! items value)))
+                 (let [[value value-ok value-error] (edn-value-from-node doc entry.value)]
+                   (when (not value-ok)
+                     (delete-value-containers-shallow key)
+                     (for [parsed items]
+                       (delete-value-containers-shallow parsed))
+                     (return (Value {}) false value-error))
+                   (arr.push! items key)
+                   (arr.push! items value))))
              (return (value-map (slice items 0)) true ""))
       :else (return (Value {}) false "unsupported EDN value"))))
 
@@ -2720,6 +2731,8 @@
                 (for [child (edn-children doc node-index)]
                   (let [[item item-ok item-error] (serial-value-from-edn-node doc child)]
                     (when (not item-ok)
+                      (for [parsed items]
+                        (delete-value-containers-shallow parsed))
                       (return (Value {}) false item-error))
                     (arr.push! items item)))
                 (return (value-vector (slice items 0)) true ""))
@@ -2727,23 +2740,47 @@
              (for [child (edn-children doc node-index)]
                (let [[item item-ok item-error] (serial-value-from-edn-node doc child)]
                  (when (not item-ok)
+                   (for [parsed items]
+                     (delete-value-containers-shallow parsed))
                    (return (Value {}) false item-error))
                  (arr.push! items item)))
              (return (value-vector (slice items 0)) true ""))
       .Map (let [items (make [dynamic]Value) :defer]
              (for [entry (edn-child-pairs doc node-index)]
                (when (= entry.value -1)
+                 (for [parsed items]
+                   (delete-value-containers-shallow parsed))
                  (return (Value {}) false "serialized map value missing"))
-               (let [[key key-ok key-error] (serial-value-from-edn-node doc entry.key)
-                     [value value-ok value-error] (serial-value-from-edn-node doc entry.value)]
+               (let [[key key-ok key-error] (serial-value-from-edn-node doc entry.key)]
                  (when (not key-ok)
+                   (for [parsed items]
+                     (delete-value-containers-shallow parsed))
                    (return (Value {}) false key-error))
-                 (when (not value-ok)
-                   (return (Value {}) false value-error))
-                 (arr.push! items key)
-                 (arr.push! items value)))
+                 (let [[value value-ok value-error] (serial-value-from-edn-node doc entry.value)]
+                   (when (not value-ok)
+                     (delete-value-containers-shallow key)
+                     (for [parsed items]
+                       (delete-value-containers-shallow parsed))
+                     (return (Value {}) false value-error))
+                   (arr.push! items key)
+                   (arr.push! items value))))
              (return (value-map (slice items 0)) true ""))
       :else (return (Value {}) false "unsupported serialized value"))))
+
+(defn delete-parser-datom-value-containers-shallow [datom: Datom]
+  (delete-value-containers-shallow datom.v))
+
+(defn delete-parser-tx-data-value-containers-shallow [data: Tx-Data]
+  (delete-value-containers-shallow data.lookup-value)
+  (delete-value-containers-shallow data.v)
+  (delete-value-containers-shallow data.expected)
+  (delete-value-containers-shallow data.expected-lookup-value)
+  (delete-value-containers-shallow data.value-lookup-value)
+  (delete-value-containers-shallow data.nested-map))
+
+(defn delete-parser-tx-edn-entity-value-containers-shallow [ref: Tx-EDN-Entity]
+  (when (= ref.kind .LookupRef)
+    (delete-value-containers-shallow ref.lookup-value)))
 
 (defn datom-from-edn-node [doc: EDN-Doc, node-index: int] -> [datom: Datom, ok: bool, error: string]
   (when (or (= node-index -1)
@@ -2756,21 +2793,29 @@
         tx-node (edn-child-at doc node-index 3)
         added-node (edn-child-at doc node-index 4)
         [e e-ok e-error] (edn-int-u64 doc e-node "entity id")
-        [attr attr-ok] (edn-attr-text doc a-node)
-        [value value-ok value-error] (serial-value-from-edn-node doc v-node)
-        [tx tx-ok tx-error] (edn-int-u64 doc tx-node "tx")
-        added-doc-node doc.nodes[added-node]]
+        [attr attr-ok] (edn-attr-text doc a-node)]
     (when (not e-ok)
       (return (Datom {}) false e-error))
     (when (not attr-ok)
       (return (Datom {}) false "expected datom attribute keyword or string"))
-    (when (not value-ok)
-      (return (Datom {}) false value-error))
-    (when (not tx-ok)
-      (return (Datom {}) false tx-error))
-    (when (not (= added-doc-node.kind .Bool))
-      (return (Datom {}) false "expected datom added boolean"))
-    (return (datom-tx e attr value tx added-doc-node.bool-value) true "")))
+    (let [[value value-ok value-error] (serial-value-from-edn-node doc v-node)]
+      (when (not value-ok)
+        (return (Datom {}) false value-error))
+      (let [[tx tx-ok tx-error] (edn-int-u64 doc tx-node "tx")
+            added-doc-node doc.nodes[added-node]]
+        (when (not tx-ok)
+          (delete-value-containers-shallow value)
+          (return (Datom {}) false tx-error))
+        (when (not (= added-doc-node.kind .Bool))
+          (delete-value-containers-shallow value)
+          (return (Datom {}) false "expected datom added boolean"))
+        (return (datom-tx e attr value tx added-doc-node.bool-value) true "")))))
+
+(defn delete-datom-value-containers-from! [datoms: ^[dynamic]Datom, start: int]
+  (for [index (arr.range start (count datoms^))]
+    (delete-parser-datom-value-containers-shallow datoms^[index]))
+  (while (> (count datoms^) start)
+    (arr.remove-ordered-at! datoms^ (- (count datoms^) 1))))
 
 (defn from-serializable-text [text: string] -> [db: DB, ok: bool, error: string]
   (let [doc (empty-edn-doc)
@@ -2782,10 +2827,12 @@
       (delete doc.nodes)
       (return (build-db (make [dynamic]Datom)) false "expected serialized DB vector"))
     (let [datoms (make [dynamic]Datom)
+          start-count (count datoms)
           child doc.nodes[doc.root].first-child]
       (while (not (= child -1))
         (let [[datom datom-ok datom-error] (datom-from-edn-node doc child)]
           (when (not datom-ok)
+            (delete-datom-value-containers-from! (addr datoms) start-count)
             (delete datoms)
             (delete doc.nodes)
             (return (build-db (make [dynamic]Datom)) false datom-error))
@@ -3041,7 +3088,11 @@
         [ref ref-ok ref-error] (edn-tx-map-entity-ref doc map-node generated-tempid)]
     (when (not ref-ok)
       (return false ref-error))
-    (append-edn-tx-map-items! out doc map-node ref map-group)))
+    (let [[items-ok items-error] (append-edn-tx-map-items! out doc map-node ref map-group)]
+      (when (not items-ok)
+        (delete-parser-tx-edn-entity-value-containers-shallow ref)
+        (return false items-error))
+      (return true ""))))
 
 (defn edn-tx-call-args [doc: EDN-Doc, vector-node: int, start-index: int] -> [value: Value, ok: bool, error: string]
   (let [items (make [dynamic]Value)]
@@ -3049,12 +3100,20 @@
       (let [arg-node (edn-child-at doc vector-node index)
             [arg arg-ok arg-error] (edn-value-from-node doc arg-node)]
         (when (not arg-ok)
+          (for [parsed items]
+            (delete-value-containers-shallow parsed))
           (delete items)
           (return (Value {}) false arg-error))
         (arr.push! items arg)))
     (let [out (value-vector (slice items 0))]
       (delete items)
       (return out true ""))))
+
+(defn delete-tx-data-value-containers-from! [items: ^[dynamic]Tx-Data, start: int]
+  (for [index (arr.range start (count items^))]
+    (delete-parser-tx-data-value-containers-shallow items^[index]))
+  (while (> (count items^) start)
+    (arr.remove-ordered-at! items^ (- (count items^) 1))))
 
 (defn append-edn-tx-vector! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, vector-node: int] -> [ok: bool, error: string]
   (let [op-node (edn-child-at doc vector-node 0)]
@@ -3080,21 +3139,28 @@
               (when (not ref-ok)
                 (return false ref-error))
               (when (not attr-ok)
+                (delete-parser-tx-edn-entity-value-containers-shallow ref)
                 (return false "tx-data attributes must be keywords or strings"))
               (if (= v-node -1)
                 (do
                   (arr.push! out^ (tx-retract-attr-from-ref ref attr))
                   (return true ""))
                 (if (= op ":db/add")
-                  (append-edn-tx-add-value! out doc ref attr v-node "")
+                  (let [[add-ok add-error] (append-edn-tx-add-value! out doc ref attr v-node "")]
+                    (when (not add-ok)
+                      (delete-parser-tx-edn-entity-value-containers-shallow ref)
+                      (return false add-error))
+                    (return true ""))
                   (if (edn-lookup-ref-node? doc v-node)
                     (let [[lookup-attr lookup-value lookup-ok lookup-error] (edn-lookup-ref-parts doc v-node)]
                       (when (not lookup-ok)
+                        (delete-parser-tx-edn-entity-value-containers-shallow ref)
                         (return false lookup-error))
                       (arr.push! out^ (tx-retract-value-lookup-ref-from-ref ref attr lookup-attr lookup-value))
                       (return true ""))
                     (let [[value value-ok value-error] (edn-value-from-node doc v-node)]
                       (when (not value-ok)
+                        (delete-parser-tx-edn-entity-value-containers-shallow ref)
                         (return false value-error))
                       (arr.push! out^ (tx-retract-from-ref ref attr value))
                       (return true "")))))))
@@ -3118,6 +3184,7 @@
               (when (not ref-ok)
                 (return false ref-error))
               (when (not attr-ok)
+                (delete-parser-tx-edn-entity-value-containers-shallow ref)
                 (return false "tx-data attributes must be keywords or strings"))
               (arr.push! out^ (tx-retract-attr-from-ref ref attr))
               (return true "")))
@@ -3146,6 +3213,7 @@
               (when (not ref-ok)
                 (return false ref-error))
               (when (not attr-ok)
+                (delete-parser-tx-edn-entity-value-containers-shallow ref)
                 (return false "tx-data attributes must be keywords or strings"))
               (if (edn-lookup-ref-node? doc old-node)
                 (let [[lookup-attr lookup-value lookup-ok lookup-error] (edn-lookup-ref-parts doc old-node)]
@@ -3170,8 +3238,18 @@
                   (set! value-ok plain-ok)
                   (set! value-error plain-error)))
               (when (not expected-ok)
+                (when value-ok
+                  (if has-value-lookup
+                    (delete-value-containers-shallow value-lookup-value)
+                    (delete-value-containers-shallow value)))
+                (delete-parser-tx-edn-entity-value-containers-shallow ref)
                 (return false expected-error))
               (when (not value-ok)
+                (when expected-ok
+                  (if has-expected-lookup
+                    (delete-value-containers-shallow expected-lookup-value)
+                    (delete-value-containers-shallow expected)))
+                (delete-parser-tx-edn-entity-value-containers-shallow ref)
                 (return false value-error))
               (arr.push! out^ (tx-cas-lookup-values-from-ref ref attr expected has-expected-lookup expected-lookup-attr expected-lookup-value value has-value-lookup value-lookup-attr value-lookup-value))
               (return true "")))
@@ -3213,6 +3291,7 @@
 
 (defn parse-tx-text! [out: ^[dynamic]Tx-Data, text: string] -> [ok: bool, error: string]
   (let [doc (empty-edn-doc)
+        start-count (count out^)
         [read-ok read-error] (read-edn-text! (addr doc) text)]
     (when (not read-ok)
       (delete doc.nodes)
@@ -3225,11 +3304,14 @@
                  (= doc.nodes[root-child].kind .Keyword))
         (let [[item-ok item-error] (append-edn-tx-vector! out doc doc.root)]
           (delete doc.nodes)
+          (when (not item-ok)
+            (delete-tx-data-value-containers-from! out start-count))
           (return item-ok item-error))))
     (let [child doc.nodes[doc.root].first-child]
       (while (not (= child -1))
         (let [[item-ok item-error] (append-edn-tx-item! out doc child)]
           (when (not item-ok)
+            (delete-tx-data-value-containers-from! out start-count)
             (delete doc.nodes)
             (return false item-error)))
         (set! child doc.nodes[child].next-sibling)))
