@@ -166,6 +166,35 @@ VEV_BENCH_REPEATS=1 \
 | `qpred1` | 3.9 | 2.5 | 1.56x |
 | `qpred2` | 7.8 | 3.2 | 2.44x |
 
+Diagnostic prepared/row variants are available for the Vev rows, for example:
+
+```sh
+VEV_COMPARE_BASELINES=datascript \
+VEV_BENCH_WARMUP_MS=10 \
+VEV_BENCH_MS=50 \
+VEV_BENCH_REPEATS=3 \
+  bench/datascript_bench/run_compare.sh \
+    q1 q1-prepared q1-rows-prepared \
+    q2 q2-prepared q2-rows-prepared
+```
+
+Latest short diagnostic result:
+
+| Query | DataScript ms | Vev ms | DataScript / Vev |
+|---|---:|---:|---:|
+| `q1` | 0.27 | 0.35 | 0.77x |
+| `q1-prepared` | --- | 0.30 | --- |
+| `q1-rows-prepared` | --- | 0.11 | --- |
+| `q2` | 1.4 | 2.1 | 0.67x |
+| `q2-prepared` | --- | 2.1 | --- |
+| `q2-rows-prepared` | --- | 1.9 | --- |
+
+Interpretation: q1 is mostly host result-shape overhead; the prepared row path
+is much faster than DataScript's set-returning q row. q2 is different: direct
+measurement showed Clojure set construction from typed columns at about 0.22
+ms, while the Java typed-column call itself is about 1.8 ms. The native typed
+q2 operator is therefore the next target, not Clojure vector/set construction.
+
 `q5` is now handled by an indexed equality self-join operator: it collects
 distinct left-side join values, then scans the right `avet` range once per
 join value. This is a semi-join shape, not a benchmark-name special case, and

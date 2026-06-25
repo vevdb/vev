@@ -343,6 +343,14 @@ Remaining performance work:
   still lag. The next query-engine work should focus on full-scale same-entity
   star/projection costs instead of recursive rules, which are already in a
   better local position.
+- The q1/q2 lag is not one problem. Prepared diagnostic rows show q1 improves
+  from roughly 0.35 ms for Datomic/DataScript-style `q` to roughly 0.11 ms for
+  prepared `rows`, so q1 is mostly host result-shape overhead. q2 stays around
+  1.9-2.1 ms even through prepared rows; direct measurement showed Clojure set
+  construction from the typed columns at roughly 0.22 ms and the Java
+  typed-column query call at roughly 1.8 ms. The q2 target is therefore the
+  native typed same-entity projection operator and its ABI materialization, not
+  the outer Clojure set builder.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.

@@ -60,6 +60,7 @@ public final class Vev {
     private final MethodHandle queryDbStmtResult;
     private final MethodHandle queryPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedResultWithInputs;
+    private final MethodHandle queryDbPreparedProfileEdnWithInputs;
     private final MethodHandle queryDbPreparedEntityColumnWithInputs;
     private final MethodHandle u64ArrayFree;
     private final MethodHandle u64ArrayCount;
@@ -161,6 +162,7 @@ public final class Vev {
         this.queryDbStmtResult = downcall("vev_query_db_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryPreparedResultWithInputs = downcall("vev_query_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedProfileEdnWithInputs = downcall("vev_query_db_prepared_profile_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityColumnWithInputs = downcall("vev_query_db_prepared_entity_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.u64ArrayFree = downcall("vev_u64_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.u64ArrayCount = downcall("vev_u64_array_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
@@ -478,6 +480,16 @@ public final class Vev {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 return new ResultSet((MemorySegment) queryDbPreparedResultWithInputs.invoke(handle.raw, query.raw, local.allocateUtf8String(inputs)));
+            }
+        }
+
+        public String profileEdn(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return ownedString((MemorySegment) queryDbPreparedProfileEdnWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs)));
             }
         }
 

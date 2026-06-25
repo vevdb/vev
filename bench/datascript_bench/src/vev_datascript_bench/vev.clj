@@ -45,6 +45,58 @@
 (def db100k-p1 (bench-db))
 (def db100k-p2 (bench-db))
 
+(def q1-query
+  '[:find ?e
+    :where [?e :name "Ivan"]])
+
+(def q2-query
+  '[:find ?e ?a
+    :where
+    [?e :name "Ivan"]
+    [?e :age ?a]])
+
+(def q2-switch-query
+  '[:find ?e ?a
+    :where
+    [?e :age ?a]
+    [?e :name "Ivan"]])
+
+(def q3-query
+  '[:find ?e ?a
+    :where
+    [?e :name "Ivan"]
+    [?e :age ?a]
+    [?e :sex :male]])
+
+(def q4-query
+  '[:find ?e ?l ?a
+    :where
+    [?e :name "Ivan"]
+    [?e :last-name ?l]
+    [?e :age ?a]
+    [?e :sex :male]])
+
+(def q5-query
+  '[:find ?e1 ?l ?a
+    :where
+    [?e :name "Ivan"]
+    [?e :age ?a]
+    [?e1 :age ?a]
+    [?e1 :last-name ?l]])
+
+(def qpred1-query
+  '[:find ?e ?s
+    :where
+    [?e :salary ?s]
+    [(> ?s 50000)]])
+
+(def qpred2-query
+  '[:find ?e ?s
+    :in $ ?min-s
+    :where
+    [?e :salary ?s]
+    [(> ?s ?min-s)]])
+
 (defn wide-entities
   ([depth width]
    (wide-entities 1 depth width))
@@ -90,72 +142,125 @@
 
 (defn q1 []
   (core/bench
-    (v/q '[:find ?e
-           :where [?e :name "Ivan"]]
-         @db100k-1)))
+    (v/q q1-query @db100k-1)))
+
+(defn q1-prepared []
+  (with-open [prepared (v/prepare @db100k-1 q1-query)]
+    (core/bench
+      (v/q prepared @db100k-1))))
+
+(defn q1-rows-prepared []
+  (with-open [prepared (v/prepare @db100k-1 q1-query)]
+    (core/bench
+      (v/rows prepared @db100k-1))))
+
+(defn q1-profile-prepared []
+  (with-open [prepared (v/prepare @db100k-1 q1-query)]
+    (core/bench
+      (v/profile prepared @db100k-1))))
 
 (defn q2 []
   (core/bench
-    (v/q '[:find ?e ?a
-           :where
-           [?e :name "Ivan"]
-           [?e :age ?a]]
-         @db100k-2)))
+    (v/q q2-query @db100k-2)))
+
+(defn q2-prepared []
+  (with-open [prepared (v/prepare @db100k-2 q2-query)]
+    (core/bench
+      (v/q prepared @db100k-2))))
+
+(defn q2-rows-prepared []
+  (with-open [prepared (v/prepare @db100k-2 q2-query)]
+    (core/bench
+      (v/rows prepared @db100k-2))))
+
+(defn q2-profile-prepared []
+  (with-open [prepared (v/prepare @db100k-2 q2-query)]
+    (core/bench
+      (v/profile prepared @db100k-2))))
 
 (defn q2-switch []
   (core/bench
-    (v/q '[:find ?e ?a
-           :where
-           [?e :age ?a]
-           [?e :name "Ivan"]]
-         @db100k-2s)))
+    (v/q q2-switch-query @db100k-2s)))
+
+(defn q2-switch-prepared []
+  (with-open [prepared (v/prepare @db100k-2s q2-switch-query)]
+    (core/bench
+      (v/q prepared @db100k-2s))))
+
+(defn q2-switch-rows-prepared []
+  (with-open [prepared (v/prepare @db100k-2s q2-switch-query)]
+    (core/bench
+      (v/rows prepared @db100k-2s))))
 
 (defn q3 []
   (core/bench
-    (v/q '[:find ?e ?a
-           :where
-           [?e :name "Ivan"]
-           [?e :age ?a]
-           [?e :sex :male]]
-         @db100k-3)))
+    (v/q q3-query @db100k-3)))
+
+(defn q3-prepared []
+  (with-open [prepared (v/prepare @db100k-3 q3-query)]
+    (core/bench
+      (v/q prepared @db100k-3))))
+
+(defn q3-rows-prepared []
+  (with-open [prepared (v/prepare @db100k-3 q3-query)]
+    (core/bench
+      (v/rows prepared @db100k-3))))
 
 (defn q4 []
   (core/bench
-    (v/q '[:find ?e ?l ?a
-           :where
-           [?e :name "Ivan"]
-           [?e :last-name ?l]
-           [?e :age ?a]
-           [?e :sex :male]]
-         @db100k-4)))
+    (v/q q4-query @db100k-4)))
+
+(defn q4-prepared []
+  (with-open [prepared (v/prepare @db100k-4 q4-query)]
+    (core/bench
+      (v/q prepared @db100k-4))))
+
+(defn q4-rows-prepared []
+  (with-open [prepared (v/prepare @db100k-4 q4-query)]
+    (core/bench
+      (v/rows prepared @db100k-4))))
 
 (defn q5 []
   (core/bench
-    (v/q '[:find ?e1 ?l ?a
-           :where
-           [?e :name "Ivan"]
-           [?e :age ?a]
-           [?e1 :age ?a]
-           [?e1 :last-name ?l]]
-         @db100k-5)))
+    (v/q q5-query @db100k-5)))
+
+(defn q5-prepared []
+  (with-open [prepared (v/prepare @db100k-5 q5-query)]
+    (core/bench
+      (v/q prepared @db100k-5))))
+
+(defn q5-rows-prepared []
+  (with-open [prepared (v/prepare @db100k-5 q5-query)]
+    (core/bench
+      (v/rows prepared @db100k-5))))
 
 (defn qpred1 []
   (core/bench
-    (v/q '[:find ?e ?s
-           :where
-           [?e :salary ?s]
-           [(> ?s 50000)]]
-         @db100k-p1)))
+    (v/q qpred1-query @db100k-p1)))
+
+(defn qpred1-prepared []
+  (with-open [prepared (v/prepare @db100k-p1 qpred1-query)]
+    (core/bench
+      (v/q prepared @db100k-p1))))
+
+(defn qpred1-rows-prepared []
+  (with-open [prepared (v/prepare @db100k-p1 qpred1-query)]
+    (core/bench
+      (v/rows prepared @db100k-p1))))
 
 (defn qpred2 []
   (core/bench
-    (v/q '[:find ?e ?s
-           :in $ ?min-s
-           :where
-           [?e :salary ?s]
-           [(> ?s ?min-s)]]
-         @db100k-p2
-         50000)))
+    (v/q qpred2-query @db100k-p2 50000)))
+
+(defn qpred2-prepared []
+  (with-open [prepared (v/prepare @db100k-p2 qpred2-query)]
+    (core/bench
+      (v/q prepared @db100k-p2 50000))))
+
+(defn qpred2-rows-prepared []
+  (with-open [prepared (v/prepare @db100k-p2 qpred2-query)]
+    (core/bench
+      (v/rows prepared @db100k-p2 50000))))
 
 (defn rules-wide-3x3 []
   (with-open [db (rule-db (wide-entities 3 3))]

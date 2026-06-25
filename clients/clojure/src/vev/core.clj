@@ -1,4 +1,5 @@
 (ns vev.core
+  (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
            [vev Vev Vev$Entity Vev$MapValue]))
 
@@ -416,6 +417,11 @@
   (or (optimized-query-output source prepared inputs entity-fn pair-fn triple-fn)
       (with-open [result (apply query-result source prepared inputs)]
         (result-fn result))))
+
+(defn profile
+  "Run a prepared query against a DB and return Vev's native query stats."
+  [^PreparedQuery prepared ^DB db & inputs]
+  (edn/read-string (.profileEdn (:native db) (:native prepared) (inputs-text inputs))))
 
 (defn- query-output [source prepared rules inputs result-fn entity-fn pair-fn triple-fn]
   (if rules
