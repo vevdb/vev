@@ -57,6 +57,9 @@ Status labels:
 - `done` Validate negative integer query entity terms.
   EDN text query parsing now rejects negative integer literals in entity-term positions before they can be cast to `u64`, while preserving negative integers in value positions.
 
+- `done` Make tuple schema transaction helpers slice-based.
+  `tuple-attrs-schema-tx-from` now accepts an arbitrary `[]string` of component attrs, and the existing two-attr `tuple-attrs-schema-tx` delegates to it.
+
 ## Vev TODO
 
 - `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
@@ -118,9 +121,6 @@ Status labels:
 
 - `todo` Improve schema property access.
   Schema extraction and hot schema predicates repeat similar EAVT probes for keyword and boolean properties. A schema property accessor or cached schema map/view would centralize these scans and make predicate paths cheaper.
-
-- `todo` Make tuple schema transaction helpers slice-based.
-  Runtime tuple schema parsing supports arbitrary-length tuple attr vectors, but helper constructors are still specialized for two component attrs. Slice-based helpers would avoid custom assembly for 3+ tuple attrs.
 
 - `todo` Make index order a typed helper.
   Seek/rseek/range paths repeatedly branch on string index names to select `eavt`, `aevt`, `avet`, or `vaet`. A typed index-order value plus `db-index-slice` helper would remove string dispatch from core scan code.
