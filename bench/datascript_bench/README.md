@@ -98,7 +98,7 @@ Current status:
   opt-in because it is a heavier shared-value join row that should drive future
   planner/operator work.
 
-Latest checked local comparison:
+Latest checked 1k local comparison:
 
 ```sh
 VEV_COMPARE_BASELINES=datascript \
@@ -145,11 +145,40 @@ this wrapper; the latest verified table above is DataScript-only. Datalevin's
 published numbers remain useful for direction, but they are not yet part of a
 fresh automated Vev table.
 
+Latest checked 20k local comparison:
+
+```sh
+VEV_COMPARE_BASELINES=datascript \
+VEV_BENCH_WARMUP_MS=2 \
+VEV_BENCH_MS=5 \
+VEV_BENCH_REPEATS=1 \
+  bench/datascript_bench/run_compare.sh q1 q2 q2-switch q3 q4 q5 qpred1 qpred2
+```
+
+| Query | DataScript ms | Vev ms | DataScript / Vev |
+|---|---:|---:|---:|
+| `q1` | 0.28 | 0.65 | 0.43x |
+| `q2` | 1.3 | 2.5 | 0.52x |
+| `q2-switch` | 2.9 | 2.1 | 1.38x |
+| `q3` | 2.2 | 2.4 | 0.92x |
+| `q4` | 3.1 | 3.4 | 0.91x |
+| `q5` | 138.9 | 106.0 | 1.31x |
+| `qpred1` | 3.9 | 2.5 | 1.56x |
+| `qpred2` | 7.8 | 3.2 | 2.44x |
+
+`q5` is now handled by an indexed equality self-join operator: it collects
+distinct left-side join values, then scans the right `avet` range once per
+join value. This is a semi-join shape, not a benchmark-name special case, and
+it should generalize to Datomic/DataScript queries where an unreturned left
+entity only constrains a shared value.
+
 Near-term benchmark work:
 
 1. Investigate why long Datalevin/Datomic baseline comparison runs can stall
    locally even when the Vev and DataScript rows complete.
-2. Run the same q1/q2/q2-switch/q3/q4/q5/qpred rows at the Datalevin 20k-person
-   scale and record stable comparison tables.
-3. Continue using `q2` and `q2-switch` to drive a general same-entity star /
-   merge-scan physical operator in Vev.
+2. Continue using q1/q2/q3/q4 to drive same-entity star/projection work at the
+   full 20k scale. Those rows still show Vev behind DataScript despite the
+   native backend.
+3. Keep broadening equality-join planning from the current self-join operator
+   into the general relation planner, including multi-common-variable joins and
+   non-all-current DBs.
