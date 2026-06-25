@@ -97,6 +97,18 @@ Status labels:
 - `done` Centralize schema property lookup.
   Keyword, boolean, and ident schema helpers now share `schema-property-value-for-entity`, giving hot schema predicate paths one EAVT property accessor that can later be backed by a cached schema view.
 
+- `done` Use `kvist:str` helpers for EDN string parsing/rendering.
+  Runtime EDN string parsing now delegates escape decoding to `kstr.unescape`, and EDN string rendering uses `kstr.builder` instead of building an intermediate dynamic array of string fragments.
+
+- `done` Use `defiter` for EDN child traversal.
+  `EDN-Doc` now has local `edn-siblings`, `edn-children`, and `edn-child-pairs` iterators for linked child-list traversal. Query and EDN text decoding paths can use direct `for` loops over child indexes instead of hand-rolled sibling cursor loops.
+
+- `done` Use `set[T]` for ordered query-variable and binding membership indexes.
+  Binding de-dupe keys, ordered query-variable collection, and primitive projection de-dupe now use `set[string]` for pure membership state instead of `map[string]bool` payload emulation.
+
+- `done` Use `arr.repeat` for dense boolean index initialization.
+  Dense transitive-rule helper arrays now use the package repeated-array helper instead of a manual fill loop.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -107,9 +119,6 @@ Status labels:
 
 - `todo` Use set-backed visited state where linear arrays are still used for cycle tracking.
   Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
-
-- `todo` Replace remaining `map[T]bool` set emulation where semantics are pure membership.
-  Binding de-dupe keys and ordered query-variable indexes still use pointer-to-map helpers in this Vev worktree. The active compiler still rejects the attempted pointer-to-set annotations here, so this should be retried when the installed Kvist binary accepts the full helper signature shape.
 
 - `todo` Consider a map-backed `Binding` index.
   Binding lookup is order-preserving but scan-heavy. A binding could keep ordered items plus `map[string]int`, or relation join code could build a temporary lookup map for join keys.
@@ -185,20 +194,17 @@ Status labels:
 - `kvist-done` Macro string/number helpers for source parsing.
   Kvist macros now have `parse-int` / `str.parse-int` and `digit?` / `str.digit?` helpers for source-string parsing. `parse-int` returns an integer on success and `nil` on failure, preserving `0` as a truthy parsed value in macro conditionals.
 
-- `kvist` EDN child traversal via `defiter` may need better ergonomics.
-  A Vev-local iterator for `EDN-Doc` children would be useful, but whether this is clean today depends on iterator ergonomics over linked child lists.
-
 - `kvist-done` String builder/unescape helpers.
-  `kvist:str` now has `str.builder`, `str.write!`, `str.finish`, `str.destroy!`, and `str.unescape`. EDN rendering and string unescaping can use the standard package helpers instead of building arrays of string parts by hand.
+  `kvist:str` now has `str.builder`, `str.write!`, `str.finish`, `str.destroy!`, and `str.unescape`. Vev uses these for EDN string escape decoding and scalar string rendering; broader recursive value rendering should wait for a clearer owned-string result convention.
 
 - `kvist` Standard Option/Maybe type.
   Vev uses value-plus-`has-*` fields and raw sentinel values in schema attrs, index args, input binding parsing, and absent `Value` results. A standard option type would make those shapes explicit.
 
 - `kvist-done` Array fill/repeat helpers.
-  `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Dense indexes and benchmark/sample setup can use the package helper instead of manual fill loops where it improves readability.
+  `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Vev uses `arr.repeat` for dense boolean index initialization.
 
 - `kvist-done` Pointer-to-set helper signatures usable for mutation.
-  Kvist now lowers `core.get`, `core.delete!`, `map.dissoc!`, and `contains?` correctly for pointer-to-map targets, which also covers `^set[T]` after set lowering. Helpers can take `seen: ^set[string]` and use direct package mutation macros such as `set.add!`, `set.remove!`, `map.assoc!`, and `map.dissoc!` without manually spelling `(deref seen)` for every access.
+  Kvist now lowers `core.get`, `core.delete!`, `map.dissoc!`, and `contains?` correctly for pointer-to-map targets, which also covers `^set[T]` after set lowering. Vev uses `^set[string]` helper signatures for ordered query-variable and binding membership indexes. `set.contains?` still takes a value set, so current Vev code explicitly reads through `seen^` for membership checks and mutates through pointer-shaped `set.add!`.
 
 - `kvist-done` Better macro-time collection utilities.
   Kvist macros now have a macro-time `reduce` helper over source form collections, plus macro-time `+` for numeric accumulators. Literal tx/pull-style macros can fold over option and clause forms instead of enumerating every ordering by hand.

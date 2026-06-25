@@ -185,11 +185,10 @@
 (defn edn-section-has-rules-input? [doc: EDN-Doc, section: int] -> bool
   (when (= section -1)
     (return false))
-  (let [cursor (if (= doc.nodes[section].kind .Vector) doc.nodes[section].first-child section)]
-    (while (not (= cursor -1))
+  (let [first (if (= doc.nodes[section].kind .Vector) doc.nodes[section].first-child section)]
+    (for [cursor (edn-siblings doc first)]
       (when (edn-symbol-text? doc cursor "%")
-        (return true))
-      (set! cursor doc.nodes[cursor].next-sibling)))
+        (return true))))
   false)
 
 (defn db-source-name? [sources: []DB-Source, name: string] -> bool
@@ -221,14 +220,12 @@
               (if item-ok
                 (return (input-binding-collection item) true "")
                 (return item false item-error))))
-          (let [items (make [dynamic]Input-Binding) :defer
-                child first-node]
-            (while (not (= child -1))
+          (let [items (make [dynamic]Input-Binding) :defer]
+            (for [child (edn-siblings doc first-node)]
               (let [[item item-ok item-error] (edn-input-binding-from-node doc child)]
                 (when (not item-ok)
                   (return item false item-error))
-                (arr.push! items item))
-              (set! child doc.nodes[child].next-sibling))
+                (arr.push! items item)))
             (return (input-binding-tuple (slice items 0)) true "")))
       :else (return (input-binding-none) false "unsupported :in binding form"))))
 
@@ -499,9 +496,8 @@
             (and (not (= doc.nodes[vector-node].kind .Vector))
                  (not (= doc.nodes[vector-node].kind .List))))
     (return (make [dynamic]Pull-Spec) false "pull pattern must be a vector or list"))
-  (let [out (make [dynamic]Pull-Spec)
-        child doc.nodes[vector-node].first-child]
-    (while (not (= child -1))
+  (let [out (make [dynamic]Pull-Spec)]
+    (for [child (edn-children doc vector-node)]
       (if (= doc.nodes[child].kind .Map)
         (let [entry doc.nodes[child].first-child]
           (while (not (= entry -1))
@@ -525,8 +521,7 @@
         (let [[spec spec-ok] (edn-pull-spec-node doc child)]
           (when (not spec-ok)
             (return out false "invalid pull pattern spec"))
-          (arr.push! out spec)))
-      (set! child doc.nodes[child].next-sibling))
+          (arr.push! out spec))))
     (return out true "")))
 
 (defn append-edn-pull-find! [out: ^[dynamic]Pull-Find, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
@@ -2568,56 +2563,50 @@
       .String (return (value-string node.text) true "")
       .Symbol (return (value-symbol node.text) true "")
       .Keyword (return (value-keyword node.text) true "")
-      .Vector (let [items (make [dynamic]Value) :defer
-                    child node.first-child]
-                (while (not (= child -1))
+      .Vector (let [items (make [dynamic]Value) :defer]
+                (for [child (edn-children doc node-index)]
                   (let [[item item-ok item-error] (edn-value-from-node doc child)]
                     (when (not item-ok)
                       (return (Value {}) false item-error))
-                    (arr.push! items item))
-                  (set! child doc.nodes[child].next-sibling))
+                    (arr.push! items item)))
                 (return (value-vector (slice items 0)) true ""))
-      .Set (let [items (make [dynamic]Value) :defer
-                 child node.first-child]
-             (while (not (= child -1))
+      .Set (let [items (make [dynamic]Value) :defer]
+             (for [child (edn-children doc node-index)]
                (let [[item item-ok item-error] (edn-value-from-node doc child)]
                  (when (not item-ok)
                    (return (Value {}) false item-error))
-                 (arr.push! items item))
-               (set! child doc.nodes[child].next-sibling))
+                 (arr.push! items item)))
              (return (value-vector (slice items 0)) true ""))
-      .Map (let [items (make [dynamic]Value) :defer
-                 child node.first-child]
-             (while (not (= child -1))
-               (let [value-node doc.nodes[child].next-sibling]
-                 (when (= value-node -1)
-                   (return (Value {}) false "EDN map value missing"))
-                 (let [[key key-ok key-error] (edn-value-from-node doc child)
-                       [value value-ok value-error] (edn-value-from-node doc value-node)]
-                   (when (not key-ok)
-                     (return (Value {}) false key-error))
-                   (when (not value-ok)
-                     (return (Value {}) false value-error))
-                   (arr.push! items key)
-                   (arr.push! items value)
-                   (set! child doc.nodes[value-node].next-sibling))))
+      .Map (let [items (make [dynamic]Value) :defer]
+             (for [entry (edn-child-pairs doc node-index)]
+               (when (= entry.value -1)
+                 (return (Value {}) false "EDN map value missing"))
+               (let [[key key-ok key-error] (edn-value-from-node doc entry.key)
+                     [value value-ok value-error] (edn-value-from-node doc entry.value)]
+                 (when (not key-ok)
+                   (return (Value {}) false key-error))
+                 (when (not value-ok)
+                   (return (Value {}) false value-error))
+                 (arr.push! items key)
+                 (arr.push! items value)))
              (return (value-map (slice items 0)) true ""))
       :else (return (Value {}) false "unsupported EDN value"))))
 
 (defn edn-escaped-string-text [text: string] -> string
-  (let [parts (make [dynamic]string) :defer
+  (let [builder (kstr.builder)
         index 0
         n (kstr.count text)]
-    (arr.push! parts "\"")
+    (defer (kstr.destroy! (addr builder)))
+    (kstr.write! (addr builder) "\"")
     (while (< index n)
       (let [ch (kstr.get text index)]
         (cond
-          (= ch 34) (arr.push! parts "\\\"")
-          (= ch 92) (arr.push! parts "\\\\")
-          :else (arr.push! parts (kstr.slice text index (+ index 1)))))
+          (= ch 34) (kstr.write! (addr builder) "\\\"")
+          (= ch 92) (kstr.write! (addr builder) "\\\\")
+          :else (kstr.write! (addr builder) (kstr.slice text index (+ index 1)))))
       (set! index (+ index 1)))
-    (arr.push! parts "\"")
-    (strings.concatenate (slice parts 0))))
+    (kstr.write! (addr builder) "\"")
+    (kstr.finish (addr builder))))
 
 (defn serializable-float-text [value: f64] -> string
   (cond
@@ -2727,39 +2716,32 @@
       .String (return (value-string node.text) true "")
       .Keyword (return (value-keyword node.text) true "")
       .Symbol (return (value-symbol node.text) true "")
-      .Vector (let [items (make [dynamic]Value) :defer
-                    child node.first-child]
-                (while (not (= child -1))
+      .Vector (let [items (make [dynamic]Value) :defer]
+                (for [child (edn-children doc node-index)]
                   (let [[item item-ok item-error] (serial-value-from-edn-node doc child)]
                     (when (not item-ok)
                       (return (Value {}) false item-error))
-                    (arr.push! items item))
-                  (set! child doc.nodes[child].next-sibling))
+                    (arr.push! items item)))
                 (return (value-vector (slice items 0)) true ""))
-      .Set (let [items (make [dynamic]Value) :defer
-                 child node.first-child]
-             (while (not (= child -1))
+      .Set (let [items (make [dynamic]Value) :defer]
+             (for [child (edn-children doc node-index)]
                (let [[item item-ok item-error] (serial-value-from-edn-node doc child)]
                  (when (not item-ok)
                    (return (Value {}) false item-error))
-                 (arr.push! items item))
-               (set! child doc.nodes[child].next-sibling))
+                 (arr.push! items item)))
              (return (value-vector (slice items 0)) true ""))
-      .Map (let [items (make [dynamic]Value) :defer
-                 child node.first-child]
-             (while (not (= child -1))
-               (let [value-node doc.nodes[child].next-sibling]
-                 (when (= value-node -1)
-                   (return (Value {}) false "serialized map value missing"))
-                 (let [[key key-ok key-error] (serial-value-from-edn-node doc child)
-                       [value value-ok value-error] (serial-value-from-edn-node doc value-node)]
-                   (when (not key-ok)
-                     (return (Value {}) false key-error))
-                   (when (not value-ok)
-                     (return (Value {}) false value-error))
-                   (arr.push! items key)
-                   (arr.push! items value)
-                   (set! child doc.nodes[value-node].next-sibling))))
+      .Map (let [items (make [dynamic]Value) :defer]
+             (for [entry (edn-child-pairs doc node-index)]
+               (when (= entry.value -1)
+                 (return (Value {}) false "serialized map value missing"))
+               (let [[key key-ok key-error] (serial-value-from-edn-node doc entry.key)
+                     [value value-ok value-error] (serial-value-from-edn-node doc entry.value)]
+                 (when (not key-ok)
+                   (return (Value {}) false key-error))
+                 (when (not value-ok)
+                   (return (Value {}) false value-error))
+                 (arr.push! items key)
+                 (arr.push! items value)))
              (return (value-map (slice items 0)) true ""))
       :else (return (Value {}) false "unsupported serialized value"))))
 
@@ -3044,15 +3026,13 @@
     (return (Tx-EDN-Entity {kind: .Tempid tempid: generated-tempid}) true "")))
 
 (defn append-edn-tx-map-items! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, map-node: int, ref: Tx-EDN-Entity, map-group: string] -> [ok: bool, error: string]
-  (let [child doc.nodes[map-node].first-child]
-    (while (not (= child -1))
-      (let [value-node doc.nodes[child].next-sibling]
-        (when (= value-node -1)
-          (return false "tx map value missing"))
-        (let [[item-ok item-error] (append-edn-tx-map-attr! out doc ref child value-node map-group)]
-          (when (not item-ok)
-            (return false item-error)))
-        (set! child doc.nodes[value-node].next-sibling)))
+  (do
+    (for [entry (edn-child-pairs doc map-node)]
+      (when (= entry.value -1)
+        (return false "tx map value missing"))
+      (let [[item-ok item-error] (append-edn-tx-map-attr! out doc ref entry.key entry.value map-group)]
+        (when (not item-ok)
+          (return false item-error))))
     (return true "")))
 
 (defn append-edn-tx-map! [out: ^[dynamic]Tx-Data, doc: EDN-Doc, map-node: int] -> [ok: bool, error: string]
