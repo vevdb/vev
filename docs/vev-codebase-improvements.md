@@ -33,6 +33,9 @@ Status labels:
 - `done` Expose public shallow cleanup for values and results.
   `delete-owned-value`, `delete-value-containers-shallow`, `delete-pull-result-shallow`, `delete-result-set-shallow`, and `delete-profiled-result-set-shallow` are now available in the `vev` package. ABI result cleanup delegates to these helpers, and query rule benchmarks use them instead of deleting only `rows`.
 
+- `done` Define duplicate transaction function registration semantics.
+  Native transaction execution now rejects duplicate tx-fn idents with a clear failed report, and the C ABI registration API rejects duplicates before allocating a callback slot.
+
 ## Vev TODO
 
 - `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
@@ -40,9 +43,6 @@ Status labels:
 
 - `todo` Tighten prepared/query lifecycle cleanup in text APIs.
   Text query execution parses owned `Query` containers, then delegates. The ownership split between shallow and deep cleanup should be explicit.
-
-- `todo` Fix or define duplicate transaction function registration semantics.
-  Registering the same transaction function ident twice currently appends a second entry while lookup uses the first. This should either reject duplicates or replace the existing function.
 
 - `todo` Replace ABI transaction listener tombstones with removal or documented slot reuse.
   Pure Kvist listeners remove entries. ABI listeners nil callbacks but keep owned names until connection close.
