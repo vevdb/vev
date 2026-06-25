@@ -188,8 +188,8 @@ Status labels:
 - `kvist` EDN child traversal via `defiter` may need better ergonomics.
   A Vev-local iterator for `EDN-Doc` children would be useful, but whether this is clean today depends on iterator ergonomics over linked child lists.
 
-- `kvist` String builder/unescape helpers.
-  EDN rendering and string unescaping build arrays of string parts. A standard builder/unescape package would be a cleaner long-term fit.
+- `kvist-done` String builder/unescape helpers.
+  `kvist:str` now has `str.builder`, `str.write!`, `str.finish`, `str.destroy!`, and `str.unescape`. EDN rendering and string unescaping can use the standard package helpers instead of building arrays of string parts by hand.
 
 - `kvist` Standard Option/Maybe type.
   Vev uses value-plus-`has-*` fields and raw sentinel values in schema attrs, index args, input binding parsing, and absent `Value` results. A standard option type would make those shapes explicit.
