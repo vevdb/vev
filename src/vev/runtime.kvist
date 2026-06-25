@@ -3502,16 +3502,10 @@
 (defn entity-attr-key [entity: u64, attr: string] -> string
   (fmt.tprintf "%d:%d:%s" entity (count attr) attr))
 
-(defn entity-attr-seen? [seen: (ptr (map string bool)), entity: u64, attr: string] -> bool
-  (let [key (entity-attr-key entity attr)
-        [_ found] (mmap.get seen^ key)]
-    found))
+(defn entity-attr-seen? [seen: set[string], entity: u64, attr: string] -> bool
+  (set.contains? seen (entity-attr-key entity attr)))
 
-(defn mark-entity-attr-seen! [seen: (ptr (map string bool)), entity: u64, attr: string]
-  (let [key (entity-attr-key entity attr)]
-    (mmap.assoc! seen^ key true)))
-
-(defn append-cardinality-one-retractions! [before: DB, seen-ea: (ptr (map string bool)), after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
+(defn append-cardinality-one-retractions! [before: DB, seen-ea: set[string], after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
   (when (not (or (current-db-attr-exists? before op.e op.a)
@@ -3549,7 +3543,7 @@
         expanded-ops (expand-tuple-ops before ops)
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count expanded-ops))
-        seen-ea (make (map string bool))
+        seen-ea (set.empty string)
         tx conn^.next-tx]
     (defer (delete seen-ea))
     (let [[valid error] (validate-ops before (slice expanded-ops 0))]
@@ -3561,7 +3555,7 @@
       (let [apply-op (or (= op.kind .Add)
                          (current-op-value-exists-in-log? (slice after-datoms 0) op))]
         (when apply-op
-          (append-cardinality-one-retractions! before (addr seen-ea) (addr after-datoms) (addr tx-data) op tx)
+          (append-cardinality-one-retractions! before seen-ea (addr after-datoms) (addr tx-data) op tx)
           (let [datom (Datom {e: op.e
                               a: op.a
                               v: op.v
@@ -3570,7 +3564,7 @@
             (arr.push! after-datoms datom)
             (arr.push! tx-data datom)))
         (when (= op.kind .Add)
-          (mark-entity-attr-seen! (addr seen-ea) op.e op.a))))
+          (set.add! seen-ea (entity-attr-key op.e op.a)))))
     (delete expanded-ops)
     (let [after (build-db after-datoms)]
       (set! conn^.db after)

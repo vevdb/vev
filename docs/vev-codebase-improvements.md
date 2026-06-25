@@ -85,6 +85,9 @@ Status labels:
 - `done` Add local builders for pull spec option variants.
   Pull spec constructors, EDN pull option parsing, and recursion-depth rewriting now use shared `pull-spec-with-*` helpers instead of manually copying every `Pull-Spec` field for each option variant.
 
+- `done` Use a local set for cardinality-one entity/attr tracking.
+  The transaction path now uses `set[string]` for the local entity/attr membership table. Helper-heavy membership paths still use `map[string]bool` until pointer-shaped set mutation is usable end-to-end in Vev.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
@@ -97,7 +100,7 @@ Status labels:
   Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
 
 - `todo` Replace remaining `map[T]bool` set emulation where semantics are pure membership.
-  Remaining cases are mostly composite string keys, binding de-dupe keys, and the ordered query-variable index. Use `set[T]` where the type shape is simple and the compiler accepts the required helper signatures.
+  Binding de-dupe keys and ordered query-variable indexes still use pointer-to-map helpers because mutating set parameters by value lowers to non-addressable Odin map assignments. Revisit after the pointer-to-set helper pattern compiles and mutates correctly in Vev.
 
 - `todo` Consider a map-backed `Binding` index.
   Binding lookup is order-preserving but scan-heavy. A binding could keep ordered items plus `map[string]int`, or relation join code could build a temporary lookup map for join keys.
@@ -167,8 +170,8 @@ Status labels:
 - `kvist` Shared macro/runtime parser descriptions.
   Query, pull, and tx syntax must exist both as Kvist literal macros and runtime EDN text parsing. A shared parser description or codegen story would reduce parity drift.
 
-- `kvist` Record update syntax.
-  Pull spec variants and similar record-copy-with-one-field-changed code are verbose.
+- `kvist-done` Record update syntax.
+  Kvist already has `assoc` and `update` for shallow struct copy-with-field-changed code, including threaded forms such as `(-> spec (assoc .children children))`. Pull spec variants and similar record updates can use those helpers instead of hand-copying records.
 
 - `kvist` Ownership-transfer annotations or inference for consuming helper functions.
   An ordinary helper like `value-vector-owned(items: [dynamic]Value) -> Value` is the shape Vev wants, but today it triggers owned-local warnings at call sites. Direct `Value` literals work because the compiler can see the ownership move.
@@ -176,8 +179,8 @@ Status labels:
 - `kvist` Static lookup tables shared between macro and runtime code.
   Predicate/function/aggregate operator tables exist as macro allow-lists and runtime string dispatch.
 
-- `kvist` Macro string/number helpers for source parsing.
-  Macro parsing still has places that would benefit from robust `parse-int`, digit predicates, and similar helpers.
+- `kvist-done` Macro string/number helpers for source parsing.
+  Kvist macros now have `parse-int` / `str.parse-int` and `digit?` / `str.digit?` helpers for source-string parsing. `parse-int` returns an integer on success and `nil` on failure, preserving `0` as a truthy parsed value in macro conditionals.
 
 - `kvist` EDN child traversal via `defiter` may need better ergonomics.
   A Vev-local iterator for `EDN-Doc` children would be useful, but whether this is clean today depends on iterator ergonomics over linked child lists.
@@ -191,11 +194,11 @@ Status labels:
 - `kvist-done` Array fill/repeat helpers.
   `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Dense indexes and benchmark/sample setup can use the package helper instead of manual fill loops where it improves readability.
 
-- `kvist-done` Pointer-to-set helper signatures.
-  Kvist now accepts helper parameters shaped like `seen: ^set[string]` and `seen: (ptr (set string))`; the compiler also recognizes caret-prefixed compact collection type tokens such as `^map[...]`, `^set[...]`, `^bit_set[...]`, and `^matrix[...]`. Vev can revisit ordered query-variable collection and use a local set helper without the previous type-parser workaround.
+- `kvist` Pointer-to-set helper signatures usable for mutation.
+  Vev can use local `set[string]` values, but helper-heavy membership paths still need an addressable mutable set parameter. The current Vev test pass works with local set mutation only; pointer-shaped set helpers should be rechecked once the installed compiler accepts and lowers them end-to-end.
 
-- `kvist` Better macro-time collection utilities.
-  Literal tx and pull macros still enumerate option orderings and shape cases by hand where runtime EDN parsing can fold over data. Macro-time iteration/folding/splicing helpers would help keep literal and runtime frontends aligned.
+- `kvist-done` Better macro-time collection utilities.
+  Kvist macros now have a macro-time `reduce` helper over source form collections, plus macro-time `+` for numeric accumulators. Literal tx/pull-style macros can fold over option and clause forms instead of enumerating every ordering by hand.
 
 - `kvist` Scoped owned aggregate helpers.
   Benchmarks and ABI execution paths often allocate several related owned arrays/values and then carry long `defer delete` blocks. Language or package support for scoped owned aggregate records would make this pattern less fragile.
