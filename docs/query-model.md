@@ -141,6 +141,12 @@ source-qualified synthetic primary collection DB rule/predicate/function
 queries still use the older binding-expansion evaluator until their
 DataScript-style source-aware relation handlers are ported.
 
+Relation joins now include a DataScript-shaped hash join for primitive common
+variables. The join path supports compound keys across one or more shared
+variables, normalizes entity IDs and integer IDs consistently with Vev query
+equality, and falls back to the semantic nested join when values are not safely
+representable as primitive join keys.
+
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the
 relation engine:
