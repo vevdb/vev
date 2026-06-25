@@ -30,10 +30,13 @@ Status labels:
 - `done` Use `arr.sort!` for primitive local sorts.
   `sort-strings!` and `sort-i64!` now delegate to Kvist's array sort instead of carrying local insertion sorts.
 
+- `done` Expose public shallow cleanup for values and results.
+  `delete-owned-value`, `delete-value-containers-shallow`, `delete-pull-result-shallow`, `delete-result-set-shallow`, and `delete-profiled-result-set-shallow` are now available in the `vev` package. ABI result cleanup delegates to these helpers, and query rule benchmarks use them instead of deleting only `rows`.
+
 ## Vev TODO
 
-- `todo` Add public cleanup/destructor APIs for owned native values.
-  Native Kvist callers need canonical cleanup for `Value` trees, `Result-Set`, `Profiled-Result-Set`, `Prepared-Query`, `Prepared-Rules`, `Prepared-Tx-Data`, `Query`, `Rule`, and `Tx-Report`. Tests and benches currently lean on allocator reset too much, while ABI has private cleanup helpers.
+- `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
+  Native Kvist callers still need canonical cleanup for `Prepared-Query`, `Prepared-Rules`, `Prepared-Tx-Data`, `Query`, `Rule`, and `Tx-Report`. This needs a careful shallow/deep ownership split for rules, not/or groups, pull specs, tx reports, and prepared containers.
 
 - `todo` Tighten prepared/query lifecycle cleanup in text APIs.
   Text query execution parses owned `Query` containers, then delegates. The ownership split between shallow and deep cleanup should be explicit.

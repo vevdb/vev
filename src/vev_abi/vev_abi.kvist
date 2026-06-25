@@ -826,37 +826,6 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (vev.Value {kind: .Map items: items}))
     :else value))
 
-(defn- delete-owned-value [value: vev.Value]
-  (case value.kind
-    .String (delete value.text)
-    .Keyword (delete value.text)
-    .Symbol (delete value.text)
-    .Vector
-      (do
-        (for [item value.items]
-          (delete-owned-value item))
-        (delete value.items))
-    .Map
-      (do
-        (for [item value.items]
-          (delete-owned-value item))
-        (delete value.items))
-    :else (do)))
-
-(defn- delete-value-containers-shallow [value: vev.Value]
-  (case value.kind
-    .Vector
-      (do
-        (for [item value.items]
-          (delete-value-containers-shallow item))
-        (delete value.items))
-    .Map
-      (do
-        (for [item value.items]
-          (delete-value-containers-shallow item))
-        (delete value.items))
-    :else (do)))
-
 (defn- delete-pull-spec-containers [specs: []vev.Pull-Spec]
   (for [spec specs]
     (delete-pull-spec-containers spec.pattern)
@@ -864,7 +833,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- tx-report-handle-from-value [value: vev.Value] -> Vev-Tx-Report
   (let [owned (value-owned value)]
-    (delete-value-containers-shallow value)
+    (vev.delete-value-containers-shallow value)
     (Vev-Tx-Report (abi-alloc-tx-report owned))))
 
 (defn- tx-report-handle-from-report [report: vev.Tx-Report] -> Vev-Tx-Report
@@ -874,7 +843,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (= (rawptr report) nil)
     (return))
   (let [ptr (tx-report-value-ptr report)]
-    (delete-owned-value ptr^)
+    (vev.delete-owned-value ptr^)
     (abi-free-tx-report (rawptr report))))
 
 (defn- notify-abi-tx-listeners! [conn: Vev-Conn, report: vev.Tx-Report]
@@ -886,33 +855,33 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- value-handle-from-value [value: vev.Value] -> Vev-Value-Handle
   (let [owned (value-owned value)]
-    (delete-value-containers-shallow value)
+    (vev.delete-value-containers-shallow value)
     (Vev-Value-Handle (abi-alloc-value-handle owned))))
 
 (defn- delete-query-input-owned [input: vev.Query-Input]
   (case input.kind
     .Scalar
       (do
-        (delete-owned-value input.value)
+        (vev.delete-owned-value input.value)
         (when input.has-lookup-ref
           (delete input.lookup-attr)
-          (delete-owned-value input.lookup-value)))
+          (vev.delete-owned-value input.lookup-value)))
     .Collection
       (do
         (for [value input.values]
-          (delete-owned-value value))
+          (vev.delete-owned-value value))
         (delete input.values))
     .Relation
       (do
         (for [value input.values]
-          (delete-owned-value value))
+          (vev.delete-owned-value value))
         (delete input.values))
     .CollectionLookupRefs
       (do
         (for [attr input.lookup-attrs]
           (delete attr))
         (for [value input.lookup-values]
-          (delete-owned-value value))
+          (vev.delete-owned-value value))
         (delete input.lookup-attrs)
         (delete input.lookup-values))
     .PullPattern
@@ -1048,7 +1017,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- delete-db-owned [db: vev.DB]
   (for [datom db.datoms]
     (delete datom.a)
-    (delete-owned-value datom.v))
+    (vev.delete-owned-value datom.v))
   (vev.delete-owned-db db))
 
 (defn- delete-query-shallow [query: vev.Query]
@@ -1074,10 +1043,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (delete query.aggregates))
 
 (defn- delete-result-shallow [result: vev.Result-Set]
-  (for [row result.rows]
-    (delete row.values)
-    (delete row.pulls))
-  (delete result.rows))
+  (vev.delete-result-set-shallow result))
 
 (defn- result-store-pull-values! [result: Vev-Result, db: vev.DB]
   (let [ptr (result-ptr result)
@@ -1086,7 +1052,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (for [pull row.pulls]
         (let [rendered (vev.pull-result-value db pull)]
           (arr.push! pull-values^ (value-owned rendered))
-          (delete-value-containers-shallow rendered))))))
+          (vev.delete-value-containers-shallow rendered))))))
 
 (defn- result-finish [result: Vev-Result, db: vev.DB] -> Vev-Result
   (result-store-pull-values! result db)
@@ -1095,7 +1061,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- result-delete-owned [result: Vev-Result]
   (let [ptr (result-ptr result)]
     (for [value (deref (result-pull-values-ptr result))]
-      (delete-owned-value value))
+      (vev.delete-owned-value value))
     (delete-result-shallow ptr^)
     (abi-free-result (rawptr result))))
 
@@ -1348,7 +1314,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (= (rawptr report) nil)
     (return))
   (let [ptr (tx-report-value-ptr report)]
-    (delete-owned-value ptr^)
+    (vev.delete-owned-value ptr^)
     (abi-free-tx-report (rawptr report))))
 
 @export
@@ -1661,7 +1627,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (let [value (abi-cstring-at values index)]
         (when (= value nil)
           (for [item out]
-            (delete-owned-value item))
+            (vev.delete-owned-value item))
           (delete out)
           (return false))
         (arr.push! out (vev.value-string (text-from-c value))))
@@ -1745,7 +1711,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (let [value (abi-cstring-at values index)]
         (when (= value nil)
           (for [item out]
-            (delete-owned-value item))
+            (vev.delete-owned-value item))
           (delete out)
           (return false))
         (arr.push! out (vev.value-string (text-from-c value))))
@@ -1821,7 +1787,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (for [item attrs]
             (delete item))
           (for [item out]
-            (delete-owned-value item))
+            (vev.delete-owned-value item))
           (delete attrs)
           (delete out)
           (return false))
@@ -2201,7 +2167,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (= (rawptr handle) nil)
     (return))
   (let [ptr (value-handle-value-ptr handle)]
-    (delete-owned-value ptr^)
+    (vev.delete-owned-value ptr^)
     (abi-free-value-handle (rawptr handle))))
 
 @export
