@@ -846,6 +846,18 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (vev.delete-owned-value ptr^)
     (abi-free-tx-report (rawptr report))))
 
+(defn- delete-tx-builder-entry-owned [data: vev.Tx-Data]
+  (delete data.a)
+  (vev.delete-owned-value data.v))
+
+(defn- tx-builder-free [builder: Vev-Tx-Builder]
+  (when (= (rawptr builder) nil)
+    (return))
+  (let [tx-data (tx-builder-data-ptr builder)]
+    (for [data tx-data^]
+      (delete-tx-builder-entry-owned data))
+    (abi-free-tx-builder (rawptr builder))))
+
 (defn- notify-abi-tx-listeners! [conn: Vev-Conn, report: vev.Tx-Report]
   (when (or (= (rawptr conn) nil) (not report.ok))
     (return))
@@ -1019,28 +1031,6 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (delete datom.a)
     (vev.delete-owned-value datom.v))
   (vev.delete-owned-db db))
-
-(defn- delete-query-shallow [query: vev.Query]
-  (delete query.find)
-  (delete query.with)
-  (delete query.inputs)
-  (delete query.collection-inputs)
-  (delete query.tuple-inputs)
-  (delete query.relation-inputs)
-  (delete query.input-specs)
-  (delete query.clauses)
-  (delete query.predicates)
-  (delete query.function-clauses)
-  (delete query.rules)
-  (delete query.rule-calls)
-  (delete query.get-elses)
-  (delete query.get-somes)
-  (delete query.grounds)
-  (delete query.not-groups)
-  (delete query.or-groups)
-  (delete query.where-steps)
-  (delete query.pulls)
-  (delete query.aggregates))
 
 (defn- delete-result-shallow [result: vev.Result-Set]
   (vev.delete-result-set-shallow result))
@@ -1345,9 +1335,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 @export
 (defn vev_tx_free :abi "c" [builder: Vev-Tx-Builder]
   (odin "context = runtime.default_context()")
-  (when (= (rawptr builder) nil)
-    (return))
-  (abi-free-tx-builder (rawptr builder)))
+  (tx-builder-free builder))
 
 (defn- tx-builder-push-add! [builder: Vev-Tx-Builder, e: u64, attr: cstring, value: vev.Value] -> bool
   (when (or (= (rawptr builder) nil) (= attr nil))
@@ -1490,7 +1478,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (= (rawptr query) nil)
     (return))
   (let [ptr (prepared-query-ptr query)]
-    (delete-query-shallow ptr^.query)
+    (vev.delete-prepared-query-shallow ptr^)
     (abi-free-prepared-query (rawptr query))))
 
 @export
@@ -2206,6 +2194,51 @@ abi_free_stmt :: proc(stmt: rawptr) {
         out (value-handle-from-value pulled)]
     (delete pattern)
     (delete attr-text)
+    (delete value-text)
+    out))
+
+@export
+(defn vev_pull_lookup_ref_keyword_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, value: cstring] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= pattern-text nil) (= attr nil) (= value nil))
+    (return (Vev-Value-Handle nil)))
+  (let [pattern (text-from-c pattern-text)
+        attr-text (text-from-c attr)
+        value-text (text-from-c value)
+        db-ptr-value (db-ptr db)
+        pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-keyword value-text))
+        out (value-handle-from-value pulled)]
+    (delete pattern)
+    (delete attr-text)
+    (delete value-text)
+    out))
+
+@export
+(defn vev_pull_lookup_ref_entity_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, value: u64] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= pattern-text nil) (= attr nil))
+    (return (Vev-Value-Handle nil)))
+  (let [pattern (text-from-c pattern-text)
+        attr-text (text-from-c attr)
+        db-ptr-value (db-ptr db)
+        pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-entity value))
+        out (value-handle-from-value pulled)]
+    (delete pattern)
+    (delete attr-text)
+    out))
+
+@export
+(defn vev_pull_lookup_ref_int_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, value: i64] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= pattern-text nil) (= attr nil))
+    (return (Vev-Value-Handle nil)))
+  (let [pattern (text-from-c pattern-text)
+        attr-text (text-from-c attr)
+        db-ptr-value (db-ptr db)
+        pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-int value))
+        out (value-handle-from-value pulled)]
+    (delete pattern)
+    (delete attr-text)
     out))
 
 @export
@@ -2460,6 +2493,41 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (= (rawptr value) nil)
     (return (Vev-Value nil)))
   (Vev-Value (abi-value-map-value-ptr (rawptr value) index)))
+
+@export
+(defn vev_value_text_equals :abi "c" [value: Vev-Value, expected: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr value) nil) (= expected nil))
+    (return false))
+  (let [ptr (value-ptr value)
+        expected-text (text-from-c expected)]
+    (defer (delete expected-text))
+    (case ptr^.kind
+      .String (= ptr^.text expected-text)
+      .Keyword (= ptr^.text expected-text)
+      .Symbol (= ptr^.text expected-text)
+      :else false)))
+
+@export
+(defn vev_value_map_get :abi "c" [value: Vev-Value, key: cstring] -> Vev-Value
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr value) nil) (= key nil))
+    (return (Vev-Value nil)))
+  (let [ptr (value-ptr value)
+        key-text (text-from-c key)]
+    (defer (delete key-text))
+    (when (not (= ptr^.kind .Map))
+      (return (Vev-Value nil)))
+    (let [index 0]
+      (while (< (+ index 1) (count ptr^.items))
+        (let [item-key ptr^.items[index]]
+          (when (and (or (= item-key.kind .String)
+                         (= item-key.kind .Keyword)
+                         (= item-key.kind .Symbol))
+                     (= item-key.text key-text))
+            (return (Vev-Value (rawptr (addr ptr^.items[(+ index 1)]))))))
+        (set! index (+ index 2))))
+    (Vev-Value nil)))
 
 @export
 (defn vev_value_visit :abi "c" [value: Vev-Value, visitor: rawptr, user: rawptr] -> bool

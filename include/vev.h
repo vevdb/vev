@@ -228,6 +228,21 @@ vev_value_handle_t vev_pull_lookup_ref_string_edn(
     const char *pattern_text,
     const char *attr,
     const char *value);
+vev_value_handle_t vev_pull_lookup_ref_keyword_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_lookup_ref_entity_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    unsigned long long value);
+vev_value_handle_t vev_pull_lookup_ref_int_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    long long value);
 vev_value_handle_t vev_pull_many_edn(
     vev_db_t db,
     const char *pattern_text,
@@ -265,6 +280,8 @@ vev_value_t vev_value_item(vev_value_t value, int index);
 int vev_value_map_count(vev_value_t value);
 vev_value_t vev_value_map_key(vev_value_t value, int index);
 vev_value_t vev_value_map_value(vev_value_t value, int index);
+bool vev_value_text_equals(vev_value_t value, const char *expected);
+vev_value_t vev_value_map_get(vev_value_t value, const char *key);
 bool vev_value_visit(vev_value_t value, vev_value_visit_fn visitor, void *user);
 
 #ifdef __cplusplus

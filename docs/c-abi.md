@@ -245,6 +245,14 @@ vev_value_handle_t lookup_pull =
         "ada@example.com");
 vev_value_handle_free(lookup_pull);
 
+vev_value_handle_t keyword_lookup_pull =
+    vev_pull_lookup_ref_keyword_edn(
+        retained_snapshot,
+        "[:user/name]",
+        ":user/status",
+        ":active");
+vev_value_handle_free(keyword_lookup_pull);
+
 unsigned long long entity_ids[] = {1, 2};
 vev_value_handle_t many_pull =
     vev_pull_many_edn(retained_snapshot, "[:user/name]", entity_ids, 2);
@@ -411,6 +419,9 @@ Inputs are ordinary Clojure arguments after the query:
            [?e :user/name ?name]]
   ["ada@example.com" "grace@example.com"])
 ```
+
+Plain Clojure `q`/`rows` calls prepare and close a temporary native query
+handle. Use `vev/prepare` with `with-open` when a query should be reused.
 
 The underlying Java wrapper still exposes EDN strings directly:
 
@@ -742,6 +753,9 @@ Direct pull entry points use owned value handles:
 
 - `vev_pull_edn`
 - `vev_pull_lookup_ref_string_edn`
+- `vev_pull_lookup_ref_keyword_edn`
+- `vev_pull_lookup_ref_entity_edn`
+- `vev_pull_lookup_ref_int_edn`
 - `vev_pull_many_edn`
 - `vev_value_handle_value`
 - `vev_value_handle_edn`

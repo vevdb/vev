@@ -39,6 +39,16 @@
        [:db/add 90 :db/unique :db.unique/identity]])
 
     (vev/transact! conn
+      [[:db/add 91 :db/ident :user/status]
+       [:db/add 91 :db/unique :db.unique/identity]
+       [:db/add 92 :db/ident :user/code]
+       [:db/add 92 :db/unique :db.unique/identity]
+       [:db/add 1 :user/status :active]
+       [:db/add 2 :user/status :inactive]
+       [:db/add 1 :user/code 1001]
+       [:db/add 2 :user/code 1002]])
+
+    (vev/transact! conn
       [[:db/add 100 :db/ident :user/friend]
        [:db/add 100 :db/valueType :db.type/ref]
        [:db/add 1 :user/friend 2]])
@@ -68,11 +78,23 @@
             lookup-pull (vev/pull db
                           [:user/name]
                           [:user/email "ada@example.com"])
+            keyword-lookup-pull (vev/pull db
+                                  [:user/name]
+                                  [:user/status :active])
+            int-lookup-pull (vev/pull db
+                              [:user/name]
+                              [:user/code 1001])
             many-pull (vev/pull-many db [:user/name] [1 2])]
         (println "lookup pull:" lookup-pull)
+        (println "keyword lookup pull:" keyword-lookup-pull)
+        (println "int lookup pull:" int-lookup-pull)
         (println "pull many:" many-pull)
         (when-not (= {:user/name "Ada"} lookup-pull)
           (throw (ex-info "unexpected lookup-ref pull" {:pull lookup-pull})))
+        (when-not (= {:user/name "Ada"} keyword-lookup-pull)
+          (throw (ex-info "unexpected keyword lookup-ref pull" {:pull keyword-lookup-pull})))
+        (when-not (= {:user/name "Ada"} int-lookup-pull)
+          (throw (ex-info "unexpected int lookup-ref pull" {:pull int-lookup-pull})))
         (when-not (= #{"Ada" "Grace"} (set (map :user/name many-pull)))
           (throw (ex-info "unexpected pull-many" {:pull many-pull}))))
 

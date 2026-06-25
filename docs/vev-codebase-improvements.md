@@ -7,6 +7,7 @@ Status labels:
 - `done`: implemented in Vev.
 - `todo`: worthwhile Vev work, not blocked on Kvist.
 - `kvist`: better solved in Kvist compiler/packages/tooling.
+- `kvist-done`: implemented in Kvist compiler/packages/tooling.
 - `later`: real issue, but larger design work or lower priority than DataScript parity, C ABI, and performance.
 - `not-now`: valid observation, but not worth changing currently.
 
@@ -60,16 +61,43 @@ Status labels:
 - `done` Make tuple schema transaction helpers slice-based.
   `tuple-attrs-schema-tx-from` now accepts an arbitrary `[]string` of component attrs, and the existing two-attr `tuple-attrs-schema-tx` delegates to it.
 
+- `done` Add public shallow lifecycle cleanup for prepared/query/report containers.
+  `delete-query-shallow`, `delete-prepared-query-shallow`, `delete-prepared-rules-shallow`, `delete-prepared-tx-data-shallow`, and `delete-tx-report-shallow` are now canonical Vev helpers. The C ABI prepared-query free path delegates to the package helper instead of carrying a duplicate local copy.
+
+- `done` Tighten temporary text-query cleanup.
+  Direct `q-text` variants that parse a short-lived query now defer `delete-query-shallow` after execution, so temporary query container arrays are not leaked on the main EDN string API path.
+
+- `done` Broaden Clojure/Java pull lookup-ref API shapes beyond string values.
+  Direct pull lookup-ref APIs now support string, keyword, entity, and int values through the C ABI and Java wrapper. The Clojure wrapper dispatches Datomic-style lookup refs such as `[:user/email "ada@example.com"]`, `[:user/status :active]`, and `[:user/code 1001]`.
+
+- `done` Improve C ABI value inspection helpers.
+  `vev_value_map_get` and `vev_value_text_equals` now cover the common C-client map lookup/text comparison boilerplate used by pull and tx-report inspection. The C smoke delegates to those helpers instead of hand-scanning map entries.
+
+- `done` Tighten ABI transaction builder cleanup.
+  `vev_tx_free` now deletes the C-owned attr strings and value payloads held by `vev_tx_create` builders before releasing the raw wrapper array. The cleanup stays builder-specific because generic `Tx-Data` can contain borrowed package literals.
+
+- `done` Remove global Clojure prepared-query cache.
+  Ad hoc Clojure `q`, `rows`, and `scalar` calls now prepare a temporary native query handle and close it after use. Explicit `vev/prepare` remains the reuse path, avoiding cross-engine prepared handle sharing and unbounded native cache lifetime.
+
+- `done` Add shared benchmark timing helpers.
+  `bench/support` now owns elapsed-time and sample percentile helpers. Query-rule, stress, ABI-native, and index benchmarks use the shared `Timing` helpers instead of carrying local copies.
+
+- `done` Add local builders for pull spec option variants.
+  Pull spec constructors, EDN pull option parsing, and recursion-depth rewriting now use shared `pull-spec-with-*` helpers instead of manually copying every `Pull-Spec` field for each option variant.
+
+- `done` Use a local set for cardinality-one entity/attr tracking.
+  The transaction path now uses `set[string]` for the local entity/attr membership table. Helper-heavy membership paths still use `map[string]bool` until pointer-shaped set mutation is usable end-to-end in Vev.
+
+- `done` Avoid repeated reachability scans in rule-call planning.
+  Rule planning now computes the reachable rule-name set once per call plan and reuses it for call-rule filtering, recursive dependency detection, and acyclic depth. This keeps the general dependency-graph path while removing repeated `rule-reaches-name?` scans from the hot planning path.
+
+- `done` Add a `Value-Map-Builder` for pull rendering.
+  Pull map rendering now uses a small builder to centralize duplicate-key checks and map materialization instead of open-coding key scans against the raw `Value` item array.
+
 ## Vev TODO
 
-- `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
-  Native Kvist callers still need canonical cleanup for `Prepared-Query`, `Prepared-Rules`, `Prepared-Tx-Data`, `Query`, `Rule`, and `Tx-Report`. This needs a careful shallow/deep ownership split for rules, not/or groups, pull specs, tx reports, and prepared containers.
-
-- `todo` Tighten prepared/query lifecycle cleanup in text APIs.
-  Text query execution parses owned `Query` containers, then delegates. The ownership split between shallow and deep cleanup should be explicit.
-
-- `todo` Broaden Clojure/Java pull lookup-ref API shapes beyond string values.
-  Statement lookup-ref collection binding now has typed ABI coverage, but direct pull lookup-ref helpers are still string-focused in host wrappers.
+- `todo` Finish parser-owned AST/value cleanup.
+  The current EDN parser still stores many AST strings as borrowed slices from source text, while container values can own nested arrays. The next cleanup step is an explicit parser ownership model: either clone AST strings and provide deep destructors for `Query`, `Rule`, pull specs, tx data, and parsed inputs, or keep borrowed text handles deliberately and only deep-delete value containers known not to escape into results.
 
 - `todo` Make host result decoding less duplicated.
   Java and Clojure duplicate scalar conversion and optimized result projection cascades. Prefer `vev_result_value` plus value accessors as the primary path, then generate or de-emphasize narrow compatibility accessors.
@@ -78,7 +106,7 @@ Status labels:
   Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
 
 - `todo` Replace remaining `map[T]bool` set emulation where semantics are pure membership.
-  Remaining cases are mostly composite string keys, binding de-dupe keys, and the ordered query-variable index. Use `set[T]` where the type shape is simple and the compiler accepts the required helper signatures.
+  Binding de-dupe keys and ordered query-variable indexes still use pointer-to-map helpers because mutating set parameters by value lowers to non-addressable Odin map assignments. Revisit after the pointer-to-set helper pattern compiles and mutates correctly in Vev.
 
 - `todo` Consider a map-backed `Binding` index.
   Binding lookup is order-preserving but scan-heavy. A binding could keep ordered items plus `map[string]int`, or relation join code could build a temporary lookup map for join keys.
@@ -86,26 +114,14 @@ Status labels:
 - `todo` Consider reshaping `Query-Relation` attrs.
   Parallel `attrs` / `attr-sources` arrays couple indexes manually. A small `{name source}` record or an auxiliary source map would be clearer.
 
-- `todo` Replace rule dependency repeated reachability with a graph/SCC pass.
-  Current dependency checks recompute reachability over array graphs. This is likely a correctness-preserving performance win for larger rule sets.
-
-- `todo` Add a `Value-Map-Builder`.
-  Pull/result rendering manually tracks duplicate map keys by scanning `Value` pairs. A builder can centralize duplicate handling and ownership.
-
-- `todo` Add local builders for pull spec option variants.
-  `Pull-Spec` construction repeats full records for small field changes. Until Kvist has record update syntax, local `pull-spec-with-*` helpers would reduce drift.
+- `todo` Add explicit SCC metadata for rule components.
+  Rule planning now reuses single-start reachability, but recursive component detection still checks mutual reachability on demand. A Tarjan/Kosaraju pass would make component recursion, rule grouping, and future semi-naive planning more direct.
 
 - `todo` Normalize transaction macro entity dispatch.
   Literal transaction macros repeat the same entity-ref matrix for lookup refs, idents, tempids, and ints. A macro helper should classify and emit it once.
 
 - `todo` Consolidate ABI exported query/bind variants.
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
-
-- `todo` Scope Clojure prepared-query caching to native library/connection lifetime.
-  The current cache key is query form only, with no explicit eviction/close path. Prepared native handles should not be shared across unrelated native engine/library instances or leaked for the wrapper lifetime.
-
-- `todo` Add benchmark helper code.
-  Query/rule and ABI benchmarks repeat timing, warmup, sample collection, reporting loops, sample-vector ownership, and schema/data fixture setup. A small benchmark helper package would make further benchmark work cheaper.
 
 - `todo` Add generic query/parser AST visitors.
   Source validation, source-input validation, relation-DB query rewriting, and EDN query section parsing all hand-walk the same query or EDN shapes. A reusable visitor/mapper plus single-pass section indexing would reduce duplicate traversal logic.
@@ -134,22 +150,16 @@ Status labels:
 - `todo` Add test support helpers for Vev values and results.
   Tests build verbose nested `Value` fixtures and carry local result/pull search helpers. EDN-to-`Value` fixture helpers, `value-get-in`, and row/pull matchers would make compatibility tests easier to read and extend.
 
-- `todo` Tighten ABI owned-builder cleanup.
-  Some ABI builder/free paths own cloned strings and values but free only the outer dynamic array. Add owned cleanup helpers for ABI transaction builders and similar owned-struct containers.
-
-- `todo` Improve C ABI value inspection helpers.
-  C clients currently hand-roll map lookup and text comparison/ownership patterns. ABI helpers for map lookup by key and borrowed/owned text extraction would reduce client boilerplate.
-
 - `todo` Materialize pull values more cleanly for ABI results.
   ABI results currently keep pull structures in the result plus a side array of rendered pull `Value`s. A single owned materialized result representation would simplify pull result access and cleanup.
 
 ## Kvist / Compiler / Package Work
 
-- `kvist` Optimize ordinary `for` over `arr.range`.
-  Vev has worked around hot cases with `while`, but the language should probably lower ordinary range loops to counted loops when the source is syntactically `arr.range`.
+- `kvist-done` Optimize ordinary `for` over eager bounded `arr` producers.
+  Kvist now lowers ordinary direct `for` sources over `arr.range`, `arr.repeat`, `arr.repeatedly`, `arr.iterate`, `arr.cycle`, and `arr.take-nth` to direct loops without allocating helper arrays. Vev's existing `while` workarounds can stay where they are clearer, but new ordinary loops no longer pay the eager-array cost for these source forms.
 
-- `kvist` Comparator/key sorting with captures.
-  Vev still needs custom datom and `Value` sorting because `arr.sort-by!` cannot close over comparator context.
+- `kvist-done` Comparator/key sorting with captures.
+  Kvist now supports captured inline `fn` key functions for `arr.sort-by` and `arr.sort-by!`, using explicit capture-aware sort helpers. Vev may still keep custom datom and `Value` sorting where it needs non-key comparator semantics, but captured key sorting no longer blocks ordinary package use.
 
 - `kvist` ABI metadata/header generation.
   `include/vev.h`, Python signatures, Java/JNA bindings, and Rust declarations mirror the Kvist ABI manually. A sidecar generator from exported declarations would reduce drift.
@@ -163,8 +173,8 @@ Status labels:
 - `kvist` Shared macro/runtime parser descriptions.
   Query, pull, and tx syntax must exist both as Kvist literal macros and runtime EDN text parsing. A shared parser description or codegen story would reduce parity drift.
 
-- `kvist` Record update syntax.
-  Pull spec variants and similar record-copy-with-one-field-changed code are verbose.
+- `kvist-done` Record update syntax.
+  Kvist already has `assoc` and `update` for shallow struct copy-with-field-changed code, including threaded forms such as `(-> spec (assoc .children children))`. Pull spec variants and similar record updates can use those helpers instead of hand-copying records.
 
 - `kvist` Ownership-transfer annotations or inference for consuming helper functions.
   An ordinary helper like `value-vector-owned(items: [dynamic]Value) -> Value` is the shape Vev wants, but today it triggers owned-local warnings at call sites. Direct `Value` literals work because the compiler can see the ownership move.
@@ -172,8 +182,8 @@ Status labels:
 - `kvist` Static lookup tables shared between macro and runtime code.
   Predicate/function/aggregate operator tables exist as macro allow-lists and runtime string dispatch.
 
-- `kvist` Macro string/number helpers for source parsing.
-  Macro parsing still has places that would benefit from robust `parse-int`, digit predicates, and similar helpers.
+- `kvist-done` Macro string/number helpers for source parsing.
+  Kvist macros now have `parse-int` / `str.parse-int` and `digit?` / `str.digit?` helpers for source-string parsing. `parse-int` returns an integer on success and `nil` on failure, preserving `0` as a truthy parsed value in macro conditionals.
 
 - `kvist` EDN child traversal via `defiter` may need better ergonomics.
   A Vev-local iterator for `EDN-Doc` children would be useful, but whether this is clean today depends on iterator ergonomics over linked child lists.
@@ -184,14 +194,14 @@ Status labels:
 - `kvist` Standard Option/Maybe type.
   Vev uses value-plus-`has-*` fields and raw sentinel values in schema attrs, index args, input binding parsing, and absent `Value` results. A standard option type would make those shapes explicit.
 
-- `kvist` Array fill/repeat helpers.
-  Dense indexes and benchmark/sample setup still need manual loops to initialize arrays with repeated values. `arr.repeat`, `arr.fill!`, or similar helpers would remove small but recurring boilerplate.
+- `kvist-done` Array fill/repeat helpers.
+  `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Dense indexes and benchmark/sample setup can use the package helper instead of manual fill loops where it improves readability.
 
-- `kvist` Pointer-to-set helper signatures.
-  Vev can use local `set[T]` values directly, but helper parameters shaped like `seen: ^set[string]` or `seen: (ptr (set string))` currently fail in this code path with poor source locations. Until that is fixed, ordered query-variable collection keeps a `map[string]bool` index.
+- `kvist` Pointer-to-set helper signatures usable for mutation.
+  Vev can use local `set[string]` values, but helper-heavy membership paths still need an addressable mutable set parameter. The current Vev test pass works with local set mutation only; pointer-shaped set helpers should be rechecked once the installed compiler accepts and lowers them end-to-end.
 
-- `kvist` Better macro-time collection utilities.
-  Literal tx and pull macros still enumerate option orderings and shape cases by hand where runtime EDN parsing can fold over data. Macro-time iteration/folding/splicing helpers would help keep literal and runtime frontends aligned.
+- `kvist-done` Better macro-time collection utilities.
+  Kvist macros now have a macro-time `reduce` helper over source form collections, plus macro-time `+` for numeric accumulators. Literal tx/pull-style macros can fold over option and clause forms instead of enumerating every ordering by hand.
 
 - `kvist` Scoped owned aggregate helpers.
   Benchmarks and ABI execution paths often allocate several related owned arrays/values and then carry long `defer delete` blocks. Language or package support for scoped owned aggregate records would make this pattern less fragile.

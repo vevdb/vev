@@ -144,6 +144,45 @@
 (defn query-copy-with-rules [query: Query, rules: []Rule] -> Query
   (query-with-rules (clone-query-shallow query) rules))
 
+(defn delete-query-shallow [query: Query]
+  (delete query.find)
+  (delete query.with)
+  (delete query.inputs)
+  (delete query.collection-inputs)
+  (delete query.tuple-inputs)
+  (delete query.relation-inputs)
+  (delete query.input-specs)
+  (delete query.clauses)
+  (delete query.predicates)
+  (delete query.function-clauses)
+  (delete query.rules)
+  (delete query.rule-calls)
+  (delete query.get-elses)
+  (delete query.get-somes)
+  (delete query.grounds)
+  (delete query.not-groups)
+  (delete query.or-groups)
+  (delete query.where-steps)
+  (delete query.pulls)
+  (delete query.aggregates))
+
+(defn delete-prepared-query-shallow [prepared: Prepared-Query]
+  (delete-query-shallow prepared.query))
+
+(defn delete-prepared-rules-shallow [prepared: Prepared-Rules]
+  (delete prepared.rules))
+
+(defn delete-prepared-tx-data-shallow [prepared: Prepared-Tx-Data]
+  (delete prepared.tx-data))
+
+(defn delete-tx-report-shallow [report: Tx-Report]
+  (when report.ok
+    (delete-owned-db report.db-before)
+    (delete-owned-db report.db-after))
+  (delete report.tx-data)
+  (delete report.tx-meta)
+  (delete report.tempids))
+
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom (slice datoms 0)))
 
@@ -3463,16 +3502,10 @@
 (defn entity-attr-key [entity: u64, attr: string] -> string
   (fmt.tprintf "%d:%d:%s" entity (count attr) attr))
 
-(defn entity-attr-seen? [seen: (ptr (map string bool)), entity: u64, attr: string] -> bool
-  (let [key (entity-attr-key entity attr)
-        [_ found] (mmap.get seen^ key)]
-    found))
+(defn entity-attr-seen? [seen: set[string], entity: u64, attr: string] -> bool
+  (set.contains? seen (entity-attr-key entity attr)))
 
-(defn mark-entity-attr-seen! [seen: (ptr (map string bool)), entity: u64, attr: string]
-  (let [key (entity-attr-key entity attr)]
-    (mmap.assoc! seen^ key true)))
-
-(defn append-cardinality-one-retractions! [before: DB, seen-ea: (ptr (map string bool)), after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
+(defn append-cardinality-one-retractions! [before: DB, seen-ea: set[string], after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
   (when (not (or (current-db-attr-exists? before op.e op.a)
@@ -3510,7 +3543,7 @@
         expanded-ops (expand-tuple-ops before ops)
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count expanded-ops))
-        seen-ea (make (map string bool))
+        seen-ea (set.empty string)
         tx conn^.next-tx]
     (defer (delete seen-ea))
     (let [[valid error] (validate-ops before (slice expanded-ops 0))]
@@ -3522,7 +3555,7 @@
       (let [apply-op (or (= op.kind .Add)
                          (current-op-value-exists-in-log? (slice after-datoms 0) op))]
         (when apply-op
-          (append-cardinality-one-retractions! before (addr seen-ea) (addr after-datoms) (addr tx-data) op tx)
+          (append-cardinality-one-retractions! before seen-ea (addr after-datoms) (addr tx-data) op tx)
           (let [datom (Datom {e: op.e
                               a: op.a
                               v: op.v
@@ -3531,7 +3564,7 @@
             (arr.push! after-datoms datom)
             (arr.push! tx-data datom)))
         (when (= op.kind .Add)
-          (mark-entity-attr-seen! (addr seen-ea) op.e op.a))))
+          (set.add! seen-ea (entity-attr-key op.e op.a)))))
     (delete expanded-ops)
     (let [after (build-db after-datoms)]
       (set! conn^.db after)
@@ -5336,6 +5369,12 @@
       (return (string-slice-contains? (slice dep.deps 0) target))))
   false)
 
+(defn rule-dependency-index [deps: []Rule-Dependency, name: string] -> [index: int, ok: bool]
+  (for [dep index deps]
+    (when (= dep.name name)
+      (return index true)))
+  (return 0 false))
+
 (defn rule-unique-names [rules: []Rule] -> [dynamic]string
   (let [out (make [dynamic]string)]
     (for [rule rules]
@@ -5385,17 +5424,31 @@
                     (arr.push! visit next)))))))))
     false))
 
+(defn rule-reachable-names-in-deps [deps: []Rule-Dependency, name: string] -> [dynamic]string
+  (let [seen (make [dynamic]string)
+        visit (make [dynamic]string)
+        out (make [dynamic]string)]
+    (defer (delete seen))
+    (defer (delete visit))
+    (arr.push! visit name)
+    (while (> (count visit) 0)
+      (let [last-index (- (count visit) 1)
+            current visit[last-index]]
+        (arr.remove-ordered-at! visit last-index)
+        (when (not (string-slice-contains? (slice seen 0) current))
+          (arr.push! seen current)
+          (let [[dep-index dep-ok] (rule-dependency-index deps current)]
+            (when dep-ok
+              (string-push-unique! (addr out) current)
+              (for [next deps[dep-index].deps]
+                (when (not (string-slice-contains? (slice seen 0) next))
+                  (arr.push! visit next))))))))
+    out))
+
 (defn rule-name-recursive? [rules: []Rule, name: string] -> bool
   (let [deps (rules-dependency-graph rules)]
     (defer (delete-rule-dependency-graph deps))
-    (when (rule-name-dependency-exists? (slice deps 0) name name)
-      (return true))
-    (for [dep deps]
-      (when (and (not (= dep.name name))
-                 (rule-reaches-name? (slice deps 0) name dep.name)
-                 (rule-reaches-name? (slice deps 0) dep.name name))
-        (return true)))
-    false))
+    (rule-name-recursive-in-deps? (slice deps 0) name)))
 
 (defn rule-name-recursive-in-deps? [deps: []Rule-Dependency, name: string] -> bool
   (when (rule-name-dependency-exists? deps name name)
@@ -5410,19 +5463,22 @@
 (defn rule-name-depends-on-recursive? [rules: []Rule, name: string] -> bool
   (let [deps (rules-dependency-graph rules)]
     (defer (delete-rule-dependency-graph deps))
-    (for [dep deps]
-      (when (and (rule-reaches-name? (slice deps 0) name dep.name)
-                 (rule-name-recursive-in-deps? (slice deps 0) dep.name))
-        (return true)))
-    false))
+    (rule-name-depends-on-recursive-in-deps? (slice deps 0) name)))
 
 (defn rule-call-can-use-acyclic-depth? [rules: []Rule, name: string] -> bool
   (not (rule-name-depends-on-recursive? rules name)))
 
 (defn rule-name-depends-on-recursive-in-deps? [deps: []Rule-Dependency, name: string] -> bool
-  (for [dep deps]
-    (when (and (rule-reaches-name? deps name dep.name)
-               (rule-name-recursive-in-deps? deps dep.name))
+  (let [names (rule-reachable-names-in-deps deps name)]
+    (defer (delete names))
+    (for [name names]
+      (when (rule-name-recursive-in-deps? deps name)
+        (return true)))
+    false))
+
+(defn any-rule-name-recursive-in-deps? [deps: []Rule-Dependency, names: []string] -> bool
+  (for [name names]
+    (when (rule-name-recursive-in-deps? deps name)
       (return true)))
   false)
 
@@ -5454,29 +5510,19 @@
   (delete components))
 
 (defn non-recursive-rule-depth [rules: []Rule, name: string] -> int
-  (let [deps (rules-dependency-graph rules)
-        max-depth 1]
+  (let [deps (rules-dependency-graph rules)]
     (defer (delete-rule-dependency-graph deps))
-    (for [dep deps]
-      (when (rule-reaches-name? (slice deps 0) name dep.name)
-        (set! max-depth (+ max-depth 1))))
-    max-depth))
+    (non-recursive-rule-depth-in-deps (slice deps 0) name)))
 
 (defn non-recursive-rule-depth-in-deps [deps: []Rule-Dependency, name: string] -> int
-  (let [max-depth 1]
-    (for [dep deps]
-      (when (rule-reaches-name? deps name dep.name)
-        (set! max-depth (+ max-depth 1))))
-    max-depth))
+  (let [names (rule-reachable-names-in-deps deps name)]
+    (defer (delete names))
+    (+ (count names) 1)))
 
 (defn rules-reachable-from-name [rules: []Rule, name: string] -> [dynamic]string
-  (let [deps (rules-dependency-graph rules)
-        out (make [dynamic]string)]
+  (let [deps (rules-dependency-graph rules)]
     (defer (delete-rule-dependency-graph deps))
-    (for [dep deps]
-      (when (rule-reaches-name? (slice deps 0) name dep.name)
-        (string-push-unique! (addr out) dep.name)))
-    out))
+    (rule-reachable-names-in-deps (slice deps 0) name)))
 
 (defn rules-filter-by-names [rules: []Rule, names: []string] -> [dynamic]Rule
   (let [out (make [dynamic]Rule)]
@@ -5493,15 +5539,12 @@
 
 (defn rule-call-plan [rules: []Rule, name: string] -> Rule-Call-Plan
   (let [deps (rules-dependency-graph rules)
-        names (make [dynamic]string)]
+        names (rule-reachable-names-in-deps (slice deps 0) name)]
     (defer (delete-rule-dependency-graph deps))
     (defer (delete names))
-    (for [dep deps]
-      (when (rule-reaches-name? (slice deps 0) name dep.name)
-        (string-push-unique! (addr names) dep.name)))
     (let [call-rules (rules-filter-by-names rules (slice names 0))
-          recursive (rule-name-depends-on-recursive-in-deps? (slice deps 0) name)
-          acyclic-depth (if recursive 0 (non-recursive-rule-depth-in-deps (slice deps 0) name))
+          recursive (any-rule-name-recursive-in-deps? (slice deps 0) (slice names 0))
+          acyclic-depth (if recursive 0 (+ (count names) 1))
           [linear-plan linear-ok] (linear-transitive-rule-plan (slice call-rules 0) name)
           linear-filters (make [dynamic]Clause)
           [alternating-plan alternating-ok] (alternating-transitive-rule-plan (slice call-rules 0) name)]
@@ -8999,13 +9042,37 @@
       (return (not (schema-component? db forward)))))
   (schema-cardinality-many? db pulled.a))
 
-(defn pull-render-append-key-value! [items: ^[dynamic]Value, key: string, value: Value]
-  (arr.push! items^ (value-keyword key))
-  (arr.push! items^ value))
+(defstruct Value-Map-Builder {
+  items: [dynamic]Value
+})
 
-(defn pull-render-append-attr-value! [items: ^[dynamic]Value, pulled: Pull-Attr, value: Value]
-  (arr.push! items^ (pull-render-attr-key pulled))
-  (arr.push! items^ value))
+(defn value-map-builder [capacity: int] -> Value-Map-Builder
+  (Value-Map-Builder {items: (make [dynamic]Value 0 capacity)}))
+
+(defn delete-value-map-builder [builder: Value-Map-Builder]
+  (delete builder.items))
+
+(defn value-map-builder-key-index [builder: Value-Map-Builder, key: Value] -> [index: int, ok: bool]
+  (let [i 0]
+    (while (< i (count builder.items))
+      (when (value-equal? builder.items[i] key)
+        (return i true))
+      (set! i (+ i 2))))
+  (return 0 false))
+
+(defn value-map-builder-has-key? [builder: Value-Map-Builder, key: Value] -> bool
+  (let [[_ ok] (value-map-builder-key-index builder key)]
+    ok))
+
+(defn value-map-builder-put-new! [builder: ^Value-Map-Builder, key: Value, value: Value] -> bool
+  (when (value-map-builder-has-key? builder^ key)
+    (return false))
+  (arr.push! builder^.items key)
+  (arr.push! builder^.items value)
+  true)
+
+(defn value-map-builder-value [builder: Value-Map-Builder] -> Value
+  (value-map (slice builder.items 0)))
 
 (defn pull-render-group-values [db: DB, attrs: []Pull-Attr, attr-name: string] -> [dynamic]Value
   (let [values (make [dynamic]Value)]
@@ -9015,29 +9082,21 @@
     values))
 
 (defn pull-render-attrs-map [db: DB, attrs: []Pull-Attr] -> Value
-  (let [items (make [dynamic]Value)
+  (let [builder (value-map-builder (* (count attrs) 2))
         i 0]
+    (defer (delete-value-map-builder builder))
     (while (< i (count attrs))
       (let [pulled attrs[i]
-            seen false
-            key (pull-render-attr-key pulled)
-            j 0]
-        (while (< j (count items))
-          (when (and (= (% j 2) 0)
-                     (value-equal? items[j] key))
-            (set! seen true))
-          (set! j (+ j 1)))
-        (when (not seen)
+            key (pull-render-attr-key pulled)]
+        (when (not (value-map-builder-has-key? builder key))
           (let [values (pull-render-group-values db attrs pulled.a)
                 rendered (if (pull-render-attr-is-many? db pulled (count values))
                            (value-vector (slice values 0))
                            values[0])]
-            (pull-render-append-attr-value! (addr items) pulled rendered)
+            (discard (value-map-builder-put-new! (addr builder) key rendered))
             (delete values))))
       (set! i (+ i 1)))
-    (let [result (value-map (slice items 0))]
-      (delete items)
-      result)))
+    (value-map-builder-value builder)))
 
 (defn pull-result-value [db: DB, result: Pull-Result] -> Value
   (if (= (count result.attrs) 0)
@@ -9485,19 +9544,7 @@
   (if (and spec.has-recursion
            (= spec.a attr)
            (not (= spec.recursion-depth 0)))
-    (Pull-Spec {a: spec.a
-                pattern: spec.pattern
-                limit: spec.limit
-                has-limit: spec.has-limit
-                has-default: spec.has-default
-                default-value: spec.default-value
-                has-alias: spec.has-alias
-                alias: spec.alias
-                alias-kind: spec.alias-kind
-                has-xform: spec.has-xform
-                xform: spec.xform
-                has-recursion: true
-                recursion-depth: (pull-next-recursion-depth spec.recursion-depth)})
+    (pull-spec-with-recursion spec (pull-next-recursion-depth spec.recursion-depth))
     spec))
 
 (defn pull-recursion-pattern [root: []Pull-Spec, attr: string] -> [dynamic]Pull-Spec
@@ -9983,7 +10030,7 @@
     .Keyword
     .String))
 
-(defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
+(defn pull-spec-base [attr: string, pattern: []Pull-Spec] -> Pull-Spec
   (Pull-Spec {a: attr
               limit: 0
               has-limit: false
@@ -9995,6 +10042,48 @@
               has-xform: false
               xform: ""
               pattern: pattern}))
+
+(defn pull-spec [attr: string, pattern: []Pull-Spec] -> Pull-Spec
+  (pull-spec-base attr pattern))
+
+(defn pull-spec-with-pattern [base: Pull-Spec, pattern: []Pull-Spec] -> Pull-Spec
+  (let [out base]
+    (set! out.pattern pattern)
+    out))
+
+(defn pull-spec-with-default [base: Pull-Spec, default-value: Value] -> Pull-Spec
+  (let [out base]
+    (set! out.has-default true)
+    (set! out.default-value default-value)
+    out))
+
+(defn pull-spec-with-alias-kind [base: Pull-Spec, alias: string, kind: Key-Kind] -> Pull-Spec
+  (let [out base]
+    (set! out.has-alias true)
+    (set! out.alias alias)
+    (set! out.alias-kind kind)
+    out))
+
+(defn pull-spec-with-alias [base: Pull-Spec, alias: string] -> Pull-Spec
+  (pull-spec-with-alias-kind base alias (pull-alias-key-kind alias)))
+
+(defn pull-spec-with-limit [base: Pull-Spec, limit: int] -> Pull-Spec
+  (let [out base]
+    (set! out.has-limit true)
+    (set! out.limit limit)
+    out))
+
+(defn pull-spec-with-xform [base: Pull-Spec, xform: string] -> Pull-Spec
+  (let [out base]
+    (set! out.has-xform true)
+    (set! out.xform xform)
+    out))
+
+(defn pull-spec-with-recursion [base: Pull-Spec, depth: int] -> Pull-Spec
+  (let [out base]
+    (set! out.has-recursion true)
+    (set! out.recursion-depth depth)
+    out))
 
 (defn pull-spec-kw [attr: keyword, pattern: []Pull-Spec] -> Pull-Spec
   (pull-spec (keyword-text attr) pattern))
@@ -10003,119 +10092,37 @@
   (Query-Input {kind: .PullPattern pattern: pattern}))
 
 (defn pull-spec-recursion [attr: string, depth: int] -> Pull-Spec
-  (Pull-Spec {a: attr
-              limit: 0
-              has-limit: false
-              has-default: false
-              default-value: (Value {})
-              has-alias: false
-              alias: ""
-              alias-kind: .Keyword
-              has-xform: false
-              xform: ""
-              pattern: ([]Pull-Spec [])
-              has-recursion: true
-              recursion-depth: depth}))
+  (pull-spec-with-recursion (flat-pull-spec attr) depth))
 
 (defn pull-spec-recursion-kw [attr: keyword, depth: int] -> Pull-Spec
   (pull-spec-recursion (keyword-text attr) depth))
 
 (defn pull-spec-limit [attr: string, pattern: []Pull-Spec, limit: int] -> Pull-Spec
-  (Pull-Spec {a: attr
-              limit: limit
-              has-limit: true
-              has-default: false
-              default-value: (Value {})
-              has-alias: false
-              alias: ""
-              alias-kind: .Keyword
-              has-xform: false
-              xform: ""
-              pattern: pattern}))
+  (pull-spec-with-limit (pull-spec attr pattern) limit))
 
 (defn pull-spec-limit-kw [attr: keyword, pattern: []Pull-Spec, limit: int] -> Pull-Spec
   (pull-spec-limit (keyword-text attr) pattern limit))
 
 (defn pull-spec-limit-as [attr: string, pattern: []Pull-Spec, limit: int, alias: string] -> Pull-Spec
-  (Pull-Spec {a: attr
-              limit: limit
-              has-limit: true
-              has-default: false
-              default-value: (Value {})
-              has-alias: true
-              alias: alias
-              alias-kind: (pull-alias-key-kind alias)
-              has-xform: false
-              xform: ""
-              pattern: pattern}))
+  (pull-spec-with-alias (pull-spec-limit attr pattern limit) alias))
 
 (defn pull-spec-default [attr: string, default-value: Value] -> Pull-Spec
-  (Pull-Spec {a: attr
-              limit: 0
-              has-limit: false
-              has-default: true
-              default-value: default-value
-              has-alias: false
-              alias: ""
-              alias-kind: .Keyword
-              has-xform: false
-              xform: ""
-              pattern: ([]Pull-Spec [])}))
+  (pull-spec-with-default (flat-pull-spec attr) default-value))
 
 (defn pull-spec-default-kw [attr: keyword, default-value: Value] -> Pull-Spec
   (pull-spec-default (keyword-text attr) default-value))
 
 (defn pull-spec-as [attr: string, alias: string] -> Pull-Spec
-  (Pull-Spec {a: attr
-              limit: 0
-              has-limit: false
-              has-default: false
-              default-value: (Value {})
-              has-alias: true
-              alias: alias
-              alias-kind: (pull-alias-key-kind alias)
-              has-xform: false
-              xform: ""
-              pattern: ([]Pull-Spec [])}))
+  (pull-spec-with-alias (flat-pull-spec attr) alias))
 
 (defn pull-spec-default-as [attr: string, default-value: Value, alias: string] -> Pull-Spec
-  (Pull-Spec {a: attr
-              limit: 0
-              has-limit: false
-              has-default: true
-              default-value: default-value
-              has-alias: true
-              alias: alias
-              alias-kind: (pull-alias-key-kind alias)
-              has-xform: false
-              xform: ""
-              pattern: ([]Pull-Spec [])}))
+  (pull-spec-with-alias (pull-spec-default attr default-value) alias))
 
 (defn pull-spec-xform [attr: string, pattern: []Pull-Spec, xform: string] -> Pull-Spec
-  (Pull-Spec {a: attr
-              limit: 0
-              has-limit: false
-              has-default: false
-              default-value: (Value {})
-              has-alias: false
-              alias: ""
-              alias-kind: .Keyword
-              has-xform: true
-              xform: xform
-              pattern: pattern}))
+  (pull-spec-with-xform (pull-spec attr pattern) xform))
 
 (defn pull-spec-default-xform [attr: string, default-value: Value, xform: string] -> Pull-Spec
-  (Pull-Spec {a: attr
-              limit: 0
-              has-limit: false
-              has-default: true
-              default-value: default-value
-              has-alias: false
-              alias: ""
-              alias-kind: .Keyword
-              has-xform: true
-              xform: xform
-              pattern: ([]Pull-Spec [])}))
+  (pull-spec-with-xform (pull-spec-default attr default-value) xform))
 
 (defn pull-pattern [db: DB, entity: u64, attrs: []string] -> Pull-Result
   (let [pattern (make [dynamic]Pull-Spec 0 (count attrs))]
