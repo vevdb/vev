@@ -109,7 +109,7 @@ Status labels:
   Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
 
 - `todo` Replace remaining `map[T]bool` set emulation where semantics are pure membership.
-  Binding de-dupe keys and ordered query-variable indexes still use pointer-to-map helpers because mutating set parameters by value lowers to non-addressable Odin map assignments. Revisit after the pointer-to-set helper pattern compiles and mutates correctly in Vev.
+  Binding de-dupe keys and ordered query-variable indexes still use pointer-to-map helpers in this Vev worktree. The active compiler still rejects the attempted pointer-to-set annotations here, so this should be retried when the installed Kvist binary accepts the full helper signature shape.
 
 - `todo` Consider a map-backed `Binding` index.
   Binding lookup is order-preserving but scan-heavy. A binding could keep ordered items plus `map[string]int`, or relation join code could build a temporary lookup map for join keys.
@@ -197,8 +197,8 @@ Status labels:
 - `kvist-done` Array fill/repeat helpers.
   `arr.repeat` already covers owned repeated arrays, and Kvist now has `arr.fill!` for in-place slice/dynamic-array initialization. Dense indexes and benchmark/sample setup can use the package helper instead of manual fill loops where it improves readability.
 
-- `kvist` Pointer-to-set helper signatures usable for mutation.
-  Vev can use local `set[string]` values, but helper-heavy membership paths still need an addressable mutable set parameter. The current Vev test pass works with local set mutation only; pointer-shaped set helpers should be rechecked once the installed compiler accepts and lowers them end-to-end.
+- `kvist-done` Pointer-to-set helper signatures usable for mutation.
+  Kvist now lowers `core.get`, `core.delete!`, `map.dissoc!`, and `contains?` correctly for pointer-to-map targets, which also covers `^set[T]` after set lowering. Helpers can take `seen: ^set[string]` and use direct package mutation macros such as `set.add!`, `set.remove!`, `map.assoc!`, and `map.dissoc!` without manually spelling `(deref seen)` for every access.
 
 - `kvist-done` Better macro-time collection utilities.
   Kvist macros now have a macro-time `reduce` helper over source form collections, plus macro-time `+` for numeric accumulators. Literal tx/pull-style macros can fold over option and clause forms instead of enumerating every ordering by hand.
