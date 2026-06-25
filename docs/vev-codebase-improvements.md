@@ -60,13 +60,16 @@ Status labels:
 - `done` Make tuple schema transaction helpers slice-based.
   `tuple-attrs-schema-tx-from` now accepts an arbitrary `[]string` of component attrs, and the existing two-attr `tuple-attrs-schema-tx` delegates to it.
 
+- `done` Add public shallow lifecycle cleanup for prepared/query/report containers.
+  `delete-query-shallow`, `delete-prepared-query-shallow`, `delete-prepared-rules-shallow`, `delete-prepared-tx-data-shallow`, and `delete-tx-report-shallow` are now canonical Vev helpers. The C ABI prepared-query free path delegates to the package helper instead of carrying a duplicate local copy.
+
+- `done` Tighten temporary text-query cleanup.
+  Direct `q-text` variants that parse a short-lived query now defer `delete-query-shallow` after execution, so temporary query container arrays are not leaked on the main EDN string API path.
+
 ## Vev TODO
 
-- `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
-  Native Kvist callers still need canonical cleanup for `Prepared-Query`, `Prepared-Rules`, `Prepared-Tx-Data`, `Query`, `Rule`, and `Tx-Report`. This needs a careful shallow/deep ownership split for rules, not/or groups, pull specs, tx reports, and prepared containers.
-
-- `todo` Tighten prepared/query lifecycle cleanup in text APIs.
-  Text query execution parses owned `Query` containers, then delegates. The ownership split between shallow and deep cleanup should be explicit.
+- `todo` Finish parser-owned AST/value cleanup.
+  The current EDN parser still stores many AST strings as borrowed slices from source text, while container values can own nested arrays. The next cleanup step is an explicit parser ownership model: either clone AST strings and provide deep destructors for `Query`, `Rule`, pull specs, tx data, and parsed inputs, or keep borrowed text handles deliberately and only deep-delete value containers known not to escape into results.
 
 - `todo` Broaden Clojure/Java pull lookup-ref API shapes beyond string values.
   Statement lookup-ref collection binding now has typed ABI coverage, but direct pull lookup-ref helpers are still string-focused in host wrappers.
