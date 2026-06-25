@@ -179,8 +179,8 @@ Status labels:
 - `not-now` Captured C callback ergonomics.
   ABI transaction callbacks currently need a fixed trampoline table, while tx listeners already store callback/user pairs directly in raw Odin. Removing the tx-function slot limit is a Vev ABI/runtime representation change unless Kvist gets first-class host callback wrapping. Leave this as-is unless the fixed slot count becomes a concrete product limit.
 
-- `kvist` Shared macro/runtime parser descriptions.
-  Query, pull, and tx syntax must exist both as Kvist literal macros and runtime EDN text parsing. A shared parser description or codegen story would reduce parity drift.
+- `design` Shared macro/runtime parser descriptions.
+  Query, pull, and tx syntax must exist both as Kvist literal macros over source forms and runtime EDN text parsing over `EDN-Doc` nodes. A shared parser description or codegen story could reduce parity drift, but it would be a new language/tooling design rather than a small compiler/package cleanup. Keep parity pressure in tests for now; discuss before adding any Kvist feature here.
 
 - `kvist-done` Record update syntax.
   Kvist already has `assoc` and `update` for shallow struct copy-with-field-changed code, including threaded forms such as `(-> spec (assoc .children children))`. Pull spec variants and similar record updates can use those helpers instead of hand-copying records.
