@@ -54,6 +54,9 @@ Status labels:
 - `done` Add direct entity read helpers.
   `entity-first-value`, `entity-first-value-kw`, `entity-has-value?`, `entity-has-value-kw?`, `entity-first-ref`, and `entity-first-ref-kw` provide allocation-free first/existence reads. `entity-get`, `entity-contains?`, and `entity-ref` now delegate to those helpers instead of building full arrays.
 
+- `done` Validate negative integer query entity terms.
+  EDN text query parsing now rejects negative integer literals in entity-term positions before they can be cast to `u64`, while preserving negative integers in value positions.
+
 ## Vev TODO
 
 - `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
@@ -121,9 +124,6 @@ Status labels:
 
 - `todo` Make index order a typed helper.
   Seek/rseek/range paths repeatedly branch on string index names to select `eavt`, `aevt`, `avet`, or `vaet`. A typed index-order value plus `db-index-slice` helper would remove string dispatch from core scan code.
-
-- `todo` Validate negative integer query terms.
-  EDN query integer terms can be cast into `u64` entity ids. Query parsing should reject negative entity terms or preserve signedness until validation, matching the more explicit transaction parser behavior.
 
 - `todo` Fix partial owned cleanup on parse failures.
   EDN value conversion, serialized DB parsing, and datom parsing delete container arrays shallowly on some error paths. Previously parsed nested `Value` containers and datoms need owned cleanup helpers on failure.
