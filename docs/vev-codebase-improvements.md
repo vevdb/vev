@@ -36,6 +36,9 @@ Status labels:
 - `done` Define duplicate transaction function registration semantics.
   Native transaction execution now rejects duplicate tx-fn idents with a clear failed report, and the C ABI registration API rejects duplicates before allocating a callback slot.
 
+- `done` Remove ABI transaction listener tombstones.
+  ABI `unlisten` now deletes the owned listener name and removes the listener entry, matching pure Kvist listener behavior.
+
 ## Vev TODO
 
 - `todo` Add public deep cleanup/destructor APIs for prepared/query/transaction-owned values.
@@ -43,9 +46,6 @@ Status labels:
 
 - `todo` Tighten prepared/query lifecycle cleanup in text APIs.
   Text query execution parses owned `Query` containers, then delegates. The ownership split between shallow and deep cleanup should be explicit.
-
-- `todo` Replace ABI transaction listener tombstones with removal or documented slot reuse.
-  Pure Kvist listeners remove entries. ABI listeners nil callbacks but keep owned names until connection close.
 
 - `todo` Add typed empty sequence and lookup-ref sequence support to the ABI.
   Python/Clojure wrappers expose a real limitation: empty typed collections cannot be represented, and lookup-ref collection binding is string-only.
