@@ -74,52 +74,61 @@
       (emit-index-arg (first forms))
       (emit-index-args (rest forms)))))
 
-(defmacro- emit-tx-data-call [op e a v]
-  (let [is-retract (= (source op) ":db/retract")]
-    (if (lookup-ref? e)
+(defmacro- emit-tx-entity-call [e lookup-ref-call tempid-call ident-call entity-call & args]
+  (if (lookup-ref? e)
+    (quasiquote
+      ((unquote lookup-ref-call)
+        (unquote (emit-attr (nth e 0)))
+        (unquote (emit-literal-value (nth e 1)))
+        (splice args)))
+    (if (string? e)
       (quasiquote
-        ((unquote (if is-retract (quasiquote retract-lookup-ref) (quasiquote add-lookup-ref)))
-          (unquote (emit-attr (nth e 0)))
-          (unquote (emit-literal-value (nth e 1)))
-          (unquote (emit-attr a))
-          (unquote (emit-literal-value v))))
-      (if (string? e)
-        (if (lookup-ref? v)
-          (quasiquote
-            (add-tempid-value-lookup-ref
-              (unquote e)
-              (unquote (emit-attr a))
-              (unquote (emit-attr (nth v 0)))
-              (unquote (emit-literal-value (nth v 1)))))
-          (quasiquote
-            ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
-              (unquote e)
-              (unquote (emit-attr a))
-              (unquote (emit-literal-value v)))))
-	    (if (keyword? e)
+        ((unquote tempid-call)
+          (unquote e)
+          (splice args)))
+      (if (keyword? e)
         (if (current-tx-form? e)
           (quasiquote
-            ((unquote (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid)))
+            ((unquote tempid-call)
               (unquote (source e))
-              (unquote (emit-attr a))
-              (unquote (emit-literal-value v))))
-	        (quasiquote
-	          ((unquote (if is-retract (quasiquote retract-ident) (quasiquote add-ident)))
-	            (unquote (source e))
-	            (unquote (emit-attr a))
-	            (unquote (emit-literal-value v)))))
-	          (if (lookup-ref? v)
-	            (quasiquote
-	              ((unquote (if is-retract (quasiquote retract-value-lookup-ref) (quasiquote add-value-lookup-ref)))
-	                (unquote e)
-	                (unquote (emit-attr a))
-	                (unquote (emit-attr (nth v 0)))
-	                (unquote (emit-literal-value (nth v 1)))))
-	            (quasiquote
-	              ((unquote (if is-retract (quasiquote retract) (quasiquote add)))
-	                (unquote e)
-	                (unquote (emit-attr a))
-	                (unquote (emit-literal-value v))))))))))
+              (splice args)))
+          (quasiquote
+            ((unquote ident-call)
+              (unquote (source e))
+              (splice args))))
+        (quasiquote
+          ((unquote entity-call)
+            (unquote e)
+            (splice args)))))))
+
+(defmacro- emit-tx-data-call [op e a v]
+  (let [is-retract (= (source op) ":db/retract")]
+    (cond
+      (and (string? e) (lookup-ref? v))
+        (quasiquote
+          (add-tempid-value-lookup-ref
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-attr (nth v 0)))
+            (unquote (emit-literal-value (nth v 1)))))
+      (and (not (lookup-ref? e))
+           (not (keyword? e))
+           (not (string? e))
+           (lookup-ref? v))
+        (quasiquote
+          ((unquote (if is-retract (quasiquote retract-value-lookup-ref) (quasiquote add-value-lookup-ref)))
+            (unquote e)
+            (unquote (emit-attr a))
+            (unquote (emit-attr (nth v 0)))
+            (unquote (emit-literal-value (nth v 1)))))
+      :else
+        (emit-tx-entity-call e
+          (if is-retract (quasiquote retract-lookup-ref) (quasiquote add-lookup-ref))
+          (if is-retract (quasiquote retract-tempid) (quasiquote add-tempid))
+          (if is-retract (quasiquote retract-ident) (quasiquote add-ident))
+          (if is-retract (quasiquote retract) (quasiquote add))
+          (emit-attr a)
+          (emit-literal-value v)))))
 
 (defmacro- emit-cas-call [e a expected v]
   (if (lookup-ref? e)
@@ -429,38 +438,19 @@
       (emit-tx-map-vector-attr group e a (rest values)))))
 
 (defmacro- emit-retract-entity-call [e]
-  (if (lookup-ref? e)
-    (quasiquote
-      (retract-entity-lookup-ref
-        (unquote (emit-attr (nth e 0)))
-        (unquote (emit-literal-value (nth e 1)))))
-    (if (string? e)
-      (quasiquote (retract-entity-tempid (unquote e)))
-      (if (keyword? e)
-        (quasiquote (retract-entity-ident (unquote (source e))))
-        (quasiquote (retract-entity (unquote e)))))))
+  (emit-tx-entity-call e
+    (quasiquote retract-entity-lookup-ref)
+    (quasiquote retract-entity-tempid)
+    (quasiquote retract-entity-ident)
+    (quasiquote retract-entity)))
 
 (defmacro- emit-retract-attr-call [e a]
-  (if (lookup-ref? e)
-    (quasiquote
-      (retract-attr-lookup-ref
-        (unquote (emit-attr (nth e 0)))
-        (unquote (emit-literal-value (nth e 1)))
-        (unquote (emit-attr a))))
-    (if (string? e)
-      (quasiquote
-        (retract-attr-tempid
-          (unquote e)
-          (unquote (emit-attr a))))
-      (if (keyword? e)
-        (quasiquote
-          (retract-attr-ident
-            (unquote (source e))
-            (unquote (emit-attr a))))
-        (quasiquote
-          (retract-attr
-            (unquote e)
-            (unquote (emit-attr a))))))))
+  (emit-tx-entity-call e
+    (quasiquote retract-attr-lookup-ref)
+    (quasiquote retract-attr-tempid)
+    (quasiquote retract-attr-ident)
+    (quasiquote retract-attr)
+    (emit-attr a)))
 
 (defmacro- emit-tx-map-attrs [group e items]
   (if (= (count items) 0)
