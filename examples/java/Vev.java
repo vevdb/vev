@@ -78,6 +78,9 @@ public final class Vev {
     private final MethodHandle entityStringIntTriplesString;
     private final MethodHandle pullEdn;
     private final MethodHandle pullLookupRefStringEdn;
+    private final MethodHandle pullLookupRefKeywordEdn;
+    private final MethodHandle pullLookupRefEntityEdn;
+    private final MethodHandle pullLookupRefIntEdn;
     private final MethodHandle pullManyEdn;
     private final MethodHandle valueHandleFree;
     private final MethodHandle valueHandleValue;
@@ -174,6 +177,9 @@ public final class Vev {
         this.entityStringIntTriplesString = downcall("vev_entity_string_int_triples_string", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.pullEdn = downcall("vev_pull_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullLookupRefKeywordEdn = downcall("vev_pull_lookup_ref_keyword_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullLookupRefEntityEdn = downcall("vev_pull_lookup_ref_entity_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.pullLookupRefIntEdn = downcall("vev_pull_lookup_ref_int_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.valueHandleFree = downcall("vev_value_handle_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.valueHandleValue = downcall("vev_value_handle_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -614,6 +620,42 @@ public final class Vev {
                      local.allocateUtf8String(pattern),
                      local.allocateUtf8String(attr),
                      local.allocateUtf8String(value)))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullLookupRefKeyword(String pattern, String attr, String value) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefKeywordEdn.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(pattern),
+                     local.allocateUtf8String(attr),
+                     local.allocateUtf8String(value)))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullLookupRefEntity(String pattern, String attr, long value) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefEntityEdn.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(pattern),
+                     local.allocateUtf8String(attr),
+                     value))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullLookupRefInt(String pattern, String attr, long value) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefIntEdn.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(pattern),
+                     local.allocateUtf8String(attr),
+                     value))) {
                 return pulled.value();
             }
         }

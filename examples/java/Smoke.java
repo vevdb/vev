@@ -36,6 +36,17 @@ public final class Smoke {
                 """);
 
             conn.transact("""
+                [[:db/add 91 :db/ident :user/status]
+                 [:db/add 91 :db/unique :db.unique/identity]
+                 [:db/add 92 :db/ident :user/code]
+                 [:db/add 92 :db/unique :db.unique/identity]
+                 [:db/add 1 :user/status :active]
+                 [:db/add 2 :user/status :inactive]
+                 [:db/add 1 :user/code 1001]
+                 [:db/add 2 :user/code 1002]]
+                """);
+
+            conn.transact("""
                 [[:db/add 100 :db/ident :user/friend]
                  [:db/add 100 :db/valueType :db.type/ref]
                  [:db/add 1 :user/friend 2]]
@@ -113,6 +124,19 @@ public final class Smoke {
                     System.out.println("lookup pull: " + lookupPull);
                     if (!"Ada".equals(lookupPull.get(":user/name"))) {
                         throw new IllegalStateException("unexpected lookup-ref pull");
+                    }
+
+                    Vev.MapValue keywordLookupPull = (Vev.MapValue) pullDb.pullLookupRefKeyword(
+                        "[:user/name]",
+                        ":user/status",
+                        ":active");
+                    Vev.MapValue intLookupPull = (Vev.MapValue) pullDb.pullLookupRefInt(
+                        "[:user/name]",
+                        ":user/code",
+                        1001);
+                    if (!"Ada".equals(keywordLookupPull.get(":user/name"))
+                        || !"Ada".equals(intLookupPull.get(":user/name"))) {
+                        throw new IllegalStateException("unexpected typed lookup-ref pull");
                     }
 
                     @SuppressWarnings("unchecked")

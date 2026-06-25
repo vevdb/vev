@@ -228,6 +228,21 @@ vev_value_handle_t vev_pull_lookup_ref_string_edn(
     const char *pattern_text,
     const char *attr,
     const char *value);
+vev_value_handle_t vev_pull_lookup_ref_keyword_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_lookup_ref_entity_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    unsigned long long value);
+vev_value_handle_t vev_pull_lookup_ref_int_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    long long value);
 vev_value_handle_t vev_pull_many_edn(
     vev_db_t db,
     const char *pattern_text,

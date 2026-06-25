@@ -66,13 +66,13 @@ Status labels:
 - `done` Tighten temporary text-query cleanup.
   Direct `q-text` variants that parse a short-lived query now defer `delete-query-shallow` after execution, so temporary query container arrays are not leaked on the main EDN string API path.
 
+- `done` Broaden Clojure/Java pull lookup-ref API shapes beyond string values.
+  Direct pull lookup-ref APIs now support string, keyword, entity, and int values through the C ABI and Java wrapper. The Clojure wrapper dispatches Datomic-style lookup refs such as `[:user/email "ada@example.com"]`, `[:user/status :active]`, and `[:user/code 1001]`.
+
 ## Vev TODO
 
 - `todo` Finish parser-owned AST/value cleanup.
   The current EDN parser still stores many AST strings as borrowed slices from source text, while container values can own nested arrays. The next cleanup step is an explicit parser ownership model: either clone AST strings and provide deep destructors for `Query`, `Rule`, pull specs, tx data, and parsed inputs, or keep borrowed text handles deliberately and only deep-delete value containers known not to escape into results.
-
-- `todo` Broaden Clojure/Java pull lookup-ref API shapes beyond string values.
-  Statement lookup-ref collection binding now has typed ABI coverage, but direct pull lookup-ref helpers are still string-focused in host wrappers.
 
 - `todo` Make host result decoding less duplicated.
   Java and Clojure duplicate scalar conversion and optimized result projection cascades. Prefer `vev_result_value` plus value accessors as the primary path, then generate or de-emphasize narrow compatibility accessors.

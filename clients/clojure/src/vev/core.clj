@@ -104,6 +104,11 @@
   [^DB db]
   (->Conn (:engine db) (.connFromDb (:engine db) (:native db))))
 
+(defn entity
+  "Create an explicit entity value for typed native APIs."
+  [id]
+  (Vev$Entity. (long id)))
+
 (defn transact-text!
   "Transact Clojure data or EDN text and return the raw EDN report text."
   [^Conn conn tx]
@@ -415,7 +420,7 @@
     (throw (ex-info "expected Vev connection or DB" {:source source}))))
 
 (defn pull
-  "Pull one entity or string lookup-ref from a DB or connection."
+  "Pull one entity or lookup-ref from a DB or connection."
   [source pattern eid]
   (with-db-source
     source
@@ -423,12 +428,27 @@
       (clj-value
         (if (and (vector? eid)
                  (= 2 (count eid))
-                 (keyword? (first eid))
-                 (string? (second eid)))
-          (.pullLookupRefString (:native db)
-                                (edn-text pattern)
-                                (edn-text (first eid))
-                                (second eid))
+                 (keyword? (first eid)))
+          (let [pattern-text (edn-text pattern)
+                attr-text (edn-text (first eid))
+                value (second eid)]
+            (cond
+              (string? value)
+              (.pullLookupRefString (:native db) pattern-text attr-text value)
+
+              (keyword? value)
+              (.pullLookupRefKeyword (:native db) pattern-text attr-text (str value))
+
+              (integer? value)
+              (.pullLookupRefInt (:native db) pattern-text attr-text (long value))
+
+              (instance? Vev$Entity value)
+              (.pullLookupRefEntity (:native db) pattern-text attr-text (.id ^Vev$Entity value))
+
+              :else
+              (throw (ex-info "unsupported lookup-ref pull value"
+                              {:value value
+                               :supported #{:string :keyword :integer :entity}}))))
           (.pull (:native db) (edn-text pattern) (long eid)))))))
 
 (defn pull-many
