@@ -8096,22 +8096,41 @@
           (mmap.assoc! out datom.e datom.v))))
     out))
 
+(defn append-two-attr-entity-projection-cardinality-one-current-merge! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: ^Query-Stats]
+  (let [indexes (slice db.aevt 0)
+        first-low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
+        first-high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
+        second-low (lower-bound-index db indexes "aevt" 0 projection.second-attr (Value {}))
+        second-high (upper-bound-index db indexes "aevt" 0 projection.second-attr (Value {}))
+        first-i first-low
+        second-i second-low]
+    (set! stats^.clause-candidates (+ stats^.clause-candidates (- first-high first-low) (- second-high second-low)))
+    (while (and (< first-i first-high) (< second-i second-high))
+      (let [first-datom db.datoms[indexes[first-i]]
+            second-datom db.datoms[indexes[second-i]]]
+        (cond
+          (< first-datom.e second-datom.e)
+          (set! first-i (+ first-i 1))
+
+          (> first-datom.e second-datom.e)
+          (set! second-i (+ second-i 1))
+
+          :else
+          (do
+            (append-two-attr-projection-row! rows seen query projection first-datom.v second-datom.v)
+            (set! first-i (+ first-i 1))
+            (set! second-i (+ second-i 1))))))))
+
 (defn append-two-attr-entity-projection-cardinality-one! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: ^Query-Stats]
   (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
         high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
         all-current (all-datoms-current? db)]
-    (set! stats^.clause-candidates (+ stats^.clause-candidates (- high low)))
     (if all-current
-      (for [i (arr.range low high)]
-        (let [first-index indexes[i]
-              first-datom db.datoms[first-index]
-              [second-value has-second] (cardinality-one-value-fast-all-current db first-datom.e projection.second-attr)]
-          (set! stats^.clause-candidates (+ stats^.clause-candidates 1))
-          (when has-second
-            (append-two-attr-projection-row! rows seen query projection first-datom.v second-value))))
+      (append-two-attr-entity-projection-cardinality-one-current-merge! rows seen db query projection stats)
       (let [second-values (current-entity-attr-values db projection.second-attr stats)]
         (defer (delete second-values))
+        (set! stats^.clause-candidates (+ stats^.clause-candidates (- high low)))
         (for [i (arr.range low high)]
           (let [first-index indexes[i]
                 first-datom db.datoms[first-index]]
@@ -8122,11 +8141,11 @@
 
 (defn q-two-attr-entity-projection-profiled [db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: Query-Stats] -> Profiled-Result-Set
   (let [out-stats stats
-        rows (make [dynamic]Result-Row)
         seen (two-primitive-seen)
         indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))]
+        high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
+        rows (make [dynamic]Result-Row 0 (- high low))]
     (defer (delete-two-primitive-seen seen))
     (set! out-stats.steps 1)
     (set! out-stats.clauses 2)

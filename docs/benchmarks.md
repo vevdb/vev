@@ -168,23 +168,23 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `chain-root n=3` | 19.1x | 54.9x |
-| `chain-root n=10` | 24.1x | 42.5x |
-| `chain-root n=30` | 50.2x | 65.2x |
-| `chain-root n=100` | 227.6x | 258.1x |
-| `chain-leaf n=10` | 18.2x | 33.1x |
-| `chain-leaf n=30` | 74.2x | 98.5x |
-| `chain-leaf n=100` | 537.7x | 540.2x |
-| `chain-all n=10` | 10.9x | 14.9x |
-| `chain-all n=30` | 16.0x | 17.1x |
-| `chain-all n=100` | 23.6x | 23.3x |
-| `tree-root n=4` | 3.2x | 8.4x |
-| `tree-root n=13` | 3.3x | 5.3x |
-| `tree-root n=40` | 2.5x | 3.1x |
-| `tree-root n=121` | 1.9x | 2.0x |
-| `bad-order-join n=1000` | 7.3x | 11.7x |
-| `distinct-age n=1000` | 3.2x | 3.5x |
-| `people-name-age n=1000` | 0.5x | 0.4x |
+| `chain-root n=3` | 15.8x | 36.8x |
+| `chain-root n=10` | 23.4x | 39.7x |
+| `chain-root n=30` | 52.9x | 69.2x |
+| `chain-root n=100` | 262.2x | 290.3x |
+| `chain-leaf n=10` | 14.8x | 23.2x |
+| `chain-leaf n=30` | 64.9x | 76.7x |
+| `chain-leaf n=100` | 451.9x | 505.6x |
+| `chain-all n=10` | 8.9x | 11.5x |
+| `chain-all n=30` | 12.0x | 12.6x |
+| `chain-all n=100` | 18.1x | 17.5x |
+| `tree-root n=4` | 2.8x | 6.2x |
+| `tree-root n=13` | 3.1x | 5.1x |
+| `tree-root n=40` | 2.7x | 3.4x |
+| `tree-root n=121` | 2.2x | 2.6x |
+| `bad-order-join n=1000` | 6.7x | 11.2x |
+| `distinct-age n=1000` | 3.2x | 3.7x |
+| `people-name-age n=1000` | 0.7x | 0.7x |
 
 ## Stress Comparison
 
@@ -317,10 +317,11 @@ Remaining performance work:
   `people-name-age` still shows broad two-column projection behind
   DataScript. Vev now keeps pure DB-clause queries on the indexed planner
   rather than the relation-engine path, has typed pair-level dedupe for common
-  primitive pairs, and uses direct all-current cardinality-one lookup for the
-  second attr. The remaining work is to turn same-entity star projections into
-  a reusable physical operator that avoids per-row `Result-Row` materialization
-  overhead where possible.
+  primitive pairs, and uses a same-entity merge operator over two `aevt` attr
+  ranges for all-current cardinality-one projections. The remaining work is to
+  reduce generic per-row `Result-Row` materialization overhead and make this
+  style of star projection available through the broader physical operator
+  layer, not only the current two-attr projection path.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.
