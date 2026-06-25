@@ -6714,19 +6714,23 @@
       (return false)))
   true)
 
-(defn query-steps-are-clauses-or-predicates? [query: Query] -> bool
+(defn query-steps-are-relation-engine-supported? [query: Query] -> bool
   (when (= (count query.where-steps) 0)
     (return true))
   (let [clause-count 0
-        predicate-count 0]
+        predicate-count 0
+        function-count 0]
     (for [step query.where-steps]
       (if (= step.kind .Clause)
         (set! clause-count (+ clause-count 1))
         (if (= step.kind .Predicate)
           (set! predicate-count (+ predicate-count 1))
-          (return false))))
+          (if (= step.kind .Function)
+            (set! function-count (+ function-count 1))
+            (return false)))))
     (and (= clause-count (count query.clauses))
-         (= predicate-count (count query.predicates)))))
+         (= predicate-count (count query.predicates))
+         (= function-count (count query.function-clauses)))))
 
 (defn query-clause-uses-source-input? [query: Query, sources: []DB-Source, clause: Clause] -> bool
   (and clause.has-source
@@ -6747,11 +6751,22 @@
         (binding-store! (addr source-binding) source value)
         (return source-binding true)))))
 
+(defn query-uses-primary-relation-db-source? [query: Query] -> bool
+  (let [primary (primary-relation-db-source-name)]
+    (for [clause-value query.clauses]
+      (when (and clause-value.has-source
+                 (= clause-value.source primary))
+        (return true)))
+    false))
+
 (defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
-  (when (not (query-steps-are-clauses-or-predicates? query))
+  (when (not (query-steps-are-relation-engine-supported? query))
     (return false))
-  (when (or (> (count query.function-clauses) 0)
-            (> (count query.rules) 0)
+  (when (and (query-uses-primary-relation-db-source? query)
+             (or (> (count query.predicates) 0)
+                 (> (count query.function-clauses) 0)))
+    (return false))
+  (when (or (> (count query.rules) 0)
             (> (count query.rule-calls) 0)
             (> (count query.get-elses) 0)
             (> (count query.get-somes) 0)
@@ -6771,23 +6786,41 @@
       (return false)))
   true)
 
-(defn query-relation-filter-predicates [db: DB, rel: Query-Relation, predicates: []Predicate, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
-  (when (= (count predicates) 0)
-    (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
-          tuples (clone-bindings (slice rel.tuples 0))]
-      (return (Query-Relation {attrs: attrs tuples: tuples}))))
+(defn query-relation-copy [rel: Query-Relation] -> Query-Relation
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        tuples (clone-bindings (slice rel.tuples 0))]
+    (Query-Relation {attrs: attrs tuples: tuples})))
+
+(defn query-relation-filter-predicate [db: DB, rel: Query-Relation, predicate: Predicate, registry: []Native-Query-Fn] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
         tuples (make [dynamic]Binding)]
     (for [tuple rel.tuples]
-      (let [matches true]
-        (for [predicate predicates]
-          (set! stats^.steps (+ stats^.steps 1))
-          (when (not (predicate-matches-with-db-and-fns? db predicate tuple registry))
-            (set! matches false)
-            (break)))
-        (when matches
-          (arr.push! tuples (clone-binding tuple)))))
+      (when (predicate-matches-with-db-and-fns? db predicate tuple registry)
+        (arr.push! tuples (clone-binding tuple))))
     (Query-Relation {attrs: attrs tuples: tuples})))
+
+(defn query-relation-extend-function [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> Query-Relation
+  (let [bindings (bindings-after-function-with-fns (slice rel.tuples 0) function registry)
+        out (query-relation-from-bindings (slice bindings 0))]
+    (delete bindings)
+    out))
+
+(defn query-relation-apply-where-ops [db: DB, query: Query, rel: Query-Relation, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+  (let [current (query-relation-copy rel)]
+    (for [step query.where-steps]
+      (when (= step.kind .Predicate)
+        (let [next (query-relation-filter-predicate db current query.predicates[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Function)
+        (let [next (query-relation-extend-function current query.function-clauses[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples)))))
+    current))
 
 (defn query-relation-from-source-input-clause [query: Query, inputs: []Query-Input, clause-value: Clause] -> Query-Relation
   (let [[binding binding-ok] (query-source-input-binding query inputs clause-value.source)]
@@ -6836,13 +6869,13 @@
         (set! stats^.clause-candidates (+ stats^.clause-candidates (count rel.tuples)))
         (arr.push! relations rel)))
     (let [joined (query-relation-reduce db (slice relations 0))
-          filtered (query-relation-filter-predicates db joined (slice query.predicates 0) registry stats)]
+          post-rel (query-relation-apply-where-ops db query joined registry stats)]
       (for [rel relations]
         (delete-query-relation rel))
       (delete relations)
-      (let [bindings (clone-bindings (slice filtered.tuples 0))]
+      (let [bindings (clone-bindings (slice post-rel.tuples 0))]
         (query-stats-observe-bindings! stats (count bindings))
-        (delete-query-relation filtered)
+        (delete-query-relation post-rel)
         (delete-query-relation joined)
         bindings))))
 
