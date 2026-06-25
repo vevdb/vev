@@ -7,6 +7,7 @@ Status labels:
 - `done`: implemented in Vev.
 - `todo`: worthwhile Vev work, not blocked on Kvist.
 - `kvist`: better solved in Kvist compiler/packages/tooling.
+- `kvist-done`: implemented in Kvist compiler/packages/tooling.
 - `later`: real issue, but larger design work or lower priority than DataScript parity, C ABI, and performance.
 - `not-now`: valid observation, but not worth changing currently.
 
@@ -68,6 +69,9 @@ Status labels:
 
 - `done` Broaden Clojure/Java pull lookup-ref API shapes beyond string values.
   Direct pull lookup-ref APIs now support string, keyword, entity, and int values through the C ABI and Java wrapper. The Clojure wrapper dispatches Datomic-style lookup refs such as `[:user/email "ada@example.com"]`, `[:user/status :active]`, and `[:user/code 1001]`.
+
+- `done` Improve C ABI value inspection helpers.
+  `vev_value_map_get` and `vev_value_text_equals` now cover the common C-client map lookup/text comparison boilerplate used by pull and tx-report inspection. The C smoke delegates to those helpers instead of hand-scanning map entries.
 
 ## Vev TODO
 
@@ -140,16 +144,13 @@ Status labels:
 - `todo` Tighten ABI owned-builder cleanup.
   Some ABI builder/free paths own cloned strings and values but free only the outer dynamic array. Add owned cleanup helpers for ABI transaction builders and similar owned-struct containers.
 
-- `todo` Improve C ABI value inspection helpers.
-  C clients currently hand-roll map lookup and text comparison/ownership patterns. ABI helpers for map lookup by key and borrowed/owned text extraction would reduce client boilerplate.
-
 - `todo` Materialize pull values more cleanly for ABI results.
   ABI results currently keep pull structures in the result plus a side array of rendered pull `Value`s. A single owned materialized result representation would simplify pull result access and cleanup.
 
 ## Kvist / Compiler / Package Work
 
-- `kvist` Optimize ordinary `for` over `arr.range`.
-  Vev has worked around hot cases with `while`, but the language should probably lower ordinary range loops to counted loops when the source is syntactically `arr.range`.
+- `kvist-done` Optimize ordinary `for` over eager bounded `arr` producers.
+  Kvist now lowers ordinary direct `for` sources over `arr.range`, `arr.repeat`, `arr.repeatedly`, `arr.iterate`, `arr.cycle`, and `arr.take-nth` to direct loops without allocating helper arrays. Vev's existing `while` workarounds can stay where they are clearer, but new ordinary loops no longer pay the eager-array cost for these source forms.
 
 - `kvist` Comparator/key sorting with captures.
   Vev still needs custom datom and `Value` sorting because `arr.sort-by!` cannot close over comparator context.

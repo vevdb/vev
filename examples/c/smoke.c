@@ -53,24 +53,11 @@ static int result_row_count_or_error(const char *label, vev_result_t result) {
 }
 
 static vev_value_t map_get(vev_value_t map, const char *key) {
-    int count = vev_value_map_count(map);
-    for (int i = 0; i < count; i++) {
-        vev_value_t item_key = vev_value_map_key(map, i);
-        const char *text = vev_value_text(item_key);
-        int matches = text != NULL && strcmp(text, key) == 0;
-        vev_string_free(text);
-        if (matches) {
-            return vev_value_map_value(map, i);
-        }
-    }
-    return NULL;
+    return vev_value_map_get(map, key);
 }
 
 static int value_text_equals(vev_value_t value, const char *expected) {
-    const char *text = vev_value_text(value);
-    int matches = text != NULL && strcmp(text, expected) == 0;
-    vev_string_free(text);
-    return matches;
+    return vev_value_text_equals(value, expected);
 }
 
 struct value_visit_stats {

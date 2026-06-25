@@ -280,6 +280,8 @@ vev_value_t vev_value_item(vev_value_t value, int index);
 int vev_value_map_count(vev_value_t value);
 vev_value_t vev_value_map_key(vev_value_t value, int index);
 vev_value_t vev_value_map_value(vev_value_t value, int index);
+bool vev_value_text_equals(vev_value_t value, const char *expected);
+vev_value_t vev_value_map_get(vev_value_t value, const char *key);
 bool vev_value_visit(vev_value_t value, vev_value_visit_fn visitor, void *user);
 
 #ifdef __cplusplus
