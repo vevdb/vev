@@ -49,8 +49,27 @@ class TupleInput:
 
 
 @dataclass(frozen=True)
+class TypedCollection:
+    value_type: str
+    values: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True)
+class TypedTuple:
+    value_type: str
+    values: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True)
 class Relation:
     rows: tuple[tuple[object, ...], ...]
+
+
+@dataclass(frozen=True)
+class TypedRelation:
+    value_type: str
+    width: int
+    rows: tuple[tuple[object, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -75,6 +94,18 @@ def _default_library_path() -> pathlib.Path:
 
 def _bytes(text: str) -> bytes:
     return text.encode("utf-8")
+
+
+def _value_matches_type(value: object, value_type: str) -> bool:
+    if value_type == "entity":
+        return isinstance(value, Entity)
+    if value_type == "bool":
+        return isinstance(value, bool)
+    if value_type == "int":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if value_type == "string":
+        return isinstance(value, str)
+    return False
 
 
 class Library:
@@ -261,6 +292,27 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_stmt_bind_lookup_ref_string_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_keyword_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_lookup_ref_keyword_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_entity_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_lookup_ref_entity_collection.restype = ctypes.c_bool
+        lib.vev_stmt_bind_lookup_ref_int_collection.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_longlong),
+            ctypes.c_int,
+        ]
+        lib.vev_stmt_bind_lookup_ref_int_collection.restype = ctypes.c_bool
         lib.vev_stmt_bind_pull_pattern_edn.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -845,10 +897,18 @@ class Statement:
             ok = lib.vev_stmt_bind_entity(self._handle, value.id)
         elif isinstance(value, LookupRef):
             ok = self._bind_lookup_ref(value)
+        elif isinstance(value, TypedTuple):
+            ok = self._bind_homogeneous_values(value.values, "tuple", value_type=value.value_type)
         elif isinstance(value, TupleInput):
             ok = self._bind_tuple(value.values)
+        elif isinstance(value, TypedRelation):
+            ok = self._bind_typed_relation(value)
         elif isinstance(value, Relation):
             ok = self._bind_relation(value.rows)
+        elif isinstance(value, TypedCollection):
+            ok = self._bind_homogeneous_values(
+                value.values, "collection", value_type=value.value_type
+            )
         elif isinstance(value, PullPattern):
             ok = lib.vev_stmt_bind_pull_pattern_edn(self._handle, _bytes(value.edn))
         elif isinstance(value, DBSource):
@@ -892,6 +952,20 @@ class Statement:
     def _bind_tuple(self, values: tuple[object, ...]) -> bool:
         return self._bind_homogeneous_values(values, "tuple")
 
+    def _bind_typed_relation(self, relation: TypedRelation) -> bool:
+        if relation.width <= 0:
+            raise TypeError(f"typed relation width must be positive: {relation!r}")
+        if len(relation.rows) == 0:
+            return self._bind_homogeneous_values(
+                (), "relation", relation.width, value_type=relation.value_type
+            )
+        if any(len(row) != relation.width for row in relation.rows):
+            raise TypeError(f"relation rows must match declared width: {relation!r}")
+        flat = tuple(value for row in relation.rows for value in row)
+        return self._bind_homogeneous_values(
+            flat, "relation", relation.width, value_type=relation.value_type
+        )
+
     def _bind_relation(self, rows: tuple[tuple[object, ...], ...]) -> bool:
         if len(rows) == 0:
             raise TypeError("empty relation bindings need an explicit typed wrapper")
@@ -902,12 +976,33 @@ class Statement:
         return self._bind_homogeneous_values(flat, "relation", width)
 
     def _bind_homogeneous_values(
-        self, values: tuple[object, ...], kind: str, width: int | None = None
+        self,
+        values: tuple[object, ...],
+        kind: str,
+        width: int | None = None,
+        value_type: str | None = None,
     ) -> bool:
         lib = self._library.lib
         suffix = "_relation" if kind == "relation" else f"_{kind}"
         if len(values) == 0:
-            raise TypeError(f"empty {kind} bindings need an explicit typed wrapper")
+            if value_type is None:
+                raise TypeError(f"empty {kind} bindings need an explicit typed wrapper")
+            if value_type == "entity":
+                fn = getattr(lib, f"vev_stmt_bind_entity{suffix}")
+            elif value_type == "bool":
+                fn = getattr(lib, f"vev_stmt_bind_bool{suffix}")
+            elif value_type == "int":
+                fn = getattr(lib, f"vev_stmt_bind_int{suffix}")
+            elif value_type == "string":
+                fn = getattr(lib, f"vev_stmt_bind_string{suffix}")
+            else:
+                raise TypeError(f"unsupported typed {kind} value type: {value_type!r}")
+            if kind == "relation":
+                assert width is not None
+                return bool(fn(self._handle, None, 0, width))
+            return bool(fn(self._handle, None, 0))
+        if value_type is not None and not all(_value_matches_type(value, value_type) for value in values):
+            raise TypeError(f"typed {kind} contains values outside {value_type!r}: {values!r}")
         if all(isinstance(value, Entity) for value in values):
             array_type = ctypes.c_ulonglong * len(values)
             array = array_type(*(value.id for value in values))
@@ -938,18 +1033,45 @@ class Statement:
             raise TypeError("empty collection bindings need an explicit typed wrapper")
         if all(isinstance(value, LookupRef) for value in values):
             attrs = {value.attr for value in values}
-            if len(attrs) != 1 or not all(isinstance(value.value, str) for value in values):
-                raise TypeError(
-                    "lookup-ref collection bindings currently require one attr and string values"
+            if len(attrs) != 1:
+                raise TypeError("lookup-ref collection bindings require one attr")
+            lookup_values = tuple(value.value for value in values)
+            attr = _bytes(values[0].attr)
+            if all(isinstance(value, Entity) for value in lookup_values):
+                array_type = ctypes.c_ulonglong * len(lookup_values)
+                array = array_type(*(value.id for value in lookup_values))
+                return bool(
+                    lib.vev_stmt_bind_lookup_ref_entity_collection(
+                        self._handle, attr, array, len(lookup_values)
+                    )
                 )
-            encoded = [_bytes(value.value) for value in values]
-            array_type = ctypes.c_char_p * len(encoded)
-            array = array_type(*encoded)
-            return bool(
-                lib.vev_stmt_bind_lookup_ref_string_collection(
-                    self._handle, _bytes(values[0].attr), array, len(encoded)
+            if all(isinstance(value, int) and not isinstance(value, bool) for value in lookup_values):
+                array_type = ctypes.c_longlong * len(lookup_values)
+                array = array_type(*lookup_values)
+                return bool(
+                    lib.vev_stmt_bind_lookup_ref_int_collection(
+                        self._handle, attr, array, len(lookup_values)
+                    )
                 )
-            )
+            if all(isinstance(value, Keyword) for value in lookup_values):
+                encoded = [_bytes(value.text) for value in lookup_values]
+                array_type = ctypes.c_char_p * len(encoded)
+                array = array_type(*encoded)
+                return bool(
+                    lib.vev_stmt_bind_lookup_ref_keyword_collection(
+                        self._handle, attr, array, len(encoded)
+                    )
+                )
+            if all(isinstance(value, str) for value in lookup_values):
+                encoded = [_bytes(value) for value in lookup_values]
+                array_type = ctypes.c_char_p * len(encoded)
+                array = array_type(*encoded)
+                return bool(
+                    lib.vev_stmt_bind_lookup_ref_string_collection(
+                        self._handle, attr, array, len(encoded)
+                    )
+                )
+            raise TypeError(f"unsupported lookup-ref collection binding: {values!r}")
         if all(isinstance(value, Entity) for value in values):
             array_type = ctypes.c_ulonglong * len(values)
             array = array_type(*(value.id for value in values))

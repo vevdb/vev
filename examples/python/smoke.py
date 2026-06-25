@@ -99,6 +99,10 @@ def main() -> int:
                     print(f"statement collection names: {names}")
                     if names != ["Ada", "Grace"]:
                         raise RuntimeError("unexpected collection statement rows")
+                with collection_query.statement() as stmt:
+                    rows = stmt.bind(vev.TypedCollection("string")).rows(conn)
+                    if rows != []:
+                        raise RuntimeError("unexpected empty typed collection rows")
             finally:
                 collection_query.close()
 
@@ -159,6 +163,15 @@ def main() -> int:
             finally:
                 lookup_query.close()
 
+            conn.transact(
+                """
+                [[:db/add 91 :db/ident :user/code]
+                 [:db/add 91 :db/unique :db.unique/identity]
+                 [:db/add 1 :user/code 101]
+                 [:db/add 2 :user/code 202]]
+                """
+            )
+
             lookup_collection_query = conn.prepare(
                 """
                 [:find ?name
@@ -178,6 +191,16 @@ def main() -> int:
                     print(f"lookup-ref collection statement names: {names}")
                     if names != ["Ada", "Grace"]:
                         raise RuntimeError("unexpected lookup-ref collection statement rows")
+                with lookup_collection_query.statement() as stmt:
+                    rows = stmt.bind(
+                        [
+                            vev.LookupRef(":user/code", 101),
+                            vev.LookupRef(":user/code", 202),
+                        ]
+                    ).rows(conn)
+                    names = sorted(row[0] for row in rows)
+                    if names != ["Ada", "Grace"]:
+                        raise RuntimeError("unexpected int lookup-ref collection rows")
             finally:
                 lookup_collection_query.close()
 

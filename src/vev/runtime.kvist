@@ -2,6 +2,7 @@
 
 (import core-strings "core:strings")
 (import mmap "kvist:map")
+(import set "kvist:set")
 
 (defn string-owned [text: string] -> string
   (let [[out err] (core-strings.clone text)]
@@ -25,6 +26,37 @@
           (arr.push! items (value-owned item)))
         (Value {kind: .Map items: items}))
     :else value))
+
+(defn delete-owned-value [value: Value]
+  (case value.kind
+    .String (delete value.text)
+    .Keyword (delete value.text)
+    .Symbol (delete value.text)
+    .Vector
+      (do
+        (for [item value.items]
+          (delete-owned-value item))
+        (delete value.items))
+    .Map
+      (do
+        (for [item value.items]
+          (delete-owned-value item))
+        (delete value.items))
+    :else (do)))
+
+(defn delete-value-containers-shallow [value: Value]
+  (case value.kind
+    .Vector
+      (do
+        (for [item value.items]
+          (delete-value-containers-shallow item))
+        (delete value.items))
+    .Map
+      (do
+        (for [item value.items]
+          (delete-value-containers-shallow item))
+        (delete value.items))
+    :else (do)))
 
 (defn tx-data-owned [data: Tx-Data] -> Tx-Data
   (Tx-Data {op: (string-owned data.op)
@@ -322,6 +354,25 @@
   (for [rel ctx.rels]
     (delete-query-relation rel))
   (delete ctx.rels))
+
+(defn delete-pull-attrs-shallow [attrs: [dynamic]Pull-Attr]
+  (for [pulled attrs]
+    (delete-pull-attrs-shallow pulled.attrs))
+  (delete attrs))
+
+(defn delete-pull-result-shallow [result: Pull-Result]
+  (delete-pull-attrs-shallow result.attrs))
+
+(defn delete-result-set-shallow [result: Result-Set]
+  (for [row result.rows]
+    (delete row.values)
+    (for [pull row.pulls]
+      (delete-pull-result-shallow pull))
+    (delete row.pulls))
+  (delete result.rows))
+
+(defn delete-profiled-result-set-shallow [profiled: Profiled-Result-Set]
+  (delete-result-set-shallow profiled.result))
 
 (defn lookup-ref-value [attr: string, value: Value] -> Value
   (value-vector2 (value-keyword attr) value))
@@ -2307,6 +2358,27 @@
   (remap-resolved-ops! ops from to)
   (remap-resolved-tempids! tempids from to))
 
+(defn resolved-tempid-lookup [index: (ptr (map string u64)), tempid: string] -> [e: u64, ok: bool]
+  (mmap.get index^ tempid))
+
+(defn push-resolved-tempid! [tempids: ^[dynamic]Tempid, index: (ptr (map string u64)), tempid: string, e: u64]
+  (arr.push! tempids^ (Tempid {tempid: tempid e: e}))
+  (mmap.assoc! index^ tempid e))
+
+(defn ensure-resolved-tempid! [tempids: ^[dynamic]Tempid, index: (ptr (map string u64)), tempid: string, e: u64]
+  (let [[_ ok] (resolved-tempid-lookup index tempid)]
+    (when (not ok)
+      (push-resolved-tempid! tempids index tempid e))))
+
+(defn remap-resolved-tempid-entity-indexed! [ops: ^[dynamic]Tx-Op, tempids: ^[dynamic]Tempid, index: (ptr (map string u64)), from: u64, to: u64]
+  (when (= from to)
+    (return))
+  (remap-resolved-ops! ops from to)
+  (for [entry item-index tempids^]
+    (when (= entry.e from)
+      (set! tempids^[item-index] (Tempid {tempid: entry.tempid e: to}))
+      (mmap.assoc! index^ entry.tempid to))))
+
 (defn tempid-existing-upsert-target [db: DB, data: Tx-Data, existing: u64] -> [target: u64, ok: bool, conflict: bool]
   (when (not (and (= data.op ":db/add")
                   (schema-unique-identity? db data.a)))
@@ -2778,11 +2850,13 @@
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
         resolved-tempids (make [dynamic]Tempid)
+        tempid-index (make (map string u64))
         pending (arr.into [dynamic]Tx-Data tx-data)
         next-e (next-entity-id (slice db.datoms 0))
         current-tx-e tx
         current-tx-reserved false
         data-index 0]
+    (defer (delete tempid-index))
     (defer (delete pending))
     (for [data pending]
       (when (and (not data.has-tempid)
@@ -2809,7 +2883,7 @@
               (when (not current-tx-reserved)
                 (set! current-tx-reserved true))
               (set! e current-tx-e)
-              (ensure-tempid! (addr resolved-tempids) data.tempid current-tx-e)
+              (ensure-resolved-tempid! (addr resolved-tempids) (addr tempid-index) data.tempid current-tx-e)
               (when (current-tx-upsert-conflict? current-db data current-tx-e)
                 (return (Resolved-Tx {ok: false
                                       error: "conflicting upsert"
@@ -2818,7 +2892,7 @@
                                       tempids: resolved-tempids})))
               (when (= data.op ":db/add")
                 (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v}))))
-          (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) data.tempid)]
+          (let [[existing ok] (resolved-tempid-lookup (addr tempid-index) data.tempid)]
             (if ok
               (let [[target target-ok _] (tempid-existing-upsert-target current-db data existing)]
                 (if target-ok
@@ -2829,7 +2903,7 @@
                                           tx-meta: resolved-meta
                                           tempids: resolved-tempids}))
                     (do
-                      (remap-resolved-tempid-entity! (addr resolved-ops) (addr resolved-tempids) existing target)
+                      (remap-resolved-tempid-entity-indexed! (addr resolved-ops) (addr resolved-tempids) (addr tempid-index) existing target)
                       (set! e target)))
                   (set! e existing)))
               (do
@@ -2845,7 +2919,7 @@
                     (do
                       (set! e next-e)
                       (set! next-e (+ next-e 1)))))
-                (arr.push! resolved-tempids (Tempid {tempid: data.tempid e: e})))))))
+                (push-resolved-tempid! (addr resolved-tempids) (addr tempid-index) data.tempid e))))))
         (when data.has-lookup-ref
           (let [[lookup-e lookup-ok lookup-error] (resolve-lookup-ref-checked current-db data.lookup-attr data.lookup-value)]
             (if lookup-ok
@@ -2996,7 +3070,7 @@
               (when (not current-tx-reserved)
                 (set! current-tx-reserved true))
               (set! v (value-entity current-tx-e))
-              (ensure-tempid! (addr resolved-tempids) current-tx-tempid current-tx-e)))
+              (ensure-resolved-tempid! (addr resolved-tempids) (addr tempid-index) current-tx-tempid current-tx-e)))
           (when (or data.has-value-tempid
                     (ref-string-value? current-db data.a v)
                     (ref-negative-int-value? current-db data.a v))
@@ -3008,14 +3082,14 @@
                   (when (not current-tx-reserved)
                     (set! current-tx-reserved true))
                   (set! v (value-entity current-tx-e))
-                  (ensure-tempid! (addr resolved-tempids) value-tempid current-tx-e))
+                  (ensure-resolved-tempid! (addr resolved-tempids) (addr tempid-index) value-tempid current-tx-e))
               (if (not (tx-data-has-tempid? current-db (slice pending 0) value-tempid))
                 (return (Resolved-Tx {ok: false
                                       error: "tempid used only as value"
                                       ops: resolved-ops
                                       tx-meta: resolved-meta
                                       tempids: resolved-tempids}))
-              (let [[existing ok] (tempid-lookup (slice resolved-tempids 0) value-tempid)]
+              (let [[existing ok] (resolved-tempid-lookup (addr tempid-index) value-tempid)]
               (if ok
                 (set! v (value-entity existing))
                 (let [[upsert-e upsert-ok upsert-conflict] (tempid-upsert-entity current-db (slice pending 0) value-tempid)]
@@ -3028,10 +3102,10 @@
                   (if upsert-ok
                     (do
                       (set! v (value-entity upsert-e))
-                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: upsert-e})))
+                      (push-resolved-tempid! (addr resolved-tempids) (addr tempid-index) value-tempid upsert-e))
                     (do
                       (set! v (value-entity next-e))
-                      (arr.push! resolved-tempids (Tempid {tempid: value-tempid e: next-e}))
+                      (push-resolved-tempid! (addr resolved-tempids) (addr tempid-index) value-tempid next-e)
                       (set! next-e (+ next-e 1)))))))))))
           (when (not value-ok)
             (return (Resolved-Tx {ok: false
@@ -3358,6 +3432,17 @@
       (return index true)))
   (return 0 false))
 
+(defn tx-fn-string-duplicate-ident [registry: []Tx-Fn-String] -> [ident: string, found: bool]
+  (let [left 0]
+    (while (< left (count registry))
+      (let [right (+ left 1)]
+        (while (< right (count registry))
+          (when (= registry[left].ident registry[right].ident)
+            (return registry[left].ident true))
+          (set! right (+ right 1))))
+      (set! left (+ left 1))))
+  (return "" false))
+
 (defn current-log-attr-exists? [datoms: []Datom, entity: u64, attr: string] -> bool
   (for [datom index datoms]
     (when (and (= datom.e entity)
@@ -3626,11 +3711,14 @@
 
 (defn transact-tx-data-with-string-fns [conn: ^Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
   (let [before (build-db (clone-datoms conn^.db.datoms))
+        [duplicate-ident has-duplicate] (tx-fn-string-duplicate-ident registry)
         tx conn^.next-tx
         ops (make [dynamic]Tx-Op)
         tx-meta (make [dynamic]Tx-Meta)
         tempids (make [dynamic]Tempid)
         segment (make [dynamic]Tx-Data)]
+    (when has-duplicate
+      (return (failed-registered-tx before ops tx-meta tempids segment (fmt.tprintf "duplicate transaction fn registration: %s" duplicate-ident))))
     (for [data tx-data]
       (if (= data.op ":db.fn/call-ident")
         (do
@@ -4541,8 +4629,8 @@
   (return (Rule {}) false))
 
 (defn append-transitive-targets! [out: ^[dynamic]u64, db: DB, attr: string, start: u64]
-  (let [expanded (make (map u64 bool))
-        emitted (make (map u64 bool))
+  (let [expanded (set.empty u64)
+        emitted (set.empty u64)
         frontier (make [dynamic]u64)
         frontier-index 0]
     (defer (delete expanded))
@@ -4554,23 +4642,23 @@
             edge-clause (clause (term-value (value-entity current)) attr (term-wildcard))
             candidates (clause-candidate-indexes db edge-clause (Binding {})) :defer]
         (set! frontier-index (+ frontier-index 1))
-        (let [[_ already-expanded] (mmap.get expanded current)]
+        (let [already-expanded (set.contains? expanded current)]
           (when (not already-expanded)
-            (mmap.assoc! expanded current true)
+            (set.add! expanded current)
             (for [datom-index candidates]
               (let [datom db.datoms[datom-index]]
                 (when (and (datom-current-at? db datom-index)
                            (= datom.v.kind .Entity))
-                  (let [[_ already-emitted] (mmap.get emitted datom.v.entity)
-                        [_ target-expanded] (mmap.get expanded datom.v.entity)]
+                  (let [already-emitted (set.contains? emitted datom.v.entity)
+                        target-expanded (set.contains? expanded datom.v.entity)]
                     (when (not already-emitted)
-                      (mmap.assoc! emitted datom.v.entity true)
+                      (set.add! emitted datom.v.entity)
                       (arr.push! out^ datom.v.entity))
                     (when (not target-expanded)
                       (arr.push! frontier datom.v.entity))))))))))))
 
 (defn append-transitive-starts! [out: ^[dynamic]u64, db: DB, attr: string]
-  (let [seen (make (map u64 bool))
+  (let [seen (set.empty u64)
         attr-clause (clause (term-wildcard) attr (term-wildcard))
         candidates (clause-candidate-indexes db attr-clause (Binding {}))]
     (defer (delete seen))
@@ -4578,14 +4666,14 @@
     (for [datom-index candidates]
       (let [datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
-          (let [[_ found] (mmap.get seen datom.e)]
+          (let [found (set.contains? seen datom.e)]
             (when (not found)
-              (mmap.assoc! seen datom.e true)
+              (set.add! seen datom.e)
               (arr.push! out^ datom.e))))))))
 
 (defn append-transitive-sources! [out: ^[dynamic]u64, db: DB, attr: string, target: u64]
-  (let [expanded (make (map u64 bool))
-        emitted (make (map u64 bool))
+  (let [expanded (set.empty u64)
+        emitted (set.empty u64)
         frontier (make [dynamic]u64)
         frontier-index 0]
     (defer (delete expanded))
@@ -4597,16 +4685,16 @@
             edge-clause (clause (term-wildcard) attr (term-value (value-entity current)))
             candidates (clause-candidate-indexes db edge-clause (Binding {})) :defer]
         (set! frontier-index (+ frontier-index 1))
-        (let [[_ already-expanded] (mmap.get expanded current)]
+        (let [already-expanded (set.contains? expanded current)]
           (when (not already-expanded)
-            (mmap.assoc! expanded current true)
+            (set.add! expanded current)
             (for [datom-index candidates]
               (let [datom db.datoms[datom-index]]
                 (when (datom-current-at? db datom-index)
-                  (let [[_ already-emitted] (mmap.get emitted datom.e)
-                        [_ source-expanded] (mmap.get expanded datom.e)]
+                  (let [already-emitted (set.contains? emitted datom.e)
+                        source-expanded (set.contains? expanded datom.e)]
                     (when (not already-emitted)
-                      (mmap.assoc! emitted datom.e true)
+                      (set.add! emitted datom.e)
                       (arr.push! out^ datom.e))
                     (when (not source-expanded)
                       (arr.push! frontier datom.e))))))))))))
@@ -5901,14 +5989,31 @@
   (when (not (string-slice-contains? (slice vars^ 0) name))
     (arr.push! vars^ name)))
 
+(defn append-var-once-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), name: string]
+  (when (= name "")
+    (return))
+  (let [[_ found] (mmap.get seen^ name)]
+    (when (not found)
+      (mmap.assoc! seen^ name true)
+      (arr.push! vars^ name))))
+
 (defn append-term-var! [vars: ^[dynamic]string, term: Term]
   (when (= term.kind .Var)
     (append-var-once! vars term.name)))
+
+(defn append-term-var-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), term: Term]
+  (when (= term.kind .Var)
+    (append-var-once-indexed! vars seen term.name)))
 
 (defn append-input-binding-vars! [vars: ^[dynamic]string, binding: Input-Binding]
   (let [names (input-binding-vars binding) :defer]
     (for [name names]
       (append-var-once! vars name))))
+
+(defn append-input-binding-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), binding: Input-Binding]
+  (let [names (input-binding-vars binding) :defer]
+    (for [name names]
+      (append-var-once-indexed! vars seen name))))
 
 (defn append-query-input-vars! [vars: ^[dynamic]string, query-value: Query]
   (for [name query-value.inputs]
@@ -5938,12 +6043,47 @@
       .Ignore (do)
       :else (do))))
 
+(defn append-query-input-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), query-value: Query]
+  (for [name query-value.inputs]
+    (append-var-once-indexed! vars seen name))
+  (for [name query-value.collection-inputs]
+    (append-var-once-indexed! vars seen name))
+  (for [tuple query-value.tuple-inputs]
+    (for [name tuple.vars]
+      (append-var-once-indexed! vars seen name))
+    (append-input-binding-vars-indexed! vars seen tuple.binding))
+  (for [relation query-value.relation-inputs]
+    (for [name relation.vars]
+      (append-var-once-indexed! vars seen name))
+    (append-input-binding-vars-indexed! vars seen relation.binding))
+  (for [spec query-value.input-specs]
+    (case spec.kind
+      .Scalar (append-var-once-indexed! vars seen spec.name)
+      .Collection (append-var-once-indexed! vars seen spec.name)
+      .Tuple (do
+        (for [name spec.tuple.vars]
+          (append-var-once-indexed! vars seen name))
+        (append-input-binding-vars-indexed! vars seen spec.tuple.binding))
+      .Relation (do
+        (for [name spec.relation.vars]
+          (append-var-once-indexed! vars seen name))
+        (append-input-binding-vars-indexed! vars seen spec.relation.binding))
+      .Ignore (do)
+      :else (do))))
+
 (defn append-clause-vars! [vars: ^[dynamic]string, clause: Clause]
   (append-term-var! vars clause.e)
   (append-term-var! vars clause.a)
   (append-term-var! vars clause.v)
   (append-term-var! vars clause.tx-term)
   (append-term-var! vars clause.op-term))
+
+(defn append-clause-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), clause: Clause]
+  (append-term-var-indexed! vars seen clause.e)
+  (append-term-var-indexed! vars seen clause.a)
+  (append-term-var-indexed! vars seen clause.v)
+  (append-term-var-indexed! vars seen clause.tx-term)
+  (append-term-var-indexed! vars seen clause.op-term))
 
 (defn append-not-group-vars! [vars: ^[dynamic]string, group: Not-Group]
   (for [clause group.clauses]
@@ -5953,15 +6093,33 @@
   (for [name group.join-vars]
     (append-var-once! vars name)))
 
+(defn append-not-group-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), group: Not-Group]
+  (for [clause group.clauses]
+    (append-clause-vars-indexed! vars seen clause))
+  (for [child group.not-groups]
+    (append-not-group-vars-indexed! vars seen child))
+  (for [name group.join-vars]
+    (append-var-once-indexed! vars seen name)))
+
 (defn append-or-group-vars! [vars: ^[dynamic]string, group: Or-Group]
   (for [branch group.branches]
     (append-not-group-vars! vars branch))
   (for [name group.join-vars]
     (append-var-once! vars name)))
 
+(defn append-or-group-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), group: Or-Group]
+  (for [branch group.branches]
+    (append-not-group-vars-indexed! vars seen branch))
+  (for [name group.join-vars]
+    (append-var-once-indexed! vars seen name)))
+
 (defn append-rule-call-vars! [vars: ^[dynamic]string, call: Rule-Call]
   (for [arg call.args]
     (append-term-var! vars arg)))
+
+(defn append-rule-call-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), call: Rule-Call]
+  (for [arg call.args]
+    (append-term-var-indexed! vars seen arg)))
 
 (defn append-ground-output-vars! [vars: ^[dynamic]string, ground: Ground]
   (append-var-once! vars ground.out)
@@ -5969,17 +6127,35 @@
     (append-var-once! vars name))
   (append-input-binding-vars! vars ground.binding))
 
+(defn append-ground-output-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), ground: Ground]
+  (append-var-once-indexed! vars seen ground.out)
+  (for [name ground.tuple-vars]
+    (append-var-once-indexed! vars seen name))
+  (append-input-binding-vars-indexed! vars seen ground.binding))
+
 (defn append-function-output-vars! [vars: ^[dynamic]string, function: Function-Clause]
   (append-var-once! vars function.out)
   (for [name function.out-vars]
     (append-var-once! vars name))
   (append-input-binding-vars! vars function.out-binding))
 
+(defn append-function-output-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), function: Function-Clause]
+  (append-var-once-indexed! vars seen function.out)
+  (for [name function.out-vars]
+    (append-var-once-indexed! vars seen name))
+  (append-input-binding-vars-indexed! vars seen function.out-binding))
+
 (defn append-predicate-vars! [vars: ^[dynamic]string, predicate: Predicate]
   (when (query-var-name? predicate.op)
     (append-var-once! vars predicate.op))
   (for [term predicate.terms]
     (append-term-var! vars term)))
+
+(defn append-predicate-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), predicate: Predicate]
+  (when (query-var-name? predicate.op)
+    (append-var-once-indexed! vars seen predicate.op))
+  (for [term predicate.terms]
+    (append-term-var-indexed! vars seen term)))
 
 (defn append-function-vars! [vars: ^[dynamic]string, function: Function-Clause]
   (when (query-var-name? function.op)
@@ -5988,14 +6164,30 @@
     (append-term-var! vars term))
   (append-function-output-vars! vars function))
 
+(defn append-function-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), function: Function-Clause]
+  (when (query-var-name? function.op)
+    (append-var-once-indexed! vars seen function.op))
+  (for [term function.terms]
+    (append-term-var-indexed! vars seen term))
+  (append-function-output-vars-indexed! vars seen function))
+
 (defn append-get-else-vars! [vars: ^[dynamic]string, clause: Get-Else]
   (append-term-var! vars clause.e)
   (append-var-once! vars clause.out))
+
+(defn append-get-else-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), clause: Get-Else]
+  (append-term-var-indexed! vars seen clause.e)
+  (append-var-once-indexed! vars seen clause.out))
 
 (defn append-get-some-vars! [vars: ^[dynamic]string, clause: Get-Some]
   (append-term-var! vars clause.e)
   (append-var-once! vars clause.out-attr)
   (append-var-once! vars clause.out-value))
+
+(defn append-get-some-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), clause: Get-Some]
+  (append-term-var-indexed! vars seen clause.e)
+  (append-var-once-indexed! vars seen clause.out-attr)
+  (append-var-once-indexed! vars seen clause.out-value))
 
 (defn append-find-vars! [vars: ^[dynamic]string, query-value: Query]
   (for [name query-value.find]
@@ -6013,6 +6205,22 @@
     (when aggregate.has-limit-var
       (append-var-once! vars aggregate.limit-var))))
 
+(defn append-find-vars-indexed! [vars: ^[dynamic]string, seen: (ptr (map string bool)), query-value: Query]
+  (for [name query-value.find]
+    (append-var-once-indexed! vars seen name))
+  (for [pull-find query-value.pulls]
+    (append-var-once-indexed! vars seen pull-find.var)
+    (when pull-find.has-pattern-var
+      (append-var-once-indexed! vars seen pull-find.pattern-var)))
+  (for [aggregate query-value.aggregates]
+    (append-var-once-indexed! vars seen aggregate.var)
+    (for [arg aggregate.args]
+      (append-term-var-indexed! vars seen arg))
+    (when aggregate.has-function-var
+      (append-var-once-indexed! vars seen aggregate.function-var))
+    (when aggregate.has-limit-var
+      (append-var-once-indexed! vars seen aggregate.limit-var))))
+
 (defn query-var-list-text [vars: []string] -> string
   (let [inner (make [dynamic]string) :defer]
     (for [name vars]
@@ -6021,48 +6229,51 @@
       (core-strings.concatenate ([]string ["[" joined "]"])))))
 
 (defn query-potential-vars [query-value: Query] -> [dynamic]string
-  (let [vars (make [dynamic]string)]
-    (append-query-input-vars! (addr vars) query-value)
+  (let [vars (make [dynamic]string)
+        seen (make (map string bool)) :defer]
+    (append-query-input-vars-indexed! (addr vars) (addr seen) query-value)
     (for [clause query-value.clauses]
-      (append-clause-vars! (addr vars) clause))
+      (append-clause-vars-indexed! (addr vars) (addr seen) clause))
     (for [call query-value.rule-calls]
-      (append-rule-call-vars! (addr vars) call))
+      (append-rule-call-vars-indexed! (addr vars) (addr seen) call))
     (for [predicate query-value.predicates]
-      (append-predicate-vars! (addr vars) predicate))
+      (append-predicate-vars-indexed! (addr vars) (addr seen) predicate))
     (for [function query-value.function-clauses]
-      (append-function-vars! (addr vars) function))
+      (append-function-vars-indexed! (addr vars) (addr seen) function))
     (for [get-else query-value.get-elses]
-      (append-get-else-vars! (addr vars) get-else))
+      (append-get-else-vars-indexed! (addr vars) (addr seen) get-else))
     (for [get-some query-value.get-somes]
-      (append-get-some-vars! (addr vars) get-some))
+      (append-get-some-vars-indexed! (addr vars) (addr seen) get-some))
     (for [ground query-value.grounds]
-      (append-ground-output-vars! (addr vars) ground))
+      (append-ground-output-vars-indexed! (addr vars) (addr seen) ground))
     (for [group query-value.not-groups]
-      (append-not-group-vars! (addr vars) group))
+      (append-not-group-vars-indexed! (addr vars) (addr seen) group))
     (for [group query-value.or-groups]
-      (append-or-group-vars! (addr vars) group))
+      (append-or-group-vars-indexed! (addr vars) (addr seen) group))
     vars))
 
 (defn query-positive-vars [query-value: Query] -> [dynamic]string
-  (let [vars (make [dynamic]string)]
-    (append-query-input-vars! (addr vars) query-value)
+  (let [vars (make [dynamic]string)
+        seen (make (map string bool)) :defer]
+    (append-query-input-vars-indexed! (addr vars) (addr seen) query-value)
     (for [clause query-value.clauses]
-      (append-clause-vars! (addr vars) clause))
+      (append-clause-vars-indexed! (addr vars) (addr seen) clause))
     (for [call query-value.rule-calls]
-      (append-rule-call-vars! (addr vars) call))
+      (append-rule-call-vars-indexed! (addr vars) (addr seen) call))
     (for [ground query-value.grounds]
-      (append-ground-output-vars! (addr vars) ground))
+      (append-ground-output-vars-indexed! (addr vars) (addr seen) ground))
     (for [get-else query-value.get-elses]
-      (append-get-else-vars! (addr vars) get-else))
+      (append-get-else-vars-indexed! (addr vars) (addr seen) get-else))
     (for [get-some query-value.get-somes]
-      (append-get-some-vars! (addr vars) get-some))
+      (append-get-some-vars-indexed! (addr vars) (addr seen) get-some))
     (for [function query-value.function-clauses]
-      (append-function-output-vars! (addr vars) function))
+      (append-function-output-vars-indexed! (addr vars) (addr seen) function))
     vars))
 
 (defn query-input-vars [query-value: Query] -> [dynamic]string
-  (let [vars (make [dynamic]string)]
-    (append-query-input-vars! (addr vars) query-value)
+  (let [vars (make [dynamic]string)
+        seen (make (map string bool)) :defer]
+    (append-query-input-vars-indexed! (addr vars) (addr seen) query-value)
     vars))
 
 (defn append-query-input-vars-raw! [vars: ^[dynamic]string, query-value: Query]
@@ -6104,8 +6315,9 @@
     vars))
 
 (defn query-find-vars [query-value: Query] -> [dynamic]string
-  (let [vars (make [dynamic]string)]
-    (append-find-vars! (addr vars) query-value)
+  (let [vars (make [dynamic]string)
+        seen (make (map string bool)) :defer]
+    (append-find-vars-indexed! (addr vars) (addr seen) query-value)
     vars))
 
 (defn validate-query-parser-vars [query-value: Query] -> [ok: bool, error: string]
@@ -6896,12 +7108,12 @@
 
 (defn result-rows-for-bindings-with-sources-and-fns [db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, bindings: []Binding, registry: []Native-Query-Fn] -> [dynamic]Result-Row
   (let [rows (make [dynamic]Result-Row 0 (count bindings))
-        seen (make (map string bool))
-        seen-entities (make (map u64 bool))
-        seen-ints (make (map i64 bool))
-        seen-strings (make (map string bool))
-        seen-keywords (make (map string bool))
-        seen-symbols (make (map string bool))
+        seen (set.empty string)
+        seen-entities (set.empty u64)
+        seen-ints (set.empty i64)
+        seen-strings (set.empty string)
+        seen-keywords (set.empty string)
+        seen-symbols (set.empty string)
         seen-nil false
         seen-true false
         seen-false false
@@ -6937,25 +7149,25 @@
             (if (= (count dedupe-values) 1)
               (let [dedupe-value dedupe-values[0]]
                 (case dedupe-value.kind
-                  .Entity (let [[_ already-seen] (mmap.get seen-entities dedupe-value.entity)]
+                  .Entity (let [already-seen (set.contains? seen-entities dedupe-value.entity)]
                             (when (not already-seen)
-                              (mmap.assoc! seen-entities dedupe-value.entity true)
+                              (set.add! seen-entities dedupe-value.entity)
                               (arr.push! rows (Result-Row {values: values pulls: pulls}))))
-                  .Int (let [[_ already-seen] (mmap.get seen-ints dedupe-value.int-value)]
+                  .Int (let [already-seen (set.contains? seen-ints dedupe-value.int-value)]
                          (when (not already-seen)
-                           (mmap.assoc! seen-ints dedupe-value.int-value true)
+                           (set.add! seen-ints dedupe-value.int-value)
                            (arr.push! rows (Result-Row {values: values pulls: pulls}))))
-                  .String (let [[_ already-seen] (mmap.get seen-strings dedupe-value.text)]
+                  .String (let [already-seen (set.contains? seen-strings dedupe-value.text)]
                             (when (not already-seen)
-                              (mmap.assoc! seen-strings dedupe-value.text true)
+                              (set.add! seen-strings dedupe-value.text)
                               (arr.push! rows (Result-Row {values: values pulls: pulls}))))
-                  .Keyword (let [[_ already-seen] (mmap.get seen-keywords dedupe-value.text)]
+                  .Keyword (let [already-seen (set.contains? seen-keywords dedupe-value.text)]
                              (when (not already-seen)
-                               (mmap.assoc! seen-keywords dedupe-value.text true)
+                               (set.add! seen-keywords dedupe-value.text)
                                (arr.push! rows (Result-Row {values: values pulls: pulls}))))
-                  .Symbol (let [[_ already-seen] (mmap.get seen-symbols dedupe-value.text)]
+                  .Symbol (let [already-seen (set.contains? seen-symbols dedupe-value.text)]
                             (when (not already-seen)
-                              (mmap.assoc! seen-symbols dedupe-value.text true)
+                              (set.add! seen-symbols dedupe-value.text)
                               (arr.push! rows (Result-Row {values: values pulls: pulls}))))
                   .Bool (if dedupe-value.bool-value
                           (when (not seen-true)
@@ -6971,9 +7183,9 @@
                           (arr.push! rows (Result-Row {values: values pulls: pulls})))))
               (let [[key key-ok] (row-values-dedupe-key (slice dedupe-values 0))]
                 (if key-ok
-                  (let [[_ already-seen] (mmap.get seen key)]
+                  (let [already-seen (set.contains? seen key)]
                     (when (not already-seen)
-                      (mmap.assoc! seen key true)
+                      (set.add! seen key)
                       (arr.push! rows (Result-Row {values: values pulls: pulls}))))
                   (when (not (row-values-exist? (slice rows 0) (slice dedupe-values 0)))
                     (arr.push! rows (Result-Row {values: values pulls: pulls}))))))))))
@@ -7544,16 +7756,16 @@
         (let [datom db.datoms[indexes[i]]]
           (append-entity-row! (addr rows) datom.e))
         (set! i (+ i 1))))
-      (let [seen (make (map u64 bool))]
+      (let [seen (set.empty u64)]
         (defer (delete seen))
         (let [i low]
           (while (< i high)
           (let [datom-index indexes[i]
                 datom db.datoms[datom-index]]
             (when (datom-current-at? db datom-index)
-              (let [[_ already-seen] (mmap.get seen datom.e)]
+              (let [already-seen (set.contains? seen datom.e)]
                 (when (not already-seen)
-                  (mmap.assoc! seen datom.e true)
+                  (set.add! seen datom.e)
                   (append-entity-row! (addr rows) datom.e)))))
           (set! i (+ i 1))))))
     (set! out-stats.output-rows (count rows))
@@ -7577,16 +7789,16 @@
             (while (< i high)
               (arr.push! out db.datoms[indexes[i]].e)
               (set! i (+ i 1))))
-          (let [seen (make (map u64 bool))]
+          (let [seen (set.empty u64)]
             (defer (delete seen))
             (let [i low]
               (while (< i high)
               (let [datom-index indexes[i]
                     datom db.datoms[datom-index]]
                 (when (datom-current-at? db datom-index)
-                  (let [[_ already-seen] (mmap.get seen datom.e)]
+                  (let [already-seen (set.contains? seen datom.e)]
                     (when (not already-seen)
-                      (mmap.assoc! seen datom.e true)
+                      (set.add! seen datom.e)
                       (arr.push! out datom.e)))))
               (set! i (+ i 1)))))))
       (return out true))))
@@ -9656,26 +9868,63 @@
     (entity-reverse-values entity attr)
     (entity-forward-values entity attr)))
 
-(defn entity-get [entity: Entity, attr: string] -> Value
+(defn entity-first-forward-value [entity: Entity, attr: string] -> [value: Value, ok: bool]
+  (when (not entity.found)
+    (return (Value {}) false))
+  (let [indexes (slice entity.db.eavt 0)
+        low (lower-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))
+        high (upper-bound-index entity.db indexes "eavt-ea" entity.e attr (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom entity.db.datoms[datom-index]]
+        (when (datom-current-at? entity.db datom-index)
+          (return datom.v true)))))
+  (return (Value {}) false))
+
+(defn entity-first-reverse-value [entity: Entity, attr: string] -> [value: Value, ok: bool]
+  (when (not entity.found)
+    (return (Value {}) false))
+  (let [forward-attr (forward-attr-for-reverse attr)
+        ref-value (value-entity entity.e)
+        indexes (slice entity.db.vaet 0)
+        low (lower-bound-index entity.db indexes "vaet" 0 "" ref-value)
+        high (upper-bound-index entity.db indexes "vaet" 0 "" ref-value)]
+    (for [datom-index (slice indexes low high)]
+      (let [datom entity.db.datoms[datom-index]]
+        (when (and (= datom.a forward-attr)
+                   (datom-current-at? entity.db datom-index))
+          (return (value-entity datom.e) true)))))
+  (return (Value {}) false))
+
+(defn entity-first-value [entity: Entity, attr: string] -> [value: Value, ok: bool]
   (when (= attr ":db/id")
-    (when entity.found
-      (return (value-entity entity.e)))
-    (return (value-nil)))
-  (let [values (entity-values entity attr)]
-    (defer (delete values))
-    (if (> (count values) 0)
-      values[0]
+    (if entity.found
+      (return (value-entity entity.e) true)
+      (return (Value {}) false)))
+  (if (reverse-attr? attr)
+    (entity-first-reverse-value entity attr)
+    (entity-first-forward-value entity attr)))
+
+(defn entity-first-value-kw [entity: Entity, attr: keyword] -> [value: Value, ok: bool]
+  (entity-first-value entity (keyword-text attr)))
+
+(defn entity-get [entity: Entity, attr: string] -> Value
+  (let [[value ok] (entity-first-value entity attr)]
+    (if ok
+      value
       (value-nil))))
 
 (defn entity-get-kw [entity: Entity, attr: keyword] -> Value
   (entity-get entity (keyword-text attr)))
 
 (defn entity-contains? [entity: Entity, attr: string] -> bool
-  (when (= attr ":db/id")
-    (return entity.found))
-  (let [values (entity-values entity attr)]
-    (defer (delete values))
-    (> (count values) 0)))
+  (let [[_ ok] (entity-first-value entity attr)]
+    ok))
+
+(defn entity-has-value? [entity: Entity, attr: string] -> bool
+  (entity-contains? entity attr))
+
+(defn entity-has-value-kw? [entity: Entity, attr: keyword] -> bool
+  (entity-has-value? entity (keyword-text attr)))
 
 (defn entity-refs [entity: Entity, attr: string] -> [dynamic]Entity
   (let [out (make [dynamic]Entity)
@@ -9689,14 +9938,24 @@
     out))
 
 (defn entity-ref [entity: Entity, attr: string] -> Entity
-  (let [refs (entity-refs entity attr)]
-    (defer (delete refs))
-    (if (> (count refs) 0)
-      refs[0]
+  (let [[ref ok] (entity-first-ref entity attr)]
+    (if ok
+      ref
       (Entity {db: entity.db e: 0 found: false}))))
 
 (defn entity-ref-kw [entity: Entity, attr: keyword] -> Entity
   (entity-ref entity (keyword-text attr)))
+
+(defn entity-first-ref [entity: Entity, attr: string] -> [ref: Entity, ok: bool]
+  (let [[value value-ok] (entity-first-value entity attr)]
+    (when (and value-ok (= value.kind .Entity))
+      (let [ref (db-entity entity.db value.entity)]
+        (when ref.found
+          (return ref true)))))
+  (return (Entity {db: entity.db e: 0 found: false}) false))
+
+(defn entity-first-ref-kw [entity: Entity, attr: keyword] -> [ref: Entity, ok: bool]
+  (entity-first-ref entity (keyword-text attr)))
 
 (defn touch [entity: Entity] -> Pull-Result
   (if entity.found
