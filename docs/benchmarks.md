@@ -76,6 +76,22 @@ There are two useful read-benchmark views:
   slowdown belongs to the query engine or to C ABI / Java / Clojure result
   materialization.
 
+Latest local public Clojure comparison after borrowed typed relation
+product/hash-join operators:
+
+| Query | DataScript ms | Vev ms | DataScript/Vev |
+|---|---:|---:|---:|
+| `q1` | 0.27 | 0.28 | 0.96x |
+| `q2` | 1.40 | 1.00 | 1.40x |
+| `q2-switch` | 3.00 | 1.10 | 2.73x |
+| `q3` | 2.10 | 0.87 | 2.41x |
+| `q4` | 3.20 | 1.60 | 2.00x |
+| `q5` | 142.00 | 16.40 | 8.66x |
+
+The `people-name-age` row was requested in the same run, but the DataScript
+side did not emit a numeric baseline for that workload, so it is omitted from
+the comparison table.
+
 The current q2/q3/q4 same-entity star-query work follows Datalevin's planning
 idea: scan a selective AVET range, then advance through the sorted EAVT entity
 starts while fetching same-entity cardinality-one attrs. This avoids restarting
