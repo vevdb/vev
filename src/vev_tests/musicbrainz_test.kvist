@@ -11,6 +11,9 @@
 (def musicbrainz-mini-rules
   "[[(track-release ?t ?r) [?m :medium/tracks ?t] [?r :release/media ?m]] [(track-info ?t ?track-name ?artist-name ?album ?year) [?t :track/name ?track-name] [?t :track/artists ?a] [?a :artist/name ?artist-name] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]] [(short-track ?a ?t ?len ?max) [?t :track/artists ?a] [?t :track/duration ?len] [(< ?len ?max)]]]")
 
+(def musicbrainz-composed-rules
+  "[[(track-artist ?t ?artist-name) [?t :track/artists ?a] [?a :artist/name ?artist-name]] [(track-release-detail ?t ?release-name ?release-year) [?m :medium/tracks ?t] [?r :release/media ?m] [?r :release/name ?release-name] [?r :release/year ?release-year]] [(track-info-composed ?t ?artist-name ?release-name ?release-year) (track-artist ?t ?artist-name) (track-release-detail ?t ?release-name ?release-year)]]")
+
 (defn mb-remove-sqlite-files [path: string]
   (os.remove path)
   (os.remove (fmt.tprintf "%s-wal" path))
@@ -118,6 +121,14 @@
       (return true)))
   false)
 
+(defn mb-pull-tree-has-attr? [attrs: []vev.Pull-Attr, attr: string] -> bool
+  (for [item attrs]
+    (when (= item.a attr)
+      (return true))
+    (when (mb-pull-tree-has-attr? (slice item.attrs 0) attr)
+      (return true)))
+  false)
+
 (defn mb-mini-queries-ok? [db: vev.DB] -> bool
   (let [artist-country (vev.q-text
                          db
@@ -191,6 +202,41 @@
         title-stats (vev.q-text
                       db
                       "[:find ?year (median ?namelen) (avg ?namelen) (stddev ?namelen) :with ?track :where [?track :track/name ?name] [(count ?name) ?namelen] [?medium :medium/tracks ?track] [?release :release/media ?medium] [?release :release/year ?year]]")
+        wildcard-pull (vev.pull-text db "[*]" 401)
+        map-query (vev.q-text
+                    db
+                    "{:find [?artist-name ?release-name] :where [[?artist :artist/name \"The Beatles\"] [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]}")
+        composed-rules (vev.q-text-with-rules
+                         db
+                         "[:find ?track-name ?artist-name ?release-name ?release-year :in $ % ?track-name :where [?t :track/name ?track-name] (track-info-composed ?t ?artist-name ?release-name ?release-year)]"
+                         musicbrainz-composed-rules
+                         ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Come Together"))]))
+        not-query (vev.q-text
+                    db
+                    "[:find ?artist-name :where [?artist :artist/name ?artist-name] (not [?artist :artist/gender :artist.gender/male])]")
+        not-join-query (vev.q-text
+                         db
+                         "[:find ?release-name :where [?release :release/name ?release-name] (not-join [?release] [?release :release/artists ?artist] [?artist :artist/name \"Miles Davis\"])]")
+        or-query (vev.q-text
+                   db
+                   "[:find ?artist-name :where (or [?artist :artist/type :artist.type/group] [?artist :artist/gender :artist.gender/male]) [?artist :artist/name ?artist-name]]")
+        or-join-query (vev.q-text
+                        db
+                        "[:find ?release-name :where [?release :release/name ?release-name] (or-join [?release] (and [?release :release/artists ?artist] [?artist :artist/name \"The Beatles\"]) [?release :release/year 1959])]")
+        get-some-query (vev.q-text
+                         db
+                         "[:find ?e ?attr ?name :where [?e :country/name \"United Kingdom\"] [(get-some $ ?e :country/name :artist/name) [?attr ?name]]]")
+        [lookup-country lookup-country-ok] (vev.q-text-scalar
+                                             db
+                                             "[:find ?name . :where [[:country/name \"United Kingdom\"] :country/name ?name]]")
+        dynamic-attr (vev.q-text-with-inputs
+                       db
+                       "[:find ?artist-name :in $ ?country [?reference ...] :where [?artist :artist/name ?artist-name] [?artist ?reference ?country]]"
+                       ([]vev.Query-Input [(vev.query-input-lookup-ref ":country/name" (vev.value-string "United Kingdom"))
+                                           (vev.query-input-collection ([]vev.Value [(vev.value-keyword ":artist/country")]))]))
+        top-duration (vev.q-text
+                       db
+                       "[:find [(min 2 ?millis) (max 2 ?millis)] :where [?track :track/duration ?millis]]")
         pulled (vev.pull-text db "[:artist/name {:release/_artists [:release/name :release/year]}]" 301)
         release-pulled (vev.pull-text db "[:release/name :release/artistCredit {:release/media [:medium/trackCount {:medium/tracks [:track/name :track/duration]}]}]" 401)
         [name-index name-ok] (mb-pull-attr-index (slice pulled.attrs 0) ":artist/name")
@@ -265,6 +311,42 @@
          (= distinct-artists.rows[0].values[1].int-value 2)
          title-stats.ok
          (= (count title-stats.rows) 2)
+         (= (count wildcard-pull.attrs) 7)
+         (mb-pull-tree-has-attr? (slice wildcard-pull.attrs 0) ":release/media")
+         map-query.ok
+         (= (count map-query.rows) 1)
+         (mb-result-has-text-pair? map-query "The Beatles" "Abbey Road")
+         composed-rules.ok
+         (= (count composed-rules.rows) 1)
+         (mb-result-has-track-info? composed-rules "Come Together" "The Beatles" "Abbey Road" 1969)
+         not-query.ok
+         (= (count not-query.rows) 1)
+         (mb-result-has-text? not-query "The Beatles")
+         not-join-query.ok
+         (= (count not-join-query.rows) 1)
+         (mb-result-has-text? not-join-query "Abbey Road")
+         or-query.ok
+         (= (count or-query.rows) 2)
+         (mb-result-has-text? or-query "The Beatles")
+         (mb-result-has-text? or-query "Miles Davis")
+         or-join-query.ok
+         (= (count or-join-query.rows) 2)
+         (mb-result-has-text? or-join-query "Abbey Road")
+         (mb-result-has-text? or-join-query "Kind of Blue")
+         get-some-query.ok
+         (= (count get-some-query.rows) 1)
+         (= get-some-query.rows[0].values[1].text ":country/name")
+         (= get-some-query.rows[0].values[2].text "United Kingdom")
+         lookup-country-ok
+         (= lookup-country.text "United Kingdom")
+         dynamic-attr.ok
+         (= (count dynamic-attr.rows) 1)
+         (mb-result-has-text? dynamic-attr "The Beatles")
+         top-duration.ok
+         (= (count top-duration.rows) 1)
+         (= (count top-duration.rows[0].values) 2)
+         (= (count top-duration.rows[0].values[0].items) 2)
+         (= (count top-duration.rows[0].values[1].items) 2)
          name-ok
          (= pulled.attrs[name-index].v.text "The Beatles")
          releases-ok

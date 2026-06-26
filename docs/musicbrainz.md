@@ -80,8 +80,10 @@ aggregates, prepared EDN text input, collection binding, tuple binding,
 relation binding, scalar/tuple/collection find specs, rule-backed queries,
 duration function expressions, return maps, enum refs through `:db/ident`,
 `get-else`, statistics aggregates, and nested pull through
-release/media/tracks. The detailed coverage ledger is
-`docs/musicbrainz-query-matrix.md`.
+release/media/tracks. It also covers wildcard pull, map-form EDN queries,
+split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`,
+lookup-ref inputs, dynamic attr inputs, and top-n aggregates. The detailed
+coverage ledger is `docs/musicbrainz-query-matrix.md`.
 
 ## Work Items
 
