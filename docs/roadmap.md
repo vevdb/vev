@@ -285,9 +285,12 @@ reopen/index-rebuild cost, and query latency after reopen. The SQLite-backed
 connection keeps a live SQLite handle open across transactions. Split batch
 measurements show SQLite append is currently small compared with in-memory
 transaction/index maintenance. Vev has a conservative append-only incremental
-DB path for direct add-only transactions, but the next durable milestone is
-removing full datom-log copies from ordinary append transactions, followed by
-Datalevin `write-bench`-style throughput and mixed read/write comparisons.
+DB path for direct add-only transactions. A deeper split showed that ordinary
+non-schema transactions were paying unnecessary full-schema validation cost;
+that pass is now skipped when the transaction cannot alter schema validity.
+The next durable milestone is reducing the remaining transaction
+resolution/validation/report overhead, followed by Datalevin `write-bench`-style
+throughput and mixed read/write comparisons.
 
 ## Phase 7: Dogfood
 

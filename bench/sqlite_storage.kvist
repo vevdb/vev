@@ -39,6 +39,34 @@
         (arr.push! tx (vev.add (u64 entity) ":user/age" (vev.value-int (i64 (% entity 100)))))))
     tx))
 
+(defn batch-people-datoms [start-entity: int, n: int, tx: u64] -> [dynamic]vev.Datom
+  (let [datoms (make [dynamic]vev.Datom 0 (* n 3))]
+    (for [offset (arr.range 0 n)]
+      (let [entity (+ start-entity offset)
+            entity-id (u64 entity)]
+        (arr.push! datoms (vev.Datom {e: entity-id
+                                      a: ":user/email"
+                                      v: (vev.value-string (fmt.tprintf "user-%d@example.com" entity))
+                                      tx: tx
+                                      added: true}))
+        (arr.push! datoms (vev.Datom {e: entity-id
+                                      a: ":user/name"
+                                      v: (vev.value-string (fmt.tprintf "User %d" entity))
+                                      tx: tx
+                                      added: true}))
+        (arr.push! datoms (vev.Datom {e: entity-id
+                                      a: ":user/age"
+                                      v: (vev.value-int (i64 (% entity 100)))
+                                      tx: tx
+                                      added: true}))))
+    datoms))
+
+(defn clone-log-with-added [base: []vev.Datom, added: []vev.Datom] -> [dynamic]vev.Datom
+  (let [out (arr.into [dynamic]vev.Datom base)]
+    (for [datom added]
+      (arr.push! out datom))
+    out))
+
 (defn print-timing [workload: string, n: int, samples: []f64]
   (let [timing (bench.timing-from-samples samples)]
     (fmt.printf
@@ -139,6 +167,40 @@
     (print-timing "batch-transact-memory" batch-size (slice memory-samples 0))
     (print-timing "batch-append-sqlite" batch-size (slice sqlite-samples 0))))
 
+(defn measure-append-only-core [base-people: int, batch-size: int, sample-count: int]
+  (let [conn (vev.create-conn)
+        seed-tx (batch-people-tx 1 base-people)
+        seed-report (vev.transact-tx-data (addr conn) (slice seed-tx 0))
+        log-samples (make [dynamic]f64 0 sample-count)
+        index-samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete log-samples))
+    (defer (delete index-samples))
+    (when (not seed-report.ok)
+      (fmt.printf "engine=vev-sqlite workload=append-only-core ok=false error=%s\n" seed-report.error)
+      (vev.delete-tx-report-shallow seed-report)
+      (delete-conn-shallow conn)
+      (delete seed-tx)
+      (return))
+    (delete-live-tx-report-shallow seed-report)
+    (delete seed-tx)
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [added (batch-people-datoms (+ base-people 1 (* sample-index batch-size)) batch-size (+ conn.next-tx (u64 sample-index)))]
+        (let [log-start (time.now)
+              after-log (clone-log-with-added (slice conn.db.datoms 0) (slice added 0))
+              log-elapsed (bench.elapsed-us log-start)]
+          (arr.push! log-samples log-elapsed)
+          (delete after-log))
+        (let [after-log (clone-log-with-added (slice conn.db.datoms 0) (slice added 0))
+              index-start (time.now)
+              after-db (vev.build-db-append-only conn.db after-log (count conn.db.datoms))
+              index-elapsed (bench.elapsed-us index-start)]
+          (arr.push! index-samples index-elapsed)
+          (vev.delete-owned-db after-db))
+        (delete added)))
+    (delete-conn-shallow conn)
+    (print-timing "append-log-copy" batch-size (slice log-samples 0))
+    (print-timing "append-index-build" batch-size (slice index-samples 0))))
+
 (defn seed-durable-db [path: string, people-count: int] -> bool
   (remove-sqlite-files path)
   (let [conn (vev.create-conn)
@@ -225,6 +287,7 @@
     (measure-single-append single-path single-samples)
     (measure-batch-append batch-path batch-size batch-samples)
     (measure-batch-split split-path batch-size batch-samples)
+    (measure-append-only-core reopen-people batch-size reopen-samples)
     (when (seed-durable-db reopen-path reopen-people)
       (measure-reopen reopen-path reopen-people reopen-samples)
       (measure-reopened-query reopen-path reopen-people reopen-samples))))

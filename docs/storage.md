@@ -66,6 +66,8 @@ it has the successful transaction report in hand.
 - `batch-append`: one SQLite-backed transaction for a configurable entity batch
 - `batch-transact-memory`: the in-memory transaction part of the same batch
 - `batch-append-sqlite`: the SQLite append part of the same batch
+- `append-log-copy`: direct copy/append cost for the current datom log
+- `append-index-build`: direct incremental index build cost for the copied log
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 
@@ -95,10 +97,11 @@ Implementation order:
 2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
 3. Continue the append-only transaction path. The current implementation avoids
-   full index rebuilds for conservative direct add-only transactions, but still
-   clones the current datom log per transaction. The next write-performance
-   milestone is a representation that shares old immutable DB/index storage and
-   appends small transaction deltas without copying the full log.
+   full index rebuilds for conservative direct add-only transactions, and the
+   benchmark now separates log copy, incremental index build, transaction
+   memory work, and SQLite append cost. The next write-performance milestone is
+   reducing the remaining transaction resolution/validation/report overhead
+   before introducing a more complex shared DB/index representation.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
 5. Once the local harness is stable, map Datalevin `write-bench` concepts onto
