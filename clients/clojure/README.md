@@ -82,11 +82,12 @@ A mutable connection can also be initialized from an immutable DB snapshot:
   (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
 ```
 
-Durable SQLite-backed connections use the same transaction and DB-value query
-shape:
+Durable connections use the same transaction and DB-value query shape. The
+current backend is SQLite:
 
 ```clojure
-(with-open [conn (vev/open-sqlite "build/lib/libvev.dylib" "app.vev.sqlite")]
+(with-open [conn (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite")]
+  (vev/connection-info conn) ; => {:backend :sqlite, :path "app.vev.sqlite", :basis-t 0, :tx-count 0}
   (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
   (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
 ```

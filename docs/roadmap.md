@@ -65,7 +65,7 @@ Non-goal:
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 363 tests. Remaining work is concentrated in exact
+suite currently passes 364 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
 and durable storage integration.
@@ -91,9 +91,10 @@ Current batch order:
    Datalevin on shared workloads before moving to larger planner benchmarks.
 5. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
    tx-data shapes fail predictably through the portable text/prepared APIs.
-6. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
-   Java feel close to Datomic/DataScript for common tutorials, including
-   listener/report callbacks where useful.
+6. Host wrapper ergonomics: keep C as the stable raw ABI, expose durable
+   storage through storage-neutral `connect`/connection handles, and make
+   Clojure and Java feel close to Datomic/DataScript for common tutorials,
+   including listener/report callbacks where useful.
 7. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
    dataset, run equivalent Datomic workshop queries against Vev and Datomic,
    compare result sets first and performance second.
@@ -282,10 +283,17 @@ metadata rows as it commits and rolls the in-memory connection back if the
 durable append fails. A first SQLite storage benchmark now measures
 single-transaction append latency, multi-entity append batches, full
 reopen/index-rebuild cost, and query latency after reopen. The SQLite-backed
-connection keeps a live SQLite handle open across transactions. The next
-durable milestone is splitting batch append into in-memory transaction cost vs
-durable write cost, followed by Datalevin `write-bench`-style throughput and
-mixed read/write comparisons.
+connection keeps a live SQLite handle open across transactions. Split batch
+measurements show SQLite append is currently small compared with in-memory
+transaction/index maintenance. Vev has a conservative append-only incremental
+DB path for direct add-only transactions. A deeper split showed that ordinary
+non-schema transactions were paying unnecessary full-schema validation cost;
+that pass is now skipped when the transaction cannot alter schema validity.
+Reportable DB snapshots now clone existing indexes/schema caches instead of
+rebuilding every index from datoms. Append-only eligibility also has a
+new-entity bulk-import shortcut. The next durable milestone is reducing the
+remaining append application/report/index maintenance overhead, followed by
+Datalevin `write-bench`-style throughput and mixed read/write comparisons.
 
 ## Phase 7: Dogfood
 

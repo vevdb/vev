@@ -56,6 +56,11 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
+(defrecord DurableConn [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
 (defrecord SQLiteConn [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
@@ -98,17 +103,30 @@
 
 (def open create-conn)
 
-(defn open-sqlite
-  "Open a durable SQLite-backed Vev connection."
-  ([sqlite-path]
-   (open-sqlite (default-library-path) sqlite-path))
-  ([lib-path sqlite-path]
+(defn connect
+  "Open a durable Vev connection.
+
+  The current backend is SQLite. A plain filesystem path and `sqlite://...` URI
+  both select the SQLite backend."
+  ([uri]
+   (connect (default-library-path) uri))
+  ([lib-path uri]
    (let [engine (Vev. (path lib-path))]
      (try
-       (->SQLiteConn engine (.openSqlite engine (path sqlite-path)))
+       (->DurableConn engine (.connect engine (str uri)))
        (catch Throwable error
          (.close engine)
          (throw error))))))
+
+(defn open-sqlite
+  "Open a durable SQLite-backed Vev connection.
+
+  Prefer `connect` for application code; this backend-specific alias remains
+  for compatibility and storage tests."
+  ([sqlite-path]
+   (connect sqlite-path))
+  ([lib-path sqlite-path]
+   (connect lib-path sqlite-path)))
 
 (defn db
   "Return an immutable DB snapshot from a connection."
@@ -117,11 +135,27 @@
     (instance? Conn conn)
     (->DB (:engine conn) (.db (:native conn)))
 
+    (instance? DurableConn conn)
+    (->DB (:engine conn) (.db (:native conn)))
+
     (instance? SQLiteConn conn)
     (->DB (:engine conn) (.db (:native conn)))
 
     :else
     (throw (ex-info "expected Vev connection" {:source conn}))))
+
+(defn connection-info
+  "Return storage metadata for a durable connection."
+  [conn]
+  (cond
+    (instance? DurableConn conn)
+    {:backend (keyword (.backend (:native conn)))
+     :path (.path (:native conn))
+     :basis-t (.basisT (:native conn))
+     :tx-count (.txCount (:native conn))}
+
+    :else
+    (throw (ex-info "expected Vev durable connection" {:source conn}))))
 
 (defn conn-from-db
   "Create a mutable connection initialized from an immutable DB value."

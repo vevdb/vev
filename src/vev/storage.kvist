@@ -329,6 +329,29 @@ sqlite_insert_tx_raw :: proc(handle: rawptr, tx: u64) -> (bool, string) {
     return true, \"\"
 }
 
+sqlite_tx_count_raw :: proc(handle: rawptr) -> (u64, bool, string) {
+    if handle == nil {
+        return 0, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"SELECT COUNT(*) FROM vev_transactions\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return 0, false, sqlite_error_text(db, \"sqlite prepare tx count failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    rc := sqlite3_step(stmt)
+    if rc != SQLITE_ROW {
+        return 0, false, sqlite_error_text(db, \"sqlite tx count failed\")
+    }
+    return u64(sqlite3_column_int64(stmt, 0)), true, \"\"
+}
+
 sqlite_insert_datom_raw :: proc(handle: rawptr, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
     if handle == nil {
         return false, \"sqlite handle was nil\"
@@ -870,6 +893,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (delete-owned-db conn.db)
           (delete conn.listeners)
           (return (SQLite-Conn {path: (string-owned path) conn: (create-conn)}) false handle-error))))))
+
+(defn sqlite-conn-tx-count [store: ^SQLite-Conn] -> [tx-count: u64, ok: bool, error: string]
+  (sqlite-tx-count-raw store^.handle))
 
 (defn close-sqlite-conn [store: SQLite-Conn]
   (sqlite-close-live-raw store.handle)

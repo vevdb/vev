@@ -232,19 +232,36 @@ cd /Users/andreas/Projects/kvist
 Current sample output on June 26, 2026:
 
 ```text
-engine=vev-sqlite workload=single-append n=1 min_us=151 median_us=1805 p90_us=3392 max_us=3740 samples=50
-engine=vev-sqlite workload=batch-append n=100 min_us=8048 median_us=114453 p90_us=210519 max_us=223956 samples=20
-engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=66768 median_us=68268 p90_us=69059 max_us=70098 samples=30
-engine=vev-sqlite workload=reopened-query n=2000 min_us=18 median_us=19 p90_us=24 max_us=212 samples=30
+engine=vev-sqlite workload=single-append n=1 min_us=75 median_us=102 p90_us=131 max_us=232 samples=50
+engine=vev-sqlite workload=batch-append n=100 min_us=2148 median_us=5619 p90_us=6476 max_us=6646 samples=20
+engine=vev-sqlite workload=batch-transact-memory n=100 min_us=1395 median_us=4608 p90_us=5382 max_us=5462 samples=20
+engine=vev-sqlite workload=batch-append-sqlite n=100 min_us=766 median_us=1083 p90_us=1175 max_us=1176 samples=20
+engine=vev-sqlite workload=batch-before-snapshot n=100 min_us=2 median_us=50 p90_us=83 max_us=85 samples=20
+engine=vev-sqlite workload=batch-resolve-tx n=100 min_us=166 median_us=1213 p90_us=1326 max_us=1329 samples=20
+engine=vev-sqlite workload=batch-apply-resolved n=100 min_us=1219 median_us=3326 p90_us=3982 max_us=4041 samples=20
+engine=vev-sqlite workload=append-log-copy n=100 min_us=143 median_us=269 p90_us=342 max_us=388 samples=30
+engine=vev-sqlite workload=append-index-build n=100 min_us=1619 median_us=1724 p90_us=1768 max_us=1791 samples=30
+engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=44274 median_us=45731 p90_us=46812 max_us=47015 samples=30
+engine=vev-sqlite workload=reopened-query n=2000 min_us=18 median_us=19 p90_us=23 max_us=212 samples=30
 ```
 
 This is not yet the final write benchmark. It establishes a repeatable baseline
 for SQLite-backed single-transaction appends, multi-entity transaction batches,
 full persisted DB reopen cost, and query performance after reopen. The current
-batch row measures the whole `transact-sqlite-*` path: in-memory transaction
-work, report generation, SQLite commit, and SQLite index maintenance. The next
-measurement split should separate in-memory transaction cost from durable write
-cost before comparing against Datalevin `write-bench` throughput.
+batch row measures the whole `transact-sqlite-*` path. The split rows show the
+current bottleneck: SQLite append for a 100-entity / 300-datom transaction is
+around 1ms median, while in-memory transaction/index maintenance is around
+4.6ms median as the DB grows. Two fixes moved this down: ordinary non-schema
+transactions skip unnecessary full-schema validation, and transaction DB
+snapshots clone existing indexes/schema caches instead of rebuilding every
+index from datoms. Append-only eligibility also avoids current-DB lookups when
+all ops target entities above the current max entity id, which is common for
+bulk imports. The pipeline split shows snapshot creation is now tens of
+microseconds, resolution is around 1ms, and applying already-resolved append
+ops is around 3.3ms. The append-only core rows show that copying the current
+datom log is sub-millisecond and incremental index construction is around 2ms,
+so the remaining write work is now mostly append application/report/index
+maintenance plus the SQLite commit.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured

@@ -205,7 +205,20 @@ public final class Smoke {
             Path sqlitePath = Path.of("tmp.vev.java.sqlite");
             deleteSqliteFiles(sqlitePath);
             try {
-                try (Vev.SQLiteConnection durable = vev.openSqlite(sqlitePath)) {
+                try (Vev.DurableConnection durable = vev.connect(sqlitePath)) {
+                    if (!"sqlite".equals(durable.backend()) || !sqlitePath.toString().equals(durable.path())) {
+                        throw new IllegalStateException("unexpected durable connection metadata");
+                    }
+                    if (durable.basisT() != 0) {
+                        throw new IllegalStateException("unexpected initial durable basis");
+                    }
+                    if (durable.txCount() != 0) {
+                        throw new IllegalStateException("unexpected initial durable tx count");
+                    }
+                    String info = durable.infoEdn();
+                    if (!info.contains(":backend :sqlite") || !info.contains(":basis-t 0") || !info.contains(":tx-count 0")) {
+                        throw new IllegalStateException("unexpected durable connection info");
+                    }
                     try (Vev.TxReport report = durable.transactReport("""
                             [{:db/id 1
                               :user/name "Durable Ada"
@@ -215,6 +228,12 @@ public final class Smoke {
                         if (!Boolean.TRUE.equals(reportValue.get(":ok"))) {
                             throw new IllegalStateException("unexpected SQLite transaction report");
                         }
+                    }
+                    if (durable.basisT() != 1) {
+                        throw new IllegalStateException("unexpected durable basis after first tx");
+                    }
+                    if (durable.txCount() != 1) {
+                        throw new IllegalStateException("unexpected durable tx count after first tx");
                     }
                     try (Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                          Vev.DB durableDb = durable.db();
@@ -226,10 +245,16 @@ public final class Smoke {
                     }
                 }
 
-                try (Vev.SQLiteConnection durable = vev.openSqlite(sqlitePath);
+                try (Vev.DurableConnection durable = vev.connect(sqlitePath);
                      Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                      Vev.DB durableDb = durable.db();
                      Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {
+                    if (durable.basisT() != 1) {
+                        throw new IllegalStateException("unexpected reopened durable basis");
+                    }
+                    if (durable.txCount() != 1) {
+                        throw new IllegalStateException("unexpected reopened durable tx count");
+                    }
                     System.out.println("sqlite-reopened rows: " + rows.rowCount());
                     if (rows.rowCount() != 1) {
                         throw new IllegalStateException("unexpected SQLite reopened row count");

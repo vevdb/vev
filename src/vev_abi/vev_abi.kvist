@@ -212,6 +212,24 @@ abi_sqlite_conn_error :: proc(conn: rawptr) -> string {
     return ((^ABI_SQLite_Conn)(conn))^.error
 }
 
+abi_sqlite_conn_path :: proc(conn: rawptr) -> string {
+    if conn == nil {
+        return \"\"
+    }
+    return ((^ABI_SQLite_Conn)(conn))^.store.path
+}
+
+abi_sqlite_conn_basis_t :: proc(conn: rawptr) -> u64 {
+    if conn == nil {
+        return 0
+    }
+    next_tx := ((^ABI_SQLite_Conn)(conn))^.store.conn.next_tx
+    if next_tx == 0 {
+        return 0
+    }
+    return next_tx - 1
+}
+
 abi_sqlite_conn_store_tx_source :: proc(conn: rawptr, source: string) {
     append(&((^ABI_SQLite_Conn)(conn))^.tx_sources, source)
 }
@@ -882,6 +900,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 ")
 
 (def Vev-Conn (distinct rawptr))
+(def Vev-Connection (distinct rawptr))
 (def Vev-SQLite-Conn (distinct rawptr))
 (def Vev-DB (distinct rawptr))
 (def Vev-Prepared-Query (distinct rawptr))
@@ -902,6 +921,27 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- sqlite-conn-ptr [conn: Vev-SQLite-Conn] -> ^vev.SQLite-Conn
   (abi-sqlite-conn-ptr (rawptr conn)))
+
+(defn- connection-as-sqlite [conn: Vev-Connection] -> Vev-SQLite-Conn
+  (Vev-SQLite-Conn (rawptr conn)))
+
+(defn- durable-path-from-uri [uri: string] -> string
+  (if (strings.has_prefix uri "sqlite://")
+    (string-owned (slice uri 9))
+    (string-owned uri)))
+
+(defn- connection-info-value [conn: Vev-Connection] -> vev.Value
+  (let [[tx-count _ _] (vev.sqlite-conn-tx-count (sqlite-conn-ptr (connection-as-sqlite conn)))]
+    (vev.value-map
+      ([]vev.Value
+        [(vev.value-keyword (string-owned ":backend"))
+         (vev.value-keyword (string-owned ":sqlite"))
+         (vev.value-keyword (string-owned ":path"))
+         (vev.value-string (string-owned (abi-sqlite-conn-path (rawptr conn))))
+         (vev.value-keyword (string-owned ":basis-t"))
+         (vev.value-int (i64 (abi-sqlite-conn-basis-t (rawptr conn))))
+         (vev.value-keyword (string-owned ":tx-count"))
+         (vev.value-int (i64 tx-count))]))))
 
 (defn- prepared-query-ptr [query: Vev-Prepared-Query] -> ^vev.Prepared-Query
   (abi-prepared-query-ptr (rawptr query)))
@@ -1287,6 +1327,82 @@ abi_free_stmt :: proc(stmt: rawptr) {
         ptr (conn-ptr (Vev-Conn conn))]
     (set! ptr^ (vev.create-conn))
     (Vev-Conn conn)))
+
+@export
+(defn vev_connect :abi "c" [uri: cstring] -> Vev-Connection
+  (odin "context = runtime.default_context()")
+  (when (= uri nil)
+    (let [store (vev.create-sqlite-conn "")]
+      (return (Vev-Connection (abi-alloc-sqlite-conn store false (string-owned "null Vev connection URI"))))))
+  (let [uri-text (text-from-c uri)
+        path (durable-path-from-uri uri-text)
+        [store ok error] (vev.open-sqlite-conn path)
+        out (Vev-Connection (abi-alloc-sqlite-conn store ok (string-owned error)))]
+    (delete uri-text)
+    (delete path)
+    out))
+
+@export
+(defn vev_connection_ok :abi "c" [conn: Vev-Connection] -> bool
+  (odin "context = runtime.default_context()")
+  (abi-sqlite-conn-ok (rawptr conn)))
+
+@export
+(defn vev_connection_error :abi "c" [conn: Vev-Connection] -> cstring
+  (odin "context = runtime.default_context()")
+  (c-string-owned (abi-sqlite-conn-error (rawptr conn))))
+
+@export
+(defn vev_connection_backend :abi "c" [conn: Vev-Connection] -> cstring
+  (odin "context = runtime.default_context()")
+  (if (= (rawptr conn) nil)
+    (c-string-owned "")
+    (c-string-owned "sqlite")))
+
+@export
+(defn vev_connection_path :abi "c" [conn: Vev-Connection] -> cstring
+  (odin "context = runtime.default_context()")
+  (c-string-owned (abi-sqlite-conn-path (rawptr conn))))
+
+@export
+(defn vev_connection_basis_t :abi "c" [conn: Vev-Connection] -> u64
+  (odin "context = runtime.default_context()")
+  (abi-sqlite-conn-basis-t (rawptr conn)))
+
+@export
+(defn vev_connection_tx_count :abi "c" [conn: Vev-Connection] -> u64
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr conn) nil)
+    (return 0))
+  (let [[tx-count _ _] (vev.sqlite-conn-tx-count (sqlite-conn-ptr (connection-as-sqlite conn)))]
+    tx-count))
+
+@export
+(defn vev_connection_info_edn :abi "c" [conn: Vev-Connection] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr conn) nil)
+    (return (c-string-owned "{:backend nil :path \"\" :basis-t 0 :tx-count 0}")))
+  (let [value (connection-info-value conn)
+        text (vev.value-serializable-text value)
+        out (c-string-owned text)]
+    (delete text)
+    (vev.delete-owned-value value)
+    out))
+
+@export
+(defn vev_connection_close :abi "c" [conn: Vev-Connection]
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_close (connection-as-sqlite conn)))
+
+@export
+(defn vev_connection_db :abi "c" [conn: Vev-Connection] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_db (connection-as-sqlite conn)))
+
+@export
+(defn vev_connection_transact_edn_report :abi "c" [conn: Vev-Connection, tx-text: cstring] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_transact_edn_report (connection-as-sqlite conn) tx-text))
 
 @export
 (defn vev_sqlite_conn_open :abi "c" [path: cstring] -> Vev-SQLite-Conn

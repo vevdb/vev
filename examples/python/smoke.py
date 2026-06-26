@@ -366,12 +366,29 @@ def main() -> int:
     sqlite_path = pathlib.Path("tmp.vev.python.sqlite")
     remove_sqlite_files(sqlite_path)
     try:
-        with vev.open_sqlite(sqlite_path) as durable:
+        with vev.connect(sqlite_path) as durable:
+            if durable.backend() != "sqlite" or durable.path() != str(sqlite_path):
+                raise RuntimeError("unexpected durable connection metadata")
+            if durable.basis_t() != 0:
+                raise RuntimeError("unexpected initial durable basis")
+            if durable.tx_count() != 0:
+                raise RuntimeError("unexpected initial durable tx count")
+            info = durable.info_edn()
+            if (
+                ":backend :sqlite" not in info
+                or ":basis-t 0" not in info
+                or ":tx-count 0" not in info
+            ):
+                raise RuntimeError("unexpected durable connection info")
             with durable.transact_report(
                 '[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]'
             ) as report:
                 if not report.value().get(":ok"):
                     raise RuntimeError("unexpected SQLite transaction report")
+            if durable.basis_t() != 1:
+                raise RuntimeError("unexpected durable basis after first tx")
+            if durable.tx_count() != 1:
+                raise RuntimeError("unexpected durable tx count after first tx")
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             ) as all_emails, durable.db() as db:
@@ -380,7 +397,11 @@ def main() -> int:
                 if len(rows) != 1:
                     raise RuntimeError("unexpected SQLite live row count")
 
-        with vev.open_sqlite(sqlite_path) as durable:
+        with vev.connect(sqlite_path) as durable:
+            if durable.basis_t() != 1:
+                raise RuntimeError("unexpected reopened durable basis")
+            if durable.tx_count() != 1:
+                raise RuntimeError("unexpected reopened durable tx count")
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             ) as all_emails, durable.db() as db:

@@ -29,6 +29,17 @@ public final class Vev {
     private final MethodHandle connClose;
     private final MethodHandle connDb;
     private final MethodHandle connFromDb;
+    private final MethodHandle connectionOpen;
+    private final MethodHandle connectionOk;
+    private final MethodHandle connectionError;
+    private final MethodHandle connectionBackend;
+    private final MethodHandle connectionPath;
+    private final MethodHandle connectionBasisT;
+    private final MethodHandle connectionTxCount;
+    private final MethodHandle connectionInfoEdn;
+    private final MethodHandle connectionClose;
+    private final MethodHandle connectionDb;
+    private final MethodHandle connectionTransactEdnReport;
     private final MethodHandle sqliteConnOpen;
     private final MethodHandle sqliteConnOk;
     private final MethodHandle sqliteConnError;
@@ -145,6 +156,17 @@ public final class Vev {
         this.connClose = downcall("vev_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connDb = downcall("vev_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connFromDb = downcall("vev_conn_from_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionOpen = downcall("vev_connect", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionOk = downcall("vev_connection_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
+        this.connectionError = downcall("vev_connection_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionBackend = downcall("vev_connection_backend", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionPath = downcall("vev_connection_path", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionBasisT = downcall("vev_connection_basis_t", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
+        this.connectionTxCount = downcall("vev_connection_tx_count", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
+        this.connectionInfoEdn = downcall("vev_connection_info_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionClose = downcall("vev_connection_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.connectionDb = downcall("vev_connection_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionTransactEdnReport = downcall("vev_connection_transact_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.sqliteConnOpen = downcall("vev_sqlite_conn_open", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.sqliteConnOk = downcall("vev_sqlite_conn_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
         this.sqliteConnError = downcall("vev_sqlite_conn_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -257,6 +279,24 @@ public final class Vev {
         MemorySegment raw = (MemorySegment) connOpenMemory.invoke();
         if (isNull(raw)) throw new IllegalStateException("failed to open Vev connection");
         return new Connection(raw);
+    }
+
+    public DurableConnection connect(Path path) throws Throwable {
+        return connect(path.toString());
+    }
+
+    public DurableConnection connect(String uri) throws Throwable {
+        try (Arena local = Arena.ofConfined()) {
+            MemorySegment raw = (MemorySegment) connectionOpen.invoke(local.allocateUtf8String(uri));
+            if (isNull(raw)) throw new IllegalStateException("failed to connect Vev durable connection");
+            boolean ok = (boolean) connectionOk.invoke(raw);
+            if (!ok) {
+                String error = ownedString((MemorySegment) connectionError.invoke(raw));
+                closeHandle(connectionClose, raw);
+                throw new IllegalStateException(error);
+            }
+            return new DurableConnection(raw);
+        }
     }
 
     public SQLiteConnection openSqlite(Path path) throws Throwable {
@@ -538,6 +578,65 @@ public final class Vev {
         public void close() {
             if (!isNull(raw)) {
                 closeHandle(connClose, raw);
+                raw = MemorySegment.NULL;
+            }
+        }
+    }
+
+    public final class DurableConnection implements AutoCloseable {
+        private MemorySegment raw;
+
+        private DurableConnection(MemorySegment raw) {
+            this.raw = raw;
+        }
+
+        public TxReport transactReport(String tx) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return new TxReport((MemorySegment) connectionTransactEdnReport.invoke(raw, local.allocateUtf8String(tx)));
+            }
+        }
+
+        public DB db() throws Throwable {
+            requireOpen();
+            MemorySegment db = (MemorySegment) connectionDb.invoke(raw);
+            if (isNull(db)) throw new IllegalStateException("failed to retain DB snapshot");
+            return new DB(db);
+        }
+
+        public String backend() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) connectionBackend.invoke(raw));
+        }
+
+        public String path() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) connectionPath.invoke(raw));
+        }
+
+        public long basisT() throws Throwable {
+            requireOpen();
+            return (long) connectionBasisT.invoke(raw);
+        }
+
+        public long txCount() throws Throwable {
+            requireOpen();
+            return (long) connectionTxCount.invoke(raw);
+        }
+
+        public String infoEdn() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) connectionInfoEdn.invoke(raw));
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("durable connection is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(connectionClose, raw);
                 raw = MemorySegment.NULL;
             }
         }

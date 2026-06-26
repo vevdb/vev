@@ -52,18 +52,48 @@ That keeps the wrapper-level connection consistent with the durable store.
 The wrapper now owns a live SQLite handle for its lifetime, so repeated
 transactions do not reopen the file or rerun schema setup on every commit.
 
-The raw C ABI now exposes this durable connection shape through
-`vev_sqlite_conn_t`, including open/ok/error/close, transaction reports, and DB
-snapshots. The Python, Java, Clojure, and Rust example wrappers also expose the
-basic durable shape and smoke-test open/write/close/reopen/query. Explicit
-full DB persist cannot reconstruct report-only tx metadata from a bare DB
-value; metadata rows are written by the SQLite-backed transaction wrapper when
-it has the successful transaction report in hand.
+The public host API now exposes this durable connection shape through
+storage-neutral connection handles:
+
+- C ABI: `vev_connect`, `vev_connection_*`
+- Python: `vev.connect(...)`
+- Java: `vev.connect(...)`
+- Clojure: `vev/connect`
+- Rust example: `DurableConn::open`
+
+The current durable backend is SQLite. A plain filesystem path and
+`sqlite://...` URI both select the SQLite backend. The older
+`vev_sqlite_conn_*`, `open-sqlite`, and `openSqlite` names remain as
+backend-specific compatibility/debug entry points, but application examples
+should use the neutral `connect` shape.
+
+Durable connection metadata is available through the same neutral boundary:
+`vev_connection_backend` reports `"sqlite"` today, `vev_connection_path`
+reports the concrete storage path, and `vev_connection_basis_t` reports the
+last committed transaction visible to the connection. `vev_connection_tx_count`
+reports the number of persisted transaction-log rows. Basis and transaction
+count are recomputed when opening a durable store, so close/reopen preserves
+both rows and observable transaction-log metadata. Higher-level wrappers expose
+the same diagnostic shape as `backend`/`path`/`basis_t`/`tx_count` methods or
+Clojure `connection-info`. `vev_connection_info_edn` is the C-friendly
+convenience form for logging or simple tooling that wants the same metadata as
+one EDN map string.
+
+Explicit full DB persist cannot reconstruct report-only tx metadata from a
+bare DB value; metadata rows are written by the SQLite-backed transaction
+wrapper when it has the successful transaction report in hand.
 
 `bench/sqlite_storage.kvist` now measures the first durable storage baseline:
 
 - `single-append`: one SQLite-backed transaction per entity
 - `batch-append`: one SQLite-backed transaction for a configurable entity batch
+- `batch-transact-memory`: the in-memory transaction part of the same batch
+- `batch-append-sqlite`: the SQLite append part of the same batch
+- `batch-before-snapshot`: reportable DB-before snapshot creation
+- `batch-resolve-tx`: tx-data resolution into concrete tx ops
+- `batch-apply-resolved`: applying already-resolved ops to the connection
+- `append-log-copy`: direct copy/append cost for the current datom log
+- `append-index-build`: direct incremental index build cost for the copied log
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 
@@ -92,9 +122,18 @@ Implementation order:
    need them.
 2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
-3. Split batch append measurements into in-memory transaction cost and durable
-   SQLite write cost, so write-bench work can distinguish Datalog transaction
-   scaling from SQLite commit/index maintenance.
+3. Continue the append-only transaction path. The current implementation avoids
+   full index rebuilds for conservative direct add-only transactions, skips
+   full-schema validation for ordinary non-schema transactions, and clones
+   reportable DB snapshots from existing indexes instead of rebuilding them.
+   Append-only eligibility skips current-DB fact/entity-attr checks when all
+   ops target entities above the current max entity id, which is the common
+   bulk-import shape.
+   The benchmark now separates snapshot, resolution, apply, log copy,
+   incremental index build, and SQLite append cost. The next write-performance
+   milestone is reducing the remaining append application/report/index
+   maintenance overhead before introducing a more complex shared DB/index
+   representation.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
 5. Once the local harness is stable, map Datalevin `write-bench` concepts onto

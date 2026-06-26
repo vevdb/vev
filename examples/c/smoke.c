@@ -189,20 +189,48 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     remove("tmp.vev.c-abi.sqlite-shm");
 
     int ok = 0;
-    vev_sqlite_conn_t durable = NULL;
+    vev_connection_t durable = NULL;
     vev_db_t db = NULL;
     vev_result_t result = NULL;
     vev_tx_report_t report = NULL;
 
-    durable = vev_sqlite_conn_open(path);
-    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
-        const char *error = vev_sqlite_conn_error(durable);
+    durable = vev_connect(path);
+    if (durable == NULL || !vev_connection_ok(durable)) {
+        const char *error = vev_connection_error(durable);
         fprintf(stderr, "failed to open sqlite Vev connection: %s\n", error);
         vev_string_free(error);
         goto cleanup;
     }
+    const char *backend = vev_connection_backend(durable);
+    const char *durable_path = vev_connection_path(durable);
+    if (strcmp(backend, "sqlite") != 0 || strcmp(durable_path, path) != 0) {
+        fprintf(stderr, "unexpected durable connection metadata: backend=%s path=%s\n", backend, durable_path);
+        vev_string_free(backend);
+        vev_string_free(durable_path);
+        goto cleanup;
+    }
+    vev_string_free(backend);
+    vev_string_free(durable_path);
+    if (vev_connection_basis_t(durable) != 0) {
+        fprintf(stderr, "unexpected initial durable basis\n");
+        goto cleanup;
+    }
+    if (vev_connection_tx_count(durable) != 0) {
+        fprintf(stderr, "unexpected initial durable tx count\n");
+        goto cleanup;
+    }
+    const char *info = vev_connection_info_edn(durable);
+    if (strstr(info, ":backend :sqlite") == NULL ||
+        strstr(info, ":basis-t 0") == NULL ||
+        strstr(info, ":tx-count 0") == NULL ||
+        strstr(info, path) == NULL) {
+        fprintf(stderr, "unexpected durable connection info: %s\n", info);
+        vev_string_free(info);
+        goto cleanup;
+    }
+    vev_string_free(info);
 
-    report = vev_sqlite_conn_transact_edn_report(
+    report = vev_connection_transact_edn_report(
         durable,
         "[{:db/id 1 :user/name \"Durable Ada\" :user/email \"durable-ada@example.com\"}]");
     print_and_free("sqlite-tx", vev_tx_report_edn(report));
@@ -211,8 +239,16 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     }
     vev_tx_report_free(report);
     report = NULL;
+    if (vev_connection_basis_t(durable) != 1) {
+        fprintf(stderr, "unexpected durable basis after first tx\n");
+        goto cleanup;
+    }
+    if (vev_connection_tx_count(durable) != 1) {
+        fprintf(stderr, "unexpected durable tx count after first tx\n");
+        goto cleanup;
+    }
 
-    db = vev_sqlite_conn_db(durable);
+    db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int live_rows = result_row_count_or_error("sqlite-live", result);
     printf("sqlite-live rows: %d\n", live_rows);
@@ -224,17 +260,25 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     result = NULL;
     vev_db_release(db);
     db = NULL;
-    vev_sqlite_conn_close(durable);
+    vev_connection_close(durable);
     durable = NULL;
 
-    durable = vev_sqlite_conn_open(path);
-    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
-        const char *error = vev_sqlite_conn_error(durable);
+    durable = vev_connect(path);
+    if (durable == NULL || !vev_connection_ok(durable)) {
+        const char *error = vev_connection_error(durable);
         fprintf(stderr, "failed to reopen sqlite Vev connection: %s\n", error);
         vev_string_free(error);
         goto cleanup;
     }
-    db = vev_sqlite_conn_db(durable);
+    if (vev_connection_basis_t(durable) != 1) {
+        fprintf(stderr, "unexpected reopened durable basis\n");
+        goto cleanup;
+    }
+    if (vev_connection_tx_count(durable) != 1) {
+        fprintf(stderr, "unexpected reopened durable tx count\n");
+        goto cleanup;
+    }
+    db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int reopened_rows = result_row_count_or_error("sqlite-reopened", result);
     printf("sqlite-reopened rows: %d\n", reopened_rows);
@@ -247,7 +291,7 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     vev_db_release(db);
     db = NULL;
 
-    report = vev_sqlite_conn_transact_edn_report(
+    report = vev_connection_transact_edn_report(
         durable,
         "[{:db/id 2 :user/name \"Durable Grace\" :user/email \"durable-grace@example.com\"}]");
     if (!tx_report_ok_or_error("sqlite-second-tx", report)) {
@@ -255,17 +299,33 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     }
     vev_tx_report_free(report);
     report = NULL;
-    vev_sqlite_conn_close(durable);
+    if (vev_connection_basis_t(durable) != 2) {
+        fprintf(stderr, "unexpected durable basis after second tx\n");
+        goto cleanup;
+    }
+    if (vev_connection_tx_count(durable) != 2) {
+        fprintf(stderr, "unexpected durable tx count after second tx\n");
+        goto cleanup;
+    }
+    vev_connection_close(durable);
     durable = NULL;
 
-    durable = vev_sqlite_conn_open(path);
-    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
-        const char *error = vev_sqlite_conn_error(durable);
+    durable = vev_connect(path);
+    if (durable == NULL || !vev_connection_ok(durable)) {
+        const char *error = vev_connection_error(durable);
         fprintf(stderr, "failed to reopen sqlite Vev connection after second tx: %s\n", error);
         vev_string_free(error);
         goto cleanup;
     }
-    db = vev_sqlite_conn_db(durable);
+    if (vev_connection_basis_t(durable) != 2) {
+        fprintf(stderr, "unexpected final reopened durable basis\n");
+        goto cleanup;
+    }
+    if (vev_connection_tx_count(durable) != 2) {
+        fprintf(stderr, "unexpected final reopened durable tx count\n");
+        goto cleanup;
+    }
+    db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int final_rows = result_row_count_or_error("sqlite-final", result);
     printf("sqlite-final rows: %d\n", final_rows);
@@ -287,7 +347,7 @@ cleanup:
         vev_db_release(db);
     }
     if (durable != NULL) {
-        vev_sqlite_conn_close(durable);
+        vev_connection_close(durable);
     }
     remove(path);
     remove("tmp.vev.c-abi.sqlite-wal");

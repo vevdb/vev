@@ -39,6 +39,34 @@
         (arr.push! tx (vev.add (u64 entity) ":user/age" (vev.value-int (i64 (% entity 100)))))))
     tx))
 
+(defn batch-people-datoms [start-entity: int, n: int, tx: u64] -> [dynamic]vev.Datom
+  (let [datoms (make [dynamic]vev.Datom 0 (* n 3))]
+    (for [offset (arr.range 0 n)]
+      (let [entity (+ start-entity offset)
+            entity-id (u64 entity)]
+        (arr.push! datoms (vev.Datom {e: entity-id
+                                      a: ":user/email"
+                                      v: (vev.value-string (fmt.tprintf "user-%d@example.com" entity))
+                                      tx: tx
+                                      added: true}))
+        (arr.push! datoms (vev.Datom {e: entity-id
+                                      a: ":user/name"
+                                      v: (vev.value-string (fmt.tprintf "User %d" entity))
+                                      tx: tx
+                                      added: true}))
+        (arr.push! datoms (vev.Datom {e: entity-id
+                                      a: ":user/age"
+                                      v: (vev.value-int (i64 (% entity 100)))
+                                      tx: tx
+                                      added: true}))))
+    datoms))
+
+(defn clone-log-with-added [base: []vev.Datom, added: []vev.Datom] -> [dynamic]vev.Datom
+  (let [out (arr.into [dynamic]vev.Datom base)]
+    (for [datom added]
+      (arr.push! out datom))
+    out))
+
 (defn print-timing [workload: string, n: int, samples: []f64]
   (let [timing (bench.timing-from-samples samples)]
     (fmt.printf
@@ -100,6 +128,128 @@
         (arr.push! samples elapsed)))
     (vev.close-sqlite-conn store)
     (print-timing "batch-append" batch-size (slice samples 0))))
+
+(defn measure-batch-split [path: string, batch-size: int, sample-count: int]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)
+        memory-samples (make [dynamic]f64 0 sample-count)
+        sqlite-samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete memory-samples))
+    (defer (delete sqlite-samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=batch-split ok=false error=%s\n" open-error)
+      (return))
+    (for [i (arr.range 0 sample-count)]
+      (let [tx (batch-people-tx (+ 1 (* i batch-size)) batch-size)
+            memory-start (time.now)
+            report (vev.transact-tx-data (addr store.conn) (slice tx 0))
+            memory-elapsed (bench.elapsed-us memory-start)]
+        (when (not report.ok)
+          (fmt.printf "engine=vev-sqlite workload=batch-transact-memory ok=false error=%s\n" report.error)
+          (vev.delete-tx-report-shallow report)
+          (delete tx)
+          (vev.close-sqlite-conn store)
+          (return))
+        (arr.push! memory-samples memory-elapsed)
+        (let [sqlite-start (time.now)
+              [append-ok append-error] (vev.append-tx-report-sqlite-handle store.handle report)
+              sqlite-elapsed (bench.elapsed-us sqlite-start)]
+          (when (not append-ok)
+            (fmt.printf "engine=vev-sqlite workload=batch-append-sqlite ok=false error=%s\n" append-error)
+            (delete-live-tx-report-shallow report)
+            (delete tx)
+            (vev.close-sqlite-conn store)
+            (return))
+          (arr.push! sqlite-samples sqlite-elapsed))
+        (delete-live-tx-report-shallow report)
+        (delete tx)))
+    (vev.close-sqlite-conn store)
+    (print-timing "batch-transact-memory" batch-size (slice memory-samples 0))
+    (print-timing "batch-append-sqlite" batch-size (slice sqlite-samples 0))))
+
+(defn measure-batch-pipeline-split [path: string, batch-size: int, sample-count: int]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)
+        before-samples (make [dynamic]f64 0 sample-count)
+        resolve-samples (make [dynamic]f64 0 sample-count)
+        apply-samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete before-samples))
+    (defer (delete resolve-samples))
+    (defer (delete apply-samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=batch-pipeline-split ok=false error=%s\n" open-error)
+      (return))
+    (for [i (arr.range 0 sample-count)]
+      (let [tx (batch-people-tx (+ 1 (* i batch-size)) batch-size)
+            before-start (time.now)
+            before (vev.clone-db store.conn.db)
+            before-elapsed (bench.elapsed-us before-start)
+            resolve-start (time.now)
+            resolved (vev.resolve-tx-data-for-tx before (slice tx 0) store.conn.next-tx)
+            resolve-elapsed (bench.elapsed-us resolve-start)]
+        (arr.push! before-samples before-elapsed)
+        (arr.push! resolve-samples resolve-elapsed)
+        (when (not resolved.ok)
+          (fmt.printf "engine=vev-sqlite workload=batch-resolve-tx ok=false error=%s\n" resolved.error)
+          (vev.delete-owned-db before)
+          (delete resolved.ops)
+          (delete resolved.tx-meta)
+          (delete resolved.tempids)
+          (delete tx)
+          (vev.close-sqlite-conn store)
+          (return))
+        (let [apply-start (time.now)
+              report (vev.transact-ops-with-tempids-from-before (addr store.conn) before (slice resolved.ops 0) (slice resolved.tx-meta 0) resolved.tempids)
+              apply-elapsed (bench.elapsed-us apply-start)]
+          (arr.push! apply-samples apply-elapsed)
+          (delete resolved.ops)
+          (delete resolved.tx-meta)
+          (when (not report.ok)
+            (fmt.printf "engine=vev-sqlite workload=batch-apply-resolved ok=false error=%s\n" report.error)
+            (vev.delete-tx-report-shallow report)
+            (delete tx)
+            (vev.close-sqlite-conn store)
+            (return))
+          (delete-live-tx-report-shallow report))
+        (delete tx)))
+    (vev.close-sqlite-conn store)
+    (print-timing "batch-before-snapshot" batch-size (slice before-samples 0))
+    (print-timing "batch-resolve-tx" batch-size (slice resolve-samples 0))
+    (print-timing "batch-apply-resolved" batch-size (slice apply-samples 0))))
+
+(defn measure-append-only-core [base-people: int, batch-size: int, sample-count: int]
+  (let [conn (vev.create-conn)
+        seed-tx (batch-people-tx 1 base-people)
+        seed-report (vev.transact-tx-data (addr conn) (slice seed-tx 0))
+        log-samples (make [dynamic]f64 0 sample-count)
+        index-samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete log-samples))
+    (defer (delete index-samples))
+    (when (not seed-report.ok)
+      (fmt.printf "engine=vev-sqlite workload=append-only-core ok=false error=%s\n" seed-report.error)
+      (vev.delete-tx-report-shallow seed-report)
+      (delete-conn-shallow conn)
+      (delete seed-tx)
+      (return))
+    (delete-live-tx-report-shallow seed-report)
+    (delete seed-tx)
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [added (batch-people-datoms (+ base-people 1 (* sample-index batch-size)) batch-size (+ conn.next-tx (u64 sample-index)))]
+        (let [log-start (time.now)
+              after-log (clone-log-with-added (slice conn.db.datoms 0) (slice added 0))
+              log-elapsed (bench.elapsed-us log-start)]
+          (arr.push! log-samples log-elapsed)
+          (delete after-log))
+        (let [after-log (clone-log-with-added (slice conn.db.datoms 0) (slice added 0))
+              index-start (time.now)
+              after-db (vev.build-db-append-only conn.db after-log (count conn.db.datoms))
+              index-elapsed (bench.elapsed-us index-start)]
+          (arr.push! index-samples index-elapsed)
+          (vev.delete-owned-db after-db))
+        (delete added)))
+    (delete-conn-shallow conn)
+    (print-timing "append-log-copy" batch-size (slice log-samples 0))
+    (print-timing "append-index-build" batch-size (slice index-samples 0))))
 
 (defn seed-durable-db [path: string, people-count: int] -> bool
   (remove-sqlite-files path)
@@ -173,6 +323,7 @@
   (defer (free_all context.allocator))
   (let [single-path "tmp.vev.bench.single.sqlite"
         batch-path "tmp.vev.bench.batch.sqlite"
+        split-path "tmp.vev.bench.split.sqlite"
         reopen-path "tmp.vev.bench.reopen.sqlite"
         single-samples 50
         batch-size 100
@@ -181,9 +332,13 @@
         reopen-samples 30]
     (defer (remove-sqlite-files single-path))
     (defer (remove-sqlite-files batch-path))
+    (defer (remove-sqlite-files split-path))
     (defer (remove-sqlite-files reopen-path))
     (measure-single-append single-path single-samples)
     (measure-batch-append batch-path batch-size batch-samples)
+    (measure-batch-split split-path batch-size batch-samples)
+    (measure-batch-pipeline-split split-path batch-size batch-samples)
+    (measure-append-only-core reopen-people batch-size reopen-samples)
     (when (seed-durable-db reopen-path reopen-people)
       (measure-reopen reopen-path reopen-people reopen-samples)
       (measure-reopened-query reopen-path reopen-people reopen-samples))))

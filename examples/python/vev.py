@@ -125,6 +125,30 @@ class Library:
         lib.vev_conn_db.restype = ctypes.c_void_p
         lib.vev_conn_from_db.argtypes = [ctypes.c_void_p]
         lib.vev_conn_from_db.restype = ctypes.c_void_p
+        lib.vev_connect.argtypes = [ctypes.c_char_p]
+        lib.vev_connect.restype = ctypes.c_void_p
+        lib.vev_connection_ok.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_ok.restype = ctypes.c_bool
+        lib.vev_connection_error.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_error.restype = ctypes.c_void_p
+        lib.vev_connection_backend.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_backend.restype = ctypes.c_void_p
+        lib.vev_connection_path.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_path.restype = ctypes.c_void_p
+        lib.vev_connection_basis_t.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_basis_t.restype = ctypes.c_ulonglong
+        lib.vev_connection_tx_count.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_tx_count.restype = ctypes.c_ulonglong
+        lib.vev_connection_info_edn.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_info_edn.restype = ctypes.c_void_p
+        lib.vev_connection_close.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_db.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_db.restype = ctypes.c_void_p
+        lib.vev_connection_transact_edn_report.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_connection_transact_edn_report.restype = ctypes.c_void_p
         lib.vev_sqlite_conn_open.argtypes = [ctypes.c_char_p]
         lib.vev_sqlite_conn_open.restype = ctypes.c_void_p
         lib.vev_sqlite_conn_ok.argtypes = [ctypes.c_void_p]
@@ -499,6 +523,10 @@ def open_memory() -> "Connection":
     return Connection(default_library())
 
 
+def connect(uri: str | pathlib.Path) -> "DurableConnection":
+    return DurableConnection(default_library(), uri)
+
+
 def open_sqlite(path: str | pathlib.Path) -> "SQLiteConnection":
     return SQLiteConnection(default_library(), path)
 
@@ -586,6 +614,83 @@ class Connection:
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("connection is closed")
+
+
+class DurableConnection:
+    def __init__(self, library: Library, uri: str | pathlib.Path):
+        self._library = library
+        self._handle = library.lib.vev_connect(_bytes(str(uri)))
+        if not self._handle:
+            raise VevError("failed to connect Vev durable connection")
+        if not library.lib.vev_connection_ok(self._handle):
+            error = library.owned_text(library.lib.vev_connection_error(self._handle))
+            self.close()
+            raise VevError(error)
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_connection_close(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "DurableConnection":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def transact_report(self, tx_edn: str) -> "TxReport":
+        self._require_open()
+        handle = self._library.lib.vev_connection_transact_edn_report(
+            self._handle, _bytes(tx_edn)
+        )
+        if not handle:
+            raise VevError("failed to transact")
+        return TxReport(self._library, handle)
+
+    def db(self) -> "DB":
+        self._require_open()
+        handle = self._library.lib.vev_connection_db(self._handle)
+        if not handle:
+            raise VevError("failed to retain DB snapshot")
+        return DB(self._library, handle)
+
+    def backend(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_connection_backend(self._handle)
+        )
+
+    def path(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_connection_path(self._handle)
+        )
+
+    def basis_t(self) -> int:
+        self._require_open()
+        return int(self._library.lib.vev_connection_basis_t(self._handle))
+
+    def tx_count(self) -> int:
+        self._require_open()
+        return int(self._library.lib.vev_connection_tx_count(self._handle))
+
+    def info_edn(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_connection_info_edn(self._handle)
+        )
+
+    def prepare(
+        self, query_edn: str, source_names: list[str] | None = None
+    ) -> "PreparedQuery":
+        return PreparedQuery(self._library, query_edn, source_names)
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("durable connection is closed")
 
 
 class SQLiteConnection:

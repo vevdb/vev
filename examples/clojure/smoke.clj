@@ -147,13 +147,19 @@
   (let [sqlite-path "tmp.vev.clojure.sqlite"]
     (delete-sqlite-files! sqlite-path)
     (try
-      (with-open [durable (vev/open-sqlite lib-path sqlite-path)]
+      (with-open [durable (vev/connect lib-path sqlite-path)]
+        (when (not= {:backend :sqlite :path sqlite-path :basis-t 0 :tx-count 0} (vev/connection-info durable))
+          (throw (ex-info "unexpected durable connection metadata" {})))
         (let [tx (vev/transact! durable
                    [{:db/id 1
                      :user/name "Durable Ada"
                      :user/email "durable-ada@example.com"}])]
           (when-not (:ok tx)
             (throw (ex-info "unexpected SQLite transaction report" {:report tx}))))
+        (when (not= 1 (:basis-t (vev/connection-info durable)))
+          (throw (ex-info "unexpected durable basis after first tx" {})))
+        (when (not= 1 (:tx-count (vev/connection-info durable)))
+          (throw (ex-info "unexpected durable tx count after first tx" {})))
         (with-open [db (vev/db durable)
                     all-emails (vev/prepare durable
                                  '[:find ?e ?email
@@ -162,11 +168,15 @@
             (println "sqlite-live rows:" rows)
             (when-not (= 1 (count rows))
               (throw (ex-info "unexpected SQLite live row count" {:rows rows}))))))
-      (with-open [durable (vev/open-sqlite lib-path sqlite-path)
+      (with-open [durable (vev/connect lib-path sqlite-path)
                   db (vev/db durable)
                   all-emails (vev/prepare durable
                                '[:find ?e ?email
                                  :where [?e :user/email ?email]])]
+        (when (not= 1 (:basis-t (vev/connection-info durable)))
+          (throw (ex-info "unexpected reopened durable basis" {})))
+        (when (not= 1 (:tx-count (vev/connection-info durable)))
+          (throw (ex-info "unexpected reopened durable tx count" {})))
         (let [rows (vev/q db all-emails)]
           (println "sqlite-reopened rows:" rows)
           (when-not (= 1 (count rows))
