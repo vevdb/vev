@@ -212,8 +212,11 @@ public final class Smoke {
                     if (durable.basisT() != 0) {
                         throw new IllegalStateException("unexpected initial durable basis");
                     }
+                    if (durable.txCount() != 0) {
+                        throw new IllegalStateException("unexpected initial durable tx count");
+                    }
                     String info = durable.infoEdn();
-                    if (!info.contains(":backend :sqlite") || !info.contains(":basis-t 0")) {
+                    if (!info.contains(":backend :sqlite") || !info.contains(":basis-t 0") || !info.contains(":tx-count 0")) {
                         throw new IllegalStateException("unexpected durable connection info");
                     }
                     try (Vev.TxReport report = durable.transactReport("""
@@ -228,6 +231,9 @@ public final class Smoke {
                     }
                     if (durable.basisT() != 1) {
                         throw new IllegalStateException("unexpected durable basis after first tx");
+                    }
+                    if (durable.txCount() != 1) {
+                        throw new IllegalStateException("unexpected durable tx count after first tx");
                     }
                     try (Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                          Vev.DB durableDb = durable.db();
@@ -245,6 +251,9 @@ public final class Smoke {
                      Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {
                     if (durable.basisT() != 1) {
                         throw new IllegalStateException("unexpected reopened durable basis");
+                    }
+                    if (durable.txCount() != 1) {
+                        throw new IllegalStateException("unexpected reopened durable tx count");
                     }
                     System.out.println("sqlite-reopened rows: " + rows.rowCount());
                     if (rows.rowCount() != 1) {

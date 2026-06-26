@@ -37,6 +37,7 @@ unsafe extern "C" {
     fn vev_connection_backend(conn: VevConnection) -> *const c_char;
     fn vev_connection_path(conn: VevConnection) -> *const c_char;
     fn vev_connection_basis_t(conn: VevConnection) -> c_ulonglong;
+    fn vev_connection_tx_count(conn: VevConnection) -> c_ulonglong;
     fn vev_connection_info_edn(conn: VevConnection) -> *const c_char;
     fn vev_connection_close(conn: VevConnection);
     fn vev_connection_db(conn: VevConnection) -> VevDb;
@@ -337,6 +338,10 @@ impl DurableConn {
 
     fn basis_t(&self) -> u64 {
         unsafe { vev_connection_basis_t(self.raw) as u64 }
+    }
+
+    fn tx_count(&self) -> u64 {
+        unsafe { vev_connection_tx_count(self.raw) as u64 }
     }
 
     fn info_edn(&self) -> String {
@@ -876,8 +881,15 @@ fn main() -> Result<(), String> {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected initial durable basis".to_string());
         }
+        if durable.tx_count() != 0 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected initial durable tx count".to_string());
+        }
         let info = durable.info_edn();
-        if !info.contains(":backend :sqlite") || !info.contains(":basis-t 0") {
+        if !info.contains(":backend :sqlite")
+            || !info.contains(":basis-t 0")
+            || !info.contains(":tx-count 0")
+        {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected durable connection info".to_string());
         }
@@ -891,6 +903,10 @@ fn main() -> Result<(), String> {
         if durable.basis_t() != 1 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected durable basis after first tx".to_string());
+        }
+        if durable.tx_count() != 1 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable tx count after first tx".to_string());
         }
         let durable_query =
             PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;
@@ -907,6 +923,10 @@ fn main() -> Result<(), String> {
         if durable.basis_t() != 1 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected reopened durable basis".to_string());
+        }
+        if durable.tx_count() != 1 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected reopened durable tx count".to_string());
         }
         let durable_query =
             PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;

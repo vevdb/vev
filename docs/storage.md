@@ -70,12 +70,14 @@ should use the neutral `connect` shape.
 Durable connection metadata is available through the same neutral boundary:
 `vev_connection_backend` reports `"sqlite"` today, `vev_connection_path`
 reports the concrete storage path, and `vev_connection_basis_t` reports the
-last committed transaction visible to the connection. That basis is recomputed
-when opening a durable store, so close/reopen preserves both rows and the
-observable transaction basis. Higher-level wrappers expose the same diagnostic
-shape as `backend`/`path`/`basis_t` methods or Clojure `connection-info`.
-`vev_connection_info_edn` is the C-friendly convenience form for logging or
-simple tooling that wants the same metadata as one EDN map string.
+last committed transaction visible to the connection. `vev_connection_tx_count`
+reports the number of persisted transaction-log rows. Basis and transaction
+count are recomputed when opening a durable store, so close/reopen preserves
+both rows and observable transaction-log metadata. Higher-level wrappers expose
+the same diagnostic shape as `backend`/`path`/`basis_t`/`tx_count` methods or
+Clojure `connection-info`. `vev_connection_info_edn` is the C-friendly
+convenience form for logging or simple tooling that wants the same metadata as
+one EDN map string.
 
 Explicit full DB persist cannot reconstruct report-only tx metadata from a
 bare DB value; metadata rows are written by the SQLite-backed transaction

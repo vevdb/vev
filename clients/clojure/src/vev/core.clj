@@ -151,7 +151,8 @@
     (instance? DurableConn conn)
     {:backend (keyword (.backend (:native conn)))
      :path (.path (:native conn))
-     :basis-t (.basisT (:native conn))}
+     :basis-t (.basisT (:native conn))
+     :tx-count (.txCount (:native conn))}
 
     :else
     (throw (ex-info "expected Vev durable connection" {:source conn}))))
