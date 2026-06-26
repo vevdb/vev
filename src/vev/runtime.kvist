@@ -650,6 +650,14 @@
     .Symbol (return (value-symbol column.texts[row]) true))
   (return (Value {}) false))
 
+(defn add-relation-column-row! [out: ^[dynamic]Relation-Column, columns: []Relation-Column, row: int] -> bool
+  (for [column index columns]
+    (let [[value value-ok] (typed-relation-column-value column row)]
+      (when (or (not value-ok)
+                (not (relation-column-add! (addr out^[index]) value)))
+        (return false))))
+  true)
+
 (defn typed-relation-row-value [rel: Typed-Relation, row: int, name: string] -> [value: Value, ok: bool]
   (let [[column-index column-ok] (typed-relation-attr-index rel name)]
     (when (not column-ok)
@@ -7993,15 +8001,30 @@
 (defn query-relation-filter-predicate [db: DB, rel: Query-Relation, predicate: Predicate, registry: []Native-Query-Fn] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
         attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
-        tuples (make [dynamic]Binding)]
-    (for [tuple rel.tuples]
+        tuples (make [dynamic]Binding)
+        typed-columns (if rel.has-typed-columns
+                        (relation-columns-for-attrs (slice rel.attrs 0))
+                        (make [dynamic]Relation-Column))
+        typed-rows 0
+        typed-ok rel.has-typed-columns]
+    (for [tuple row rel.tuples]
       (when (predicate-matches-with-db-and-fns? db predicate tuple registry)
+        (when typed-ok
+          (if (add-relation-column-row! (addr typed-columns) (slice rel.typed-columns 0) row)
+            (set! typed-rows (+ typed-rows 1))
+            (set! typed-ok false)))
         (arr.push! tuples (clone-binding tuple))))
+    (when (not typed-ok)
+      (delete-relation-columns typed-columns)
+      (set! typed-columns (make [dynamic]Relation-Column))
+      (set! typed-rows 0))
     (Query-Relation {attrs: attrs
                      attr-sources: attr-sources
                      attr-index: (query-relation-attr-index (slice attrs 0))
                      tuples: tuples
-                     typed-columns: (make [dynamic]Relation-Column)})))
+                     typed-columns: typed-columns
+                     typed-rows: typed-rows
+                     has-typed-columns: typed-ok})))
 
 (defn query-relation-extend-function [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> Query-Relation
   (let [bindings (bindings-after-function-with-fns (slice rel.tuples 0) function registry)

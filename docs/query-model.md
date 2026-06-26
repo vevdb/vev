@@ -227,6 +227,13 @@ column cache on their result relation. The join still emits compatibility
 same time, so downstream typed joins and simple result projection can stay on
 the cached-column path instead of rebuilding typed data from row bindings.
 
+Sixth slice implemented: predicate filters now preserve cached typed columns
+when the input relation already has them. Matching rows are copied into fresh
+typed columns in lockstep with the compatibility tuple output. If a row cannot
+be represented in the typed layout, the operator drops back to the ordinary
+tuple-only relation, so the cache remains an optimization rather than a semantic
+requirement.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
