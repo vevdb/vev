@@ -245,6 +245,27 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn append-var-binding-attr! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, name: string, source: string]
+  (when (= name "")
+    (return))
+  (when (not (string-slice-contains? (slice attrs^ 0) name))
+    (arr.push! attrs^ name)
+    (arr.push! attr-sources^ source)))
+
+(defn append-clause-term-var-attr! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, term: Term, source: string]
+  (when (= term.kind .Var)
+    (append-var-binding-attr! attrs attr-sources term.name source)))
+
+(defn clause-output-attrs [clause-value: Clause, source: string] -> [attrs: [dynamic]string, attr-sources: [dynamic]string]
+  (let [out-attrs (make [dynamic]string)
+        out-sources (make [dynamic]string)]
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.e source)
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.a source)
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.v source)
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.tx-term source)
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.op-term source)
+    (return out-attrs out-sources)))
+
 (defn query-relation-attr-index [attrs: []string] -> map[string]int
   (let [index (make (map string int))]
     (for [attr attr-index attrs]
@@ -8009,26 +8030,36 @@
       (delete out)
       rel)))
 
+(defn query-relation-from-db-clause [db: DB, clause-value: Clause, source: string] -> Query-Relation
+  (let [[attrs attr-sources] (clause-output-attrs clause-value source)
+        tuples (make [dynamic]Binding)]
+    (let [candidates (clause-candidate-indexes db clause-value (Binding {})) :defer]
+      (for [datom-index candidates]
+        (let [datom db.datoms[datom-index]]
+          (when (datom-current-at? db datom-index)
+            (let [next (Binding {items: (make [dynamic]Var-Binding 0 (count attrs))})]
+              (if (datom-clause-matches? db datom clause-value (addr next))
+                (arr.push! tuples next)
+                (delete next.items)))))))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples})))
+
 (defn query-relation-from-clause [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, clause-value: Clause] -> Query-Relation
-  (let [out (make [dynamic]Binding)
-        empty (Binding {})]
-    (if clause-value.has-source
-      (if (query-source-input? query clause-value.source)
-        (do
-          (delete out)
-          (return (query-relation-from-source-input-clause query inputs clause-value)))
-        (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
-          (when source-ok
-            (append-bindings-after-clause! (addr out) source-db (unsourced-clause clause-value) empty))))
-      (append-bindings-after-clause! (addr out) db clause-value empty))
-    (let [source (if (and clause-value.has-source
-                          (not (= clause-value.source "$"))
-                          (query-source-db? sources clause-value.source))
-                   clause-value.source
-                   "")
-          rel (query-relation-from-bindings-with-source (slice out 0) source)]
-      (delete out)
-      rel)))
+  (if clause-value.has-source
+    (if (query-source-input? query clause-value.source)
+      (return (query-relation-from-source-input-clause query inputs clause-value))
+      (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+        (when source-ok
+          (let [source-name (if (and (not (= clause-value.source "$"))
+                                     (query-source-db? sources clause-value.source))
+                              clause-value.source
+                              "")]
+            (return (query-relation-from-db-clause source-db (unsourced-clause clause-value) source-name))))))
+    (return (query-relation-from-db-clause db clause-value "")))
+  (query-relation-empty))
+
 
 (defn query-relation-reduce [db: DB, sources: []DB-Source, relations: []Query-Relation] -> Query-Relation
   (let [current (query-relation-singleton)]

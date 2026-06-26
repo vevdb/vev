@@ -205,6 +205,14 @@ also uses a fast merge after typed key equality, appending only right-side
 non-common vars instead of re-running generic binding agreement checks. This
 is still a general operator improvement, not a benchmark-specific recognizer.
 
+Third slice implemented: ordinary DB data clauses in the relation engine now
+derive their relation attrs directly from the clause shape and build
+`Query-Relation` rows directly from candidate datoms. This avoids the previous
+extra pass where clause bindings were materialized first and relation attrs
+were rediscovered by scanning row bindings. The semantic matcher still owns
+the per-datom correctness checks, so this is a relation construction change,
+not a shortcut around Datalog semantics.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
