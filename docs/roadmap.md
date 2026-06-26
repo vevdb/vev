@@ -60,17 +60,15 @@ Goal:
 
 Non-goal:
 
-- durable storage
-- SQLite integration
 - server/transactor packaging
 
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 357 tests. Remaining work is concentrated in exact
+suite currently passes 360 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
-MusicBrainz/Datomic workload coverage, and higher-level host wrapper
-ergonomics.
+MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
+and durable storage integration.
 
 Current batch order:
 
@@ -184,11 +182,11 @@ Goal:
 - compare result sets before comparing performance
 - use the workload to expose planner, rule, pull, aggregate, and API gaps
 
-Why before durability:
+Why it matters:
 
 - MusicBrainz is a real Datomic-shaped workload, not a synthetic microbench
 - it tests whether Vev can follow existing Datomic teaching material
-- it gives a shared correctness/performance target before SQLite storage
+- it gives a shared correctness/performance target for SQLite storage
 - it exercises large in-memory indexes, immutable DB values, EDN text APIs, and
   host wrappers under realistic pressure
 
@@ -199,9 +197,9 @@ Initial scope:
 - store expected query results in Vev tests or benchmark fixtures
 - report Datomic vs Vev timings as comparative ratios, not raw claims
 
-Status: not started. This should happen after the next parser/callback cleanup
-batch, after the first Datalevin benchmark ladder steps are running, and before
-durable SQLite work.
+Status: not started. This should happen alongside the durable-storage phase,
+after the basic SQLite reopen/query loop exists. It should validate that
+durability preserves the same Datomic-shaped semantics as the in-memory engine.
 
 ## Phase 5b: External Optimizer Benchmarks
 
@@ -272,9 +270,10 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: not started. Keep this postponed until parser/API exactness,
-MusicBrainz/Datomic workload coverage, and rule/query performance are stable
-enough that the storage layer can preserve semantics instead of reshaping them.
+Status: active. The first implemented slice is snapshot-file persistence using
+the existing serializable datom text format. This is a storage-boundary
+scaffold, not the production SQLite backend. The next step is a SQLite adapter
+that preserves the same open/write/close/reopen/query contract.
 
 ## Phase 7: Dogfood
 
@@ -353,21 +352,21 @@ Non-goal:
 
 ## Current rule
 
-Do not start durable storage by solving:
+Do not continue durable storage by solving:
 
 - every backend
 - every host language
 - every deployment story
 
-Get the in-memory semantic core, EDN/C ABI surface, and performance baseline
-right first. The next durable-storage gate is not "all possible DataScript host
-details"; it is:
+The in-memory semantic core, EDN/C ABI surface, and performance baseline are
+now strong enough to start durability. The next durable-storage gate is not
+"all possible DataScript host details"; it is:
 
-- portable parser and tx-data APIs reject bad input predictably
-- recursive rules and large relation queries have measured, acceptable behavior
-- MusicBrainz/Datomic workshop queries have correctness coverage and comparison
-  benchmarks
-- Clojure/Java examples can follow common Datomic/DataScript tutorial shapes
+- SQLite-backed open/write/close/reopen/query works through the same semantic
+  engine path as in-memory Vev
+- transaction boundaries and tx metadata are durable
+- immutable DB snapshot semantics remain visible through the native ABI
+- MusicBrainz/Datomic workshop queries validate durable correctness and
+  performance once the basic SQLite backend exists
 
-SQLite durability comes after those gates, so storage preserves established
-semantics instead of reshaping them.
+Storage must preserve established semantics instead of reshaping them.

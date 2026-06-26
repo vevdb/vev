@@ -3,6 +3,7 @@
 (import arr "kvist:arr")
 (import fmt "core:fmt")
 (import math "core:math")
+(import os "core:os")
 (import strings "core:strings")
 (import t "kvist:test")
 (import vev "../vev")
@@ -3400,6 +3401,49 @@
       (t.is text-next.ok)
       (t.is (= (count text-next-names) 3))
       (t.is (= text-next-names[2].text "Ivan")))))
+
+(t.deftest snapshot-file-storage-reopens-queryable-conn
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.snapshot.edn"]
+    (defer (os.remove path))
+    (let [conn (vev.create-conn)
+          seed (vev.transact-text
+                 (addr conn)
+                 "[{:db/id 1 :user/email \"ada@example.com\" :user/name \"Ada\"} {:db/id 2 :user/email \"grace@example.com\" :user/name \"Grace\"}]")
+          [saved-ok saved-error] (vev.persist-conn-snapshot-text path conn)
+          [opened opened-ok opened-error] (vev.open-conn-snapshot-text path)
+          opened-result (vev.q opened.db
+                          [:find ?name
+                           :where
+                           [?e :user/email "ada@example.com"]
+                           [?e :user/name ?name]])
+          opened-next-tx opened.next-tx
+          next (vev.transact-text
+                 (addr opened)
+                 "[{:db/id 3 :user/email \"frances@example.com\" :user/name \"Frances\"}]")
+          [resaved-ok resaved-error] (vev.persist-conn-snapshot-text path opened)
+          [reopened reopened-ok reopened-error] (vev.open-conn-snapshot-text path)
+          reopened-result (vev.q reopened.db
+                            [:find ?name
+                             :where
+                             [?e :user/email "frances@example.com"]
+                             [?e :user/name ?name]])]
+      (t.is seed.ok)
+      (t.is saved-ok)
+      (t.is (= saved-error ""))
+      (t.is opened-ok)
+      (t.is (= opened-error ""))
+      (t.is (= (count opened-result.rows) 1))
+      (t.is (= opened-result.rows[0].values[0].text "Ada"))
+      (t.is next.ok)
+      (t.is (= next.tx opened-next-tx))
+      (t.is resaved-ok)
+      (t.is (= resaved-error ""))
+      (t.is reopened-ok)
+      (t.is (= reopened-error ""))
+      (t.is (= reopened.next-tx (+ opened-next-tx 1)))
+      (t.is (= (count reopened-result.rows) 1))
+      (t.is (= reopened-result.rows[0].values[0].text "Frances")))))
 
 (t.deftest datascript-reset-conn-subset
   (defer (free_all context.allocator))
