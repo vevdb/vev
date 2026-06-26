@@ -252,6 +252,11 @@ and semantic nested-join fallback still use the existing correctness logic, but
 their results no longer permanently lose the typed column cache when the output
 values fit the primitive relation layout.
 
+Tenth slice implemented: typed result rendering now resolves `:find` and
+`:with` variables to relation column indexes once before scanning result rows.
+The row loop reads values directly from typed columns by integer index instead
+of doing per-row variable-name lookups through the relation attr map.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
