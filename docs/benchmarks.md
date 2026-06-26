@@ -315,6 +315,11 @@ DataScript.
 
 Remaining performance work:
 
+- Move query intermediates toward typed struct-of-arrays relation storage before
+  taking on the generic semi-naive rules engine. The current typed result
+  columns and specialized q1/q2/q3/q4 paths should become ordinary physical
+  relation operators, not permanent side channels. Benchmarks should be rerun
+  after each operator migration so the work stays general.
 - Generalize this from the current linear transitive closure path into a
   measured semi-naive/memoized rule evaluator. Filtered linear recursion and
   alternating two-rule recursion are now optimized, and primitive binding

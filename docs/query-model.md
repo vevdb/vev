@@ -158,6 +158,36 @@ relation engine:
 - recursive rule fast paths become planned recursive/semi-naive relation
   operators
 
+## Data-Oriented Relation Storage
+
+The next physical query milestone is to bring an Odin/game-engine style,
+data-oriented layout into Vev's query intermediates. The current `Binding`
+representation is flexible, but it stores rows as named value bags and pays for
+string lookups, per-row metadata, and generic `Value` materialization in hot
+paths.
+
+Priority order:
+
+1. Struct-of-arrays typed relation columns. Store hot relation data as
+   contiguous typed columns such as `[]u64`, `[]i64`, `[]string`, and `[]Value`
+   instead of arrays of row-shaped bindings.
+2. Small integer variable IDs in execution plans. Resolve query symbols once,
+   then let operators address columns by integer indexes rather than repeated
+   string comparisons.
+3. Scratch/query-local allocation. Allocate per-query temporary columns,
+   hash tables, and work buffers from an explicit query scratch lifetime where
+   possible, so cleanup is bulk and predictable.
+4. Typed hash joins without string compound keys. Keep compound string keys as
+   the conservative first step, but move hot joins toward typed key structs or
+   parallel key columns.
+5. Dense bitsets/boolean arrays for bounded visited and de-duplication paths,
+   especially rule traversal and entity-ID keyed workloads.
+
+The migration should be incremental: keep the logical `Query-Relation` API,
+add typed storage behind it, port one operator family end-to-end, benchmark,
+then fold existing q1/q2/q3/q4 typed fast paths into the general relation result
+path.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
@@ -167,13 +197,13 @@ using the dependency components as the stratification input.
 
 Near-term query work should expand the relation engine in this order:
 
-1. Rules: replace the current wrapped recursive rule evaluator with measured
-   relation-native recursive/semi-naive behavior.
+1. Physical storage: replace generic `Binding` tuples with compact typed
+   relation columns while keeping the same logical relation API.
 2. Source-qualified synthetic primary collection DB operators: move the
    remaining collection-backed rule/predicate/function cases into the same
    source-aware relation representation.
-3. Physical storage: replace generic `Binding` tuples with compact typed
-   relation columns while keeping the same logical relation API.
+3. Rules: replace the current wrapped recursive rule evaluator with measured
+   relation-native recursive/semi-naive behavior.
 
 The transaction side has the same split:
 
