@@ -704,7 +704,8 @@
             (arr.push! out (Relation-Column-Source {side: 1 index: right-index}))))))
     (return out true)))
 
-(defn add-joined-relation-column-row! [out: ^[dynamic]Relation-Column, sources: []Relation-Column-Source, left: Typed-Relation, left-row: int, right: Typed-Relation, right-row: int] -> bool
+(defn joined-binding-and-column-row! [attrs: []string, out: ^[dynamic]Relation-Column, sources: []Relation-Column-Source, left: Typed-Relation, left-row: int, right: Typed-Relation, right-row: int] -> [binding: Binding, ok: bool]
+  (let [items (make [dynamic]Var-Binding 0 (count attrs))]
   (for [source out-index sources]
     (let [column (if (= source.side 0)
                    left.columns[source.index]
@@ -713,8 +714,10 @@
           [value value-ok] (typed-relation-column-value column row)]
       (when (or (not value-ok)
                 (not (relation-column-add! (addr out^[out-index]) value)))
-        (return false))))
-  true)
+        (delete items)
+        (return (Binding {}) false))
+      (arr.push! items (Var-Binding {name: attrs[out-index] value: value}))))
+  (return (Binding {items: items}) true)))
 
 (defn typed-relation-indexes-for-vars [rel: Typed-Relation, names: []string] -> [indexes: [dynamic]int, ok: bool]
   (let [out (make [dynamic]int 0 (count names))]
@@ -839,10 +842,8 @@
                 (when found
                   (let [right-index head]
                     (while (>= right-index 0)
-                      (let [left-tuple left.tuples[left-row]
-                            right-tuple right.tuples[right-index]
-                            merged (merge-relation-binding-known-common left left-tuple right-tuple)]
-                        (when (not (add-joined-relation-column-row! (addr typed-columns) (slice column-sources 0) left-typed left-row right-typed right-index))
+                      (let [[merged merged-ok] (joined-binding-and-column-row! (slice attrs 0) (addr typed-columns) (slice column-sources 0) left-typed left-row right-typed right-index)]
+                        (when (not merged-ok)
                           (delete attrs)
                           (delete attr-sources)
                           (delete tuples)
@@ -850,7 +851,6 @@
                           (delete next-indexes)
                           (delete-relation-columns typed-columns)
                           (delete column-sources)
-                          (delete merged.items)
                           (return (query-relation-empty) false))
                         (set! typed-rows (+ typed-rows 1))
                         (arr.push! tuples merged))

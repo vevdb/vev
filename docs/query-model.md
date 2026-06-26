@@ -260,8 +260,9 @@ of doing per-row variable-name lookups through the relation attr map.
 Eleventh slice implemented: typed primitive hash joins now precompute output
 column sources and fill typed result columns directly from left/right typed
 input columns by row index. The compatibility `Binding` row is still emitted
-for callers and fallback paths, but typed output no longer has to scan that
-merged row by variable name to populate the column cache.
+for callers and fallback paths, but it is built from the same column-source
+table. Typed output no longer has to scan the merged row by variable name to
+populate the column cache.
 
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
