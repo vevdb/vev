@@ -13,6 +13,7 @@ typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
 typedef void *vev_u64_array_t;
 typedef void *vev_entity_int_pairs_t;
+typedef void *vev_entity_string_int_triples_t;
 typedef void *vev_stmt_t;
 typedef void *vev_tx_report_t;
 typedef void *vev_tx_builder_t;
@@ -221,6 +222,17 @@ unsigned long long vev_entity_int_pairs_entity(vev_entity_int_pairs_t pairs, int
 long long vev_entity_int_pairs_value(vev_entity_int_pairs_t pairs, int index);
 const unsigned long long *vev_entity_int_pairs_entities_data(vev_entity_int_pairs_t pairs);
 const long long *vev_entity_int_pairs_values_data(vev_entity_int_pairs_t pairs);
+vev_entity_string_int_triples_t vev_query_db_prepared_entity_string_int_triples_with_inputs(
+    vev_db_t db,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+void vev_entity_string_int_triples_free(vev_entity_string_int_triples_t triples);
+int vev_entity_string_int_triples_count(vev_entity_string_int_triples_t triples);
+const unsigned long long *vev_entity_string_int_triples_entities_data(vev_entity_string_int_triples_t triples);
+const long long *vev_entity_string_int_triples_ints_data(vev_entity_string_int_triples_t triples);
+const char *vev_entity_string_int_triples_string(vev_entity_string_int_triples_t triples, int index);
+const void *vev_entity_string_int_triples_string_data(vev_entity_string_int_triples_t triples, int index);
+int vev_entity_string_int_triples_string_len(vev_entity_string_int_triples_t triples, int index);
 
 vev_value_handle_t vev_pull_edn(vev_db_t db, const char *pattern_text, unsigned long long entity);
 vev_value_handle_t vev_pull_lookup_ref_string_edn(

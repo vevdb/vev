@@ -729,6 +729,31 @@ row values. New host wrappers should prefer `vev_result_value` plus the generic
 `vev_value_*` traversal functions, because the same path works for nested values
 and rendered pull results.
 
+For hot flat query shapes, the ABI also exposes column-oriented handles:
+
+- `vev_query_db_prepared_entity_column_with_inputs`
+- `vev_u64_array_count`
+- `vev_u64_array_data`
+- `vev_query_db_prepared_entity_int_pairs_with_inputs`
+- `vev_entity_int_pairs_count`
+- `vev_entity_int_pairs_entities_data`
+- `vev_entity_int_pairs_values_data`
+- `vev_query_db_prepared_entity_string_int_triples_with_inputs`
+- `vev_entity_string_int_triples_count`
+- `vev_entity_string_int_triples_entities_data`
+- `vev_entity_string_int_triples_ints_data`
+- `vev_entity_string_int_triples_string_data`
+- `vev_entity_string_int_triples_string_len`
+
+These are lower-level than the generic result API, but are the right shape for
+language adapters that want to avoid per-cell value handles for common
+`[:find ?e]`, `[:find ?e ?n]`, and `[:find ?e ?s ?n]` queries. Column pointers
+are borrowed and remain valid until the corresponding column handle is freed.
+`vev_entity_string_int_triples_string_data` returns borrowed UTF-8 bytes plus
+`vev_entity_string_int_triples_string_len`; use those for hot paths. The
+convenience `vev_entity_string_int_triples_string` returns an owned C string
+that must be released with `vev_string_free`.
+
 Current value-handle accessors:
 
 - `vev_value_kind`
