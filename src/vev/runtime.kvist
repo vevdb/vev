@@ -733,6 +733,55 @@
       (arr.push! items (Var-Binding {name: attrs[out-index] value: value}))))
   (return (Binding {items: items}) true)))
 
+(defn query-relation-product-typed [left: Query-Relation, right: Query-Relation] -> [rel: Query-Relation, ok: bool]
+  (let [[left-typed left-ok] (typed-relation-from-query-relation left)]
+    (when (not left-ok)
+      (return (query-relation-empty) false))
+    (defer (delete-typed-relation left-typed))
+    (let [[right-typed right-ok] (typed-relation-from-query-relation right)]
+      (when (not right-ok)
+        (return (query-relation-empty) false))
+      (defer (delete-typed-relation right-typed))
+      (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+            attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
+            tuples (make [dynamic]Binding 0 (* left-typed.rows right-typed.rows))]
+        (for [name index right.attrs]
+          (arr.push! attrs name)
+          (arr.push! attr-sources right.attr-sources[index]))
+        (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+              [column-sources column-sources-ok] (relation-column-sources-for-join left-typed right-typed (slice attrs 0))
+              typed-rows 0]
+          (when (not column-sources-ok)
+            (delete attrs)
+            (delete attr-sources)
+            (delete tuples)
+            (delete-relation-columns typed-columns)
+            (return (query-relation-empty) false))
+          (let [left-row 0]
+            (while (< left-row left-typed.rows)
+              (let [right-row 0]
+                (while (< right-row right-typed.rows)
+                  (let [[merged merged-ok] (joined-binding-and-column-row! (slice attrs 0) (addr typed-columns) (slice column-sources 0) left-typed left-row right-typed right-row)]
+                    (when (not merged-ok)
+                      (delete attrs)
+                      (delete attr-sources)
+                      (delete tuples)
+                      (delete-relation-columns typed-columns)
+                      (delete column-sources)
+                      (return (query-relation-empty) false))
+                    (set! typed-rows (+ typed-rows 1))
+                    (arr.push! tuples merged))
+                  (set! right-row (+ right-row 1))))
+              (set! left-row (+ left-row 1))))
+          (delete column-sources)
+          (return (Query-Relation {attrs: attrs
+                                   attr-sources: attr-sources
+                                   attr-index: (query-relation-attr-index (slice attrs 0))
+                                   tuples: tuples
+                                   typed-columns: typed-columns
+                                   typed-rows: typed-rows
+                                   has-typed-columns: true}) true))))))
+
 (defn typed-relation-indexes-for-vars [rel: Typed-Relation, names: []string] -> [indexes: [dynamic]int, ok: bool]
   (let [out (make [dynamic]int 0 (count names))]
     (for [name names]
@@ -937,6 +986,10 @@
 (defn query-relation-join [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [common (relation-common-attrs left right) :defer]
     (when (= (count common) 0)
+      (let [[typed-product typed-product-ok] (query-relation-product-typed left right)]
+        (when typed-product-ok
+          (return typed-product))
+        (delete-query-relation typed-product))
       (return (query-relation-product db sources left right)))
     (when (> (count common) 1)
       (let [[typed-hash-joined typed-hash-ok] (query-relation-hash-join-typed-primitive db sources left right (slice common 0))]

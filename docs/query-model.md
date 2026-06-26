@@ -271,6 +271,13 @@ back to the compatibility `Binding` path, but ordinary comparison, boolean,
 numeric, regex, and string predicates no longer need per-row variable-name
 lookup when typed columns are present.
 
+Thirteenth slice implemented: Cartesian/product joins with no shared variables
+now have a typed operator path. When both inputs have cached typed columns, the
+product precomputes output column sources and fills typed output columns from
+left/right row indexes directly. The compatibility `Binding` row is still
+emitted from the same column-source table, and the older semantic product
+remains as fallback.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
