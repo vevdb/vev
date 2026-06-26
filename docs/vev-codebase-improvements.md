@@ -133,7 +133,7 @@ Status labels:
   Recursive rule calls whose reachable rule set is plain positive Datalog, currently data clauses plus rule calls with no source-qualified calls, can use a memo table keyed by rule name/params and iterate to a local fixpoint. This covers non-linear recursive rule bodies that are not handled by the linear/alternating transitive recognizers. A true delta/semi-naive evaluator remains future work.
 
 - `done` Add a conservative delta path for positive recursive rules.
-  Positive recursive components where every body has zero or one recursive rule-call step now use accumulated memo tables plus per-iteration delta tables. This avoids re-probing the full memo each iteration for the common semi-naive shape while keeping the full memoized fixpoint as the fallback for multi-recursive-call bodies.
+  Positive recursive components now use accumulated memo tables plus per-iteration delta tables. Bodies with multiple recursive rule calls are evaluated once per recursive call position with that position reading the delta table and the other positions reading accumulated memo rows. This avoids re-probing the full memo each iteration for the common semi-naive shape.
 
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
