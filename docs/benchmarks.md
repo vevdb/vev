@@ -342,9 +342,14 @@ development. The schema intentionally matches Datalevin's write-bench shape:
 key as unique identity sent the harness through upsert/uniqueness work and made
 the benchmark measure a different workload. With the corrected plain-key shape,
 the small pure-write harness is in the same broad throughput range as the
-published Datalevin write-bench discussion. The next step is to scale this
-harness up and wire Vev into Datalevin's upstream `write-bench` shape for
-direct comparison.
+published Datalevin write-bench discussion. A larger 10k local run shows the
+next real bottleneck: batch-100 pure write is still around 13k writes/second,
+but batch-1 pure write drops to roughly 544 writes/second by 10k rows and mixed
+read/write drops to roughly 184 writes/second. That points at per-commit
+immutable DB/index copying, not EDN parsing or SQLite binding. The next storage
+performance work should therefore introduce shared immutable DB/index storage
+before chasing smaller loop-level optimizations. After that, wire Vev into
+Datalevin's upstream `write-bench` shape for direct comparison.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured

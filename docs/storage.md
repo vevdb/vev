@@ -130,6 +130,22 @@ write-bench schema. The next measurement step is scaling this harness to the
 upstream Datalevin `write-bench` totals and comparing pure write and mixed
 read/write behavior directly.
 
+A 10k-row local run on June 26, 2026 shows the current durable shape clearly:
+
+- batch-100 pure write: about 13k writes/second by 10k rows
+- batch-1 pure write: about 544 writes/second by 10k rows
+- mixed read/write over a 10k-row store: about 184 writes/second
+
+The batch-1 and mixed curves point at the same bottleneck: each successful
+connection transaction produces a new immutable `DB` value by copying the datom
+log plus `current`, `eavt`, `aevt`, `avet`, and `vaet` index arrays. That is
+semantically correct and keeps DB values immutable, but it is not the final
+durable write representation. The next storage implementation work should move
+`DB` internals toward shared immutable index storage or chunked index pages so a
+new DB value can share old index pages and only add/replace the affected tail
+or page set. Special reportless fast paths are not the desired fix; transaction
+reports, listeners, and `db` snapshots still need correct immutable values.
+
 ## SQLite Backend Plan
 
 SQLite is the first production durable backend.
@@ -162,8 +178,8 @@ Implementation order:
    existing ids.
    The benchmark now separates snapshot, resolution, apply, log copy,
    incremental index build, and SQLite append cost. The next write-performance
-   milestone is reducing the remaining report/index ownership-copy overhead
-   before introducing a more complex shared DB/index representation.
+   milestone is replacing whole-array DB/index ownership copies with a shared
+   immutable DB/index representation.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
 5. Keep extending the new `bench/write_bench.kvist` harness until it can run at
