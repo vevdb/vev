@@ -42,7 +42,7 @@ compatibility gap.
 | `filter.cljc` | 1 | covered | materialized `filter-db` covers predicate filters, chaining, entity reads, index-backed queries, and semantic DB equivalence; Clojure hash/equality/runtime wrapper behavior is host |
 | `listen.cljc` | 1 | covered | named report-sink listeners cover registration, tx-data reports, metadata reports, and unlisten; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
 | `issues.cljc` | 5 | covered | issue-262 vector result isolation, issue-369 mixed-type DB diff, and issue-381 schema inspection covered; issue-330/331 are Clojure pprint/meta host behavior |
-| `storage.clj` | 5 | partial | snapshot-file and first SQLite-backed durable reopen/query scaffolds exist; append-only SQLite datom/tx tables and exact DataScript storage API remain |
+| `storage.clj` | 5 | partial | snapshot-file and SQLite datom-row durable reopen/query paths exist; incremental append-on-transaction SQLite connection mode and exact DataScript storage API remain |
 | `datafy.cljc` | 1 | later | Clojure-specific app/runtime API after core parity |
 
 Near-term rule: port one namespace at a time, and only mark `covered` when the

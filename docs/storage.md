@@ -22,18 +22,22 @@ This is deliberately a scaffold, not the final SQLite backend. Its job is to
 make the durable open/write/close/reopen/query loop real while the storage
 boundary is still small.
 
-The first SQLite-backed slice now exists too:
+The SQLite-backed slice now persists datoms as rows:
 
 - `save-db-sqlite`
 - `load-db-sqlite`
 - `open-conn-sqlite`
 - `persist-conn-sqlite`
 
-This currently stores the same serializable datom snapshot inside SQLite. It
-creates Vev metadata and snapshot tables, writes through SQLite transactions,
-reopens from disk, rebuilds the in-memory indexes, and then runs normal Vev
-queries. This proves the SQLite link/schema/write/reopen path without yet
-committing the final durable datom layout.
+It creates Vev metadata, transaction, and datom tables, writes one row per
+datom through a SQLite transaction, reopens from disk, rebuilds the in-memory
+indexes from those rows, and then runs normal Vev queries. The older snapshot
+table remains as a compatibility fallback for databases created by the first
+SQLite snapshot slice.
+
+Current limitation: `persist-conn-sqlite` replaces the durable datom rows with
+the connection's current full datom log. It is row-backed, but it is not yet an
+incremental append-on-each-transaction connection mode.
 
 ## SQLite Backend Plan
 
@@ -51,10 +55,11 @@ Initial schema direction:
 
 Implementation order:
 
-1. Replace snapshot-in-SQLite persistence with append-only SQLite datom and
-   transaction tables.
-2. Store transaction boundaries and tx metadata explicitly.
-3. Rebuild in-memory indexes from the append-only tables on open.
+1. Add a SQLite-backed connection mode that appends each successful transaction
+   as it commits, instead of full-replacing rows during explicit persist.
+2. Store transaction metadata explicitly.
+3. Keep rebuilding in-memory indexes from the datom tables on open until reopen
+   cost measurements require persisted logical indexes.
 4. Add write-bench style measurements for commit latency, batch throughput, and
    reopen cost.
 5. Move selected logical indexes to persisted structures only after benchmarks

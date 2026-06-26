@@ -270,12 +270,13 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: active. Vev now has snapshot-file persistence and a first SQLite-backed
-snapshot backend using the existing serializable datom text format. The SQLite
-slice creates metadata/snapshot tables, writes through SQLite transactions,
-reopens from disk, rebuilds in-memory indexes, and then queries normally. The
-next step is replacing snapshot-in-SQLite with append-only SQLite datom and
-transaction tables.
+Status: active. Vev now has snapshot-file persistence and SQLite-backed datom
+row persistence. The SQLite slice creates metadata, transaction, and datom
+tables, writes one row per datom through a SQLite transaction, reopens from
+disk, rebuilds in-memory indexes, and then queries normally. The current
+persist API full-replaces the durable datom rows from the connection's current
+datom log; the next step is an incremental SQLite-backed connection mode that
+appends each successful transaction as it commits.
 
 ## Phase 7: Dogfood
 
@@ -364,8 +365,8 @@ The in-memory semantic core, EDN/C ABI surface, and performance baseline are
 now strong enough to start durability. The next durable-storage gate is not
 "all possible DataScript host details"; it is:
 
-- SQLite-backed open/write/close/reopen/query works through the same semantic
-  engine path as in-memory Vev
+- SQLite-backed open/write/close/reopen/query works from datom rows through
+  the same semantic engine path as in-memory Vev
 - transaction boundaries and tx metadata are durable
 - immutable DB snapshot semantics remain visible through the native ABI
 - MusicBrainz/Datomic workshop queries validate durable correctness and
