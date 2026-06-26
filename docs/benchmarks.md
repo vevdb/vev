@@ -384,12 +384,12 @@ Remaining performance work:
   values, then scan the right `avet` range once per join value. The native q5
   result-set path is around 4ms for 5000 rows. The typed triple-column ABI plus
   batched borrowed string pointer/length metadata brings the public Clojure row
-  to around 19ms versus DataScript around 147ms. Remaining q5 work should
-  target larger-grained Java/Clojure materialization for string/value rows and
-  broader physical-operator integration, not the indexed self-join itself.
-  General relation hash joins are also in place for one primitive common
-  variable, with fallback to the older nested join when lookup-ref/source
-  semantics require it.
+  to around 19ms, and the sampled string-dictionary path brings it to around
+  17ms versus DataScript around 144ms. Remaining q5 work should target
+  larger-grained Java/Clojure materialization for string/value rows and broader
+  physical-operator integration, not the indexed self-join itself. General
+  relation hash joins are also in place for one primitive common variable, with
+  fallback to the older nested join when lookup-ref/source semantics require it.
 - Same-entity star/projection queries use two reusable indexed shapes inspired
   by Datalevin's sorted scans. Single-filter star queries such as q2 use an
   advancing entity-local `eavt` cursor for cardinality-one attr fetches, which
@@ -411,7 +411,10 @@ Remaining performance work:
   target string-heavy Java materialization and set/vector construction through
   the Clojure adapter, not index lookup. Current diagnostic rows show q2/qpred
   pair-column extraction is close to the native path, while q5 column extraction
-  is still dominated by decoding thousands of strings into JVM `String`s.
+  is still dominated by string handling across the Java/Clojure boundary. The
+  triple-column ABI now exposes an optional per-result string dictionary for
+  repeated string-heavy rows, but native result construction is still several
+  times faster than the host-facing row shape.
 - The relation engine now has a DataScript-shaped compound primitive hash join
   for relations with one or more common primitive variables. It uses
   length-prefixed compound keys and preserves the existing semantic fallback

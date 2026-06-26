@@ -232,6 +232,10 @@ const unsigned long long *vev_entity_string_int_triples_entities_data(vev_entity
 const long long *vev_entity_string_int_triples_ints_data(vev_entity_string_int_triples_t triples);
 const void *const *vev_entity_string_int_triples_string_data_array(vev_entity_string_int_triples_t triples);
 const int *vev_entity_string_int_triples_string_lengths_data(vev_entity_string_int_triples_t triples);
+int vev_entity_string_int_triples_string_dictionary_count(vev_entity_string_int_triples_t triples);
+const void *const *vev_entity_string_int_triples_string_dictionary_data_array(vev_entity_string_int_triples_t triples);
+const int *vev_entity_string_int_triples_string_dictionary_lengths_data(vev_entity_string_int_triples_t triples);
+const int *vev_entity_string_int_triples_string_indices_data(vev_entity_string_int_triples_t triples);
 const char *vev_entity_string_int_triples_string(vev_entity_string_int_triples_t triples, int index);
 const void *vev_entity_string_int_triples_string_data(vev_entity_string_int_triples_t triples, int index);
 int vev_entity_string_int_triples_string_len(vev_entity_string_int_triples_t triples, int index);

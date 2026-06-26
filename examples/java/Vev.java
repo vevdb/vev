@@ -81,6 +81,10 @@ public final class Vev {
     private final MethodHandle entityStringIntTriplesIntsData;
     private final MethodHandle entityStringIntTriplesStringDataArray;
     private final MethodHandle entityStringIntTriplesStringLengthsData;
+    private final MethodHandle entityStringIntTriplesStringDictionaryCount;
+    private final MethodHandle entityStringIntTriplesStringDictionaryDataArray;
+    private final MethodHandle entityStringIntTriplesStringDictionaryLengthsData;
+    private final MethodHandle entityStringIntTriplesStringIndicesData;
     private final MethodHandle entityStringIntTriplesString;
     private final MethodHandle entityStringIntTriplesStringData;
     private final MethodHandle entityStringIntTriplesStringLen;
@@ -187,6 +191,10 @@ public final class Vev {
         this.entityStringIntTriplesIntsData = downcall("vev_entity_string_int_triples_ints_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityStringIntTriplesStringDataArray = downcall("vev_entity_string_int_triples_string_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityStringIntTriplesStringLengthsData = downcall("vev_entity_string_int_triples_string_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityStringIntTriplesStringDictionaryCount = downcall("vev_entity_string_int_triples_string_dictionary_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.entityStringIntTriplesStringDictionaryDataArray = downcall("vev_entity_string_int_triples_string_dictionary_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityStringIntTriplesStringDictionaryLengthsData = downcall("vev_entity_string_int_triples_string_dictionary_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityStringIntTriplesStringIndicesData = downcall("vev_entity_string_int_triples_string_indices_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityStringIntTriplesString = downcall("vev_entity_string_int_triples_string", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.entityStringIntTriplesStringData = downcall("vev_entity_string_int_triples_string_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.entityStringIntTriplesStringLen = downcall("vev_entity_string_int_triples_string_len", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
@@ -608,20 +616,41 @@ public final class Vev {
                     long[] entities = entityData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
                     long[] ints = intData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
                     String[] strings = new String[count];
-                    MemorySegment stringDataArray = (MemorySegment) entityStringIntTriplesStringDataArray.invoke(raw);
-                    MemorySegment stringLengthsData = (MemorySegment) entityStringIntTriplesStringLengthsData.invoke(raw);
-                    if (!isNull(stringDataArray) && !isNull(stringLengthsData)) {
-                        MemorySegment dataArray = stringDataArray.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
-                        int[] lengths = stringLengthsData.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
-                        for (int index = 0; index < count; index++) {
+                    int dictionaryCount = (int) entityStringIntTriplesStringDictionaryCount.invoke(raw);
+                    MemorySegment dictionaryDataArray = (MemorySegment) entityStringIntTriplesStringDictionaryDataArray.invoke(raw);
+                    MemorySegment dictionaryLengthsData = (MemorySegment) entityStringIntTriplesStringDictionaryLengthsData.invoke(raw);
+                    MemorySegment stringIndicesData = (MemorySegment) entityStringIntTriplesStringIndicesData.invoke(raw);
+                    if (dictionaryCount > 0
+                            && !isNull(dictionaryDataArray)
+                            && !isNull(dictionaryLengthsData)
+                            && !isNull(stringIndicesData)) {
+                        MemorySegment dataArray = dictionaryDataArray.reinterpret((long) dictionaryCount * ValueLayout.ADDRESS.byteSize());
+                        int[] lengths = dictionaryLengthsData.reinterpret((long) dictionaryCount * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+                        int[] indices = stringIndicesData.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+                        String[] dictionary = new String[dictionaryCount];
+                        for (int index = 0; index < dictionaryCount; index++) {
                             MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
-                            strings[index] = borrowedUtf8String(data, lengths[index]);
+                            dictionary[index] = borrowedUtf8String(data, lengths[index]);
+                        }
+                        for (int index = 0; index < count; index++) {
+                            strings[index] = dictionary[indices[index]];
                         }
                     } else {
-                        for (int index = 0; index < count; index++) {
-                            int length = (int) entityStringIntTriplesStringLen.invoke(raw, index);
-                            MemorySegment data = (MemorySegment) entityStringIntTriplesStringData.invoke(raw, index);
-                            strings[index] = borrowedUtf8String(data, length);
+                        MemorySegment stringDataArray = (MemorySegment) entityStringIntTriplesStringDataArray.invoke(raw);
+                        MemorySegment stringLengthsData = (MemorySegment) entityStringIntTriplesStringLengthsData.invoke(raw);
+                        if (!isNull(stringDataArray) && !isNull(stringLengthsData)) {
+                            MemorySegment dataArray = stringDataArray.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+                            int[] lengths = stringLengthsData.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+                            for (int index = 0; index < count; index++) {
+                                MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
+                                strings[index] = borrowedUtf8String(data, lengths[index]);
+                            }
+                        } else {
+                            for (int index = 0; index < count; index++) {
+                                int length = (int) entityStringIntTriplesStringLen.invoke(raw, index);
+                                MemorySegment data = (MemorySegment) entityStringIntTriplesStringData.invoke(raw, index);
+                                strings[index] = borrowedUtf8String(data, length);
+                            }
                         }
                     }
                     return new Object[] { entities, strings, ints };

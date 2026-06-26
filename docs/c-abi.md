@@ -744,6 +744,10 @@ For hot flat query shapes, the ABI also exposes column-oriented handles:
 - `vev_entity_string_int_triples_ints_data`
 - `vev_entity_string_int_triples_string_data_array`
 - `vev_entity_string_int_triples_string_lengths_data`
+- `vev_entity_string_int_triples_string_dictionary_count`
+- `vev_entity_string_int_triples_string_dictionary_data_array`
+- `vev_entity_string_int_triples_string_dictionary_lengths_data`
+- `vev_entity_string_int_triples_string_indices_data`
 - `vev_entity_string_int_triples_string_data`
 - `vev_entity_string_int_triples_string_len`
 
@@ -755,6 +759,11 @@ For string columns, prefer
 `vev_entity_string_int_triples_string_data_array` plus
 `vev_entity_string_int_triples_string_lengths_data` so host adapters can read
 all borrowed UTF-8 byte pointers and lengths without one ABI call per cell.
+For repeated string-heavy results, adapters can instead use the optional string
+dictionary accessors: decode the dictionary entries once, then map each row
+through `vev_entity_string_int_triples_string_indices_data`. Vev only builds
+that dictionary when a small result sample shows repeated strings, so mostly
+unique string columns stay on the direct pointer/length path.
 The per-index `vev_entity_string_int_triples_string_data` and
 `vev_entity_string_int_triples_string_len` accessors are retained for simpler
 callers. The convenience `vev_entity_string_int_triples_string` returns an
