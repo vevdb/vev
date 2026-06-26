@@ -213,6 +213,14 @@ were rediscovered by scanning row bindings. The semantic matcher still owns
 the per-datom correctness checks, so this is a relation construction change,
 not a shortcut around Datalog semantics.
 
+Fourth slice implemented: `Query-Relation` can now carry optional cached typed
+columns alongside the compatibility `Binding` tuples. Direct DB data-clause
+relations populate those columns when all emitted values are representable in
+the typed column layout; unsupported values simply invalidate the cache and
+continue through the ordinary tuple path. Typed joins and result projection can
+reuse cached columns instead of rebuilding a `Typed-Relation` by scanning every
+binding row.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
