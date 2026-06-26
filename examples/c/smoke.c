@@ -60,6 +60,26 @@ static int value_text_equals(vev_value_t value, const char *expected) {
     return vev_value_text_equals(value, expected);
 }
 
+static int expect_u64_array(const char *label, vev_u64_array_t array, const unsigned long long *expected, int expected_count) {
+    if (array == NULL) {
+        fprintf(stderr, "%s: null array\n", label);
+        return 0;
+    }
+    int count = vev_u64_array_count(array);
+    if (count != expected_count) {
+        fprintf(stderr, "%s: expected %d values, got %d\n", label, expected_count, count);
+        return 0;
+    }
+    for (int i = 0; i < expected_count; i++) {
+        unsigned long long value = vev_u64_array_value(array, i);
+        if (value != expected[i]) {
+            fprintf(stderr, "%s: expected value[%d]=%llu, got %llu\n", label, i, expected[i], value);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 struct value_visit_stats {
     int values;
     int ends;
@@ -193,6 +213,7 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     vev_db_t db = NULL;
     vev_result_t result = NULL;
     vev_tx_report_t report = NULL;
+    vev_u64_array_t tx_ids = NULL;
 
     durable = vev_connect(path);
     if (durable == NULL || !vev_connection_ok(durable)) {
@@ -219,6 +240,12 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         fprintf(stderr, "unexpected initial durable tx count\n");
         goto cleanup;
     }
+    tx_ids = vev_connection_tx_ids(durable);
+    if (!expect_u64_array("initial-tx-ids", tx_ids, NULL, 0)) {
+        goto cleanup;
+    }
+    vev_u64_array_free(tx_ids);
+    tx_ids = NULL;
     const char *info = vev_connection_info_edn(durable);
     if (strstr(info, ":backend :sqlite") == NULL ||
         strstr(info, ":basis-t 0") == NULL ||
@@ -247,6 +274,13 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         fprintf(stderr, "unexpected durable tx count after first tx\n");
         goto cleanup;
     }
+    unsigned long long first_tx_ids[] = {1};
+    tx_ids = vev_connection_tx_ids(durable);
+    if (!expect_u64_array("first-tx-ids", tx_ids, first_tx_ids, 1)) {
+        goto cleanup;
+    }
+    vev_u64_array_free(tx_ids);
+    tx_ids = NULL;
 
     db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
@@ -278,6 +312,12 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         fprintf(stderr, "unexpected reopened durable tx count\n");
         goto cleanup;
     }
+    tx_ids = vev_connection_tx_ids(durable);
+    if (!expect_u64_array("reopened-tx-ids", tx_ids, first_tx_ids, 1)) {
+        goto cleanup;
+    }
+    vev_u64_array_free(tx_ids);
+    tx_ids = NULL;
     db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int reopened_rows = result_row_count_or_error("sqlite-reopened", result);
@@ -307,6 +347,13 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         fprintf(stderr, "unexpected durable tx count after second tx\n");
         goto cleanup;
     }
+    unsigned long long two_tx_ids[] = {1, 2};
+    tx_ids = vev_connection_tx_ids(durable);
+    if (!expect_u64_array("second-tx-ids", tx_ids, two_tx_ids, 2)) {
+        goto cleanup;
+    }
+    vev_u64_array_free(tx_ids);
+    tx_ids = NULL;
     vev_connection_close(durable);
     durable = NULL;
 
@@ -325,6 +372,12 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         fprintf(stderr, "unexpected final reopened durable tx count\n");
         goto cleanup;
     }
+    tx_ids = vev_connection_tx_ids(durable);
+    if (!expect_u64_array("final-tx-ids", tx_ids, two_tx_ids, 2)) {
+        goto cleanup;
+    }
+    vev_u64_array_free(tx_ids);
+    tx_ids = NULL;
     db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int final_rows = result_row_count_or_error("sqlite-final", result);
@@ -339,6 +392,9 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
 cleanup:
     if (report != NULL) {
         vev_tx_report_free(report);
+    }
+    if (tx_ids != NULL) {
+        vev_u64_array_free(tx_ids);
     }
     if (result != NULL) {
         vev_result_free(result);

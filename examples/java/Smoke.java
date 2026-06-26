@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Arrays;
 
 public final class Smoke {
     private static void deleteSqliteFiles(Path path) throws Exception {
@@ -215,6 +216,9 @@ public final class Smoke {
                     if (durable.txCount() != 0) {
                         throw new IllegalStateException("unexpected initial durable tx count");
                     }
+                    if (!Arrays.equals(durable.txIds(), new long[]{})) {
+                        throw new IllegalStateException("unexpected initial durable tx ids");
+                    }
                     String info = durable.infoEdn();
                     if (!info.contains(":backend :sqlite") || !info.contains(":basis-t 0") || !info.contains(":tx-count 0")) {
                         throw new IllegalStateException("unexpected durable connection info");
@@ -235,6 +239,9 @@ public final class Smoke {
                     if (durable.txCount() != 1) {
                         throw new IllegalStateException("unexpected durable tx count after first tx");
                     }
+                    if (!Arrays.equals(durable.txIds(), new long[]{1})) {
+                        throw new IllegalStateException("unexpected durable tx ids after first tx");
+                    }
                     try (Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                          Vev.DB durableDb = durable.db();
                          Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {
@@ -254,6 +261,9 @@ public final class Smoke {
                     }
                     if (durable.txCount() != 1) {
                         throw new IllegalStateException("unexpected reopened durable tx count");
+                    }
+                    if (!Arrays.equals(durable.txIds(), new long[]{1})) {
+                        throw new IllegalStateException("unexpected reopened durable tx ids");
                     }
                     System.out.println("sqlite-reopened rows: " + rows.rowCount());
                     if (rows.rowCount() != 1) {

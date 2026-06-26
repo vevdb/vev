@@ -71,11 +71,13 @@ Durable connection metadata is available through the same neutral boundary:
 `vev_connection_backend` reports `"sqlite"` today, `vev_connection_path`
 reports the concrete storage path, and `vev_connection_basis_t` reports the
 last committed transaction visible to the connection. `vev_connection_tx_count`
-reports the number of persisted transaction-log rows. Basis and transaction
-count are recomputed when opening a durable store, so close/reopen preserves
-both rows and observable transaction-log metadata. Higher-level wrappers expose
-the same diagnostic shape as `backend`/`path`/`basis_t`/`tx_count` methods or
-Clojure `connection-info`. `vev_connection_info_edn` is the C-friendly
+reports the number of persisted transaction-log rows, and
+`vev_connection_tx_ids` returns the persisted transaction ids in order. Basis,
+transaction count, and transaction ids are recomputed when opening a durable
+store, so close/reopen preserves both rows and observable transaction-log
+metadata. Higher-level wrappers expose the same diagnostic shape as
+`backend`/`path`/`basis_t`/`tx_count`/`tx_ids` methods or Clojure
+`connection-info`. `vev_connection_info_edn` is the C-friendly
 convenience form for logging or simple tooling that wants the same metadata as
 one EDN map string.
 

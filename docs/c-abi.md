@@ -299,7 +299,9 @@ const char *backend = vev_connection_backend(durable);
 const char *path = vev_connection_path(durable);
 unsigned long long basis_t = vev_connection_basis_t(durable);
 unsigned long long tx_count = vev_connection_tx_count(durable);
+vev_u64_array_t tx_ids = vev_connection_tx_ids(durable);
 const char *info = vev_connection_info_edn(durable);
+vev_u64_array_free(tx_ids);
 vev_string_free(backend);
 vev_string_free(path);
 vev_string_free(info);
@@ -327,6 +329,8 @@ but new host APIs should prefer `vev_connect` / `vev_connection_*`.
 strings; callers free them with `vev_string_free`. `vev_connection_basis_t`
 returns the Datomic-style basis transaction visible to the connection.
 `vev_connection_tx_count` returns the persisted transaction-log row count.
+`vev_connection_tx_ids` returns the persisted transaction ids as an owned
+`vev_u64_array_t`; callers free it with `vev_u64_array_free`.
 `vev_connection_info_edn` returns the same metadata as one owned EDN map string
 for simple C tooling and logging.
 

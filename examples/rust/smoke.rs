@@ -9,6 +9,7 @@ type VevPreparedQuery = *mut c_void;
 type VevResult = *mut c_void;
 type VevStmt = *mut c_void;
 type VevTxReport = *mut c_void;
+type VevU64Array = *mut c_void;
 type VevValue = *const c_void;
 type VevValueHandle = *mut c_void;
 
@@ -38,6 +39,7 @@ unsafe extern "C" {
     fn vev_connection_path(conn: VevConnection) -> *const c_char;
     fn vev_connection_basis_t(conn: VevConnection) -> c_ulonglong;
     fn vev_connection_tx_count(conn: VevConnection) -> c_ulonglong;
+    fn vev_connection_tx_ids(conn: VevConnection) -> VevU64Array;
     fn vev_connection_info_edn(conn: VevConnection) -> *const c_char;
     fn vev_connection_close(conn: VevConnection);
     fn vev_connection_db(conn: VevConnection) -> VevDb;
@@ -46,6 +48,9 @@ unsafe extern "C" {
         tx_text: *const c_char,
     ) -> VevTxReport;
     fn vev_db_release(db: VevDb);
+    fn vev_u64_array_free(array: VevU64Array);
+    fn vev_u64_array_count(array: VevU64Array) -> c_int;
+    fn vev_u64_array_value(array: VevU64Array, index: c_int) -> c_ulonglong;
     fn vev_with_edn_report(db: VevDb, tx_text: *const c_char) -> VevTxReport;
     fn vev_db_with_edn(db: VevDb, tx_text: *const c_char) -> VevDb;
 
@@ -342,6 +347,20 @@ impl DurableConn {
 
     fn tx_count(&self) -> u64 {
         unsafe { vev_connection_tx_count(self.raw) as u64 }
+    }
+
+    fn tx_ids(&self) -> Vec<u64> {
+        let raw = unsafe { vev_connection_tx_ids(self.raw) };
+        if raw.is_null() {
+            return Vec::new();
+        }
+        let count = unsafe { vev_u64_array_count(raw) };
+        let mut out = Vec::with_capacity(count.max(0) as usize);
+        for index in 0..count {
+            out.push(unsafe { vev_u64_array_value(raw, index) as u64 });
+        }
+        unsafe { vev_u64_array_free(raw) };
+        out
     }
 
     fn info_edn(&self) -> String {
@@ -885,6 +904,10 @@ fn main() -> Result<(), String> {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected initial durable tx count".to_string());
         }
+        if durable.tx_ids() != Vec::<u64>::new() {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected initial durable tx ids".to_string());
+        }
         let info = durable.info_edn();
         if !info.contains(":backend :sqlite")
             || !info.contains(":basis-t 0")
@@ -908,6 +931,10 @@ fn main() -> Result<(), String> {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected durable tx count after first tx".to_string());
         }
+        if durable.tx_ids() != vec![1] {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable tx ids after first tx".to_string());
+        }
         let durable_query =
             PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;
         let durable_db = durable.db()?;
@@ -927,6 +954,10 @@ fn main() -> Result<(), String> {
         if durable.tx_count() != 1 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected reopened durable tx count".to_string());
+        }
+        if durable.tx_ids() != vec![1] {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected reopened durable tx ids".to_string());
         }
         let durable_query =
             PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;
