@@ -240,6 +240,12 @@ relation from scratch. Since `not` cannot introduce new attributes, the output
 relation preserves the input attr/source layout and keeps the typed column cache
 alive for rows that survive the anti-join.
 
+Eighth slice implemented: the binding-to-relation constructors now attempt to
+materialize typed columns for the completed relation rows. This gives operators
+that still rebuild through `Binding` arrays, such as function clauses, `ground`,
+`get-else`, `get-some`, `or`, and rule-call outputs, a way back into the typed
+relation path when their output values fit the primitive column layout.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
