@@ -49,6 +49,8 @@ There are now two write modes:
 If the SQLite append fails after the in-memory transaction succeeds, the
 wrapper restores the previous DB snapshot and reports a failed transaction.
 That keeps the wrapper-level connection consistent with the durable store.
+The wrapper now owns a live SQLite handle for its lifetime, so repeated
+transactions do not reopen the file or rerun schema setup on every commit.
 
 The raw C ABI now exposes this durable connection shape through
 `vev_sqlite_conn_t`, including open/ok/error/close, transaction reports, and DB
@@ -61,6 +63,7 @@ it has the successful transaction report in hand.
 `bench/sqlite_storage.kvist` now measures the first durable storage baseline:
 
 - `single-append`: one SQLite-backed transaction per entity
+- `batch-append`: one SQLite-backed transaction for a configurable entity batch
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 
@@ -89,10 +92,9 @@ Implementation order:
    need them.
 2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
-3. Extend the SQLite benchmark from single appends and full-replace persisted
-   seed data to verified multi-entity append batches. This should measure commit
-   latency, batch throughput, and rollback/report behavior without bypassing the
-   normal transaction engine.
+3. Split batch append measurements into in-memory transaction cost and durable
+   SQLite write cost, so write-bench work can distinguish Datalog transaction
+   scaling from SQLite commit/index maintenance.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
 5. Once the local harness is stable, map Datalevin `write-bench` concepts onto

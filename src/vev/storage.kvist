@@ -22,6 +22,8 @@ foreign sqlite {
     sqlite3_free :: proc(ptr: rawptr) ---
     sqlite3_prepare_v2 :: proc(db: ^SQLite3, sql: cstring, nbytes: c.int, stmt: ^^SQLite3_Stmt, tail: ^cstring) -> c.int ---
     sqlite3_finalize :: proc(stmt: ^SQLite3_Stmt) -> c.int ---
+    sqlite3_reset :: proc(stmt: ^SQLite3_Stmt) -> c.int ---
+    sqlite3_clear_bindings :: proc(stmt: ^SQLite3_Stmt) -> c.int ---
     sqlite3_step :: proc(stmt: ^SQLite3_Stmt) -> c.int ---
     sqlite3_bind_text :: proc(stmt: ^SQLite3_Stmt, idx: c.int, value: cstring, nbytes: c.int, destructor: rawptr) -> c.int ---
     sqlite3_bind_int64 :: proc(stmt: ^SQLite3_Stmt, idx: c.int, value: i64) -> c.int ---
@@ -247,6 +249,40 @@ sqlite_open_append_datoms_raw :: proc(path: string) -> (rawptr, bool, string) {
     return rawptr(db), true, \"\"
 }
 
+sqlite_open_live_raw :: proc(path: string) -> (rawptr, bool, string) {
+    db, open_ok, open_error := sqlite_open_initialized(path)
+    if !open_ok {
+        return nil, false, open_error
+    }
+    return rawptr(db), true, \"\"
+}
+
+sqlite_close_live_raw :: proc(handle: rawptr) {
+    if handle != nil {
+        _ = sqlite3_close((^SQLite3)(handle))
+    }
+}
+
+sqlite_begin_immediate_raw :: proc(handle: rawptr) -> (bool, string) {
+    if handle == nil {
+        return false, \"sqlite handle was nil\"
+    }
+    return sqlite_exec_ok((^SQLite3)(handle), \"BEGIN IMMEDIATE\")
+}
+
+sqlite_rollback_raw :: proc(handle: rawptr) {
+    if handle != nil {
+        _, _ = sqlite_exec_ok((^SQLite3)(handle), \"ROLLBACK\")
+    }
+}
+
+sqlite_commit_raw :: proc(handle: rawptr) -> (bool, string) {
+    if handle == nil {
+        return false, \"sqlite handle was nil\"
+    }
+    return sqlite_exec_ok((^SQLite3)(handle), \"COMMIT\")
+}
+
 sqlite_rollback_close_raw :: proc(handle: rawptr) {
     if handle != nil {
         db := (^SQLite3)(handle)
@@ -313,6 +349,96 @@ sqlite_insert_datom_raw :: proc(handle: rawptr, e: u64, a: string, value_text: s
         return false, sqlite_error_text(db, \"sqlite prepare datom failed\")
     }
     defer _ = sqlite3_finalize(stmt)
+    a_c, a_c_ok := sqlite_cstring(a)
+    if !a_c_ok {
+        return false, \"failed to allocate sqlite datom attr\"
+    }
+    defer delete(a_c)
+    value_c, value_c_ok := sqlite_cstring(value_text)
+    if !value_c_ok {
+        return false, \"failed to allocate sqlite datom value\"
+    }
+    defer delete(value_c)
+    if sqlite3_bind_int64(stmt, 1, i64(e)) != SQLITE_OK ||
+       sqlite3_bind_text(stmt, 2, a_c, -1, nil) != SQLITE_OK ||
+       sqlite3_bind_text(stmt, 3, value_c, -1, nil) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 4, i64(tx)) != SQLITE_OK ||
+       sqlite3_bind_int(stmt, 5, c.int(added ? 1 : 0)) != SQLITE_OK {
+        return false, sqlite_error_text(db, \"sqlite bind datom failed\")
+    }
+    if sqlite3_step(stmt) != SQLITE_DONE {
+        return false, sqlite_error_text(db, \"sqlite insert datom failed\")
+    }
+    return true, \"\"
+}
+
+sqlite_prepare_insert_tx_raw :: proc(handle: rawptr) -> (rawptr, bool, string) {
+    if handle == nil {
+        return nil, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"INSERT OR IGNORE INTO vev_transactions (tx) VALUES (?)\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return nil, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return nil, false, sqlite_error_text(db, \"sqlite prepare tx failed\")
+    }
+    return rawptr(stmt), true, \"\"
+}
+
+sqlite_prepare_insert_datom_raw :: proc(handle: rawptr) -> (rawptr, bool, string) {
+    if handle == nil {
+        return nil, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"INSERT INTO vev_datoms (e, a, value_text, tx, added) VALUES (?, ?, ?, ?, ?)\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return nil, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return nil, false, sqlite_error_text(db, \"sqlite prepare datom failed\")
+    }
+    return rawptr(stmt), true, \"\"
+}
+
+sqlite_finalize_stmt_raw :: proc(stmt_handle: rawptr) {
+    if stmt_handle != nil {
+        _ = sqlite3_finalize((^SQLite3_Stmt)(stmt_handle))
+    }
+}
+
+sqlite_step_tx_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, tx: u64) -> (bool, string) {
+    if handle == nil || stmt_handle == nil {
+        return false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt := (^SQLite3_Stmt)(stmt_handle)
+    _ = sqlite3_reset(stmt)
+    _ = sqlite3_clear_bindings(stmt)
+    if sqlite3_bind_int64(stmt, 1, i64(tx)) != SQLITE_OK {
+        return false, sqlite_error_text(db, \"sqlite bind tx failed\")
+    }
+    if sqlite3_step(stmt) != SQLITE_DONE {
+        return false, sqlite_error_text(db, \"sqlite insert tx failed\")
+    }
+    return true, \"\"
+}
+
+sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
+    if handle == nil || stmt_handle == nil {
+        return false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt := (^SQLite3_Stmt)(stmt_handle)
+    _ = sqlite3_reset(stmt)
+    _ = sqlite3_clear_bindings(stmt)
     a_c, a_c_ok := sqlite_cstring(a)
     if !a_c_ok {
         return false, \"failed to allocate sqlite datom attr\"
@@ -610,6 +736,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defstruct SQLite-Conn {
   path: string
   conn: Conn
+  handle: rawptr
 })
 
 (defn insert-sqlite-tx-meta! [handle: rawptr, tx: u64, meta: []Tx-Meta] -> [ok: bool, error: string]
@@ -634,22 +761,45 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (return false insert-error))))
     (sqlite-commit-close-raw handle)))
 
-(defn append-tx-report-sqlite [path: string, report: Tx-Report] -> [ok: bool, error: string]
-  (let [[handle open-ok open-error] (sqlite-open-append-datoms-raw path)]
-    (when (not open-ok)
-      (return false open-error))
-    (for [datom report.tx-data]
-      (let [value-text (value-serializable-text datom.v)
-            [insert-ok insert-error] (sqlite-insert-datom-raw handle datom.e datom.a value-text datom.tx datom.added)]
-        (delete value-text)
-        (when (not insert-ok)
-          (sqlite-rollback-close-raw handle)
-          (return false insert-error))))
+(defn append-tx-report-sqlite-handle [handle: rawptr, report: Tx-Report] -> [ok: bool, error: string]
+  (let [[begin-ok begin-error] (sqlite-begin-immediate-raw handle)]
+    (when (not begin-ok)
+      (return false begin-error))
+    (let [[tx-stmt tx-stmt-ok tx-stmt-error] (sqlite-prepare-insert-tx-raw handle)]
+      (when (not tx-stmt-ok)
+        (sqlite-rollback-raw handle)
+        (return false tx-stmt-error))
+      (let [[tx-ok tx-error] (sqlite-step-tx-stmt-raw handle tx-stmt report.tx)]
+        (sqlite-finalize-stmt-raw tx-stmt)
+        (when (not tx-ok)
+          (sqlite-rollback-raw handle)
+          (return false tx-error))))
+    (let [[datom-stmt datom-stmt-ok datom-stmt-error] (sqlite-prepare-insert-datom-raw handle)]
+      (when (not datom-stmt-ok)
+        (sqlite-rollback-raw handle)
+        (return false datom-stmt-error))
+      (for [datom report.tx-data]
+        (let [value-text (value-serializable-text datom.v)
+              [insert-ok insert-error] (sqlite-step-datom-stmt-raw handle datom-stmt datom.e datom.a value-text datom.tx datom.added)]
+          (delete value-text)
+          (when (not insert-ok)
+            (sqlite-finalize-stmt-raw datom-stmt)
+            (sqlite-rollback-raw handle)
+            (return false insert-error))))
+      (sqlite-finalize-stmt-raw datom-stmt))
     (let [[meta-ok meta-error] (insert-sqlite-tx-meta! handle report.tx (slice report.tx-meta 0))]
       (when (not meta-ok)
-        (sqlite-rollback-close-raw handle)
+        (sqlite-rollback-raw handle)
         (return false meta-error)))
-    (sqlite-commit-close-raw handle)))
+    (sqlite-commit-raw handle)))
+
+(defn append-tx-report-sqlite [path: string, report: Tx-Report] -> [ok: bool, error: string]
+  (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
+    (when (not open-ok)
+      (return false open-error))
+    (let [[append-ok append-error] (append-tx-report-sqlite-handle handle report)]
+      (sqlite-close-live-raw handle)
+      (return append-ok append-error))))
 
 (defn sqlite-tx-meta-row-from-edn-node [doc: EDN-Doc, node-index: int] -> [row: SQLite-Tx-Meta-Row, ok: bool, error: string]
   (when (or (= node-index -1)
@@ -710,13 +860,19 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn open-sqlite-conn [path: string] -> [store: SQLite-Conn, ok: bool, error: string]
   (let [[conn opened-ok opened-error] (open-conn-sqlite path)]
-    (if opened-ok
-      (return (SQLite-Conn {path: (string-owned path) conn: conn}) true "")
-      (if (= opened-error "sqlite DB has no Vev datom rows")
-        (return (SQLite-Conn {path: (string-owned path) conn: conn}) true "")
-        (return (SQLite-Conn {path: (string-owned path) conn: conn}) false opened-error)))))
+    (when (and (not opened-ok)
+               (not (= opened-error "sqlite DB has no Vev datom rows")))
+      (return (SQLite-Conn {path: (string-owned path) conn: conn}) false opened-error))
+    (let [[handle handle-ok handle-error] (sqlite-open-live-raw path)]
+      (if handle-ok
+        (return (SQLite-Conn {path: (string-owned path) conn: conn handle: handle}) true "")
+        (do
+          (delete-owned-db conn.db)
+          (delete conn.listeners)
+          (return (SQLite-Conn {path: (string-owned path) conn: (create-conn)}) false handle-error))))))
 
 (defn close-sqlite-conn [store: SQLite-Conn]
+  (sqlite-close-live-raw store.handle)
   (delete store.path)
   (delete store.conn.listeners)
   (delete-owned-db store.conn.db))
@@ -732,7 +888,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (let [report (transact-tx-data (addr store^.conn) tx-data)]
     (when (not report.ok)
       (return report))
-    (let [[saved-ok save-error] (append-tx-report-sqlite store^.path report)]
+    (let [[saved-ok save-error] (append-tx-report-sqlite-handle store^.handle report)]
       (when (not saved-ok)
         (rollback-sqlite-conn! store report.db-before)
         (delete-tx-report-shallow report)

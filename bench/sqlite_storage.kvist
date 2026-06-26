@@ -76,6 +76,31 @@
     (vev.close-sqlite-conn store)
     (print-timing "single-append" 1 (slice samples 0))))
 
+(defn measure-batch-append [path: string, batch-size: int, sample-count: int]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)
+        samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=batch-append ok=false error=%s\n" open-error)
+      (return))
+    (for [i (arr.range 0 sample-count)]
+      (let [tx (batch-people-tx (+ 1 (* i batch-size)) batch-size)
+            start (time.now)
+            report (vev.transact-sqlite-tx-data (addr store) (slice tx 0))
+            elapsed (bench.elapsed-us start)]
+        (when (not report.ok)
+          (fmt.printf "engine=vev-sqlite workload=batch-append ok=false error=%s\n" report.error)
+          (vev.delete-tx-report-shallow report)
+          (delete tx)
+          (vev.close-sqlite-conn store)
+          (return))
+        (delete-live-tx-report-shallow report)
+        (delete tx)
+        (arr.push! samples elapsed)))
+    (vev.close-sqlite-conn store)
+    (print-timing "batch-append" batch-size (slice samples 0))))
+
 (defn seed-durable-db [path: string, people-count: int] -> bool
   (remove-sqlite-files path)
   (let [conn (vev.create-conn)
@@ -147,13 +172,18 @@
 (defn main []
   (defer (free_all context.allocator))
   (let [single-path "tmp.vev.bench.single.sqlite"
+        batch-path "tmp.vev.bench.batch.sqlite"
         reopen-path "tmp.vev.bench.reopen.sqlite"
         single-samples 50
+        batch-size 100
+        batch-samples 20
         reopen-people 2000
         reopen-samples 30]
     (defer (remove-sqlite-files single-path))
+    (defer (remove-sqlite-files batch-path))
     (defer (remove-sqlite-files reopen-path))
     (measure-single-append single-path single-samples)
+    (measure-batch-append batch-path batch-size batch-samples)
     (when (seed-durable-db reopen-path reopen-people)
       (measure-reopen reopen-path reopen-people reopen-samples)
       (measure-reopened-query reopen-path reopen-people reopen-samples))))
