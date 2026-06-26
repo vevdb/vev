@@ -245,9 +245,23 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn query-relation-attr-index [attrs: []string] -> map[string]int
+  (let [index (make (map string int))]
+    (for [attr attr-index attrs]
+      (mmap.assoc! index attr attr-index))
+    index))
+
+(defn query-relation-attr-index-lookup [rel: Query-Relation, name: string] -> [index: int, ok: bool]
+  (mmap.get rel.attr-index name))
+
+(defn query-relation-has-attr? [rel: Query-Relation, name: string] -> bool
+  (let [[_ found] (query-relation-attr-index-lookup rel name)]
+    found))
+
 (defn query-relation-empty [] -> Query-Relation
   (Query-Relation {attrs: (make [dynamic]string)
                    attr-sources: (make [dynamic]string)
+                   attr-index: (make (map string int))
                    tuples: (make [dynamic]Binding)}))
 
 (defn query-relation-singleton [] -> Query-Relation
@@ -255,6 +269,7 @@
     (arr.push! tuples (Binding {}))
     (Query-Relation {attrs: (make [dynamic]string)
                      attr-sources: (make [dynamic]string)
+                     attr-index: (make (map string int))
                      tuples: tuples})))
 
 (defn query-relation-from-bindings [bindings: []Binding] -> Query-Relation
@@ -270,7 +285,10 @@
           (arr.push! attrs item.name)
           (arr.push! attr-sources source)))
       (arr.push! tuples (clone-binding binding)))
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples})))
 
 (defn query-relation-from-bindings-inheriting-sources [bindings: []Binding, parent: Query-Relation] -> Query-Relation
   (let [attrs (make [dynamic]string)
@@ -285,11 +303,15 @@
               (arr.push! attr-sources source)
               (arr.push! attr-sources "")))))
       (arr.push! tuples (clone-binding binding)))
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples})))
 
 (defn delete-query-relation [rel: Query-Relation]
   (delete rel.attrs)
   (delete rel.attr-sources)
+  (delete rel.attr-index)
   (delete rel.tuples))
 
 (defn relation-column-empty [] -> Relation-Column
@@ -309,11 +331,13 @@
 (defn typed-relation-empty [] -> Typed-Relation
   (Typed-Relation {attrs: (make [dynamic]string)
                    attr-sources: (make [dynamic]string)
+                   attr-index: (make (map string int))
                    columns: (make [dynamic]Relation-Column)}))
 
 (defn delete-typed-relation [rel: Typed-Relation]
   (delete rel.attrs)
   (delete rel.attr-sources)
+  (delete rel.attr-index)
   (for [column rel.columns]
     (delete-relation-column column))
   (delete rel.columns))
@@ -352,10 +376,7 @@
     true))
 
 (defn typed-relation-attr-index [rel: Typed-Relation, name: string] -> [index: int, ok: bool]
-  (for [attr index rel.attrs]
-    (when (= attr name)
-      (return index true)))
-  (return 0 false))
+  (mmap.get rel.attr-index name))
 
 (defn typed-relation-from-query-relation [rel: Query-Relation] -> [typed: Typed-Relation, ok: bool]
   (let [out (typed-relation-empty)]
@@ -363,6 +384,7 @@
     (for [attr index rel.attrs]
       (arr.push! out.attrs attr)
       (arr.push! out.attr-sources rel.attr-sources[index])
+      (mmap.assoc! out.attr-index attr index)
       (let [column (relation-column-empty)]
         (for [tuple rel.tuples]
           (let [[value value-ok] (binding-lookup tuple attr)]
@@ -375,15 +397,15 @@
     (return out true)))
 
 (defn relation-attr-source [rel: Query-Relation, name: string] -> [source: string, ok: bool]
-  (for [attr index rel.attrs]
-    (when (= attr name)
-      (return rel.attr-sources[index] true)))
-  (return "" false))
+  (let [[index found] (query-relation-attr-index-lookup rel name)]
+    (if found
+      (return rel.attr-sources[index] true)
+      (return "" false))))
 
 (defn relation-common-attrs [left: Query-Relation, right: Query-Relation] -> [dynamic]string
   (let [out (make [dynamic]string)]
     (for [name left.attrs]
-      (when (string-slice-contains? (slice right.attrs 0) name)
+      (when (query-relation-has-attr? right name)
         (arr.push! out name)))
     out))
 
@@ -433,6 +455,13 @@
           (binding-store! (addr out) item.name item.value))))
     (return out true)))
 
+(defn merge-relation-binding-known-common [base-rel: Query-Relation, base: Binding, extra: Binding] -> Binding
+  (let [out (clone-binding base)]
+    (for [item extra.items]
+      (when (not (query-relation-has-attr? base-rel item.name))
+        (binding-store! (addr out) item.name item.value)))
+    out))
+
 (defn query-relation-product [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
         attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
@@ -445,7 +474,10 @@
         (let [[merged ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
           (when ok
             (arr.push! tuples merged)))))
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples})))
 
 (defn primitive-value-join-key [value: Value] -> [key: string, ok: bool]
   (case value.kind
@@ -603,7 +635,7 @@
             bucket-heads (make (map string int))
             next-indexes (make [dynamic]int 0 right-typed.rows)]
         (for [name index right.attrs]
-          (when (not (string-slice-contains? (slice attrs 0) name))
+          (when (not (query-relation-has-attr? left name))
             (arr.push! attrs name)
             (arr.push! attr-sources right.attr-sources[index])))
         (let [right-row 0]
@@ -638,14 +670,16 @@
                     (while (>= right-index 0)
                       (let [left-tuple left.tuples[left-row]
                             right-tuple right.tuples[right-index]
-                            [merged merge-ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
-                        (when merge-ok
-                          (arr.push! tuples merged)))
+                            merged (merge-relation-binding-known-common left left-tuple right-tuple)]
+                        (arr.push! tuples merged))
                       (set! right-index next-indexes[right-index]))))))
             (set! left-row (+ left-row 1))))
         (delete bucket-heads)
         (delete next-indexes)
-        (return (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples}) true)))))
+        (return (Query-Relation {attrs: attrs
+                                 attr-sources: attr-sources
+                                 attr-index: (query-relation-attr-index (slice attrs 0))
+                                 tuples: tuples}) true)))))
 
 (defn query-relation-hash-join-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
@@ -654,7 +688,7 @@
         bucket-heads (make (map string int))
         next-indexes (make [dynamic]int 0 (count right.tuples))]
     (for [name index right.attrs]
-      (when (not (string-slice-contains? (slice attrs 0) name))
+      (when (not (query-relation-has-attr? left name))
         (arr.push! attrs name)
         (arr.push! attr-sources right.attr-sources[index])))
     (for [right-tuple right-index right.tuples]
@@ -691,7 +725,10 @@
                 (set! right-index next-indexes[right-index])))))))
     (delete bucket-heads)
     (delete next-indexes)
-    (return (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples}) true)))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: tuples}) true)))
 
 (defn query-relation-join [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [common (relation-common-attrs left right) :defer]
@@ -710,7 +747,7 @@
           attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
           tuples (make [dynamic]Binding)]
       (for [name index right.attrs]
-        (when (not (string-slice-contains? (slice attrs 0) name))
+        (when (not (query-relation-has-attr? left name))
           (arr.push! attrs name)
           (arr.push! attr-sources right.attr-sources[index])))
       (for [left-tuple left.tuples]
@@ -719,7 +756,10 @@
             (let [[merged ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
               (when ok
                 (arr.push! tuples merged))))))
-      (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples}))))
+      (Query-Relation {attrs: attrs
+                       attr-sources: attr-sources
+                       attr-index: (query-relation-attr-index (slice attrs 0))
+                       tuples: tuples}))))
 
 (defn query-context-singleton [] -> Query-Context
   (let [rels (make [dynamic]Query-Relation)]
@@ -7841,7 +7881,10 @@
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
         attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
         tuples (clone-bindings (slice rel.tuples 0))]
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples})))
 
 (defn query-relation-filter-predicate [db: DB, rel: Query-Relation, predicate: Predicate, registry: []Native-Query-Fn] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
@@ -7850,7 +7893,10 @@
     (for [tuple rel.tuples]
       (when (predicate-matches-with-db-and-fns? db predicate tuple registry)
         (arr.push! tuples (clone-binding tuple))))
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples})))
 
 (defn query-relation-extend-function [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> Query-Relation
   (let [bindings (bindings-after-function-with-fns (slice rel.tuples 0) function registry)

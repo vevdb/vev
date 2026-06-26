@@ -198,6 +198,13 @@ to carry `Binding` tuples as the compatibility representation, so the larger
 performance work remains keeping scans, joins, filters, projection, and
 deduplication typed end-to-end.
 
+Second slice implemented: `Query-Relation` and `Typed-Relation` now carry
+relation-local attr indexes, so relation operators can resolve vars to column
+positions without repeated linear attr scans. The typed primitive hash join
+also uses a fast merge after typed key equality, appending only right-side
+non-common vars instead of re-running generic binding agreement checks. This
+is still a general operator improvement, not a benchmark-specific recognizer.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
