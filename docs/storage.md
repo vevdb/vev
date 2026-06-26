@@ -28,6 +28,9 @@ The SQLite-backed slice now persists datoms as rows:
 - `load-db-sqlite`
 - `open-conn-sqlite`
 - `persist-conn-sqlite`
+- `open-sqlite-conn`
+- `transact-sqlite-tx-data`
+- `transact-sqlite-text`
 
 It creates Vev metadata, transaction, and datom tables, writes one row per
 datom through a SQLite transaction, reopens from disk, rebuilds the in-memory
@@ -35,9 +38,22 @@ indexes from those rows, and then runs normal Vev queries. The older snapshot
 table remains as a compatibility fallback for databases created by the first
 SQLite snapshot slice.
 
-Current limitation: `persist-conn-sqlite` replaces the durable datom rows with
-the connection's current full datom log. It is row-backed, but it is not yet an
-incremental append-on-each-transaction connection mode.
+There are now two write modes:
+
+- explicit full persist: `persist-conn-sqlite` replaces the durable datom rows
+  with the connection's current full datom log
+- SQLite-backed connection wrapper: `transact-sqlite-*` runs the normal Vev
+  transaction engine and appends the successful report tx-data to SQLite before
+  returning
+
+If the SQLite append fails after the in-memory transaction succeeds, the
+wrapper restores the previous DB snapshot and reports a failed transaction.
+That keeps the wrapper-level connection consistent with the durable store.
+
+Current limitation: this is still a native wrapper-level API. The raw C ABI and
+host language wrappers do not yet expose durable SQLite connection handles, and
+transaction metadata is not persisted as explicit metadata rows beyond the
+datom rows themselves.
 
 ## SQLite Backend Plan
 
@@ -55,9 +71,9 @@ Initial schema direction:
 
 Implementation order:
 
-1. Add a SQLite-backed connection mode that appends each successful transaction
-   as it commits, instead of full-replacing rows during explicit persist.
-2. Store transaction metadata explicitly.
+1. Store transaction metadata explicitly.
+2. Expose durable SQLite connection handles through the C ABI and selected host
+   wrappers once the native shape settles.
 3. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
 4. Add write-bench style measurements for commit latency, batch throughput, and

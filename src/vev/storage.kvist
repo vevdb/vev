@@ -226,6 +226,19 @@ sqlite_open_replace_datoms_raw :: proc(path: string) -> (rawptr, bool, string) {
     return rawptr(db), true, \"\"
 }
 
+sqlite_open_append_datoms_raw :: proc(path: string) -> (rawptr, bool, string) {
+    db, open_ok, open_error := sqlite_open_initialized(path)
+    if !open_ok {
+        return nil, false, open_error
+    }
+    begin_ok, tx_error := sqlite_exec_ok(db, \"BEGIN IMMEDIATE\")
+    if !begin_ok {
+        _ = sqlite3_close(db)
+        return nil, false, tx_error
+    }
+    return rawptr(db), true, \"\"
+}
+
 sqlite_rollback_close_raw :: proc(handle: rawptr) {
     if handle != nil {
         db := (^SQLite3)(handle)
@@ -475,3 +488,63 @@ sqlite_load_datom_rows_text_raw :: proc(path: string) -> (string, bool, string) 
 
 (defn persist-conn-sqlite [path: string, conn: Conn] -> [ok: bool, error: string]
   (save-db-sqlite path conn.db))
+
+(defstruct SQLite-Conn {
+  path: string
+  conn: Conn
+})
+
+(defn append-datoms-sqlite [path: string, datoms: []Datom] -> [ok: bool, error: string]
+  (let [[handle open-ok open-error] (sqlite-open-append-datoms-raw path)]
+    (when (not open-ok)
+      (return false open-error))
+    (for [datom datoms]
+      (let [value-text (value-serializable-text datom.v)
+            [insert-ok insert-error] (sqlite-insert-datom-raw handle datom.e datom.a value-text datom.tx datom.added)]
+        (delete value-text)
+        (when (not insert-ok)
+          (sqlite-rollback-close-raw handle)
+          (return false insert-error))))
+    (sqlite-commit-close-raw handle)))
+
+(defn create-sqlite-conn [path: string] -> SQLite-Conn
+  (SQLite-Conn {path: (string-owned path)
+                conn: (create-conn)}))
+
+(defn open-sqlite-conn [path: string] -> [store: SQLite-Conn, ok: bool, error: string]
+  (let [[conn opened-ok opened-error] (open-conn-sqlite path)]
+    (if opened-ok
+      (return (SQLite-Conn {path: (string-owned path) conn: conn}) true "")
+      (if (= opened-error "sqlite DB has no Vev datom rows")
+        (return (SQLite-Conn {path: (string-owned path) conn: conn}) true "")
+        (return (SQLite-Conn {path: (string-owned path) conn: conn}) false opened-error)))))
+
+(defn close-sqlite-conn [store: SQLite-Conn]
+  (delete store.path)
+  (delete store.conn.listeners)
+  (delete-owned-db store.conn.db))
+
+(defn rollback-sqlite-conn! [store: ^SQLite-Conn, before: DB]
+  (let [restored (conn-from-db before)]
+    (delete-owned-db store^.conn.db)
+    (set! store^.conn.db restored.db)
+    (set! store^.conn.next-tx restored.next-tx)
+    (delete restored.listeners)))
+
+(defn transact-sqlite-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> Tx-Report
+  (let [report (transact-tx-data (addr store^.conn) tx-data)]
+    (when (not report.ok)
+      (return report))
+    (let [[saved-ok save-error] (append-datoms-sqlite store^.path (slice report.tx-data 0))]
+      (when (not saved-ok)
+        (rollback-sqlite-conn! store report.db-before)
+        (delete-tx-report-shallow report)
+        (return (failed-tx-report store^.conn.db save-error))))
+    report))
+
+(defn transact-sqlite-text [store: ^SQLite-Conn, text: string] -> Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (when (not parse-ok)
+      (return (failed-tx-report store^.conn.db parse-error)))
+    (transact-sqlite-tx-data store (slice tx-data 0))))
