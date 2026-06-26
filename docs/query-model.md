@@ -190,9 +190,13 @@ path.
 
 First slice implemented: `Typed-Relation` stores primitive relation columns in
 struct-of-arrays form and the compound primitive hash join can build/probe join
-keys from those columns for multi-variable joins. The result still materializes
-ordinary `Binding` tuples after the join; later steps should keep rows typed
-through projection/result rendering.
+keys from those columns for multi-variable joins. The relation engine can now
+also render simple no-pull/no-aggregate result rows directly from typed
+relation columns, with the old `Binding` renderer retained as the semantic
+fallback. This is still an incremental migration: relation operators continue
+to carry `Binding` tuples as the compatibility representation, so the larger
+performance work remains keeping scans, joins, filters, projection, and
+deduplication typed end-to-end.
 
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
