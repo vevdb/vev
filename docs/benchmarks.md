@@ -237,13 +237,15 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 | `distinct-age n=1000` | 3.4x | 4.1x |
 | `people-name-age n=1000` | 0.8x | 0.8x |
 
-Prepared queries now cache per-rule-call plans on the parsed query value. The
-small `datascript-bench` rule rows measured after that change are:
+Prepared queries now cache per-rule-call plans on the parsed query value, and
+plain positive single-recursive-call rule bodies use a conservative delta
+iteration. The small `datascript-bench` rule rows measured after those changes
+are:
 
 | Workload | DataScript median | Vev median | DataScript/Vev |
 |---|---:|---:|---:|
-| `rules-wide-3x3` | 0.44ms | 0.25ms | 1.76x |
-| `rules-long-10x3` | 0.94ms | 0.30ms | 3.13x |
+| `rules-wide-3x3` | 0.46ms | 0.26ms | 1.77x |
+| `rules-long-10x3` | 0.98ms | 0.32ms | 3.06x |
 
 ## Stress Comparison
 
@@ -252,11 +254,11 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1721.4x | 1735.8x |
-| `stress-chain-leaf n=300` | 4215.0x | 4396.3x |
-| `stress-chain-all n=200` | 31.2x | 30.3x |
-| `stress-tree-root n=364` | 2.8x | 2.7x |
-| `stress-mutual-root n=30` | 16.6x | 21.6x |
+| `stress-chain-root n=300` | 1658.9x | 1758.4x |
+| `stress-chain-leaf n=300` | 3559.7x | 3995.4x |
+| `stress-chain-all n=200` | 27.2x | 27.2x |
+| `stress-tree-root n=364` | 2.5x | 2.7x |
+| `stress-mutual-root n=30` | 16.9x | 21.7x |
 
 The stress harness also emits Vev-only rows for workloads that are currently
 too expensive for routine DataScript comparison:
@@ -373,10 +375,12 @@ Remaining performance work:
   after each operator migration so the work stays general.
 - Generalize this from the current linear transitive closure path into a
   measured semi-naive/memoized rule evaluator. Filtered linear recursion and
-  alternating two-rule recursion are optimized, and plain positive recursive
-  rule groups now have a component-local memoized fixpoint. The next step is a
-  delta/semi-naive relation-native implementation rather than re-probing the
-  full memo each iteration.
+  alternating two-rule recursion are optimized. Plain positive recursive rule
+  groups now have a component-local memoized fixpoint, and single-recursive-call
+  bodies use per-iteration delta tables rather than re-probing the full memo
+  each iteration. The next step is to move that binding-row evaluator into
+  relation-native operators and extend semi-naive coverage to multi-call
+  recursive bodies.
 - Continue result-projection work beyond the single-attr distinct fast path.
   `distinct-age` is now faster than DataScript locally, but
   `people-name-age` still shows broad two-column projection behind

@@ -5772,6 +5772,7 @@
   name: string
   params: [dynamic]string
   bindings: [dynamic]Binding
+  delta: [dynamic]Binding
 })
 
 (defn alternating-state-expanded? [left-expanded: []u64, right-expanded: []u64, entity: u64, use-left: bool] -> bool
@@ -6211,6 +6212,35 @@
       (return false)))
   true)
 
+(defn recursive-component-names-for-rule [rules: []Rule, name: string] -> [dynamic]string
+  (let [deps (rules-dependency-graph rules)
+        components (rule-components-in-deps (slice deps 0))
+        out (make [dynamic]string)]
+    (defer (delete-rule-dependency-graph deps))
+    (defer (delete-rule-components components))
+    (let [[component-index found] (rule-component-index-for-name (slice components 0) name)]
+      (when (and found components[component-index].recursive)
+        (for [component-name components[component-index].names]
+          (arr.push! out component-name))))
+    out))
+
+(defn positive-rule-delta-plan-eligible? [plan: Rule-Call-Plan, call: Rule-Call] -> bool
+  (when (not (positive-rule-memo-plan-eligible? plan call))
+    (return false))
+  (let [recursive-names (recursive-component-names-for-rule (slice plan.rules 0) call.name)]
+    (defer (delete recursive-names))
+    (when (= (count recursive-names) 0)
+      (return false))
+    (for [rule plan.rules]
+      (when (not (string-slice-contains? (slice recursive-names 0) rule.name))
+        (return false))
+      (when (> (count rule.rule-calls) 1)
+        (return false))
+      (for [rule-call rule.rule-calls]
+        (when (not (string-slice-contains? (slice recursive-names 0) rule-call.name))
+          (return false)))))
+  true)
+
 (defn string-slices-equal? [left: []string, right: []string] -> bool
   (when (not (= (count left) (count right)))
     (return false))
@@ -6222,7 +6252,8 @@
 (defn delete-rule-memo [memo: [dynamic]Rule-Memo-Entry]
   (for [entry memo]
     (delete entry.params)
-    (delete entry.bindings))
+    (delete entry.bindings)
+    (delete entry.delta))
   (delete memo))
 
 (defn rule-memo-entry-index [memo: []Rule-Memo-Entry, name: string, params: []string] -> [index: int, ok: bool]
@@ -6238,10 +6269,12 @@
       (let [[_ found] (rule-memo-entry-index (slice memo 0) rule.name (slice rule.params 0))]
         (when (not found)
           (let [params (arr.into [dynamic]string (slice rule.params 0))
-                bindings (make [dynamic]Binding)]
+                bindings (make [dynamic]Binding)
+                delta (make [dynamic]Binding)]
             (arr.push! memo (Rule-Memo-Entry {name: rule.name
                                               params: params
-                                              bindings: bindings}))))))
+                                              bindings: bindings
+                                              delta: delta}))))))
     memo))
 
 (defn rule-output-binding [rule: Rule, result: Binding] -> [binding: Binding, ok: bool]
@@ -6265,15 +6298,30 @@
       (arr.push! memo^[entry-index].bindings output)
       true)))
 
-(defn bindings-after-rule-call-from-memo-entry [entry: Rule-Memo-Entry, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+(defn rule-memo-append-result-to-delta! [memo: ^[dynamic]Rule-Memo-Entry, next-delta: ^[dynamic]Rule-Memo-Entry, rule: Rule, result: Binding] -> bool
+  (let [[output output-ok] (rule-output-binding rule result)]
+    (when (not output-ok)
+      (return false))
+    (let [[entry-index entry-ok] (rule-memo-entry-index (slice memo^ 0) rule.name (slice rule.params 0))]
+      (when (not entry-ok)
+        (return false))
+      (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
+        (return false))
+      (arr.push! memo^[entry-index].bindings output)
+      (let [[delta-index delta-ok] (rule-memo-entry-index (slice next-delta^ 0) rule.name (slice rule.params 0))]
+        (when delta-ok
+          (arr.push! next-delta^[delta-index].delta output)))
+      true)))
+
+(defn bindings-after-rule-call-from-memo-bindings [params: []string, memo-bindings: []Binding, call: Rule-Call, binding: Binding] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
-    (when (not (= (count call.args) (count entry.params)))
+    (when (not (= (count call.args) (count params)))
       (return out))
-    (for [memo-binding entry.bindings]
+    (for [memo-binding memo-bindings]
       (let [next (clone-binding binding)
             ok true]
         (for [arg index call.args]
-          (let [param entry.params[index]
+          (let [param params[index]
                 [value value-ok] (binding-lookup memo-binding param)]
             (when (not value-ok)
               (set! ok false))
@@ -6293,11 +6341,27 @@
           (arr.push! out next))))
     out))
 
+(defn bindings-after-rule-call-from-memo-entry [entry: Rule-Memo-Entry, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+  (bindings-after-rule-call-from-memo-bindings (slice entry.params 0) (slice entry.bindings 0) call binding))
+
+(defn bindings-after-rule-call-from-memo-entry-delta [entry: Rule-Memo-Entry, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+  (bindings-after-rule-call-from-memo-bindings (slice entry.params 0) (slice entry.delta 0) call binding))
+
 (defn bindings-after-rule-call-from-memo [memo: []Rule-Memo-Entry, call: Rule-Call, binding: Binding] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [entry memo]
       (when (= entry.name call.name)
         (let [entry-bindings (bindings-after-rule-call-from-memo-entry entry call binding)]
+          (for [entry-binding entry-bindings]
+            (arr.push! out entry-binding))
+          (delete entry-bindings))))
+    out))
+
+(defn bindings-after-rule-call-from-memo-delta [memo: []Rule-Memo-Entry, call: Rule-Call, binding: Binding] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [entry memo]
+      (when (= entry.name call.name)
+        (let [entry-bindings (bindings-after-rule-call-from-memo-entry-delta entry call binding)]
           (for [entry-binding entry-bindings]
             (arr.push! out entry-binding))
           (delete entry-bindings))))
@@ -6323,6 +6387,28 @@
     :else
       (make [dynamic]Binding)))
 
+(defn bindings-after-rule-step-memo-with-delta [db: DB, memo: []Rule-Memo-Entry, rule: Rule, bindings: []Binding, step: Query-Step, delta-call-index: int] -> [dynamic]Binding
+  (case step.kind
+    .Clause
+      (let [out (make [dynamic]Binding)
+            clause rule.clauses[step.index]]
+        (for [binding bindings]
+          (append-bindings-after-clause! (addr out) db clause binding))
+        out)
+    .RuleCall
+      (let [out (make [dynamic]Binding)
+            call rule.rule-calls[step.index]]
+        (for [binding bindings]
+          (let [rule-bindings (if (= step.index delta-call-index)
+                                (bindings-after-rule-call-from-memo-delta memo call binding)
+                                (bindings-after-rule-call-from-memo memo call binding))]
+            (for [rule-binding rule-bindings]
+              (arr.push! out rule-binding))
+            (delete rule-bindings)))
+        out)
+    :else
+      (make [dynamic]Binding)))
+
 (defn bindings-after-rule-body-memo [db: DB, memo: []Rule-Memo-Entry, rule: Rule] -> [dynamic]Binding
   (let [bindings (make [dynamic]Binding)]
     (arr.push! bindings (Binding {}))
@@ -6336,9 +6422,73 @@
           (return bindings))))
     bindings))
 
+(defn bindings-after-rule-body-memo-with-delta [db: DB, memo: []Rule-Memo-Entry, rule: Rule, delta-call-index: int] -> [dynamic]Binding
+  (let [bindings (make [dynamic]Binding)]
+    (arr.push! bindings (Binding {}))
+    (for [step rule.body-steps]
+      (let [next-raw (bindings-after-rule-step-memo-with-delta db memo rule (slice bindings 0) step delta-call-index)
+            next (unique-bindings (slice next-raw 0))]
+        (delete next-raw)
+        (delete bindings)
+        (set! bindings next)
+        (when (= (count bindings) 0)
+          (return bindings))))
+    bindings))
+
+(defn first-rule-call-index [rule: Rule] -> [index: int, ok: bool]
+  (for [step rule.body-steps]
+    (when (= step.kind .RuleCall)
+      (return step.index true)))
+  (return 0 false))
+
+(defn rule-memo-has-delta? [memo: []Rule-Memo-Entry] -> bool
+  (for [entry memo]
+    (when (> (count entry.delta) 0)
+      (return true)))
+  false)
+
+(defn rule-memo-replace-deltas! [memo: ^[dynamic]Rule-Memo-Entry, next-delta: []Rule-Memo-Entry]
+  (for [entry index memo^]
+    (delete memo^[index].delta)
+    (let [[delta-index delta-ok] (rule-memo-entry-index next-delta entry.name (slice entry.params 0))
+          delta-values (make [dynamic]Binding)]
+      (when delta-ok
+        (delete delta-values)
+        (set! delta-values (arr.into [dynamic]Binding (slice next-delta[delta-index].delta 0))))
+      (set! memo^[index].delta delta-values))))
+
+(defn bindings-after-rule-call-delta-fixpoint [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding] -> [bindings: [dynamic]Binding, ok: bool]
+  (when (not (positive-rule-delta-plan-eligible? plan call))
+    (return (make [dynamic]Binding) false))
+  (let [memo (rule-memo-build (slice plan.rules 0))]
+    (defer (delete-rule-memo memo))
+    (for [rule plan.rules]
+      (let [[_ has-call] (first-rule-call-index rule)]
+        (when (not has-call)
+          (let [results (bindings-after-rule-body-memo db (slice memo 0) rule)]
+            (for [result results]
+              (discard (rule-memo-append-result-to-delta! (addr memo) (addr memo) rule result)))
+            (delete results)))))
+    (while (rule-memo-has-delta? (slice memo 0))
+      (let [next-delta (rule-memo-build (slice plan.rules 0))]
+        (for [rule plan.rules]
+          (let [[delta-call-index has-call] (first-rule-call-index rule)]
+            (when has-call
+              (let [results (bindings-after-rule-body-memo-with-delta db (slice memo 0) rule delta-call-index)]
+                (for [result results]
+                  (discard (rule-memo-append-result-to-delta! (addr memo) (addr next-delta) rule result)))
+                (delete results)))))
+        (rule-memo-replace-deltas! (addr memo) (slice next-delta 0))
+        (delete-rule-memo next-delta)))
+    (return (bindings-after-rule-call-from-memo (slice memo 0) call binding) true)))
+
 (defn bindings-after-rule-call-memo-fixpoint [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding] -> [bindings: [dynamic]Binding, ok: bool]
   (when (not (positive-rule-memo-plan-eligible? plan call))
     (return (make [dynamic]Binding) false))
+  (let [[delta-bindings delta-ok] (bindings-after-rule-call-delta-fixpoint db plan call binding)]
+    (when delta-ok
+      (return delta-bindings true))
+    (delete delta-bindings))
   (let [memo (rule-memo-build (slice plan.rules 0))
         changed true]
     (defer (delete-rule-memo memo))

@@ -128,12 +128,14 @@ array just to discover which names exist or which rule branches share a name.
 The same dependency graph now produces explicit strongly connected component
 metadata. Recursive checks use those components instead of pairwise
 mutual-reachability probes, which is the planner-side structure needed before a
-component-local semi-naive rule evaluator. The first component-local execution
-slice is now in place for plain positive recursive rules: data clauses plus rule
-calls, no source-qualified calls and no predicates/functions/negation/disjunction
-inside the component. It builds a memo table of rule outputs and iterates to a
-fixpoint, while preserving the specialized linear and alternating transitive
-paths as faster physical operators.
+component-local semi-naive rule evaluator. Plain positive recursive rules now
+have two generic component-local execution slices: rule bodies with at most one
+recursive rule-call step use accumulated memo tables plus per-iteration delta
+tables, while broader positive components fall back to the full memoized
+fixpoint. Both paths handle data clauses plus rule calls, with no
+source-qualified calls and no predicates/functions/negation/disjunction inside
+the component. The specialized linear and alternating transitive paths remain
+faster physical operators and run before the generic memo/delta paths.
 
 ## Query Engine Strategy
 
@@ -324,11 +326,13 @@ Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
 connected component metadata for recursive checks and rule grouping. Plain
-positive recursive rule groups can use a component-local memoized fixpoint, and
-specialized transitive paths remain the fast path for common reachability
-shapes. The next rule-engine step is to replace the full-memo recursive probe
-with a relation-native delta/semi-naive evaluator, using the dependency
-components as the stratification input.
+positive recursive rule groups can use component-local memoized execution:
+single-recursive-call bodies use a delta-driven iteration, and broader positive
+components fall back to a full memo fixpoint. Specialized transitive paths
+remain the fast path for common reachability shapes. The next rule-engine step
+is to move this binding-row memo/delta evaluator into relation-native operators
+and expand semi-naive coverage to multi-recursive-call bodies using the
+dependency components as the stratification input.
 
 Near-term query work should expand the relation engine in this order:
 
@@ -337,8 +341,9 @@ Near-term query work should expand the relation engine in this order:
 2. Source-qualified synthetic primary collection DB operators: move the
    remaining collection-backed rule/predicate/function cases into the same
    source-aware relation representation.
-3. Rules: move the new memoized positive-rule fixpoint from binding rows toward
-   relation-native delta/semi-naive behavior.
+3. Rules: move the positive-rule memo/delta evaluator from binding rows toward
+   relation-native semi-naive behavior, then broaden it beyond one recursive
+   call per body.
 
 The transaction side has the same split:
 
