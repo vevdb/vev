@@ -1,6 +1,11 @@
 (ns smoke
   (:require [vev.core :as vev]))
 
+(defn delete-sqlite-files! [path]
+  (doseq [suffix ["" "-wal" "-shm"]]
+    (java.nio.file.Files/deleteIfExists
+      (java.nio.file.Path/of (str path suffix) (make-array String 0)))))
+
 (defn -main [& args]
   (when-not (= 1 (count args))
     (throw (ex-info "usage: smoke <path-to-libvev.dylib>" {})))
@@ -137,6 +142,36 @@
           (println "snapshot-db rows:" snapshot-rows)
           (when-not (and (= 3 current-rows) (= 2 snapshot-rows))
             (throw (ex-info "unexpected snapshot row counts"
-                            {:current current-rows :snapshot snapshot-rows})))))))))
+                            {:current current-rows :snapshot snapshot-rows})))))))
+
+  (let [sqlite-path "tmp.vev.clojure.sqlite"]
+    (delete-sqlite-files! sqlite-path)
+    (try
+      (with-open [durable (vev/open-sqlite lib-path sqlite-path)]
+        (let [tx (vev/transact! durable
+                   [{:db/id 1
+                     :user/name "Durable Ada"
+                     :user/email "durable-ada@example.com"}])]
+          (when-not (:ok tx)
+            (throw (ex-info "unexpected SQLite transaction report" {:report tx}))))
+        (with-open [db (vev/db durable)
+                    all-emails (vev/prepare durable
+                                 '[:find ?e ?email
+                                   :where [?e :user/email ?email]])]
+          (let [rows (vev/q db all-emails)]
+            (println "sqlite-live rows:" rows)
+            (when-not (= 1 (count rows))
+              (throw (ex-info "unexpected SQLite live row count" {:rows rows}))))))
+      (with-open [durable (vev/open-sqlite lib-path sqlite-path)
+                  db (vev/db durable)
+                  all-emails (vev/prepare durable
+                               '[:find ?e ?email
+                                 :where [?e :user/email ?email]])]
+        (let [rows (vev/q db all-emails)]
+          (println "sqlite-reopened rows:" rows)
+          (when-not (= 1 (count rows))
+            (throw (ex-info "unexpected SQLite reopened row count" {:rows rows})))))
+      (finally
+        (delete-sqlite-files! sqlite-path))))))
 
 (apply -main *command-line-args*)

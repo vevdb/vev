@@ -52,11 +52,11 @@ That keeps the wrapper-level connection consistent with the durable store.
 
 The raw C ABI now exposes this durable connection shape through
 `vev_sqlite_conn_t`, including open/ok/error/close, transaction reports, and DB
-snapshots. Higher-level Python, Java, Clojure, and Rust wrapper ergonomics can
-be added when concrete adapter needs justify them. Explicit full DB persist
-cannot reconstruct report-only tx metadata from a bare DB value; metadata rows
-are written by the SQLite-backed transaction wrapper when it has the successful
-transaction report in hand.
+snapshots. The Python, Java, Clojure, and Rust example wrappers also expose the
+basic durable shape and smoke-test open/write/close/reopen/query. Explicit
+full DB persist cannot reconstruct report-only tx metadata from a bare DB
+value; metadata rows are written by the SQLite-backed transaction wrapper when
+it has the successful transaction report in hand.
 
 ## SQLite Backend Plan
 
@@ -74,15 +74,13 @@ Initial schema direction:
 
 Implementation order:
 
-1. Add higher-level durable SQLite connection wrappers for selected host
-   languages once the raw C shape settles.
-2. Add storage-level metadata inspection/replay APIs only where concrete tools
+1. Add storage-level metadata inspection/replay APIs only where concrete tools
    need them.
-3. Keep rebuilding in-memory indexes from the datom tables on open until reopen
+2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
-4. Add write-bench style measurements for commit latency, batch throughput, and
+3. Add write-bench style measurements for commit latency, batch throughput, and
    reopen cost.
-5. Move selected logical indexes to persisted structures only after benchmarks
+4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
 
 Non-goals for the first SQLite backend:

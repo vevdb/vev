@@ -314,12 +314,14 @@ connection handles, immutable DB snapshot handles, EDN transaction/query/pull
 entrypoints, prepared queries, typed statement bindings, named DB source
 bindings, typed result access, direct result-row visitors, status/error
 accessors, and DB-value retain/release. C, Python, Rust, Java, and Clojure
-smokes exercise the native library, and the C smoke also covers raw durable
-SQLite open/transact/close/reopen/query. The ABI-vs-native benchmark covers
-small lookups, DB snapshots, transaction reports, many-row results, direct row
+smokes exercise the native library, including durable SQLite
+open/transact/close/reopen/query through the raw C ABI and the Python, Rust,
+Java, and Clojure example wrappers. The ABI-vs-native benchmark covers small
+lookups, DB snapshots, transaction reports, many-row results, direct row
 visitors, nested pull-many values, and host-provided transaction function
 callbacks. Further interop work should be driven by specific adapter needs,
-especially higher-level host wrappers over the raw C ABI.
+especially packaging and richer host-specific APIs over the stable raw C
+surface.
 
 ## Phase 9: Optional packaging expansion
 

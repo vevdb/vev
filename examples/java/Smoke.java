@@ -1,11 +1,18 @@
 package vev;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 public final class Smoke {
+    private static void deleteSqliteFiles(Path path) throws Exception {
+        Files.deleteIfExists(path);
+        Files.deleteIfExists(Path.of(path.toString() + "-wal"));
+        Files.deleteIfExists(Path.of(path.toString() + "-shm"));
+    }
+
     public static void main(String[] args) throws Throwable {
         if (args.length != 1) {
             throw new IllegalArgumentException("usage: Smoke <path-to-libvev.dylib>");
@@ -193,6 +200,43 @@ public final class Smoke {
                         }
                     }
                 }
+            }
+
+            Path sqlitePath = Path.of("tmp.vev.java.sqlite");
+            deleteSqliteFiles(sqlitePath);
+            try {
+                try (Vev.SQLiteConnection durable = vev.openSqlite(sqlitePath)) {
+                    try (Vev.TxReport report = durable.transactReport("""
+                            [{:db/id 1
+                              :user/name "Durable Ada"
+                              :user/email "durable-ada@example.com"}]
+                            """)) {
+                        Vev.MapValue reportValue = (Vev.MapValue) report.value();
+                        if (!Boolean.TRUE.equals(reportValue.get(":ok"))) {
+                            throw new IllegalStateException("unexpected SQLite transaction report");
+                        }
+                    }
+                    try (Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
+                         Vev.DB durableDb = durable.db();
+                         Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {
+                        System.out.println("sqlite-live rows: " + rows.rowCount());
+                        if (rows.rowCount() != 1) {
+                            throw new IllegalStateException("unexpected SQLite live row count");
+                        }
+                    }
+                }
+
+                try (Vev.SQLiteConnection durable = vev.openSqlite(sqlitePath);
+                     Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
+                     Vev.DB durableDb = durable.db();
+                     Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {
+                    System.out.println("sqlite-reopened rows: " + rows.rowCount());
+                    if (rows.rowCount() != 1) {
+                        throw new IllegalStateException("unexpected SQLite reopened row count");
+                    }
+                }
+            } finally {
+                deleteSqliteFiles(sqlitePath);
             }
         } finally {
             vev.close();

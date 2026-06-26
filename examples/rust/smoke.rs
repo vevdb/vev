@@ -3,6 +3,7 @@ use std::os::raw::{c_char, c_double, c_int, c_ulonglong, c_void};
 use std::ptr;
 
 type VevConn = *mut c_void;
+type VevSqliteConn = *mut c_void;
 type VevDb = *mut c_void;
 type VevPreparedQuery = *mut c_void;
 type VevResult = *mut c_void;
@@ -30,6 +31,15 @@ unsafe extern "C" {
     fn vev_conn_close(conn: VevConn);
     fn vev_conn_db(conn: VevConn) -> VevDb;
     fn vev_conn_from_db(db: VevDb) -> VevConn;
+    fn vev_sqlite_conn_open(path: *const c_char) -> VevSqliteConn;
+    fn vev_sqlite_conn_ok(conn: VevSqliteConn) -> bool;
+    fn vev_sqlite_conn_error(conn: VevSqliteConn) -> *const c_char;
+    fn vev_sqlite_conn_close(conn: VevSqliteConn);
+    fn vev_sqlite_conn_db(conn: VevSqliteConn) -> VevDb;
+    fn vev_sqlite_conn_transact_edn_report(
+        conn: VevSqliteConn,
+        tx_text: *const c_char,
+    ) -> VevTxReport;
     fn vev_db_release(db: VevDb);
     fn vev_with_edn_report(db: VevDb, tx_text: *const c_char) -> VevTxReport;
     fn vev_db_with_edn(db: VevDb, tx_text: *const c_char) -> VevDb;
@@ -269,6 +279,55 @@ impl Drop for Conn {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             unsafe { vev_conn_close(self.raw) };
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
+struct SqliteConn {
+    raw: VevSqliteConn,
+}
+
+impl SqliteConn {
+    fn open(path: &str) -> Result<Self, String> {
+        let path = cstring(path);
+        let raw = unsafe { vev_sqlite_conn_open(path.as_ptr()) };
+        if raw.is_null() {
+            return Err("failed to open SQLite-backed Vev connection".to_string());
+        }
+        if unsafe { vev_sqlite_conn_ok(raw) } {
+            Ok(Self { raw })
+        } else {
+            let error = unsafe { Library::owned_string(vev_sqlite_conn_error(raw)) };
+            unsafe { vev_sqlite_conn_close(raw) };
+            Err(error)
+        }
+    }
+
+    fn transact_report(&self, tx: &str) -> Result<TxReport, String> {
+        let tx = cstring(tx);
+        let raw = unsafe { vev_sqlite_conn_transact_edn_report(self.raw, tx.as_ptr()) };
+        if raw.is_null() {
+            Err("failed to transact".to_string())
+        } else {
+            Ok(TxReport { raw })
+        }
+    }
+
+    fn db(&self) -> Result<Db, String> {
+        let raw = unsafe { vev_sqlite_conn_db(self.raw) };
+        if raw.is_null() {
+            Err("failed to retain DB snapshot".to_string())
+        } else {
+            Ok(Db { raw })
+        }
+    }
+}
+
+impl Drop for SqliteConn {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { vev_sqlite_conn_close(self.raw) };
             self.raw = ptr::null_mut();
         }
     }
@@ -582,6 +641,12 @@ impl Drop for ResultSet {
     }
 }
 
+fn remove_sqlite_files(path: &str) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(format!("{path}-wal"));
+    let _ = std::fs::remove_file(format!("{path}-shm"));
+}
+
 fn main() -> Result<(), String> {
     let version = unsafe { Library::borrowed_string(vev_version()) };
     println!("version: {version}");
@@ -778,6 +843,41 @@ fn main() -> Result<(), String> {
     if derived_barbara_rows != 1 || derived_dorothy_rows != 1 {
         return Err("conn-from-db did not initialize from DB value".to_string());
     }
+
+    let sqlite_path = "tmp.vev.rust.sqlite";
+    remove_sqlite_files(sqlite_path);
+    {
+        let durable = SqliteConn::open(sqlite_path)?;
+        let report = durable.transact_report(
+            r#"[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]"#,
+        )?;
+        if report.value().map_get(":ok") != Some(&Value::Bool(true)) {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected SQLite transaction report".to_string());
+        }
+        let durable_query =
+            PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;
+        let durable_db = durable.db()?;
+        let live_rows = durable_query.query_db(&durable_db, "[]")?.row_count();
+        println!("sqlite-live rows: {live_rows}");
+        if live_rows != 1 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected SQLite live row count".to_string());
+        }
+    }
+    {
+        let durable = SqliteConn::open(sqlite_path)?;
+        let durable_query =
+            PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;
+        let durable_db = durable.db()?;
+        let reopened_rows = durable_query.query_db(&durable_db, "[]")?.row_count();
+        println!("sqlite-reopened rows: {reopened_rows}");
+        if reopened_rows != 1 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected SQLite reopened row count".to_string());
+        }
+    }
+    remove_sqlite_files(sqlite_path);
 
     Ok(())
 }

@@ -29,6 +29,12 @@ public final class Vev {
     private final MethodHandle connClose;
     private final MethodHandle connDb;
     private final MethodHandle connFromDb;
+    private final MethodHandle sqliteConnOpen;
+    private final MethodHandle sqliteConnOk;
+    private final MethodHandle sqliteConnError;
+    private final MethodHandle sqliteConnClose;
+    private final MethodHandle sqliteConnDb;
+    private final MethodHandle sqliteConnTransactEdnReport;
     private final MethodHandle dbRetain;
     private final MethodHandle dbRelease;
     private final MethodHandle withEdn;
@@ -139,6 +145,12 @@ public final class Vev {
         this.connClose = downcall("vev_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connDb = downcall("vev_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connFromDb = downcall("vev_conn_from_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.sqliteConnOpen = downcall("vev_sqlite_conn_open", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.sqliteConnOk = downcall("vev_sqlite_conn_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
+        this.sqliteConnError = downcall("vev_sqlite_conn_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.sqliteConnClose = downcall("vev_sqlite_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.sqliteConnDb = downcall("vev_sqlite_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.sqliteConnTransactEdnReport = downcall("vev_sqlite_conn_transact_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRetain = downcall("vev_db_retain", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRelease = downcall("vev_db_release", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.withEdn = downcall("vev_with_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -245,6 +257,24 @@ public final class Vev {
         MemorySegment raw = (MemorySegment) connOpenMemory.invoke();
         if (isNull(raw)) throw new IllegalStateException("failed to open Vev connection");
         return new Connection(raw);
+    }
+
+    public SQLiteConnection openSqlite(Path path) throws Throwable {
+        try (Arena local = Arena.ofConfined()) {
+            MemorySegment raw = (MemorySegment) sqliteConnOpen.invoke(local.allocateUtf8String(path.toString()));
+            if (isNull(raw)) throw new IllegalStateException("failed to open SQLite-backed Vev connection");
+            boolean ok = (boolean) sqliteConnOk.invoke(raw);
+            if (!ok) {
+                String error = ownedString((MemorySegment) sqliteConnError.invoke(raw));
+                closeHandle(sqliteConnClose, raw);
+                throw new IllegalStateException(error);
+            }
+            return new SQLiteConnection(raw);
+        }
+    }
+
+    public SQLiteConnection openSqlite(String path) throws Throwable {
+        return openSqlite(Path.of(path));
     }
 
     public Connection connFromDb(DB db) throws Throwable {
@@ -508,6 +538,40 @@ public final class Vev {
         public void close() {
             if (!isNull(raw)) {
                 closeHandle(connClose, raw);
+                raw = MemorySegment.NULL;
+            }
+        }
+    }
+
+    public final class SQLiteConnection implements AutoCloseable {
+        private MemorySegment raw;
+
+        private SQLiteConnection(MemorySegment raw) {
+            this.raw = raw;
+        }
+
+        public TxReport transactReport(String tx) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return new TxReport((MemorySegment) sqliteConnTransactEdnReport.invoke(raw, local.allocateUtf8String(tx)));
+            }
+        }
+
+        public DB db() throws Throwable {
+            requireOpen();
+            MemorySegment db = (MemorySegment) sqliteConnDb.invoke(raw);
+            if (isNull(db)) throw new IllegalStateException("failed to retain DB snapshot");
+            return new DB(db);
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("SQLite-backed connection is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(sqliteConnClose, raw);
                 raw = MemorySegment.NULL;
             }
         }

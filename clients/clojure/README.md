@@ -82,6 +82,15 @@ A mutable connection can also be initialized from an immutable DB snapshot:
   (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
 ```
 
+Durable SQLite-backed connections use the same transaction and DB-value query
+shape:
+
+```clojure
+(with-open [conn (vev/open-sqlite "build/lib/libvev.dylib" "app.vev.sqlite")]
+  (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
+  (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
+```
+
 The current package is deliberately thin:
 
 - `transact!` and `with` return transaction report maps from typed native report handles

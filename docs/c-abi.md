@@ -370,6 +370,16 @@ friend = user[":user/friend"][":user/name"]
 entity values from ordinary integer values. Keywords and symbols currently
 convert to their EDN text strings, for example `":user/name"`.
 
+Durable SQLite-backed connections use the same DB-value query path:
+
+```python
+with vev.open_sqlite("app.vev.sqlite") as durable:
+    durable.transact_report(
+        '[{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}]')
+    with durable.db() as db:
+        rows = query.rows(db)
+```
+
 The smoke also exercises DB-value `with`, `db-with`, and `conn-from-db` so the
 Python path follows the same immutable snapshot contract as C, Java, Clojure,
 and Rust. Transactions can use `transact_report` / `with_report` for typed
@@ -391,7 +401,8 @@ intended safe wrapper shape:
 The example covers transactions, rendered EDN query output, prepared statement
 bindings, homogeneous collection bindings, pull-pattern statement bindings,
 pull result traversal, direct pull APIs, DB snapshots, querying a snapshot with
-a statement, immutable `db-with`, and deriving a connection from a DB value.
+a statement, immutable `db-with`, deriving a connection from a DB value, and
+SQLite-backed open/write/close/reopen/query.
 
 ## Java And Clojure Examples
 
@@ -425,7 +436,20 @@ java --enable-preview --enable-native-access=ALL-UNNAMED ...
 
 The Java wrapper exposes `Vev.load(path)` and `createConn()` as the public-ish
 example shape. `openMemory()` remains as a low-level compatibility alias for
-the underlying ABI operation.
+the underlying ABI operation. Durable SQLite-backed connections use
+`openSqlite(path)` and query through immutable DB snapshots:
+
+```java
+try (Vev.SQLiteConnection durable = vev.openSqlite("app.vev.sqlite")) {
+    try (Vev.TxReport report =
+             durable.transactReport("[{:db/id 1 :user/name \"Ada\"}]")) {
+        // inspect report.value() if needed
+    }
+    try (Vev.DB db = durable.db()) {
+        // query db with prepared queries
+    }
+}
+```
 
 [vev.core](../clients/clojure/src/vev/core.clj) is the first Clojure package
 layer on top of that Java wrapper. It accepts ordinary quoted Clojure forms and
@@ -459,6 +483,14 @@ Inputs are ordinary Clojure arguments after the query:
 
 Plain Clojure `q`/`rows` calls prepare and close a temporary native query
 handle. Use `vev/prepare` with `with-open` when a query should be reused.
+
+Durable SQLite-backed connections use `open-sqlite`:
+
+```clojure
+(with-open [conn (vev/open-sqlite "build/lib/libvev.dylib" "app.vev.sqlite")]
+  (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
+  (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
+```
 
 The underlying Java wrapper still exposes EDN strings directly:
 
@@ -891,6 +923,8 @@ The initial C ABI shape is now covered for C, Python, Rust, Java, and Clojure,
 including immutable DB handles, typed statement bindings, direct pull handles,
 direct row visitors, registered transaction function callbacks, status/error
 accessors, transaction report listeners, durable SQLite connection handles, and
-baseline ABI-vs-native benchmarks. The next interop work should be driven by
-concrete host adapter needs, especially higher-level host adapter APIs, rather
-than expanding the raw C surface speculatively.
+baseline ABI-vs-native benchmarks. Basic Python, Rust, Java, and Clojure
+wrappers now smoke-test durable SQLite open/write/close/reopen/query. The next
+interop work should be driven by concrete host adapter needs, especially
+packaging and richer host-specific APIs, rather than expanding the raw C surface
+speculatively.
