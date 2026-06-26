@@ -165,13 +165,13 @@ VEV_BENCH_REPEATS=3 \
 | `q2` | 1.3 | 1.1 | 1.18x |
 | `q2-switch` | 2.9 | 1.0 | 2.90x |
 | `q3` | 2.0 | 1.2 | 1.67x |
-| `q4` | 3.2 | 1.9 | 1.68x |
-| `q5` | 145.1 | 23.3 | 6.23x |
+| `q4` | 3.5 | 1.6 | 2.19x |
+| `q5` | 147.4 | 19.0 | 7.76x |
 | `qpred1` | 3.9 | 2.4 | 1.62x |
 | `qpred2` | 7.6 | 2.5 | 3.04x |
 | `q2-rows-prepared` | --- | 0.81 | --- |
-| `q4-rows-prepared` | --- | 1.7 | --- |
-| `q5-rows-prepared` | --- | 20.5 | --- |
+| `q4-rows-prepared` | --- | 1.3 | --- |
+| `q5-rows-prepared` | --- | 15.4 | --- |
 | `qpred1-rows-prepared` | --- | 1.5 | --- |
 | `qpred2-rows-prepared` | --- | 1.5 | --- |
 
@@ -255,11 +255,13 @@ join value. This is a semi-join shape, not a benchmark-name special case, and
 it should generalize to Datomic/DataScript queries where an unreturned left
 entity only constrains a shared value. The typed triple-column ABI brings the
 public Clojure q5 row to about 23ms and the prepared rows path to about 20ms,
-versus about 4ms for native result construction. Triple-column strings now use
-borrowed UTF-8 data plus length instead of allocating one owned C string per
-cell. Remaining q5 work should target broader physical-operator integration and
-larger-grained Java/Clojure row materialization rather than another
-query-engine shortcut.
+then batched string pointer/length arrays bring the public Clojure q5 row to
+about 19ms and the prepared rows path to about 15ms, versus about 4ms for
+native result construction. Triple-column strings now use borrowed UTF-8 data
+plus length metadata instead of allocating one owned C string per cell or
+calling back into the ABI once per cell. Remaining q5 work should target
+broader physical-operator integration and larger-grained Java/Clojure row
+materialization rather than another query-engine shortcut.
 
 Near-term benchmark work:
 

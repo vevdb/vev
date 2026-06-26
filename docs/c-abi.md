@@ -742,6 +742,8 @@ For hot flat query shapes, the ABI also exposes column-oriented handles:
 - `vev_entity_string_int_triples_count`
 - `vev_entity_string_int_triples_entities_data`
 - `vev_entity_string_int_triples_ints_data`
+- `vev_entity_string_int_triples_string_data_array`
+- `vev_entity_string_int_triples_string_lengths_data`
 - `vev_entity_string_int_triples_string_data`
 - `vev_entity_string_int_triples_string_len`
 
@@ -749,10 +751,14 @@ These are lower-level than the generic result API, but are the right shape for
 language adapters that want to avoid per-cell value handles for common
 `[:find ?e]`, `[:find ?e ?n]`, and `[:find ?e ?s ?n]` queries. Column pointers
 are borrowed and remain valid until the corresponding column handle is freed.
-`vev_entity_string_int_triples_string_data` returns borrowed UTF-8 bytes plus
-`vev_entity_string_int_triples_string_len`; use those for hot paths. The
-convenience `vev_entity_string_int_triples_string` returns an owned C string
-that must be released with `vev_string_free`.
+For string columns, prefer
+`vev_entity_string_int_triples_string_data_array` plus
+`vev_entity_string_int_triples_string_lengths_data` so host adapters can read
+all borrowed UTF-8 byte pointers and lengths without one ABI call per cell.
+The per-index `vev_entity_string_int_triples_string_data` and
+`vev_entity_string_int_triples_string_len` accessors are retained for simpler
+callers. The convenience `vev_entity_string_int_triples_string` returns an
+owned C string that must be released with `vev_string_free`.
 
 Current value-handle accessors:
 
