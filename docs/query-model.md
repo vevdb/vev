@@ -257,6 +257,12 @@ Tenth slice implemented: typed result rendering now resolves `:find` and
 The row loop reads values directly from typed columns by integer index instead
 of doing per-row variable-name lookups through the relation attr map.
 
+Eleventh slice implemented: typed primitive hash joins now precompute output
+column sources and fill typed result columns directly from left/right typed
+input columns by row index. The compatibility `Binding` row is still emitted
+for callers and fallback paths, but typed output no longer has to scan that
+merged row by variable name to populate the column cache.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
