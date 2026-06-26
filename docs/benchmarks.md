@@ -232,19 +232,24 @@ cd /Users/andreas/Projects/kvist
 Current sample output on June 26, 2026:
 
 ```text
-engine=vev-sqlite workload=single-append n=1 min_us=151 median_us=1805 p90_us=3392 max_us=3740 samples=50
-engine=vev-sqlite workload=batch-append n=100 min_us=8048 median_us=114453 p90_us=210519 max_us=223956 samples=20
-engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=66768 median_us=68268 p90_us=69059 max_us=70098 samples=30
-engine=vev-sqlite workload=reopened-query n=2000 min_us=18 median_us=19 p90_us=24 max_us=212 samples=30
+engine=vev-sqlite workload=single-append n=1 min_us=154 median_us=1420 p90_us=2839 max_us=2990 samples=50
+engine=vev-sqlite workload=batch-append n=100 min_us=8396 median_us=97694 p90_us=177456 max_us=187373 samples=20
+engine=vev-sqlite workload=batch-transact-memory n=100 min_us=7601 median_us=95846 p90_us=176522 max_us=199490 samples=20
+engine=vev-sqlite workload=batch-append-sqlite n=100 min_us=738 median_us=1093 p90_us=1163 max_us=1191 samples=20
+engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=67221 median_us=68448 p90_us=69523 max_us=69886 samples=30
+engine=vev-sqlite workload=reopened-query n=2000 min_us=17 median_us=19 p90_us=23 max_us=201 samples=30
 ```
 
 This is not yet the final write benchmark. It establishes a repeatable baseline
 for SQLite-backed single-transaction appends, multi-entity transaction batches,
 full persisted DB reopen cost, and query performance after reopen. The current
-batch row measures the whole `transact-sqlite-*` path: in-memory transaction
-work, report generation, SQLite commit, and SQLite index maintenance. The next
-measurement split should separate in-memory transaction cost from durable write
-cost before comparing against Datalevin `write-bench` throughput.
+batch row measures the whole `transact-sqlite-*` path. The split rows show the
+current bottleneck: SQLite append for a 100-entity / 300-datom transaction is
+around 1ms median, while in-memory transaction/index maintenance is around
+96ms median as the DB grows. Vev now has a conservative append-only incremental
+DB path for eligible direct add-only transactions, but the remaining write
+work is still dominated by cloning the current datom log and updating/rebuilding
+in-memory indexes, not by SQLite.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured

@@ -1273,6 +1273,41 @@
     (sort-datom-indexes! (addr indexes) datoms order)
     indexes))
 
+(defn sorted-new-datom-indexes [datoms: []Datom, start-index: int, order: string] -> [dynamic]int
+  (let [indexes (make [dynamic]int 0 (- (count datoms) start-index))]
+    (let [index start-index]
+      (while (< index (count datoms))
+        (arr.push! indexes index)
+        (set! index (+ index 1))))
+    (sort-datom-indexes! (addr indexes) datoms order)
+    indexes))
+
+(defn merge-datom-indexes [datoms: []Datom, existing: []int, added: []int, order: string] -> [dynamic]int
+  (let [out (make [dynamic]int 0 (+ (count existing) (count added)))
+        left 0
+        right 0]
+    (while (and (< left (count existing))
+                (< right (count added)))
+      (if (datom-index-less? datoms order added[right] existing[left])
+        (do
+          (arr.push! out added[right])
+          (set! right (+ right 1)))
+        (do
+          (arr.push! out existing[left])
+          (set! left (+ left 1)))))
+    (while (< left (count existing))
+      (arr.push! out existing[left])
+      (set! left (+ left 1)))
+    (while (< right (count added))
+      (arr.push! out added[right])
+      (set! right (+ right 1)))
+    out))
+
+(defn append-index [datoms: []Datom, existing: []int, start-index: int, order: string] -> [dynamic]int
+  (let [added (sorted-new-datom-indexes datoms start-index order)]
+    (defer (delete added))
+    (merge-datom-indexes datoms existing (slice added 0) order)))
+
 (defn build-eavt-entities [datoms: []Datom, eavt: []int] -> [entities: [dynamic]u64, starts: [dynamic]int]
   (let [out-entities (make [dynamic]u64)
         out-starts (make [dynamic]int)
@@ -1393,6 +1428,32 @@
          vaet: (build-index slice-datoms "vaet")
          schema-value-types: schema-value-types
          schema-cardinality-many: schema-cardinality-many})))
+
+(defn clone-schema-value-types [schema: map[string]string] -> map[string]string
+  (mmap.merge schema (mmap.empty string string)))
+
+(defn clone-schema-cardinality-many [schema: set[string]] -> set[string]
+  (set.union schema (set.empty string)))
+
+(defn build-db-append-only [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
+  (let [slice-datoms (slice datoms 0)
+        eavt (append-index slice-datoms (slice db.eavt 0) start-index "eavt")
+        [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
+        current (arr.into [dynamic]int (slice db.current 0))]
+    (let [index start-index]
+      (while (< index (count datoms))
+        (arr.push! current index)
+        (set! index (+ index 1))))
+    (DB {datoms: datoms
+         current: current
+         eavt: eavt
+         eavt-entities: eavt-entities
+         eavt-entity-starts: eavt-entity-starts
+         aevt: (append-index slice-datoms (slice db.aevt 0) start-index "aevt")
+         avet: (append-index slice-datoms (slice db.avet 0) start-index "avet")
+         vaet: (append-index slice-datoms (slice db.vaet 0) start-index "vaet")
+         schema-value-types: (clone-schema-value-types db.schema-value-types)
+         schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)})))
 
 (defn clone-datom-slice [datoms: []Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom datoms))

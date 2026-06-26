@@ -282,10 +282,12 @@ metadata rows as it commits and rolls the in-memory connection back if the
 durable append fails. A first SQLite storage benchmark now measures
 single-transaction append latency, multi-entity append batches, full
 reopen/index-rebuild cost, and query latency after reopen. The SQLite-backed
-connection keeps a live SQLite handle open across transactions. The next
-durable milestone is splitting batch append into in-memory transaction cost vs
-durable write cost, followed by Datalevin `write-bench`-style throughput and
-mixed read/write comparisons.
+connection keeps a live SQLite handle open across transactions. Split batch
+measurements show SQLite append is currently small compared with in-memory
+transaction/index maintenance. Vev has a conservative append-only incremental
+DB path for direct add-only transactions, but the next durable milestone is
+removing full datom-log copies from ordinary append transactions, followed by
+Datalevin `write-bench`-style throughput and mixed read/write comparisons.
 
 ## Phase 7: Dogfood
 

@@ -4580,13 +4580,56 @@
       (return true)))
   false)
 
-(defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
-  (let [before (build-db (clone-datoms conn^.db.datoms))
-        expanded-ops (expand-tuple-ops before ops)
+(defn current-db-fact-exists? [db: DB, op: Tx-Op] -> bool
+  (let [indexes (slice db.eavt 0)
+        low (lower-bound-index db indexes "eavt-ea" op.e op.a (Value {}))
+        high (upper-bound-index db indexes "eavt-ea" op.e op.a (Value {}))]
+    (for [datom-index (slice indexes low high)]
+      (let [datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (value-equal? datom.v op.v))
+          (return true)))))
+  false)
+
+(defn same-add-op-fact? [left: Tx-Op, right: Tx-Op] -> bool
+  (and (= left.kind .Add)
+       (= right.kind .Add)
+       (= left.e right.e)
+       (= left.a right.a)
+       (value-equal? left.v right.v)))
+
+(defn prior-add-op-fact-exists? [ops: []Tx-Op, index: int, op: Tx-Op] -> bool
+  (let [prior 0]
+    (while (< prior index)
+      (when (same-add-op-fact? ops[prior] op)
+        (return true))
+      (set! prior (+ prior 1))))
+  false)
+
+(defn append-only-ops-eligible? [before: DB, ops: []Tx-Op] -> bool
+  (let [seen-ea (set.empty string)]
+    (defer (delete seen-ea))
+    (for [op index ops]
+      (when (not (= op.kind .Add))
+        (return false))
+      (when (current-db-fact-exists? before op)
+        (return false))
+      (when (prior-add-op-fact-exists? ops index op)
+        (return false))
+      (when (schema-cardinality-one? before op.a)
+        (when (or (current-db-attr-exists? before op.e op.a)
+                  (entity-attr-seen? seen-ea op.e op.a))
+          (return false))
+        (set.add! seen-ea (entity-attr-key op.e op.a)))))
+  true)
+
+(defn transact-ops-with-tempids-from-before [conn: ^Conn, before: DB, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
+  (let [expanded-ops (expand-tuple-ops before ops)
         after-datoms (clone-datoms conn^.db.datoms)
         tx-data (make [dynamic]Datom 0 (count expanded-ops))
         seen-ea (set.empty string)
-        tx conn^.next-tx]
+        tx conn^.next-tx
+        append-only-ok (append-only-ops-eligible? before (slice expanded-ops 0))]
     (defer (delete seen-ea))
     (let [[valid error] (validate-ops before (slice expanded-ops 0))]
       (when (not valid)
@@ -4608,7 +4651,9 @@
         (when (= op.kind .Add)
           (set.add! seen-ea (entity-attr-key op.e op.a)))))
     (delete expanded-ops)
-    (let [after (build-db after-datoms)]
+    (let [after (if append-only-ok
+                  (build-db-append-only before after-datoms (count conn^.db.datoms))
+                  (build-db after-datoms))]
       (set! conn^.db after)
       (set! conn^.next-tx (+ conn^.next-tx 1))
       (let [report-tempids (arr.into [dynamic]Tempid (slice tempids 0))]
@@ -4627,6 +4672,10 @@
           (notify-listeners! conn report)
           report)))))
 
+(defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
+  (let [before (build-db (clone-datoms conn^.db.datoms))]
+    (transact-ops-with-tempids-from-before conn before ops tx-meta tempids)))
+
 (defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
   (transact-ops-with-tempids conn ops tx-meta (make [dynamic]Tempid)))
 
@@ -4641,7 +4690,7 @@
       (delete resolved.tx-meta)
       (delete resolved.tempids)
       (return (failed-tx-report before resolved.error)))
-    (let [report (transact-ops-with-tempids conn (slice resolved.ops 0) (slice resolved.tx-meta 0) resolved.tempids)]
+    (let [report (transact-ops-with-tempids-from-before conn before (slice resolved.ops 0) (slice resolved.tx-meta 0) resolved.tempids)]
       (delete resolved.ops)
       (delete resolved.tx-meta)
       report)))
