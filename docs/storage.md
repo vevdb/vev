@@ -52,13 +52,24 @@ That keeps the wrapper-level connection consistent with the durable store.
 The wrapper now owns a live SQLite handle for its lifetime, so repeated
 transactions do not reopen the file or rerun schema setup on every commit.
 
-The raw C ABI now exposes this durable connection shape through
-`vev_sqlite_conn_t`, including open/ok/error/close, transaction reports, and DB
-snapshots. The Python, Java, Clojure, and Rust example wrappers also expose the
-basic durable shape and smoke-test open/write/close/reopen/query. Explicit
-full DB persist cannot reconstruct report-only tx metadata from a bare DB
-value; metadata rows are written by the SQLite-backed transaction wrapper when
-it has the successful transaction report in hand.
+The public host API now exposes this durable connection shape through
+storage-neutral connection handles:
+
+- C ABI: `vev_connect`, `vev_connection_*`
+- Python: `vev.connect(...)`
+- Java: `vev.connect(...)`
+- Clojure: `vev/connect`
+- Rust example: `DurableConn::open`
+
+The current durable backend is SQLite. A plain filesystem path and
+`sqlite://...` URI both select the SQLite backend. The older
+`vev_sqlite_conn_*`, `open-sqlite`, and `openSqlite` names remain as
+backend-specific compatibility/debug entry points, but application examples
+should use the neutral `connect` shape.
+
+Explicit full DB persist cannot reconstruct report-only tx metadata from a
+bare DB value; metadata rows are written by the SQLite-backed transaction
+wrapper when it has the successful transaction report in hand.
 
 `bench/sqlite_storage.kvist` now measures the first durable storage baseline:
 

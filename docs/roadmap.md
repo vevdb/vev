@@ -65,7 +65,7 @@ Non-goal:
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 363 tests. Remaining work is concentrated in exact
+suite currently passes 364 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
 and durable storage integration.
@@ -91,9 +91,10 @@ Current batch order:
    Datalevin on shared workloads before moving to larger planner benchmarks.
 5. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
    tx-data shapes fail predictably through the portable text/prepared APIs.
-6. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
-   Java feel close to Datomic/DataScript for common tutorials, including
-   listener/report callbacks where useful.
+6. Host wrapper ergonomics: keep C as the stable raw ABI, expose durable
+   storage through storage-neutral `connect`/connection handles, and make
+   Clojure and Java feel close to Datomic/DataScript for common tutorials,
+   including listener/report callbacks where useful.
 7. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
    dataset, run equivalent Datomic workshop queries against Vev and Datomic,
    compare result sets first and performance second.

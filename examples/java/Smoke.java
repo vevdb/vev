@@ -205,7 +205,7 @@ public final class Smoke {
             Path sqlitePath = Path.of("tmp.vev.java.sqlite");
             deleteSqliteFiles(sqlitePath);
             try {
-                try (Vev.SQLiteConnection durable = vev.openSqlite(sqlitePath)) {
+                try (Vev.DurableConnection durable = vev.connect(sqlitePath)) {
                     try (Vev.TxReport report = durable.transactReport("""
                             [{:db/id 1
                               :user/name "Durable Ada"
@@ -226,7 +226,7 @@ public final class Smoke {
                     }
                 }
 
-                try (Vev.SQLiteConnection durable = vev.openSqlite(sqlitePath);
+                try (Vev.DurableConnection durable = vev.connect(sqlitePath);
                      Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                      Vev.DB durableDb = durable.db();
                      Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {

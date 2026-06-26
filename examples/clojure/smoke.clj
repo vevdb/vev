@@ -147,7 +147,7 @@
   (let [sqlite-path "tmp.vev.clojure.sqlite"]
     (delete-sqlite-files! sqlite-path)
     (try
-      (with-open [durable (vev/open-sqlite lib-path sqlite-path)]
+      (with-open [durable (vev/connect lib-path sqlite-path)]
         (let [tx (vev/transact! durable
                    [{:db/id 1
                      :user/name "Durable Ada"
@@ -162,7 +162,7 @@
             (println "sqlite-live rows:" rows)
             (when-not (= 1 (count rows))
               (throw (ex-info "unexpected SQLite live row count" {:rows rows}))))))
-      (with-open [durable (vev/open-sqlite lib-path sqlite-path)
+      (with-open [durable (vev/connect lib-path sqlite-path)
                   db (vev/db durable)
                   all-emails (vev/prepare durable
                                '[:find ?e ?email

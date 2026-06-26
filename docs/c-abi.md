@@ -282,35 +282,38 @@ vev_prepared_query_free(query);
 vev_conn_close(conn);
 ```
 
-Durable SQLite-backed connections use a separate opaque handle:
+Durable connections use a separate opaque handle. The current backend is
+SQLite, selected by a plain filesystem path or `sqlite://...` URI:
 
 ```c
 vev_prepared_query_t durable_query =
     vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");
 
-vev_sqlite_conn_t durable = vev_sqlite_conn_open("app.vev.sqlite");
-if (!vev_sqlite_conn_ok(durable)) {
-    const char *error = vev_sqlite_conn_error(durable);
+vev_connection_t durable = vev_connect("app.vev.sqlite");
+if (!vev_connection_ok(durable)) {
+    const char *error = vev_connection_error(durable);
     vev_string_free(error);
 }
 
-vev_tx_report_t durable_tx = vev_sqlite_conn_transact_edn_report(
+vev_tx_report_t durable_tx = vev_connection_transact_edn_report(
     durable,
     "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}]");
 vev_tx_report_free(durable_tx);
 
-vev_db_t durable_db = vev_sqlite_conn_db(durable);
+vev_db_t durable_db = vev_connection_db(durable);
 vev_result_t durable_rows =
     vev_query_db_prepared_result_with_inputs(durable_db, durable_query, "[]");
 vev_result_free(durable_rows);
 vev_db_release(durable_db);
-vev_sqlite_conn_close(durable);
+vev_connection_close(durable);
 vev_prepared_query_free(durable_query);
 ```
 
 The durable handle appends successful transaction datoms and tx metadata rows
-to SQLite before returning. DB snapshots from `vev_sqlite_conn_db` follow the
-same immutable owned-handle contract as `vev_conn_db`.
+to SQLite before returning. DB snapshots from `vev_connection_db` follow the
+same immutable owned-handle contract as `vev_conn_db`. The backend-specific
+`vev_sqlite_conn_*` functions remain available for storage tests and migration,
+but new host APIs should prefer `vev_connect` / `vev_connection_*`.
 
 ## Python Adapter
 
@@ -370,10 +373,10 @@ friend = user[":user/friend"][":user/name"]
 entity values from ordinary integer values. Keywords and symbols currently
 convert to their EDN text strings, for example `":user/name"`.
 
-Durable SQLite-backed connections use the same DB-value query path:
+Durable connections use the same DB-value query path:
 
 ```python
-with vev.open_sqlite("app.vev.sqlite") as durable:
+with vev.connect("app.vev.sqlite") as durable:
     durable.transact_report(
         '[{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}]')
     with durable.db() as db:
@@ -436,11 +439,11 @@ java --enable-preview --enable-native-access=ALL-UNNAMED ...
 
 The Java wrapper exposes `Vev.load(path)` and `createConn()` as the public-ish
 example shape. `openMemory()` remains as a low-level compatibility alias for
-the underlying ABI operation. Durable SQLite-backed connections use
-`openSqlite(path)` and query through immutable DB snapshots:
+the underlying ABI operation. Durable connections use `connect(path)` and query
+through immutable DB snapshots:
 
 ```java
-try (Vev.SQLiteConnection durable = vev.openSqlite("app.vev.sqlite")) {
+try (Vev.DurableConnection durable = vev.connect("app.vev.sqlite")) {
     try (Vev.TxReport report =
              durable.transactReport("[{:db/id 1 :user/name \"Ada\"}]")) {
         // inspect report.value() if needed
@@ -484,10 +487,10 @@ Inputs are ordinary Clojure arguments after the query:
 Plain Clojure `q`/`rows` calls prepare and close a temporary native query
 handle. Use `vev/prepare` with `with-open` when a query should be reused.
 
-Durable SQLite-backed connections use `open-sqlite`:
+Durable connections use `connect`:
 
 ```clojure
-(with-open [conn (vev/open-sqlite "build/lib/libvev.dylib" "app.vev.sqlite")]
+(with-open [conn (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite")]
   (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
   (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
 ```
@@ -922,9 +925,10 @@ model.
 The initial C ABI shape is now covered for C, Python, Rust, Java, and Clojure,
 including immutable DB handles, typed statement bindings, direct pull handles,
 direct row visitors, registered transaction function callbacks, status/error
-accessors, transaction report listeners, durable SQLite connection handles, and
-baseline ABI-vs-native benchmarks. Basic Python, Rust, Java, and Clojure
-wrappers now smoke-test durable SQLite open/write/close/reopen/query. The next
+accessors, transaction report listeners, storage-neutral durable connection
+handles backed by SQLite, and baseline ABI-vs-native benchmarks. Basic Python,
+Rust, Java, and Clojure wrappers now smoke-test durable
+open/write/close/reopen/query. The next
 interop work should be driven by concrete host adapter needs, especially
 packaging and richer host-specific APIs, rather than expanding the raw C surface
 speculatively.

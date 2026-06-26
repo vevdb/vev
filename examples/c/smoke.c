@@ -189,20 +189,20 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     remove("tmp.vev.c-abi.sqlite-shm");
 
     int ok = 0;
-    vev_sqlite_conn_t durable = NULL;
+    vev_connection_t durable = NULL;
     vev_db_t db = NULL;
     vev_result_t result = NULL;
     vev_tx_report_t report = NULL;
 
-    durable = vev_sqlite_conn_open(path);
-    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
-        const char *error = vev_sqlite_conn_error(durable);
+    durable = vev_connect(path);
+    if (durable == NULL || !vev_connection_ok(durable)) {
+        const char *error = vev_connection_error(durable);
         fprintf(stderr, "failed to open sqlite Vev connection: %s\n", error);
         vev_string_free(error);
         goto cleanup;
     }
 
-    report = vev_sqlite_conn_transact_edn_report(
+    report = vev_connection_transact_edn_report(
         durable,
         "[{:db/id 1 :user/name \"Durable Ada\" :user/email \"durable-ada@example.com\"}]");
     print_and_free("sqlite-tx", vev_tx_report_edn(report));
@@ -212,7 +212,7 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     vev_tx_report_free(report);
     report = NULL;
 
-    db = vev_sqlite_conn_db(durable);
+    db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int live_rows = result_row_count_or_error("sqlite-live", result);
     printf("sqlite-live rows: %d\n", live_rows);
@@ -224,17 +224,17 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     result = NULL;
     vev_db_release(db);
     db = NULL;
-    vev_sqlite_conn_close(durable);
+    vev_connection_close(durable);
     durable = NULL;
 
-    durable = vev_sqlite_conn_open(path);
-    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
-        const char *error = vev_sqlite_conn_error(durable);
+    durable = vev_connect(path);
+    if (durable == NULL || !vev_connection_ok(durable)) {
+        const char *error = vev_connection_error(durable);
         fprintf(stderr, "failed to reopen sqlite Vev connection: %s\n", error);
         vev_string_free(error);
         goto cleanup;
     }
-    db = vev_sqlite_conn_db(durable);
+    db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int reopened_rows = result_row_count_or_error("sqlite-reopened", result);
     printf("sqlite-reopened rows: %d\n", reopened_rows);
@@ -247,7 +247,7 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     vev_db_release(db);
     db = NULL;
 
-    report = vev_sqlite_conn_transact_edn_report(
+    report = vev_connection_transact_edn_report(
         durable,
         "[{:db/id 2 :user/name \"Durable Grace\" :user/email \"durable-grace@example.com\"}]");
     if (!tx_report_ok_or_error("sqlite-second-tx", report)) {
@@ -255,17 +255,17 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     }
     vev_tx_report_free(report);
     report = NULL;
-    vev_sqlite_conn_close(durable);
+    vev_connection_close(durable);
     durable = NULL;
 
-    durable = vev_sqlite_conn_open(path);
-    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
-        const char *error = vev_sqlite_conn_error(durable);
+    durable = vev_connect(path);
+    if (durable == NULL || !vev_connection_ok(durable)) {
+        const char *error = vev_connection_error(durable);
         fprintf(stderr, "failed to reopen sqlite Vev connection after second tx: %s\n", error);
         vev_string_free(error);
         goto cleanup;
     }
-    db = vev_sqlite_conn_db(durable);
+    db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int final_rows = result_row_count_or_error("sqlite-final", result);
     printf("sqlite-final rows: %d\n", final_rows);
@@ -287,7 +287,7 @@ cleanup:
         vev_db_release(db);
     }
     if (durable != NULL) {
-        vev_sqlite_conn_close(durable);
+        vev_connection_close(durable);
     }
     remove(path);
     remove("tmp.vev.c-abi.sqlite-wal");

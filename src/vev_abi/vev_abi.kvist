@@ -882,6 +882,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 ")
 
 (def Vev-Conn (distinct rawptr))
+(def Vev-Connection (distinct rawptr))
 (def Vev-SQLite-Conn (distinct rawptr))
 (def Vev-DB (distinct rawptr))
 (def Vev-Prepared-Query (distinct rawptr))
@@ -902,6 +903,14 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- sqlite-conn-ptr [conn: Vev-SQLite-Conn] -> ^vev.SQLite-Conn
   (abi-sqlite-conn-ptr (rawptr conn)))
+
+(defn- connection-as-sqlite [conn: Vev-Connection] -> Vev-SQLite-Conn
+  (Vev-SQLite-Conn (rawptr conn)))
+
+(defn- durable-path-from-uri [uri: string] -> string
+  (if (strings.has_prefix uri "sqlite://")
+    (string-owned (slice uri 9))
+    (string-owned uri)))
 
 (defn- prepared-query-ptr [query: Vev-Prepared-Query] -> ^vev.Prepared-Query
   (abi-prepared-query-ptr (rawptr query)))
@@ -1287,6 +1296,45 @@ abi_free_stmt :: proc(stmt: rawptr) {
         ptr (conn-ptr (Vev-Conn conn))]
     (set! ptr^ (vev.create-conn))
     (Vev-Conn conn)))
+
+@export
+(defn vev_connect :abi "c" [uri: cstring] -> Vev-Connection
+  (odin "context = runtime.default_context()")
+  (when (= uri nil)
+    (let [store (vev.create-sqlite-conn "")]
+      (return (Vev-Connection (abi-alloc-sqlite-conn store false (string-owned "null Vev connection URI"))))))
+  (let [uri-text (text-from-c uri)
+        path (durable-path-from-uri uri-text)
+        [store ok error] (vev.open-sqlite-conn path)
+        out (Vev-Connection (abi-alloc-sqlite-conn store ok (string-owned error)))]
+    (delete uri-text)
+    (delete path)
+    out))
+
+@export
+(defn vev_connection_ok :abi "c" [conn: Vev-Connection] -> bool
+  (odin "context = runtime.default_context()")
+  (abi-sqlite-conn-ok (rawptr conn)))
+
+@export
+(defn vev_connection_error :abi "c" [conn: Vev-Connection] -> cstring
+  (odin "context = runtime.default_context()")
+  (c-string-owned (abi-sqlite-conn-error (rawptr conn))))
+
+@export
+(defn vev_connection_close :abi "c" [conn: Vev-Connection]
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_close (connection-as-sqlite conn)))
+
+@export
+(defn vev_connection_db :abi "c" [conn: Vev-Connection] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_db (connection-as-sqlite conn)))
+
+@export
+(defn vev_connection_transact_edn_report :abi "c" [conn: Vev-Connection, tx-text: cstring] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_transact_edn_report (connection-as-sqlite conn) tx-text))
 
 @export
 (defn vev_sqlite_conn_open :abi "c" [path: cstring] -> Vev-SQLite-Conn

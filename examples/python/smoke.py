@@ -366,7 +366,7 @@ def main() -> int:
     sqlite_path = pathlib.Path("tmp.vev.python.sqlite")
     remove_sqlite_files(sqlite_path)
     try:
-        with vev.open_sqlite(sqlite_path) as durable:
+        with vev.connect(sqlite_path) as durable:
             with durable.transact_report(
                 '[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]'
             ) as report:
@@ -380,7 +380,7 @@ def main() -> int:
                 if len(rows) != 1:
                     raise RuntimeError("unexpected SQLite live row count")
 
-        with vev.open_sqlite(sqlite_path) as durable:
+        with vev.connect(sqlite_path) as durable:
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             ) as all_emails, durable.db() as db:
