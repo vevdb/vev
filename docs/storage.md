@@ -71,13 +71,22 @@ Durable connection metadata is available through the same neutral boundary:
 `vev_connection_backend` reports `"sqlite"` today, `vev_connection_path`
 reports the concrete storage path, and `vev_connection_basis_t` reports the
 last committed transaction visible to the connection. `vev_connection_tx_count`
-reports the number of persisted transaction-log rows. Basis and transaction
-count are recomputed when opening a durable store, so close/reopen preserves
-both rows and observable transaction-log metadata. Higher-level wrappers expose
-the same diagnostic shape as `backend`/`path`/`basis_t`/`tx_count` methods or
-Clojure `connection-info`. `vev_connection_info_edn` is the C-friendly
+reports the number of persisted transaction-log rows, and
+`vev_connection_tx_ids` returns the persisted transaction ids in order. Basis,
+transaction count, and transaction ids are recomputed when opening a durable
+store, so close/reopen preserves both rows and observable transaction-log
+metadata. Higher-level wrappers expose the same diagnostic shape as
+`backend`/`path`/`basis_t`/`tx_count`/`tx_ids` methods or Clojure
+`connection-info`. `vev_connection_info_edn` is the C-friendly
 convenience form for logging or simple tooling that wants the same metadata as
 one EDN map string.
+
+Live connection transactions return reports whose `db-after` is the
+connection's current DB value. Cleanup code for those reports should use
+`delete-live-tx-report-shallow`, which deletes the report-owned `db-before`
+and report collections without freeing the live connection DB. The generic
+`delete-tx-report-shallow` remains appropriate for immutable `with-*` reports
+and failed reports that do not alias a live connection.
 
 Explicit full DB persist cannot reconstruct report-only tx metadata from a
 bare DB value; metadata rows are written by the SQLite-backed transaction
@@ -101,6 +110,23 @@ The first benchmark pass found and fixed a serializer ownership bug: storage
 callers delete `value-serializable-text` results, so that function must return
 heap-owned text for literals, formatted scalars, keywords, symbols, vectors,
 and maps.
+
+`bench/write_bench.kvist` now starts mapping Datalevin `write-bench` concepts
+onto Vev's durable API:
+
+- pure SQLite-backed writes at batch sizes 1, 10, 100, and 1000
+- mixed read/write behavior using prepared EDN queries against the live DB
+  snapshot
+- end-to-end call latency and commit-path latency reporting
+
+This harness is intentionally smaller than the final external benchmark. It is
+for regular development runs while the durable path is still changing, but it
+now accepts `--total`, `--report-every`, `--mixed-operations`, `--batch`, and
+`--seed-batch` so larger runs can be launched without source edits. It uses a
+plain long `:item/key`, matching Datalevin's write-bench schema. The next
+measurement step is scaling this harness to the upstream Datalevin
+`write-bench` totals and comparing pure write and mixed read/write behavior
+directly.
 
 ## SQLite Backend Plan
 
@@ -128,16 +154,19 @@ Implementation order:
    reportable DB snapshots from existing indexes instead of rebuilding them.
    Append-only eligibility skips current-DB fact/entity-attr checks when all
    ops target entities above the current max entity id, which is the common
-   bulk-import shape.
+   bulk-import shape. Ordered new-entity imports also avoid per-op formatted
+   entity/attr keys during append-only eligibility, and append-only index
+   maintenance extends the `eavt` entity table when new entity ids sort after
+   existing ids.
    The benchmark now separates snapshot, resolution, apply, log copy,
    incremental index build, and SQLite append cost. The next write-performance
-   milestone is reducing the remaining append application/report/index
-   maintenance overhead before introducing a more complex shared DB/index
-   representation.
+   milestone is reducing the remaining report/index ownership-copy overhead
+   before introducing a more complex shared DB/index representation.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
-5. Once the local harness is stable, map Datalevin `write-bench` concepts onto
-   Vev's API and compare commit/reopen behavior against existing systems.
+5. Keep extending the new `bench/write_bench.kvist` harness until it can run at
+   Datalevin `write-bench` scale, then compare commit/reopen behavior against
+   existing systems.
 
 Non-goals for the first SQLite backend:
 

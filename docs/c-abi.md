@@ -22,9 +22,9 @@ The current shape is intentionally narrow:
 - registered transaction function callbacks that return EDN tx-data
 - transaction report listener callbacks on connection commits
 
-This is the portable baseline for Python, Rust, Java, Clojure, and other hosts.
-Host wrappers should build on this surface first instead of mirroring internal
-Vev structs.
+This is the portable baseline for Python, Rust, Java, Clojure, Go,
+Node/TypeScript, and other hosts. Host wrappers should build on this surface
+first instead of mirroring internal Vev structs.
 
 ## Build And Smoke Test
 
@@ -52,10 +52,9 @@ scripts/build_c_abi.sh
 The script compiles `src/vev_abi/vev_abi.kvist` to Odin, builds
 `build/lib/libvev.dylib`, compiles `examples/c/smoke.c`, runs the C smoke
 program, and runs the Python smoke program through the thin
-`examples/python/vev.py` adapter. When `rustc` is available, it also compiles
-and runs `examples/rust/smoke.rs`. When Java 21 and Clojure are available, it
-also compiles the Java Foreign Function & Memory wrapper and runs Java and
-Clojure smoke programs against the same shared library.
+`examples/python/vev.py` adapter. When the relevant toolchains are available,
+it also compiles and runs the Rust, Go, Node/TypeScript, Java, and Clojure
+smoke programs against the same shared library.
 
 ## ABI Benchmark
 
@@ -299,7 +298,9 @@ const char *backend = vev_connection_backend(durable);
 const char *path = vev_connection_path(durable);
 unsigned long long basis_t = vev_connection_basis_t(durable);
 unsigned long long tx_count = vev_connection_tx_count(durable);
+vev_u64_array_t tx_ids = vev_connection_tx_ids(durable);
 const char *info = vev_connection_info_edn(durable);
+vev_u64_array_free(tx_ids);
 vev_string_free(backend);
 vev_string_free(path);
 vev_string_free(info);
@@ -327,6 +328,8 @@ but new host APIs should prefer `vev_connect` / `vev_connection_*`.
 strings; callers free them with `vev_string_free`. `vev_connection_basis_t`
 returns the Datomic-style basis transaction visible to the connection.
 `vev_connection_tx_count` returns the persisted transaction-log row count.
+`vev_connection_tx_ids` returns the persisted transaction ids as an owned
+`vev_u64_array_t`; callers free it with `vev_u64_array_free`.
 `vev_connection_info_edn` returns the same metadata as one owned EDN map string
 for simple C tooling and logging.
 

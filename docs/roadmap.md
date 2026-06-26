@@ -235,9 +235,12 @@ Datalevin benchmark ladder:
 6. `idoc-bench`: document/nested-value milestone. Relevant if Vev leans into
    document-ish nested values, arrays, ranges, wildcards, and YCSB-style query
    mixes.
-7. `write-bench`: durability milestone. Use after durable SQLite-backed
-   storage exists. This should measure transaction throughput, commit latency,
-   batching, WAL/sync choices, and mixed read/write behavior.
+7. `write-bench`: durability milestone. Started as a small Vev-native
+   `bench/write_bench.kvist` harness now that durable SQLite-backed storage
+   exists. It measures transaction throughput, commit latency, batching, and
+   mixed read/write behavior. Scale it up and wire it to Datalevin's upstream
+   shape once the local durable path is less dominated by report/index
+   ownership-copy overhead.
 8. `search-bench`: optional/full-text milestone. Relevant only if Vev owns a
    full-text search story instead of delegating to SQLite FTS or external
    indexes.
@@ -247,8 +250,8 @@ Current stance:
 - `datascript-bench`, `math-bench`, and `openrulebench` are the near-term
   semantic/rule-engine benchmark path.
 - `JOB-bench` and `LDBC-SNB-bench` are planner and large-read milestones.
-- `idoc-bench`, `write-bench`, and `search-bench` are phase-specific later
-  benchmarks.
+- `write-bench` is now active as a small local durable harness; `idoc-bench`
+  and `search-bench` remain phase-specific later benchmarks.
 - None of these should be gamed with one-off recognizers; benchmark wins should
   come from reusable physical operators and better planning.
 
@@ -291,9 +294,13 @@ non-schema transactions were paying unnecessary full-schema validation cost;
 that pass is now skipped when the transaction cannot alter schema validity.
 Reportable DB snapshots now clone existing indexes/schema caches instead of
 rebuilding every index from datoms. Append-only eligibility also has a
-new-entity bulk-import shortcut. The next durable milestone is reducing the
-remaining append application/report/index maintenance overhead, followed by
-Datalevin `write-bench`-style throughput and mixed read/write comparisons.
+new-entity bulk-import shortcut. Ordered new-entity imports avoid formatted
+entity/attr eligibility keys and extend the `eavt` entity table instead of
+rebuilding it. A first Datalevin-style local write harness now measures pure
+write throughput across batch sizes and mixed read/write behavior through the
+SQLite-backed connection. The next durable milestone is reducing the remaining
+report/index ownership-copy overhead, then scaling that write harness to direct
+Datalevin `write-bench` comparisons.
 
 ## Phase 7: Dogfood
 

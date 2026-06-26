@@ -25,7 +25,7 @@ The current integration stack is:
 2. stable internal semantic model
 3. native library packaging through a narrow C ABI
 4. EDN text and prepared handles for portable query/tx/pull
-5. host-specific wrappers for Python, Rust, Java, and Clojure
+5. host-specific wrappers for Python, Rust, Java, Clojure, Go, and Node/TypeScript
 6. CLI binary over the same engine when tooling needs it
 7. only later, if justified, server/daemon packaging
 8. only later, if justified, transactor/peer-style packaging
@@ -147,7 +147,7 @@ The implementation lives in `src/vev_abi` with the public header in
 - free returned strings and handles
 
 See `docs/c-abi.md`, `examples/c/smoke.c`, and the Python/Rust/Java/Clojure
-smoke examples.
+smoke examples, plus the Go and Node/TypeScript smoke examples.
 
 ## Clojure/JVM
 
@@ -174,6 +174,46 @@ The important point is:
 
 - Clojure should consume a wrapper
 - the engine should not become JVM-shaped internally
+
+## Go
+
+Go is a strong host-language fit for Vev's embedded-native shape: CLIs,
+developer tools, local daemons, infrastructure agents, and application servers
+often accept a small native database dependency when it gives them simple
+deployment and predictable local reads.
+
+The first Go surface should stay close to the C ABI:
+
+- `Conn`, `DB`, and `PreparedQuery` wrappers around opaque handles
+- EDN transaction/query strings for broad compatibility
+- prepared queries for repeated execution
+- explicit close/release behavior
+
+The current `examples/go/smoke.go` proves that path through `cgo`, including
+typed result rows, pull, lookup refs, immutable DB snapshots, `conn-from-db`,
+and durable SQLite reopen checks. A fuller Go client can grow from the same
+shape once real callers prove which typed statement bindings and
+transaction-builder helpers are worth maintaining.
+
+## Node/TypeScript
+
+Node is the right first JavaScript target. It is widely used in developer
+tooling, Electron-style desktop applications, local-first app backends, and
+automation, all of which can plausibly embed a native database.
+
+The initial Node/TypeScript path is a tiny N-API addon plus a JavaScript facade
+and TypeScript declarations:
+
+- Node owns wrapper objects
+- the native addon owns/release C ABI handles
+- EDN text remains the portable query and transaction boundary
+- prepared handles preserve the same production path as other hosts
+
+The current smoke example covers typed row materialization, pull, lookup refs,
+pull-many, immutable DB snapshots, and durable SQLite metadata/query checks.
+Browser JavaScript should be treated as a separate WASM packaging effort. It
+has different constraints around storage, binary distribution, threading, and
+host APIs, so it should not drive the Node package shape yet.
 
 ## Public data shape
 

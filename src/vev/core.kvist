@@ -1303,15 +1303,60 @@
       (set! right (+ right 1)))
     out))
 
+(defn datom-indexes-can-concat? [datoms: []Datom, existing: []int, added: []int, order: string] -> bool
+  (or (= (count existing) 0)
+      (= (count added) 0)
+      (not (datom-index-less? datoms order added[0] existing[(- (count existing) 1)]))))
+
+(defn concat-datom-indexes [existing: []int, added: []int] -> [dynamic]int
+  (let [out (arr.into [dynamic]int existing)]
+    (for [index added]
+      (arr.push! out index))
+    out))
+
 (defn append-index [datoms: []Datom, existing: []int, start-index: int, order: string] -> [dynamic]int
   (let [added (sorted-new-datom-indexes datoms start-index order)]
     (defer (delete added))
-    (merge-datom-indexes datoms existing (slice added 0) order)))
+    (if (datom-indexes-can-concat? datoms existing (slice added 0) order)
+      (concat-datom-indexes existing (slice added 0))
+      (merge-datom-indexes datoms existing (slice added 0) order))))
+
+(defn added-entities-after-existing? [db: DB, datoms: []Datom, start-index: int] -> bool
+  (when (= (count db.eavt) 0)
+    (return true))
+  (let [max-existing db.datoms[db.eavt[(- (count db.eavt) 1)]].e
+        index start-index]
+    (while (< index (count datoms))
+      (when (<= datoms[index].e max-existing)
+        (return false))
+      (set! index (+ index 1))))
+  true)
+
+(defn append-eavt-index-new-entities [datoms: []Datom, existing: []int, start-index: int] -> [dynamic]int
+  (let [out (arr.into [dynamic]int existing)
+        added (sorted-new-datom-indexes datoms start-index "eavt")]
+    (defer (delete added))
+    (for [index added]
+      (arr.push! out index))
+    out))
 
 (defn build-eavt-entities [datoms: []Datom, eavt: []int] -> [entities: [dynamic]u64, starts: [dynamic]int]
   (let [out-entities (make [dynamic]u64)
         out-starts (make [dynamic]int)
         i 0]
+    (while (< i (count eavt))
+      (let [entity datoms[eavt[i]].e]
+        (arr.push! out-entities entity)
+        (arr.push! out-starts i)
+        (while (and (< i (count eavt))
+                    (= datoms[eavt[i]].e entity))
+          (set! i (+ i 1)))))
+    (return out-entities out-starts)))
+
+(defn append-eavt-entities-new-entities [datoms: []Datom, eavt: []int, existing-entities: []u64, existing-starts: []int, start-pos: int] -> [entities: [dynamic]u64, starts: [dynamic]int]
+  (let [out-entities (arr.into [dynamic]u64 existing-entities)
+        out-starts (arr.into [dynamic]int existing-starts)
+        i start-pos]
     (while (< i (count eavt))
       (let [entity datoms[eavt[i]].e]
         (arr.push! out-entities entity)
@@ -1457,7 +1502,7 @@
          schema-value-types: schema-value-types
          schema-cardinality-many: schema-cardinality-many})))
 
-(defn build-db-append-only [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
+(defn build-db-append-only-merged [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
   (let [slice-datoms (slice datoms 0)
         eavt (append-index slice-datoms (slice db.eavt 0) start-index "eavt")
         [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
@@ -1476,6 +1521,35 @@
          vaet: (append-index slice-datoms (slice db.vaet 0) start-index "vaet")
          schema-value-types: (clone-schema-value-types db.schema-value-types)
          schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)})))
+
+(defn build-db-append-only-new-entities [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
+  (let [slice-datoms (slice datoms 0)
+        eavt (append-eavt-index-new-entities slice-datoms (slice db.eavt 0) start-index)
+        [eavt-entities eavt-entity-starts] (append-eavt-entities-new-entities slice-datoms
+                                                                              (slice eavt 0)
+                                                                              (slice db.eavt-entities 0)
+                                                                              (slice db.eavt-entity-starts 0)
+                                                                              (count db.eavt))
+        current (arr.into [dynamic]int (slice db.current 0))]
+    (let [index start-index]
+      (while (< index (count datoms))
+        (arr.push! current index)
+        (set! index (+ index 1))))
+    (DB {datoms: datoms
+         current: current
+         eavt: eavt
+         eavt-entities: eavt-entities
+         eavt-entity-starts: eavt-entity-starts
+         aevt: (append-index slice-datoms (slice db.aevt 0) start-index "aevt")
+         avet: (append-index slice-datoms (slice db.avet 0) start-index "avet")
+         vaet: (append-index slice-datoms (slice db.vaet 0) start-index "vaet")
+         schema-value-types: (clone-schema-value-types db.schema-value-types)
+         schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)})))
+
+(defn build-db-append-only [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
+  (if (added-entities-after-existing? db (slice datoms 0) start-index)
+    (build-db-append-only-new-entities db datoms start-index)
+    (build-db-append-only-merged db datoms start-index)))
 
 (defn clone-datom-slice [datoms: []Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom datoms))

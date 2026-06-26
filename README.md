@@ -18,7 +18,8 @@ Vev is designed around a few core principles:
 * Datomic-flavored Datalog queries.
 * Datomic/DataScript transaction and pull syntax where practical.
 * Durable storage behind a narrow adapter boundary.
-* Distributed as a native library for consumption from multiple host languages.
+* Distributed as a native library for consumption from multiple host languages
+  including C, Python, Rust, Java, Clojure, Go, and Node/TypeScript.
 * Supported by a CLI for inspection, import/export, and operational tooling.
 * Future-friendly through a stable native ABI.
 * Kvist-first implementation with readable Odin output.

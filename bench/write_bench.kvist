@@ -1,0 +1,236 @@
+(package main)
+
+(import arr "kvist:arr")
+(import bench "./support")
+(import cli "kvist:cli")
+(import fmt "core:fmt")
+(import os "core:os")
+(import time "core:time")
+(import vev "../src/vev")
+
+(defn remove-sqlite-files [path: string]
+  (os.remove path)
+  (os.remove (fmt.tprintf "%s-wal" path))
+  (os.remove (fmt.tprintf "%s-shm" path)))
+
+(defn seed-write-schema [store: ^vev.SQLite-Conn] -> bool
+  (let [tx (make [dynamic]vev.Tx-Data 0 4) :defer]
+    ;; Match Datalevin write-bench: :item/key is a plain long, not unique identity.
+    (arr.push! tx (vev.add 201 ":db/ident" (vev.value-keyword ":item/key")))
+    (arr.push! tx (vev.add 201 ":db/valueType" (vev.value-keyword ":db.type/long")))
+    (arr.push! tx (vev.add 202 ":db/ident" (vev.value-keyword ":item/value")))
+    (arr.push! tx (vev.add 202 ":db/valueType" (vev.value-keyword ":db.type/string")))
+    (let [report (vev.transact-sqlite-tx-data store (slice tx 0))]
+      (when (not report.ok)
+        (fmt.printf "engine=vev-sqlite workload=write-schema ok=false error=%s\n" report.error)
+        (vev.delete-tx-report-shallow report)
+        (return false))
+      (vev.delete-live-tx-report-shallow report)
+      true)))
+
+(defn item-entity [index: int] -> u64
+  (+ (u64 index) 1000))
+
+(defn item-value [key: i64, revision: i64] -> string
+  (fmt.tprintf "value-%d-%d-000000000000000000000000000000000000" key revision))
+
+(defn append-item-tx! [tx: ^[dynamic]vev.Tx-Data, entity: u64, key: i64, revision: i64]
+  (arr.push! tx^ (vev.add entity ":item/key" (vev.value-int key)))
+  (arr.push! tx^ (vev.add entity ":item/value" (vev.value-string (item-value key revision)))))
+
+(defn item-batch-tx [start-index: int, batch-size: int, revision: i64] -> [dynamic]vev.Tx-Data
+  (let [tx (make [dynamic]vev.Tx-Data 0 (* batch-size 2))]
+    (for [offset (arr.range 0 batch-size)]
+      (let [write-index (+ start-index offset)
+            key (i64 (* write-index 2))]
+        (append-item-tx! (addr tx) (item-entity write-index) key revision)))
+    tx))
+
+(defn print-write-header [workload: string, batch-size: int, total: int]
+  (fmt.printf "engine=vev-sqlite workload=%s batch=%d total=%d columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms\n"
+              workload
+              batch-size
+              total))
+
+(defn print-write-row [written: int, inserted: int, start: time.Time, interval-start: time.Time, call-us: f64, commit-us: f64, commits: int]
+  (let [elapsed-us (bench.elapsed-us start)
+        interval-us (bench.elapsed-us interval-start)
+        elapsed-s (/ elapsed-us 1000000.0)
+        throughput (if (> elapsed-us 0.0)
+                     (/ (* (f64 inserted) 1000000.0) elapsed-us)
+                     0.0)
+        call-ms (if (> commits 0)
+                  (/ call-us (* (f64 commits) 1000.0))
+                  0.0)
+        commit-ms (if (> commits 0)
+                    (/ commit-us (* (f64 commits) 1000.0))
+                    0.0)]
+    (discard interval-us)
+    (fmt.printf "%d,%.3f,%.2f,%.3f,%.3f\n"
+                written
+                elapsed-s
+                throughput
+                call-ms
+                commit-ms)))
+
+(defn measure-pure-write [path: string, batch-size: int, total: int, report-every: int]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=pure-write ok=false error=%s\n" open-error)
+      (return))
+    (when (not (seed-write-schema (addr store)))
+      (vev.close-sqlite-conn store)
+      (return))
+    (print-write-header "pure-write" batch-size total)
+    (let [start (time.now)
+          interval-start start
+          call-us 0.0
+          commit-us 0.0
+          commits 0
+          inserted 0
+          written 0]
+      (while (< written total)
+        (let [remaining (- total written)
+              actual-batch (min batch-size remaining)
+              tx (item-batch-tx (+ written 1) actual-batch 0)
+              before (time.now)
+              report (vev.transact-sqlite-tx-data (addr store) (slice tx 0))
+              elapsed (bench.elapsed-us before)]
+          (set! call-us (+ call-us elapsed))
+          (set! commit-us (+ commit-us elapsed))
+          (set! commits (+ commits 1))
+          (when (not report.ok)
+            (fmt.printf "engine=vev-sqlite workload=pure-write ok=false error=%s\n" report.error)
+            (vev.delete-tx-report-shallow report)
+            (delete tx)
+            (vev.close-sqlite-conn store)
+            (return))
+          (vev.delete-live-tx-report-shallow report)
+          (delete tx)
+          (set! inserted (+ inserted actual-batch))
+          (set! written (+ written actual-batch))
+          (when (or (= written total)
+                    (= (% written report-every) 0))
+            (print-write-row written inserted start interval-start call-us commit-us commits)
+            (set! call-us 0.0)
+            (set! commit-us 0.0)
+            (set! commits 0)
+            (set! interval-start (time.now))))))
+    (vev.close-sqlite-conn store)))
+
+(defn lcg-next [state: u64] -> u64
+  (+ (* state (u64 6364136223846793005)) (u64 1442695040888963407)))
+
+(defn random-key [state: u64, keyspace: int] -> i64
+  (let [span (u64 keyspace)
+        raw (% state span)]
+    (+ (i64 raw) 1)))
+
+(defn seed-pure-write [path: string, total: int, batch-size: int] -> bool
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=seed-write ok=false error=%s\n" open-error)
+      (return false))
+    (when (not (seed-write-schema (addr store)))
+      (vev.close-sqlite-conn store)
+      (return false))
+    (let [written 0]
+      (while (< written total)
+        (let [remaining (- total written)
+              actual-batch (min batch-size remaining)
+              tx (item-batch-tx (+ written 1) actual-batch 0)
+              report (vev.transact-sqlite-tx-data (addr store) (slice tx 0))]
+          (when (not report.ok)
+            (fmt.printf "engine=vev-sqlite workload=seed-write ok=false error=%s\n" report.error)
+            (vev.delete-tx-report-shallow report)
+            (delete tx)
+            (vev.close-sqlite-conn store)
+            (return false))
+          (vev.delete-live-tx-report-shallow report)
+          (delete tx)
+          (set! written (+ written actual-batch)))))
+    (vev.close-sqlite-conn store)
+    true))
+
+(defn measure-mixed-read-write [path: string, total: int, operations: int, report-every: int]
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)
+        query (vev.prepare-query-text "[:find ?v :in ?k :where [?e :item/key ?k] [?e :item/value ?v]]")
+        keyspace (* total 2)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=mixed-read-write ok=false error=%s\n" open-error)
+      (vev.delete-prepared-query-shallow query)
+      (return))
+    (print-write-header "mixed-read-write" 1 operations)
+    (let [start (time.now)
+          interval-start start
+          call-us 0.0
+          commit-us 0.0
+          commits 0
+          writes 0
+          op 0
+          rng (u64 1)]
+      (while (< op operations)
+        (set! rng (lcg-next rng))
+        (let [key (random-key rng keyspace)]
+          (if (= (% op 2) 0)
+            (let [inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int key))])
+                  before (time.now)
+                  result (vev.q-prepared-with-inputs store.conn.db query inputs)
+                  elapsed (bench.elapsed-us before)]
+              (discard (count result.rows))
+              (set! call-us (+ call-us elapsed))
+              (vev.delete-result-set-shallow result))
+            (let [tx (make [dynamic]vev.Tx-Data 0 2)]
+              (append-item-tx! (addr tx) (item-entity (+ total op 1)) key (i64 op))
+              (let [before (time.now)
+                    report (vev.transact-sqlite-tx-data (addr store) (slice tx 0))
+                    elapsed (bench.elapsed-us before)]
+                (set! call-us (+ call-us elapsed))
+                (set! commit-us (+ commit-us elapsed))
+                (set! commits (+ commits 1))
+                (when (not report.ok)
+                  (fmt.printf "engine=vev-sqlite workload=mixed-read-write ok=false error=%s\n" report.error)
+                  (vev.delete-tx-report-shallow report)
+                  (delete tx)
+                  (vev.delete-prepared-query-shallow query)
+                  (vev.close-sqlite-conn store)
+                  (return))
+                (vev.delete-live-tx-report-shallow report)
+                (delete tx)
+                (set! writes (+ writes 1))))))
+        (set! op (+ op 1))
+        (when (or (= op operations)
+                  (= (% op report-every) 0))
+          (print-write-row op writes start interval-start call-us commit-us commits)
+          (set! call-us 0.0)
+          (set! commit-us 0.0)
+          (set! commits 0)
+          (set! interval-start (time.now)))))
+    (vev.delete-prepared-query-shallow query)
+    (vev.close-sqlite-conn store)))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [total (max 1 (cli.int-option os.args "--total" 200))
+        report-every (max 1 (cli.int-option os.args "--report-every" 100))
+        mixed-operations (max 1 (cli.int-option os.args "--mixed-operations" (* total 2)))
+        seed-batch (max 1 (cli.int-option os.args "--seed-batch" 100))
+        selected-batch (cli.int-option os.args "--batch" 0)
+        seed-path "tmp.vev.write-bench.mixed.sqlite"
+        batch-sizes ([]int [1 10 100 1000])
+        batch-index 0]
+    (if (> selected-batch 0)
+      (let [path (fmt.tprintf "tmp.vev.write-bench.%d.sqlite" selected-batch)]
+        (measure-pure-write path selected-batch total report-every)
+        (remove-sqlite-files path))
+      (while (< batch-index (count batch-sizes))
+        (let [batch-size batch-sizes[batch-index]
+              path (fmt.tprintf "tmp.vev.write-bench.%d.sqlite" batch-size)]
+          (measure-pure-write path batch-size total report-every)
+          (remove-sqlite-files path))
+        (set! batch-index (+ batch-index 1))))
+    (when (seed-pure-write seed-path total seed-batch)
+      (measure-mixed-read-write seed-path total mixed-operations report-every))
+    (remove-sqlite-files seed-path)))

@@ -139,6 +139,8 @@ class Library:
         lib.vev_connection_basis_t.restype = ctypes.c_ulonglong
         lib.vev_connection_tx_count.argtypes = [ctypes.c_void_p]
         lib.vev_connection_tx_count.restype = ctypes.c_ulonglong
+        lib.vev_connection_tx_ids.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_tx_ids.restype = ctypes.c_void_p
         lib.vev_connection_info_edn.argtypes = [ctypes.c_void_p]
         lib.vev_connection_info_edn.restype = ctypes.c_void_p
         lib.vev_connection_close.argtypes = [ctypes.c_void_p]
@@ -170,6 +172,11 @@ class Library:
         lib.vev_with_edn_report.restype = ctypes.c_void_p
         lib.vev_db_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_db_with_edn.restype = ctypes.c_void_p
+        lib.vev_u64_array_free.argtypes = [ctypes.c_void_p]
+        lib.vev_u64_array_count.argtypes = [ctypes.c_void_p]
+        lib.vev_u64_array_count.restype = ctypes.c_int
+        lib.vev_u64_array_value.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.vev_u64_array_value.restype = ctypes.c_ulonglong
 
         lib.vev_string_free.argtypes = [ctypes.c_void_p]
 
@@ -676,6 +683,20 @@ class DurableConnection:
     def tx_count(self) -> int:
         self._require_open()
         return int(self._library.lib.vev_connection_tx_count(self._handle))
+
+    def tx_ids(self) -> list[int]:
+        self._require_open()
+        handle = self._library.lib.vev_connection_tx_ids(self._handle)
+        if not handle:
+            return []
+        try:
+            count = self._library.lib.vev_u64_array_count(handle)
+            return [
+                int(self._library.lib.vev_u64_array_value(handle, index))
+                for index in range(count)
+            ]
+        finally:
+            self._library.lib.vev_u64_array_free(handle)
 
     def info_edn(self) -> str:
         self._require_open()

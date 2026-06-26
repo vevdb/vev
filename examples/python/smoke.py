@@ -373,6 +373,8 @@ def main() -> int:
                 raise RuntimeError("unexpected initial durable basis")
             if durable.tx_count() != 0:
                 raise RuntimeError("unexpected initial durable tx count")
+            if durable.tx_ids() != []:
+                raise RuntimeError("unexpected initial durable tx ids")
             info = durable.info_edn()
             if (
                 ":backend :sqlite" not in info
@@ -389,6 +391,8 @@ def main() -> int:
                 raise RuntimeError("unexpected durable basis after first tx")
             if durable.tx_count() != 1:
                 raise RuntimeError("unexpected durable tx count after first tx")
+            if durable.tx_ids() != [1]:
+                raise RuntimeError("unexpected durable tx ids after first tx")
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             ) as all_emails, durable.db() as db:
@@ -402,6 +406,8 @@ def main() -> int:
                 raise RuntimeError("unexpected reopened durable basis")
             if durable.tx_count() != 1:
                 raise RuntimeError("unexpected reopened durable tx count")
+            if durable.tx_ids() != [1]:
+                raise RuntimeError("unexpected reopened durable tx ids")
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             ) as all_emails, durable.db() as db:

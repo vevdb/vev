@@ -36,6 +36,7 @@ public final class Vev {
     private final MethodHandle connectionPath;
     private final MethodHandle connectionBasisT;
     private final MethodHandle connectionTxCount;
+    private final MethodHandle connectionTxIds;
     private final MethodHandle connectionInfoEdn;
     private final MethodHandle connectionClose;
     private final MethodHandle connectionDb;
@@ -163,6 +164,7 @@ public final class Vev {
         this.connectionPath = downcall("vev_connection_path", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionBasisT = downcall("vev_connection_basis_t", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         this.connectionTxCount = downcall("vev_connection_tx_count", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
+        this.connectionTxIds = downcall("vev_connection_tx_ids", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionInfoEdn = downcall("vev_connection_info_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionClose = downcall("vev_connection_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connectionDb = downcall("vev_connection_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -622,6 +624,21 @@ public final class Vev {
         public long txCount() throws Throwable {
             requireOpen();
             return (long) connectionTxCount.invoke(raw);
+        }
+
+        public long[] txIds() throws Throwable {
+            requireOpen();
+            MemorySegment ids = (MemorySegment) connectionTxIds.invoke(raw);
+            if (isNull(ids)) return new long[0];
+            try {
+                int count = (int) u64ArrayCount.invoke(ids);
+                if (count == 0) return new long[0];
+                MemorySegment data = (MemorySegment) u64ArrayData.invoke(ids);
+                if (isNull(data)) return new long[0];
+                return data.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+            } finally {
+                u64ArrayFree.invoke(ids);
+            }
         }
 
         public String infoEdn() throws Throwable {
