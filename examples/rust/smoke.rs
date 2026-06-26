@@ -36,6 +36,7 @@ unsafe extern "C" {
     fn vev_connection_error(conn: VevConnection) -> *const c_char;
     fn vev_connection_backend(conn: VevConnection) -> *const c_char;
     fn vev_connection_path(conn: VevConnection) -> *const c_char;
+    fn vev_connection_basis_t(conn: VevConnection) -> c_ulonglong;
     fn vev_connection_close(conn: VevConnection);
     fn vev_connection_db(conn: VevConnection) -> VevDb;
     fn vev_connection_transact_edn_report(
@@ -331,6 +332,10 @@ impl DurableConn {
 
     fn path(&self) -> String {
         unsafe { Library::owned_string(vev_connection_path(self.raw)) }
+    }
+
+    fn basis_t(&self) -> u64 {
+        unsafe { vev_connection_basis_t(self.raw) as u64 }
     }
 }
 
@@ -862,12 +867,20 @@ fn main() -> Result<(), String> {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected durable connection metadata".to_string());
         }
+        if durable.basis_t() != 0 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected initial durable basis".to_string());
+        }
         let report = durable.transact_report(
             r#"[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]"#,
         )?;
         if report.value().map_get(":ok") != Some(&Value::Bool(true)) {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected SQLite transaction report".to_string());
+        }
+        if durable.basis_t() != 1 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable basis after first tx".to_string());
         }
         let durable_query =
             PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;

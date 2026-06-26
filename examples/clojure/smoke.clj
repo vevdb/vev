@@ -148,7 +148,7 @@
     (delete-sqlite-files! sqlite-path)
     (try
       (with-open [durable (vev/connect lib-path sqlite-path)]
-        (when (not= {:backend :sqlite :path sqlite-path} (vev/connection-info durable))
+        (when (not= {:backend :sqlite :path sqlite-path :basis-t 0} (vev/connection-info durable))
           (throw (ex-info "unexpected durable connection metadata" {})))
         (let [tx (vev/transact! durable
                    [{:db/id 1
@@ -156,6 +156,8 @@
                      :user/email "durable-ada@example.com"}])]
           (when-not (:ok tx)
             (throw (ex-info "unexpected SQLite transaction report" {:report tx}))))
+        (when (not= 1 (:basis-t (vev/connection-info durable)))
+          (throw (ex-info "unexpected durable basis after first tx" {})))
         (with-open [db (vev/db durable)
                     all-emails (vev/prepare durable
                                  '[:find ?e ?email

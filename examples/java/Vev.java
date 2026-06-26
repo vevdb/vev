@@ -34,6 +34,7 @@ public final class Vev {
     private final MethodHandle connectionError;
     private final MethodHandle connectionBackend;
     private final MethodHandle connectionPath;
+    private final MethodHandle connectionBasisT;
     private final MethodHandle connectionClose;
     private final MethodHandle connectionDb;
     private final MethodHandle connectionTransactEdnReport;
@@ -158,6 +159,7 @@ public final class Vev {
         this.connectionError = downcall("vev_connection_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionBackend = downcall("vev_connection_backend", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionPath = downcall("vev_connection_path", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionBasisT = downcall("vev_connection_basis_t", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         this.connectionClose = downcall("vev_connection_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connectionDb = downcall("vev_connection_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionTransactEdnReport = downcall("vev_connection_transact_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -606,6 +608,11 @@ public final class Vev {
         public String path() throws Throwable {
             requireOpen();
             return ownedString((MemorySegment) connectionPath.invoke(raw));
+        }
+
+        public long basisT() throws Throwable {
+            requireOpen();
+            return (long) connectionBasisT.invoke(raw);
         }
 
         private void requireOpen() {

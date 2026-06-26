@@ -369,11 +369,15 @@ def main() -> int:
         with vev.connect(sqlite_path) as durable:
             if durable.backend() != "sqlite" or durable.path() != str(sqlite_path):
                 raise RuntimeError("unexpected durable connection metadata")
+            if durable.basis_t() != 0:
+                raise RuntimeError("unexpected initial durable basis")
             with durable.transact_report(
                 '[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]'
             ) as report:
                 if not report.value().get(":ok"):
                     raise RuntimeError("unexpected SQLite transaction report")
+            if durable.basis_t() != 1:
+                raise RuntimeError("unexpected durable basis after first tx")
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             ) as all_emails, durable.db() as db:

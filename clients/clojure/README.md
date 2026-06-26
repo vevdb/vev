@@ -87,7 +87,7 @@ current backend is SQLite:
 
 ```clojure
 (with-open [conn (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite")]
-  (vev/connection-info conn) ; => {:backend :sqlite, :path "app.vev.sqlite"}
+  (vev/connection-info conn) ; => {:backend :sqlite, :path "app.vev.sqlite", :basis-t 0}
   (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
   (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
 ```

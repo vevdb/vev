@@ -209,6 +209,9 @@ public final class Smoke {
                     if (!"sqlite".equals(durable.backend()) || !sqlitePath.toString().equals(durable.path())) {
                         throw new IllegalStateException("unexpected durable connection metadata");
                     }
+                    if (durable.basisT() != 0) {
+                        throw new IllegalStateException("unexpected initial durable basis");
+                    }
                     try (Vev.TxReport report = durable.transactReport("""
                             [{:db/id 1
                               :user/name "Durable Ada"
@@ -218,6 +221,9 @@ public final class Smoke {
                         if (!Boolean.TRUE.equals(reportValue.get(":ok"))) {
                             throw new IllegalStateException("unexpected SQLite transaction report");
                         }
+                    }
+                    if (durable.basisT() != 1) {
+                        throw new IllegalStateException("unexpected durable basis after first tx");
                     }
                     try (Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                          Vev.DB durableDb = durable.db();

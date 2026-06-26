@@ -68,9 +68,11 @@ backend-specific compatibility/debug entry points, but application examples
 should use the neutral `connect` shape.
 
 Durable connection metadata is available through the same neutral boundary:
-`vev_connection_backend` reports `"sqlite"` today and `vev_connection_path`
-reports the concrete storage path. Higher-level wrappers expose the same
-diagnostic shape as `backend`/`path` methods or Clojure `connection-info`.
+`vev_connection_backend` reports `"sqlite"` today, `vev_connection_path`
+reports the concrete storage path, and `vev_connection_basis_t` reports the
+last committed transaction visible to the connection. Higher-level wrappers
+expose the same diagnostic shape as `backend`/`path`/`basis_t` methods or
+Clojure `connection-info`.
 
 Explicit full DB persist cannot reconstruct report-only tx metadata from a
 bare DB value; metadata rows are written by the SQLite-backed transaction

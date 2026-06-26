@@ -297,6 +297,7 @@ if (!vev_connection_ok(durable)) {
 
 const char *backend = vev_connection_backend(durable);
 const char *path = vev_connection_path(durable);
+unsigned long long basis_t = vev_connection_basis_t(durable);
 vev_string_free(backend);
 vev_string_free(path);
 
@@ -320,7 +321,8 @@ same immutable owned-handle contract as `vev_conn_db`. The backend-specific
 `vev_sqlite_conn_*` functions remain available for storage tests and migration,
 but new host APIs should prefer `vev_connect` / `vev_connection_*`.
 `vev_connection_backend` and `vev_connection_path` return owned diagnostic
-strings; callers free them with `vev_string_free`.
+strings; callers free them with `vev_string_free`. `vev_connection_basis_t`
+returns the Datomic-style basis transaction visible to the connection.
 
 ## Python Adapter
 
@@ -385,6 +387,7 @@ Durable connections use the same DB-value query path:
 ```python
 with vev.connect("app.vev.sqlite") as durable:
     assert durable.backend() == "sqlite"
+    assert durable.basis_t() == 0
     durable.transact_report(
         '[{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}]')
     with durable.db() as db:
@@ -453,6 +456,7 @@ through immutable DB snapshots:
 ```java
 try (Vev.DurableConnection durable = vev.connect("app.vev.sqlite")) {
     String backend = durable.backend();
+    long basisT = durable.basisT();
     try (Vev.TxReport report =
              durable.transactReport("[{:db/id 1 :user/name \"Ada\"}]")) {
         // inspect report.value() if needed

@@ -211,6 +211,10 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     }
     vev_string_free(backend);
     vev_string_free(durable_path);
+    if (vev_connection_basis_t(durable) != 0) {
+        fprintf(stderr, "unexpected initial durable basis\n");
+        goto cleanup;
+    }
 
     report = vev_connection_transact_edn_report(
         durable,
@@ -221,6 +225,10 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     }
     vev_tx_report_free(report);
     report = NULL;
+    if (vev_connection_basis_t(durable) != 1) {
+        fprintf(stderr, "unexpected durable basis after first tx\n");
+        goto cleanup;
+    }
 
     db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
