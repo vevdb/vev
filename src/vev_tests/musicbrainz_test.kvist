@@ -1,0 +1,236 @@
+(package vev-tests)
+
+(import fmt "core:fmt")
+(import os "core:os")
+(import t "kvist:test")
+(import vev "../vev")
+
+(def musicbrainz-mini-tx
+  "[{:db/id 100 :db/ident :country/name :db/valueType :db.type/string :db/unique :db.unique/identity} {:db/id 101 :db/ident :artist/name :db/valueType :db.type/string :db/unique :db.unique/identity} {:db/id 102 :db/ident :artist/country :db/valueType :db.type/ref} {:db/id 103 :db/ident :artist/type :db/valueType :db.type/keyword} {:db/id 104 :db/ident :artist/startYear :db/valueType :db.type/long} {:db/id 105 :db/ident :artist/startMonth :db/valueType :db.type/long} {:db/id 106 :db/ident :artist/startDay :db/valueType :db.type/long} {:db/id 110 :db/ident :release/name :db/valueType :db.type/string} {:db/id 111 :db/ident :release/year :db/valueType :db.type/long} {:db/id 112 :db/ident :release/artists :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} {:db/id 113 :db/ident :release/country :db/valueType :db.type/ref} {:db/id 114 :db/ident :release/media :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} {:db/id 115 :db/ident :release/artistCredit :db/valueType :db.type/string} {:db/id 120 :db/ident :medium/tracks :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} {:db/id 121 :db/ident :medium/trackCount :db/valueType :db.type/long} {:db/id 122 :db/ident :medium/position :db/valueType :db.type/long} {:db/id 123 :db/ident :medium/name :db/valueType :db.type/string} {:db/id 130 :db/ident :track/name :db/valueType :db.type/string} {:db/id 131 :db/ident :track/duration :db/valueType :db.type/long} {:db/id 132 :db/ident :track/artists :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} {:db/id 133 :db/ident :track/position :db/valueType :db.type/long} {:db/id 201 :country/name \"United Kingdom\"} {:db/id 202 :country/name \"United States\"} {:db/id 301 :artist/name \"The Beatles\" :artist/country 201 :artist/type :artist.type/group :artist/startYear 1960 :artist/startMonth 8 :artist/startDay 17} {:db/id 302 :artist/name \"Miles Davis\" :artist/country 202 :artist/type :artist.type/person :artist/startYear 1944} {:db/id 401 :release/name \"Abbey Road\" :release/year 1969 :release/artists [301] :release/country 201 :release/media [601] :release/artistCredit \"The Beatles\"} {:db/id 402 :release/name \"Kind of Blue\" :release/year 1959 :release/artists [302] :release/country 202 :release/media [602] :release/artistCredit \"Miles Davis\"} {:db/id 501 :track/name \"Come Together\" :track/duration 259000 :track/artists [301] :track/position 1} {:db/id 502 :track/name \"Something\" :track/duration 182000 :track/artists [301] :track/position 2} {:db/id 503 :track/name \"So What\" :track/duration 545000 :track/artists [302] :track/position 1} {:db/id 601 :medium/name \"CD 1\" :medium/position 1 :medium/trackCount 2 :medium/tracks [501 502]} {:db/id 602 :medium/name \"CD 1\" :medium/position 1 :medium/trackCount 1 :medium/tracks [503]}]")
+
+(def musicbrainz-mini-rules
+  "[[(track-release ?t ?r) [?m :medium/tracks ?t] [?r :release/media ?m]] [(track-info ?t ?track-name ?artist-name ?album ?year) [?t :track/name ?track-name] [?t :track/artists ?a] [?a :artist/name ?artist-name] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]] [(short-track ?a ?t ?len ?max) [?t :track/artists ?a] [?t :track/duration ?len] [(< ?len ?max)]]]")
+
+(defn mb-remove-sqlite-files [path: string]
+  (os.remove path)
+  (os.remove (fmt.tprintf "%s-wal" path))
+  (os.remove (fmt.tprintf "%s-shm" path)))
+
+(defn mb-result-has-text? [result: vev.Result-Set, text: string] -> bool
+  (for [row result.rows]
+    (for [value row.values]
+      (when (and (= value.kind .String)
+                 (= value.text text))
+        (return true))))
+  false)
+
+(defn mb-result-has-text-pair? [result: vev.Result-Set, left: string, right: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .String)
+               (= row.values[1].kind .String)
+               (= row.values[0].text left)
+               (= row.values[1].text right))
+      (return true)))
+  false)
+
+(defn mb-result-has-text-int? [result: vev.Result-Set, text: string, value: i64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .String)
+               (= row.values[1].kind .Int)
+               (= row.values[0].text text)
+               (= row.values[1].int-value value))
+      (return true)))
+  false)
+
+(defn mb-result-has-text-text-int? [result: vev.Result-Set, first: string, second: string, value: i64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 3)
+               (= row.values[0].kind .String)
+               (= row.values[1].kind .String)
+               (= row.values[2].kind .Int)
+               (= row.values[0].text first)
+               (= row.values[1].text second)
+               (= row.values[2].int-value value))
+      (return true)))
+  false)
+
+(defn mb-result-has-track-info? [result: vev.Result-Set, track: string, artist: string, album: string, year: i64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 4)
+               (= row.values[0].kind .String)
+               (= row.values[1].kind .String)
+               (= row.values[2].kind .String)
+               (= row.values[3].kind .Int)
+               (= row.values[0].text track)
+               (= row.values[1].text artist)
+               (= row.values[2].text album)
+               (= row.values[3].int-value year))
+      (return true)))
+  false)
+
+(defn mb-pull-attr-index [attrs: []vev.Pull-Attr, attr: string] -> [index: int, ok: bool]
+  (for [item index attrs]
+    (when (= item.a attr)
+      (return index true)))
+  (return 0 false))
+
+(defn mb-pull-child-has-text? [attrs: []vev.Pull-Attr, attr: string, text: string] -> bool
+  (for [item attrs]
+    (when (and (= item.a attr)
+               (= item.v.kind .String)
+               (= item.v.text text))
+      (return true)))
+  false)
+
+(defn mb-pull-tree-has-text? [attrs: []vev.Pull-Attr, attr: string, text: string] -> bool
+  (for [item attrs]
+    (when (and (= item.a attr)
+               (= item.v.kind .String)
+               (= item.v.text text))
+      (return true))
+    (when (mb-pull-tree-has-text? (slice item.attrs 0) attr text)
+      (return true)))
+  false)
+
+(defn mb-mini-queries-ok? [db: vev.DB] -> bool
+  (let [artist-country (vev.q-text
+                         db
+                         "[:find ?artist-name ?country-name :where [?artist :artist/name ?artist-name] [?artist :artist/country ?country] [?country :country/name ?country-name]]")
+        beatles-releases (vev.q-text
+                           db
+                           "[:find ?release-name :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
+        miles-reverse (vev.q-text
+                        db
+                        "[:find ?release-name :where [?artist :artist/name \"Miles Davis\"] [?artist :release/_artists ?release] [?release :release/name ?release-name]]")
+        long-tracks (vev.q-text
+                      db
+                      "[:find ?track-name ?duration :where [?track :track/name ?track-name] [?track :track/duration ?duration] [(> ?duration 300000)]]")
+        track-count (vev.q-text
+                      db
+                      "[:find (count ?track) :where [?track :track/name]]")
+        prepared (vev.prepare-query-text
+                   "[:find ?release-name :in ?artist-name :where [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
+        prepared-result (vev.q-prepared-with-input-text db prepared "[\"Miles Davis\"]")
+        collection-binding (vev.q-text-with-inputs
+                             db
+                             "[:find ?artist-name ?release-name :in [?artist-name ...] :where [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]"
+                             ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Miles Davis")]))]))
+        tuple-binding (vev.q-text-with-inputs
+                        db
+                        "[:find ?track-name ?minutes :in [?artist-name ?release-name] :where [?artist :artist/name ?artist-name] [?release :release/name ?release-name] [?release :release/artists ?artist] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/name ?track-name] [?track :track/duration ?millis] [(quot ?millis 60000) ?minutes]]"
+                        ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Abbey Road")]))]))
+        relation-binding (vev.q-text-with-inputs
+                           db
+                           "[:find ?artist-name ?release-name :in [[?artist-name ?release-name]] :where [?artist :artist/name ?artist-name] [?release :release/name ?release-name] [?release :release/artists ?artist]]"
+                           ([]vev.Query-Input [(vev.query-input-relation ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Abbey Road") (vev.value-string "Miles Davis") (vev.value-string "Kind of Blue")]) 2)]))
+        [scalar-start scalar-start-ok] (vev.q-text-scalar
+                                         db
+                                         "[:find ?year . :where [?artist :artist/name \"The Beatles\"] [?artist :artist/startYear ?year]]")
+        tuple-start (vev.q-text-tuple
+                      db
+                      "[:find [?year ?month ?day] :where [?artist :artist/name \"The Beatles\"] [?artist :artist/startYear ?year] [?artist :artist/startMonth ?month] [?artist :artist/startDay ?day]]")
+        collection-find (vev.q-text-collection
+                          db
+                          "[:find [?track-name ...] :where [?track :track/name ?track-name] [?track :track/duration ?duration] [(< ?duration 300000)]]")
+        rule-track-info (vev.q-text-with-rules
+                          db
+                          "[:find ?track-name ?artist-name ?album ?year :in $ % :where (track-info ?track ?track-name ?artist-name ?album ?year)]"
+                          musicbrainz-mini-rules
+                          ([]vev.Query-Input []))
+        rule-short-track (vev.q-text-with-rules
+                           db
+                           "[:find ?track-name ?len :in $ % ?max :where [?artist :artist/name \"The Beatles\"] (short-track ?artist ?track ?len ?max) [?track :track/name ?track-name]]"
+                           musicbrainz-mini-rules
+                           ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 200000))]))
+        pulled (vev.pull-text db "[:artist/name {:release/_artists [:release/name :release/year]}]" 301)
+        release-pulled (vev.pull-text db "[:release/name :release/artistCredit {:release/media [:medium/trackCount {:medium/tracks [:track/name :track/duration]}]}]" 401)
+        [name-index name-ok] (mb-pull-attr-index (slice pulled.attrs 0) ":artist/name")
+        [releases-index releases-ok] (mb-pull-attr-index (slice pulled.attrs 0) ":release/_artists")
+        [media-index media-ok] (mb-pull-attr-index (slice release-pulled.attrs 0) ":release/media")]
+    (and artist-country.ok
+         (= (count artist-country.rows) 2)
+         (mb-result-has-text-pair? artist-country "The Beatles" "United Kingdom")
+         (mb-result-has-text-pair? artist-country "Miles Davis" "United States")
+         beatles-releases.ok
+         (= (count beatles-releases.rows) 1)
+         (mb-result-has-text? beatles-releases "Abbey Road")
+         miles-reverse.ok
+         (= (count miles-reverse.rows) 1)
+         (mb-result-has-text? miles-reverse "Kind of Blue")
+         long-tracks.ok
+         (= (count long-tracks.rows) 1)
+         (mb-result-has-text-int? long-tracks "So What" 545000)
+         track-count.ok
+         (= (count track-count.rows) 1)
+         (= track-count.rows[0].values[0].int-value 3)
+         prepared.ok
+         prepared-result.ok
+         (= (count prepared-result.rows) 1)
+         (mb-result-has-text? prepared-result "Kind of Blue")
+         collection-binding.ok
+         (= (count collection-binding.rows) 2)
+         (mb-result-has-text-pair? collection-binding "The Beatles" "Abbey Road")
+         (mb-result-has-text-pair? collection-binding "Miles Davis" "Kind of Blue")
+         tuple-binding.ok
+         (= (count tuple-binding.rows) 2)
+         (mb-result-has-text-int? tuple-binding "Come Together" 4)
+         (mb-result-has-text-int? tuple-binding "Something" 3)
+         relation-binding.ok
+         (= (count relation-binding.rows) 2)
+         (mb-result-has-text-pair? relation-binding "The Beatles" "Abbey Road")
+         (mb-result-has-text-pair? relation-binding "Miles Davis" "Kind of Blue")
+         scalar-start-ok
+         (= scalar-start.int-value 1960)
+         (= (count tuple-start) 3)
+         (= tuple-start[0].int-value 1960)
+         (= tuple-start[1].int-value 8)
+         (= tuple-start[2].int-value 17)
+         (= (count collection-find) 2)
+         rule-track-info.ok
+         (= (count rule-track-info.rows) 3)
+         (mb-result-has-track-info? rule-track-info "Come Together" "The Beatles" "Abbey Road" 1969)
+         (mb-result-has-track-info? rule-track-info "Something" "The Beatles" "Abbey Road" 1969)
+         (mb-result-has-track-info? rule-track-info "So What" "Miles Davis" "Kind of Blue" 1959)
+         rule-short-track.ok
+         (= (count rule-short-track.rows) 1)
+         (mb-result-has-text-int? rule-short-track "Something" 182000)
+         name-ok
+         (= pulled.attrs[name-index].v.text "The Beatles")
+         releases-ok
+         (= (count pulled.attrs[releases-index].attrs) 2)
+         media-ok
+         (= (count release-pulled.attrs[media-index].attrs) 3)
+         (mb-pull-tree-has-text? (slice release-pulled.attrs 0) ":track/name" "Come Together")
+         (mb-pull-tree-has-text? (slice release-pulled.attrs 0) ":track/name" "Something"))))
+
+(t.deftest musicbrainz-mini-edn-tutorial-queries
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.transact-text (addr conn) musicbrainz-mini-tx)]
+    (t.is report.ok)
+    (t.is (mb-mini-queries-ok? conn.db))
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-owned-db conn.db)
+    (delete conn.listeners)))
+
+(t.deftest musicbrainz-mini-sqlite-reopen-queries
+  (defer (free_all context.allocator))
+  (mb-remove-sqlite-files "tmp.vev.musicbrainz-mini.sqlite")
+  (let [path "tmp.vev.musicbrainz-mini.sqlite"
+        [store open-ok open-error] (vev.open-sqlite-conn path)]
+    (t.is open-ok)
+    (t.is (= open-error ""))
+    (when open-ok
+      (let [report (vev.transact-sqlite-text (addr store) musicbrainz-mini-tx)]
+        (t.is report.ok)
+        (vev.delete-live-tx-report-shallow report)
+        (vev.close-sqlite-conn store))
+      (let [[reopened reopened-ok reopened-error] (vev.open-sqlite-conn path)]
+        (t.is reopened-ok)
+        (t.is (= reopened-error ""))
+        (when reopened-ok
+          (t.is (mb-mini-queries-ok? reopened.conn.db))
+          (vev.close-sqlite-conn reopened))))
+    (mb-remove-sqlite-files path)))

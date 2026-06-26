@@ -20,6 +20,34 @@ Vev is ready to start this phase because:
 The project should not block MusicBrainz on the shared-index storage rewrite.
 The workload should instead tell us where that rewrite matters in practice.
 
+Initial local discovery did not find a checked-in full mbrainz/MusicBrainz dump
+under `/Users/andreas/Projects` or the nearby home-directory project tree. The
+current harness therefore starts with a deterministic mbrainz-shaped mini
+fixture and leaves the full dataset path as the next discovery/import step.
+
+Primary upstream references:
+
+- Datomic blog announcement:
+  `https://blog.datomic.com/2013/07/datomic-musicbrainz-sample-database.html`
+- sample project:
+  `https://github.com/Datomic/mbrainz-sample`
+- sample schema:
+  `https://github.com/Datomic/mbrainz-sample/blob/master/schema.edn`
+- sample query wiki:
+  `https://github.com/Datomic/mbrainz-sample/wiki/Queries`
+- current Amazing Day of Datomic workshop:
+  `https://github.com/Datomic/day-of-datomic-conj`
+- original Day of Datomic samples:
+  `https://github.com/Datomic/day-of-datomic`
+
+The 2013 blog references the original full backup
+`http://s3.amazonaws.com/mbrainz/datomic-mbrainz-backup-20130611.tar`, about
+2.8 GB, with a restore target like `datomic:free://localhost:4334/mbrainz`.
+The current sample repo README points at the smaller 1968-1973 subset backup:
+`https://s3.amazonaws.com/mbrainz/datomic-mbrainz-1968-1973-backup-2017-07-20.tar`.
+That subset should be the first real Datomic comparison target because it is
+large enough to be meaningful but much easier to restore and iterate on.
+
 ## First Target
 
 Start with a deterministic Day-of-Datomic / mbrainz-shaped dataset slice.
@@ -35,20 +63,41 @@ The first useful milestone is:
 Correctness comes first. Performance comparisons become meaningful only after
 the query and result shapes match.
 
+Status: first mini-fixture harness exists in
+`src/vev_tests/musicbrainz_test.kvist`. It imports schema and seed data via EDN
+text, runs tutorial-shaped queries against an in-memory DB, and repeats the
+same assertions after SQLite-backed commit, close, reopen, and query. The mini
+fixture now uses real mbrainz-shaped attrs such as `:release/media`,
+`:medium/tracks`, `:track/artists`, and `:artist/startYear`, plus a small
+subset of the upstream `rules.edn` shape:
+
+- `track-release`
+- `track-info`
+- `short-track`
+
+Current covered query shapes include direct joins, reverse refs, predicates,
+aggregates, prepared EDN text input, collection binding, tuple binding,
+relation binding, scalar/tuple/collection find specs, rule-backed queries,
+duration function expressions, and nested pull through release/media/tracks.
+
 ## Work Items
 
-1. Locate the local Day-of-Datomic or mbrainz dataset and document the exact
-   source path, schema format, and data format used by the harness.
-2. Add an importer that converts the dataset into Vev EDN transaction text or
+1. Download or locate the 1968-1973 mbrainz backup from the sample repo README,
+   restore it into local Datomic, and document the exact local path/URI.
+2. Port the `day-of-datomic-conj/src/music_brainz.clj` query set into a Vev
+   fixture file, marking each form as passing, Vev-difference, or pending.
+3. Expand the mini fixture toward that query set while the full dataset path is
+   being located.
+4. Add an importer that converts the dataset into Vev EDN transaction text or
    prepared `Tx-Data` values.
-3. Add a small query fixture file containing Datomic tutorial queries, expected
+5. Add a small query fixture file containing Datomic tutorial queries, expected
    result normalization rules, and notes for any deliberate Vev differences.
-4. Add a Vev harness that can run:
+6. Add a Vev harness that can run:
    - in-memory import and query
    - SQLite import, close/reopen, and query
    - optional Datomic comparison when the local Datomic process/database is
      available
-5. Record comparisons as result equality plus relative timing ratios. Avoid
+7. Record comparisons as result equality plus relative timing ratios. Avoid
    unsupported raw timing claims until the harness has stable warmup and repeat
    behavior.
 
