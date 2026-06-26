@@ -62,7 +62,7 @@ Non-goal:
 
 - server/transactor packaging
 
-Status: current compatibility gate. The broad in-memory surface is present:
+Status: mostly satisfied as the current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
 suite currently passes 364 tests. Remaining work is concentrated in exact
@@ -70,7 +70,7 @@ parser diagnostics/object rendering, query/rule planner maturity,
 MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
 and durable storage integration.
 
-Current batch order:
+Deferred engine batch order:
 
 1. Typed/columnar relation storage: replace hot `Binding` tuple intermediates
    with struct-of-arrays style relation columns while preserving the current
@@ -95,9 +95,8 @@ Current batch order:
    storage through storage-neutral `connect`/connection handles, and make
    Clojure and Java feel close to Datomic/DataScript for common tutorials,
    including listener/report callbacks where useful.
-7. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
-   dataset, run equivalent Datomic workshop queries against Vev and Datomic,
-   compare result sets first and performance second.
+MusicBrainz/Datomic comparison is no longer part of this deferred list; it is
+the next active phase.
 
 ## Current Query Engine State
 
@@ -198,9 +197,11 @@ Initial scope:
 - store expected query results in Vev tests or benchmark fixtures
 - report Datomic vs Vev timings as comparative ratios, not raw claims
 
-Status: not started. This should happen alongside the durable-storage phase,
-after the basic SQLite reopen/query loop exists. It should validate that
-durability preserves the same Datomic-shaped semantics as the in-memory engine.
+Status: active next phase. The basic SQLite reopen/query loop exists, host
+connection wrappers can reach it, and the remaining storage architecture work
+is known. MusicBrainz should now validate that Vev follows real Datomic
+tutorial material before we return to deeper storage architecture or planner
+work. See `docs/musicbrainz.md` for the active work plan.
 
 ## Phase 5b: External Optimizer Benchmarks
 
@@ -274,7 +275,7 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: active. Vev now has snapshot-file persistence, SQLite-backed datom row
+Status: first proof complete; deeper architecture deferred. Vev now has snapshot-file persistence, SQLite-backed datom row
 persistence, explicit SQLite tx metadata rows, a native SQLite-backed
 connection wrapper, and raw C ABI durable connection handles. The SQLite slice
 creates metadata, transaction, tx metadata, and datom tables, writes one row
@@ -298,8 +299,11 @@ new-entity bulk-import shortcut. Ordered new-entity imports avoid formatted
 entity/attr eligibility keys and extend the `eavt` entity table instead of
 rebuilding it. A first Datalevin-style local write harness now measures pure
 write throughput across batch sizes and mixed read/write behavior through the
-SQLite-backed connection. The next durable milestone is reducing the remaining
-report/index ownership-copy overhead, then scaling that write harness to direct
+SQLite-backed connection. A 10k-row durable run shows batch-100 writes are
+acceptable for this phase, while batch-1 and mixed read/write are dominated by
+per-commit immutable DB/index copying. The next durable milestone, when storage
+work resumes, is replacing whole-array DB/index ownership copies with shared
+immutable/chunked DB index storage, then scaling the write harness to direct
 Datalevin `write-bench` comparisons.
 
 ## Phase 7: Dogfood
@@ -388,15 +392,17 @@ Do not continue durable storage by solving:
 - every host language
 - every deployment story
 
-The in-memory semantic core, EDN/C ABI surface, and performance baseline are
-now strong enough to start durability. The next durable-storage gate is not
-"all possible DataScript host details"; it is:
+The in-memory semantic core, EDN/C ABI surface, performance baseline, and first
+SQLite durable loop are now strong enough to start MusicBrainz/Day-of-Datomic
+validation. The next durable-storage gate is no longer proving that SQLite can
+open/write/close/reopen/query; that exists. The next durable-storage gate, when
+we return to storage, is:
 
-- SQLite-backed open/write/close/reopen/query works from datom rows through
-  the same semantic engine path as in-memory Vev
-- transaction boundaries and SQLite-backed report metadata rows are durable
+- shared immutable/chunked DB index storage avoids per-commit whole-array
+  copies while preserving immutable snapshot semantics
+- transaction boundaries and SQLite-backed report metadata rows remain durable
 - immutable DB snapshot semantics remain visible through the native ABI
-- MusicBrainz/Datomic workshop queries validate durable correctness and
-  performance once the basic SQLite backend exists
+- MusicBrainz/Datomic workshop queries continue to validate correctness and
+  performance on both in-memory and durable paths
 
 Storage must preserve established semantics instead of reshaping them.
