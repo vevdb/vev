@@ -120,8 +120,10 @@ onto Vev's durable API:
 - end-to-end call latency and commit-path latency reporting
 
 This harness is intentionally smaller than the final external benchmark. It is
-for regular development runs while the durable path is still changing. It uses
-a plain long `:item/key`, matching Datalevin's write-bench schema. The next
+for regular development runs while the durable path is still changing, but it
+now accepts `--total`, `--report-every`, `--mixed-operations`, `--batch`, and
+`--seed-batch` so larger runs can be launched without source edits. It uses a
+plain long `:item/key`, matching Datalevin's write-bench schema. The next
 measurement step is scaling this harness to the upstream Datalevin
 `write-bench` totals and comparing pure write and mixed read/write behavior
 directly.

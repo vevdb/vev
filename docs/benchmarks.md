@@ -274,6 +274,25 @@ cd /Users/andreas/Projects/kvist
   run /Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/bench/write_bench.kvist
 ```
 
+The default run is intentionally small. Scale and select workloads with:
+
+```sh
+/Users/andreas/Projects/kvist/kvist \
+  build /Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/bench/write_bench.kvist \
+  --out /Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/build/write-bench
+
+/Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/build/write-bench \
+  --total 10000 --report-every 1000 --mixed-operations 10000 --batch 100
+```
+
+Options:
+
+- `--total`: pure-write rows to transact and mixed-read/write seed size
+- `--report-every`: row interval for progress samples
+- `--mixed-operations`: total alternating read/write operations
+- `--batch`: run a single pure-write batch size; omit to run 1, 10, 100, 1000
+- `--seed-batch`: mixed-workload seed import batch size
+
 Current sample output on June 26, 2026:
 
 ```text
