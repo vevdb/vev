@@ -114,6 +114,30 @@ The current in-memory implementation has two query frontends:
 - a Kvist query literal macro that lowers Datomic-shaped data to the same typed
   `Query` representation
 
+Prepared queries now also own a cached `Rule-Call-Plan` array. When rules are
+attached at prepare time, or when an already-prepared query is combined with a
+prepared rules value for execution, Vev plans each rule call once and reuses the
+plan by query-step index. This keeps recursive-rule execution on the same
+generic engine path, but avoids rebuilding dependency graphs and transitive-rule
+recognizers for every prepared run.
+
+Rule-call planning now also builds a reusable rule-name index for the planning
+batch. Dependency graphs are still ordinary rule-name graphs, and execution
+keeps the original rule order, but the planner no longer rescans the full rule
+array just to discover which names exist or which rule branches share a name.
+The same dependency graph now produces explicit strongly connected component
+metadata. Recursive checks use those components instead of pairwise
+mutual-reachability probes, which is the planner-side structure needed before a
+component-local semi-naive rule evaluator. Plain positive recursive rules now
+have a generic component-local delta slice: each recursive rule-call position is
+evaluated against the current per-iteration delta table while the other rule
+calls read the accumulated memo tables. It handles data clauses plus rule calls,
+with no source-qualified calls and no predicates/functions/negation/disjunction
+inside the component. Memo tables keep set-backed primitive binding keys for
+duplicate detection, with structural scans only as a fallback for non-keyable
+outputs. The specialized linear and alternating transitive paths remain faster
+physical operators and run before the generic memo/delta path.
+
 ## Query Engine Strategy
 
 Vev should follow DataScript's query architecture as the semantic baseline:
@@ -291,12 +315,24 @@ entity id, then emits q3/q4-style projected rows from the aligned streams. This
 is still in the indexed prototype layer, but it is the intended shape for the
 future relation-native star/merge-scan operator.
 
+Sixteenth slice implemented: the shared-value entity join prototype now
+materializes the projected cardinality-one output attr once as an entity-keyed
+table, then scans the right-side join-value `AVET` ranges and probes that table
+instead of doing a fresh entity/attr lookup for every right candidate. This is
+the q5 pressure-point shape from `datascript-bench`, but the operator lesson is
+general: separate index scans and projected attr materialization should feed a
+join/projection operator instead of repeating random per-row index probes.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
-generic recursive fixpoint loop. Recursive rule groups are still handled by the
-existing evaluator and specialized transitive paths. The next rule-engine step
-is to replace that recursive path with a relation-native semi-naive evaluator,
-using the dependency components as the stratification input.
+generic recursive fixpoint loop. The dependency graph also exposes strongly
+connected component metadata for recursive checks and rule grouping. Plain
+positive recursive rule groups can use component-local memoized execution with
+delta-driven iteration over each recursive rule-call position. Specialized
+transitive paths remain the fast path for common reachability shapes. The next
+rule-engine step is to move this binding-row memo/delta evaluator into
+relation-native operators and add measured handling for richer rule bodies using
+the dependency components as the stratification input.
 
 Near-term query work should expand the relation engine in this order:
 
@@ -305,8 +341,8 @@ Near-term query work should expand the relation engine in this order:
 2. Source-qualified synthetic primary collection DB operators: move the
    remaining collection-backed rule/predicate/function cases into the same
    source-aware relation representation.
-3. Rules: replace the current wrapped recursive rule evaluator with measured
-   relation-native recursive/semi-naive behavior.
+3. Rules: move the positive-rule memo/delta evaluator from binding rows toward
+   relation-native semi-naive behavior, then broaden it to richer rule bodies.
 
 The transaction side has the same split:
 

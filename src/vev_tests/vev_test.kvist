@@ -230,9 +230,11 @@
     (vev.value-string (strings.concatenate ([]string ["tag:" value.text])))))
 
 (defn native-sort-reverse [values: []vev.Value] -> vev.Native-Query-Function-Result
-  (let [sorted (arr.into [dynamic]vev.Value values)
+  (let [sorted (make [dynamic]vev.Value 0 (count values))
         out (make [dynamic]vev.Value)]
     (defer (delete sorted))
+    (for [value values]
+      (arr.push! sorted value))
     (for [i (arr.range 1 (count sorted))]
       (let [current sorted[i]
             j i]
@@ -2052,31 +2054,37 @@
 
 (t.deftest datascript-parser-query-text-relation-source-inputs
   (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)]
+    (let [result-value (vev.q-text-value-with-input-text
+                         conn.db
+                         "[:find ?n ?a :in $rows :where [$rows ?e :aka \"dragon_killer_94\"] [$rows ?e :name ?n] [$rows ?e :age ?a]]"
+                         "[[[1 :name \"Ivan\"] [1 :age 19] [1 :aka \"dragon_killer_94\"] [1 :aka \"-=autobot=-\"]]]")
+          [rows rows-ok] (map-value result-value ":rows")
+          [values values-ok] (map-value rows.items[0] ":values")]
+      (t.is rows-ok)
+      (t.is values-ok)
+      (t.is (= (count rows.items) 1))
+      (t.is (= values.items[0].text "Ivan"))
+      (t.is (= values.items[1].int-value 19))
+      (vev.delete-value-containers-shallow result-value))))
+
+(t.deftest datascript-parser-query-text-long-relation-source-inputs
+  (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
-        rows (vev.value-vector
-               ([]vev.Value [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan")]))
-                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 19)]))
-                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":aka") (vev.value-string "dragon_killer_94")]))
-                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":aka") (vev.value-string "-=autobot=-")]))]))
-        long-rows (vev.value-vector
-                    ([]vev.Value [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan") (vev.value-int 945) (vev.value-keyword ":db/add")]))
-                                   (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 39) (vev.value-int 999) (vev.value-keyword ":db/retract")]))]))
-        result (vev.q-text-with-inputs
-                 conn.db
-                 "[:find ?n ?a :in $rows :where [$rows ?e :aka \"dragon_killer_94\"] [$rows ?e :name ?n] [$rows ?e :age ?a]]"
-                 ([]vev.Query-Input [(vev.query-input-scalar rows)]))
-        long (vev.q-text-with-inputs
-               conn.db
-               "[:find ?e ?a ?v ?t :in $rows :where [$rows ?e ?a ?v ?t :db/retract]]"
-               ([]vev.Query-Input [(vev.query-input-scalar long-rows)]))]
-    (t.is (= (count result.rows) 1))
-    (t.is (= result.rows[0].values[0].text "Ivan"))
-    (t.is (= result.rows[0].values[1].int-value 19))
-    (t.is (= (count long.rows) 1))
-    (t.is (= long.rows[0].values[0].int-value 1))
-    (t.is (= long.rows[0].values[1].text ":age"))
-    (t.is (= long.rows[0].values[2].int-value 39))
-    (t.is (= long.rows[0].values[3].int-value 999))))
+        result-value (vev.q-text-value-with-input-text
+                       conn.db
+                       "[:find ?e ?a ?v ?t :in $rows :where [$rows ?e ?a ?v ?t :db/retract]]"
+                       "[[[1 :name \"Ivan\" 945 :db/add] [1 :age 39 999 :db/retract]]]")
+        [rows rows-ok] (map-value result-value ":rows")
+        [values values-ok] (map-value rows.items[0] ":values")]
+    (t.is rows-ok)
+    (t.is values-ok)
+    (t.is (= (count rows.items) 1))
+    (t.is (= values.items[0].int-value 1))
+    (t.is (= values.items[1].text ":age"))
+    (t.is (= values.items[2].int-value 39))
+    (t.is (= values.items[3].int-value 999))
+    (vev.delete-value-containers-shallow result-value)))
 
 (t.deftest datascript-query-typed-relation-source-inputs-subset
   (defer (free_all context.allocator))
@@ -2096,8 +2104,8 @@
                      ([]vev.Query-Input
                        [(vev.query-input-collection
                           ([]vev.Value
-                            [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan") (vev.value-int 945) (vev.value-keyword ":db/add")]))
-                             (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 39) (vev.value-int 999) (vev.value-keyword ":db/retract")]))]))]))
+                            [(vev.value-vector5 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan") (vev.value-int 945) (vev.value-keyword ":db/add"))
+                             (vev.value-vector5 (vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 39) (vev.value-int 999) (vev.value-keyword ":db/retract"))]))]))
         map-value (vev.value-map
                     ([]vev.Value [(vev.value-keyword ":a") (vev.value-int 1)
                                   (vev.value-keyword ":b") (vev.value-int 2)]))
@@ -2137,14 +2145,8 @@
 
 (t.deftest datascript-query-primary-collection-db-subset
   (defer (free_all context.allocator))
-  (let [rows (vev.value-vector
-               ([]vev.Value [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan")]))
-                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 19)]))
-                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":aka") (vev.value-string "dragon_killer_94")]))
-                              (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":aka") (vev.value-string "-=autobot=-")]))]))
-        long-rows (vev.value-vector
-                    ([]vev.Value [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan") (vev.value-int 945) (vev.value-keyword ":db/add")]))
-                                   (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 39) (vev.value-int 999) (vev.value-keyword ":db/retract")]))]))
+  (let [rows (vev.value-fixture-person-rows)
+        long-rows (vev.value-fixture-person-datom-rows)
         result (vev.q-text-relation-db
                  rows
                  "[:find ?n ?a :where [?e :aka \"dragon_killer_94\"] [?e :name ?n] [?e :age ?a]]")
@@ -5797,6 +5799,29 @@
                      [(follow ?e1 ?e2)
                       [?e1 :follow ?t]
                       (follow ?t ?e2)]])
+        nonlinear-recursive (vev.q-collection report.db-after
+                              [:find [?e2 ...]
+                               :in $ ?e1 %
+                               :where
+                               (odd-follow ?e1 ?e2)]
+                              1
+                              [[(odd-follow ?e1 ?e2)
+                                [?e1 :follow ?e2]]
+                               [(odd-follow ?e1 ?e2)
+                                [?e1 :follow ?a]
+                                (odd-follow ?a ?b)
+                                [?b :follow ?e2]]])
+        composed-recursive (vev.q-collection report.db-after
+                             [:find [?e2 ...]
+                              :in $ ?e1 %
+                              :where
+                              (composed-follow ?e1 ?e2)]
+                             1
+                             [[(composed-follow ?e1 ?e2)
+                               [?e1 :follow ?e2]]
+                              [(composed-follow ?e1 ?e2)
+                               (composed-follow ?e1 ?mid)
+                               (composed-follow ?mid ?e2)]])
         rule-builtins (vev.q report.db-after
                         [:find ?x ?y
                          :in $ %
@@ -5895,6 +5920,15 @@
     (t.is (= recursive[1].entity 3))
     (t.is (= recursive[2].entity 4))
     (t.is (= recursive[3].entity 6))
+    (t.is (= (count nonlinear-recursive) 3))
+    (t.is (vev.value-exists? (slice nonlinear-recursive 0) (vev.value-entity 2)))
+    (t.is (vev.value-exists? (slice nonlinear-recursive 0) (vev.value-entity 4)))
+    (t.is (vev.value-exists? (slice nonlinear-recursive 0) (vev.value-entity 6)))
+    (t.is (= (count composed-recursive) 4))
+    (t.is (vev.value-exists? (slice composed-recursive 0) (vev.value-entity 2)))
+    (t.is (vev.value-exists? (slice composed-recursive 0) (vev.value-entity 3)))
+    (t.is (vev.value-exists? (slice composed-recursive 0) (vev.value-entity 4)))
+    (t.is (vev.value-exists? (slice composed-recursive 0) (vev.value-entity 6)))
     (t.is (= (count rule-builtins.rows) 2))
     (t.is (= rule-builtins.rows[0].values[0].entity 2))
     (t.is (= rule-builtins.rows[0].values[1].entity 4))

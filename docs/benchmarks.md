@@ -237,6 +237,17 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 | `distinct-age n=1000` | 3.4x | 4.1x |
 | `people-name-age n=1000` | 0.8x | 0.8x |
 
+Prepared queries now cache per-rule-call plans on the parsed query value, and
+plain positive recursive rule bodies use a conservative delta iteration across
+each recursive rule-call position. Rule memo entries also keep set-backed
+dedupe keys for primitive output bindings. The small `datascript-bench` rule
+rows measured after those changes are:
+
+| Workload | DataScript median | Vev median | DataScript/Vev |
+|---|---:|---:|---:|
+| `rules-wide-3x3` | 0.45ms | 0.25ms | 1.80x |
+| `rules-long-10x3` | 0.96ms | 0.31ms | 3.10x |
+
 ## Stress Comparison
 
 The stress comparison uses fewer samples and larger recursive-rule workloads.
@@ -244,20 +255,20 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1370.3x | 1411.0x |
-| `stress-chain-leaf n=300` | 3971.5x | 4167.7x |
-| `stress-chain-all n=200` | 32.9x | 32.4x |
-| `stress-tree-root n=364` | 1.8x | 2.0x |
-| `stress-mutual-root n=30` | 17.0x | 21.3x |
+| `stress-chain-root n=300` | 1683.9x | 1779.6x |
+| `stress-chain-leaf n=300` | 3857.2x | 4073.5x |
+| `stress-chain-all n=200` | 29.0x | 28.9x |
+| `stress-tree-root n=364` | 2.6x | 2.6x |
+| `stress-mutual-root n=30` | 16.6x | 22.7x |
 
 The stress harness also emits Vev-only rows for workloads that are currently
 too expensive for routine DataScript comparison:
 
 | Workload | Vev text median | Vev prepared median | Notes |
 |---|---:|---:|---|
-| `stress-dense-root n=60` | 240us | 220us | Dense DAG, width 8 |
-| `stress-dense-root n=160` | 622us | 605us | Dense DAG, width 8 |
-| `stress-filtered-root n=10` | 71us | 44us | Linear recursive rule with a target-node data filter |
+| `stress-dense-root n=60` | 203us | 190us | Dense DAG, width 8 |
+| `stress-dense-root n=160` | 518us | 501us | Dense DAG, width 8 |
+| `stress-filtered-root n=10` | 56us | 31us | Linear recursive rule with a target-node data filter |
 
 ## Current Findings
 
@@ -365,9 +376,14 @@ Remaining performance work:
   after each operator migration so the work stays general.
 - Generalize this from the current linear transitive closure path into a
   measured semi-naive/memoized rule evaluator. Filtered linear recursion and
-  alternating two-rule recursion are now optimized, and primitive binding
-  dedupe is map-backed, but arbitrary multi-step recursive bodies still use the
-  generic depth/fixpoint evaluator.
+  alternating two-rule recursion are optimized. Plain positive recursive rule
+  groups now have a component-local memoized fixpoint, and recursive bodies use
+  per-iteration delta tables rather than re-probing the full memo each
+  iteration. Memo insertion now uses set-backed primitive binding keys instead
+  of always scanning accumulated outputs. The next step is to move that
+  binding-row evaluator into
+  relation-native operators and extend semi-naive coverage to richer rule bodies
+  beyond the current positive data-clause/rule-call subset.
 - Continue result-projection work beyond the single-attr distinct fast path.
   `distinct-age` is now faster than DataScript locally, but
   `people-name-age` still shows broad two-column projection behind
@@ -390,19 +406,17 @@ Remaining performance work:
   physical-operator integration, not the indexed self-join itself. General
   relation hash joins are also in place for one primitive common variable, with
   fallback to the older nested join when lookup-ref/source semantics require it.
-- Same-entity star/projection queries use two reusable indexed shapes inspired
-  by Datalevin's sorted scans. Single-filter star queries such as q2 use an
-  advancing entity-local `eavt` cursor for cardinality-one attr fetches, which
-  avoids restarting a global `(entity, attr)` lookup for each candidate. Queries
-  with two or more fixed same-entity filters, such as q3/q4, now use the
-  all-current merge-stream operator: it aligns entity-sorted
-  `AVET(attr,value)` filter ranges and `AEVT(attr)` output ranges together.
-  The latest 20k local `datascript-bench` comparison has Vev ahead of
-  DataScript on q1/q2/q2-switch/q3/q4/qpred1/qpred2, with q2 at about 1.5x,
-  q2-switch at about 3.3x, q3 at about 1.8x, and q4 at about 1.9x. This is
-  still above the published Datalevin target, so the next work is to fold these
-  paths into the normal physical relation operator layer and reduce
-  Clojure/JVM materialization overhead for returned row vectors/sets.
+- Same-entity star/projection queries use reusable indexed shapes inspired by
+  Datalevin's sorted scans. Single-filter star queries such as q2 and
+  multi-filter star queries such as q3/q4 now use the all-current merge-stream
+  operator: it aligns entity-sorted `AVET(attr,value)` filter ranges and
+  `AEVT(attr)` output ranges together. The latest 20k local
+  `datascript-bench` comparison has Vev ahead of DataScript on
+  q1/q2/q2-switch/q3/q4/qpred1/qpred2, with q2 at about 1.3x, q2-switch at
+  about 3.1x, q3 at about 2.6x, and q4 at about 1.8x. This is still above the
+  published Datalevin target, so the next work is to fold these paths into the
+  normal physical relation operator layer and reduce Clojure/JVM materialization
+  overhead for returned row vectors/sets.
 - q1 and q5's remaining costs are mostly host result-shape overhead. Prepared
   diagnostic rows show q1 improves from roughly 0.30 ms for
   Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`; q5 still

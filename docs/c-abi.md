@@ -377,7 +377,14 @@ Rust:
   bindings
 - typed results convert entity ids, scalar values, and pull maps into Java
   values
+- `DB.queryColumns` exposes a first generic Java column facade over the current
+  optimized entity, entity/int, and entity/string/int result shapes
 - immutable DB snapshots can be queried after the connection has advanced
+
+The Clojure adapter still uses the direct shape-specific Java methods on hot
+`q`/`rows` paths. The generic Java facade is useful for API direction, but a
+future native one-call column batch handle is needed before it should replace
+the current optimized Clojure dispatch.
 
 Because it uses the preview FFM API, the examples compile and run with:
 

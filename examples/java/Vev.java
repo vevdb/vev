@@ -16,6 +16,10 @@ import java.lang.ref.Cleaner;
 public final class Vev {
     private static final Linker LINKER = Linker.nativeLinker();
     private static final Cleaner CLEANER = Cleaner.create();
+    public static final int COLUMN_ENTITY = 1;
+    public static final int COLUMN_STRING = 2;
+    public static final int COLUMN_INT = 3;
+    public static final int COLUMN_BOOL = 5;
 
     private final Arena arena;
     private final Cleaner.Cleanable cleanable;
@@ -379,6 +383,31 @@ public final class Vev {
     public record Entity(long id) {}
     public record Entry(Object key, Object value) {}
 
+    public record ColumnResult(int rowCount, int[] kinds, Object[] columns) {
+        public List<List<Object>> rows() {
+            List<List<Object>> out = new ArrayList<>(rowCount);
+            for (int row = 0; row < rowCount; row++) {
+                List<Object> values = new ArrayList<>(kinds.length);
+                for (int column = 0; column < kinds.length; column++) {
+                    values.add(valueAt(column, row));
+                }
+                out.add(values);
+            }
+            return out;
+        }
+
+        private Object valueAt(int column, int row) {
+            Object values = columns[column];
+            return switch (kinds[column]) {
+                case COLUMN_ENTITY -> new Entity(((long[]) values)[row]);
+                case COLUMN_INT -> ((long[]) values)[row];
+                case COLUMN_STRING -> ((String[]) values)[row];
+                case COLUMN_BOOL -> ((boolean[]) values)[row];
+                default -> throw new IllegalStateException("unsupported column kind: " + kinds[column]);
+            };
+        }
+    }
+
     public record MapValue(List<Entry> entries) {
         public Object get(String key) {
             for (Entry entry : entries) {
@@ -658,6 +687,32 @@ public final class Vev {
                     entityStringIntTriplesFree.invoke(raw);
                 }
             }
+        }
+
+        public ColumnResult queryColumns(PreparedQuery query, String inputs) throws Throwable {
+            long[] entities = queryEntityColumn(query, inputs);
+            if (entities != null) {
+                return new ColumnResult(
+                    entities.length,
+                    new int[] { COLUMN_ENTITY },
+                    new Object[] { entities });
+            }
+            long[][] pairs = queryEntityIntPairColumns(query, inputs);
+            if (pairs != null) {
+                return new ColumnResult(
+                    pairs[0].length,
+                    new int[] { COLUMN_ENTITY, COLUMN_INT },
+                    new Object[] { pairs[0], pairs[1] });
+            }
+            Object[] triples = queryEntityStringIntTripleColumns(query, inputs);
+            if (triples != null) {
+                long[] tripleEntities = (long[]) triples[0];
+                return new ColumnResult(
+                    tripleEntities.length,
+                    new int[] { COLUMN_ENTITY, COLUMN_STRING, COLUMN_INT },
+                    triples);
+            }
+            return null;
         }
 
         public ResultSet query(Statement stmt) throws Throwable {

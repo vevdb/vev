@@ -126,8 +126,17 @@ Status labels:
 - `todo` Consider reshaping `Query-Relation` attrs.
   Parallel `attrs` / `attr-sources` arrays couple indexes manually. A small `{name source}` record or an auxiliary source map would be clearer.
 
-- `todo` Add explicit SCC metadata for rule components.
-  Rule planning now reuses single-start reachability, but recursive component detection still checks mutual reachability on demand. A Tarjan/Kosaraju pass would make component recursion, rule grouping, and future semi-naive planning more direct.
+- `done` Add explicit SCC metadata for rule components.
+  Rule dependency analysis now builds strongly connected component metadata from the dependency graph using DFS finish order plus reverse traversal. Recursive checks and prepared rule-call planning can ask component metadata instead of repeatedly checking pairwise mutual reachability.
+
+- `done` Add a component-local memoized rule fixpoint for positive rules.
+  Recursive rule calls whose reachable rule set is plain positive Datalog, currently data clauses plus rule calls with no source-qualified calls, can use a memo table keyed by rule name/params and iterate to a local fixpoint. This covers non-linear recursive rule bodies that are not handled by the linear/alternating transitive recognizers.
+
+- `done` Add a conservative delta path for positive recursive rules.
+  Positive recursive components now use accumulated memo tables plus per-iteration delta tables. Bodies with multiple recursive rule calls are evaluated once per recursive call position with that position reading the delta table and the other positions reading accumulated memo rows. This avoids re-probing the full memo each iteration for the common semi-naive shape.
+
+- `done` Add set-backed rule memo duplicate detection.
+  Rule memo entries now keep a `seen` key set next to the accumulated binding table, so primitive rule outputs avoid linear `binding-exists?` scans on insert. Structural scan fallback remains for output bindings that cannot be represented by the primitive binding key.
 
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
@@ -141,11 +150,14 @@ Status labels:
 - `todo` Build reusable physical query operators.
   Entity-column scans, profiled row rendering, same-entity star plans, relation-source row matching, and specialized typed result paths duplicate scan/filter/project logic. Indexed scan, row matcher, star/merge-scan, and column materialization operators should feed both rows and typed columns.
 
-- `todo` Cache prepared rule planning data.
-  Rule-call planning still rebuilds dependency graphs, reachable rule sets, recursion classification, and transitive-shape recognition from raw rules. Prepared queries should own reusable rule plans instead of deriving them during execution.
+- `done` Cache prepared rule planning data.
+  `Query` now owns cached `Rule-Call-Plan` values. Prepared queries build those plans when rules are attached, and execution reuses them by rule-call step index instead of rebuilding dependency graphs and transitive-shape recognition on every prepared run. Deeper SCC/component metadata remains tracked separately under rule component planning.
 
-- `todo` Add a rule lookup/index structure.
-  Rule validation, arity checks, required-binding checks, and planning repeatedly scan all rules by name and arity. A rule index keyed by name and arity would centralize those checks and avoid repeated scans.
+- `done` Add a rule lookup/index structure for planning.
+  Prepared rule-call planning now builds one rule-name index for the query's rules and reuses it while constructing dependency graphs for every cached call plan. Execution still preserves original rule ordering by filtering the source rule array after reachability is known.
+
+- `todo` Extend rule indexes to validation and arity checks.
+  Rule validation, arity checks, and required-binding checks still scan rule arrays by name/arity in some paths. A richer index keyed by name and arity would centralize those checks and prepare the ground for explicit SCC/component planning.
 
 - `done` Make index order a typed helper.
   Public datom index APIs now convert order strings once to a typed `Public-Index-Order` and use `db-index-slice` to select `eavt`, `aevt`, `avet`, or `vaet`. Datoms, seek, and reverse-seek share the same typed dispatch path while preserving the public `:eavt`/`:aevt`/`:avet`/`:vaet` API.
@@ -232,8 +244,8 @@ Status labels:
 - `later` Revisit EDN document child storage.
   `EDN-Doc` stores children as linked sibling indexes in one node array, which forces linear `edn-child-at` and cursor loops. Child spans or child-index arrays would better match Kvist slice-heavy traversal.
 
-- `later` Add generic typed result/column batches.
-  Typed fast paths and ABI wrappers are currently shape-specific for entity columns, entity/int pairs, and entity/string/int triples. A generic column batch or typed relation result would age better than adding benchmark-shaped accessors.
+- `partial` Add generic typed result/column batches.
+  Java now has a `DB.queryColumns` / `ColumnResult` facade over the current optimized entity, entity/int, and entity/string/int result shapes. The Clojure hot path deliberately still calls the direct shape-specific Java methods because probing through the Java facade is measurably slower. The remaining real design work is a native one-call C ABI column batch/result handle selected by the planner, not more host-side probing over benchmark-shaped accessors.
 
 - `later` Consolidate transitive graph execution.
   Forward/reverse adjacency construction, sparse/dense BFS, unbound-start emission, and alternating traversal all carry similar graph-walk logic. A graph traversal helper should come with the broader physical-operator layer.

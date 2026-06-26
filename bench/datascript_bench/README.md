@@ -133,8 +133,8 @@ VEV_BENCH_REPEATS=1 \
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
 | `q5` | 140.9 | 20.9 | 6.74x |
-| `rules-wide-3x3` | 0.46 | 0.27 | 1.70x |
-| `rules-long-10x3` | 0.96 | 0.36 | 2.67x |
+| `rules-wide-3x3` | 0.44 | 0.25 | 1.76x |
+| `rules-long-10x3` | 0.94 | 0.30 | 3.13x |
 
 The rule rows now use the same DataScript-style `%` rules input shape through
 the Clojure wrapper:
@@ -164,14 +164,14 @@ VEV_BENCH_REPEATS=3 \
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
 | `q1` | 0.26 | 0.31 | 0.84x |
-| `q2` | 1.3 | 1.1 | 1.18x |
-| `q2-switch` | 2.9 | 1.0 | 2.90x |
-| `q3` | 2.0 | 1.2 | 1.67x |
-| `q4` | 3.1 | 1.6 | 1.94x |
+| `q2` | 1.3 | 0.98 | 1.33x |
+| `q2-switch` | 2.8 | 0.90 | 3.11x |
+| `q3` | 2.1 | 0.80 | 2.62x |
+| `q4` | 3.1 | 1.7 | 1.82x |
 | `q5` | 143.6 | 17.3 | 8.30x |
 | `qpred1` | 3.9 | 2.4 | 1.62x |
 | `qpred2` | 7.6 | 2.5 | 3.04x |
-| `q2-rows-prepared` | --- | 0.81 | --- |
+| `q2-rows-prepared` | --- | 0.67 | --- |
 | `q4-rows-prepared` | --- | 1.3 | --- |
 | `q5-rows-prepared` | --- | 15.3 | --- |
 | `q2-columns-prepared` | --- | 0.62 | --- |
@@ -225,6 +225,10 @@ When there are two or more same-entity filters, the column paths now use the
 indexed star merge stream instead of repeated entity-local value probes. That
 keeps q3/q4 clause-order-independent and moves them closer to Datalevin's
 merge-scan behavior without making the single-filter q2 path slower.
+For q5-style shared-value joins, the engine now materializes the projected
+cardinality-one output attr once by entity and probes that table while scanning
+the right-side join-value ranges. This avoids repeating random entity/attr
+lookups for every joined candidate in the typed column path.
 
 Native engine-only read timings are available through:
 
