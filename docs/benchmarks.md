@@ -408,8 +408,10 @@ Remaining performance work:
   Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`; q5 still
   shows a native/public gap for string-heavy rows even after the typed
   triple-column ABI and batched borrowed string accessors. The next work should
-  target set/vector materialization through the Clojure adapter and native
-  result API, not index lookup.
+  target string-heavy Java materialization and set/vector construction through
+  the Clojure adapter, not index lookup. Current diagnostic rows show q2/qpred
+  pair-column extraction is close to the native path, while q5 column extraction
+  is still dominated by decoding thousands of strings into JVM `String`s.
 - The relation engine now has a DataScript-shaped compound primitive hash join
   for relations with one or more common primitive variables. It uses
   length-prefixed compound keys and preserves the existing semantic fallback

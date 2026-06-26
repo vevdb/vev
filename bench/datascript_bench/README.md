@@ -156,7 +156,9 @@ VEV_BENCH_REPEATS=3 \
   bench/datascript_bench/run_compare.sh \
     q1 q2 q2-switch q3 q4 q5 qpred1 qpred2 \
     q2-rows-prepared q4-rows-prepared q5-rows-prepared \
-    qpred1-rows-prepared qpred2-rows-prepared
+    q2-columns-prepared q4-columns-prepared q5-columns-prepared \
+    qpred1-columns-prepared qpred1-rows-prepared \
+    qpred2-columns-prepared qpred2-rows-prepared
 ```
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
@@ -172,8 +174,20 @@ VEV_BENCH_REPEATS=3 \
 | `q2-rows-prepared` | --- | 0.81 | --- |
 | `q4-rows-prepared` | --- | 1.3 | --- |
 | `q5-rows-prepared` | --- | 15.4 | --- |
+| `q2-columns-prepared` | --- | 0.62 | --- |
+| `q4-columns-prepared` | --- | 1.3 | --- |
+| `q5-columns-prepared` | --- | 13.0 | --- |
 | `qpred1-rows-prepared` | --- | 1.5 | --- |
 | `qpred2-rows-prepared` | --- | 1.5 | --- |
+
+Additional column/row split for qpred:
+
+| Query | Vev ms |
+|---|---:|
+| `qpred1-columns-prepared` | 1.0 |
+| `qpred1-rows-prepared` | 1.3 |
+| `qpred2-columns-prepared` | 1.0 |
+| `qpred2-rows-prepared` | 1.3 |
 
 Diagnostic prepared/row variants are available for the Vev rows, for example:
 
@@ -260,8 +274,10 @@ about 19ms and the prepared rows path to about 15ms, versus about 4ms for
 native result construction. Triple-column strings now use borrowed UTF-8 data
 plus length metadata instead of allocating one owned C string per cell or
 calling back into the ABI once per cell. Remaining q5 work should target
-broader physical-operator integration and larger-grained Java/Clojure row
-materialization rather than another query-engine shortcut.
+broader physical-operator integration and string-heavy Java materialization
+rather than another query-engine shortcut: the diagnostic
+`q5-columns-prepared` row is still about 13ms before Clojure vector/set
+construction, so most of the public q5 cost is JVM string decoding/copying.
 
 Near-term benchmark work:
 
