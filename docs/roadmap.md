@@ -291,9 +291,11 @@ non-schema transactions were paying unnecessary full-schema validation cost;
 that pass is now skipped when the transaction cannot alter schema validity.
 Reportable DB snapshots now clone existing indexes/schema caches instead of
 rebuilding every index from datoms. Append-only eligibility also has a
-new-entity bulk-import shortcut. The next durable milestone is reducing the
-remaining append application/report/index maintenance overhead, followed by
-Datalevin `write-bench`-style throughput and mixed read/write comparisons.
+new-entity bulk-import shortcut. Ordered new-entity imports avoid formatted
+entity/attr eligibility keys and extend the `eavt` entity table instead of
+rebuilding it. The next durable milestone is reducing the remaining
+report/index ownership-copy overhead, followed by Datalevin `write-bench`-style
+throughput and mixed read/write comparisons.
 
 ## Phase 7: Dogfood
 

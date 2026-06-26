@@ -3899,6 +3899,11 @@
       (return false)))
   true)
 
+(defn resolve-direct-tx-data-value [db: DB, data: Tx-Data] -> [resolved: Value, ok: bool, error: string]
+  (if (schema-ref-target? db data.a)
+    (resolve-ref-component-value db data.v)
+    (return data.v true "")))
+
 (defn resolve-direct-tx-data-for-tx [db: DB, tx-data: []Tx-Data] -> Resolved-Tx
   (let [resolved-ops (make [dynamic]Tx-Op 0 (count tx-data))
         resolved-meta (make [dynamic]Tx-Meta)
@@ -3911,7 +3916,7 @@
                                 ops: resolved-ops
                                 tx-meta: resolved-meta
                                 tempids: resolved-tempids}))))
-      (let [[value value-ok value-error] (resolve-tx-value db data.a data.v)]
+      (let [[value value-ok value-error] (resolve-direct-tx-data-value db data)]
         (when (not value-ok)
           (return (Resolved-Tx {ok: false
                                 error: value-error
@@ -4608,7 +4613,38 @@
         (return false))))
   true)
 
+(defn append-only-ordered-new-entity-ops-eligible? [before: DB, ops: []Tx-Op] -> bool
+  (when (= (count ops) 0)
+    (return true))
+  (let [next-e (db-next-entity-id-fast before)
+        current-entity (u64 0)
+        current-attrs (set.empty string)
+        first true]
+    (defer (delete current-attrs))
+    (for [op ops]
+      (when (or (not (= op.kind .Add))
+                (< op.e next-e))
+        (return false))
+      (when (not (schema-cardinality-one? before op.a))
+        (return false))
+      (when (and (not first)
+                 (< op.e current-entity))
+        (return false))
+      (when (or first
+                (not (= op.e current-entity)))
+        (when (not first)
+          (delete current-attrs)
+          (set! current-attrs (set.empty string)))
+        (set! current-entity op.e)
+        (set! first false))
+      (when (set.contains? current-attrs op.a)
+        (return false))
+      (set.add! current-attrs op.a)))
+  true)
+
 (defn append-only-ops-eligible? [before: DB, ops: []Tx-Op] -> bool
+  (when (append-only-ordered-new-entity-ops-eligible? before ops)
+    (return true))
   (let [seen-ea (set.empty string)
         all-new-entities (append-only-ops-all-new-entities? before ops)]
     (defer (delete seen-ea))

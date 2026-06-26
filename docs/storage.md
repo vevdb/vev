@@ -130,12 +130,14 @@ Implementation order:
    reportable DB snapshots from existing indexes instead of rebuilding them.
    Append-only eligibility skips current-DB fact/entity-attr checks when all
    ops target entities above the current max entity id, which is the common
-   bulk-import shape.
+   bulk-import shape. Ordered new-entity imports also avoid per-op formatted
+   entity/attr keys during append-only eligibility, and append-only index
+   maintenance extends the `eavt` entity table when new entity ids sort after
+   existing ids.
    The benchmark now separates snapshot, resolution, apply, log copy,
    incremental index build, and SQLite append cost. The next write-performance
-   milestone is reducing the remaining append application/report/index
-   maintenance overhead before introducing a more complex shared DB/index
-   representation.
+   milestone is reducing the remaining report/index ownership-copy overhead
+   before introducing a more complex shared DB/index representation.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
 5. Once the local harness is stable, map Datalevin `write-bench` concepts onto
