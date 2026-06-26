@@ -242,8 +242,8 @@ small `datascript-bench` rule rows measured after that change are:
 
 | Workload | DataScript median | Vev median | DataScript/Vev |
 |---|---:|---:|---:|
-| `rules-wide-3x3` | 0.45ms | 0.24ms | 1.88x |
-| `rules-long-10x3` | 0.97ms | 0.30ms | 3.23x |
+| `rules-wide-3x3` | 0.44ms | 0.25ms | 1.76x |
+| `rules-long-10x3` | 0.94ms | 0.30ms | 3.13x |
 
 ## Stress Comparison
 
@@ -252,20 +252,20 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1370.3x | 1411.0x |
-| `stress-chain-leaf n=300` | 3971.5x | 4167.7x |
-| `stress-chain-all n=200` | 32.9x | 32.4x |
-| `stress-tree-root n=364` | 1.8x | 2.0x |
-| `stress-mutual-root n=30` | 17.0x | 21.3x |
+| `stress-chain-root n=300` | 1721.4x | 1735.8x |
+| `stress-chain-leaf n=300` | 4215.0x | 4396.3x |
+| `stress-chain-all n=200` | 31.2x | 30.3x |
+| `stress-tree-root n=364` | 2.8x | 2.7x |
+| `stress-mutual-root n=30` | 16.6x | 21.6x |
 
 The stress harness also emits Vev-only rows for workloads that are currently
 too expensive for routine DataScript comparison:
 
 | Workload | Vev text median | Vev prepared median | Notes |
 |---|---:|---:|---|
-| `stress-dense-root n=60` | 240us | 220us | Dense DAG, width 8 |
-| `stress-dense-root n=160` | 622us | 605us | Dense DAG, width 8 |
-| `stress-filtered-root n=10` | 71us | 44us | Linear recursive rule with a target-node data filter |
+| `stress-dense-root n=60` | 203us | 190us | Dense DAG, width 8 |
+| `stress-dense-root n=160` | 518us | 501us | Dense DAG, width 8 |
+| `stress-filtered-root n=10` | 56us | 31us | Linear recursive rule with a target-node data filter |
 
 ## Current Findings
 
@@ -373,9 +373,10 @@ Remaining performance work:
   after each operator migration so the work stays general.
 - Generalize this from the current linear transitive closure path into a
   measured semi-naive/memoized rule evaluator. Filtered linear recursion and
-  alternating two-rule recursion are now optimized, and primitive binding
-  dedupe is map-backed, but arbitrary multi-step recursive bodies still use the
-  generic depth/fixpoint evaluator.
+  alternating two-rule recursion are optimized, and plain positive recursive
+  rule groups now have a component-local memoized fixpoint. The next step is a
+  delta/semi-naive relation-native implementation rather than re-probing the
+  full memo each iteration.
 - Continue result-projection work beyond the single-attr distinct fast path.
   `distinct-age` is now faster than DataScript locally, but
   `people-name-age` still shows broad two-column projection behind

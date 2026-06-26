@@ -127,7 +127,10 @@ Status labels:
   Parallel `attrs` / `attr-sources` arrays couple indexes manually. A small `{name source}` record or an auxiliary source map would be clearer.
 
 - `done` Add explicit SCC metadata for rule components.
-  Rule dependency analysis now builds strongly connected component metadata from the dependency graph using DFS finish order plus reverse traversal. Recursive checks and prepared rule-call planning can ask component metadata instead of repeatedly checking pairwise mutual reachability. The semi-naive rule evaluator remains separate future work.
+  Rule dependency analysis now builds strongly connected component metadata from the dependency graph using DFS finish order plus reverse traversal. Recursive checks and prepared rule-call planning can ask component metadata instead of repeatedly checking pairwise mutual reachability.
+
+- `done` Add a component-local memoized rule fixpoint for positive rules.
+  Recursive rule calls whose reachable rule set is plain positive Datalog, currently data clauses plus rule calls with no source-qualified calls, can use a memo table keyed by rule name/params and iterate to a local fixpoint. This covers non-linear recursive rule bodies that are not handled by the linear/alternating transitive recognizers. A true delta/semi-naive evaluator remains future work.
 
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.

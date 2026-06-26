@@ -133,8 +133,8 @@ VEV_BENCH_REPEATS=1 \
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
 | `q5` | 140.9 | 20.9 | 6.74x |
-| `rules-wide-3x3` | 0.45 | 0.24 | 1.88x |
-| `rules-long-10x3` | 0.97 | 0.30 | 3.23x |
+| `rules-wide-3x3` | 0.44 | 0.25 | 1.76x |
+| `rules-long-10x3` | 0.94 | 0.30 | 3.13x |
 
 The rule rows now use the same DataScript-style `%` rules input shape through
 the Clojure wrapper:

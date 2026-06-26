@@ -128,7 +128,12 @@ array just to discover which names exist or which rule branches share a name.
 The same dependency graph now produces explicit strongly connected component
 metadata. Recursive checks use those components instead of pairwise
 mutual-reachability probes, which is the planner-side structure needed before a
-component-local semi-naive rule evaluator.
+component-local semi-naive rule evaluator. The first component-local execution
+slice is now in place for plain positive recursive rules: data clauses plus rule
+calls, no source-qualified calls and no predicates/functions/negation/disjunction
+inside the component. It builds a memo table of rule outputs and iterates to a
+fixpoint, while preserving the specialized linear and alternating transitive
+paths as faster physical operators.
 
 ## Query Engine Strategy
 
@@ -318,11 +323,12 @@ join/projection operator instead of repeating random per-row index probes.
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
-connected component metadata for recursive checks and rule grouping. Recursive
-rule groups are still handled by the existing evaluator and specialized
-transitive paths. The next rule-engine step is to replace that recursive path
-with a relation-native semi-naive evaluator, using the dependency components as
-the stratification input.
+connected component metadata for recursive checks and rule grouping. Plain
+positive recursive rule groups can use a component-local memoized fixpoint, and
+specialized transitive paths remain the fast path for common reachability
+shapes. The next rule-engine step is to replace the full-memo recursive probe
+with a relation-native delta/semi-naive evaluator, using the dependency
+components as the stratification input.
 
 Near-term query work should expand the relation engine in this order:
 
@@ -331,8 +337,8 @@ Near-term query work should expand the relation engine in this order:
 2. Source-qualified synthetic primary collection DB operators: move the
    remaining collection-backed rule/predicate/function cases into the same
    source-aware relation representation.
-3. Rules: replace the current wrapped recursive rule evaluator with measured
-   relation-native recursive/semi-naive behavior.
+3. Rules: move the new memoized positive-rule fixpoint from binding rows toward
+   relation-native delta/semi-naive behavior.
 
 The transaction side has the same split:
 
