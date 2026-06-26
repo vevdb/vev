@@ -141,8 +141,8 @@ Status labels:
 - `todo` Build reusable physical query operators.
   Entity-column scans, profiled row rendering, same-entity star plans, relation-source row matching, and specialized typed result paths duplicate scan/filter/project logic. Indexed scan, row matcher, star/merge-scan, and column materialization operators should feed both rows and typed columns.
 
-- `todo` Cache prepared rule planning data.
-  Rule-call planning still rebuilds dependency graphs, reachable rule sets, recursion classification, and transitive-shape recognition from raw rules. Prepared queries should own reusable rule plans instead of deriving them during execution.
+- `done` Cache prepared rule planning data.
+  `Query` now owns cached `Rule-Call-Plan` values. Prepared queries build those plans when rules are attached, and execution reuses them by rule-call step index instead of rebuilding dependency graphs and transitive-shape recognition on every prepared run. Deeper SCC/component metadata remains tracked separately under rule component planning.
 
 - `todo` Add a rule lookup/index structure.
   Rule validation, arity checks, required-binding checks, and planning repeatedly scan all rules by name and arity. A rule index keyed by name and arity would centralize those checks and avoid repeated scans.

@@ -237,6 +237,14 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 | `distinct-age n=1000` | 3.4x | 4.1x |
 | `people-name-age n=1000` | 0.8x | 0.8x |
 
+Prepared queries now cache per-rule-call plans on the parsed query value. The
+small `datascript-bench` rule rows measured after that change are:
+
+| Workload | DataScript median | Vev median | DataScript/Vev |
+|---|---:|---:|---:|
+| `rules-wide-3x3` | 0.44ms | 0.25ms | 1.76x |
+| `rules-long-10x3` | 0.93ms | 0.29ms | 3.21x |
+
 ## Stress Comparison
 
 The stress comparison uses fewer samples and larger recursive-rule workloads.

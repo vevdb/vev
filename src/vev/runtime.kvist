@@ -95,7 +95,10 @@
 (defn query-with-rules [query: Query, rules: []Rule] -> Query
   (let [out query]
     (delete out.rules)
-    (set! out.rules (arr.into [dynamic]Rule rules))
+    (delete-rule-call-plans out.rule-call-plans)
+    (let [owned-rules (arr.into [dynamic]Rule rules)]
+      (set! out.rules owned-rules))
+    (set! out.rule-call-plans (make [dynamic]Rule-Call-Plan))
     (return out)))
 
 (defn clone-query-shallow [query: Query] -> Query
@@ -111,6 +114,7 @@
         function-clauses (arr.into [dynamic]Function-Clause (slice query.function-clauses 0))
         rules (arr.into [dynamic]Rule (slice query.rules 0))
         rule-calls (arr.into [dynamic]Rule-Call (slice query.rule-calls 0))
+        rule-call-plans (clone-rule-call-plans (slice query.rule-call-plans 0))
         get-elses (arr.into [dynamic]Get-Else (slice query.get-elses 0))
         get-somes (arr.into [dynamic]Get-Some (slice query.get-somes 0))
         grounds (arr.into [dynamic]Ground (slice query.grounds 0))
@@ -132,6 +136,7 @@
             function-clauses: function-clauses
             rules: rules
             rule-calls: rule-calls
+            rule-call-plans: rule-call-plans
             get-elses: get-elses
             get-somes: get-somes
             grounds: grounds
@@ -157,6 +162,7 @@
   (delete query.function-clauses)
   (delete query.rules)
   (delete query.rule-calls)
+  (delete-rule-call-plans query.rule-call-plans)
   (delete query.get-elses)
   (delete query.get-somes)
   (delete query.grounds)
@@ -3466,7 +3472,8 @@
 (defn expand-tuple-ops [db: DB, ops: []Tx-Op] -> [dynamic]Tx-Op
   (when (and (not (db-has-tuple-schema? db))
              (not (ops-modify-tuple-schema? ops)))
-    (return (arr.into [dynamic]Tx-Op ops)))
+    (let [owned-ops (arr.into [dynamic]Tx-Op ops)]
+      (return owned-ops)))
   (let [out (make [dynamic]Tx-Op 0 (count ops))
         whole-tx-db (db-with-resolved-ops db ops)]
     (for [op ops]
@@ -5399,7 +5406,8 @@
                   (return (empty-linear-transitive-plan) false))
                 (when (not found-base)
                   (delete filters)
-                  (set! filters (arr.into [dynamic]Clause (slice recursive-filters 0))))
+                  (let [owned-filters (arr.into [dynamic]Clause (slice recursive-filters 0))]
+                    (set! filters owned-filters)))
                 (set! attr recursive-attr)
                 (delete recursive-filters)
                 (set! found-recursive true)))))))
@@ -6393,7 +6401,8 @@
       (defer (delete-linear-transitive-plan linear-plan))
       (when linear-ok
         (delete linear-filters)
-        (set! linear-filters (arr.into [dynamic]Clause (slice linear-plan.filters 0))))
+        (let [owned-linear-filters (arr.into [dynamic]Clause (slice linear-plan.filters 0))]
+          (set! linear-filters owned-linear-filters)))
       (Rule-Call-Plan {rules: call-rules
                        recursive: recursive
                        acyclic-depth: acyclic-depth
@@ -6409,6 +6418,44 @@
 (defn delete-rule-call-plan [plan: Rule-Call-Plan]
   (delete plan.rules)
   (delete plan.linear-filters))
+
+(defn clone-rule-call-plan [plan: Rule-Call-Plan] -> Rule-Call-Plan
+  (let [rules (arr.into [dynamic]Rule (slice plan.rules 0))
+        linear-filters (arr.into [dynamic]Clause (slice plan.linear-filters 0))]
+    (Rule-Call-Plan {rules: rules
+                     recursive: plan.recursive
+                     acyclic-depth: plan.acyclic-depth
+                     linear-transitive: plan.linear-transitive
+                     linear-attr: plan.linear-attr
+                     linear-filters: linear-filters
+                     alternating-transitive: plan.alternating-transitive
+                     alternating-left-name: plan.alternating-left-name
+                     alternating-left-attr: plan.alternating-left-attr
+                     alternating-right-name: plan.alternating-right-name
+                     alternating-right-attr: plan.alternating-right-attr})))
+
+(defn clone-rule-call-plans [plans: []Rule-Call-Plan] -> [dynamic]Rule-Call-Plan
+  (let [out (make [dynamic]Rule-Call-Plan 0 (count plans))]
+    (for [plan plans]
+      (arr.push! out (clone-rule-call-plan plan)))
+    out))
+
+(defn delete-rule-call-plans [plans: [dynamic]Rule-Call-Plan]
+  (for [plan plans]
+    (delete-rule-call-plan plan))
+  (delete plans))
+
+(defn rule-call-plans-for-query [query: Query] -> [dynamic]Rule-Call-Plan
+  (let [out (make [dynamic]Rule-Call-Plan 0 (count query.rule-calls))]
+    (for [call query.rule-calls]
+      (arr.push! out (rule-call-plan (slice query.rules 0) call.name)))
+    out))
+
+(defn query-with-rule-call-plans [query: Query] -> Query
+  (let [out query]
+    (delete-rule-call-plans out.rule-call-plans)
+    (set! out.rule-call-plans (rule-call-plans-for-query out))
+    out))
 
 (defn bindings-after-linear-transitive-rule-call-with-plan [db: DB, plan: Rule-Call-Plan, call: Rule-Call, binding: Binding] -> [out: [dynamic]Binding, ok: bool]
   (let [result-bindings (make [dynamic]Binding)]
@@ -8084,6 +8131,11 @@
     (defer (delete-rule-call-plan plan))
     (bindings-after-rule-call-step-with-plan db plan bindings call registry)))
 
+(defn bindings-after-rule-call-step-with-plans [db: DB, rules: []Rule, plans: []Rule-Call-Plan, bindings: []Binding, call: Rule-Call, call-index: int, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (if (< call-index (count plans))
+    (bindings-after-rule-call-step-with-plan db plans[call-index] bindings call registry)
+    (bindings-after-rule-call-step-with-fns db rules bindings call registry)))
+
 (defn bindings-after-rule-call-step-with-plan [db: DB, plan: Rule-Call-Plan, bindings: []Binding, call: Rule-Call, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
@@ -8140,7 +8192,7 @@
           (append-bindings-after-clause-with-sources! (addr out) db sources query^.clauses[step.index] binding))
         out)
     .RuleCall
-      (bindings-after-rule-call-step-with-fns db (slice query^.rules 0) bindings query^.rule-calls[step.index] registry)
+      (bindings-after-rule-call-step-with-plans db (slice query^.rules 0) (slice query^.rule-call-plans 0) bindings query^.rule-calls[step.index] step.index registry)
     .Ground
       (apply-ground bindings query^.grounds[step.index])
     .GetElse
@@ -8170,13 +8222,15 @@
     .RuleCall
       (let [out (make [dynamic]Binding)
             call query^.rule-calls[step.index]
-            plan (rule-call-plan (slice query^.rules 0) call.name)]
+            use-cached-plan (< step.index (count query^.rule-call-plans))
+            plan (if use-cached-plan query^.rule-call-plans[step.index] (rule-call-plan (slice query^.rules 0) call.name))]
         (for [binding bindings]
           (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call binding registry stats)]
             (for [rule-binding rule-bindings]
               (arr.push! out rule-binding))
             (delete rule-bindings)))
-        (delete-rule-call-plan plan)
+        (when (not use-cached-plan)
+          (delete-rule-call-plan plan))
         out)
     .Ground
       (apply-ground bindings query^.grounds[step.index])
@@ -8395,15 +8449,17 @@
     (delete bindings)
     out))
 
-(defn query-relation-apply-rule-call [db: DB, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+(defn query-relation-apply-rule-call [db: DB, rules: []Rule, plans: []Rule-Call-Plan, rel: Query-Relation, call: Rule-Call, call-index: int, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
   (let [bindings (make [dynamic]Binding)
-        plan (rule-call-plan rules call.name)]
+        use-cached-plan (< call-index (count plans))
+        plan (if use-cached-plan plans[call-index] (rule-call-plan rules call.name))]
     (for [tuple rel.tuples]
       (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call tuple registry stats)]
         (for [rule-binding rule-bindings]
           (arr.push! bindings rule-binding))
         (delete rule-bindings)))
-    (delete-rule-call-plan plan)
+    (when (not use-cached-plan)
+      (delete-rule-call-plan plan))
     (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
       (delete bindings)
       out)))
@@ -8454,7 +8510,7 @@
           (set! current next)
           (query-stats-observe-bindings! stats (count current.tuples))))
       (when (= step.kind .RuleCall)
-        (let [next (query-relation-apply-rule-call db (slice query.rules 0) current query.rule-calls[step.index] registry stats)]
+        (let [next (query-relation-apply-rule-call db (slice query.rules 0) (slice query.rule-call-plans 0) current query.rule-calls[step.index] step.index registry stats)]
           (set! stats^.steps (+ stats^.steps 1))
           (delete-query-relation current)
           (set! current next)
@@ -10111,16 +10167,18 @@
         (set! bindings next-bindings)
         (query-stats-observe-bindings! (addr stats) (count bindings))
         (arr.remove-ordered-at! remaining clause-index)))
-    (for [call query.rule-calls]
+    (for [call call-index query.rule-calls]
       (let [next-bindings (make [dynamic]Binding)
-            plan (rule-call-plan (slice query.rules 0) call.name)]
+            use-cached-plan (< call-index (count query.rule-call-plans))
+            plan (if use-cached-plan query.rule-call-plans[call-index] (rule-call-plan (slice query.rules 0) call.name))]
         (set! stats.steps (+ stats.steps 1))
         (for [binding bindings]
           (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call binding registry (addr stats))]
             (for [rule-binding rule-bindings]
               (arr.push! next-bindings rule-binding))
             (delete rule-bindings)))
-        (delete-rule-call-plan plan)
+        (when (not use-cached-plan)
+          (delete-rule-call-plan plan))
         (delete bindings)
         (set! bindings next-bindings)
         (query-stats-observe-bindings! (addr stats) (count bindings))))

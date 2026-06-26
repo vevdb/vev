@@ -179,7 +179,8 @@
 (defn query-from-text-parts [find: []string, with: []string, inputs: []string, collection-inputs: []string, tuple-inputs: []Tuple-Input, relation-inputs: []Relation-Input, input-specs: []Query-Input-Spec, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, rule-calls: []Rule-Call, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, or-groups: []Or-Group, pulls: []Pull-Find, aggregates: []Aggregate-Find] -> Query
   (let [out (query find with inputs collection-inputs tuple-inputs relation-inputs clauses predicates function-clauses ([]Rule []) rule-calls get-elses get-somes grounds not-groups or-groups pulls aggregates)]
     (delete out.input-specs)
-    (set! out.input-specs (arr.into [dynamic]Query-Input-Spec input-specs))
+    (let [owned-input-specs (arr.into [dynamic]Query-Input-Spec input-specs)]
+      (set! out.input-specs owned-input-specs))
     out))
 
 (defn edn-section-has-rules-input? [doc: EDN-Doc, section: int] -> bool
@@ -1975,7 +1976,8 @@
                         (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
                         (or has-rules-input (> (count inline-rules) 0)))]
       (delete query-value.rules)
-      (set! query-value.rules (arr.into [dynamic]Rule (slice inline-rules 0)))
+      (let [owned-rules (arr.into [dynamic]Rule (slice inline-rules 0))]
+        (set! query-value.rules owned-rules))
       (set! out^ query-value)
       (return true ""))))
 
@@ -2013,7 +2015,9 @@
 (defn prepare-query-text-with-sources [text: string, sources: []DB-Source] -> Prepared-Query
   (let [query-value (empty-query)
         [ok error] (parse-query-text-with-sources! (addr query-value) text sources)]
-    (Prepared-Query {ok: ok error: error query: query-value})))
+    (if ok
+      (Prepared-Query {ok: ok error: error query: (query-with-rule-call-plans query-value)})
+      (Prepared-Query {ok: ok error: error query: query-value}))))
 
 (defn prepare-query-text [text: string] -> Prepared-Query
   (prepare-query-text-with-sources text ([]DB-Source [])))
@@ -2027,7 +2031,7 @@
       (when (not prepared-rules.ok)
         (delete prepared-rules.rules)
         (return (Prepared-Query {ok: false error: prepared-rules.error query: query-value})))
-      (let [query-with-attached-rules (query-with-rules query-value (slice prepared-rules.rules 0))]
+      (let [query-with-attached-rules (query-with-rule-call-plans (query-with-rules query-value (slice prepared-rules.rules 0)))]
         (delete prepared-rules.rules)
         (Prepared-Query {ok: true error: "" query: query-with-attached-rules})))))
 
@@ -2087,7 +2091,10 @@
   (cond
     (not prepared.ok) (result-set-error prepared.error)
     (not prepared-rules.ok) (result-set-error prepared-rules.error)
-    :else (q-query-with-inputs db (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs)))
+    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+                result (q-query-with-inputs db query-value inputs)]
+            (delete-query-shallow query-value)
+            result)))
 
 (defn q-prepared-value-with-rules [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Value
   (result-set-value db (q-prepared-with-rules db prepared prepared-rules inputs)))
@@ -2096,7 +2103,10 @@
   (cond
     (not prepared.ok) (result-set-error prepared.error)
     (not prepared-rules.ok) (result-set-error prepared-rules.error)
-    :else (q-query-with-inputs-and-fns db (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs registry)))
+    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+                result (q-query-with-inputs-and-fns db query-value inputs registry)]
+            (delete-query-shallow query-value)
+            result)))
 
 (defn q-prepared-value-with-rules-and-fns [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input, registry: []Native-Query-Fn] -> Value
   (result-set-value db (q-prepared-with-rules-and-fns db prepared prepared-rules inputs registry)))
@@ -2105,7 +2115,10 @@
   (cond
     (not prepared.ok) (profiled-result-set (result-set-error prepared.error) (query-stats-empty))
     (not prepared-rules.ok) (profiled-result-set (result-set-error prepared-rules.error) (query-stats-empty))
-    :else (q-query-profiled-with-sources-and-fns db (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs ([]DB-Source []) registry)))
+    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+                result (q-query-profiled-with-sources-and-fns db query-value inputs ([]DB-Source []) registry)]
+            (delete-query-shallow query-value)
+            result)))
 
 (defn q-prepared-profiled-with-rules [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Profiled-Result-Set
   (q-prepared-profiled-with-rules-and-fns db prepared prepared-rules inputs ([]Native-Query-Fn [])))
@@ -2156,13 +2169,19 @@
   (cond
     (not prepared.ok) (result-set-error prepared.error)
     (not prepared-rules.ok) (result-set-error prepared-rules.error)
-    :else (q-query-relation-db rows (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs)))
+    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+                result (q-query-relation-db rows query-value inputs)]
+            (delete-query-shallow query-value)
+            result)))
 
 (defn q-prepared-relation-db-with-rules-and-fns [rows: Value, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
   (cond
     (not prepared.ok) (result-set-error prepared.error)
     (not prepared-rules.ok) (result-set-error prepared-rules.error)
-    :else (q-query-relation-db-with-fns rows (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)) inputs registry)))
+    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+                result (q-query-relation-db-with-fns rows query-value inputs registry)]
+            (delete-query-shallow query-value)
+            result)))
 
 (defn q-text [db: DB, text: string] -> Result-Set
   (let [query-value (empty-query)

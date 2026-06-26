@@ -114,6 +114,13 @@ The current in-memory implementation has two query frontends:
 - a Kvist query literal macro that lowers Datomic-shaped data to the same typed
   `Query` representation
 
+Prepared queries now also own a cached `Rule-Call-Plan` array. When rules are
+attached at prepare time, or when an already-prepared query is combined with a
+prepared rules value for execution, Vev plans each rule call once and reuses the
+plan by query-step index. This keeps recursive-rule execution on the same
+generic engine path, but avoids rebuilding dependency graphs and transitive-rule
+recognizers for every prepared run.
+
 ## Query Engine Strategy
 
 Vev should follow DataScript's query architecture as the semantic baseline:
