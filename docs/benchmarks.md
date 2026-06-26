@@ -82,6 +82,13 @@ starts while fetching same-entity cardinality-one attrs. This avoids restarting
 an entity lookup for every candidate row and is the general operator direction
 for native Vev, not a benchmark-specific shortcut.
 
+The current qpred path follows Datalevin's predicate-pushdown idea for typed
+long attrs: `[(> ?s 50000)]` lowers to integer AVET range bounds, not a full
+attribute scan plus generic predicate filtering. DB values now also carry small
+schema caches for value type and cardinality-many attrs so hot optimized
+queries do not repeatedly rediscover basic schema metadata through datom
+queries.
+
 The q5 row is the next read-query pressure point. It joins two entity variables
 through a shared value (`:age`) and should drive reusable hash/merge join
 operators rather than another star-query recognizer.

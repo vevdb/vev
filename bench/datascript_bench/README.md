@@ -155,21 +155,23 @@ VEV_BENCH_MS=80 \
 VEV_BENCH_REPEATS=3 \
   bench/datascript_bench/run_compare.sh \
     q1 q2 q2-switch q3 q4 qpred1 qpred2 \
-    q2-rows-prepared q4-rows-prepared qpred1-rows-prepared
+    q2-rows-prepared q4-rows-prepared \
+    qpred1-rows-prepared qpred2-rows-prepared
 ```
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
 | `q1` | 0.30 | 0.29 | 1.03x |
-| `q2` | 1.4 | 0.99 | 1.41x |
+| `q2` | 1.3 | 1.1 | 1.18x |
 | `q2-switch` | 3.0 | 0.91 | 3.30x |
 | `q3` | 2.1 | 1.3 | 1.62x |
-| `q4` | 3.2 | 1.9 | 1.68x |
-| `qpred1` | 4.3 | 2.8 | 1.54x |
-| `qpred2` | 8.1 | 2.6 | 3.12x |
+| `q4` | 3.3 | 1.9 | 1.74x |
+| `qpred1` | 5.8 | 2.3 | 2.52x |
+| `qpred2` | 9.2 | 2.3 | 4.00x |
 | `q2-rows-prepared` | --- | 0.75 | --- |
 | `q4-rows-prepared` | --- | 1.6 | --- |
-| `qpred1-rows-prepared` | --- | 1.7 | --- |
+| `qpred1-rows-prepared` | --- | 1.4 | --- |
+| `qpred2-rows-prepared` | --- | 1.4 | --- |
 
 Diagnostic prepared/row variants are available for the Vev rows, for example:
 
@@ -214,17 +216,24 @@ KVIST_PACKAGES_DIR=/Users/andreas/Projects/kvist/packages \
 ```
 
 The native fixture uses 20k entities with five attrs each, so it is also a
-100k-datom database. Latest representative medians:
+100k-datom database. It includes the same valueType schema as the public
+DataScript-bench adapter. Latest representative medians:
 
 | Native workload | Rows | Median us |
 |---|---:|---:|
-| `q1-entity-column` | 2500 | 38 |
-| `q2-pair-columns` | 2500 | 500 |
-| `q2-switch-pair-columns` | 2500 | 390 |
-| `q3-pair-columns` | 2500 | 1211 |
-| `q4-triple-columns` | 2500 | 1556 |
-| `qpred1-pair-columns` | 9997 | 1239 |
-| `qpred2-pair-columns` | 9997 | 1183 |
+| `q1-entity-column` | 2500 | 42 |
+| `q2-pair-columns` | 2500 | 639 |
+| `q2-switch-pair-columns` | 2500 | 638 |
+| `q3-pair-columns` | 2500 | 1210 |
+| `q4-triple-columns` | 2500 | 1526 |
+| `qpred1-pair-columns` | 9997 | 838 |
+| `qpred2-pair-columns` | 9997 | 881 |
+
+The qpred rows use predicate pushdown for `:db.type/long` attrs: the engine
+turns `[(> ?s 50000)]` into AVET integer range bounds, preallocates pair
+columns from the scan span, and avoids per-row generic predicate evaluation.
+The same schema metadata also lives in DB-level caches so optimized plans do
+not re-query the schema through normal datom indexes on every execution.
 
 The relation engine also has a DataScript-shaped compound primitive hash join:
 when two relations share one or more primitive variables, Vev builds a

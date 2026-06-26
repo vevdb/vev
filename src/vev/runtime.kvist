@@ -2830,16 +2830,14 @@
          (= unique ":db.unique/identity"))))
 
 (defn schema-cardinality-one? [db: DB, attr: string] -> bool
-  (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
-    (if (and has-cardinality
-             (= cardinality ":db.cardinality/many"))
-      false
-      true)))
+  (not (set.contains? db.schema-cardinality-many attr)))
+
+(defn schema-value-type-long? [db: DB, attr: string] -> bool
+  (let [[value-type has-value-type] (mmap.get db.schema-value-types attr)]
+    (and has-value-type (= value-type ":db.type/long"))))
 
 (defn schema-cardinality-many? [db: DB, attr: string] -> bool
-  (let [[cardinality has-cardinality] (schema-keyword db attr ":db/cardinality")]
-    (and has-cardinality
-         (= cardinality ":db.cardinality/many"))))
+  (set.contains? db.schema-cardinality-many attr))
 
 (defn tx-op-cardinality-one? [db: DB, op: Tx-Op] -> bool
   (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
@@ -4530,6 +4528,8 @@
   (delete db.aevt)
   (delete db.avet)
   (delete db.vaet)
+  (delete db.schema-value-types)
+  (delete db.schema-cardinality-many)
   (delete db.datoms))
 
 (defn serializable [db: DB] -> Serializable-DB
@@ -8938,6 +8938,10 @@
   (Entity-Int-Pair-Columns {entities: (make [dynamic]u64)
                             values: (make [dynamic]i64)}))
 
+(defn entity-int-pair-columns-with-capacity [capacity: int] -> Entity-Int-Pair-Columns
+  (Entity-Int-Pair-Columns {entities: (make [dynamic]u64 0 capacity)
+                            values: (make [dynamic]i64 0 capacity)}))
+
 (defn delete-entity-int-pair-columns [columns: Entity-Int-Pair-Columns]
   (delete columns.entities)
   (delete columns.values))
@@ -9459,23 +9463,33 @@
     out))
 
 (defn q-query-entity-int-threshold-pair-columns [db: DB, plan: Entity-Int-Threshold-Plan] -> Entity-Int-Pair-Columns
-  (let [out (empty-entity-int-pair-columns)
-        indexes (slice db.avet 0)
-        low (lower-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
-        attr-prefix ([]Value [(value-keyword plan.value-attr)])
-        high (upper-bound-index-values db indexes "avet" attr-prefix)
-        all-current (all-datoms-current? db)
-        i low]
-    (while (< i high)
-      (let [datom-index indexes[i]
-            datom db.datoms[datom-index]]
-        (when (and (or all-current (datom-current-at? db datom-index))
-                   (= datom.a plan.value-attr)
-                   (= datom.v.kind .Int)
-                   (> datom.v.int-value plan.threshold))
-          (append-entity-int-pair-column! (addr out) datom.e datom.v.int-value)))
-      (set! i (+ i 1)))
-    out))
+  (let [indexes (slice db.avet 0)
+        all-current (all-datoms-current? db)]
+    (when (and all-current (schema-value-type-long? db plan.value-attr))
+      (let [low (upper-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
+            high (lower-bound-index db indexes "avet" 0 plan.value-attr (Value {kind: .Float}))
+            out (entity-int-pair-columns-with-capacity (- high low))
+            i low]
+        (while (< i high)
+          (let [datom db.datoms[indexes[i]]]
+            (append-entity-int-pair-column! (addr out) datom.e datom.v.int-value))
+          (set! i (+ i 1)))
+        (return out)))
+    (let [low (lower-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
+          attr-prefix ([]Value [(value-keyword plan.value-attr)])
+          high (upper-bound-index-values db indexes "avet" attr-prefix)
+          out (entity-int-pair-columns-with-capacity (- high low))
+          i low]
+      (while (< i high)
+        (let [datom-index indexes[i]
+              datom db.datoms[datom-index]]
+          (when (and (or all-current (datom-current-at? db datom-index))
+                     (= datom.a plan.value-attr)
+                     (= datom.v.kind .Int)
+                     (> datom.v.int-value plan.threshold))
+            (append-entity-int-pair-column! (addr out) datom.e datom.v.int-value)))
+        (set! i (+ i 1)))
+      out)))
 
 (defn append-entity-value-self-join-row! [rows: ^[dynamic]Result-Row, seen: ^set[string], entity: u64, output: Value, join-value: Value]
   (let [entity-value (value-entity entity)

@@ -80,6 +80,8 @@
   aevt: [dynamic]int
   avet: [dynamic]int
   vaet: [dynamic]int
+  schema-value-types: map[string]string
+  schema-cardinality-many: set[string]
 })
 
 (defstruct Serializable-DB {
@@ -1317,6 +1319,27 @@
     (arr.sort! current)
     current))
 
+(defn build-schema-caches [datoms: []Datom, current: []int] -> [value-types: map[string]string, cardinality-many: set[string]]
+  (let [out-value-types (mmap.empty string string)
+        out-cardinality-many (set.empty string)]
+    (for [ident-index current]
+      (let [ident-datom datoms[ident-index]]
+        (when (and (= ident-datom.a ":db/ident")
+                   (= ident-datom.v.kind .Keyword))
+          (let [attr ident-datom.v.text]
+            (for [prop-index current]
+              (let [prop datoms[prop-index]]
+                (when (= prop.e ident-datom.e)
+                  (cond
+                    (and (= prop.a ":db/valueType")
+                         (= prop.v.kind .Keyword))
+                      (mmap.assoc! out-value-types attr prop.v.text)
+                    (and (= prop.a ":db/cardinality")
+                         (= prop.v.kind .Keyword)
+                         (= prop.v.text ":db.cardinality/many"))
+                      (set.add! out-cardinality-many attr)))))))))
+    (return out-value-types out-cardinality-many)))
+
 (defn int-lower-bound [xs: []int, value: int] -> int
   (let [low 0
         high (count xs)]
@@ -1330,15 +1353,19 @@
 (defn build-db [datoms: [dynamic]Datom] -> DB
   (let [slice-datoms (slice datoms 0)
         eavt (build-index slice-datoms "eavt")
-        [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))]
+        [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
+        current (build-current-index slice-datoms)
+        [schema-value-types schema-cardinality-many] (build-schema-caches slice-datoms (slice current 0))]
     (DB {datoms: datoms
-         current: (build-current-index slice-datoms)
+         current: current
          eavt: eavt
          eavt-entities: eavt-entities
          eavt-entity-starts: eavt-entity-starts
          aevt: (build-index slice-datoms "aevt")
          avet: (build-index slice-datoms "avet")
-         vaet: (build-index slice-datoms "vaet")})))
+         vaet: (build-index slice-datoms "vaet")
+         schema-value-types: schema-value-types
+         schema-cardinality-many: schema-cardinality-many})))
 
 (defn clone-datom-slice [datoms: []Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom datoms))
