@@ -161,15 +161,15 @@ VEV_BENCH_REPEATS=3 \
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q1` | 0.30 | 0.29 | 1.03x |
-| `q2` | 1.3 | 1.1 | 1.18x |
-| `q2-switch` | 3.0 | 0.91 | 3.30x |
-| `q3` | 2.1 | 1.3 | 1.62x |
-| `q4` | 3.3 | 1.9 | 1.74x |
-| `qpred1` | 5.8 | 2.3 | 2.52x |
-| `qpred2` | 9.2 | 2.3 | 4.00x |
-| `q2-rows-prepared` | --- | 0.75 | --- |
-| `q4-rows-prepared` | --- | 1.6 | --- |
+| `q1` | 0.33 | 0.28 | 1.18x |
+| `q2` | 1.4 | 0.93 | 1.51x |
+| `q2-switch` | 3.0 | 0.90 | 3.33x |
+| `q3` | 2.1 | 1.2 | 1.75x |
+| `q4` | 3.2 | 1.7 | 1.88x |
+| `qpred1` | 4.1 | 2.2 | 1.86x |
+| `qpred2` | 8.0 | 2.2 | 3.64x |
+| `q2-rows-prepared` | --- | 0.70 | --- |
+| `q4-rows-prepared` | --- | 1.5 | --- |
 | `qpred1-rows-prepared` | --- | 1.4 | --- |
 | `qpred2-rows-prepared` | --- | 1.4 | --- |
 
@@ -205,6 +205,10 @@ same-entity cardinality-one attr lookups use an advancing entity cursor across
 candidate rows instead of running a global `(entity, attr)` lower-bound for
 every candidate. This is a general same-entity star-query operator shape, not a
 benchmark-name special case.
+When there are two or more same-entity filters, the column paths now use the
+indexed star merge stream instead of repeated entity-local value probes. That
+keeps q3/q4 clause-order-independent and moves them closer to Datalevin's
+merge-scan behavior without making the single-filter q2 path slower.
 
 Native engine-only read timings are available through:
 
@@ -221,13 +225,13 @@ DataScript-bench adapter. Latest representative medians:
 
 | Native workload | Rows | Median us |
 |---|---:|---:|
-| `q1-entity-column` | 2500 | 42 |
-| `q2-pair-columns` | 2500 | 639 |
-| `q2-switch-pair-columns` | 2500 | 638 |
-| `q3-pair-columns` | 2500 | 1210 |
-| `q4-triple-columns` | 2500 | 1526 |
-| `qpred1-pair-columns` | 9997 | 838 |
-| `qpred2-pair-columns` | 9997 | 881 |
+| `q1-entity-column` | 2500 | 40 |
+| `q2-pair-columns` | 2500 | 604 |
+| `q2-switch-pair-columns` | 2500 | 622 |
+| `q3-pair-columns` | 2500 | 695 |
+| `q4-triple-columns` | 2500 | 1029 |
+| `qpred1-pair-columns` | 9997 | 759 |
+| `qpred2-pair-columns` | 9997 | 808 |
 
 The qpred rows use predicate pushdown for `:db.type/long` attrs: the engine
 turns `[(> ?s 50000)]` into AVET integer range bounds, preallocates pair

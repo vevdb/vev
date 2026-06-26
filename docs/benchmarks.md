@@ -386,23 +386,19 @@ Remaining performance work:
   139 ms in the short local harness. General relation hash joins are also in
   place for one primitive common variable, with fallback to the older nested
   join when lookup-ref/source semantics require it.
-- Same-entity star/projection queries now use a general entity-local EAV span
-  lookup inspired by Datalevin's sorted entity-local scans. Vev records each
-  entity's contiguous range in `eavt`, then cardinality-one attr fetches search
-  that small range instead of running a global `(entity, attr)` lower-bound for
-  every candidate. In the latest 20k local `datascript-bench` comparison, q2 is
-  at DataScript parity, q2-switch/q3/q4/q5/qpred1/qpred2 are ahead of
-  DataScript, and q1 is effectively at parity at roughly 0.30 ms versus
-  DataScript at roughly 0.29 ms.
-- Same-entity star/projection now has an early all-current merge-stream
-  operator for fixed filters plus projected attrs. It aligns entity-sorted
-  `AVET(attr,value)` filter ranges and `AEVT(attr)` output ranges together,
-  which is the Datalevin-style direction for q2/q3/q4. The current narrow
-  implementation improves q2 rows to roughly 0.95 ms and q4 rows to roughly
-  2.1 ms in the short local Clojure wrapper harness, but it is still well above
-  the published Datalevin target. The next work is to make this the primary
-  physical star operator and reduce Clojure/JVM materialization overhead for
-  returned row vectors/sets.
+- Same-entity star/projection queries use two reusable indexed shapes inspired
+  by Datalevin's sorted scans. Single-filter star queries such as q2 use an
+  advancing entity-local `eavt` cursor for cardinality-one attr fetches, which
+  avoids restarting a global `(entity, attr)` lookup for each candidate. Queries
+  with two or more fixed same-entity filters, such as q3/q4, now use the
+  all-current merge-stream operator: it aligns entity-sorted
+  `AVET(attr,value)` filter ranges and `AEVT(attr)` output ranges together.
+  The latest 20k local `datascript-bench` comparison has Vev ahead of
+  DataScript on q1/q2/q2-switch/q3/q4/qpred1/qpred2, with q2 at about 1.5x,
+  q2-switch at about 3.3x, q3 at about 1.8x, and q4 at about 1.9x. This is
+  still above the published Datalevin target, so the next work is to fold these
+  paths into the normal physical relation operator layer and reduce
+  Clojure/JVM materialization overhead for returned row vectors/sets.
 - q1's remaining cost is mostly host result-shape overhead. Prepared
   diagnostic rows show q1 improves from roughly 0.30 ms for
   Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`, so the
