@@ -81,7 +81,7 @@ These are useful, but not the next engine-parity gate.
 | `conn.cljc` | 2 | passing | create/conn-from-db/conn-from-datoms and reset reports with tx-data, before/after snapshots, metadata, and listener delivery are covered; Clojure schema-map storage shape is host |
 | `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
 | `serialize.cljc` | 5 | passing | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
-| `storage.clj` | 5 | partial | snapshot-file durable reopen/query scaffold exists; production SQLite storage and exact DataScript storage API remain |
+| `storage.clj` | 5 | partial | snapshot-file and first SQLite-backed durable reopen/query scaffolds exist; append-only SQLite datom/tx tables and exact DataScript storage API remain |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | passing | semantic DB diff is covered; record-updatable, hash-cache, and UUID helpers are Clojure/DataScript runtime details |
 | `issues.cljc` | 5 | passing | issue-262 vector result isolation, issue-369 mixed-type DB diff, and issue-381 schema inspection are covered; issue-330/331 are Clojure pprint/meta host behavior |

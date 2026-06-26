@@ -1,6 +1,193 @@
 (package vev)
 
+(import c "core:c")
 (import os "core:os")
+
+(foreign-import sqlite "system:sqlite3")
+
+(odin "
+SQLite3 :: struct {}
+SQLite3_Stmt :: struct {}
+
+SQLITE_OK :: c.int(0)
+SQLITE_ROW :: c.int(100)
+SQLITE_DONE :: c.int(101)
+
+@(default_calling_convention=\"c\")
+foreign sqlite {
+    sqlite3_open :: proc(filename: cstring, db: ^^SQLite3) -> c.int ---
+    sqlite3_close :: proc(db: ^SQLite3) -> c.int ---
+    sqlite3_errmsg :: proc(db: ^SQLite3) -> cstring ---
+    sqlite3_exec :: proc(db: ^SQLite3, sql: cstring, callback: rawptr, arg: rawptr, errmsg: ^^c.char) -> c.int ---
+    sqlite3_free :: proc(ptr: rawptr) ---
+    sqlite3_prepare_v2 :: proc(db: ^SQLite3, sql: cstring, nbytes: c.int, stmt: ^^SQLite3_Stmt, tail: ^cstring) -> c.int ---
+    sqlite3_finalize :: proc(stmt: ^SQLite3_Stmt) -> c.int ---
+    sqlite3_step :: proc(stmt: ^SQLite3_Stmt) -> c.int ---
+    sqlite3_bind_text :: proc(stmt: ^SQLite3_Stmt, idx: c.int, value: cstring, nbytes: c.int, destructor: rawptr) -> c.int ---
+    sqlite3_column_text :: proc(stmt: ^SQLite3_Stmt, idx: c.int) -> cstring ---
+}
+
+sqlite_error_text :: proc(db: ^SQLite3, fallback: string) -> string {
+    if db == nil {
+        return fallback
+    }
+    msg := sqlite3_errmsg(db)
+    if msg == nil {
+        return fallback
+    }
+    out, err := strings.clone_from_cstring(msg)
+    if err != nil {
+        return fallback
+    }
+    return out
+}
+
+sqlite_cstring :: proc(text: string) -> (cstring, bool) {
+    out, err := strings.clone_to_cstring(text)
+    if err != nil {
+        return cstring(\"\"), false
+    }
+    return out, true
+}
+
+sqlite_exec_ok :: proc(db: ^SQLite3, sql: string) -> (bool, string) {
+    errmsg: ^c.char
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    rc := sqlite3_exec(db, sql_c, nil, nil, &errmsg)
+    if rc == SQLITE_OK {
+        return true, \"\"
+    }
+    if errmsg != nil {
+        text, err := strings.clone_from_cstring(cstring(errmsg))
+        sqlite3_free(rawptr(errmsg))
+        if err == nil {
+            return false, text
+        }
+    }
+    return false, sqlite_error_text(db, \"sqlite exec failed\")
+}
+
+sqlite_schema_sql :: `
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+CREATE TABLE IF NOT EXISTS vev_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vev_snapshots (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR REPLACE INTO vev_meta (key, value) VALUES ('format', 'vev-snapshot-text-v1');
+`
+
+sqlite_open_initialized :: proc(path: string) -> (^SQLite3, bool, string) {
+    db: ^SQLite3
+    path_c, path_c_ok := sqlite_cstring(path)
+    if !path_c_ok {
+        return nil, false, \"failed to allocate sqlite path\"
+    }
+    defer delete(path_c)
+    if sqlite3_open(path_c, &db) != SQLITE_OK {
+        msg := sqlite_error_text(db, \"sqlite open failed\")
+        if db != nil {
+            _ = sqlite3_close(db)
+        }
+        return nil, false, msg
+    }
+    ok, err := sqlite_exec_ok(db, sqlite_schema_sql)
+    if !ok {
+        _ = sqlite3_close(db)
+        return nil, false, err
+    }
+    return db, true, \"\"
+}
+
+sqlite_save_snapshot_text_raw :: proc(path: string, text: string) -> (bool, string) {
+    db, open_ok, open_error := sqlite_open_initialized(path)
+    if !open_ok {
+        return false, open_error
+    }
+    defer _ = sqlite3_close(db)
+    ok, tx_error := sqlite_exec_ok(db, \"BEGIN IMMEDIATE\")
+    if !ok {
+        return false, tx_error
+    }
+    stmt: ^SQLite3_Stmt
+    sql := \"INSERT OR REPLACE INTO vev_snapshots (key, value, updated_at) VALUES ('current', ?, CURRENT_TIMESTAMP)\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        _, _ = sqlite_exec_ok(db, \"ROLLBACK\")
+        return false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        _, _ = sqlite_exec_ok(db, \"ROLLBACK\")
+        return false, sqlite_error_text(db, \"sqlite prepare failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    text_c, text_c_ok := sqlite_cstring(text)
+    if !text_c_ok {
+        _, _ = sqlite_exec_ok(db, \"ROLLBACK\")
+        return false, \"failed to allocate sqlite snapshot text\"
+    }
+    defer delete(text_c)
+    if sqlite3_bind_text(stmt, 1, text_c, -1, nil) != SQLITE_OK {
+        _, _ = sqlite_exec_ok(db, \"ROLLBACK\")
+        return false, sqlite_error_text(db, \"sqlite bind failed\")
+    }
+    if sqlite3_step(stmt) != SQLITE_DONE {
+        _, _ = sqlite_exec_ok(db, \"ROLLBACK\")
+        return false, sqlite_error_text(db, \"sqlite write failed\")
+    }
+    commit_ok, commit_error := sqlite_exec_ok(db, \"COMMIT\")
+    if !commit_ok {
+        _, _ = sqlite_exec_ok(db, \"ROLLBACK\")
+        return false, commit_error
+    }
+    return true, \"\"
+}
+
+sqlite_load_snapshot_text_raw :: proc(path: string) -> (string, bool, string) {
+    db, open_ok, open_error := sqlite_open_initialized(path)
+    if !open_ok {
+        return \"\", false, open_error
+    }
+    defer _ = sqlite3_close(db)
+    stmt: ^SQLite3_Stmt
+    sql := \"SELECT value FROM vev_snapshots WHERE key = 'current'\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return \"\", false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return \"\", false, sqlite_error_text(db, \"sqlite prepare failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        raw := sqlite3_column_text(stmt, 0)
+        if raw == nil {
+            return \"\", false, \"sqlite snapshot value was null\"
+        }
+        out, err := strings.clone_from_cstring(raw)
+        if err != nil {
+            return \"\", false, \"failed to clone sqlite snapshot text\"
+        }
+        return out, true, \"\"
+    }
+    if rc == SQLITE_DONE {
+        return \"\", false, \"sqlite DB has no current Vev snapshot\"
+    }
+    return \"\", false, sqlite_error_text(db, \"sqlite read failed\")
+}
+")
 
 (defn save-db-snapshot-text [path: string, db: DB] -> [ok: bool, error: string]
   (let [text (serializable-text db) :defer
@@ -29,3 +216,30 @@
 
 (defn persist-conn-snapshot-text [path: string, conn: Conn] -> [ok: bool, error: string]
   (save-db-snapshot-text path conn.db))
+
+(defn save-db-sqlite [path: string, db: DB] -> [ok: bool, error: string]
+  (let [text (serializable-text db)
+        [saved-ok save-error] (sqlite-save-snapshot-text-raw path text)]
+    (delete text)
+    (return saved-ok save-error)))
+
+(defn load-db-sqlite [path: string] -> [db: DB, ok: bool, error: string]
+  (let [[text read-ok read-error] (sqlite-load-snapshot-text-raw path)]
+    (when (not read-ok)
+      (return (build-db (make [dynamic]Datom)) false read-error))
+    (defer (delete text))
+    (from-serializable-text text)))
+
+(defn open-conn-sqlite [path: string] -> [conn: Conn, ok: bool, error: string]
+  (let [[db loaded-ok load-error] (load-db-sqlite path)]
+    (if loaded-ok
+      (do
+        (let [conn (conn-from-db db)]
+          (delete-owned-db db)
+          (return conn true "")))
+      (do
+        (delete-owned-db db)
+        (return (create-conn) false load-error)))))
+
+(defn persist-conn-sqlite [path: string, conn: Conn] -> [ok: bool, error: string]
+  (save-db-sqlite path conn.db))

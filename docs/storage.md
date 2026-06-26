@@ -10,7 +10,7 @@ existing semantic model:
 
 ## Current Slice
 
-The first implemented storage slice is snapshot-file persistence:
+The first implemented storage slice was snapshot-file persistence:
 
 - `save-db-snapshot-text`
 - `load-db-snapshot-text`
@@ -21,6 +21,19 @@ These functions write and read the existing EDN-ish serializable datom snapshot.
 This is deliberately a scaffold, not the final SQLite backend. Its job is to
 make the durable open/write/close/reopen/query loop real while the storage
 boundary is still small.
+
+The first SQLite-backed slice now exists too:
+
+- `save-db-sqlite`
+- `load-db-sqlite`
+- `open-conn-sqlite`
+- `persist-conn-sqlite`
+
+This currently stores the same serializable datom snapshot inside SQLite. It
+creates Vev metadata and snapshot tables, writes through SQLite transactions,
+reopens from disk, rebuilds the in-memory indexes, and then runs normal Vev
+queries. This proves the SQLite link/schema/write/reopen path without yet
+committing the final durable datom layout.
 
 ## SQLite Backend Plan
 
@@ -38,10 +51,10 @@ Initial schema direction:
 
 Implementation order:
 
-1. Add a small SQLite binding/package or local wrapper.
-2. Replace snapshot-file persistence with SQLite-backed open/commit/reopen
-   tests while still rebuilding in-memory indexes on open.
-3. Store transaction boundaries and tx metadata explicitly.
+1. Replace snapshot-in-SQLite persistence with append-only SQLite datom and
+   transaction tables.
+2. Store transaction boundaries and tx metadata explicitly.
+3. Rebuild in-memory indexes from the append-only tables on open.
 4. Add write-bench style measurements for commit latency, batch throughput, and
    reopen cost.
 5. Move selected logical indexes to persisted structures only after benchmarks

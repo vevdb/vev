@@ -3445,6 +3445,51 @@
       (t.is (= (count reopened-result.rows) 1))
       (t.is (= reopened-result.rows[0].values[0].text "Frances")))))
 
+(t.deftest sqlite-storage-reopens-queryable-conn
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.sqlite"]
+    (defer (os.remove path))
+    (defer (os.remove "tmp.vev.sqlite-wal"))
+    (defer (os.remove "tmp.vev.sqlite-shm"))
+    (let [conn (vev.create-conn)
+          seed (vev.transact-text
+                 (addr conn)
+                 "[{:db/id 1 :user/email \"ada@example.com\" :user/name \"Ada\"} {:db/id 2 :user/email \"grace@example.com\" :user/name \"Grace\"}]")
+          [saved-ok saved-error] (vev.persist-conn-sqlite path conn)
+          [opened opened-ok opened-error] (vev.open-conn-sqlite path)
+          opened-result (vev.q opened.db
+                          [:find ?name
+                           :where
+                           [?e :user/email "grace@example.com"]
+                           [?e :user/name ?name]])
+          opened-next-tx opened.next-tx
+          next (vev.transact-text
+                 (addr opened)
+                 "[{:db/id 3 :user/email \"frances@example.com\" :user/name \"Frances\"}]")
+          [resaved-ok resaved-error] (vev.persist-conn-sqlite path opened)
+          [reopened reopened-ok reopened-error] (vev.open-conn-sqlite path)
+          reopened-result (vev.q reopened.db
+                            [:find ?name
+                             :where
+                             [?e :user/email "frances@example.com"]
+                             [?e :user/name ?name]])]
+      (t.is seed.ok)
+      (t.is saved-ok)
+      (t.is (= saved-error ""))
+      (t.is opened-ok)
+      (t.is (= opened-error ""))
+      (t.is (= (count opened-result.rows) 1))
+      (t.is (= opened-result.rows[0].values[0].text "Grace"))
+      (t.is next.ok)
+      (t.is (= next.tx opened-next-tx))
+      (t.is resaved-ok)
+      (t.is (= resaved-error ""))
+      (t.is reopened-ok)
+      (t.is (= reopened-error ""))
+      (t.is (= reopened.next-tx (+ opened-next-tx 1)))
+      (t.is (= (count reopened-result.rows) 1))
+      (t.is (= reopened-result.rows[0].values[0].text "Frances")))))
+
 (t.deftest datascript-reset-conn-subset
   (defer (free_all context.allocator))
   (let [conn (vev.conn-from-datoms

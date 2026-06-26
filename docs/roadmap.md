@@ -65,7 +65,7 @@ Non-goal:
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 360 tests. Remaining work is concentrated in exact
+suite currently passes 361 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
 and durable storage integration.
@@ -270,10 +270,12 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: active. The first implemented slice is snapshot-file persistence using
-the existing serializable datom text format. This is a storage-boundary
-scaffold, not the production SQLite backend. The next step is a SQLite adapter
-that preserves the same open/write/close/reopen/query contract.
+Status: active. Vev now has snapshot-file persistence and a first SQLite-backed
+snapshot backend using the existing serializable datom text format. The SQLite
+slice creates metadata/snapshot tables, writes through SQLite transactions,
+reopens from disk, rebuilds in-memory indexes, and then queries normally. The
+next step is replacing snapshot-in-SQLite with append-only SQLite datom and
+transaction tables.
 
 ## Phase 7: Dogfood
 

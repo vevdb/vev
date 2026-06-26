@@ -47,13 +47,13 @@ Status key:
 | `serialize` | covered | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
 | `issues` | covered | Engine-relevant regressions from `issues.cljc` are covered: vector result isolation, mixed-type DB diff, and schema inspection; Clojure metadata/pprint cases are host-specific |
 | `listen` | covered | Named report-sink listeners cover registration, tx-data reports, metadata reports, and unlisten; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
-| `storage` | partial | Snapshot-file persistence now covers the durable open/write/close/reopen/query scaffold; production SQLite storage remains |
+| `storage` | partial | Snapshot-file persistence and first SQLite-backed snapshot persistence cover durable open/write/close/reopen/query; append-only SQLite datom/tx tables and exact DataScript storage API remain |
 | `datafy` | later | Clojure-specific API feature after semantic core |
 | `tuples` | covered | Tuple attr schema, inferred tuple value type/cardinality metadata, final tuple schema validation independent of tx-data order, derived multi-tuple transaction maintenance, direct tuple attr rejection except redundant final-state tuple assertions, stale explicit direct tuple update rejection, unique tuple lookup refs including ref-component nested lookup refs, query lookup refs over tuple attrs in literal and EDN text APIs, tuple lookup-ref pull via literal/text/prepared APIs, tuple lookup-ref unique conflict/update paths through EDN text tx-data, component-based tuple upsert, direct tuple-value tempid upsert, tuple unique conflict and multi-component update shapes including DataScript's vector-sequential versus tx-map-atomic component updates, EDN text/prepared tx-data tuple component upsert, tuple lookup-ref entity refs, prepared direct tuple-value tempid upsert, conflict rollback, text/map tx-data direct tuple-value ignore cases, public AVET/index-range without explicit `:db/index`, tuple query functions, tuple type/attrs validation including invalid `:db/tupleAttrs` shapes, nested tuple dependency rejection, and cardinality-many tuple/component rejection covered; exact diagnostic text is Vev-shaped |
 
 ## Next Porting Order
 
-The local compatibility suite currently passes 360 tests. The remaining
+The local compatibility suite currently passes 361 tests. The remaining
 DataScript work should focus on the areas where Vev still differs in engine
 semantics or required native interop, not on already-covered syntax families.
 
