@@ -148,6 +148,8 @@
     (delete-sqlite-files! sqlite-path)
     (try
       (with-open [durable (vev/connect lib-path sqlite-path)]
+        (when (not= {:backend :sqlite :path sqlite-path} (vev/connection-info durable))
+          (throw (ex-info "unexpected durable connection metadata" {})))
         (let [tx (vev/transact! durable
                    [{:db/id 1
                      :user/name "Durable Ada"

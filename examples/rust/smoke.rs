@@ -34,6 +34,8 @@ unsafe extern "C" {
     fn vev_connect(path: *const c_char) -> VevConnection;
     fn vev_connection_ok(conn: VevConnection) -> bool;
     fn vev_connection_error(conn: VevConnection) -> *const c_char;
+    fn vev_connection_backend(conn: VevConnection) -> *const c_char;
+    fn vev_connection_path(conn: VevConnection) -> *const c_char;
     fn vev_connection_close(conn: VevConnection);
     fn vev_connection_db(conn: VevConnection) -> VevDb;
     fn vev_connection_transact_edn_report(
@@ -321,6 +323,14 @@ impl DurableConn {
         } else {
             Ok(Db { raw })
         }
+    }
+
+    fn backend(&self) -> String {
+        unsafe { Library::owned_string(vev_connection_backend(self.raw)) }
+    }
+
+    fn path(&self) -> String {
+        unsafe { Library::owned_string(vev_connection_path(self.raw)) }
     }
 }
 
@@ -848,6 +858,10 @@ fn main() -> Result<(), String> {
     remove_sqlite_files(sqlite_path);
     {
         let durable = DurableConn::open(sqlite_path)?;
+        if durable.backend() != "sqlite" || durable.path() != sqlite_path {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable connection metadata".to_string());
+        }
         let report = durable.transact_report(
             r#"[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]"#,
         )?;

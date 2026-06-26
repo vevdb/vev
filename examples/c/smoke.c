@@ -201,6 +201,16 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         vev_string_free(error);
         goto cleanup;
     }
+    const char *backend = vev_connection_backend(durable);
+    const char *durable_path = vev_connection_path(durable);
+    if (strcmp(backend, "sqlite") != 0 || strcmp(durable_path, path) != 0) {
+        fprintf(stderr, "unexpected durable connection metadata: backend=%s path=%s\n", backend, durable_path);
+        vev_string_free(backend);
+        vev_string_free(durable_path);
+        goto cleanup;
+    }
+    vev_string_free(backend);
+    vev_string_free(durable_path);
 
     report = vev_connection_transact_edn_report(
         durable,

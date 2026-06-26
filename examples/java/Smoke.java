@@ -206,6 +206,9 @@ public final class Smoke {
             deleteSqliteFiles(sqlitePath);
             try {
                 try (Vev.DurableConnection durable = vev.connect(sqlitePath)) {
+                    if (!"sqlite".equals(durable.backend()) || !sqlitePath.toString().equals(durable.path())) {
+                        throw new IllegalStateException("unexpected durable connection metadata");
+                    }
                     try (Vev.TxReport report = durable.transactReport("""
                             [{:db/id 1
                               :user/name "Durable Ada"

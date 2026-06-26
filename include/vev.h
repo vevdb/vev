@@ -70,6 +70,8 @@ void vev_conn_close(vev_conn_t conn);
 vev_connection_t vev_connect(const char *uri);
 bool vev_connection_ok(vev_connection_t conn);
 const char *vev_connection_error(vev_connection_t conn);
+const char *vev_connection_backend(vev_connection_t conn);
+const char *vev_connection_path(vev_connection_t conn);
 void vev_connection_close(vev_connection_t conn);
 vev_db_t vev_connection_db(vev_connection_t conn);
 vev_tx_report_t vev_connection_transact_edn_report(

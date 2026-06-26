@@ -367,6 +367,8 @@ def main() -> int:
     remove_sqlite_files(sqlite_path)
     try:
         with vev.connect(sqlite_path) as durable:
+            if durable.backend() != "sqlite" or durable.path() != str(sqlite_path):
+                raise RuntimeError("unexpected durable connection metadata")
             with durable.transact_report(
                 '[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]'
             ) as report:

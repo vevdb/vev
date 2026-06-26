@@ -32,6 +32,8 @@ public final class Vev {
     private final MethodHandle connectionOpen;
     private final MethodHandle connectionOk;
     private final MethodHandle connectionError;
+    private final MethodHandle connectionBackend;
+    private final MethodHandle connectionPath;
     private final MethodHandle connectionClose;
     private final MethodHandle connectionDb;
     private final MethodHandle connectionTransactEdnReport;
@@ -154,6 +156,8 @@ public final class Vev {
         this.connectionOpen = downcall("vev_connect", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionOk = downcall("vev_connection_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
         this.connectionError = downcall("vev_connection_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionBackend = downcall("vev_connection_backend", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionPath = downcall("vev_connection_path", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionClose = downcall("vev_connection_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connectionDb = downcall("vev_connection_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionTransactEdnReport = downcall("vev_connection_transact_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -592,6 +596,16 @@ public final class Vev {
             MemorySegment db = (MemorySegment) connectionDb.invoke(raw);
             if (isNull(db)) throw new IllegalStateException("failed to retain DB snapshot");
             return new DB(db);
+        }
+
+        public String backend() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) connectionBackend.invoke(raw));
+        }
+
+        public String path() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) connectionPath.invoke(raw));
         }
 
         private void requireOpen() {

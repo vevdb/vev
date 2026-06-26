@@ -144,6 +144,17 @@
     :else
     (throw (ex-info "expected Vev connection" {:source conn}))))
 
+(defn connection-info
+  "Return storage metadata for a durable connection."
+  [conn]
+  (cond
+    (instance? DurableConn conn)
+    {:backend (keyword (.backend (:native conn)))
+     :path (.path (:native conn))}
+
+    :else
+    (throw (ex-info "expected Vev durable connection" {:source conn}))))
+
 (defn conn-from-db
   "Create a mutable connection initialized from an immutable DB value."
   [^DB db]

@@ -295,6 +295,11 @@ if (!vev_connection_ok(durable)) {
     vev_string_free(error);
 }
 
+const char *backend = vev_connection_backend(durable);
+const char *path = vev_connection_path(durable);
+vev_string_free(backend);
+vev_string_free(path);
+
 vev_tx_report_t durable_tx = vev_connection_transact_edn_report(
     durable,
     "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}]");
@@ -314,6 +319,8 @@ to SQLite before returning. DB snapshots from `vev_connection_db` follow the
 same immutable owned-handle contract as `vev_conn_db`. The backend-specific
 `vev_sqlite_conn_*` functions remain available for storage tests and migration,
 but new host APIs should prefer `vev_connect` / `vev_connection_*`.
+`vev_connection_backend` and `vev_connection_path` return owned diagnostic
+strings; callers free them with `vev_string_free`.
 
 ## Python Adapter
 
@@ -377,6 +384,7 @@ Durable connections use the same DB-value query path:
 
 ```python
 with vev.connect("app.vev.sqlite") as durable:
+    assert durable.backend() == "sqlite"
     durable.transact_report(
         '[{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}]')
     with durable.db() as db:
@@ -444,6 +452,7 @@ through immutable DB snapshots:
 
 ```java
 try (Vev.DurableConnection durable = vev.connect("app.vev.sqlite")) {
+    String backend = durable.backend();
     try (Vev.TxReport report =
              durable.transactReport("[{:db/id 1 :user/name \"Ada\"}]")) {
         // inspect report.value() if needed
@@ -491,6 +500,7 @@ Durable connections use `connect`:
 
 ```clojure
 (with-open [conn (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite")]
+  (vev/connection-info conn)
   (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
   (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
 ```

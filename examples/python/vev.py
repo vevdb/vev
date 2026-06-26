@@ -131,6 +131,10 @@ class Library:
         lib.vev_connection_ok.restype = ctypes.c_bool
         lib.vev_connection_error.argtypes = [ctypes.c_void_p]
         lib.vev_connection_error.restype = ctypes.c_void_p
+        lib.vev_connection_backend.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_backend.restype = ctypes.c_void_p
+        lib.vev_connection_path.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_path.restype = ctypes.c_void_p
         lib.vev_connection_close.argtypes = [ctypes.c_void_p]
         lib.vev_connection_db.argtypes = [ctypes.c_void_p]
         lib.vev_connection_db.restype = ctypes.c_void_p
@@ -646,6 +650,18 @@ class DurableConnection:
         if not handle:
             raise VevError("failed to retain DB snapshot")
         return DB(self._library, handle)
+
+    def backend(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_connection_backend(self._handle)
+        )
+
+    def path(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_connection_path(self._handle)
+        )
 
     def prepare(
         self, query_edn: str, source_names: list[str] | None = None
