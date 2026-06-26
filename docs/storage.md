@@ -50,11 +50,13 @@ If the SQLite append fails after the in-memory transaction succeeds, the
 wrapper restores the previous DB snapshot and reports a failed transaction.
 That keeps the wrapper-level connection consistent with the durable store.
 
-Current limitation: this is still a native wrapper-level API. The raw C ABI and
-host language wrappers do not yet expose durable SQLite connection handles.
-Explicit full DB persist cannot reconstruct report-only tx metadata from a bare
-DB value; metadata rows are written by the SQLite-backed transaction wrapper
-when it has the successful transaction report in hand.
+The raw C ABI now exposes this durable connection shape through
+`vev_sqlite_conn_t`, including open/ok/error/close, transaction reports, and DB
+snapshots. Higher-level Python, Java, Clojure, and Rust wrapper ergonomics can
+be added when concrete adapter needs justify them. Explicit full DB persist
+cannot reconstruct report-only tx metadata from a bare DB value; metadata rows
+are written by the SQLite-backed transaction wrapper when it has the successful
+transaction report in hand.
 
 ## SQLite Backend Plan
 
@@ -72,8 +74,8 @@ Initial schema direction:
 
 Implementation order:
 
-1. Expose durable SQLite connection handles through the C ABI and selected host
-   wrappers once the native shape settles.
+1. Add higher-level durable SQLite connection wrappers for selected host
+   languages once the raw C shape settles.
 2. Add storage-level metadata inspection/replay APIs only where concrete tools
    need them.
 3. Keep rebuilding in-memory indexes from the datom tables on open until reopen

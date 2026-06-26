@@ -271,14 +271,15 @@ Packaging:
 - CLI binary exercises the same engine path
 
 Status: active. Vev now has snapshot-file persistence, SQLite-backed datom row
-persistence, explicit SQLite tx metadata rows, and a native SQLite-backed
-connection wrapper. The SQLite slice creates metadata, transaction, tx metadata,
-and datom tables, writes one row per datom through a SQLite transaction,
-reopens from disk, rebuilds in-memory indexes, and then queries normally. The
-explicit persist API full-replaces durable datom rows from the connection's
-current datom log; the SQLite connection wrapper appends each successful
-transaction's report tx-data plus tx metadata rows as it commits and rolls the
-in-memory connection back if the durable append fails.
+persistence, explicit SQLite tx metadata rows, a native SQLite-backed
+connection wrapper, and raw C ABI durable connection handles. The SQLite slice
+creates metadata, transaction, tx metadata, and datom tables, writes one row
+per datom through a SQLite transaction, reopens from disk, rebuilds in-memory
+indexes, and then queries normally. The explicit persist API full-replaces
+durable datom rows from the connection's current datom log; the SQLite
+connection wrapper appends each successful transaction's report tx-data plus tx
+metadata rows as it commits and rolls the in-memory connection back if the
+durable append fails.
 
 ## Phase 7: Dogfood
 
@@ -313,7 +314,8 @@ connection handles, immutable DB snapshot handles, EDN transaction/query/pull
 entrypoints, prepared queries, typed statement bindings, named DB source
 bindings, typed result access, direct result-row visitors, status/error
 accessors, and DB-value retain/release. C, Python, Rust, Java, and Clojure
-smokes exercise the native library, and the ABI-vs-native benchmark covers
+smokes exercise the native library, and the C smoke also covers raw durable
+SQLite open/transact/close/reopen/query. The ABI-vs-native benchmark covers
 small lookups, DB snapshots, transaction reports, many-row results, direct row
 visitors, nested pull-many values, and host-provided transaction function
 callbacks. Further interop work should be driven by specific adapter needs,

@@ -282,6 +282,36 @@ vev_prepared_query_free(query);
 vev_conn_close(conn);
 ```
 
+Durable SQLite-backed connections use a separate opaque handle:
+
+```c
+vev_prepared_query_t durable_query =
+    vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");
+
+vev_sqlite_conn_t durable = vev_sqlite_conn_open("app.vev.sqlite");
+if (!vev_sqlite_conn_ok(durable)) {
+    const char *error = vev_sqlite_conn_error(durable);
+    vev_string_free(error);
+}
+
+vev_tx_report_t durable_tx = vev_sqlite_conn_transact_edn_report(
+    durable,
+    "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}]");
+vev_tx_report_free(durable_tx);
+
+vev_db_t durable_db = vev_sqlite_conn_db(durable);
+vev_result_t durable_rows =
+    vev_query_db_prepared_result_with_inputs(durable_db, durable_query, "[]");
+vev_result_free(durable_rows);
+vev_db_release(durable_db);
+vev_sqlite_conn_close(durable);
+vev_prepared_query_free(durable_query);
+```
+
+The durable handle appends successful transaction datoms and tx metadata rows
+to SQLite before returning. DB snapshots from `vev_sqlite_conn_db` follow the
+same immutable owned-handle contract as `vev_conn_db`.
+
 ## Python Adapter
 
 The raw `ctypes` surface is intentionally hidden behind a small Python adapter
@@ -860,7 +890,7 @@ model.
 The initial C ABI shape is now covered for C, Python, Rust, Java, and Clojure,
 including immutable DB handles, typed statement bindings, direct pull handles,
 direct row visitors, registered transaction function callbacks, status/error
-accessors, transaction report listeners, and baseline ABI-vs-native benchmarks.
-The next interop work should be driven by concrete host adapter needs,
-especially higher-level host adapter APIs, rather than expanding the raw C
-surface speculatively.
+accessors, transaction report listeners, durable SQLite connection handles, and
+baseline ABI-vs-native benchmarks. The next interop work should be driven by
+concrete host adapter needs, especially higher-level host adapter APIs, rather
+than expanding the raw C surface speculatively.

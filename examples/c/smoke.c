@@ -182,6 +182,119 @@ static void count_tx_listener(void *user, vev_tx_report_t report) {
     vev_string_free(edn);
 }
 
+static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
+    const char *path = "tmp.vev.c-abi.sqlite";
+    remove(path);
+    remove("tmp.vev.c-abi.sqlite-wal");
+    remove("tmp.vev.c-abi.sqlite-shm");
+
+    int ok = 0;
+    vev_sqlite_conn_t durable = NULL;
+    vev_db_t db = NULL;
+    vev_result_t result = NULL;
+    vev_tx_report_t report = NULL;
+
+    durable = vev_sqlite_conn_open(path);
+    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
+        const char *error = vev_sqlite_conn_error(durable);
+        fprintf(stderr, "failed to open sqlite Vev connection: %s\n", error);
+        vev_string_free(error);
+        goto cleanup;
+    }
+
+    report = vev_sqlite_conn_transact_edn_report(
+        durable,
+        "[{:db/id 1 :user/name \"Durable Ada\" :user/email \"durable-ada@example.com\"}]");
+    print_and_free("sqlite-tx", vev_tx_report_edn(report));
+    if (!tx_report_ok_or_error("sqlite-tx", report)) {
+        goto cleanup;
+    }
+    vev_tx_report_free(report);
+    report = NULL;
+
+    db = vev_sqlite_conn_db(durable);
+    result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
+    int live_rows = result_row_count_or_error("sqlite-live", result);
+    printf("sqlite-live rows: %d\n", live_rows);
+    if (live_rows != 1) {
+        fprintf(stderr, "unexpected sqlite live row count\n");
+        goto cleanup;
+    }
+    vev_result_free(result);
+    result = NULL;
+    vev_db_release(db);
+    db = NULL;
+    vev_sqlite_conn_close(durable);
+    durable = NULL;
+
+    durable = vev_sqlite_conn_open(path);
+    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
+        const char *error = vev_sqlite_conn_error(durable);
+        fprintf(stderr, "failed to reopen sqlite Vev connection: %s\n", error);
+        vev_string_free(error);
+        goto cleanup;
+    }
+    db = vev_sqlite_conn_db(durable);
+    result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
+    int reopened_rows = result_row_count_or_error("sqlite-reopened", result);
+    printf("sqlite-reopened rows: %d\n", reopened_rows);
+    if (reopened_rows != 1) {
+        fprintf(stderr, "unexpected sqlite reopened row count\n");
+        goto cleanup;
+    }
+    vev_result_free(result);
+    result = NULL;
+    vev_db_release(db);
+    db = NULL;
+
+    report = vev_sqlite_conn_transact_edn_report(
+        durable,
+        "[{:db/id 2 :user/name \"Durable Grace\" :user/email \"durable-grace@example.com\"}]");
+    if (!tx_report_ok_or_error("sqlite-second-tx", report)) {
+        goto cleanup;
+    }
+    vev_tx_report_free(report);
+    report = NULL;
+    vev_sqlite_conn_close(durable);
+    durable = NULL;
+
+    durable = vev_sqlite_conn_open(path);
+    if (durable == NULL || !vev_sqlite_conn_ok(durable)) {
+        const char *error = vev_sqlite_conn_error(durable);
+        fprintf(stderr, "failed to reopen sqlite Vev connection after second tx: %s\n", error);
+        vev_string_free(error);
+        goto cleanup;
+    }
+    db = vev_sqlite_conn_db(durable);
+    result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
+    int final_rows = result_row_count_or_error("sqlite-final", result);
+    printf("sqlite-final rows: %d\n", final_rows);
+    if (final_rows != 2) {
+        fprintf(stderr, "unexpected sqlite final row count\n");
+        goto cleanup;
+    }
+
+    ok = 1;
+
+cleanup:
+    if (report != NULL) {
+        vev_tx_report_free(report);
+    }
+    if (result != NULL) {
+        vev_result_free(result);
+    }
+    if (db != NULL) {
+        vev_db_release(db);
+    }
+    if (durable != NULL) {
+        vev_sqlite_conn_close(durable);
+    }
+    remove(path);
+    remove("tmp.vev.c-abi.sqlite-wal");
+    remove("tmp.vev.c-abi.sqlite-shm");
+    return ok;
+}
+
 int main(void) {
     printf("version: %s\n", vev_version());
 
@@ -1119,6 +1232,17 @@ int main(void) {
     vev_conn_close(derived);
     if (derived_barbara_rows != 1 || derived_dorothy_rows != 1) {
         fprintf(stderr, "unexpected derived connection rows\n");
+        vev_db_release(next_db);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+
+    if (!run_sqlite_smoke(all_emails)) {
         vev_db_release(next_db);
         vev_prepared_query_free(dorothy_query);
         vev_prepared_query_free(barbara_query);

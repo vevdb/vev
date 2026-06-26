@@ -12,6 +12,13 @@ ABI_Conn :: struct {
     listeners: [dynamic]ABI_Tx_Listener,
 }
 
+ABI_SQLite_Conn :: struct {
+    store: vev__SQLite_Conn,
+    ok: bool,
+    error: string,
+    tx_sources: [dynamic]string,
+}
+
 ABI_Prepared_Query :: struct {
     source: string,
     query: vev__Prepared_Query,
@@ -175,6 +182,49 @@ abi_free_conn :: proc(conn: rawptr) {
     }
     delete(wrapper.tx_sources)
     delete(wrapper.listeners)
+    free(wrapper)
+}
+
+abi_alloc_sqlite_conn :: proc(store: vev__SQLite_Conn, ok: bool, error: string) -> rawptr {
+    wrapper := new(ABI_SQLite_Conn)
+    wrapper.store = store
+    wrapper.ok = ok
+    wrapper.error = error
+    wrapper.tx_sources = make([dynamic]string)
+    return rawptr(wrapper)
+}
+
+abi_sqlite_conn_ptr :: proc(conn: rawptr) -> ^vev__SQLite_Conn {
+    return &((^ABI_SQLite_Conn)(conn))^.store
+}
+
+abi_sqlite_conn_ok :: proc(conn: rawptr) -> bool {
+    if conn == nil {
+        return false
+    }
+    return ((^ABI_SQLite_Conn)(conn))^.ok
+}
+
+abi_sqlite_conn_error :: proc(conn: rawptr) -> string {
+    if conn == nil {
+        return \"null sqlite connection\"
+    }
+    return ((^ABI_SQLite_Conn)(conn))^.error
+}
+
+abi_sqlite_conn_store_tx_source :: proc(conn: rawptr, source: string) {
+    append(&((^ABI_SQLite_Conn)(conn))^.tx_sources, source)
+}
+
+abi_free_sqlite_conn :: proc(conn: rawptr) {
+    wrapper := (^ABI_SQLite_Conn)(conn)
+    if len(wrapper.error) > 0 {
+        delete(wrapper.error)
+    }
+    for source in wrapper.tx_sources {
+        delete(source)
+    }
+    delete(wrapper.tx_sources)
     free(wrapper)
 }
 
@@ -832,6 +882,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 ")
 
 (def Vev-Conn (distinct rawptr))
+(def Vev-SQLite-Conn (distinct rawptr))
 (def Vev-DB (distinct rawptr))
 (def Vev-Prepared-Query (distinct rawptr))
 (def Vev-Result (distinct rawptr))
@@ -848,6 +899,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- conn-ptr [conn: Vev-Conn] -> ^vev.Conn
   (abi-conn-ptr (rawptr conn)))
+
+(defn- sqlite-conn-ptr [conn: Vev-SQLite-Conn] -> ^vev.SQLite-Conn
+  (abi-sqlite-conn-ptr (rawptr conn)))
 
 (defn- prepared-query-ptr [query: Vev-Prepared-Query] -> ^vev.Prepared-Query
   (abi-prepared-query-ptr (rawptr query)))
@@ -1235,6 +1289,45 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (Vev-Conn conn)))
 
 @export
+(defn vev_sqlite_conn_open :abi "c" [path: cstring] -> Vev-SQLite-Conn
+  (odin "context = runtime.default_context()")
+  (when (= path nil)
+    (let [store (vev.create-sqlite-conn "")]
+      (return (Vev-SQLite-Conn (abi-alloc-sqlite-conn store false (string-owned "null sqlite path"))))))
+  (let [path-text (text-from-c path)
+        [store ok error] (vev.open-sqlite-conn path-text)
+        out (Vev-SQLite-Conn (abi-alloc-sqlite-conn store ok (string-owned error)))]
+    (delete path-text)
+    out))
+
+@export
+(defn vev_sqlite_conn_ok :abi "c" [conn: Vev-SQLite-Conn] -> bool
+  (odin "context = runtime.default_context()")
+  (abi-sqlite-conn-ok (rawptr conn)))
+
+@export
+(defn vev_sqlite_conn_error :abi "c" [conn: Vev-SQLite-Conn] -> cstring
+  (odin "context = runtime.default_context()")
+  (c-string-owned (abi-sqlite-conn-error (rawptr conn))))
+
+@export
+(defn vev_sqlite_conn_close :abi "c" [conn: Vev-SQLite-Conn]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr conn) nil)
+    (return))
+  (let [store (sqlite-conn-ptr conn)]
+    (vev.close-sqlite-conn store^)
+    (abi-free-sqlite-conn (rawptr conn))))
+
+@export
+(defn vev_sqlite_conn_db :abi "c" [conn: Vev-SQLite-Conn] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-DB nil)))
+  (let [store (sqlite-conn-ptr conn)]
+    (Vev-DB (abi-alloc-db (db-owned store^.conn.db)))))
+
+@export
 (defn vev_conn_close :abi "c" [conn: Vev-Conn]
   (odin "context = runtime.default_context()")
   (when (= (rawptr conn) nil)
@@ -1371,6 +1464,17 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (let [out (tx-report-handle-from-report report)]
     (abi-conn-store-tx-source (rawptr conn) tx)
     out)))
+
+@export
+(defn vev_sqlite_conn_transact_edn_report :abi "c" [conn: Vev-SQLite-Conn, tx-text: cstring] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= tx-text nil) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-Tx-Report nil)))
+  (let [tx (text-from-c tx-text)
+        report (vev.transact-sqlite-text (sqlite-conn-ptr conn) tx)
+        out (tx-report-handle-from-report report)]
+    (abi-sqlite-conn-store-tx-source (rawptr conn) tx)
+    out))
 
 @export
 (defn vev_tx_fn_registry_create :abi "c" [] -> Vev-Tx-Fn-Registry

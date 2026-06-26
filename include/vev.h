@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 typedef void *vev_conn_t;
+typedef void *vev_sqlite_conn_t;
 typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
 typedef void *vev_result_t;
@@ -65,6 +66,14 @@ const char *vev_version(void);
 
 vev_conn_t vev_conn_open_memory(void);
 void vev_conn_close(vev_conn_t conn);
+vev_sqlite_conn_t vev_sqlite_conn_open(const char *path);
+bool vev_sqlite_conn_ok(vev_sqlite_conn_t conn);
+const char *vev_sqlite_conn_error(vev_sqlite_conn_t conn);
+void vev_sqlite_conn_close(vev_sqlite_conn_t conn);
+vev_db_t vev_sqlite_conn_db(vev_sqlite_conn_t conn);
+vev_tx_report_t vev_sqlite_conn_transact_edn_report(
+    vev_sqlite_conn_t conn,
+    const char *tx_text);
 bool vev_conn_listen_tx_report(
     vev_conn_t conn,
     const char *name,
