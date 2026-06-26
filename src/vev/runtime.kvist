@@ -5773,6 +5773,7 @@
   params: [dynamic]string
   bindings: [dynamic]Binding
   delta: [dynamic]Binding
+  seen: set[string]
 })
 
 (defn alternating-state-expanded? [left-expanded: []u64, right-expanded: []u64, entity: u64, use-left: bool] -> bool
@@ -6251,7 +6252,8 @@
   (for [entry memo]
     (delete entry.params)
     (delete entry.bindings)
-    (delete entry.delta))
+    (delete entry.delta)
+    (delete entry.seen))
   (delete memo))
 
 (defn rule-memo-entry-index [memo: []Rule-Memo-Entry, name: string, params: []string] -> [index: int, ok: bool]
@@ -6268,11 +6270,13 @@
         (when (not found)
           (let [params (arr.into [dynamic]string (slice rule.params 0))
                 bindings (make [dynamic]Binding)
-                delta (make [dynamic]Binding)]
+                delta (make [dynamic]Binding)
+                seen (set.empty string)]
             (arr.push! memo (Rule-Memo-Entry {name: rule.name
                                               params: params
                                               bindings: bindings
-                                              delta: delta}))))))
+                                              delta: delta
+                                              seen: seen}))))))
     memo))
 
 (defn rule-output-binding [rule: Rule, result: Binding] -> [binding: Binding, ok: bool]
@@ -6291,8 +6295,14 @@
     (let [[entry-index entry-ok] (rule-memo-entry-index (slice memo^ 0) rule.name (slice rule.params 0))]
       (when (not entry-ok)
         (return false))
-      (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
-        (return false))
+      (let [[key key-ok] (binding-dedupe-key output)]
+        (if key-ok
+          (let [already-seen (set.contains? memo^[entry-index].seen key)]
+            (when already-seen
+              (return false))
+            (set.add! memo^[entry-index].seen key))
+          (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
+            (return false))))
       (arr.push! memo^[entry-index].bindings output)
       true)))
 
@@ -6303,8 +6313,14 @@
     (let [[entry-index entry-ok] (rule-memo-entry-index (slice memo^ 0) rule.name (slice rule.params 0))]
       (when (not entry-ok)
         (return false))
-      (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
-        (return false))
+      (let [[key key-ok] (binding-dedupe-key output)]
+        (if key-ok
+          (let [already-seen (set.contains? memo^[entry-index].seen key)]
+            (when already-seen
+              (return false))
+            (set.add! memo^[entry-index].seen key))
+          (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
+            (return false))))
       (arr.push! memo^[entry-index].bindings output)
       (let [[delta-index delta-ok] (rule-memo-entry-index (slice next-delta^ 0) rule.name (slice rule.params 0))]
         (when delta-ok

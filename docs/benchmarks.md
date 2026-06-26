@@ -239,13 +239,14 @@ They are DataScript median divided by Vev median, so larger is better for Vev.
 
 Prepared queries now cache per-rule-call plans on the parsed query value, and
 plain positive recursive rule bodies use a conservative delta iteration across
-each recursive rule-call position. The small `datascript-bench` rule rows
-measured after those changes are:
+each recursive rule-call position. Rule memo entries also keep set-backed
+dedupe keys for primitive output bindings. The small `datascript-bench` rule
+rows measured after those changes are:
 
 | Workload | DataScript median | Vev median | DataScript/Vev |
 |---|---:|---:|---:|
-| `rules-wide-3x3` | 0.48ms | 0.26ms | 1.85x |
-| `rules-long-10x3` | 1.00ms | 0.31ms | 3.23x |
+| `rules-wide-3x3` | 0.45ms | 0.25ms | 1.80x |
+| `rules-long-10x3` | 0.96ms | 0.31ms | 3.10x |
 
 ## Stress Comparison
 
@@ -254,11 +255,11 @@ It is intended for scaling direction, not stable microbenchmark numbers.
 
 | Workload | Vev text | Vev prepared |
 |---|---:|---:|
-| `stress-chain-root n=300` | 1725.3x | 1802.9x |
-| `stress-chain-leaf n=300` | 3760.2x | 3870.4x |
-| `stress-chain-all n=200` | 28.5x | 28.4x |
-| `stress-tree-root n=364` | 2.3x | 2.5x |
-| `stress-mutual-root n=30` | 17.2x | 21.8x |
+| `stress-chain-root n=300` | 1683.9x | 1779.6x |
+| `stress-chain-leaf n=300` | 3857.2x | 4073.5x |
+| `stress-chain-all n=200` | 29.0x | 28.9x |
+| `stress-tree-root n=364` | 2.6x | 2.6x |
+| `stress-mutual-root n=30` | 16.6x | 22.7x |
 
 The stress harness also emits Vev-only rows for workloads that are currently
 too expensive for routine DataScript comparison:
@@ -378,7 +379,9 @@ Remaining performance work:
   alternating two-rule recursion are optimized. Plain positive recursive rule
   groups now have a component-local memoized fixpoint, and recursive bodies use
   per-iteration delta tables rather than re-probing the full memo each
-  iteration. The next step is to move that binding-row evaluator into
+  iteration. Memo insertion now uses set-backed primitive binding keys instead
+  of always scanning accumulated outputs. The next step is to move that
+  binding-row evaluator into
   relation-native operators and extend semi-naive coverage to richer rule bodies
   beyond the current positive data-clause/rule-call subset.
 - Continue result-projection work beyond the single-attr distinct fast path.

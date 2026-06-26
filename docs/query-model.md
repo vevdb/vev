@@ -133,8 +133,10 @@ have a generic component-local delta slice: each recursive rule-call position is
 evaluated against the current per-iteration delta table while the other rule
 calls read the accumulated memo tables. It handles data clauses plus rule calls,
 with no source-qualified calls and no predicates/functions/negation/disjunction
-inside the component. The specialized linear and alternating transitive paths
-remain faster physical operators and run before the generic memo/delta path.
+inside the component. Memo tables keep set-backed primitive binding keys for
+duplicate detection, with structural scans only as a fallback for non-keyable
+outputs. The specialized linear and alternating transitive paths remain faster
+physical operators and run before the generic memo/delta path.
 
 ## Query Engine Strategy
 

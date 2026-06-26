@@ -130,10 +130,13 @@ Status labels:
   Rule dependency analysis now builds strongly connected component metadata from the dependency graph using DFS finish order plus reverse traversal. Recursive checks and prepared rule-call planning can ask component metadata instead of repeatedly checking pairwise mutual reachability.
 
 - `done` Add a component-local memoized rule fixpoint for positive rules.
-  Recursive rule calls whose reachable rule set is plain positive Datalog, currently data clauses plus rule calls with no source-qualified calls, can use a memo table keyed by rule name/params and iterate to a local fixpoint. This covers non-linear recursive rule bodies that are not handled by the linear/alternating transitive recognizers. A true delta/semi-naive evaluator remains future work.
+  Recursive rule calls whose reachable rule set is plain positive Datalog, currently data clauses plus rule calls with no source-qualified calls, can use a memo table keyed by rule name/params and iterate to a local fixpoint. This covers non-linear recursive rule bodies that are not handled by the linear/alternating transitive recognizers.
 
 - `done` Add a conservative delta path for positive recursive rules.
   Positive recursive components now use accumulated memo tables plus per-iteration delta tables. Bodies with multiple recursive rule calls are evaluated once per recursive call position with that position reading the delta table and the other positions reading accumulated memo rows. This avoids re-probing the full memo each iteration for the common semi-naive shape.
+
+- `done` Add set-backed rule memo duplicate detection.
+  Rule memo entries now keep a `seen` key set next to the accumulated binding table, so primitive rule outputs avoid linear `binding-exists?` scans on insert. Structural scan fallback remains for output bindings that cannot be represented by the primitive binding key.
 
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
