@@ -278,6 +278,12 @@ left/right row indexes directly. The compatibility `Binding` row is still
 emitted from the same column-source table, and the older semantic product
 remains as fallback.
 
+Fourteenth slice implemented: final typed result rendering now borrows the
+`Query-Relation` typed column cache directly instead of cloning it into a
+temporary `Typed-Relation` just to read `:find` and `:with` values. This keeps
+the final projection on column indexes while removing one whole-column copy
+from the successful typed result path.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the

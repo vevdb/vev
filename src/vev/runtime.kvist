@@ -792,34 +792,42 @@
         (arr.push! out index)))
     (return out true)))
 
+(defn query-relation-indexes-for-vars [rel: Query-Relation, names: []string] -> [indexes: [dynamic]int, ok: bool]
+  (let [out (make [dynamic]int 0 (count names))]
+    (for [name names]
+      (let [[index index-ok] (query-relation-attr-index-lookup rel name)]
+        (when (not index-ok)
+          (delete out)
+          (return (make [dynamic]int) false))
+        (arr.push! out index)))
+    (return out true)))
+
 (defn result-rows-for-typed-relation [query: Query, rel: Query-Relation] -> [rows: [dynamic]Result-Row, ok: bool]
   (when (> (count query.pulls) 0)
     (return (make [dynamic]Result-Row) false))
-  (let [[typed typed-ok] (typed-relation-from-query-relation rel)]
-    (when (not typed-ok)
-      (return (make [dynamic]Result-Row) false))
-    (defer (delete-typed-relation typed))
-    (let [[find-indexes find-ok] (typed-relation-indexes-for-vars typed (slice query.find 0))]
+  (when (not rel.has-typed-columns)
+    (return (make [dynamic]Result-Row) false))
+    (let [[find-indexes find-ok] (query-relation-indexes-for-vars rel (slice query.find 0))]
       (when (not find-ok)
         (return (make [dynamic]Result-Row) false))
       (defer (delete find-indexes))
-      (let [[with-indexes with-ok] (typed-relation-indexes-for-vars typed (slice query.with 0))]
+      (let [[with-indexes with-ok] (query-relation-indexes-for-vars rel (slice query.with 0))]
         (when (not with-ok)
           (return (make [dynamic]Result-Row) false))
         (defer (delete with-indexes))
-    (let [out (make [dynamic]Result-Row 0 typed.rows)
+    (let [out (make [dynamic]Result-Row 0 rel.typed-rows)
           seen (set.empty string) :defer
           trust-unique-bindings (query-can-trust-unique-bindings? query)]
-      (for [row (arr.range 0 typed.rows)]
+      (for [row (arr.range 0 rel.typed-rows)]
         (let [values (make [dynamic]Value 0 (count query.find))
               dedupe-values (make [dynamic]Value)
               pushed false]
           (for [column-index find-indexes]
-            (let [[value _] (typed-relation-column-value typed.columns[column-index] row)]
+            (let [[value _] (typed-relation-column-value rel.typed-columns[column-index] row)]
               (arr.push! values value)
               (arr.push! dedupe-values value)))
           (for [column-index with-indexes]
-            (let [[value _] (typed-relation-column-value typed.columns[column-index] row)]
+            (let [[value _] (typed-relation-column-value rel.typed-columns[column-index] row)]
               (arr.push! dedupe-values value)))
           (if trust-unique-bindings
             (do
@@ -838,7 +846,7 @@
           (delete dedupe-values)
           (when (not pushed)
             (delete values))))
-      (return out true))))))
+      (return out true)))))
 
 (defn query-relation-hash-join-typed-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
   (let [[left-typed left-ok] (typed-relation-from-query-relation left)]
