@@ -292,6 +292,88 @@
   (delete rel.attr-sources)
   (delete rel.tuples))
 
+(defn relation-column-empty [] -> Relation-Column
+  (Relation-Column {entities: (make [dynamic]u64)
+                    texts: (make [dynamic]string)
+                    ints: (make [dynamic]i64)
+                    floats: (make [dynamic]f64)
+                    bools: (make [dynamic]bool)}))
+
+(defn delete-relation-column [column: Relation-Column]
+  (delete column.entities)
+  (delete column.texts)
+  (delete column.ints)
+  (delete column.floats)
+  (delete column.bools))
+
+(defn typed-relation-empty [] -> Typed-Relation
+  (Typed-Relation {attrs: (make [dynamic]string)
+                   attr-sources: (make [dynamic]string)
+                   columns: (make [dynamic]Relation-Column)}))
+
+(defn delete-typed-relation [rel: Typed-Relation]
+  (delete rel.attrs)
+  (delete rel.attr-sources)
+  (for [column rel.columns]
+    (delete-relation-column column))
+  (delete rel.columns))
+
+(defn value-relation-column-kind [value: Value] -> [kind: Relation-Column-Kind, ok: bool]
+  (case value.kind
+    .Nil (return .Nil true)
+    .Entity (return .Entity true)
+    .String (return .String true)
+    .Int (return .Int true)
+    .Float (return .Float true)
+    .Bool (return .Bool true)
+    .Keyword (return .Keyword true)
+    .Symbol (return .Symbol true)
+    :else (return .Nil false)))
+
+(defn relation-column-add! [column: ^Relation-Column, value: Value] -> bool
+  (let [[kind kind-ok] (value-relation-column-kind value)]
+    (when (not kind-ok)
+      (return false))
+    (if column^.has-kind
+      (when (not (= column^.kind kind))
+        (return false))
+      (do
+        (set! column^.kind kind)
+        (set! column^.has-kind true)))
+    (case kind
+      .Nil (discard kind)
+      .Entity (arr.push! column^.entities value.entity)
+      .String (arr.push! column^.texts value.text)
+      .Int (arr.push! column^.ints value.int-value)
+      .Float (arr.push! column^.floats value.float-value)
+      .Bool (arr.push! column^.bools value.bool-value)
+      .Keyword (arr.push! column^.texts value.text)
+      .Symbol (arr.push! column^.texts value.text))
+    true))
+
+(defn typed-relation-attr-index [rel: Typed-Relation, name: string] -> [index: int, ok: bool]
+  (for [attr index rel.attrs]
+    (when (= attr name)
+      (return index true)))
+  (return 0 false))
+
+(defn typed-relation-from-query-relation [rel: Query-Relation] -> [typed: Typed-Relation, ok: bool]
+  (let [out (typed-relation-empty)]
+    (set! out.rows (count rel.tuples))
+    (for [attr index rel.attrs]
+      (arr.push! out.attrs attr)
+      (arr.push! out.attr-sources rel.attr-sources[index])
+      (let [column (relation-column-empty)]
+        (for [tuple rel.tuples]
+          (let [[value value-ok] (binding-lookup tuple attr)]
+            (when (or (not value-ok)
+                      (not (relation-column-add! (addr column) value)))
+              (delete-relation-column column)
+              (delete-typed-relation out)
+              (return (typed-relation-empty) false))))
+        (arr.push! out.columns column)))
+    (return out true)))
+
 (defn relation-attr-source [rel: Query-Relation, name: string] -> [source: string, ok: bool]
   (for [attr index rel.attrs]
     (when (= attr name)
@@ -391,6 +473,110 @@
           (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part)))))
     (return (core-strings.concatenate (slice parts 0)) true)))
 
+(defn typed-relation-column-row-key [column: Relation-Column, row: int] -> [key: string, ok: bool]
+  (when (not column.has-kind)
+    (return "" false))
+  (case column.kind
+    .Nil (return "n:" true)
+    .Entity (return (fmt.tprintf "e:%d" column.entities[row]) true)
+    .String (return (fmt.tprintf "s:%s" column.texts[row]) true)
+    .Int (return (fmt.tprintf "i:%d" column.ints[row]) true)
+    .Float (return (fmt.tprintf "f:%v" column.floats[row]) true)
+    .Bool (if column.bools[row]
+            (return "b:true" true)
+            (return "b:false" true))
+    .Keyword (return (fmt.tprintf "k:%s" column.texts[row]) true)
+    .Symbol (return (fmt.tprintf "y:%s" column.texts[row]) true))
+  (return "" false))
+
+(defn typed-relations-compatible-common? [left: Typed-Relation, right: Typed-Relation, common: []string] -> bool
+  (for [name common]
+    (let [[left-index left-ok] (typed-relation-attr-index left name)
+          [right-index right-ok] (typed-relation-attr-index right name)]
+      (when (not (and left-ok right-ok))
+        (return false))
+      (when (not (= left.columns[left-index].kind right.columns[right-index].kind))
+        (return false))))
+  true)
+
+(defn typed-relation-row-join-key [rel: Typed-Relation, row: int, common: []string] -> [key: string, ok: bool]
+  (when (= (count common) 1)
+    (let [[column-index column-ok] (typed-relation-attr-index rel common[0])]
+      (when (not column-ok)
+        (return "" false))
+      (return (typed-relation-column-row-key rel.columns[column-index] row))))
+  (let [parts (make [dynamic]string 0 (count common)) :defer]
+    (for [name common]
+      (let [[column-index column-ok] (typed-relation-attr-index rel name)]
+        (when (not column-ok)
+          (return "" false))
+        (let [[part part-ok] (typed-relation-column-row-key rel.columns[column-index] row)]
+          (when (not part-ok)
+            (return "" false))
+          (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part)))))
+    (return (core-strings.concatenate (slice parts 0)) true)))
+
+(defn query-relation-hash-join-typed-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
+  (let [[left-typed left-ok] (typed-relation-from-query-relation left)]
+    (when (not left-ok)
+      (return (query-relation-empty) false))
+    (defer (delete-typed-relation left-typed))
+    (let [[right-typed right-ok] (typed-relation-from-query-relation right)]
+      (when (not right-ok)
+        (return (query-relation-empty) false))
+      (defer (delete-typed-relation right-typed))
+      (when (not (typed-relations-compatible-common? left-typed right-typed common))
+        (return (query-relation-empty) false))
+      (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+            attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
+            tuples (make [dynamic]Binding)
+            bucket-heads (make (map string int))
+            next-indexes (make [dynamic]int 0 right-typed.rows)]
+        (for [name index right.attrs]
+          (when (not (string-slice-contains? (slice attrs 0) name))
+            (arr.push! attrs name)
+            (arr.push! attr-sources right.attr-sources[index])))
+        (let [right-row 0]
+          (while (< right-row right-typed.rows)
+            (let [[key key-ok] (typed-relation-row-join-key right-typed right-row common)]
+              (when (not key-ok)
+                (delete attrs)
+                (delete attr-sources)
+                (delete tuples)
+                (delete bucket-heads)
+                (delete next-indexes)
+                (return (query-relation-empty) false))
+              (let [[head found] (mmap.get bucket-heads key)]
+                (if found
+                  (arr.push! next-indexes head)
+                  (arr.push! next-indexes -1))
+                (mmap.assoc! bucket-heads key right-row)))
+            (set! right-row (+ right-row 1))))
+        (let [left-row 0]
+          (while (< left-row left-typed.rows)
+            (let [[key key-ok] (typed-relation-row-join-key left-typed left-row common)]
+              (when (not key-ok)
+                (delete attrs)
+                (delete attr-sources)
+                (delete tuples)
+                (delete bucket-heads)
+                (delete next-indexes)
+                (return (query-relation-empty) false))
+              (let [[head found] (mmap.get bucket-heads key)]
+                (when found
+                  (let [right-index head]
+                    (while (>= right-index 0)
+                      (let [left-tuple left.tuples[left-row]
+                            right-tuple right.tuples[right-index]
+                            [merged merge-ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
+                        (when merge-ok
+                          (arr.push! tuples merged)))
+                      (set! right-index next-indexes[right-index]))))))
+            (set! left-row (+ left-row 1))))
+        (delete bucket-heads)
+        (delete next-indexes)
+        (return (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples}) true)))))
+
 (defn query-relation-hash-join-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
         attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
@@ -441,6 +627,11 @@
   (let [common (relation-common-attrs left right) :defer]
     (when (= (count common) 0)
       (return (query-relation-product db sources left right)))
+    (when (> (count common) 1)
+      (let [[typed-hash-joined typed-hash-ok] (query-relation-hash-join-typed-primitive db sources left right (slice common 0))]
+        (when typed-hash-ok
+          (return typed-hash-joined))
+        (delete-query-relation typed-hash-joined)))
     (let [[hash-joined hash-ok] (query-relation-hash-join-primitive db sources left right (slice common 0))]
       (when hash-ok
         (return hash-joined))

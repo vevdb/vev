@@ -188,6 +188,12 @@ add typed storage behind it, port one operator family end-to-end, benchmark,
 then fold existing q1/q2/q3/q4 typed fast paths into the general relation result
 path.
 
+First slice implemented: `Typed-Relation` stores primitive relation columns in
+struct-of-arrays form and the compound primitive hash join can build/probe join
+keys from those columns for multi-variable joins. The result still materializes
+ordinary `Binding` tuples after the join; later steps should keep rows typed
+through projection/result rendering.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
