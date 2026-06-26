@@ -278,21 +278,21 @@ Current sample output on June 26, 2026:
 
 ```text
 engine=vev-sqlite workload=pure-write batch=1 total=200 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
-100,0.251,397.63,2.513,2.513
-200,1.024,195.29,7.723,7.723
+100,0.011,8872.33,0.110,0.110
+200,0.031,6508.09,0.192,0.192
 engine=vev-sqlite workload=pure-write batch=10 total=200 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
-100,0.100,1002.43,9.963,9.963
-200,0.401,498.70,30.113,30.113
+100,0.005,21132.71,0.461,0.461
+200,0.011,18885.74,0.572,0.572
 engine=vev-sqlite workload=pure-write batch=100 total=200 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
-100,0.085,1176.55,84.879,84.879
-200,0.338,591.39,253.067,253.067
+100,0.003,31446.54,3.066,3.066
+200,0.008,26034.89,4.382,4.382
 engine=vev-sqlite workload=pure-write batch=1000 total=200 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
-200,0.337,593.21,336.897,336.897
+200,0.006,31152.65,6.190,6.190
 engine=vev-sqlite workload=mixed-read-write batch=1 total=400 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
-100,0.993,50.36,19.852,19.834
-200,2.384,41.94,27.830,27.815
-300,4.335,34.60,39.009,38.993
-400,6.453,30.99,42.361,42.343
+100,0.010,4959.83,0.199,0.187
+200,0.021,4781.26,0.214,0.205
+300,0.036,4173.16,0.298,0.288
+400,0.049,4107.87,0.252,0.242
 ```
 
 This is a first Vev-native harness for the Datalevin `write-bench` family, not
@@ -303,12 +303,14 @@ yet a direct apples-to-apples run of the upstream benchmark. It measures:
 - end-to-end `transact-sqlite-*` call latency and commit-path latency
 
 The default dataset is deliberately small so it can run during ordinary
-development. The immediate value is directional: batch size quickly exposes the
-fixed transaction/apply/report overhead, and the mixed workload shows the cost
-of querying through the current in-memory snapshot while writes keep appending
-to SQLite. Once the durable path is less dominated by report/index ownership
-copying, scale this harness up and then wire Vev into Datalevin's upstream
-`write-bench` shape for direct comparison.
+development. The schema intentionally matches Datalevin's write-bench shape:
+`:item/key` is a plain long attribute, not `:db.unique/identity`. Modeling the
+key as unique identity sent the harness through upsert/uniqueness work and made
+the benchmark measure a different workload. With the corrected plain-key shape,
+the small pure-write harness is in the same broad throughput range as the
+published Datalevin write-bench discussion. The next step is to scale this
+harness up and wire Vev into Datalevin's upstream `write-bench` shape for
+direct comparison.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured

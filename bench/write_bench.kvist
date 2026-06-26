@@ -13,10 +13,10 @@
   (os.remove (fmt.tprintf "%s-shm" path)))
 
 (defn seed-write-schema [store: ^vev.SQLite-Conn] -> bool
-  (let [tx (make [dynamic]vev.Tx-Data 0 5) :defer]
+  (let [tx (make [dynamic]vev.Tx-Data 0 4) :defer]
+    ;; Match Datalevin write-bench: :item/key is a plain long, not unique identity.
     (arr.push! tx (vev.add 201 ":db/ident" (vev.value-keyword ":item/key")))
     (arr.push! tx (vev.add 201 ":db/valueType" (vev.value-keyword ":db.type/long")))
-    (arr.push! tx (vev.add 201 ":db/unique" (vev.value-keyword ":db.unique/identity")))
     (arr.push! tx (vev.add 202 ":db/ident" (vev.value-keyword ":item/value")))
     (arr.push! tx (vev.add 202 ":db/valueType" (vev.value-keyword ":db.type/string")))
     (let [report (vev.transact-sqlite-tx-data store (slice tx 0))]
@@ -27,23 +27,22 @@
       (vev.delete-live-tx-report-shallow report)
       true)))
 
-(defn item-entity [key: i64] -> u64
-  (+ (u64 key) 1000))
+(defn item-entity [index: int] -> u64
+  (+ (u64 index) 1000))
 
 (defn item-value [key: i64, revision: i64] -> string
   (fmt.tprintf "value-%d-%d-000000000000000000000000000000000000" key revision))
 
-(defn append-item-tx! [tx: ^[dynamic]vev.Tx-Data, key: i64, revision: i64]
-  (let [entity (item-entity key)]
-    (arr.push! tx^ (vev.add entity ":item/key" (vev.value-int key)))
-    (arr.push! tx^ (vev.add entity ":item/value" (vev.value-string (item-value key revision))))))
+(defn append-item-tx! [tx: ^[dynamic]vev.Tx-Data, entity: u64, key: i64, revision: i64]
+  (arr.push! tx^ (vev.add entity ":item/key" (vev.value-int key)))
+  (arr.push! tx^ (vev.add entity ":item/value" (vev.value-string (item-value key revision)))))
 
 (defn item-batch-tx [start-index: int, batch-size: int, revision: i64] -> [dynamic]vev.Tx-Data
   (let [tx (make [dynamic]vev.Tx-Data 0 (* batch-size 2))]
     (for [offset (arr.range 0 batch-size)]
       (let [write-index (+ start-index offset)
             key (i64 (* write-index 2))]
-        (append-item-tx! (addr tx) key revision)))
+        (append-item-tx! (addr tx) (item-entity write-index) key revision)))
     tx))
 
 (defn print-write-header [workload: string, batch-size: int, total: int]
@@ -183,7 +182,7 @@
               (set! call-us (+ call-us elapsed))
               (vev.delete-result-set-shallow result))
             (let [tx (make [dynamic]vev.Tx-Data 0 2)]
-              (append-item-tx! (addr tx) key (i64 op))
+              (append-item-tx! (addr tx) (item-entity (+ total op 1)) key (i64 op))
               (let [before (time.now)
                     report (vev.transact-sqlite-tx-data (addr store) (slice tx 0))
                     elapsed (bench.elapsed-us before)]

@@ -120,9 +120,11 @@ onto Vev's durable API:
 - end-to-end call latency and commit-path latency reporting
 
 This harness is intentionally smaller than the final external benchmark. It is
-for regular development runs while the durable path is still changing. The
-current shape shows the main cost is still Vev's transaction/apply/report/index
-ownership work around the SQLite commit, not SQL row insertion alone.
+for regular development runs while the durable path is still changing. It uses
+a plain long `:item/key`, matching Datalevin's write-bench schema. The next
+measurement step is scaling this harness to the upstream Datalevin
+`write-bench` totals and comparing pure write and mixed read/write behavior
+directly.
 
 ## SQLite Backend Plan
 
