@@ -8,6 +8,7 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.lang.ref.Cleaner;
@@ -79,6 +80,8 @@ public final class Vev {
     private final MethodHandle entityStringIntTriplesEntitiesData;
     private final MethodHandle entityStringIntTriplesIntsData;
     private final MethodHandle entityStringIntTriplesString;
+    private final MethodHandle entityStringIntTriplesStringData;
+    private final MethodHandle entityStringIntTriplesStringLen;
     private final MethodHandle pullEdn;
     private final MethodHandle pullLookupRefStringEdn;
     private final MethodHandle pullLookupRefKeywordEdn;
@@ -181,6 +184,8 @@ public final class Vev {
         this.entityStringIntTriplesEntitiesData = downcall("vev_entity_string_int_triples_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityStringIntTriplesIntsData = downcall("vev_entity_string_int_triples_ints_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityStringIntTriplesString = downcall("vev_entity_string_int_triples_string", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.entityStringIntTriplesStringData = downcall("vev_entity_string_int_triples_string_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.entityStringIntTriplesStringLen = downcall("vev_entity_string_int_triples_string_len", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.pullEdn = downcall("vev_pull_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullLookupRefKeywordEdn = downcall("vev_pull_lookup_ref_keyword_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -265,6 +270,13 @@ public final class Vev {
 
     private String textOf(MemorySegment value) throws Throwable {
         return ownedString((MemorySegment) valueText.invoke(value));
+    }
+
+    private String borrowedUtf8String(MemorySegment data, int length) {
+        if (length <= 0) return "";
+        if (isNull(data)) return "";
+        byte[] bytes = data.reinterpret(length).toArray(ValueLayout.JAVA_BYTE);
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     private Object valueToJava(MemorySegment value) throws Throwable {
@@ -593,7 +605,9 @@ public final class Vev {
                     long[] ints = intData.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
                     String[] strings = new String[count];
                     for (int index = 0; index < count; index++) {
-                        strings[index] = ownedString((MemorySegment) entityStringIntTriplesString.invoke(raw, index));
+                        int length = (int) entityStringIntTriplesStringLen.invoke(raw, index);
+                        MemorySegment data = (MemorySegment) entityStringIntTriplesStringData.invoke(raw, index);
+                        strings[index] = borrowedUtf8String(data, length);
                     }
                     return new Object[] { entities, strings, ints };
                 } finally {

@@ -382,12 +382,15 @@ Remaining performance work:
 - Equality self-join planning has a first indexed operator for the
   `datascript-bench` q5 shape: filter the left side, collect distinct join
   values, then scan the right `avet` range once per join value. The native q5
-  result-set path is around 4ms for 5000 rows, but the public Clojure row is
-  around 100ms versus DataScript around 148ms. That points at bulk
-  Java/Clojure result materialization for string/value-heavy rows as the next
-  q5 bottleneck, not the indexed self-join itself. General relation hash joins
-  are also in place for one primitive common variable, with fallback to the
-  older nested join when lookup-ref/source semantics require it.
+  result-set path is around 4ms for 5000 rows, and the typed triple-column ABI
+  brings the public Clojure row to around 23ms versus DataScript around 145ms.
+  Triple-column string values now cross the ABI as borrowed UTF-8 data plus
+  length instead of one owned C string allocation per cell. Remaining q5 work
+  should target larger-grained Java/Clojure materialization for string/value
+  rows and broader physical-operator integration, not the indexed self-join
+  itself. General relation hash joins are also in place for one primitive
+  common variable, with fallback to the older nested join when lookup-ref/source
+  semantics require it.
 - Same-entity star/projection queries use two reusable indexed shapes inspired
   by Datalevin's sorted scans. Single-filter star queries such as q2 use an
   advancing entity-local `eavt` cursor for cardinality-one attr fetches, which
@@ -403,8 +406,9 @@ Remaining performance work:
   Clojure/JVM materialization overhead for returned row vectors/sets.
 - q1 and q5's remaining costs are mostly host result-shape overhead. Prepared
   diagnostic rows show q1 improves from roughly 0.30 ms for
-  Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`; q5 shows
-  an even larger native/public gap for string-heavy rows. The next work should
+  Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`; q5 still
+  shows a native/public gap for string-heavy rows even after the typed
+  triple-column ABI and borrowed string accessors. The next work should
   target set/vector materialization through the Clojure adapter and native
   result API, not index lookup.
 - The relation engine now has a DataScript-shaped compound primitive hash join

@@ -132,7 +132,7 @@ VEV_BENCH_REPEATS=1 \
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q5` | 147.8 | 101.7 | 1.45x |
+| `q5` | 140.9 | 20.9 | 6.74x |
 | `rules-wide-3x3` | 0.46 | 0.27 | 1.70x |
 | `rules-long-10x3` | 0.96 | 0.36 | 2.67x |
 
@@ -154,24 +154,26 @@ VEV_BENCH_WARMUP_MS=20 \
 VEV_BENCH_MS=80 \
 VEV_BENCH_REPEATS=3 \
   bench/datascript_bench/run_compare.sh \
-    q1 q2 q2-switch q3 q4 qpred1 qpred2 \
-    q2-rows-prepared q4-rows-prepared \
+    q1 q2 q2-switch q3 q4 q5 qpred1 qpred2 \
+    q2-rows-prepared q4-rows-prepared q5-rows-prepared \
     qpred1-rows-prepared qpred2-rows-prepared
 ```
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q1` | 0.33 | 0.28 | 1.18x |
-| `q2` | 1.4 | 0.93 | 1.51x |
-| `q2-switch` | 3.0 | 0.90 | 3.33x |
-| `q3` | 2.1 | 1.2 | 1.75x |
-| `q4` | 3.2 | 1.7 | 1.88x |
-| `qpred1` | 4.1 | 2.2 | 1.86x |
-| `qpred2` | 8.0 | 2.2 | 3.64x |
-| `q2-rows-prepared` | --- | 0.70 | --- |
-| `q4-rows-prepared` | --- | 1.5 | --- |
-| `qpred1-rows-prepared` | --- | 1.4 | --- |
-| `qpred2-rows-prepared` | --- | 1.4 | --- |
+| `q1` | 0.26 | 0.31 | 0.84x |
+| `q2` | 1.3 | 1.1 | 1.18x |
+| `q2-switch` | 2.9 | 1.0 | 2.90x |
+| `q3` | 2.0 | 1.2 | 1.67x |
+| `q4` | 3.2 | 1.9 | 1.68x |
+| `q5` | 145.1 | 23.3 | 6.23x |
+| `qpred1` | 3.9 | 2.4 | 1.62x |
+| `qpred2` | 7.6 | 2.5 | 3.04x |
+| `q2-rows-prepared` | --- | 0.81 | --- |
+| `q4-rows-prepared` | --- | 1.7 | --- |
+| `q5-rows-prepared` | --- | 20.5 | --- |
+| `qpred1-rows-prepared` | --- | 1.5 | --- |
+| `qpred2-rows-prepared` | --- | 1.5 | --- |
 
 Diagnostic prepared/row variants are available for the Vev rows, for example:
 
@@ -251,10 +253,13 @@ semantic fallback.
 distinct left-side join values, then scans the right `avet` range once per
 join value. This is a semi-join shape, not a benchmark-name special case, and
 it should generalize to Datomic/DataScript queries where an unreturned left
-entity only constrains a shared value. Native q5 result construction is about
-4ms for 5000 rows, while the public Clojure benchmark is about 100ms. The next
-q5 work should target bulk result materialization for string/value columns
-across the Java/Clojure boundary, not another query-engine shortcut.
+entity only constrains a shared value. The typed triple-column ABI brings the
+public Clojure q5 row to about 23ms and the prepared rows path to about 20ms,
+versus about 4ms for native result construction. Triple-column strings now use
+borrowed UTF-8 data plus length instead of allocating one owned C string per
+cell. Remaining q5 work should target broader physical-operator integration and
+larger-grained Java/Clojure row materialization rather than another
+query-engine shortcut.
 
 Near-term benchmark work:
 
