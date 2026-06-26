@@ -126,8 +126,8 @@ Status labels:
 - `todo` Consider reshaping `Query-Relation` attrs.
   Parallel `attrs` / `attr-sources` arrays couple indexes manually. A small `{name source}` record or an auxiliary source map would be clearer.
 
-- `todo` Add explicit SCC metadata for rule components.
-  Rule planning now reuses single-start reachability, but recursive component detection still checks mutual reachability on demand. A Tarjan/Kosaraju pass would make component recursion, rule grouping, and future semi-naive planning more direct.
+- `done` Add explicit SCC metadata for rule components.
+  Rule dependency analysis now builds strongly connected component metadata from the dependency graph using DFS finish order plus reverse traversal. Recursive checks and prepared rule-call planning can ask component metadata instead of repeatedly checking pairwise mutual reachability. The semi-naive rule evaluator remains separate future work.
 
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.

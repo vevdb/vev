@@ -243,7 +243,7 @@ small `datascript-bench` rule rows measured after that change are:
 | Workload | DataScript median | Vev median | DataScript/Vev |
 |---|---:|---:|---:|
 | `rules-wide-3x3` | 0.45ms | 0.24ms | 1.88x |
-| `rules-long-10x3` | 0.96ms | 0.30ms | 3.20x |
+| `rules-long-10x3` | 0.97ms | 0.30ms | 3.23x |
 
 ## Stress Comparison
 

@@ -125,6 +125,10 @@ Rule-call planning now also builds a reusable rule-name index for the planning
 batch. Dependency graphs are still ordinary rule-name graphs, and execution
 keeps the original rule order, but the planner no longer rescans the full rule
 array just to discover which names exist or which rule branches share a name.
+The same dependency graph now produces explicit strongly connected component
+metadata. Recursive checks use those components instead of pairwise
+mutual-reachability probes, which is the planner-side structure needed before a
+component-local semi-naive rule evaluator.
 
 ## Query Engine Strategy
 
@@ -313,10 +317,12 @@ join/projection operator instead of repeating random per-row index probes.
 
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
-generic recursive fixpoint loop. Recursive rule groups are still handled by the
-existing evaluator and specialized transitive paths. The next rule-engine step
-is to replace that recursive path with a relation-native semi-naive evaluator,
-using the dependency components as the stratification input.
+generic recursive fixpoint loop. The dependency graph also exposes strongly
+connected component metadata for recursive checks and rule grouping. Recursive
+rule groups are still handled by the existing evaluator and specialized
+transitive paths. The next rule-engine step is to replace that recursive path
+with a relation-native semi-naive evaluator, using the dependency components as
+the stratification input.
 
 Near-term query work should expand the relation engine in this order:
 

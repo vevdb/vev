@@ -6320,20 +6320,71 @@
                   (arr.push! visit next))))))))
     out))
 
+(defn rule-component-visit-order! [deps: []Rule-Dependency, name: string, visited: ^[dynamic]string, order: ^[dynamic]string]
+  (when (string-slice-contains? (slice visited^ 0) name)
+    (return))
+  (arr.push! visited^ name)
+  (let [[dep-index dep-ok] (rule-dependency-index deps name)]
+    (when dep-ok
+      (for [next deps[dep-index].deps]
+        (rule-component-visit-order! deps next visited order))))
+  (arr.push! order^ name))
+
+(defn rule-component-collect-reverse! [deps: []Rule-Dependency, name: string, assigned: ^[dynamic]string, component: ^[dynamic]string]
+  (when (string-slice-contains? (slice assigned^ 0) name)
+    (return))
+  (arr.push! assigned^ name)
+  (arr.push! component^ name)
+  (for [dep deps]
+    (when (string-slice-contains? (slice dep.deps 0) name)
+      (rule-component-collect-reverse! deps dep.name assigned component))))
+
+(defn rule-component-recursive? [deps: []Rule-Dependency, names: []string] -> bool
+  (when (> (count names) 1)
+    (return true))
+  (when (= (count names) 0)
+    (return false))
+  (rule-name-dependency-exists? deps names[0] names[0]))
+
+(defn rule-components-in-deps [deps: []Rule-Dependency] -> [dynamic]Rule-Component
+  (let [visited (make [dynamic]string)
+        order (make [dynamic]string)
+        assigned (make [dynamic]string)
+        out (make [dynamic]Rule-Component)]
+    (defer (delete visited))
+    (defer (delete order))
+    (defer (delete assigned))
+    (for [dep deps]
+      (rule-component-visit-order! deps dep.name (addr visited) (addr order)))
+    (let [i (- (count order) 1)]
+      (while (>= i 0)
+        (let [name order[i]]
+          (when (not (string-slice-contains? (slice assigned 0) name))
+            (let [component-names (make [dynamic]string)]
+              (rule-component-collect-reverse! deps name (addr assigned) (addr component-names))
+              (arr.push! out (Rule-Component {names: component-names recursive: (rule-component-recursive? deps (slice component-names 0))}))))
+          (set! i (- i 1)))))
+    out))
+
+(defn rule-component-index-for-name [components: []Rule-Component, name: string] -> [index: int, ok: bool]
+  (for [component index components]
+    (when (string-slice-contains? (slice component.names 0) name)
+      (return index true)))
+  (return 0 false))
+
+(defn rule-name-recursive-in-components? [components: []Rule-Component, name: string] -> bool
+  (let [[component-index found] (rule-component-index-for-name components name)]
+    (and found components[component-index].recursive)))
+
 (defn rule-name-recursive? [rules: []Rule, name: string] -> bool
   (let [deps (rules-dependency-graph rules)]
     (defer (delete-rule-dependency-graph deps))
     (rule-name-recursive-in-deps? (slice deps 0) name)))
 
 (defn rule-name-recursive-in-deps? [deps: []Rule-Dependency, name: string] -> bool
-  (when (rule-name-dependency-exists? deps name name)
-    (return true))
-  (for [other deps]
-    (when (and (not (= other.name name))
-               (rule-reaches-name? deps name other.name)
-               (rule-reaches-name? deps other.name name))
-      (return true)))
-  false)
+  (let [components (rule-components-in-deps deps)]
+    (defer (delete-rule-components components))
+    (rule-name-recursive-in-components? (slice components 0) name)))
 
 (defn rule-name-depends-on-recursive? [rules: []Rule, name: string] -> bool
   (let [deps (rules-dependency-graph rules)]
@@ -6344,40 +6395,33 @@
   (not (rule-name-depends-on-recursive? rules name)))
 
 (defn rule-name-depends-on-recursive-in-deps? [deps: []Rule-Dependency, name: string] -> bool
+  (let [components (rule-components-in-deps deps)]
+    (defer (delete-rule-components components))
+    (rule-name-depends-on-recursive-in-components? deps (slice components 0) name)))
+
+(defn rule-name-depends-on-recursive-in-components? [deps: []Rule-Dependency, components: []Rule-Component, name: string] -> bool
   (let [names (rule-reachable-names-in-deps deps name)]
     (defer (delete names))
     (for [name names]
-      (when (rule-name-recursive-in-deps? deps name)
+      (when (rule-name-recursive-in-components? components name)
         (return true)))
     false))
 
 (defn any-rule-name-recursive-in-deps? [deps: []Rule-Dependency, names: []string] -> bool
+  (let [components (rule-components-in-deps deps)]
+    (defer (delete-rule-components components))
+    (any-rule-name-recursive-in-components? (slice components 0) names)))
+
+(defn any-rule-name-recursive-in-components? [components: []Rule-Component, names: []string] -> bool
   (for [name names]
-    (when (rule-name-recursive-in-deps? deps name)
+    (when (rule-name-recursive-in-components? components name)
       (return true)))
   false)
 
 (defn rule-components [rules: []Rule] -> [dynamic]Rule-Component
-  (let [deps (rules-dependency-graph rules)
-        names (rule-unique-names rules)
-        assigned (make [dynamic]string)
-        out (make [dynamic]Rule-Component)]
+  (let [deps (rules-dependency-graph rules)]
     (defer (delete-rule-dependency-graph deps))
-    (defer (delete names))
-    (defer (delete assigned))
-    (for [name names]
-      (when (not (string-slice-contains? (slice assigned 0) name))
-        (let [component-names (make [dynamic]string)
-              recursive (rule-name-dependency-exists? (slice deps 0) name name)]
-          (for [candidate names]
-            (when (and (rule-reaches-name? (slice deps 0) name candidate)
-                       (rule-reaches-name? (slice deps 0) candidate name))
-              (string-push-unique! (addr component-names) candidate)
-              (string-push-unique! (addr assigned) candidate)))
-          (when (> (count component-names) 1)
-            (set! recursive true))
-          (arr.push! out (Rule-Component {names: component-names recursive: recursive})))))
-    out))
+    (rule-components-in-deps (slice deps 0))))
 
 (defn delete-rule-components [components: [dynamic]Rule-Component]
   (for [component components]
@@ -6419,11 +6463,13 @@
 
 (defn rule-call-plan-indexed [rules: []Rule, index: []Rule-Name-Index-Entry, name: string] -> Rule-Call-Plan
   (let [deps (rules-dependency-graph-indexed rules index)
+        components (rule-components-in-deps (slice deps 0))
         names (rule-reachable-names-in-deps (slice deps 0) name)]
     (defer (delete-rule-dependency-graph deps))
+    (defer (delete-rule-components components))
     (defer (delete names))
     (let [call-rules (rules-filter-by-names rules (slice names 0))
-          recursive (any-rule-name-recursive-in-deps? (slice deps 0) (slice names 0))
+          recursive (any-rule-name-recursive-in-components? (slice components 0) (slice names 0))
           acyclic-depth (if recursive 0 (+ (count names) 1))
           [linear-plan linear-ok] (linear-transitive-rule-plan (slice call-rules 0) name)
           linear-filters (make [dynamic]Clause)
