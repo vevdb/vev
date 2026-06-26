@@ -246,6 +246,12 @@ that still rebuild through `Binding` arrays, such as function clauses, `ground`,
 `get-else`, `get-some`, `or`, and rule-call outputs, a way back into the typed
 relation path when their output values fit the primitive column layout.
 
+Ninth slice implemented: join fallback paths now also re-materialize typed
+columns for their tuple output. Cartesian product, primitive hash-join fallback,
+and semantic nested-join fallback still use the existing correctness logic, but
+their results no longer permanently lose the typed column cache when the output
+values fit the primitive relation layout.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
