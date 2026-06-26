@@ -90,6 +90,13 @@ CREATE TABLE IF NOT EXISTS vev_snapshots (
 CREATE TABLE IF NOT EXISTS vev_transactions (
   tx INTEGER PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS vev_tx_meta (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tx INTEGER NOT NULL,
+  a TEXT NOT NULL,
+  value_text TEXT NOT NULL,
+  FOREIGN KEY(tx) REFERENCES vev_transactions(tx)
+);
 CREATE TABLE IF NOT EXISTS vev_datoms (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   e INTEGER NOT NULL,
@@ -99,6 +106,7 @@ CREATE TABLE IF NOT EXISTS vev_datoms (
   added INTEGER NOT NULL,
   FOREIGN KEY(tx) REFERENCES vev_transactions(tx)
 );
+CREATE INDEX IF NOT EXISTS vev_tx_meta_tx ON vev_tx_meta(tx, a);
 CREATE INDEX IF NOT EXISTS vev_datoms_eavt ON vev_datoms(e, a, value_text, tx, added);
 CREATE INDEX IF NOT EXISTS vev_datoms_aevt ON vev_datoms(a, e, value_text, tx, added);
 CREATE INDEX IF NOT EXISTS vev_datoms_avet ON vev_datoms(a, value_text, e, tx, added);
@@ -217,7 +225,7 @@ sqlite_open_replace_datoms_raw :: proc(path: string) -> (rawptr, bool, string) {
         _ = sqlite3_close(db)
         return nil, false, tx_error
     }
-    clear_ok, clear_error := sqlite_exec_ok(db, \"DELETE FROM vev_datoms; DELETE FROM vev_transactions;\")
+    clear_ok, clear_error := sqlite_exec_ok(db, \"DELETE FROM vev_datoms; DELETE FROM vev_tx_meta; DELETE FROM vev_transactions;\")
     if !clear_ok {
         _, _ = sqlite_exec_ok(db, \"ROLLBACK\")
         _ = sqlite3_close(db)
@@ -328,6 +336,47 @@ sqlite_insert_datom_raw :: proc(handle: rawptr, e: u64, a: string, value_text: s
     return true, \"\"
 }
 
+sqlite_insert_tx_meta_raw :: proc(handle: rawptr, tx: u64, a: string, value_text: string) -> (bool, string) {
+    if handle == nil {
+        return false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    tx_ok, tx_error := sqlite_insert_tx_raw(handle, tx)
+    if !tx_ok {
+        return false, tx_error
+    }
+    stmt: ^SQLite3_Stmt
+    sql := \"INSERT INTO vev_tx_meta (tx, a, value_text) VALUES (?, ?, ?)\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return false, sqlite_error_text(db, \"sqlite prepare tx metadata failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    a_c, a_c_ok := sqlite_cstring(a)
+    if !a_c_ok {
+        return false, \"failed to allocate sqlite tx metadata attr\"
+    }
+    defer delete(a_c)
+    value_c, value_c_ok := sqlite_cstring(value_text)
+    if !value_c_ok {
+        return false, \"failed to allocate sqlite tx metadata value\"
+    }
+    defer delete(value_c)
+    if sqlite3_bind_int64(stmt, 1, i64(tx)) != SQLITE_OK ||
+       sqlite3_bind_text(stmt, 2, a_c, -1, nil) != SQLITE_OK ||
+       sqlite3_bind_text(stmt, 3, value_c, -1, nil) != SQLITE_OK {
+        return false, sqlite_error_text(db, \"sqlite bind tx metadata failed\")
+    }
+    if sqlite3_step(stmt) != SQLITE_DONE {
+        return false, sqlite_error_text(db, \"sqlite insert tx metadata failed\")
+    }
+    return true, \"\"
+}
+
 sqlite_rows_exist_raw :: proc(db: ^SQLite3) -> (bool, bool, string) {
     stmt: ^SQLite3_Stmt
     sql := \"SELECT 1 FROM vev_datoms LIMIT 1\"
@@ -421,6 +470,69 @@ sqlite_load_datom_rows_text_raw :: proc(path: string) -> (string, bool, string) 
     delete(parts)
     return out, true, \"\"
 }
+
+sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string) {
+    db, open_ok, open_error := sqlite_open_initialized(path)
+    if !open_ok {
+        return \"\", false, open_error
+    }
+    defer _ = sqlite3_close(db)
+    stmt: ^SQLite3_Stmt
+    sql := \"SELECT tx, a, value_text FROM vev_tx_meta ORDER BY id\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return \"\", false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return \"\", false, sqlite_error_text(db, \"sqlite prepare tx metadata read failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    parts := make([dynamic]string)
+    append(&parts, \"[\")
+    first := true
+    for {
+        rc := sqlite3_step(stmt)
+        if rc == SQLITE_DONE {
+            break
+        }
+        if rc != SQLITE_ROW {
+            delete(parts)
+            return \"\", false, sqlite_error_text(db, \"sqlite tx metadata read failed\")
+        }
+        a_raw := sqlite3_column_text(stmt, 1)
+        value_raw := sqlite3_column_text(stmt, 2)
+        if a_raw == nil || value_raw == nil {
+            delete(parts)
+            return \"\", false, \"sqlite tx metadata row had null text\"
+        }
+        a_text, a_err := strings.clone_from_cstring(a_raw)
+        if a_err != nil {
+            delete(parts)
+            return \"\", false, \"failed to clone sqlite tx metadata attr\"
+        }
+        value_text, value_err := strings.clone_from_cstring(value_raw)
+        if value_err != nil {
+            delete(a_text)
+            delete(parts)
+            return \"\", false, \"failed to clone sqlite tx metadata value\"
+        }
+        if !first {
+            append(&parts, \" \")
+        }
+        first = false
+        append(&parts, fmt.tprintf(\"[%d %s %s]\",
+            sqlite3_column_int64(stmt, 0),
+            vev__attr_serializable_text(a_text),
+            value_text))
+        delete(a_text)
+        delete(value_text)
+    }
+    append(&parts, \"]\")
+    out := strings.concatenate(parts[:])
+    delete(parts)
+    return out, true, \"\"
+}
 ")
 
 (defn save-db-snapshot-text [path: string, db: DB] -> [ok: bool, error: string]
@@ -489,10 +601,25 @@ sqlite_load_datom_rows_text_raw :: proc(path: string) -> (string, bool, string) 
 (defn persist-conn-sqlite [path: string, conn: Conn] -> [ok: bool, error: string]
   (save-db-sqlite path conn.db))
 
+(defstruct SQLite-Tx-Meta-Row {
+  tx: u64
+  a: string
+  v: Value
+})
+
 (defstruct SQLite-Conn {
   path: string
   conn: Conn
 })
+
+(defn insert-sqlite-tx-meta! [handle: rawptr, tx: u64, meta: []Tx-Meta] -> [ok: bool, error: string]
+  (for [entry meta]
+    (let [value-text (value-serializable-text entry.v)
+          [insert-ok insert-error] (sqlite-insert-tx-meta-raw handle tx entry.a value-text)]
+      (delete value-text)
+      (when (not insert-ok)
+        (return false insert-error))))
+  (return true ""))
 
 (defn append-datoms-sqlite [path: string, datoms: []Datom] -> [ok: bool, error: string]
   (let [[handle open-ok open-error] (sqlite-open-append-datoms-raw path)]
@@ -506,6 +633,76 @@ sqlite_load_datom_rows_text_raw :: proc(path: string) -> (string, bool, string) 
           (sqlite-rollback-close-raw handle)
           (return false insert-error))))
     (sqlite-commit-close-raw handle)))
+
+(defn append-tx-report-sqlite [path: string, report: Tx-Report] -> [ok: bool, error: string]
+  (let [[handle open-ok open-error] (sqlite-open-append-datoms-raw path)]
+    (when (not open-ok)
+      (return false open-error))
+    (for [datom report.tx-data]
+      (let [value-text (value-serializable-text datom.v)
+            [insert-ok insert-error] (sqlite-insert-datom-raw handle datom.e datom.a value-text datom.tx datom.added)]
+        (delete value-text)
+        (when (not insert-ok)
+          (sqlite-rollback-close-raw handle)
+          (return false insert-error))))
+    (let [[meta-ok meta-error] (insert-sqlite-tx-meta! handle report.tx (slice report.tx-meta 0))]
+      (when (not meta-ok)
+        (sqlite-rollback-close-raw handle)
+        (return false meta-error)))
+    (sqlite-commit-close-raw handle)))
+
+(defn sqlite-tx-meta-row-from-edn-node [doc: EDN-Doc, node-index: int] -> [row: SQLite-Tx-Meta-Row, ok: bool, error: string]
+  (when (or (= node-index -1)
+            (not (= doc.nodes[node-index].kind .Vector))
+            (not (= doc.nodes[node-index].child-count 3)))
+    (return (SQLite-Tx-Meta-Row {}) false "expected serialized tx metadata vector [tx a v]"))
+  (let [tx-node (edn-child-at doc node-index 0)
+        a-node (edn-child-at doc node-index 1)
+        v-node (edn-child-at doc node-index 2)
+        [tx tx-ok tx-error] (edn-int-u64 doc tx-node "tx")
+        [attr attr-ok] (edn-attr-text doc a-node)]
+    (when (not tx-ok)
+      (return (SQLite-Tx-Meta-Row {}) false tx-error))
+    (when (not attr-ok)
+      (return (SQLite-Tx-Meta-Row {}) false "expected tx metadata attribute keyword or string"))
+    (let [[value value-ok value-error] (serial-value-from-edn-node doc v-node)]
+      (when (not value-ok)
+        (return (SQLite-Tx-Meta-Row {}) false value-error))
+      (let [owned (value-owned value)]
+        (delete-value-containers-shallow value)
+        (return (SQLite-Tx-Meta-Row {tx: tx a: (string-owned attr) v: owned}) true "")))))
+
+(defn delete-sqlite-tx-meta-rows [rows: [dynamic]SQLite-Tx-Meta-Row]
+  (for [row rows]
+    (delete row.a)
+    (delete-owned-value row.v))
+  (delete rows))
+
+(defn load-sqlite-tx-meta-rows [path: string] -> [rows: [dynamic]SQLite-Tx-Meta-Row, ok: bool, error: string]
+  (let [[text loaded-ok loaded-error] (sqlite-load-tx-meta-rows-text-raw path)]
+    (when (not loaded-ok)
+      (return (make [dynamic]SQLite-Tx-Meta-Row) false loaded-error))
+    (defer (delete text))
+    (let [doc (empty-edn-doc)
+          [read-ok read-error] (read-edn-text! (addr doc) text)]
+      (when (not read-ok)
+        (delete doc.nodes)
+        (return (make [dynamic]SQLite-Tx-Meta-Row) false read-error))
+      (when (not (= doc.nodes[doc.root].kind .Vector))
+        (delete doc.nodes)
+        (return (make [dynamic]SQLite-Tx-Meta-Row) false "expected serialized tx metadata vector"))
+      (let [out (make [dynamic]SQLite-Tx-Meta-Row)
+            child doc.nodes[doc.root].first-child]
+        (while (not (= child -1))
+          (let [[row row-ok row-error] (sqlite-tx-meta-row-from-edn-node doc child)]
+            (when (not row-ok)
+              (delete-sqlite-tx-meta-rows out)
+              (delete doc.nodes)
+              (return (make [dynamic]SQLite-Tx-Meta-Row) false row-error))
+            (arr.push! out row)
+            (set! child doc.nodes[child].next-sibling)))
+        (delete doc.nodes)
+        (return out true "")))))
 
 (defn create-sqlite-conn [path: string] -> SQLite-Conn
   (SQLite-Conn {path: (string-owned path)
@@ -535,7 +732,7 @@ sqlite_load_datom_rows_text_raw :: proc(path: string) -> (string, bool, string) 
   (let [report (transact-tx-data (addr store^.conn) tx-data)]
     (when (not report.ok)
       (return report))
-    (let [[saved-ok save-error] (append-datoms-sqlite store^.path (slice report.tx-data 0))]
+    (let [[saved-ok save-error] (append-tx-report-sqlite store^.path report)]
       (when (not saved-ok)
         (rollback-sqlite-conn! store report.db-before)
         (delete-tx-report-shallow report)

@@ -65,7 +65,7 @@ Non-goal:
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 362 tests. Remaining work is concentrated in exact
+suite currently passes 363 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
 and durable storage integration.
@@ -271,13 +271,14 @@ Packaging:
 - CLI binary exercises the same engine path
 
 Status: active. Vev now has snapshot-file persistence, SQLite-backed datom row
-persistence, and a native SQLite-backed connection wrapper. The SQLite slice
-creates metadata, transaction, and datom tables, writes one row per datom
-through a SQLite transaction, reopens from disk, rebuilds in-memory indexes,
-and then queries normally. The explicit persist API full-replaces durable
-datom rows from the connection's current datom log; the SQLite connection
-wrapper appends each successful transaction's report tx-data as it commits and
-rolls the in-memory connection back if the durable append fails.
+persistence, explicit SQLite tx metadata rows, and a native SQLite-backed
+connection wrapper. The SQLite slice creates metadata, transaction, tx metadata,
+and datom tables, writes one row per datom through a SQLite transaction,
+reopens from disk, rebuilds in-memory indexes, and then queries normally. The
+explicit persist API full-replaces durable datom rows from the connection's
+current datom log; the SQLite connection wrapper appends each successful
+transaction's report tx-data plus tx metadata rows as it commits and rolls the
+in-memory connection back if the durable append fails.
 
 ## Phase 7: Dogfood
 
@@ -368,8 +369,7 @@ now strong enough to start durability. The next durable-storage gate is not
 
 - SQLite-backed open/write/close/reopen/query works from datom rows through
   the same semantic engine path as in-memory Vev
-- transaction boundaries are durable, and explicit tx metadata persistence is
-  the next storage task
+- transaction boundaries and SQLite-backed report metadata rows are durable
 - immutable DB snapshot semantics remain visible through the native ABI
 - MusicBrainz/Datomic workshop queries validate durable correctness and
   performance once the basic SQLite backend exists

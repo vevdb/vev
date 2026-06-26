@@ -43,17 +43,18 @@ There are now two write modes:
 - explicit full persist: `persist-conn-sqlite` replaces the durable datom rows
   with the connection's current full datom log
 - SQLite-backed connection wrapper: `transact-sqlite-*` runs the normal Vev
-  transaction engine and appends the successful report tx-data to SQLite before
-  returning
+  transaction engine and appends the successful report tx-data plus tx metadata
+  rows to SQLite before returning
 
 If the SQLite append fails after the in-memory transaction succeeds, the
 wrapper restores the previous DB snapshot and reports a failed transaction.
 That keeps the wrapper-level connection consistent with the durable store.
 
 Current limitation: this is still a native wrapper-level API. The raw C ABI and
-host language wrappers do not yet expose durable SQLite connection handles, and
-transaction metadata is not persisted as explicit metadata rows beyond the
-datom rows themselves.
+host language wrappers do not yet expose durable SQLite connection handles.
+Explicit full DB persist cannot reconstruct report-only tx metadata from a bare
+DB value; metadata rows are written by the SQLite-backed transaction wrapper
+when it has the successful transaction report in hand.
 
 ## SQLite Backend Plan
 
@@ -71,9 +72,10 @@ Initial schema direction:
 
 Implementation order:
 
-1. Store transaction metadata explicitly.
-2. Expose durable SQLite connection handles through the C ABI and selected host
+1. Expose durable SQLite connection handles through the C ABI and selected host
    wrappers once the native shape settles.
+2. Add storage-level metadata inspection/replay APIs only where concrete tools
+   need them.
 3. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
 4. Add write-bench style measurements for commit latency, batch throughput, and
