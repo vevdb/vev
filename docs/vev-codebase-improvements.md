@@ -232,8 +232,8 @@ Status labels:
 - `later` Revisit EDN document child storage.
   `EDN-Doc` stores children as linked sibling indexes in one node array, which forces linear `edn-child-at` and cursor loops. Child spans or child-index arrays would better match Kvist slice-heavy traversal.
 
-- `later` Add generic typed result/column batches.
-  Typed fast paths and ABI wrappers are currently shape-specific for entity columns, entity/int pairs, and entity/string/int triples. A generic column batch or typed relation result would age better than adding benchmark-shaped accessors.
+- `partial` Add generic typed result/column batches.
+  Java now has a `DB.queryColumns` / `ColumnResult` facade over the current optimized entity, entity/int, and entity/string/int result shapes. The Clojure hot path deliberately still calls the direct shape-specific Java methods because probing through the Java facade is measurably slower. The remaining real design work is a native one-call C ABI column batch/result handle selected by the planner, not more host-side probing over benchmark-shaped accessors.
 
 - `later` Consolidate transitive graph execution.
   Forward/reverse adjacency construction, sparse/dense BFS, unbound-start emission, and alternating traversal all carry similar graph-walk logic. A graph traversal helper should come with the broader physical-operator layer.
