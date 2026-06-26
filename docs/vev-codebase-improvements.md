@@ -62,7 +62,7 @@ Status labels:
   `tuple-attrs-schema-tx-from` now accepts an arbitrary `[]string` of component attrs, and the existing two-attr `tuple-attrs-schema-tx` delegates to it.
 
 - `done` Add public shallow lifecycle cleanup for prepared/query/report containers.
-  `delete-query-shallow`, `delete-prepared-query-shallow`, `delete-prepared-rules-shallow`, `delete-prepared-tx-data-shallow`, and `delete-tx-report-shallow` are now canonical Vev helpers. The C ABI prepared-query free path delegates to the package helper instead of carrying a duplicate local copy.
+  `delete-query-shallow`, `delete-prepared-query-shallow`, `delete-prepared-rules-shallow`, `delete-prepared-tx-data-shallow`, `delete-tx-report-shallow`, and `delete-live-tx-report-shallow` are now canonical Vev helpers. The C ABI prepared-query free path delegates to the package helper instead of carrying a duplicate local copy.
 
 - `done` Tighten temporary text-query cleanup.
   Direct `q-text` variants that parse a short-lived query now defer `delete-query-shallow` after execution, so temporary query container arrays are not leaked on the main EDN string API path.

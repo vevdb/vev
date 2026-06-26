@@ -81,6 +81,13 @@ metadata. Higher-level wrappers expose the same diagnostic shape as
 convenience form for logging or simple tooling that wants the same metadata as
 one EDN map string.
 
+Live connection transactions return reports whose `db-after` is the
+connection's current DB value. Cleanup code for those reports should use
+`delete-live-tx-report-shallow`, which deletes the report-owned `db-before`
+and report collections without freeing the live connection DB. The generic
+`delete-tx-report-shallow` remains appropriate for immutable `with-*` reports
+and failed reports that do not alias a live connection.
+
 Explicit full DB persist cannot reconstruct report-only tx metadata from a
 bare DB value; metadata rows are written by the SQLite-backed transaction
 wrapper when it has the successful transaction report in hand.
