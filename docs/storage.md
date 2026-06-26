@@ -103,6 +103,9 @@ Implementation order:
    full index rebuilds for conservative direct add-only transactions, skips
    full-schema validation for ordinary non-schema transactions, and clones
    reportable DB snapshots from existing indexes instead of rebuilding them.
+   Append-only eligibility skips current-DB fact/entity-attr checks when all
+   ops target entities above the current max entity id, which is the common
+   bulk-import shape.
    The benchmark now separates snapshot, resolution, apply, log copy,
    incremental index build, and SQLite append cost. The next write-performance
    milestone is reducing the remaining append application/report/index

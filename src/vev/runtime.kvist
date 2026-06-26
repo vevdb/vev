@@ -4596,21 +4596,39 @@
       (set! prior (+ prior 1))))
   false)
 
+(defn db-next-entity-id-fast [db: DB] -> u64
+  (when (= (count db.eavt) 0)
+    (return 1))
+  (+ db.datoms[db.eavt[(- (count db.eavt) 1)]].e 1))
+
+(defn append-only-ops-all-new-entities? [db: DB, ops: []Tx-Op] -> bool
+  (let [next-e (db-next-entity-id-fast db)]
+    (for [op ops]
+      (when (< op.e next-e)
+        (return false))))
+  true)
+
 (defn append-only-ops-eligible? [before: DB, ops: []Tx-Op] -> bool
-  (let [seen-ea (set.empty string)]
+  (let [seen-ea (set.empty string)
+        all-new-entities (append-only-ops-all-new-entities? before ops)]
     (defer (delete seen-ea))
     (for [op index ops]
       (when (not (= op.kind .Add))
         (return false))
-      (when (current-db-fact-exists? before op)
+      (when (and (not all-new-entities)
+                 (current-db-fact-exists? before op))
         (return false))
-      (when (prior-add-op-fact-exists? ops index op)
-        (return false))
-      (when (schema-cardinality-one? before op.a)
-        (when (or (current-db-attr-exists? before op.e op.a)
-                  (entity-attr-seen? seen-ea op.e op.a))
-          (return false))
-        (set.add! seen-ea (entity-attr-key op.e op.a)))))
+      (if (schema-cardinality-one? before op.a)
+        (do
+          (when (or (and (not all-new-entities)
+                         (current-db-attr-exists? before op.e op.a))
+                    (entity-attr-seen? seen-ea op.e op.a))
+            (return false))
+          (set.add! seen-ea (entity-attr-key op.e op.a)))
+        (do
+          (when (prior-add-op-fact-exists? ops index op)
+            (return false))
+          (set.add! seen-ea (entity-attr-key op.e op.a))))))
   true)
 
 (defn transact-ops-with-tempids-from-before [conn: ^Conn, before: DB, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
