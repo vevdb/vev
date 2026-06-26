@@ -227,6 +227,63 @@ column cache on their result relation. The join still emits compatibility
 same time, so downstream typed joins and simple result projection can stay on
 the cached-column path instead of rebuilding typed data from row bindings.
 
+Sixth slice implemented: predicate filters now preserve cached typed columns
+when the input relation already has them. Matching rows are copied into fresh
+typed columns in lockstep with the compatibility tuple output. If a row cannot
+be represented in the typed layout, the operator drops back to the ordinary
+tuple-only relation, so the cache remains an optimization rather than a semantic
+requirement.
+
+Seventh slice implemented: `not` / `not-join` now execute as direct relation
+filters instead of materializing a temporary binding array and rebuilding the
+relation from scratch. Since `not` cannot introduce new attributes, the output
+relation preserves the input attr/source layout and keeps the typed column cache
+alive for rows that survive the anti-join.
+
+Eighth slice implemented: the binding-to-relation constructors now attempt to
+materialize typed columns for the completed relation rows. This gives operators
+that still rebuild through `Binding` arrays, such as function clauses, `ground`,
+`get-else`, `get-some`, `or`, and rule-call outputs, a way back into the typed
+relation path when their output values fit the primitive column layout.
+
+Ninth slice implemented: join fallback paths now also re-materialize typed
+columns for their tuple output. Cartesian product, primitive hash-join fallback,
+and semantic nested-join fallback still use the existing correctness logic, but
+their results no longer permanently lose the typed column cache when the output
+values fit the primitive relation layout.
+
+Tenth slice implemented: typed result rendering now resolves `:find` and
+`:with` variables to relation column indexes once before scanning result rows.
+The row loop reads values directly from typed columns by integer index instead
+of doing per-row variable-name lookups through the relation attr map.
+
+Eleventh slice implemented: typed primitive hash joins now precompute output
+column sources and fill typed result columns directly from left/right typed
+input columns by row index. The compatibility `Binding` row is still emitted
+for callers and fallback paths, but it is built from the same column-source
+table. Typed output no longer has to scan the merged row by variable name to
+populate the column cache.
+
+Twelfth slice implemented: predicate filters can now evaluate built-in
+predicate operators directly against cached typed relation columns by row and
+column index. Native callback predicates and dynamic operator vars still fall
+back to the compatibility `Binding` path, but ordinary comparison, boolean,
+numeric, regex, and string predicates no longer need per-row variable-name
+lookup when typed columns are present.
+
+Thirteenth slice implemented: Cartesian/product joins with no shared variables
+now have a typed operator path. When both inputs have cached typed columns, the
+product precomputes output column sources and fills typed output columns from
+left/right row indexes directly. The compatibility `Binding` row is still
+emitted from the same column-source table, and the older semantic product
+remains as fallback.
+
+Fourteenth slice implemented: final typed result rendering now borrows the
+`Query-Relation` typed column cache directly instead of cloning it into a
+temporary `Typed-Relation` just to read `:find` and `:with` values. This keeps
+the final projection on column indexes while removing one whole-column copy
+from the successful typed result path.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
