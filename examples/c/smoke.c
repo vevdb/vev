@@ -215,6 +215,15 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         fprintf(stderr, "unexpected initial durable basis\n");
         goto cleanup;
     }
+    const char *info = vev_connection_info_edn(durable);
+    if (strstr(info, ":backend :sqlite") == NULL ||
+        strstr(info, ":basis-t 0") == NULL ||
+        strstr(info, path) == NULL) {
+        fprintf(stderr, "unexpected durable connection info: %s\n", info);
+        vev_string_free(info);
+        goto cleanup;
+    }
+    vev_string_free(info);
 
     report = vev_connection_transact_edn_report(
         durable,

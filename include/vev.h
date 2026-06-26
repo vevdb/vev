@@ -73,6 +73,7 @@ const char *vev_connection_error(vev_connection_t conn);
 const char *vev_connection_backend(vev_connection_t conn);
 const char *vev_connection_path(vev_connection_t conn);
 unsigned long long vev_connection_basis_t(vev_connection_t conn);
+const char *vev_connection_info_edn(vev_connection_t conn);
 void vev_connection_close(vev_connection_t conn);
 vev_db_t vev_connection_db(vev_connection_t conn);
 vev_tx_report_t vev_connection_transact_edn_report(

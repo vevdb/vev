@@ -37,6 +37,7 @@ unsafe extern "C" {
     fn vev_connection_backend(conn: VevConnection) -> *const c_char;
     fn vev_connection_path(conn: VevConnection) -> *const c_char;
     fn vev_connection_basis_t(conn: VevConnection) -> c_ulonglong;
+    fn vev_connection_info_edn(conn: VevConnection) -> *const c_char;
     fn vev_connection_close(conn: VevConnection);
     fn vev_connection_db(conn: VevConnection) -> VevDb;
     fn vev_connection_transact_edn_report(
@@ -336,6 +337,10 @@ impl DurableConn {
 
     fn basis_t(&self) -> u64 {
         unsafe { vev_connection_basis_t(self.raw) as u64 }
+    }
+
+    fn info_edn(&self) -> String {
+        unsafe { Library::owned_string(vev_connection_info_edn(self.raw)) }
     }
 }
 
@@ -870,6 +875,11 @@ fn main() -> Result<(), String> {
         if durable.basis_t() != 0 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected initial durable basis".to_string());
+        }
+        let info = durable.info_edn();
+        if !info.contains(":backend :sqlite") || !info.contains(":basis-t 0") {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable connection info".to_string());
         }
         let report = durable.transact_report(
             r#"[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]"#,

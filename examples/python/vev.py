@@ -137,6 +137,8 @@ class Library:
         lib.vev_connection_path.restype = ctypes.c_void_p
         lib.vev_connection_basis_t.argtypes = [ctypes.c_void_p]
         lib.vev_connection_basis_t.restype = ctypes.c_ulonglong
+        lib.vev_connection_info_edn.argtypes = [ctypes.c_void_p]
+        lib.vev_connection_info_edn.restype = ctypes.c_void_p
         lib.vev_connection_close.argtypes = [ctypes.c_void_p]
         lib.vev_connection_db.argtypes = [ctypes.c_void_p]
         lib.vev_connection_db.restype = ctypes.c_void_p
@@ -668,6 +670,12 @@ class DurableConnection:
     def basis_t(self) -> int:
         self._require_open()
         return int(self._library.lib.vev_connection_basis_t(self._handle))
+
+    def info_edn(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_connection_info_edn(self._handle)
+        )
 
     def prepare(
         self, query_edn: str, source_names: list[str] | None = None

@@ -72,7 +72,9 @@ Durable connection metadata is available through the same neutral boundary:
 reports the concrete storage path, and `vev_connection_basis_t` reports the
 last committed transaction visible to the connection. Higher-level wrappers
 expose the same diagnostic shape as `backend`/`path`/`basis_t` methods or
-Clojure `connection-info`.
+Clojure `connection-info`. `vev_connection_info_edn` is the C-friendly
+convenience form for logging or simple tooling that wants the same metadata as
+one EDN map string.
 
 Explicit full DB persist cannot reconstruct report-only tx metadata from a
 bare DB value; metadata rows are written by the SQLite-backed transaction

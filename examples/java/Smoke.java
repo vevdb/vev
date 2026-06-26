@@ -212,6 +212,10 @@ public final class Smoke {
                     if (durable.basisT() != 0) {
                         throw new IllegalStateException("unexpected initial durable basis");
                     }
+                    String info = durable.infoEdn();
+                    if (!info.contains(":backend :sqlite") || !info.contains(":basis-t 0")) {
+                        throw new IllegalStateException("unexpected durable connection info");
+                    }
                     try (Vev.TxReport report = durable.transactReport("""
                             [{:db/id 1
                               :user/name "Durable Ada"

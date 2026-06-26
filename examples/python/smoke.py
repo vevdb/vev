@@ -371,6 +371,9 @@ def main() -> int:
                 raise RuntimeError("unexpected durable connection metadata")
             if durable.basis_t() != 0:
                 raise RuntimeError("unexpected initial durable basis")
+            info = durable.info_edn()
+            if ":backend :sqlite" not in info or ":basis-t 0" not in info:
+                raise RuntimeError("unexpected durable connection info")
             with durable.transact_report(
                 '[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]'
             ) as report:

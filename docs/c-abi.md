@@ -298,8 +298,10 @@ if (!vev_connection_ok(durable)) {
 const char *backend = vev_connection_backend(durable);
 const char *path = vev_connection_path(durable);
 unsigned long long basis_t = vev_connection_basis_t(durable);
+const char *info = vev_connection_info_edn(durable);
 vev_string_free(backend);
 vev_string_free(path);
+vev_string_free(info);
 
 vev_tx_report_t durable_tx = vev_connection_transact_edn_report(
     durable,
@@ -323,6 +325,8 @@ but new host APIs should prefer `vev_connect` / `vev_connection_*`.
 `vev_connection_backend` and `vev_connection_path` return owned diagnostic
 strings; callers free them with `vev_string_free`. `vev_connection_basis_t`
 returns the Datomic-style basis transaction visible to the connection.
+`vev_connection_info_edn` returns the same metadata as one owned EDN map string
+for simple C tooling and logging.
 
 ## Python Adapter
 
@@ -388,6 +392,7 @@ Durable connections use the same DB-value query path:
 with vev.connect("app.vev.sqlite") as durable:
     assert durable.backend() == "sqlite"
     assert durable.basis_t() == 0
+    info = durable.info_edn()
     durable.transact_report(
         '[{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}]')
     with durable.db() as db:
@@ -457,6 +462,7 @@ through immutable DB snapshots:
 try (Vev.DurableConnection durable = vev.connect("app.vev.sqlite")) {
     String backend = durable.backend();
     long basisT = durable.basisT();
+    String info = durable.infoEdn();
     try (Vev.TxReport report =
              durable.transactReport("[{:db/id 1 :user/name \"Ada\"}]")) {
         // inspect report.value() if needed
