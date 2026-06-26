@@ -264,6 +264,13 @@ for callers and fallback paths, but it is built from the same column-source
 table. Typed output no longer has to scan the merged row by variable name to
 populate the column cache.
 
+Twelfth slice implemented: predicate filters can now evaluate built-in
+predicate operators directly against cached typed relation columns by row and
+column index. Native callback predicates and dynamic operator vars still fall
+back to the compatibility `Binding` path, but ordinary comparison, boolean,
+numeric, regex, and string predicates no longer need per-row variable-name
+lookup when typed columns are present.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the

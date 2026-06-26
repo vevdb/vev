@@ -686,6 +686,20 @@
       (return (Value {}) false))
     (typed-relation-column-value rel.columns[column-index] row)))
 
+(defn query-relation-typed-row-value [rel: Query-Relation, row: int, name: string] -> [value: Value, ok: bool]
+  (when (not rel.has-typed-columns)
+    (return (Value {}) false))
+  (let [[column-index column-ok] (query-relation-attr-index-lookup rel name)]
+    (when (not column-ok)
+      (return (Value {}) false))
+    (typed-relation-column-value rel.typed-columns[column-index] row)))
+
+(defn query-relation-resolve-typed-term [rel: Query-Relation, row: int, term: Term] -> [value: Value, ok: bool]
+  (case term.kind
+    .Value (return term.value true)
+    .Var (return (query-relation-typed-row-value rel row term.name))
+    :else (return (Value {}) false)))
+
 (defstruct Relation-Column-Source {
   side: int
   index: int
@@ -1694,6 +1708,103 @@
 
 (defn predicate-matches-with-fns? [predicate: Predicate, binding: Binding, registry: []Native-Query-Fn] -> bool
   (predicate-matches-with-db-and-fns? (DB {}) predicate binding registry))
+
+(defn typed-predicate-op-name [predicate: Predicate, registry: []Native-Query-Fn] -> [op: string, ok: bool]
+  (when (query-var-name? predicate.op)
+    (return "" false))
+  (when (predicate-op-supported? predicate.op)
+    (return predicate.op true))
+  (let [[index found] (query-fn-index registry predicate.op)]
+    (when (not found)
+      (return "" false))
+    (let [entry registry[index]]
+      (when (or entry.has-predicate-callback
+                entry.has-db-predicate-callback
+                (= (count entry.target) 0)
+                (not (predicate-op-supported? entry.target)))
+        (return "" false))
+      (return entry.target true))))
+
+(defn typed-predicate-matches? [rel: Query-Relation, row: int, predicate: Predicate, registry: []Native-Query-Fn] -> [matched: bool, ok: bool]
+  (let [[op op-ok] (typed-predicate-op-name predicate registry)]
+    (when (not op-ok)
+      (return false false))
+    (when (and (or (= op "true?")
+                   (= op "false?")
+                   (= op "nil?")
+                   (= op "some?")
+                   (= op "not")
+                   (= op "empty?"))
+               (= (count predicate.terms) 1))
+      (let [[value value-ok] (query-relation-resolve-typed-term rel row predicate.terms[0])]
+        (when (not value-ok)
+          (return false true))
+        (cond
+          (= op "true?") (return (and (= value.kind .Bool) value.bool-value) true)
+          (= op "false?") (return (and (= value.kind .Bool) (not value.bool-value)) true)
+          (= op "nil?") (return (= value.kind .Nil) true)
+          (= op "some?") (return (not (= value.kind .Nil)) true)
+          (= op "not") (return (or (= value.kind .Nil)
+                                    (and (= value.kind .Bool) (not value.bool-value))) true)
+          (= op "empty?") (return (and (= value.kind .Vector) (= (count value.items) 0)) true))))
+    (when (and (or (= op "even?")
+                   (= op "odd?")
+                   (= op "zero?")
+                   (= op "pos?")
+                   (= op "neg?"))
+               (= (count predicate.terms) 1))
+      (let [[value value-ok] (query-relation-resolve-typed-term rel row predicate.terms[0])]
+        (when (not value-ok)
+          (return false true))
+        (when (= value.kind .Int)
+          (cond
+            (= op "even?") (return (= (% value.int-value 2) 0) true)
+            (= op "odd?") (return (not (= (% value.int-value 2) 0)) true)
+            (= op "zero?") (return (= value.int-value 0) true)
+            (= op "pos?") (return (> value.int-value 0) true)
+            (= op "neg?") (return (< value.int-value 0) true)))
+        (when (= value.kind .Entity)
+          (cond
+            (= op "even?") (return (= (% value.entity 2) 0) true)
+            (= op "odd?") (return (not (= (% value.entity 2) 0)) true)
+            (= op "zero?") (return (= value.entity 0) true)
+            (= op "pos?") (return (> value.entity 0) true)
+            (= op "neg?") (return false true)))
+        (return false true)))
+    (when (and (= op "re-find")
+               (= (count predicate.terms) 2))
+      (let [[pattern pattern-ok] (query-relation-resolve-typed-term rel row predicate.terms[0])
+            [text text-ok] (query-relation-resolve-typed-term rel row predicate.terms[1])]
+        (return (and pattern-ok text-ok (re-find-matches? pattern text)) true)))
+    (when (and (or (= op "contains?")
+                   (= op "clojure.string/includes?")
+                   (= op "clojure.string/starts-with?")
+                   (= op "clojure.string/ends-with?"))
+               (= (count predicate.terms) 2))
+      (let [[left left-ok] (query-relation-resolve-typed-term rel row predicate.terms[0])
+            [right right-ok] (query-relation-resolve-typed-term rel row predicate.terms[1])]
+        (when (not (and left-ok right-ok (= left.kind .String) (= right.kind .String)))
+          (return false true))
+        (cond
+          (or (= op "contains?") (= op "clojure.string/includes?"))
+            (return (strings.contains left.text right.text) true)
+          (= op "clojure.string/starts-with?")
+            (return (strings.has_prefix left.text right.text) true)
+          (= op "clojure.string/ends-with?")
+            (return (strings.has_suffix left.text right.text) true))))
+    (when (< (count predicate.terms) 2)
+      (return false true))
+    (let [index 0
+          end (- (count predicate.terms) 1)]
+      (while (< index end)
+        (let [[left left-ok] (query-relation-resolve-typed-term rel row predicate.terms[index])
+              [right right-ok] (query-relation-resolve-typed-term rel row predicate.terms[(+ index 1)])]
+          (when (not (and left-ok right-ok))
+            (return false true))
+          (when (not (predicate-pair-matches? op left right))
+            (return false true)))
+        (set! index (+ index 1))))
+    (return true true)))
 
 (defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
   (when (not (= map-value.kind .Map))
@@ -8095,12 +8206,21 @@
         typed-rows 0
         typed-ok rel.has-typed-columns]
     (for [tuple row rel.tuples]
-      (when (predicate-matches-with-db-and-fns? db predicate tuple registry)
-        (when typed-ok
-          (if (add-relation-column-row! (addr typed-columns) (slice rel.typed-columns 0) row)
-            (set! typed-rows (+ typed-rows 1))
-            (set! typed-ok false)))
-        (arr.push! tuples (clone-binding tuple))))
+      (let [typed-match false
+            typed-match-ok false]
+        (when rel.has-typed-columns
+          (let [[matched ok] (typed-predicate-matches? rel row predicate registry)]
+            (set! typed-match matched)
+            (set! typed-match-ok ok)))
+        (let [match (if typed-match-ok
+                      typed-match
+                      (predicate-matches-with-db-and-fns? db predicate tuple registry))]
+          (when match
+            (when typed-ok
+              (if (add-relation-column-row! (addr typed-columns) (slice rel.typed-columns 0) row)
+                (set! typed-rows (+ typed-rows 1))
+                (set! typed-ok false)))
+            (arr.push! tuples (clone-binding tuple))))))
     (when (not typed-ok)
       (delete-relation-columns typed-columns)
       (set! typed-columns (make [dynamic]Relation-Column))
