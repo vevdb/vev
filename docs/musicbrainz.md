@@ -78,7 +78,10 @@ subset of the upstream `rules.edn` shape:
 Current covered query shapes include direct joins, reverse refs, predicates,
 aggregates, prepared EDN text input, collection binding, tuple binding,
 relation binding, scalar/tuple/collection find specs, rule-backed queries,
-duration function expressions, and nested pull through release/media/tracks.
+duration function expressions, return maps, enum refs through `:db/ident`,
+`get-else`, statistics aggregates, and nested pull through
+release/media/tracks. The detailed coverage ledger is
+`docs/musicbrainz-query-matrix.md`.
 
 ## Work Items
 
@@ -86,6 +89,7 @@ duration function expressions, and nested pull through release/media/tracks.
    restore it into local Datomic, and document the exact local path/URI.
 2. Port the `day-of-datomic-conj/src/music_brainz.clj` query set into a Vev
    fixture file, marking each form as passing, Vev-difference, or pending.
+   Track this in `docs/musicbrainz-query-matrix.md`.
 3. Expand the mini fixture toward that query set while the full dataset path is
    being located.
 4. Add an importer that converts the dataset into Vev EDN transaction text or
