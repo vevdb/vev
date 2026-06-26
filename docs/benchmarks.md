@@ -264,6 +264,52 @@ current datom log is sub-millisecond and incremental index construction is
 around 1.4ms, so the remaining write work is now mostly index ownership/copy
 structure plus the SQLite commit.
 
+## SQLite Write Bench
+
+Run the first Datalevin-style write harness from the Kvist repo root:
+
+```sh
+cd /Users/andreas/Projects/kvist
+/Users/andreas/Projects/kvist/kvist \
+  run /Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/bench/write_bench.kvist
+```
+
+Current sample output on June 26, 2026:
+
+```text
+engine=vev-sqlite workload=pure-write batch=1 total=200 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
+100,0.251,397.63,2.513,2.513
+200,1.024,195.29,7.723,7.723
+engine=vev-sqlite workload=pure-write batch=10 total=200 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
+100,0.100,1002.43,9.963,9.963
+200,0.401,498.70,30.113,30.113
+engine=vev-sqlite workload=pure-write batch=100 total=200 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
+100,0.085,1176.55,84.879,84.879
+200,0.338,591.39,253.067,253.067
+engine=vev-sqlite workload=pure-write batch=1000 total=200 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
+200,0.337,593.21,336.897,336.897
+engine=vev-sqlite workload=mixed-read-write batch=1 total=400 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms
+100,0.993,50.36,19.852,19.834
+200,2.384,41.94,27.830,27.815
+300,4.335,34.60,39.009,38.993
+400,6.453,30.99,42.361,42.343
+```
+
+This is a first Vev-native harness for the Datalevin `write-bench` family, not
+yet a direct apples-to-apples run of the upstream benchmark. It measures:
+
+- pure durable writes at batch sizes 1, 10, 100, and 1000
+- mixed read/write behavior against an existing SQLite-backed Vev store
+- end-to-end `transact-sqlite-*` call latency and commit-path latency
+
+The default dataset is deliberately small so it can run during ordinary
+development. The immediate value is directional: batch size quickly exposes the
+fixed transaction/apply/report overhead, and the mixed workload shows the cost
+of querying through the current in-memory snapshot while writes keep appending
+to SQLite. Once the durable path is less dominated by report/index ownership
+copying, scale this harness up and then wire Vev into Datalevin's upstream
+`write-bench` shape for direct comparison.
+
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured
 samples to reduce JVM warmup noise. Vev emits `*-text` rows, which include EDN

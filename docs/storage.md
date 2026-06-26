@@ -104,6 +104,19 @@ callers delete `value-serializable-text` results, so that function must return
 heap-owned text for literals, formatted scalars, keywords, symbols, vectors,
 and maps.
 
+`bench/write_bench.kvist` now starts mapping Datalevin `write-bench` concepts
+onto Vev's durable API:
+
+- pure SQLite-backed writes at batch sizes 1, 10, 100, and 1000
+- mixed read/write behavior using prepared EDN queries against the live DB
+  snapshot
+- end-to-end call latency and commit-path latency reporting
+
+This harness is intentionally smaller than the final external benchmark. It is
+for regular development runs while the durable path is still changing. The
+current shape shows the main cost is still Vev's transaction/apply/report/index
+ownership work around the SQLite commit, not SQL row insertion alone.
+
 ## SQLite Backend Plan
 
 SQLite is the first production durable backend.
@@ -140,8 +153,9 @@ Implementation order:
    before introducing a more complex shared DB/index representation.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
-5. Once the local harness is stable, map Datalevin `write-bench` concepts onto
-   Vev's API and compare commit/reopen behavior against existing systems.
+5. Keep extending the new `bench/write_bench.kvist` harness until it can run at
+   Datalevin `write-bench` scale, then compare commit/reopen behavior against
+   existing systems.
 
 Non-goals for the first SQLite backend:
 
