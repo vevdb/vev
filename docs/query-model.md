@@ -221,6 +221,12 @@ continue through the ordinary tuple path. Typed joins and result projection can
 reuse cached columns instead of rebuilding a `Typed-Relation` by scanning every
 binding row.
 
+Fifth slice implemented: typed primitive hash joins now preserve the typed
+column cache on their result relation. The join still emits compatibility
+`Binding` tuples, but it appends each joined row to typed output columns at the
+same time, so downstream typed joins and simple result projection can stay on
+the cached-column path instead of rebuilding typed data from row bindings.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the

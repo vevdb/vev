@@ -337,9 +337,7 @@
   (delete rel.attrs)
   (delete rel.attr-sources)
   (delete rel.attr-index)
-  (for [column rel.typed-columns]
-    (delete-relation-column column))
-  (delete rel.typed-columns)
+  (delete-relation-columns rel.typed-columns)
   (delete rel.tuples))
 
 (defn relation-column-empty [] -> Relation-Column
@@ -355,6 +353,11 @@
   (delete column.ints)
   (delete column.floats)
   (delete column.bools))
+
+(defn delete-relation-columns [columns: [dynamic]Relation-Column]
+  (for [column columns]
+    (delete-relation-column column))
+  (delete columns))
 
 (defn clone-relation-column [column: Relation-Column] -> Relation-Column
   (let [entities (arr.into [dynamic]u64 (slice column.entities 0))
@@ -723,6 +726,8 @@
           (when (not (query-relation-has-attr? left name))
             (arr.push! attrs name)
             (arr.push! attr-sources right.attr-sources[index])))
+        (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+              typed-rows 0]
         (let [right-row 0]
           (while (< right-row right-typed.rows)
             (let [[key key-ok] (typed-relation-row-join-key right-typed right-row common)]
@@ -732,6 +737,7 @@
                 (delete tuples)
                 (delete bucket-heads)
                 (delete next-indexes)
+                (delete-relation-columns typed-columns)
                 (return (query-relation-empty) false))
               (let [[head found] (mmap.get bucket-heads key)]
                 (if found
@@ -748,6 +754,7 @@
                 (delete tuples)
                 (delete bucket-heads)
                 (delete next-indexes)
+                (delete-relation-columns typed-columns)
                 (return (query-relation-empty) false))
               (let [[head found] (mmap.get bucket-heads key)]
                 (when found
@@ -756,6 +763,8 @@
                       (let [left-tuple left.tuples[left-row]
                             right-tuple right.tuples[right-index]
                             merged (merge-relation-binding-known-common left left-tuple right-tuple)]
+                        (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) merged)
+                        (set! typed-rows (+ typed-rows 1))
                         (arr.push! tuples merged))
                       (set! right-index next-indexes[right-index]))))))
             (set! left-row (+ left-row 1))))
@@ -765,7 +774,9 @@
                                  attr-sources: attr-sources
                                  attr-index: (query-relation-attr-index (slice attrs 0))
                                  tuples: tuples
-                                 typed-columns: (make [dynamic]Relation-Column)}) true)))))
+                                 typed-columns: typed-columns
+                                 typed-rows: typed-rows
+                                 has-typed-columns: true}) true))))))
 
 (defn query-relation-hash-join-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
