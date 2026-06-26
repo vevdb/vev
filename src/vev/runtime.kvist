@@ -6207,11 +6207,31 @@
   (when (not (string-slice-contains? (slice out^ 0) value))
     (arr.push! out^ value)))
 
-(defn rule-name-exists? [rules: []Rule, name: string] -> bool
-  (for [rule rules]
-    (when (= rule.name name)
-      (return true)))
-  false)
+(defn rule-name-index-entry [index: []Rule-Name-Index-Entry, name: string] -> [entry-index: int, ok: bool]
+  (for [entry entry-index index]
+    (when (= entry.name name)
+      (return entry-index true)))
+  (return 0 false))
+
+(defn rule-name-index-build [rules: []Rule] -> [dynamic]Rule-Name-Index-Entry
+  (let [out (make [dynamic]Rule-Name-Index-Entry)]
+    (for [rule rule-index rules]
+      (let [[entry-index found] (rule-name-index-entry (slice out 0) rule.name)]
+        (if found
+          (arr.push! out[entry-index].indexes rule-index)
+          (let [indexes (make [dynamic]int)]
+            (arr.push! indexes rule-index)
+            (arr.push! out (Rule-Name-Index-Entry {name: rule.name indexes: indexes}))))))
+    out))
+
+(defn delete-rule-name-index [index: [dynamic]Rule-Name-Index-Entry]
+  (for [entry index]
+    (delete entry.indexes))
+  (delete index))
+
+(defn rule-name-index-has? [index: []Rule-Name-Index-Entry, name: string] -> bool
+  (let [[_ ok] (rule-name-index-entry index name)]
+    ok))
 
 (defn rule-name-dependency-exists? [deps: []Rule-Dependency, from: string, target: string] -> bool
   (for [dep deps]
@@ -6231,22 +6251,27 @@
       (string-push-unique! (addr out) rule.name))
     out))
 
-(defn rule-direct-dependencies [rules: []Rule, name: string] -> [dynamic]string
-  (let [out (make [dynamic]string)]
-    (for [rule rules]
-      (when (= rule.name name)
-        (for [call rule.rule-calls]
-          (when (rule-name-exists? rules call.name)
-            (string-push-unique! (addr out) call.name)))))
+(defn rule-direct-dependencies-indexed [rules: []Rule, index: []Rule-Name-Index-Entry, name: string] -> [dynamic]string
+  (let [out (make [dynamic]string)
+        [entry-index found] (rule-name-index-entry index name)]
+    (when found
+      (for [rule-index index[entry-index].indexes]
+        (let [rule rules[rule-index]]
+          (for [call rule.rule-calls]
+            (when (rule-name-index-has? index call.name)
+              (string-push-unique! (addr out) call.name))))))
+    out))
+
+(defn rules-dependency-graph-indexed [rules: []Rule, index: []Rule-Name-Index-Entry] -> [dynamic]Rule-Dependency
+  (let [out (make [dynamic]Rule-Dependency)]
+    (for [entry index]
+      (arr.push! out (Rule-Dependency {name: entry.name deps: (rule-direct-dependencies-indexed rules index entry.name)})))
     out))
 
 (defn rules-dependency-graph [rules: []Rule] -> [dynamic]Rule-Dependency
-  (let [out (make [dynamic]Rule-Dependency)
-        names (rule-unique-names rules)]
-    (defer (delete names))
-    (for [name names]
-      (arr.push! out (Rule-Dependency {name: name deps: (rule-direct-dependencies rules name)})))
-    out))
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (rules-dependency-graph-indexed rules (slice index 0))))
 
 (defn delete-rule-dependency-graph [deps: [dynamic]Rule-Dependency]
   (for [dep deps]
@@ -6388,7 +6413,12 @@
     out))
 
 (defn rule-call-plan [rules: []Rule, name: string] -> Rule-Call-Plan
-  (let [deps (rules-dependency-graph rules)
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (rule-call-plan-indexed rules (slice index 0) name)))
+
+(defn rule-call-plan-indexed [rules: []Rule, index: []Rule-Name-Index-Entry, name: string] -> Rule-Call-Plan
+  (let [deps (rules-dependency-graph-indexed rules index)
         names (rule-reachable-names-in-deps (slice deps 0) name)]
     (defer (delete-rule-dependency-graph deps))
     (defer (delete names))
@@ -6446,9 +6476,11 @@
   (delete plans))
 
 (defn rule-call-plans-for-query [query: Query] -> [dynamic]Rule-Call-Plan
-  (let [out (make [dynamic]Rule-Call-Plan 0 (count query.rule-calls))]
+  (let [out (make [dynamic]Rule-Call-Plan 0 (count query.rule-calls))
+        index (rule-name-index-build (slice query.rules 0))]
+    (defer (delete-rule-name-index index))
     (for [call query.rule-calls]
-      (arr.push! out (rule-call-plan (slice query.rules 0) call.name)))
+      (arr.push! out (rule-call-plan-indexed (slice query.rules 0) (slice index 0) call.name)))
     out))
 
 (defn query-with-rule-call-plans [query: Query] -> Query

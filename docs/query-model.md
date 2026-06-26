@@ -121,6 +121,11 @@ plan by query-step index. This keeps recursive-rule execution on the same
 generic engine path, but avoids rebuilding dependency graphs and transitive-rule
 recognizers for every prepared run.
 
+Rule-call planning now also builds a reusable rule-name index for the planning
+batch. Dependency graphs are still ordinary rule-name graphs, and execution
+keeps the original rule order, but the planner no longer rescans the full rule
+array just to discover which names exist or which rule branches share a name.
+
 ## Query Engine Strategy
 
 Vev should follow DataScript's query architecture as the semantic baseline:
