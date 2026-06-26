@@ -245,17 +245,55 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn append-var-binding-attr! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, name: string, source: string]
+  (when (= name "")
+    (return))
+  (when (not (string-slice-contains? (slice attrs^ 0) name))
+    (arr.push! attrs^ name)
+    (arr.push! attr-sources^ source)))
+
+(defn append-clause-term-var-attr! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, term: Term, source: string]
+  (when (= term.kind .Var)
+    (append-var-binding-attr! attrs attr-sources term.name source)))
+
+(defn clause-output-attrs [clause-value: Clause, source: string] -> [attrs: [dynamic]string, attr-sources: [dynamic]string]
+  (let [out-attrs (make [dynamic]string)
+        out-sources (make [dynamic]string)]
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.e source)
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.a source)
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.v source)
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.tx-term source)
+    (append-clause-term-var-attr! (addr out-attrs) (addr out-sources) clause-value.op-term source)
+    (return out-attrs out-sources)))
+
+(defn query-relation-attr-index [attrs: []string] -> map[string]int
+  (let [index (make (map string int))]
+    (for [attr attr-index attrs]
+      (mmap.assoc! index attr attr-index))
+    index))
+
+(defn query-relation-attr-index-lookup [rel: Query-Relation, name: string] -> [index: int, ok: bool]
+  (mmap.get rel.attr-index name))
+
+(defn query-relation-has-attr? [rel: Query-Relation, name: string] -> bool
+  (let [[_ found] (query-relation-attr-index-lookup rel name)]
+    found))
+
 (defn query-relation-empty [] -> Query-Relation
   (Query-Relation {attrs: (make [dynamic]string)
                    attr-sources: (make [dynamic]string)
-                   tuples: (make [dynamic]Binding)}))
+                   attr-index: (make (map string int))
+                   tuples: (make [dynamic]Binding)
+                   typed-columns: (make [dynamic]Relation-Column)}))
 
 (defn query-relation-singleton [] -> Query-Relation
   (let [tuples (make [dynamic]Binding)]
     (arr.push! tuples (Binding {}))
     (Query-Relation {attrs: (make [dynamic]string)
                      attr-sources: (make [dynamic]string)
-                     tuples: tuples})))
+                     attr-index: (make (map string int))
+                     tuples: tuples
+                     typed-columns: (make [dynamic]Relation-Column)})))
 
 (defn query-relation-from-bindings [bindings: []Binding] -> Query-Relation
   (query-relation-from-bindings-with-source bindings ""))
@@ -270,7 +308,11 @@
           (arr.push! attrs item.name)
           (arr.push! attr-sources source)))
       (arr.push! tuples (clone-binding binding)))
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples
+                     typed-columns: (make [dynamic]Relation-Column)})))
 
 (defn query-relation-from-bindings-inheriting-sources [bindings: []Binding, parent: Query-Relation] -> Query-Relation
   (let [attrs (make [dynamic]string)
@@ -285,23 +327,172 @@
               (arr.push! attr-sources source)
               (arr.push! attr-sources "")))))
       (arr.push! tuples (clone-binding binding)))
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples
+                     typed-columns: (make [dynamic]Relation-Column)})))
 
 (defn delete-query-relation [rel: Query-Relation]
   (delete rel.attrs)
   (delete rel.attr-sources)
+  (delete rel.attr-index)
+  (delete-relation-columns rel.typed-columns)
   (delete rel.tuples))
 
+(defn relation-column-empty [] -> Relation-Column
+  (Relation-Column {entities: (make [dynamic]u64)
+                    texts: (make [dynamic]string)
+                    ints: (make [dynamic]i64)
+                    floats: (make [dynamic]f64)
+                    bools: (make [dynamic]bool)}))
+
+(defn delete-relation-column [column: Relation-Column]
+  (delete column.entities)
+  (delete column.texts)
+  (delete column.ints)
+  (delete column.floats)
+  (delete column.bools))
+
+(defn delete-relation-columns [columns: [dynamic]Relation-Column]
+  (for [column columns]
+    (delete-relation-column column))
+  (delete columns))
+
+(defn clone-relation-column [column: Relation-Column] -> Relation-Column
+  (let [entities (arr.into [dynamic]u64 (slice column.entities 0))
+        texts (arr.into [dynamic]string (slice column.texts 0))
+        ints (arr.into [dynamic]i64 (slice column.ints 0))
+        floats (arr.into [dynamic]f64 (slice column.floats 0))
+        bools (arr.into [dynamic]bool (slice column.bools 0))]
+    (Relation-Column {kind: column.kind
+                      has-kind: column.has-kind
+                      entities: entities
+                      texts: texts
+                      ints: ints
+                      floats: floats
+                      bools: bools})))
+
+(defn clone-relation-columns [columns: []Relation-Column] -> [dynamic]Relation-Column
+  (let [out (make [dynamic]Relation-Column 0 (count columns))]
+    (for [column columns]
+      (arr.push! out (clone-relation-column column)))
+    out))
+
+(defn typed-relation-empty [] -> Typed-Relation
+  (Typed-Relation {attrs: (make [dynamic]string)
+                   attr-sources: (make [dynamic]string)
+                   attr-index: (make (map string int))
+                   columns: (make [dynamic]Relation-Column)}))
+
+(defn delete-typed-relation [rel: Typed-Relation]
+  (delete rel.attrs)
+  (delete rel.attr-sources)
+  (delete rel.attr-index)
+  (for [column rel.columns]
+    (delete-relation-column column))
+  (delete rel.columns))
+
+(defn value-relation-column-kind [value: Value] -> [kind: Relation-Column-Kind, ok: bool]
+  (case value.kind
+    .Nil (return .Nil true)
+    .Entity (return .Entity true)
+    .String (return .String true)
+    .Int (return .Int true)
+    .Float (return .Float true)
+    .Bool (return .Bool true)
+    .Keyword (return .Keyword true)
+    .Symbol (return .Symbol true)
+    :else (return .Nil false)))
+
+(defn relation-column-add! [column: ^Relation-Column, value: Value] -> bool
+  (let [[kind kind-ok] (value-relation-column-kind value)]
+    (when (not kind-ok)
+      (return false))
+    (if column^.has-kind
+      (when (not (= column^.kind kind))
+        (return false))
+      (do
+        (set! column^.kind kind)
+        (set! column^.has-kind true)))
+    (case kind
+      .Nil (discard kind)
+      .Entity (arr.push! column^.entities value.entity)
+      .String (arr.push! column^.texts value.text)
+      .Int (arr.push! column^.ints value.int-value)
+      .Float (arr.push! column^.floats value.float-value)
+      .Bool (arr.push! column^.bools value.bool-value)
+      .Keyword (arr.push! column^.texts value.text)
+      .Symbol (arr.push! column^.texts value.text))
+    true))
+
+(defn relation-column-can-add? [column: Relation-Column, value: Value] -> bool
+  (let [[kind kind-ok] (value-relation-column-kind value)]
+    (when (not kind-ok)
+      (return false))
+    (or (not column.has-kind)
+        (= column.kind kind))))
+
+(defn relation-columns-for-attrs [attrs: []string] -> [dynamic]Relation-Column
+  (let [columns (make [dynamic]Relation-Column 0 (count attrs))]
+    (for [_ attrs]
+      (arr.push! columns (relation-column-empty)))
+    columns))
+
+(defn binding-can-add-to-relation-columns? [attrs: []string, columns: []Relation-Column, binding: Binding] -> bool
+  (for [attr index attrs]
+    (let [[value value-ok] (binding-lookup binding attr)]
+      (when (or (not value-ok)
+                (not (relation-column-can-add? columns[index] value)))
+        (return false))))
+  true)
+
+(defn add-binding-to-relation-columns! [attrs: []string, columns: ^[dynamic]Relation-Column, binding: Binding]
+  (for [attr index attrs]
+    (let [[value _] (binding-lookup binding attr)]
+      (discard (relation-column-add! (addr columns^[index]) value)))))
+
+(defn typed-relation-attr-index [rel: Typed-Relation, name: string] -> [index: int, ok: bool]
+  (mmap.get rel.attr-index name))
+
+(defn typed-relation-from-query-relation [rel: Query-Relation] -> [typed: Typed-Relation, ok: bool]
+  (when rel.has-typed-columns
+    (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+          attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+          attr-index (query-relation-attr-index (slice rel.attrs 0))
+          columns (clone-relation-columns (slice rel.typed-columns 0))]
+      (return (Typed-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: attr-index
+                               columns: columns
+                               rows: rel.typed-rows}) true)))
+  (let [out (typed-relation-empty)]
+    (set! out.rows (count rel.tuples))
+    (for [attr index rel.attrs]
+      (arr.push! out.attrs attr)
+      (arr.push! out.attr-sources rel.attr-sources[index])
+      (mmap.assoc! out.attr-index attr index)
+      (let [column (relation-column-empty)]
+        (for [tuple rel.tuples]
+          (let [[value value-ok] (binding-lookup tuple attr)]
+            (when (or (not value-ok)
+                      (not (relation-column-add! (addr column) value)))
+              (delete-relation-column column)
+              (delete-typed-relation out)
+              (return (typed-relation-empty) false))))
+        (arr.push! out.columns column)))
+    (return out true)))
+
 (defn relation-attr-source [rel: Query-Relation, name: string] -> [source: string, ok: bool]
-  (for [attr index rel.attrs]
-    (when (= attr name)
-      (return rel.attr-sources[index] true)))
-  (return "" false))
+  (let [[index found] (query-relation-attr-index-lookup rel name)]
+    (if found
+      (return rel.attr-sources[index] true)
+      (return "" false))))
 
 (defn relation-common-attrs [left: Query-Relation, right: Query-Relation] -> [dynamic]string
   (let [out (make [dynamic]string)]
     (for [name left.attrs]
-      (when (string-slice-contains? (slice right.attrs 0) name)
+      (when (query-relation-has-attr? right name)
         (arr.push! out name)))
     out))
 
@@ -351,6 +542,13 @@
           (binding-store! (addr out) item.name item.value))))
     (return out true)))
 
+(defn merge-relation-binding-known-common [base-rel: Query-Relation, base: Binding, extra: Binding] -> Binding
+  (let [out (clone-binding base)]
+    (for [item extra.items]
+      (when (not (query-relation-has-attr? base-rel item.name))
+        (binding-store! (addr out) item.name item.value)))
+    out))
+
 (defn query-relation-product [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
         attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
@@ -363,26 +561,235 @@
         (let [[merged ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
           (when ok
             (arr.push! tuples merged)))))
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples
+                     typed-columns: (make [dynamic]Relation-Column)})))
+
+(defn primitive-value-join-key [value: Value] -> [key: string, ok: bool]
+  (case value.kind
+    .Entity (return (fmt.tprintf "n:%d" value.entity) true)
+    .Int (return (fmt.tprintf "n:%d" value.int-value) true)
+    :else (primitive-value-dedupe-key value)))
 
 (defn binding-primitive-join-key [binding: Binding, name: string] -> [key: string, ok: bool]
   (let [[value found] (binding-lookup binding name)]
     (when (not found)
       (return "" false))
-    (primitive-value-dedupe-key value)))
+    (primitive-value-join-key value)))
 
-(defn query-relation-hash-join-one-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common-name: string] -> [rel: Query-Relation, ok: bool]
+(defn binding-primitive-join-key-many [binding: Binding, names: []string] -> [key: string, ok: bool]
+  (when (= (count names) 1)
+    (return (binding-primitive-join-key binding names[0])))
+  (let [parts (make [dynamic]string 0 (count names)) :defer]
+    (for [name names]
+      (let [[value found] (binding-lookup binding name)]
+        (when (not found)
+          (return "" false))
+        (let [[part part-ok] (primitive-value-join-key value)]
+          (when (not part-ok)
+            (return "" false))
+          (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part)))))
+    (return (core-strings.concatenate (slice parts 0)) true)))
+
+(defn typed-relation-column-row-key [column: Relation-Column, row: int] -> [key: string, ok: bool]
+  (when (not column.has-kind)
+    (return "" false))
+  (case column.kind
+    .Nil (return "n:" true)
+    .Entity (return (fmt.tprintf "e:%d" column.entities[row]) true)
+    .String (return (fmt.tprintf "s:%s" column.texts[row]) true)
+    .Int (return (fmt.tprintf "i:%d" column.ints[row]) true)
+    .Float (return (fmt.tprintf "f:%v" column.floats[row]) true)
+    .Bool (if column.bools[row]
+            (return "b:true" true)
+            (return "b:false" true))
+    .Keyword (return (fmt.tprintf "k:%s" column.texts[row]) true)
+    .Symbol (return (fmt.tprintf "y:%s" column.texts[row]) true))
+  (return "" false))
+
+(defn typed-relations-compatible-common? [left: Typed-Relation, right: Typed-Relation, common: []string] -> bool
+  (for [name common]
+    (let [[left-index left-ok] (typed-relation-attr-index left name)
+          [right-index right-ok] (typed-relation-attr-index right name)]
+      (when (not (and left-ok right-ok))
+        (return false))
+      (when (not (= left.columns[left-index].kind right.columns[right-index].kind))
+        (return false))))
+  true)
+
+(defn typed-relation-row-join-key [rel: Typed-Relation, row: int, common: []string] -> [key: string, ok: bool]
+  (when (= (count common) 1)
+    (let [[column-index column-ok] (typed-relation-attr-index rel common[0])]
+      (when (not column-ok)
+        (return "" false))
+      (return (typed-relation-column-row-key rel.columns[column-index] row))))
+  (let [parts (make [dynamic]string 0 (count common)) :defer]
+    (for [name common]
+      (let [[column-index column-ok] (typed-relation-attr-index rel name)]
+        (when (not column-ok)
+          (return "" false))
+        (let [[part part-ok] (typed-relation-column-row-key rel.columns[column-index] row)]
+          (when (not part-ok)
+            (return "" false))
+          (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part)))))
+    (return (core-strings.concatenate (slice parts 0)) true)))
+
+(defn typed-relation-column-value [column: Relation-Column, row: int] -> [value: Value, ok: bool]
+  (when (not column.has-kind)
+    (return (Value {}) false))
+  (case column.kind
+    .Nil (return (value-nil) true)
+    .Entity (return (value-entity column.entities[row]) true)
+    .String (return (value-string column.texts[row]) true)
+    .Int (return (value-int column.ints[row]) true)
+    .Float (return (value-float column.floats[row]) true)
+    .Bool (return (value-bool column.bools[row]) true)
+    .Keyword (return (value-keyword column.texts[row]) true)
+    .Symbol (return (value-symbol column.texts[row]) true))
+  (return (Value {}) false))
+
+(defn typed-relation-row-value [rel: Typed-Relation, row: int, name: string] -> [value: Value, ok: bool]
+  (let [[column-index column-ok] (typed-relation-attr-index rel name)]
+    (when (not column-ok)
+      (return (Value {}) false))
+    (typed-relation-column-value rel.columns[column-index] row)))
+
+(defn typed-relation-supports-result-vars? [rel: Typed-Relation, names: []string] -> bool
+  (for [name names]
+    (let [[_ ok] (typed-relation-attr-index rel name)]
+      (when (not ok)
+        (return false))))
+  true)
+
+(defn result-rows-for-typed-relation [query: Query, rel: Query-Relation] -> [rows: [dynamic]Result-Row, ok: bool]
+  (when (> (count query.pulls) 0)
+    (return (make [dynamic]Result-Row) false))
+  (let [[typed typed-ok] (typed-relation-from-query-relation rel)]
+    (when (not typed-ok)
+      (return (make [dynamic]Result-Row) false))
+    (defer (delete-typed-relation typed))
+    (when (not (and (typed-relation-supports-result-vars? typed (slice query.find 0))
+                    (typed-relation-supports-result-vars? typed (slice query.with 0))))
+      (return (make [dynamic]Result-Row) false))
+    (let [out (make [dynamic]Result-Row 0 typed.rows)
+          seen (set.empty string) :defer
+          trust-unique-bindings (query-can-trust-unique-bindings? query)]
+      (for [row (arr.range 0 typed.rows)]
+        (let [values (make [dynamic]Value 0 (count query.find))
+              dedupe-values (make [dynamic]Value)
+              pushed false]
+          (for [name query.find]
+            (let [[value _] (typed-relation-row-value typed row name)]
+              (arr.push! values value)
+              (arr.push! dedupe-values value)))
+          (for [name query.with]
+            (let [[value _] (typed-relation-row-value typed row name)]
+              (arr.push! dedupe-values value)))
+          (if trust-unique-bindings
+            (do
+              (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
+              (set! pushed true))
+            (let [[key key-ok] (row-values-dedupe-key (slice dedupe-values 0))]
+              (if key-ok
+                (let [already-seen (set.contains? seen key)]
+                  (when (not already-seen)
+                    (set.add! seen key)
+                    (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
+                    (set! pushed true)))
+                (when (not (row-values-exist? (slice out 0) (slice dedupe-values 0)))
+                  (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
+                  (set! pushed true)))))
+          (delete dedupe-values)
+          (when (not pushed)
+            (delete values))))
+      (return out true))))
+
+(defn query-relation-hash-join-typed-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
+  (let [[left-typed left-ok] (typed-relation-from-query-relation left)]
+    (when (not left-ok)
+      (return (query-relation-empty) false))
+    (defer (delete-typed-relation left-typed))
+    (let [[right-typed right-ok] (typed-relation-from-query-relation right)]
+      (when (not right-ok)
+        (return (query-relation-empty) false))
+      (defer (delete-typed-relation right-typed))
+      (when (not (typed-relations-compatible-common? left-typed right-typed common))
+        (return (query-relation-empty) false))
+      (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+            attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
+            tuples (make [dynamic]Binding)
+            bucket-heads (make (map string int))
+            next-indexes (make [dynamic]int 0 right-typed.rows)]
+        (for [name index right.attrs]
+          (when (not (query-relation-has-attr? left name))
+            (arr.push! attrs name)
+            (arr.push! attr-sources right.attr-sources[index])))
+        (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+              typed-rows 0]
+        (let [right-row 0]
+          (while (< right-row right-typed.rows)
+            (let [[key key-ok] (typed-relation-row-join-key right-typed right-row common)]
+              (when (not key-ok)
+                (delete attrs)
+                (delete attr-sources)
+                (delete tuples)
+                (delete bucket-heads)
+                (delete next-indexes)
+                (delete-relation-columns typed-columns)
+                (return (query-relation-empty) false))
+              (let [[head found] (mmap.get bucket-heads key)]
+                (if found
+                  (arr.push! next-indexes head)
+                  (arr.push! next-indexes -1))
+                (mmap.assoc! bucket-heads key right-row)))
+            (set! right-row (+ right-row 1))))
+        (let [left-row 0]
+          (while (< left-row left-typed.rows)
+            (let [[key key-ok] (typed-relation-row-join-key left-typed left-row common)]
+              (when (not key-ok)
+                (delete attrs)
+                (delete attr-sources)
+                (delete tuples)
+                (delete bucket-heads)
+                (delete next-indexes)
+                (delete-relation-columns typed-columns)
+                (return (query-relation-empty) false))
+              (let [[head found] (mmap.get bucket-heads key)]
+                (when found
+                  (let [right-index head]
+                    (while (>= right-index 0)
+                      (let [left-tuple left.tuples[left-row]
+                            right-tuple right.tuples[right-index]
+                            merged (merge-relation-binding-known-common left left-tuple right-tuple)]
+                        (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) merged)
+                        (set! typed-rows (+ typed-rows 1))
+                        (arr.push! tuples merged))
+                      (set! right-index next-indexes[right-index]))))))
+            (set! left-row (+ left-row 1))))
+        (delete bucket-heads)
+        (delete next-indexes)
+        (return (Query-Relation {attrs: attrs
+                                 attr-sources: attr-sources
+                                 attr-index: (query-relation-attr-index (slice attrs 0))
+                                 tuples: tuples
+                                 typed-columns: typed-columns
+                                 typed-rows: typed-rows
+                                 has-typed-columns: true}) true))))))
+
+(defn query-relation-hash-join-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
         attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
         tuples (make [dynamic]Binding)
         bucket-heads (make (map string int))
         next-indexes (make [dynamic]int 0 (count right.tuples))]
     (for [name index right.attrs]
-      (when (not (string-slice-contains? (slice attrs 0) name))
+      (when (not (query-relation-has-attr? left name))
         (arr.push! attrs name)
         (arr.push! attr-sources right.attr-sources[index])))
     (for [right-tuple right-index right.tuples]
-      (let [[key key-ok] (binding-primitive-join-key right-tuple common-name)]
+      (let [[key key-ok] (binding-primitive-join-key-many right-tuple common)]
         (when (not key-ok)
           (delete attrs)
           (delete attr-sources)
@@ -396,7 +803,7 @@
             (arr.push! next-indexes -1))
           (mmap.assoc! bucket-heads key right-index))))
     (for [left-tuple left.tuples]
-      (let [[key key-ok] (binding-primitive-join-key left-tuple common-name)]
+      (let [[key key-ok] (binding-primitive-join-key-many left-tuple common)]
         (when (not key-ok)
           (delete attrs)
           (delete attr-sources)
@@ -415,22 +822,30 @@
                 (set! right-index next-indexes[right-index])))))))
     (delete bucket-heads)
     (delete next-indexes)
-    (return (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples}) true)))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: tuples
+                             typed-columns: (make [dynamic]Relation-Column)}) true)))
 
 (defn query-relation-join [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [common (relation-common-attrs left right) :defer]
     (when (= (count common) 0)
       (return (query-relation-product db sources left right)))
-    (when (= (count common) 1)
-      (let [[hash-joined hash-ok] (query-relation-hash-join-one-primitive db sources left right common[0])]
-        (when hash-ok
-          (return hash-joined))
-        (delete-query-relation hash-joined)))
+    (when (> (count common) 1)
+      (let [[typed-hash-joined typed-hash-ok] (query-relation-hash-join-typed-primitive db sources left right (slice common 0))]
+        (when typed-hash-ok
+          (return typed-hash-joined))
+        (delete-query-relation typed-hash-joined)))
+    (let [[hash-joined hash-ok] (query-relation-hash-join-primitive db sources left right (slice common 0))]
+      (when hash-ok
+        (return hash-joined))
+      (delete-query-relation hash-joined))
     (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
           attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
           tuples (make [dynamic]Binding)]
       (for [name index right.attrs]
-        (when (not (string-slice-contains? (slice attrs 0) name))
+        (when (not (query-relation-has-attr? left name))
           (arr.push! attrs name)
           (arr.push! attr-sources right.attr-sources[index])))
       (for [left-tuple left.tuples]
@@ -439,7 +854,11 @@
             (let [[merged ok] (merge-relation-binding db sources left right left-tuple right-tuple)]
               (when ok
                 (arr.push! tuples merged))))))
-      (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples}))))
+      (Query-Relation {attrs: attrs
+                       attr-sources: attr-sources
+                       attr-index: (query-relation-attr-index (slice attrs 0))
+                       tuples: tuples
+                       typed-columns: (make [dynamic]Relation-Column)}))))
 
 (defn query-context-singleton [] -> Query-Context
   (let [rels (make [dynamic]Query-Relation)]
@@ -7561,7 +7980,15 @@
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
         attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
         tuples (clone-bindings (slice rel.tuples 0))]
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples
+                     typed-columns: (if rel.has-typed-columns
+                                      (clone-relation-columns (slice rel.typed-columns 0))
+                                      (make [dynamic]Relation-Column))
+                     typed-rows: rel.typed-rows
+                     has-typed-columns: rel.has-typed-columns})))
 
 (defn query-relation-filter-predicate [db: DB, rel: Query-Relation, predicate: Predicate, registry: []Native-Query-Fn] -> Query-Relation
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
@@ -7570,7 +7997,11 @@
     (for [tuple rel.tuples]
       (when (predicate-matches-with-db-and-fns? db predicate tuple registry)
         (arr.push! tuples (clone-binding tuple))))
-    (Query-Relation {attrs: attrs attr-sources: attr-sources tuples: tuples})))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples
+                     typed-columns: (make [dynamic]Relation-Column)})))
 
 (defn query-relation-extend-function [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> Query-Relation
   (let [bindings (bindings-after-function-with-fns (slice rel.tuples 0) function registry)
@@ -7683,26 +8114,55 @@
       (delete out)
       rel)))
 
+(defn query-relation-from-db-clause [db: DB, clause-value: Clause, source: string] -> Query-Relation
+  (let [[attrs attr-sources] (clause-output-attrs clause-value source)
+        tuples (make [dynamic]Binding)
+        typed-columns (relation-columns-for-attrs (slice attrs 0))
+        typed-ok true
+        typed-rows 0]
+    (let [candidates (clause-candidate-indexes db clause-value (Binding {})) :defer]
+      (for [datom-index candidates]
+        (let [datom db.datoms[datom-index]]
+          (when (datom-current-at? db datom-index)
+            (let [next (Binding {items: (make [dynamic]Var-Binding 0 (count attrs))})]
+              (if (datom-clause-matches? db datom clause-value (addr next))
+                (do
+                  (when typed-ok
+                    (if (binding-can-add-to-relation-columns? (slice attrs 0) (slice typed-columns 0) next)
+                      (do
+                        (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) next)
+                        (set! typed-rows (+ typed-rows 1)))
+                      (set! typed-ok false)))
+                  (arr.push! tuples next))
+                (delete next.items)))))))
+    (when (not typed-ok)
+      (for [column typed-columns]
+        (delete-relation-column column))
+      (delete typed-columns)
+      (set! typed-columns (make [dynamic]Relation-Column))
+      (set! typed-rows 0))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples
+                     typed-columns: typed-columns
+                     typed-rows: typed-rows
+                     has-typed-columns: typed-ok})))
+
 (defn query-relation-from-clause [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, clause-value: Clause] -> Query-Relation
-  (let [out (make [dynamic]Binding)
-        empty (Binding {})]
-    (if clause-value.has-source
-      (if (query-source-input? query clause-value.source)
-        (do
-          (delete out)
-          (return (query-relation-from-source-input-clause query inputs clause-value)))
-        (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
-          (when source-ok
-            (append-bindings-after-clause! (addr out) source-db (unsourced-clause clause-value) empty))))
-      (append-bindings-after-clause! (addr out) db clause-value empty))
-    (let [source (if (and clause-value.has-source
-                          (not (= clause-value.source "$"))
-                          (query-source-db? sources clause-value.source))
-                   clause-value.source
-                   "")
-          rel (query-relation-from-bindings-with-source (slice out 0) source)]
-      (delete out)
-      rel)))
+  (if clause-value.has-source
+    (if (query-source-input? query clause-value.source)
+      (return (query-relation-from-source-input-clause query inputs clause-value))
+      (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+        (when source-ok
+          (let [source-name (if (and (not (= clause-value.source "$"))
+                                     (query-source-db? sources clause-value.source))
+                              clause-value.source
+                              "")]
+            (return (query-relation-from-db-clause source-db (unsourced-clause clause-value) source-name))))))
+    (return (query-relation-from-db-clause db clause-value "")))
+  (query-relation-empty))
+
 
 (defn query-relation-reduce [db: DB, sources: []DB-Source, relations: []Query-Relation] -> Query-Relation
   (let [current (query-relation-singleton)]
@@ -7712,7 +8172,7 @@
         (set! current next)))
     current))
 
-(defn relation-engine-bindings-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+(defn relation-engine-relation-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
   (let [relations (make [dynamic]Query-Relation)
         input-bindings (bindings-from-inputs db query inputs)]
     (set! stats^.input-bindings (count input-bindings))
@@ -7730,11 +8190,15 @@
       (for [rel relations]
         (delete-query-relation rel))
       (delete relations)
-      (let [bindings (clone-bindings (slice post-rel.tuples 0))]
-        (query-stats-observe-bindings! stats (count bindings))
-        (delete-query-relation post-rel)
-        (delete-query-relation joined)
-        bindings))))
+      (query-stats-observe-bindings! stats (count post-rel.tuples))
+      (delete-query-relation joined)
+      post-rel)))
+
+(defn relation-engine-bindings-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (let [post-rel (relation-engine-relation-profiled db query inputs sources registry stats)
+        bindings (clone-bindings (slice post-rel.tuples 0))]
+    (delete-query-relation post-rel)
+    bindings))
 
 (defn bindings-after-ordered-where-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (bindings-from-inputs db query^ inputs)]
@@ -8959,20 +9423,25 @@
     (when self-join-ok
       (return (q-entity-value-self-join-profiled db self-join-plan stats))))
   (when (query-relation-engine-eligible? query sources)
-    (let [bindings (relation-engine-bindings-profiled db query inputs sources registry (addr stats))
+    (let [post-rel (relation-engine-relation-profiled db query inputs sources registry (addr stats))
           rows (make [dynamic]Result-Row)]
       (if (> (count query.aggregates) 0)
         (if (= (count query.find) 0)
           (let [values (make [dynamic]Value 0 (count query.aggregates))
                 pulls (make [dynamic]Pull-Result)]
             (for [aggregate query.aggregates]
-              (arr.push! values (aggregate-value-for-group-with-fns (slice bindings 0) query aggregate ([]Value []) registry)))
+              (arr.push! values (aggregate-value-for-group-with-fns (slice post-rel.tuples 0) query aggregate ([]Value []) registry)))
             (arr.push! rows (Result-Row {values: values pulls: pulls})))
-          (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice bindings 0) registry))
+          (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice post-rel.tuples 0) registry))
         (do
           (delete rows)
-          (set! rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice bindings 0) registry))))
-      (delete bindings)
+          (let [[typed-rows typed-ok] (result-rows-for-typed-relation query post-rel)]
+            (if typed-ok
+              (set! rows typed-rows)
+              (do
+                (delete typed-rows)
+                (set! rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice post-rel.tuples 0) registry)))))))
+      (delete-query-relation post-rel)
       (set! stats.output-rows (count rows))
       (return (profiled-result-set (result-set-ok rows) stats))))
   (let [[distinct-clause distinct-ok] (query-single-attr-value-distinct-clause query)]

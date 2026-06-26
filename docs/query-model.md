@@ -141,6 +141,12 @@ source-qualified synthetic primary collection DB rule/predicate/function
 queries still use the older binding-expansion evaluator until their
 DataScript-style source-aware relation handlers are ported.
 
+Relation joins now include a DataScript-shaped hash join for primitive common
+variables. The join path supports compound keys across one or more shared
+variables, normalizes entity IDs and integer IDs consistently with Vev query
+equality, and falls back to the semantic nested join when values are not safely
+representable as primitive join keys.
+
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the
 relation engine:
@@ -152,6 +158,75 @@ relation engine:
 - recursive rule fast paths become planned recursive/semi-naive relation
   operators
 
+## Data-Oriented Relation Storage
+
+The next physical query milestone is to bring an Odin/game-engine style,
+data-oriented layout into Vev's query intermediates. The current `Binding`
+representation is flexible, but it stores rows as named value bags and pays for
+string lookups, per-row metadata, and generic `Value` materialization in hot
+paths.
+
+Priority order:
+
+1. Struct-of-arrays typed relation columns. Store hot relation data as
+   contiguous typed columns such as `[]u64`, `[]i64`, `[]string`, and `[]Value`
+   instead of arrays of row-shaped bindings.
+2. Small integer variable IDs in execution plans. Resolve query symbols once,
+   then let operators address columns by integer indexes rather than repeated
+   string comparisons.
+3. Scratch/query-local allocation. Allocate per-query temporary columns,
+   hash tables, and work buffers from an explicit query scratch lifetime where
+   possible, so cleanup is bulk and predictable.
+4. Typed hash joins without string compound keys. Keep compound string keys as
+   the conservative first step, but move hot joins toward typed key structs or
+   parallel key columns.
+5. Dense bitsets/boolean arrays for bounded visited and de-duplication paths,
+   especially rule traversal and entity-ID keyed workloads.
+
+The migration should be incremental: keep the logical `Query-Relation` API,
+add typed storage behind it, port one operator family end-to-end, benchmark,
+then fold existing q1/q2/q3/q4 typed fast paths into the general relation result
+path.
+
+First slice implemented: `Typed-Relation` stores primitive relation columns in
+struct-of-arrays form and the compound primitive hash join can build/probe join
+keys from those columns for multi-variable joins. The relation engine can now
+also render simple no-pull/no-aggregate result rows directly from typed
+relation columns, with the old `Binding` renderer retained as the semantic
+fallback. This is still an incremental migration: relation operators continue
+to carry `Binding` tuples as the compatibility representation, so the larger
+performance work remains keeping scans, joins, filters, projection, and
+deduplication typed end-to-end.
+
+Second slice implemented: `Query-Relation` and `Typed-Relation` now carry
+relation-local attr indexes, so relation operators can resolve vars to column
+positions without repeated linear attr scans. The typed primitive hash join
+also uses a fast merge after typed key equality, appending only right-side
+non-common vars instead of re-running generic binding agreement checks. This
+is still a general operator improvement, not a benchmark-specific recognizer.
+
+Third slice implemented: ordinary DB data clauses in the relation engine now
+derive their relation attrs directly from the clause shape and build
+`Query-Relation` rows directly from candidate datoms. This avoids the previous
+extra pass where clause bindings were materialized first and relation attrs
+were rediscovered by scanning row bindings. The semantic matcher still owns
+the per-datom correctness checks, so this is a relation construction change,
+not a shortcut around Datalog semantics.
+
+Fourth slice implemented: `Query-Relation` can now carry optional cached typed
+columns alongside the compatibility `Binding` tuples. Direct DB data-clause
+relations populate those columns when all emitted values are representable in
+the typed column layout; unsupported values simply invalidate the cache and
+continue through the ordinary tuple path. Typed joins and result projection can
+reuse cached columns instead of rebuilding a `Typed-Relation` by scanning every
+binding row.
+
+Fifth slice implemented: typed primitive hash joins now preserve the typed
+column cache on their result relation. The join still emits compatibility
+`Binding` tuples, but it appends each joined row to typed output columns at the
+same time, so downstream typed joins and simple result projection can stay on
+the cached-column path instead of rebuilding typed data from row bindings.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the
@@ -161,13 +236,13 @@ using the dependency components as the stratification input.
 
 Near-term query work should expand the relation engine in this order:
 
-1. Rules: replace the current wrapped recursive rule evaluator with measured
-   relation-native recursive/semi-naive behavior.
+1. Physical storage: replace generic `Binding` tuples with compact typed
+   relation columns while keeping the same logical relation API.
 2. Source-qualified synthetic primary collection DB operators: move the
    remaining collection-backed rule/predicate/function cases into the same
    source-aware relation representation.
-3. Physical storage: replace generic `Binding` tuples with compact typed
-   relation columns while keeping the same logical relation API.
+3. Rules: replace the current wrapped recursive rule evaluator with measured
+   relation-native recursive/semi-naive behavior.
 
 The transaction side has the same split:
 

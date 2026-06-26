@@ -293,7 +293,14 @@
 
 (defn- single-entity-rows [result]
   (when-let [ids (.singleEntityColumn result)]
-    (mapv (fn [id] [(long id)]) ids)))
+    (let [^longs ids ids
+          n (alength ids)]
+      (loop [index 0
+             out (transient [])]
+        (if (< index n)
+          (recur (inc index)
+                 (conj! out [(long (aget ids index))]))
+          (persistent! out))))))
 
 (defn- rows-from-result [result]
   (or (single-entity-rows result)
@@ -301,12 +308,14 @@
 
 (defn- q-from-result [result]
   (if-let [ids (.singleEntityColumn result)]
-    (persistent!
-      (reduce
-        (fn [out id]
-          (conj! out [(long id)]))
-        (transient #{})
-        ids))
+    (let [^longs ids ids
+          n (alength ids)]
+      (loop [index 0
+             out (transient #{})]
+        (if (< index n)
+          (recur (inc index)
+                 (conj! out [(long (aget ids index))]))
+          (persistent! out))))
     (set (mapv clj-value (.rows result)))))
 
 (defn- entity-column [source ^PreparedQuery prepared inputs]
@@ -349,15 +358,24 @@
       nil)))
 
 (defn- entity-column-rows [ids]
-  (mapv (fn [id] [(long id)]) ids))
+  (let [^longs ids ids
+        n (alength ids)]
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget ids index))]))
+        (persistent! out)))))
 
 (defn- entity-column-set [ids]
-  (persistent!
-    (reduce
-      (fn [out id]
-        (conj! out [(long id)]))
-      (transient #{})
-      ids)))
+  (let [^longs ids ids
+        n (alength ids)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget ids index))]))
+        (persistent! out)))))
 
 (defn- entity-int-pair-rows [columns]
   (let [^objects columns columns

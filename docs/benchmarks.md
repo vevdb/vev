@@ -315,6 +315,11 @@ DataScript.
 
 Remaining performance work:
 
+- Move query intermediates toward typed struct-of-arrays relation storage before
+  taking on the generic semi-naive rules engine. The current typed result
+  columns and specialized q1/q2/q3/q4 paths should become ordinary physical
+  relation operators, not permanent side channels. Benchmarks should be rerun
+  after each operator migration so the work stays general.
 - Generalize this from the current linear transitive closure path into a
   measured semi-naive/memoized rule evaluator. Filtered linear recursion and
   alternating two-rule recursion are now optimized, and primitive binding
@@ -344,13 +349,17 @@ Remaining performance work:
   that small range instead of running a global `(entity, attr)` lower-bound for
   every candidate. In the latest 20k local `datascript-bench` comparison, q2 is
   at DataScript parity, q2-switch/q3/q4/q5/qpred1/qpred2 are ahead of
-  DataScript, and q1 is the remaining normal-`q` regression at roughly 0.35 ms
-  versus DataScript at roughly 0.27 ms.
-- The remaining q1 lag is mostly host result-shape overhead. Prepared
-  diagnostic rows show q1 improves from roughly 0.35 ms for
-  Datomic/DataScript-style `q` to roughly 0.11 ms for prepared `rows`, so the
+  DataScript, and q1 is effectively at parity at roughly 0.30 ms versus
+  DataScript at roughly 0.29 ms.
+- q1's remaining cost is mostly host result-shape overhead. Prepared
+  diagnostic rows show q1 improves from roughly 0.30 ms for
+  Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`, so the
   next q1 work should target set/vector materialization through the Clojure
   adapter and native result API, not index lookup.
+- The relation engine now has a DataScript-shaped compound primitive hash join
+  for relations with one or more common primitive variables. It uses
+  length-prefixed compound keys and preserves the existing semantic fallback
+  for non-primitive, lookup-ref-sensitive, or source-sensitive joins.
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.

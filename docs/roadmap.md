@@ -67,29 +67,36 @@ Non-goal:
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 355 tests. Remaining work is concentrated in exact
+suite currently passes 357 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 MusicBrainz/Datomic workload coverage, and higher-level host wrapper
 ergonomics.
 
 Current batch order:
 
-1. Query planner/operator layer: replace local heuristic planning and isolated
+1. Typed/columnar relation storage: replace hot `Binding` tuple intermediates
+   with struct-of-arrays style relation columns while preserving the current
+   logical relation API. Migrate one operator family end-to-end first, then
+   fold q1/q2/q3/q4-style entity/projection paths into the same relation result
+   path instead of keeping them as separate recognizers.
+2. Query planner/operator layer: replace local heuristic planning and isolated
    fast paths with reusable physical operators for indexed scan, bind join,
    hash/semi join, anti join, rule calls, projection, and aggregation.
-2. Generic recursive rules: build component/SCC-local semi-naive evaluation,
+3. Generic recursive rules: build component/SCC-local semi-naive evaluation,
    reusable/materialized rule relations where appropriate, and bound-recursive
-   query support that can later grow toward magic-set-style rewriting.
-3. Datalevin benchmark integration: start with `datascript-bench` through the
+   query support that can later grow toward magic-set-style rewriting. This
+   should build on the typed relation/operator layer rather than on the current
+   generic binding representation.
+4. Datalevin benchmark integration: start with `datascript-bench` through the
    Clojure API, then move to `math-bench` and `openrulebench` for rule-engine
    validation. Use these to compare Vev against Datomic, DataScript, and
    Datalevin on shared workloads before moving to larger planner benchmarks.
-4. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
+5. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
    tx-data shapes fail predictably through the portable text/prepared APIs.
-5. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
+6. Host wrapper ergonomics: keep C as the stable raw ABI, but make Clojure and
    Java feel close to Datomic/DataScript for common tutorials, including
    listener/report callbacks where useful.
-6. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
+7. MusicBrainz/Datomic comparison: import a Day of Datomic / mbrainz-shaped
    dataset, run equivalent Datomic workshop queries against Vev and Datomic,
    compare result sets first and performance second.
 
@@ -112,6 +119,18 @@ The desired direction is not to add benchmark-specific recognizers. The next
 planner work should introduce reusable operators and make benchmark wins fall
 out of better generic planning: indexed scans, bind joins, hash/semi joins,
 anti joins, rule operators, projection, aggregate, and pull integration.
+
+The immediate implementation batch is:
+
+1. Define a typed relation storage direction: keep logical relation attrs, but
+   store hot rows as typed struct-of-arrays columns and keep the existing
+   `Binding` API as a compatibility veneer during migration.
+2. Port one operator family end-to-end, starting with primitive
+   entity/int/string columns and the existing compound primitive hash join.
+3. Benchmark after each migration with `datascript-bench` q1-q5/qpred plus
+   focused relation-source compound join tests.
+4. Then build the generic semi-naive rules engine on top of the improved
+   relation/operator representation.
 
 ## Current Rules Engine State
 
