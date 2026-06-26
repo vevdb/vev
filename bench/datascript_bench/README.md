@@ -150,22 +150,26 @@ Latest checked 20k local comparison:
 ```sh
 VEV_COMPARE_BASELINES=datascript \
 VEV_COMPARE_RAW=1 \
-VEV_BENCH_WARMUP_MS=10 \
-VEV_BENCH_MS=50 \
+VEV_BENCH_WARMUP_MS=20 \
+VEV_BENCH_MS=80 \
 VEV_BENCH_REPEATS=3 \
-  bench/datascript_bench/run_compare.sh q1 q2 q2-switch q3 q4 q5 qpred1 qpred2
+  bench/datascript_bench/run_compare.sh \
+    q1 q2 q2-switch q3 q4 qpred1 qpred2 \
+    q2-rows-prepared q4-rows-prepared qpred1-rows-prepared
 ```
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q1` | 0.29 | 0.30 | 0.97x |
-| `q2` | 1.3 | 1.3 | 1.00x |
-| `q2-switch` | 2.9 | 1.1 | 2.64x |
-| `q3` | 2.1 | 1.7 | 1.24x |
-| `q4` | 3.1 | 2.5 | 1.24x |
-| `q5` | 143.6 | 100.2 | 1.43x |
-| `qpred1` | 3.8 | 2.5 | 1.52x |
-| `qpred2` | 7.2 | 2.6 | 2.77x |
+| `q1` | 0.30 | 0.29 | 1.03x |
+| `q2` | 1.4 | 0.99 | 1.41x |
+| `q2-switch` | 3.0 | 0.91 | 3.30x |
+| `q3` | 2.1 | 1.3 | 1.62x |
+| `q4` | 3.2 | 1.9 | 1.68x |
+| `qpred1` | 4.3 | 2.8 | 1.54x |
+| `qpred2` | 8.1 | 2.6 | 3.12x |
+| `q2-rows-prepared` | --- | 0.75 | --- |
+| `q4-rows-prepared` | --- | 1.6 | --- |
+| `qpred1-rows-prepared` | --- | 1.7 | --- |
 
 Diagnostic prepared/row variants are available for the Vev rows, for example:
 
@@ -179,7 +183,8 @@ VEV_BENCH_REPEATS=3 \
     q2 q2-prepared q2-rows-prepared
 ```
 
-Latest short diagnostic result:
+Latest short diagnostic result, before the cursor-based same-entity lookup
+work:
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
@@ -194,8 +199,32 @@ Interpretation: q1 is mostly host result-shape overhead; the prepared row path
 is much faster than DataScript's set-returning q row. q2/q3/q4 now use a
 general entity-local EAV span lookup inspired by Datalevin's sorted
 entity-local scans: Vev records each entity's contiguous range in `eavt`, then
-same-entity cardinality-one attr lookups search that small range instead of
-running a global `(entity, attr)` lower-bound for every candidate.
+same-entity cardinality-one attr lookups use an advancing entity cursor across
+candidate rows instead of running a global `(entity, attr)` lower-bound for
+every candidate. This is a general same-entity star-query operator shape, not a
+benchmark-name special case.
+
+Native engine-only read timings are available through:
+
+```sh
+cd /Users/andreas/Projects/kvist
+KVIST_PACKAGES_DIR=/Users/andreas/Projects/kvist/packages \
+  /Users/andreas/.local/bin/kvist \
+  run /Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/bench/datascript_read.kvist
+```
+
+The native fixture uses 20k entities with five attrs each, so it is also a
+100k-datom database. Latest representative medians:
+
+| Native workload | Rows | Median us |
+|---|---:|---:|
+| `q1-entity-column` | 2500 | 38 |
+| `q2-pair-columns` | 2500 | 500 |
+| `q2-switch-pair-columns` | 2500 | 390 |
+| `q3-pair-columns` | 2500 | 1211 |
+| `q4-triple-columns` | 2500 | 1556 |
+| `qpred1-pair-columns` | 9997 | 1239 |
+| `qpred2-pair-columns` | 9997 | 1183 |
 
 The relation engine also has a DataScript-shaped compound primitive hash join:
 when two relations share one or more primitive variables, Vev builds a

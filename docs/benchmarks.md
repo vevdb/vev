@@ -67,6 +67,21 @@ matters. The performance goal is the Datalevin planning shape: ordered
 index/range scans, same-entity merge scans, predicate pushdown, and minimal
 host result materialization.
 
+There are two useful read-benchmark views:
+
+- `bench/datascript_bench/run_compare.sh` measures the public Clojure API
+  against DataScript and optionally Datalevin/Datomic.
+- `bench/datascript_read.kvist` measures native engine column paths directly
+  on a 20k entity / 100k datom fixture. Use this when deciding whether a
+  slowdown belongs to the query engine or to C ABI / Java / Clojure result
+  materialization.
+
+The current q2/q3/q4 same-entity star-query work follows Datalevin's planning
+idea: scan a selective AVET range, then advance through the sorted EAVT entity
+starts while fetching same-entity cardinality-one attrs. This avoids restarting
+an entity lookup for every candidate row and is the general operator direction
+for native Vev, not a benchmark-specific shortcut.
+
 The q5 row is the next read-query pressure point. It joins two entity variables
 through a shared value (`:age`) and should drive reusable hash/merge join
 operators rather than another star-query recognizer.
