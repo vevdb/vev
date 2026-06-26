@@ -25,7 +25,9 @@ semi-naive rule optimization.
 
 ## Semantic Core
 
-These are the main in-memory parity target before durable storage.
+These are the main in-memory parity target. Durable storage is now active, but
+these rows still track DataScript namespace coverage rather than backend
+implementation status.
 
 | Namespace | Upstream tests | Status | Next batch |
 | --- | ---: | --- | --- |
@@ -79,7 +81,7 @@ These are useful, but not the next engine-parity gate.
 | `conn.cljc` | 2 | passing | create/conn-from-db/conn-from-datoms and reset reports with tx-data, before/after snapshots, metadata, and listener delivery are covered; Clojure schema-map storage shape is host |
 | `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
 | `serialize.cljc` | 5 | passing | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
-| `storage.clj` | 5 | planned | durable/storage work later |
+| `storage.clj` | 5 | partial | snapshot-file, SQLite datom-row durable reopen/query paths, native wrapper-level append-on-transaction SQLite connection mode, SQLite tx metadata rows, raw C ABI durable SQLite handles, and basic Python/Rust/Java/Clojure durable wrapper smokes exist; exact DataScript storage API and richer packaged host ergonomics remain |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |
 | `db.cljc` | 4 | passing | semantic DB diff is covered; record-updatable, hash-cache, and UUID helpers are Clojure/DataScript runtime details |
 | `issues.cljc` | 5 | passing | issue-262 vector result isolation, issue-369 mixed-type DB diff, and issue-381 schema inspection are covered; issue-330/331 are Clojure pprint/meta host behavior |
@@ -94,8 +96,8 @@ These are useful, but not the next engine-parity gate.
    `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
-2. Add higher-level host wrapper ergonomics over the raw C ABI where concrete
-   Java/Clojure/Python/Rust usage needs them.
+2. Continue SQLite storage work with write/reopen measurements and metadata
+   inspection only where concrete tools need it.
 3. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript
    parity also needs predictable performance on recursive rules and large

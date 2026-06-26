@@ -234,6 +234,7 @@ engine behavior or registered transaction logic, not ad hoc per-call callbacks.
 
 Recommended initial posture:
 
+- prove the storage boundary with a simple snapshot-file implementation
 - store engine-owned index pages or normalized records through a narrow storage API
 - do not leak SQL row concepts into the semantic layer
 

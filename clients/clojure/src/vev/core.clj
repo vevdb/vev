@@ -56,6 +56,11 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
+(defrecord SQLiteConn [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
 (defrecord DB [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
@@ -93,10 +98,30 @@
 
 (def open create-conn)
 
+(defn open-sqlite
+  "Open a durable SQLite-backed Vev connection."
+  ([sqlite-path]
+   (open-sqlite (default-library-path) sqlite-path))
+  ([lib-path sqlite-path]
+   (let [engine (Vev. (path lib-path))]
+     (try
+       (->SQLiteConn engine (.openSqlite engine (path sqlite-path)))
+       (catch Throwable error
+         (.close engine)
+         (throw error))))))
+
 (defn db
   "Return an immutable DB snapshot from a connection."
-  [^Conn conn]
-  (->DB (:engine conn) (.db (:native conn))))
+  [conn]
+  (cond
+    (instance? Conn conn)
+    (->DB (:engine conn) (.db (:native conn)))
+
+    (instance? SQLiteConn conn)
+    (->DB (:engine conn) (.db (:native conn)))
+
+    :else
+    (throw (ex-info "expected Vev connection" {:source conn}))))
 
 (defn conn-from-db
   "Create a mutable connection initialized from an immutable DB value."
@@ -117,7 +142,7 @@
   "Transact Clojure data or EDN text against a connection.
 
   Returns a Clojure transaction report map."
-  [^Conn conn tx]
+  [conn tx]
   (with-open [report (if (instance? TxBuilder tx)
                        (.transactReport (:native conn) (:native tx))
                        (.transactReport (:native conn) (edn-text tx)))]
@@ -219,6 +244,7 @@
 
 (defn- source? [value]
   (or (instance? Conn value)
+      (instance? SQLiteConn value)
       (instance? DB value)))
 
 (defn- normalize-query-call [first-arg second-arg inputs]
@@ -270,6 +296,10 @@
       (instance? Conn source)
       (.query (:native source) (:native prepared) input-edn)
 
+      (instance? SQLiteConn source)
+      (with-open [snapshot (db source)]
+        (.query (:native snapshot) (:native prepared) input-edn))
+
       (instance? DB source)
       (.query (:native source) (:native prepared) input-edn)
 
@@ -284,6 +314,10 @@
     (cond
       (instance? Conn source)
       (.query (:native source) (:native prepared) rules-edn input-edn)
+
+      (instance? SQLiteConn source)
+      (with-open [snapshot (db source)]
+        (.query (:native snapshot) (:native prepared) rules-edn input-edn))
 
       (instance? DB source)
       (.query (:native source) (:native prepared) rules-edn input-edn)
@@ -328,6 +362,10 @@
       (with-open [snapshot (db source)]
         (.queryEntityColumn (:native snapshot) (:native prepared) input-edn))
 
+      (instance? SQLiteConn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityColumn (:native snapshot) (:native prepared) input-edn))
+
       :else
       nil)))
 
@@ -341,6 +379,10 @@
       (with-open [snapshot (db source)]
         (.queryEntityIntPairColumns (:native snapshot) (:native prepared) input-edn))
 
+      (instance? SQLiteConn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityIntPairColumns (:native snapshot) (:native prepared) input-edn))
+
       :else
       nil)))
 
@@ -351,6 +393,10 @@
       (.queryEntityStringIntTripleColumns (:native source) (:native prepared) input-edn)
 
       (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityStringIntTripleColumns (:native snapshot) (:native prepared) input-edn))
+
+      (instance? SQLiteConn source)
       (with-open [snapshot (db source)]
         (.queryEntityStringIntTripleColumns (:native snapshot) (:native prepared) input-edn))
 

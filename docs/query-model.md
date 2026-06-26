@@ -323,6 +323,12 @@ the q5 pressure-point shape from `datascript-bench`, but the operator lesson is
 general: separate index scans and projected attr materialization should feed a
 join/projection operator instead of repeating random per-row index probes.
 
+Seventeenth slice implemented: typed product and typed hash-join operators now
+borrow `Query-Relation` typed columns directly when both inputs already have a
+typed column cache. The older `Typed-Relation` conversion path remains as
+fallback for untyped relation inputs, but the common typed path no longer clones
+whole columns just to build join keys and output rows.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly

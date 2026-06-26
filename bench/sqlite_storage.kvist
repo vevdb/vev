@@ -1,0 +1,189 @@
+(package main)
+
+(import arr "kvist:arr")
+(import bench "./support")
+(import fmt "core:fmt")
+(import os "core:os")
+(import time "core:time")
+(import vev "../src/vev")
+
+(defn remove-sqlite-files [path: string]
+  (os.remove path)
+  (os.remove (fmt.tprintf "%s-wal" path))
+  (os.remove (fmt.tprintf "%s-shm" path)))
+
+(defn delete-live-tx-report-shallow [report: vev.Tx-Report]
+  (when report.ok
+    (vev.delete-owned-db report.db-before))
+  (delete report.tx-data)
+  (delete report.tx-meta)
+  (delete report.tempids))
+
+(defn delete-conn-shallow [conn: vev.Conn]
+  (delete conn.listeners)
+  (vev.delete-owned-db conn.db))
+
+(defn one-person-tx [entity: int] -> [dynamic]vev.Tx-Data
+  (let [tx (make [dynamic]vev.Tx-Data 0 3)]
+    (arr.push! tx (vev.add (u64 entity) ":user/email" (vev.value-string (fmt.tprintf "user-%d@example.com" entity))))
+    (arr.push! tx (vev.add (u64 entity) ":user/name" (vev.value-string (fmt.tprintf "User %d" entity))))
+    (arr.push! tx (vev.add (u64 entity) ":user/age" (vev.value-int (i64 (% entity 100)))))
+    tx))
+
+(defn batch-people-tx [start-entity: int, n: int] -> [dynamic]vev.Tx-Data
+  (let [tx (make [dynamic]vev.Tx-Data 0 (* n 3))]
+    (for [offset (arr.range 0 n)]
+      (let [entity (+ start-entity offset)]
+        (arr.push! tx (vev.add (u64 entity) ":user/email" (vev.value-string (fmt.tprintf "user-%d@example.com" entity))))
+        (arr.push! tx (vev.add (u64 entity) ":user/name" (vev.value-string (fmt.tprintf "User %d" entity))))
+        (arr.push! tx (vev.add (u64 entity) ":user/age" (vev.value-int (i64 (% entity 100)))))))
+    tx))
+
+(defn print-timing [workload: string, n: int, samples: []f64]
+  (let [timing (bench.timing-from-samples samples)]
+    (fmt.printf
+      "engine=vev-sqlite workload=%s n=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f samples=%d\n"
+      workload
+      n
+      timing.min-us
+      timing.median-us
+      timing.p90-us
+      timing.max-us
+      (count samples))))
+
+(defn measure-single-append [path: string, sample-count: int]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)
+        samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=single-append ok=false error=%s\n" open-error)
+      (return))
+    (for [i (arr.range 0 sample-count)]
+      (let [tx (one-person-tx (+ i 1))
+            start (time.now)
+            report (vev.transact-sqlite-tx-data (addr store) (slice tx 0))
+            elapsed (bench.elapsed-us start)]
+        (when (not report.ok)
+          (fmt.printf "engine=vev-sqlite workload=single-append ok=false error=%s\n" report.error)
+          (vev.delete-tx-report-shallow report)
+          (delete tx)
+          (vev.close-sqlite-conn store)
+          (return))
+        (delete-live-tx-report-shallow report)
+        (delete tx)
+        (arr.push! samples elapsed)))
+    (vev.close-sqlite-conn store)
+    (print-timing "single-append" 1 (slice samples 0))))
+
+(defn measure-batch-append [path: string, batch-size: int, sample-count: int]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)
+        samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=batch-append ok=false error=%s\n" open-error)
+      (return))
+    (for [i (arr.range 0 sample-count)]
+      (let [tx (batch-people-tx (+ 1 (* i batch-size)) batch-size)
+            start (time.now)
+            report (vev.transact-sqlite-tx-data (addr store) (slice tx 0))
+            elapsed (bench.elapsed-us start)]
+        (when (not report.ok)
+          (fmt.printf "engine=vev-sqlite workload=batch-append ok=false error=%s\n" report.error)
+          (vev.delete-tx-report-shallow report)
+          (delete tx)
+          (vev.close-sqlite-conn store)
+          (return))
+        (delete-live-tx-report-shallow report)
+        (delete tx)
+        (arr.push! samples elapsed)))
+    (vev.close-sqlite-conn store)
+    (print-timing "batch-append" batch-size (slice samples 0))))
+
+(defn seed-durable-db [path: string, people-count: int] -> bool
+  (remove-sqlite-files path)
+  (let [conn (vev.create-conn)
+        tx (batch-people-tx 1 people-count)
+        report (vev.transact-tx-data (addr conn) (slice tx 0))]
+    (when (not report.ok)
+      (fmt.printf "engine=vev-sqlite workload=seed ok=false error=%s\n" report.error)
+      (vev.delete-tx-report-shallow report)
+      (delete-conn-shallow conn)
+      (delete tx)
+      (return false))
+    (let [[saved-ok saved-error] (vev.persist-conn-sqlite path conn)]
+      (when (not saved-ok)
+        (fmt.printf "engine=vev-sqlite workload=seed ok=false error=%s\n" saved-error)
+        (delete-live-tx-report-shallow report)
+        (delete-conn-shallow conn)
+        (delete tx)
+        (return false)))
+    (delete-live-tx-report-shallow report)
+    (delete-conn-shallow conn)
+    (delete tx)
+    true))
+
+(defn measure-reopen [path: string, people-count: int, sample-count: int]
+  (let [samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            [conn ok error] (vev.open-conn-sqlite path)
+            elapsed (bench.elapsed-us start)]
+        (when (not ok)
+          (fmt.printf "engine=vev-sqlite workload=reopen ok=false error=%s\n" error)
+          (return))
+        (when (not (= (count conn.db.datoms) (* people-count 3)))
+          (fmt.printf "engine=vev-sqlite workload=reopen ok=false error=unexpected-datom-count count=%d\n" (count conn.db.datoms))
+          (delete-conn-shallow conn)
+          (return))
+        (delete-conn-shallow conn)
+        (arr.push! samples elapsed)))
+    (print-timing "reopen-rebuild" people-count (slice samples 0))))
+
+(defn measure-reopened-query [path: string, people-count: int, sample-count: int]
+  (let [[conn ok error] (vev.open-conn-sqlite path)
+        samples (make [dynamic]f64 0 sample-count)
+        query (vev.prepare-query-text "[:find ?name ?age :in ?email :where [?e :user/email ?email] [?e :user/name ?name] [?e :user/age ?age]]")
+        inputs (vev.string-owned (fmt.tprintf "[\"user-%d@example.com\"]" (/ people-count 2)))]
+    (defer (delete samples))
+    (defer (delete inputs))
+    (when (not ok)
+      (fmt.printf "engine=vev-sqlite workload=reopened-query ok=false error=%s\n" error)
+      (vev.delete-prepared-query-shallow query)
+      (delete-conn-shallow conn)
+      (return))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            result (vev.q-prepared-with-input-text conn.db query inputs)
+            elapsed (bench.elapsed-us start)]
+        (when (not (= (count result.rows) 1))
+          (fmt.printf "engine=vev-sqlite workload=reopened-query ok=false error=unexpected-row-count count=%d\n" (count result.rows))
+          (vev.delete-result-set-shallow result)
+          (delete-conn-shallow conn)
+          (return))
+        (vev.delete-result-set-shallow result)
+        (arr.push! samples elapsed)))
+    (vev.delete-prepared-query-shallow query)
+    (delete-conn-shallow conn)
+    (print-timing "reopened-query" people-count (slice samples 0))))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [single-path "tmp.vev.bench.single.sqlite"
+        batch-path "tmp.vev.bench.batch.sqlite"
+        reopen-path "tmp.vev.bench.reopen.sqlite"
+        single-samples 50
+        batch-size 100
+        batch-samples 20
+        reopen-people 2000
+        reopen-samples 30]
+    (defer (remove-sqlite-files single-path))
+    (defer (remove-sqlite-files batch-path))
+    (defer (remove-sqlite-files reopen-path))
+    (measure-single-append single-path single-samples)
+    (measure-batch-append batch-path batch-size batch-samples)
+    (when (seed-durable-db reopen-path reopen-people)
+      (measure-reopen reopen-path reopen-people reopen-samples)
+      (measure-reopened-query reopen-path reopen-people reopen-samples))))

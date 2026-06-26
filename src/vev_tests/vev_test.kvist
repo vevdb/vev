@@ -3,6 +3,7 @@
 (import arr "kvist:arr")
 (import fmt "core:fmt")
 (import math "core:math")
+(import os "core:os")
 (import strings "core:strings")
 (import t "kvist:test")
 (import vev "../vev")
@@ -3400,6 +3401,212 @@
       (t.is text-next.ok)
       (t.is (= (count text-next-names) 3))
       (t.is (= text-next-names[2].text "Ivan")))))
+
+(t.deftest snapshot-file-storage-reopens-queryable-conn
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.snapshot.edn"]
+    (defer (os.remove path))
+    (let [conn (vev.create-conn)
+          seed (vev.transact-text
+                 (addr conn)
+                 "[{:db/id 1 :user/email \"ada@example.com\" :user/name \"Ada\"} {:db/id 2 :user/email \"grace@example.com\" :user/name \"Grace\"}]")
+          [saved-ok saved-error] (vev.persist-conn-snapshot-text path conn)
+          [opened opened-ok opened-error] (vev.open-conn-snapshot-text path)
+          opened-result (vev.q opened.db
+                          [:find ?name
+                           :where
+                           [?e :user/email "ada@example.com"]
+                           [?e :user/name ?name]])
+          opened-next-tx opened.next-tx
+          next (vev.transact-text
+                 (addr opened)
+                 "[{:db/id 3 :user/email \"frances@example.com\" :user/name \"Frances\"}]")
+          [resaved-ok resaved-error] (vev.persist-conn-snapshot-text path opened)
+          [reopened reopened-ok reopened-error] (vev.open-conn-snapshot-text path)
+          reopened-result (vev.q reopened.db
+                            [:find ?name
+                             :where
+                             [?e :user/email "frances@example.com"]
+                             [?e :user/name ?name]])]
+      (t.is seed.ok)
+      (t.is saved-ok)
+      (t.is (= saved-error ""))
+      (t.is opened-ok)
+      (t.is (= opened-error ""))
+      (t.is (= (count opened-result.rows) 1))
+      (t.is (= opened-result.rows[0].values[0].text "Ada"))
+      (t.is next.ok)
+      (t.is (= next.tx opened-next-tx))
+      (t.is resaved-ok)
+      (t.is (= resaved-error ""))
+      (t.is reopened-ok)
+      (t.is (= reopened-error ""))
+      (t.is (= reopened.next-tx (+ opened-next-tx 1)))
+      (t.is (= (count reopened-result.rows) 1))
+      (t.is (= reopened-result.rows[0].values[0].text "Frances")))))
+
+(t.deftest sqlite-storage-reopens-queryable-conn
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.sqlite"]
+    (defer (os.remove path))
+    (defer (os.remove "tmp.vev.sqlite-wal"))
+    (defer (os.remove "tmp.vev.sqlite-shm"))
+    (let [conn (vev.create-conn)
+          seed (vev.transact-text
+                 (addr conn)
+                 "[{:db/id 1 :user/email \"ada@example.com\" :user/name \"Ada\"} {:db/id 2 :user/email \"grace@example.com\" :user/name \"Grace\"}]")
+          [saved-ok saved-error] (vev.persist-conn-sqlite path conn)
+          [opened opened-ok opened-error] (vev.open-conn-sqlite path)
+          opened-result (vev.q opened.db
+                          [:find ?name
+                           :where
+                           [?e :user/email "grace@example.com"]
+                           [?e :user/name ?name]])
+          opened-next-tx opened.next-tx
+          next (vev.transact-text
+                 (addr opened)
+                 "[{:db/id 3 :user/email \"frances@example.com\" :user/name \"Frances\"}]")
+          [resaved-ok resaved-error] (vev.persist-conn-sqlite path opened)
+          [reopened reopened-ok reopened-error] (vev.open-conn-sqlite path)
+          reopened-result (vev.q reopened.db
+                            [:find ?name
+                             :where
+                             [?e :user/email "frances@example.com"]
+                             [?e :user/name ?name]])]
+      (t.is seed.ok)
+      (t.is saved-ok)
+      (t.is (= saved-error ""))
+      (t.is opened-ok)
+      (t.is (= opened-error ""))
+      (t.is (= (count opened-result.rows) 1))
+      (t.is (= opened-result.rows[0].values[0].text "Grace"))
+      (t.is next.ok)
+      (t.is (= next.tx opened-next-tx))
+      (t.is resaved-ok)
+      (t.is (= resaved-error ""))
+      (t.is reopened-ok)
+      (t.is (= reopened-error ""))
+      (t.is (= reopened.next-tx (+ opened-next-tx 1)))
+      (t.is (= (count reopened-result.rows) 1))
+      (t.is (= reopened-result.rows[0].values[0].text "Frances")))))
+
+(t.deftest sqlite-conn-appends-successful-transactions
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.sqlite-conn.sqlite"]
+    (defer (os.remove path))
+    (defer (os.remove "tmp.vev.sqlite-conn.sqlite-wal"))
+    (defer (os.remove "tmp.vev.sqlite-conn.sqlite-shm"))
+    (let [[store opened-ok opened-error] (vev.open-sqlite-conn path)
+          first (vev.transact-sqlite-text
+                  (addr store)
+                  "[{:db/id 1 :user/email \"ada@example.com\" :user/name \"Ada\"}]")
+          second (vev.transact-sqlite-text
+                   (addr store)
+                   "[{:db/id 2 :user/email \"grace@example.com\" :user/name \"Grace\"}]")
+          live-result (vev.q store.conn.db
+                        [:find ?name
+                         :where
+                         [?e :user/email "grace@example.com"]
+                         [?e :user/name ?name]])]
+      (t.is opened-ok)
+      (t.is (= opened-error ""))
+      (t.is first.ok)
+      (t.is second.ok)
+      (t.is (= second.tx (+ first.tx 1)))
+      (t.is (= (count live-result.rows) 1))
+      (t.is (= live-result.rows[0].values[0].text "Grace"))
+      (vev.close-sqlite-conn store))
+    (let [[reopened reopened-ok reopened-error] (vev.open-sqlite-conn path)
+          reopened-result (vev.q reopened.conn.db
+                            [:find ?name
+                             :where
+                             [?e :user/email "ada@example.com"]
+                             [?e :user/name ?name]])
+          reopened-next-tx reopened.conn.next-tx
+          third (vev.transact-sqlite-text
+                  (addr reopened)
+                  "[{:db/id 3 :user/email \"frances@example.com\" :user/name \"Frances\"}]")
+          third-next-tx third.tx]
+      (t.is reopened-ok)
+      (t.is (= reopened-error ""))
+      (t.is (= (count reopened-result.rows) 1))
+      (t.is (= reopened-result.rows[0].values[0].text "Ada"))
+      (t.is third.ok)
+      (t.is (= third-next-tx reopened-next-tx))
+      (vev.close-sqlite-conn reopened)
+      (let [[final final-ok final-error] (vev.open-sqlite-conn path)
+            final-result (vev.q final.conn.db
+                           [:find ?name
+                            :where
+                            [?e :user/email "frances@example.com"]
+                            [?e :user/name ?name]])]
+        (t.is final-ok)
+        (t.is (= final-error ""))
+        (t.is (= final.conn.next-tx (+ third-next-tx 1)))
+        (t.is (= (count final-result.rows) 1))
+        (t.is (= final-result.rows[0].values[0].text "Frances"))
+        (vev.close-sqlite-conn final)))))
+
+(t.deftest sqlite-conn-appends-multi-entity-transactions
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.sqlite-batch.sqlite"]
+    (defer (os.remove path))
+    (defer (os.remove "tmp.vev.sqlite-batch.sqlite-wal"))
+    (defer (os.remove "tmp.vev.sqlite-batch.sqlite-shm"))
+    (let [[store opened-ok opened-error] (vev.open-sqlite-conn path)
+          report (vev.transact-sqlite-text
+                   (addr store)
+                   "[{:db/id 1 :user/email \"ada@example.com\" :user/name \"Ada\" :user/age 37} {:db/id 2 :user/email \"grace@example.com\" :user/name \"Grace\" :user/age 44} {:db/id 3 :user/email \"frances@example.com\" :user/name \"Frances\" :user/age 85}]")
+          live-result (vev.q store.conn.db
+                        [:find ?name ?age
+                         :where
+                         [?e :user/email "frances@example.com"]
+                         [?e :user/name ?name]
+                         [?e :user/age ?age]])]
+      (t.is opened-ok)
+      (t.is (= opened-error ""))
+      (t.is report.ok)
+      (t.is (= (count report.tx-data) 9))
+      (t.is (= (count live-result.rows) 1))
+      (t.is (= live-result.rows[0].values[0].text "Frances"))
+      (t.is (= live-result.rows[0].values[1].int-value 85))
+      (vev.close-sqlite-conn store))
+    (let [[reopened reopened-ok reopened-error] (vev.open-sqlite-conn path)
+          reopened-result (vev.q reopened.conn.db
+                            [:find ?email
+                             :where
+                             [?e :user/name "Grace"]
+                             [?e :user/email ?email]])]
+      (t.is reopened-ok)
+      (t.is (= reopened-error ""))
+      (t.is (= reopened.conn.next-tx 2))
+      (t.is (= (count reopened.conn.db.datoms) 9))
+      (t.is (= (count reopened-result.rows) 1))
+      (t.is (= reopened-result.rows[0].values[0].text "grace@example.com"))
+      (vev.close-sqlite-conn reopened))))
+
+(t.deftest sqlite-storage-persists-transaction-metadata-rows
+  (defer (free_all context.allocator))
+  (let [append-path "tmp.vev.sqlite-tx-meta-append.sqlite"]
+    (defer (os.remove append-path))
+    (defer (os.remove "tmp.vev.sqlite-tx-meta-append.sqlite-wal"))
+    (defer (os.remove "tmp.vev.sqlite-tx-meta-append.sqlite-shm"))
+    (let [[store opened-ok opened-error] (vev.open-sqlite-conn append-path)
+          report (vev.transact-sqlite-text
+                   (addr store)
+                   "[{:db/id \"datomic.tx\" :request/id \"req-append\"} [:db/add 1 :user/name \"Ada\"]]")]
+      (t.is opened-ok)
+      (t.is (= opened-error ""))
+      (t.is report.ok)
+      (vev.close-sqlite-conn store))
+    (let [[append-meta append-meta-ok append-meta-error] (vev.load-sqlite-tx-meta-rows append-path)]
+      (defer (vev.delete-sqlite-tx-meta-rows append-meta))
+      (t.is append-meta-ok)
+      (t.is (= append-meta-error ""))
+      (t.is (= (count append-meta) 1))
+      (t.is (= append-meta[0].tx 1))
+      (t.is (= append-meta[0].a ":request/id"))
+      (t.is (= append-meta[0].v.text "req-append")))))
 
 (t.deftest datascript-reset-conn-subset
   (defer (free_all context.allocator))

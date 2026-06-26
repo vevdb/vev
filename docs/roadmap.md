@@ -60,17 +60,15 @@ Goal:
 
 Non-goal:
 
-- durable storage
-- SQLite integration
 - server/transactor packaging
 
 Status: current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 357 tests. Remaining work is concentrated in exact
+suite currently passes 363 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
-MusicBrainz/Datomic workload coverage, and higher-level host wrapper
-ergonomics.
+MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
+and durable storage integration.
 
 Current batch order:
 
@@ -184,11 +182,11 @@ Goal:
 - compare result sets before comparing performance
 - use the workload to expose planner, rule, pull, aggregate, and API gaps
 
-Why before durability:
+Why it matters:
 
 - MusicBrainz is a real Datomic-shaped workload, not a synthetic microbench
 - it tests whether Vev can follow existing Datomic teaching material
-- it gives a shared correctness/performance target before SQLite storage
+- it gives a shared correctness/performance target for SQLite storage
 - it exercises large in-memory indexes, immutable DB values, EDN text APIs, and
   host wrappers under realistic pressure
 
@@ -199,9 +197,9 @@ Initial scope:
 - store expected query results in Vev tests or benchmark fixtures
 - report Datomic vs Vev timings as comparative ratios, not raw claims
 
-Status: not started. This should happen after the next parser/callback cleanup
-batch, after the first Datalevin benchmark ladder steps are running, and before
-durable SQLite work.
+Status: not started. This should happen alongside the durable-storage phase,
+after the basic SQLite reopen/query loop exists. It should validate that
+durability preserves the same Datomic-shaped semantics as the in-memory engine.
 
 ## Phase 5b: External Optimizer Benchmarks
 
@@ -272,9 +270,22 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: not started. Keep this postponed until parser/API exactness,
-MusicBrainz/Datomic workload coverage, and rule/query performance are stable
-enough that the storage layer can preserve semantics instead of reshaping them.
+Status: active. Vev now has snapshot-file persistence, SQLite-backed datom row
+persistence, explicit SQLite tx metadata rows, a native SQLite-backed
+connection wrapper, and raw C ABI durable connection handles. The SQLite slice
+creates metadata, transaction, tx metadata, and datom tables, writes one row
+per datom through a SQLite transaction, reopens from disk, rebuilds in-memory
+indexes, and then queries normally. The explicit persist API full-replaces
+durable datom rows from the connection's current datom log; the SQLite
+connection wrapper appends each successful transaction's report tx-data plus tx
+metadata rows as it commits and rolls the in-memory connection back if the
+durable append fails. A first SQLite storage benchmark now measures
+single-transaction append latency, multi-entity append batches, full
+reopen/index-rebuild cost, and query latency after reopen. The SQLite-backed
+connection keeps a live SQLite handle open across transactions. The next
+durable milestone is splitting batch append into in-memory transaction cost vs
+durable write cost, followed by Datalevin `write-bench`-style throughput and
+mixed read/write comparisons.
 
 ## Phase 7: Dogfood
 
@@ -309,11 +320,14 @@ connection handles, immutable DB snapshot handles, EDN transaction/query/pull
 entrypoints, prepared queries, typed statement bindings, named DB source
 bindings, typed result access, direct result-row visitors, status/error
 accessors, and DB-value retain/release. C, Python, Rust, Java, and Clojure
-smokes exercise the native library, and the ABI-vs-native benchmark covers
-small lookups, DB snapshots, transaction reports, many-row results, direct row
+smokes exercise the native library, including durable SQLite
+open/transact/close/reopen/query through the raw C ABI and the Python, Rust,
+Java, and Clojure example wrappers. The ABI-vs-native benchmark covers small
+lookups, DB snapshots, transaction reports, many-row results, direct row
 visitors, nested pull-many values, and host-provided transaction function
 callbacks. Further interop work should be driven by specific adapter needs,
-especially higher-level host wrappers over the raw C ABI.
+especially packaging and richer host-specific APIs over the stable raw C
+surface.
 
 ## Phase 9: Optional packaging expansion
 
@@ -353,21 +367,21 @@ Non-goal:
 
 ## Current rule
 
-Do not start durable storage by solving:
+Do not continue durable storage by solving:
 
 - every backend
 - every host language
 - every deployment story
 
-Get the in-memory semantic core, EDN/C ABI surface, and performance baseline
-right first. The next durable-storage gate is not "all possible DataScript host
-details"; it is:
+The in-memory semantic core, EDN/C ABI surface, and performance baseline are
+now strong enough to start durability. The next durable-storage gate is not
+"all possible DataScript host details"; it is:
 
-- portable parser and tx-data APIs reject bad input predictably
-- recursive rules and large relation queries have measured, acceptable behavior
-- MusicBrainz/Datomic workshop queries have correctness coverage and comparison
-  benchmarks
-- Clojure/Java examples can follow common Datomic/DataScript tutorial shapes
+- SQLite-backed open/write/close/reopen/query works from datom rows through
+  the same semantic engine path as in-memory Vev
+- transaction boundaries and SQLite-backed report metadata rows are durable
+- immutable DB snapshot semantics remain visible through the native ABI
+- MusicBrainz/Datomic workshop queries validate durable correctness and
+  performance once the basic SQLite backend exists
 
-SQLite durability comes after those gates, so storage preserves established
-semantics instead of reshaping them.
+Storage must preserve established semantics instead of reshaping them.

@@ -76,6 +76,22 @@ There are two useful read-benchmark views:
   slowdown belongs to the query engine or to C ABI / Java / Clojure result
   materialization.
 
+Latest local public Clojure comparison after borrowed typed relation
+product/hash-join operators:
+
+| Query | DataScript ms | Vev ms | DataScript/Vev |
+|---|---:|---:|---:|
+| `q1` | 0.27 | 0.28 | 0.96x |
+| `q2` | 1.40 | 1.00 | 1.40x |
+| `q2-switch` | 3.00 | 1.10 | 2.73x |
+| `q3` | 2.10 | 0.87 | 2.41x |
+| `q4` | 3.20 | 1.60 | 2.00x |
+| `q5` | 142.00 | 16.40 | 8.66x |
+
+The `people-name-age` row was requested in the same run, but the DataScript
+side did not emit a numeric baseline for that workload, so it is omitted from
+the comparison table.
+
 The current q2/q3/q4 same-entity star-query work follows Datalevin's planning
 idea: scan a selective AVET range, then advance through the sorted EAVT entity
 starts while fetching same-entity cardinality-one attrs. This avoids restarting
@@ -202,6 +218,33 @@ The important Vev-specific counters are:
 - `candidates`: total datom/relation candidates inspected by data patterns.
 - `rule_calls` and `rule_iterations`: recursive rule/fixpoint pressure.
 - `max_bindings`: largest intermediate binding set materialized by the query.
+
+## SQLite Storage Baseline
+
+Run the durable-storage harness from the Kvist repo root:
+
+```sh
+cd /Users/andreas/Projects/kvist
+/Users/andreas/Projects/kvist/kvist \
+  run /Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/bench/sqlite_storage.kvist
+```
+
+Current sample output on June 26, 2026:
+
+```text
+engine=vev-sqlite workload=single-append n=1 min_us=151 median_us=1805 p90_us=3392 max_us=3740 samples=50
+engine=vev-sqlite workload=batch-append n=100 min_us=8048 median_us=114453 p90_us=210519 max_us=223956 samples=20
+engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=66768 median_us=68268 p90_us=69059 max_us=70098 samples=30
+engine=vev-sqlite workload=reopened-query n=2000 min_us=18 median_us=19 p90_us=24 max_us=212 samples=30
+```
+
+This is not yet the final write benchmark. It establishes a repeatable baseline
+for SQLite-backed single-transaction appends, multi-entity transaction batches,
+full persisted DB reopen cost, and query performance after reopen. The current
+batch row measures the whole `transact-sqlite-*` path: in-memory transaction
+work, report generation, SQLite commit, and SQLite index maintenance. The next
+measurement split should separate in-memory transaction cost from durable write
+cost before comparing against Datalevin `write-bench` throughput.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured

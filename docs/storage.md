@@ -1,0 +1,114 @@
+# Storage
+
+Vev's durable storage phase is now active. The storage layer must preserve the
+existing semantic model:
+
+- DB values are immutable snapshots.
+- Transactions append facts and retractions with stable tx ids.
+- Query, pull, entity, and index semantics are owned by the engine, not by SQL.
+- Host APIs should keep using opaque connection and DB snapshot handles.
+
+## Current Slice
+
+The first implemented storage slice was snapshot-file persistence:
+
+- `save-db-snapshot-text`
+- `load-db-snapshot-text`
+- `open-conn-snapshot-text`
+- `persist-conn-snapshot-text`
+
+These functions write and read the existing EDN-ish serializable datom snapshot.
+This is deliberately a scaffold, not the final SQLite backend. Its job is to
+make the durable open/write/close/reopen/query loop real while the storage
+boundary is still small.
+
+The SQLite-backed slice now persists datoms as rows:
+
+- `save-db-sqlite`
+- `load-db-sqlite`
+- `open-conn-sqlite`
+- `persist-conn-sqlite`
+- `open-sqlite-conn`
+- `transact-sqlite-tx-data`
+- `transact-sqlite-text`
+
+It creates Vev metadata, transaction, and datom tables, writes one row per
+datom through a SQLite transaction, reopens from disk, rebuilds the in-memory
+indexes from those rows, and then runs normal Vev queries. The older snapshot
+table remains as a compatibility fallback for databases created by the first
+SQLite snapshot slice.
+
+There are now two write modes:
+
+- explicit full persist: `persist-conn-sqlite` replaces the durable datom rows
+  with the connection's current full datom log
+- SQLite-backed connection wrapper: `transact-sqlite-*` runs the normal Vev
+  transaction engine and appends the successful report tx-data plus tx metadata
+  rows to SQLite before returning
+
+If the SQLite append fails after the in-memory transaction succeeds, the
+wrapper restores the previous DB snapshot and reports a failed transaction.
+That keeps the wrapper-level connection consistent with the durable store.
+The wrapper now owns a live SQLite handle for its lifetime, so repeated
+transactions do not reopen the file or rerun schema setup on every commit.
+
+The raw C ABI now exposes this durable connection shape through
+`vev_sqlite_conn_t`, including open/ok/error/close, transaction reports, and DB
+snapshots. The Python, Java, Clojure, and Rust example wrappers also expose the
+basic durable shape and smoke-test open/write/close/reopen/query. Explicit
+full DB persist cannot reconstruct report-only tx metadata from a bare DB
+value; metadata rows are written by the SQLite-backed transaction wrapper when
+it has the successful transaction report in hand.
+
+`bench/sqlite_storage.kvist` now measures the first durable storage baseline:
+
+- `single-append`: one SQLite-backed transaction per entity
+- `batch-append`: one SQLite-backed transaction for a configurable entity batch
+- `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
+- `reopened-query`: run a prepared query against the reopened DB snapshot
+
+The first benchmark pass found and fixed a serializer ownership bug: storage
+callers delete `value-serializable-text` results, so that function must return
+heap-owned text for literals, formatted scalars, keywords, symbols, vectors,
+and maps.
+
+## SQLite Backend Plan
+
+SQLite is the first production durable backend.
+
+Initial schema direction:
+
+- database metadata table with format version and current basis tx
+- append-only transaction table
+- append-only datom table storing `e`, `a`, typed value payload, `tx`, and
+  `added`
+- optional materialized current-datom table once commit/read costs need it
+- optional persisted logical index tables/pages once full-load rebuild is too
+  slow
+
+Implementation order:
+
+1. Add storage-level metadata inspection/replay APIs only where concrete tools
+   need them.
+2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
+   cost measurements require persisted logical indexes.
+3. Split batch append measurements into in-memory transaction cost and durable
+   SQLite write cost, so write-bench work can distinguish Datalog transaction
+   scaling from SQLite commit/index maintenance.
+4. Move selected logical indexes to persisted structures only after benchmarks
+   show full rebuild is the bottleneck.
+5. Once the local harness is stable, map Datalevin `write-bench` concepts onto
+   Vev's API and compare commit/reopen behavior against existing systems.
+
+Non-goals for the first SQLite backend:
+
+- making SQL rows the public data model
+- query execution by translating Vev Datalog to SQL
+- multi-backend abstraction before SQLite works well
+- distributed client/transactor semantics
+
+## Validation Workloads
+
+MusicBrainz/Datomic workshop data should validate the durable backend once
+basic SQLite reopen/query works. Datalevin `write-bench` becomes relevant after
+SQLite commit semantics and batch append behavior are both measured.

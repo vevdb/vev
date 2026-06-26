@@ -2640,10 +2640,10 @@
 
 (defn serializable-float-text [value: f64] -> string
   (cond
-    (math.is_nan value) "[:vev/float \"NaN\"]"
-    (math.is_inf value 1) "[:vev/float \"Inf\"]"
-    (math.is_inf value -1) "[:vev/float \"-Inf\"]"
-    :else (fmt.tprintf "[:vev/float \"%v\"]" value)))
+    (math.is_nan value) (string-owned "[:vev/float \"NaN\"]")
+    (math.is_inf value 1) (string-owned "[:vev/float \"Inf\"]")
+    (math.is_inf value -1) (string-owned "[:vev/float \"-Inf\"]")
+    :else (string-owned (fmt.tprintf "[:vev/float \"%v\"]" value))))
 
 (defn serializable-float-from-text [text: string] -> [value: f64, ok: bool]
   (cond
@@ -2654,33 +2654,51 @@
 
 (defn value-serializable-text [value: Value] -> string
   (case value.kind
-    .Nil "nil"
-    .Bool (if value.bool-value "true" "false")
-    .Int (fmt.tprintf "%d" value.int-value)
+    .Nil (string-owned "nil")
+    .Bool (string-owned (if value.bool-value "true" "false"))
+    .Int (string-owned (fmt.tprintf "%d" value.int-value))
     .Float (serializable-float-text value.float-value)
     .String (edn-escaped-string-text value.text)
-    .Keyword value.text
-    .Symbol value.text
-    .Entity (fmt.tprintf "[:vev/entity %d]" value.entity)
+    .Keyword (string-owned value.text)
+    .Symbol (string-owned value.text)
+    .Entity (string-owned (fmt.tprintf "[:vev/entity %d]" value.entity))
     .Vector
-      (let [parts (make [dynamic]string) :defer]
-        (arr.push! parts "[")
+      (let [parts (make [dynamic]string) :defer
+            owned-parts (make [dynamic]string) :defer]
+        (arr.push! parts (string-owned "["))
+        (arr.push! owned-parts parts[0])
         (for [item index value.items]
           (when (> index 0)
-            (arr.push! parts " "))
-          (arr.push! parts (value-serializable-text item)))
-        (arr.push! parts "]")
-        (strings.concatenate (slice parts 0)))
+            (arr.push! parts (string-owned " "))
+            (arr.push! owned-parts parts[(- (count parts) 1)]))
+          (let [item-text (value-serializable-text item)]
+            (arr.push! parts item-text)
+            (arr.push! owned-parts item-text)))
+        (arr.push! parts (string-owned "]"))
+        (arr.push! owned-parts parts[(- (count parts) 1)])
+        (let [out (strings.concatenate (slice parts 0))]
+          (for [part owned-parts]
+            (delete part))
+          out))
     .Map
-      (let [parts (make [dynamic]string) :defer]
-        (arr.push! parts "{")
+      (let [parts (make [dynamic]string) :defer
+            owned-parts (make [dynamic]string) :defer]
+        (arr.push! parts (string-owned "{"))
+        (arr.push! owned-parts parts[0])
         (for [item index value.items]
           (when (> index 0)
-            (arr.push! parts " "))
-          (arr.push! parts (value-serializable-text item)))
-        (arr.push! parts "}")
-        (strings.concatenate (slice parts 0)))
-    :else "nil"))
+            (arr.push! parts (string-owned " "))
+            (arr.push! owned-parts parts[(- (count parts) 1)]))
+          (let [item-text (value-serializable-text item)]
+            (arr.push! parts item-text)
+            (arr.push! owned-parts item-text)))
+        (arr.push! parts (string-owned "}"))
+        (arr.push! owned-parts parts[(- (count parts) 1)])
+        (let [out (strings.concatenate (slice parts 0))]
+          (for [part owned-parts]
+            (delete part))
+          out))
+    :else (string-owned "nil")))
 
 (defn attr-serializable-text [attr: string] -> string
   (if (strings.has_prefix attr ":")
@@ -2688,12 +2706,13 @@
     (edn-escaped-string-text attr)))
 
 (defn datom-serializable-text [datom: Datom] -> string
-  (fmt.tprintf "[%d %s %s %d %v]"
-               datom.e
-               (attr-serializable-text datom.a)
-               (value-serializable-text datom.v)
-               datom.tx
-               datom.added))
+  (let [value-text (value-serializable-text datom.v) :defer]
+    (fmt.tprintf "[%d %s %s %d %v]"
+                 datom.e
+                 (attr-serializable-text datom.a)
+                 value-text
+                 datom.tx
+                 datom.added)))
 
 (defn serializable-text [db: DB] -> string
   (let [parts (make [dynamic]string) :defer]
@@ -2828,11 +2847,14 @@
         (when (not (= added-doc-node.kind .Bool))
           (delete-value-containers-shallow value)
           (return (Datom {}) false "expected datom added boolean"))
-        (return (datom-tx e attr value tx added-doc-node.bool-value) true "")))))
+        (let [owned-value (value-owned value)]
+          (delete-value-containers-shallow value)
+          (return (datom-tx e (string-owned attr) owned-value tx added-doc-node.bool-value) true ""))))))
 
 (defn delete-datom-value-containers-from! [datoms: ^[dynamic]Datom, start: int]
   (for [index (arr.range start (count datoms^))]
-    (delete-parser-datom-value-containers-shallow datoms^[index]))
+    (delete datoms^[index].a)
+    (delete-owned-value datoms^[index].v))
   (while (> (count datoms^) start)
     (arr.remove-ordered-at! datoms^ (- (count datoms^) 1))))
 
