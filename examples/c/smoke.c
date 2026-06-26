@@ -261,6 +261,10 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         vev_string_free(error);
         goto cleanup;
     }
+    if (vev_connection_basis_t(durable) != 1) {
+        fprintf(stderr, "unexpected reopened durable basis\n");
+        goto cleanup;
+    }
     db = vev_connection_db(durable);
     result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
     int reopened_rows = result_row_count_or_error("sqlite-reopened", result);
@@ -282,6 +286,10 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     }
     vev_tx_report_free(report);
     report = NULL;
+    if (vev_connection_basis_t(durable) != 2) {
+        fprintf(stderr, "unexpected durable basis after second tx\n");
+        goto cleanup;
+    }
     vev_connection_close(durable);
     durable = NULL;
 
@@ -290,6 +298,10 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         const char *error = vev_connection_error(durable);
         fprintf(stderr, "failed to reopen sqlite Vev connection after second tx: %s\n", error);
         vev_string_free(error);
+        goto cleanup;
+    }
+    if (vev_connection_basis_t(durable) != 2) {
+        fprintf(stderr, "unexpected final reopened durable basis\n");
         goto cleanup;
     }
     db = vev_connection_db(durable);

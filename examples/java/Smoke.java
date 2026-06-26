@@ -243,6 +243,9 @@ public final class Smoke {
                      Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                      Vev.DB durableDb = durable.db();
                      Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {
+                    if (durable.basisT() != 1) {
+                        throw new IllegalStateException("unexpected reopened durable basis");
+                    }
                     System.out.println("sqlite-reopened rows: " + rows.rowCount());
                     if (rows.rowCount() != 1) {
                         throw new IllegalStateException("unexpected SQLite reopened row count");

@@ -904,6 +904,10 @@ fn main() -> Result<(), String> {
     }
     {
         let durable = DurableConn::open(sqlite_path)?;
+        if durable.basis_t() != 1 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected reopened durable basis".to_string());
+        }
         let durable_query =
             PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;
         let durable_db = durable.db()?;

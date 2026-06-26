@@ -171,6 +171,8 @@
                   all-emails (vev/prepare durable
                                '[:find ?e ?email
                                  :where [?e :user/email ?email]])]
+        (when (not= 1 (:basis-t (vev/connection-info durable)))
+          (throw (ex-info "unexpected reopened durable basis" {})))
         (let [rows (vev/q db all-emails)]
           (println "sqlite-reopened rows:" rows)
           (when-not (= 1 (count rows))

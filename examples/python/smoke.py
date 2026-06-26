@@ -390,6 +390,8 @@ def main() -> int:
                     raise RuntimeError("unexpected SQLite live row count")
 
         with vev.connect(sqlite_path) as durable:
+            if durable.basis_t() != 1:
+                raise RuntimeError("unexpected reopened durable basis")
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             ) as all_emails, durable.db() as db:
