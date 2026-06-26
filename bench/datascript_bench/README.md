@@ -132,7 +132,7 @@ VEV_BENCH_REPEATS=1 \
 
 | Query | DataScript ms | Vev ms | DataScript / Vev |
 |---|---:|---:|---:|
-| `q5` | 133.4 | 10.1 | 13.21x |
+| `q5` | 147.8 | 101.7 | 1.45x |
 | `rules-wide-3x3` | 0.46 | 0.27 | 1.70x |
 | `rules-long-10x3` | 0.96 | 0.36 | 2.67x |
 
@@ -226,12 +226,14 @@ DataScript-bench adapter. Latest representative medians:
 | Native workload | Rows | Median us |
 |---|---:|---:|
 | `q1-entity-column` | 2500 | 40 |
-| `q2-pair-columns` | 2500 | 604 |
-| `q2-switch-pair-columns` | 2500 | 622 |
-| `q3-pair-columns` | 2500 | 695 |
-| `q4-triple-columns` | 2500 | 1029 |
-| `qpred1-pair-columns` | 9997 | 759 |
-| `qpred2-pair-columns` | 9997 | 808 |
+| `q2-pair-columns` | 2500 | 608 |
+| `q2-switch-pair-columns` | 2500 | 608 |
+| `q3-pair-columns` | 2500 | 676 |
+| `q4-triple-columns` | 2500 | 1018 |
+| `q5-result-set` | 5000 | 4365 |
+| `q5-triple-columns` | 5000 | 3880 |
+| `qpred1-pair-columns` | 9997 | 814 |
+| `qpred2-pair-columns` | 9997 | 810 |
 
 The qpred rows use predicate pushdown for `:db.type/long` attrs: the engine
 turns `[(> ?s 50000)]` into AVET integer range bounds, preallocates pair
@@ -249,15 +251,19 @@ semantic fallback.
 distinct left-side join values, then scans the right `avet` range once per
 join value. This is a semi-join shape, not a benchmark-name special case, and
 it should generalize to Datomic/DataScript queries where an unreturned left
-entity only constrains a shared value.
+entity only constrains a shared value. Native q5 result construction is about
+4ms for 5000 rows, while the public Clojure benchmark is about 100ms. The next
+q5 work should target bulk result materialization for string/value columns
+across the Java/Clojure boundary, not another query-engine shortcut.
 
 Near-term benchmark work:
 
 1. Investigate why long Datalevin/Datomic baseline comparison runs can stall
    locally even when the Vev and DataScript rows complete.
-2. Use q1 to drive the remaining full `q` host result-shape overhead. The
-   engine/row path is already fast; the slower path is Datomic/DataScript-style
-   set materialization through the Clojure adapter.
+2. Use q1 and q5 to drive the remaining full `q` host result-shape overhead.
+   The engine/row paths are already much faster than the public Clojure rows;
+   the slower path is Datomic/DataScript-style set/vector materialization
+   through Java/Clojure.
 3. Keep broadening equality-join planning from the current self-join operator
    into the general relation planner, including multi-common-variable joins and
    non-all-current DBs.

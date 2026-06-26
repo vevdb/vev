@@ -9505,28 +9505,13 @@
         (set! i (+ i 1)))
       out)))
 
-(defn append-entity-value-self-join-row! [rows: ^[dynamic]Result-Row, seen: ^set[string], entity: u64, output: Value, join-value: Value]
-  (let [entity-value (value-entity entity)
-        values ([]Value [entity-value output join-value])
-        [key key-ok] (row-values-dedupe-key values)]
-    (if key-ok
-      (let [already-seen (set.contains? seen^ key)]
-        (when (not already-seen)
-          (set.add! seen^ key)
-          (append-three-value-row! rows entity-value output join-value)))
-      (when (not (row-values-exist? (slice rows^ 0) values))
-        (append-three-value-row! rows entity-value output join-value)))))
-
 (defn q-entity-value-self-join-profiled [db: DB, plan: Entity-Value-Self-Join-Plan, stats: Query-Stats] -> Profiled-Result-Set
   (let [out-stats stats
-        rows (make [dynamic]Result-Row)
-        seen (set.empty string)
         seen-join-values (set.empty string)
         join-values (make [dynamic]Value)
         indexes (slice db.avet 0)
         left-low (lower-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
         left-high (upper-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)]
-    (defer (delete seen))
     (defer (delete seen-join-values))
     (defer (delete join-values))
     (set! out-stats.steps 1)
@@ -9546,20 +9531,68 @@
                 (when (not (value-slice-contains? (slice join-values 0) join-value))
                   (arr.push! join-values join-value))))))
         (set! left-index (+ left-index 1))))
-    (for [join-value join-values]
-      (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
-            right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)
-            right-index right-low]
+    (let [right-candidates 0]
+      (for [join-value join-values]
+        (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
+              right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)]
+          (set! right-candidates (+ right-candidates (- right-high right-low)))))
+      (let [rows (make [dynamic]Result-Row 0 right-candidates)]
+        (for [join-value join-values]
+          (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
+                right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)
+                right-index right-low]
         (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- right-high right-low)))
         (while (< right-index right-high)
           (let [right-datom db.datoms[indexes[right-index]]
                 [output output-ok] (cardinality-one-value-fast-all-current db right-datom.e plan.output-attr)]
             (when output-ok
-              (append-entity-value-self-join-row! (addr rows) (addr seen) right-datom.e output join-value)))
+              (append-three-value-row! (addr rows) (value-entity right-datom.e) output join-value)))
           (set! right-index (+ right-index 1)))))
-    (set! out-stats.max-intermediate-bindings (count rows))
-    (set! out-stats.output-rows (count rows))
-    (profiled-result-set (result-set-ok rows) out-stats)))
+        (set! out-stats.max-intermediate-bindings (count rows))
+        (set! out-stats.output-rows (count rows))
+        (profiled-result-set (result-set-ok rows) out-stats)))))
+
+(defn q-entity-value-self-join-triples [db: DB, plan: Entity-Value-Self-Join-Plan] -> Entity-String-Int-Triples
+  (let [seen-join-values (set.empty string)
+        join-values (make [dynamic]Value)
+        indexes (slice db.avet 0)
+        left-low (lower-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        left-high (upper-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)]
+    (defer (delete seen-join-values))
+    (defer (delete join-values))
+    (let [left-index left-low]
+      (while (< left-index left-high)
+        (let [left-datom db.datoms[indexes[left-index]]
+              [join-value join-ok] (cardinality-one-value-fast-all-current db left-datom.e plan.join-attr)]
+          (when (and join-ok (= join-value.kind .Int))
+            (let [[join-key join-key-ok] (primitive-value-dedupe-key join-value)]
+              (if join-key-ok
+                (let [already-seen (set.contains? seen-join-values join-key)]
+                  (when (not already-seen)
+                    (set.add! seen-join-values join-key)
+                    (arr.push! join-values join-value)))
+                (when (not (value-slice-contains? (slice join-values 0) join-value))
+                  (arr.push! join-values join-value))))))
+        (set! left-index (+ left-index 1))))
+    (let [right-candidates 0]
+      (for [join-value join-values]
+        (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
+              right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)]
+          (set! right-candidates (+ right-candidates (- right-high right-low)))))
+      (let [out (Entity-String-Int-Triples {entities: (make [dynamic]u64 0 right-candidates)
+                                            strings: (make [dynamic]string 0 right-candidates)
+                                            ints: (make [dynamic]i64 0 right-candidates)})]
+        (for [join-value join-values]
+          (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
+                right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)
+                right-index right-low]
+            (while (< right-index right-high)
+              (let [right-datom db.datoms[indexes[right-index]]
+                    [output output-ok] (cardinality-one-value-fast-all-current db right-datom.e plan.output-attr)]
+                (when (and output-ok (= output.kind .String))
+                  (append-entity-string-int-triple! (addr out) right-datom.e output.text join-value.int-value)))
+              (set! right-index (+ right-index 1)))))
+        out))))
 
 (defn append-two-attr-projection-row! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, query: Query, projection: Two-Attr-Entity-Projection, first-value-source: Value, second-value-source: Value]
   (let [first-value (if (= query.find[0] projection.first-var) first-value-source second-value-source)
@@ -9907,6 +9940,10 @@
   (let [out (empty-entity-string-int-triples)]
     (when (> (count inputs) 0)
       (return out false))
+    (let [[self-join-plan self-join-ok] (query-entity-value-self-join-plan db query)]
+      (when self-join-ok
+        (delete-entity-string-int-triples out)
+        (return (q-entity-value-self-join-triples db self-join-plan) true)))
     (let [[plan plan-ok] (query-entity-two-value-plan db query)]
       (when (not plan-ok)
         (delete plan.filters)

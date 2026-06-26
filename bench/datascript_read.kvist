@@ -139,6 +139,28 @@
       (set! sample-index (+ sample-index 1)))
     (Query-Timing {rows: rows timing: (bench.timing-from-samples (slice samples 0))})))
 
+(defn time-result-set [db: vev.DB, prepared: vev.Prepared-Query, warmups: int, samples-count: int] -> Query-Timing
+  (let [warmup-index 0]
+    (while (< warmup-index warmups)
+      (let [result (vev.q-query db prepared.query)]
+        (vev.delete-result-set-shallow result)
+        (when (not result.ok)
+          (fmt.println result.error)))
+      (set! warmup-index (+ warmup-index 1))))
+  (let [samples (make [dynamic]f64 0 samples-count)
+        rows 0
+        sample-index 0]
+    (defer (delete samples))
+    (while (< sample-index samples-count)
+      (let [start (time.now)
+            result (vev.q-query db prepared.query)
+            elapsed (bench.elapsed-us start)]
+        (set! rows (count result.rows))
+        (arr.push! samples elapsed)
+        (vev.delete-result-set-shallow result))
+      (set! sample-index (+ sample-index 1)))
+    (Query-Timing {rows: rows timing: (bench.timing-from-samples (slice samples 0))})))
+
 (defn print-timing [label: string, result: Query-Timing]
   (fmt.printf
     "engine=vev-native workload=%s rows=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f\n"
@@ -160,6 +182,7 @@
           q2-switch (prepare "[:find ?e ?a :where [?e :age ?a] [?e :name \"Ivan\"]]")
           q3 (prepare "[:find ?e ?a :where [?e :name \"Ivan\"] [?e :age ?a] [?e :sex :male]]")
           q4 (prepare "[:find ?e ?l ?a :where [?e :name \"Ivan\"] [?e :last-name ?l] [?e :age ?a] [?e :sex :male]]")
+          q5 (prepare "[:find ?e1 ?l ?a :where [?e :name \"Ivan\"] [?e :age ?a] [?e1 :age ?a] [?e1 :last-name ?l]]")
           qpred1 (prepare "[:find ?e ?s :where [?e :salary ?s] [(> ?s 50000)]]")
           qpred2 (prepare "[:find ?e ?s :in $ ?min-s :where [?e :salary ?s] [(> ?s ?min-s)]]")
           qpred2-inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 50000))])
@@ -170,5 +193,7 @@
       (print-timing "q2-switch-pair-columns" (time-pair-columns conn.db q2-switch ([]vev.Query-Input []) warmups samples))
       (print-timing "q3-pair-columns" (time-pair-columns conn.db q3 ([]vev.Query-Input []) warmups samples))
       (print-timing "q4-triple-columns" (time-triple-columns conn.db q4 warmups samples))
+      (print-timing "q5-result-set" (time-result-set conn.db q5 warmups samples))
+      (print-timing "q5-triple-columns" (time-triple-columns conn.db q5 warmups samples))
       (print-timing "qpred1-pair-columns" (time-pair-columns conn.db qpred1 ([]vev.Query-Input []) warmups samples))
       (print-timing "qpred2-pair-columns" (time-pair-columns conn.db qpred2 qpred2-inputs warmups samples)))))
