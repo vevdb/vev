@@ -219,6 +219,30 @@ The important Vev-specific counters are:
 - `rule_calls` and `rule_iterations`: recursive rule/fixpoint pressure.
 - `max_bindings`: largest intermediate binding set materialized by the query.
 
+## SQLite Storage Baseline
+
+Run the durable-storage harness from the Kvist repo root:
+
+```sh
+cd /Users/andreas/Projects/kvist
+/Users/andreas/Projects/kvist/kvist \
+  run /Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/bench/sqlite_storage.kvist
+```
+
+Current sample output on June 26, 2026:
+
+```text
+engine=vev-sqlite workload=single-append n=1 min_us=1498 median_us=2969 p90_us=4653 max_us=4810 samples=50
+engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=65494 median_us=66920 p90_us=67546 max_us=68113 samples=30
+engine=vev-sqlite workload=reopened-query n=2000 min_us=17 median_us=18 p90_us=21 max_us=203 samples=30
+```
+
+This is not yet the final write benchmark. It establishes a repeatable baseline
+for SQLite-backed single-transaction appends, full persisted DB reopen cost,
+and query performance after reopen. The next storage measurement work is
+verified multi-entity append batching through the SQLite-backed transaction
+wrapper, then Datalevin `write-bench`-style throughput comparisons.
+
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured
 samples to reduce JVM warmup noise. Vev emits `*-text` rows, which include EDN

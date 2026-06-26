@@ -58,6 +58,17 @@ full DB persist cannot reconstruct report-only tx metadata from a bare DB
 value; metadata rows are written by the SQLite-backed transaction wrapper when
 it has the successful transaction report in hand.
 
+`bench/sqlite_storage.kvist` now measures the first durable storage baseline:
+
+- `single-append`: one SQLite-backed transaction per entity
+- `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
+- `reopened-query`: run a prepared query against the reopened DB snapshot
+
+The first benchmark pass found and fixed a serializer ownership bug: storage
+callers delete `value-serializable-text` results, so that function must return
+heap-owned text for literals, formatted scalars, keywords, symbols, vectors,
+and maps.
+
 ## SQLite Backend Plan
 
 SQLite is the first production durable backend.
@@ -78,10 +89,14 @@ Implementation order:
    need them.
 2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
-3. Add write-bench style measurements for commit latency, batch throughput, and
-   reopen cost.
+3. Extend the SQLite benchmark from single appends and full-replace persisted
+   seed data to verified multi-entity append batches. This should measure commit
+   latency, batch throughput, and rollback/report behavior without bypassing the
+   normal transaction engine.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
+5. Once the local harness is stable, map Datalevin `write-bench` concepts onto
+   Vev's API and compare commit/reopen behavior against existing systems.
 
 Non-goals for the first SQLite backend:
 
@@ -94,4 +109,4 @@ Non-goals for the first SQLite backend:
 
 MusicBrainz/Datomic workshop data should validate the durable backend once
 basic SQLite reopen/query works. Datalevin `write-bench` becomes relevant after
-SQLite commit semantics exist.
+SQLite commit semantics and batch append behavior are both measured.

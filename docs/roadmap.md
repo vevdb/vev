@@ -279,7 +279,11 @@ indexes, and then queries normally. The explicit persist API full-replaces
 durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the
-durable append fails.
+durable append fails. A first SQLite storage benchmark now measures
+single-transaction append latency, full reopen/index-rebuild cost, and query
+latency after reopen. The next durable milestone is verified multi-entity
+append batching through the SQLite-backed transaction wrapper, followed by
+Datalevin `write-bench`-style throughput and mixed read/write comparisons.
 
 ## Phase 7: Dogfood
 
