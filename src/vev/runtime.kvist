@@ -193,21 +193,19 @@
   (arr.into [dynamic]Datom (slice datoms 0)))
 
 (defn db [conn: ^Conn] -> DB
-  (build-db (clone-datoms conn^.db.datoms)))
+  (clone-db conn^.db))
 
 (defn clone-tx-meta [meta: []Tx-Meta] -> [dynamic]Tx-Meta
   (arr.into [dynamic]Tx-Meta meta))
 
 (defn clone-tx-report [report: Tx-Report] -> Tx-Report
-  (let [before-datoms (clone-datoms report.db-before.datoms)
-        after-datoms (clone-datoms report.db-after.datoms)
-        tx-data (arr.into [dynamic]Datom (slice report.tx-data 0))
+  (let [tx-data (arr.into [dynamic]Datom (slice report.tx-data 0))
         tx-meta (clone-tx-meta (slice report.tx-meta 0))
         tempids (arr.into [dynamic]Tempid (slice report.tempids 0))]
     (Tx-Report {ok: report.ok
                 error: report.error
-                db-before: (build-db before-datoms)
-                db-after: (build-db after-datoms)
+                db-before: (clone-db report.db-before)
+                db-after: (clone-db report.db-after)
                 tx-data: tx-data
                 tx: report.tx
                 tx-meta: tx-meta
@@ -4451,8 +4449,8 @@
               tempids: (make [dynamic]Tempid)}))
 
 (defn reset-conn-with-meta [conn: ^Conn, next-db: DB, tx-meta: []Tx-Meta] -> Tx-Report
-  (let [before (build-db (clone-datoms conn^.db.datoms))
-        after (build-db (clone-datom-slice (slice next-db.datoms 0)))
+  (let [before (clone-db conn^.db)
+        after (clone-db next-db)
         diff (db-diff before after)
         tx conn^.next-tx
         tx-data (make [dynamic]Datom 0 (+ (count diff.only-left) (count diff.only-right)))]
@@ -4628,20 +4626,29 @@
         (delete expanded-ops)
         (delete tempids)
         (return (failed-tx-report before error))))
-    (for [op expanded-ops]
-      (let [apply-op (or (= op.kind .Add)
-                         (current-op-value-exists-in-log? (slice after-datoms 0) op))]
-        (when apply-op
-          (append-cardinality-one-retractions! before seen-ea (addr after-datoms) (addr tx-data) op tx)
-          (let [datom (Datom {e: op.e
-                              a: op.a
-                              v: op.v
-                              tx: tx
-                              added: (= op.kind .Add)})]
-            (arr.push! after-datoms datom)
-            (arr.push! tx-data datom)))
-        (when (= op.kind .Add)
-          (set.add! seen-ea (entity-attr-key op.e op.a)))))
+    (if append-only-ok
+      (for [op expanded-ops]
+        (let [datom (Datom {e: op.e
+                            a: op.a
+                            v: op.v
+                            tx: tx
+                            added: true})]
+          (arr.push! after-datoms datom)
+          (arr.push! tx-data datom)))
+      (for [op expanded-ops]
+        (let [apply-op (or (= op.kind .Add)
+                           (current-op-value-exists-in-log? (slice after-datoms 0) op))]
+          (when apply-op
+            (append-cardinality-one-retractions! before seen-ea (addr after-datoms) (addr tx-data) op tx)
+            (let [datom (Datom {e: op.e
+                                a: op.a
+                                v: op.v
+                                tx: tx
+                                added: (= op.kind .Add)})]
+              (arr.push! after-datoms datom)
+              (arr.push! tx-data datom)))
+          (when (= op.kind .Add)
+            (set.add! seen-ea (entity-attr-key op.e op.a))))))
     (delete expanded-ops)
     (let [after (if append-only-ok
                   (build-db-append-only before after-datoms (count conn^.db.datoms))
@@ -4665,7 +4672,7 @@
           report)))))
 
 (defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
-  (let [before (build-db (clone-datoms conn^.db.datoms))]
+  (let [before (clone-db conn^.db)]
     (transact-ops-with-tempids-from-before conn before ops tx-meta tempids)))
 
 (defn transact-with-meta [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta] -> Tx-Report
@@ -4675,7 +4682,7 @@
   (transact-with-meta conn ops ([]Tx-Meta [])))
 
 (defn transact-tx-data [conn: ^Conn, tx-data: []Tx-Data] -> Tx-Report
-  (let [before (build-db (clone-datoms conn^.db.datoms))
+  (let [before (clone-db conn^.db)
         resolved (resolve-tx-data-for-tx before tx-data conn^.next-tx)]
     (when (not resolved.ok)
       (delete resolved.ops)
@@ -4724,7 +4731,7 @@
     (if (> tx 0) tx fallback)))
 
 (defn with-datoms [db: DB, datoms: []Datom] -> Tx-Report
-  (let [before (build-db (clone-datoms db.datoms))
+  (let [before (clone-db db)
         out (clone-datoms db.datoms)]
     (for [datom datoms]
       (arr.push! out datom))
@@ -4740,7 +4747,7 @@
                   tempids: (make [dynamic]Tempid)}))))
 
 (defn transact-datoms [conn: ^Conn, datoms: []Datom] -> Tx-Report
-  (let [before (build-db (clone-datoms conn^.db.datoms))
+  (let [before (clone-db conn^.db)
         out (clone-datoms conn^.db.datoms)]
     (for [datom datoms]
       (arr.push! out datom))
@@ -4830,7 +4837,7 @@
   (tx-fn-error "transaction fn expects one string argument"))
 
 (defn transact-tx-data-with-string-fns [conn: ^Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
-  (let [before (build-db (clone-datoms conn^.db.datoms))
+  (let [before (clone-db conn^.db)
         [duplicate-ident has-duplicate] (tx-fn-string-duplicate-ident registry)
         tx conn^.next-tx
         ops (make [dynamic]Tx-Op)
@@ -4868,26 +4875,44 @@
       (when (not tail-ok)
         (return (failed-registered-tx before ops tx-meta tempids segment tail-error))))
     (delete segment)
-    (let [report (transact-ops-with-tempids conn (slice ops 0) (slice tx-meta 0) tempids)]
+    (let [report (transact-ops-with-tempids-from-before conn before (slice ops 0) (slice tx-meta 0) tempids)]
       (delete ops)
       (delete tx-meta)
       report)))
 
 (defn transact-fn [conn: ^Conn, f: (fn [db: DB] -> Tx-Fn-Result)] -> Tx-Report
-  (let [before (build-db (clone-datoms conn^.db.datoms))
+  (let [before (clone-db conn^.db)
         result (f before)]
     (defer (delete result.tx-data))
     (when (not result.ok)
       (return (failed-tx-report before result.error)))
-    (transact-tx-data conn (slice result.tx-data 0))))
+    (let [resolved (resolve-tx-data-for-tx before (slice result.tx-data 0) conn^.next-tx)]
+      (when (not resolved.ok)
+        (delete resolved.ops)
+        (delete resolved.tx-meta)
+        (delete resolved.tempids)
+        (return (failed-tx-report before resolved.error)))
+      (let [report (transact-ops-with-tempids-from-before conn before (slice resolved.ops 0) (slice resolved.tx-meta 0) resolved.tempids)]
+        (delete resolved.ops)
+        (delete resolved.tx-meta)
+        report))))
 
 (defn transact-fn-string [conn: ^Conn, f: (fn [db: DB, arg: string] -> Tx-Fn-Result), arg: string] -> Tx-Report
-  (let [before (build-db (clone-datoms conn^.db.datoms))
+  (let [before (clone-db conn^.db)
         result (f before arg)]
     (defer (delete result.tx-data))
     (when (not result.ok)
       (return (failed-tx-report before result.error)))
-    (transact-tx-data conn (slice result.tx-data 0))))
+    (let [resolved (resolve-tx-data-for-tx before (slice result.tx-data 0) conn^.next-tx)]
+      (when (not resolved.ok)
+        (delete resolved.ops)
+        (delete resolved.tx-meta)
+        (delete resolved.tempids)
+        (return (failed-tx-report before resolved.error)))
+      (let [report (transact-ops-with-tempids-from-before conn before (slice resolved.ops 0) (slice resolved.tx-meta 0) resolved.tempids)]
+        (delete resolved.ops)
+        (delete resolved.tx-meta)
+        report))))
 
 (defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
   (when (= term.kind .Var)

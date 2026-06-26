@@ -232,14 +232,17 @@ cd /Users/andreas/Projects/kvist
 Current sample output on June 26, 2026:
 
 ```text
-engine=vev-sqlite workload=single-append n=1 min_us=88 median_us=254 p90_us=434 max_us=510 samples=50
-engine=vev-sqlite workload=batch-append n=100 min_us=2854 median_us=16680 p90_us=26295 max_us=26895 samples=20
-engine=vev-sqlite workload=batch-transact-memory n=100 min_us=2171 median_us=15882 p90_us=25404 max_us=25786 samples=20
-engine=vev-sqlite workload=batch-append-sqlite n=100 min_us=745 median_us=1142 p90_us=1220 max_us=1294 samples=20
-engine=vev-sqlite workload=append-log-copy n=100 min_us=188 median_us=236 p90_us=325 max_us=443 samples=30
-engine=vev-sqlite workload=append-index-build n=100 min_us=1577 median_us=1710 p90_us=1750 max_us=1798 samples=30
-engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=66938 median_us=68046 p90_us=69158 max_us=69220 samples=30
-engine=vev-sqlite workload=reopened-query n=2000 min_us=18 median_us=19 p90_us=24 max_us=223 samples=30
+engine=vev-sqlite workload=single-append n=1 min_us=78 median_us=109 p90_us=146 max_us=235 samples=50
+engine=vev-sqlite workload=batch-append n=100 min_us=2345 median_us=6130 p90_us=7041 max_us=7190 samples=20
+engine=vev-sqlite workload=batch-transact-memory n=100 min_us=1582 median_us=5081 p90_us=5793 max_us=5915 samples=20
+engine=vev-sqlite workload=batch-append-sqlite n=100 min_us=807 median_us=1117 p90_us=1226 max_us=1250 samples=20
+engine=vev-sqlite workload=batch-before-snapshot n=100 min_us=2 median_us=43 p90_us=93 max_us=98 samples=20
+engine=vev-sqlite workload=batch-resolve-tx n=100 min_us=169 median_us=1231 p90_us=1327 max_us=1327 samples=20
+engine=vev-sqlite workload=batch-apply-resolved n=100 min_us=1401 median_us=3840 p90_us=4482 max_us=4586 samples=20
+engine=vev-sqlite workload=append-log-copy n=100 min_us=189 median_us=253 p90_us=305 max_us=353 samples=30
+engine=vev-sqlite workload=append-index-build n=100 min_us=1574 median_us=1725 p90_us=1804 max_us=1890 samples=30
+engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=44617 median_us=45699 p90_us=46492 max_us=47328 samples=30
+engine=vev-sqlite workload=reopened-query n=2000 min_us=18 median_us=19 p90_us=23 max_us=242 samples=30
 ```
 
 This is not yet the final write benchmark. It establishes a repeatable baseline
@@ -248,13 +251,15 @@ full persisted DB reopen cost, and query performance after reopen. The current
 batch row measures the whole `transact-sqlite-*` path. The split rows show the
 current bottleneck: SQLite append for a 100-entity / 300-datom transaction is
 around 1ms median, while in-memory transaction/index maintenance is around
-16ms median as the DB grows. A previous pass spent most of that time repeatedly
-rebuilding and validating full schema DBs for ordinary non-schema transactions;
-the current validator skips that full-schema pass when the transaction cannot
-change schema validity. The append-only core rows show that copying the current
-datom log is currently sub-millisecond at this size and incremental index
-construction is around 2ms median, so the remaining batch cost is now mostly
-transaction resolution/validation and general report construction, not SQLite.
+5ms median as the DB grows. Two fixes moved this down: ordinary non-schema
+transactions skip unnecessary full-schema validation, and transaction DB
+snapshots clone existing indexes/schema caches instead of rebuilding every
+index from datoms. The pipeline split shows snapshot creation is now tens of
+microseconds, resolution is around 1ms, and applying already-resolved append
+ops is around 4ms. The append-only core rows show that copying the current
+datom log is sub-millisecond and incremental index construction is around 2ms,
+so the remaining write work is now mostly append application/report/index
+maintenance plus the SQLite commit.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured

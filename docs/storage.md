@@ -66,6 +66,9 @@ it has the successful transaction report in hand.
 - `batch-append`: one SQLite-backed transaction for a configurable entity batch
 - `batch-transact-memory`: the in-memory transaction part of the same batch
 - `batch-append-sqlite`: the SQLite append part of the same batch
+- `batch-before-snapshot`: reportable DB-before snapshot creation
+- `batch-resolve-tx`: tx-data resolution into concrete tx ops
+- `batch-apply-resolved`: applying already-resolved ops to the connection
 - `append-log-copy`: direct copy/append cost for the current datom log
 - `append-index-build`: direct incremental index build cost for the copied log
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
@@ -97,11 +100,14 @@ Implementation order:
 2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
 3. Continue the append-only transaction path. The current implementation avoids
-   full index rebuilds for conservative direct add-only transactions, and the
-   benchmark now separates log copy, incremental index build, transaction
-   memory work, and SQLite append cost. The next write-performance milestone is
-   reducing the remaining transaction resolution/validation/report overhead
-   before introducing a more complex shared DB/index representation.
+   full index rebuilds for conservative direct add-only transactions, skips
+   full-schema validation for ordinary non-schema transactions, and clones
+   reportable DB snapshots from existing indexes instead of rebuilding them.
+   The benchmark now separates snapshot, resolution, apply, log copy,
+   incremental index build, and SQLite append cost. The next write-performance
+   milestone is reducing the remaining append application/report/index
+   maintenance overhead before introducing a more complex shared DB/index
+   representation.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
 5. Once the local harness is stable, map Datalevin `write-bench` concepts onto

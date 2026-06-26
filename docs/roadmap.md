@@ -288,9 +288,10 @@ transaction/index maintenance. Vev has a conservative append-only incremental
 DB path for direct add-only transactions. A deeper split showed that ordinary
 non-schema transactions were paying unnecessary full-schema validation cost;
 that pass is now skipped when the transaction cannot alter schema validity.
-The next durable milestone is reducing the remaining transaction
-resolution/validation/report overhead, followed by Datalevin `write-bench`-style
-throughput and mixed read/write comparisons.
+Reportable DB snapshots now clone existing indexes/schema caches instead of
+rebuilding every index from datoms. The next durable milestone is reducing the
+remaining append application/report/index maintenance overhead, followed by
+Datalevin `write-bench`-style throughput and mixed read/write comparisons.
 
 ## Phase 7: Dogfood
 
