@@ -285,8 +285,23 @@ The default run is intentionally small. Scale and select workloads with:
   --total 10000 --report-every 1000 --mixed-operations 10000 --batch 100
 ```
 
+To mirror Datalevin's upstream sequence, run pure writes into a durable store
+and then run mixed read/write against that same store:
+
+```sh
+/Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/build/write-bench \
+  --workload pure --path /tmp/vev-write-bench.sqlite \
+  --total 1000000 --report-every 10000 --batch 100
+
+/Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/build/write-bench \
+  --workload mixed --path /tmp/vev-write-bench.sqlite \
+  --total 1000000 --mixed-operations 2000000 --report-every 10000
+```
+
 Options:
 
+- `--workload`: `both` for the local default, `pure`, or `mixed`
+- `--path`: SQLite file for single-workload runs; `both` uses derived temp paths
 - `--total`: pure-write rows to transact and mixed-read/write seed size
 - `--report-every`: row interval for progress samples
 - `--mixed-operations`: total alternating read/write operations

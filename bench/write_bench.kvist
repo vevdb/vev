@@ -211,6 +211,19 @@
     (vev.delete-prepared-query-shallow query)
     (vev.close-sqlite-conn store)))
 
+(defn run-pure-workload [path: string, batch-size: int, total: int, report-every: int]
+  (measure-pure-write path batch-size total report-every)
+  (remove-sqlite-files path))
+
+(defn run-all-pure-workloads [base-path: string, total: int, report-every: int]
+  (let [batch-sizes ([]int [1 10 100 1000])
+        batch-index 0]
+    (while (< batch-index (count batch-sizes))
+      (let [batch-size batch-sizes[batch-index]
+            path (fmt.tprintf "%s.batch-%d" base-path batch-size)]
+        (run-pure-workload path batch-size total report-every))
+      (set! batch-index (+ batch-index 1)))))
+
 (defn main []
   (defer (free_all context.allocator))
   (let [total (max 1 (cli.int-option os.args "--total" 200))
@@ -218,19 +231,20 @@
         mixed-operations (max 1 (cli.int-option os.args "--mixed-operations" (* total 2)))
         seed-batch (max 1 (cli.int-option os.args "--seed-batch" 100))
         selected-batch (cli.int-option os.args "--batch" 0)
-        seed-path "tmp.vev.write-bench.mixed.sqlite"
-        batch-sizes ([]int [1 10 100 1000])
-        batch-index 0]
-    (if (> selected-batch 0)
-      (let [path (fmt.tprintf "tmp.vev.write-bench.%d.sqlite" selected-batch)]
+        workload (cli.option os.args "--workload" "both")
+        path (cli.option os.args "--path" "tmp.vev.write-bench.sqlite")]
+    (if (= workload "pure")
+      (if (> selected-batch 0)
         (measure-pure-write path selected-batch total report-every)
-        (remove-sqlite-files path))
-      (while (< batch-index (count batch-sizes))
-        (let [batch-size batch-sizes[batch-index]
-              path (fmt.tprintf "tmp.vev.write-bench.%d.sqlite" batch-size)]
-          (measure-pure-write path batch-size total report-every)
-          (remove-sqlite-files path))
-        (set! batch-index (+ batch-index 1))))
-    (when (seed-pure-write seed-path total seed-batch)
-      (measure-mixed-read-write seed-path total mixed-operations report-every))
-    (remove-sqlite-files seed-path)))
+        (run-all-pure-workloads path total report-every))
+      (if (= workload "mixed")
+        (measure-mixed-read-write path total mixed-operations report-every)
+        (if (= workload "both")
+          (let [mixed-path (fmt.tprintf "%s.mixed" path)]
+            (if (> selected-batch 0)
+              (run-pure-workload path selected-batch total report-every)
+              (run-all-pure-workloads path total report-every))
+            (when (seed-pure-write mixed-path total seed-batch)
+              (measure-mixed-read-write mixed-path total mixed-operations report-every))
+            (remove-sqlite-files mixed-path))
+          (fmt.printf "unknown --workload %s; expected pure, mixed, or both\n" workload))))))
