@@ -8846,6 +8846,13 @@
   threshold: i64
 })
 
+(defstruct Entity-Star-Stream {
+  indexes: []int
+  index: int
+  high: int
+  output-index: int
+})
+
 (defstruct Entity-Value-Self-Join-Plan {
   left-entity-var: string
   right-entity-var: string
@@ -9328,6 +9335,68 @@
                                             output-attr: output-attr})
               true))))
 
+(defn entity-star-stream-entity [db: DB, stream: Entity-Star-Stream] -> u64
+  db.datoms[stream.indexes[stream.index]].e)
+
+(defn entity-star-stream-advance-to! [db: DB, stream: ^Entity-Star-Stream, entity: u64] -> bool
+  (while (and (< stream^.index stream^.high)
+              (< db.datoms[stream^.indexes[stream^.index]].e entity))
+    (set! stream^.index (+ stream^.index 1)))
+  (< stream^.index stream^.high))
+
+(defn entity-star-streams-align! [db: DB, streams: ^[dynamic]Entity-Star-Stream] -> [entity: u64, ok: bool]
+  (when (= (count streams^) 0)
+    (return 0 false))
+  (let [target: u64 0]
+    (for [stream streams^]
+      (when (>= stream.index stream.high)
+        (return 0 false))
+      (let [entity (entity-star-stream-entity db stream)]
+        (when (> entity target)
+          (set! target entity))))
+    (let [changed true]
+      (while changed
+        (set! changed false)
+        (for [_ stream-index streams^]
+          (when (not (entity-star-stream-advance-to! db (addr streams^[stream-index]) target))
+            (return 0 false))
+          (let [entity (entity-star-stream-entity db streams^[stream-index])]
+            (when (> entity target)
+              (set! target entity)
+              (set! changed true))))))
+    (return target true)))
+
+(defn entity-star-streams-advance-all! [streams: ^[dynamic]Entity-Star-Stream]
+  (for [_ stream-index streams^]
+    (set! streams^[stream-index].index (+ streams^[stream-index].index 1))))
+
+(defn entity-star-output-value [db: DB, streams: []Entity-Star-Stream, output-index: int] -> [value: Value, ok: bool]
+  (for [stream streams]
+    (when (= stream.output-index output-index)
+      (let [datom db.datoms[stream.indexes[stream.index]]]
+        (return datom.v true))))
+  (return (Value {}) false))
+
+(defn entity-star-streams-for-filters-and-outputs [db: DB, filters: []Entity-Int-Pair-Filter, output-attrs: []string] -> [streams: [dynamic]Entity-Star-Stream]
+  (let [out (make [dynamic]Entity-Star-Stream)
+        avet-indexes (slice db.avet 0)
+        aevt-indexes (slice db.aevt 0)]
+    (for [filter filters]
+      (let [low (lower-bound-index db avet-indexes "avet" 0 filter.attr filter.value)
+            high (upper-bound-index db avet-indexes "avet" 0 filter.attr filter.value)]
+        (arr.push! out (Entity-Star-Stream {indexes: avet-indexes
+                                            index: low
+                                            high: high
+                                            output-index: -1}))))
+    (for [attr output-index output-attrs]
+      (let [low (lower-bound-index db aevt-indexes "aevt" 0 attr (Value {}))
+            high (upper-bound-index db aevt-indexes "aevt" 0 attr (Value {}))]
+        (arr.push! out (Entity-Star-Stream {indexes: aevt-indexes
+                                            index: low
+                                            high: high
+                                            output-index: output-index}))))
+    out))
+
 (defn q-query-entity-int-threshold-pair-columns [db: DB, plan: Entity-Int-Threshold-Plan] -> Entity-Int-Pair-Columns
   (let [out (empty-entity-int-pair-columns)
         indexes (slice db.avet 0)
@@ -9526,6 +9595,29 @@
         second-value (if (= query.find[1] projection.value-var) value entity-value)]
     (append-two-value-row! rows first-value second-value)))
 
+(defn append-entity-attr-value-projection-cardinality-one-current-merge! [rows: ^[dynamic]Result-Row, db: DB, query: Query, projection: Entity-Attr-Value-Projection, stats: ^Query-Stats, filter-low: int, filter-high: int]
+  (let [filter-indexes (slice db.avet 0)
+        value-indexes (slice db.aevt 0)
+        value-low (lower-bound-index db value-indexes "aevt" 0 projection.value-attr (Value {}))
+        value-high (upper-bound-index db value-indexes "aevt" 0 projection.value-attr (Value {}))
+        filter-i filter-low
+        value-i value-low]
+    (set! stats^.clause-candidates (+ stats^.clause-candidates (- value-high value-low)))
+    (while (and (< filter-i filter-high)
+                (< value-i value-high))
+      (let [filter-datom db.datoms[filter-indexes[filter-i]]
+            value-datom db.datoms[value-indexes[value-i]]]
+        (cond
+          (< filter-datom.e value-datom.e)
+            (set! filter-i (+ filter-i 1))
+          (> filter-datom.e value-datom.e)
+            (set! value-i (+ value-i 1))
+          :else
+            (do
+              (append-entity-attr-value-projection-row-raw! rows query projection filter-datom.e value-datom.v)
+              (set! filter-i (+ filter-i 1))
+              (set! value-i (+ value-i 1))))))))
+
 (defn q-entity-attr-value-projection-profiled [db: DB, query: Query, projection: Entity-Attr-Value-Projection, stats: Query-Stats] -> Profiled-Result-Set
   (let [out-stats stats
         rows (make [dynamic]Result-Row)
@@ -9540,6 +9632,11 @@
     (set! out-stats.steps 1)
     (set! out-stats.clauses 2)
     (set! out-stats.clause-candidates (- high low))
+    (when (not dedupe-required)
+      (append-entity-attr-value-projection-cardinality-one-current-merge! (addr rows) db query projection (addr out-stats) low high)
+      (set! out-stats.max-intermediate-bindings (count rows))
+      (set! out-stats.output-rows (count rows))
+      (return (profiled-result-set (result-set-ok rows) out-stats)))
     (let [i low]
       (while (< i high)
       (let [filter-index filter-indexes[i]
@@ -9575,6 +9672,20 @@
       (when (not plan-ok)
         (delete plan.filters)
         (return out false))
+      (when (and (all-datoms-current? db)
+                 (> (count plan.filters) 0))
+        (let [output-attrs ([]string [plan.value-attr])
+              streams (entity-star-streams-for-filters-and-outputs db (slice plan.filters 0) output-attrs)]
+          (defer (delete streams))
+          (while true
+            (let [[entity entity-ok] (entity-star-streams-align! db (addr streams))]
+              (when (not entity-ok)
+                (delete plan.filters)
+                (return out true))
+              (let [[value value-ok] (entity-star-output-value db (slice streams 0) 0)]
+                (when (and value-ok (= value.kind .Int))
+                  (append-entity-int-pair-column! (addr out) entity value.int-value)))
+              (entity-star-streams-advance-all! (addr streams))))))
       (let [filter-indexes (slice db.avet 0)
             best-filter-index 0
             best-low 0
@@ -9646,6 +9757,22 @@
     (set! out-stats.steps 1)
     (set! out-stats.clauses (count query.clauses))
     (set! out-stats.clause-candidates (- best-high best-low))
+    (when (and all-current
+               (> (count plan.filters) 0))
+      (let [output-attrs ([]string [plan.first-attr plan.second-attr])
+            streams (entity-star-streams-for-filters-and-outputs db (slice plan.filters 0) output-attrs)]
+        (defer (delete streams))
+        (while true
+          (let [[entity entity-ok] (entity-star-streams-align! db (addr streams))]
+            (when (not entity-ok)
+              (set! out-stats.max-intermediate-bindings (count rows))
+              (set! out-stats.output-rows (count rows))
+              (return (profiled-result-set (result-set-ok rows) out-stats)))
+            (let [[first-value first-ok] (entity-star-output-value db (slice streams 0) 0)
+                  [second-value second-ok] (entity-star-output-value db (slice streams 0) 1)]
+              (when (and first-ok second-ok)
+                (append-three-value-row! (addr rows) (value-entity entity) first-value second-value)))
+            (entity-star-streams-advance-all! (addr streams))))))
     (let [i best-low]
       (while (< i best-high)
       (let [filter-datom-index filter-indexes[i]

@@ -46,6 +46,27 @@ merge-scan operator instead of clause-order-sensitive hash joins. Vev should
 use these rows to drive reusable star-query and planner work rather than adding
 query-name-specific fast paths.
 
+Published Datalevin target latencies for this benchmark shape should be treated
+as Vev's near-term read-query performance target, not merely DataScript parity:
+
+| Query | Datomic ms | DataScript ms | Datalevin ms | Required Vev lesson |
+|---|---:|---:|---:|---|
+| `q1` | 1.0 | 0.25 | 0.22 | Bound AVET lookup plus cheap result materialization |
+| `q2` | 2.0 | 1.1 | 0.25 | Same-entity merge scan for additional attrs |
+| `q2-switch` | 9.6 | 2.2 | 0.24 | Clause-order-independent planning |
+| `q3` | 2.7 | 1.7 | 0.13 | Push low-selectivity filters into the same star scan |
+| `q4` | 3.7 | 2.5 | 0.14 | Add extra projected attrs with negligible overhead |
+| `qpred1` | 5.4 | 3.7 | 1.0 | Rewrite value predicates into AVET range scans |
+| `qpred2` | 6.6 | 6.1 | 0.99 | Substitute scalar inputs before range planning |
+
+The local benchmark fixture currently defaults to 20k people, matching the
+checked-out Datalevin `datascript-bench` fixture. With the five benchmark attrs
+this is a 100k-datom database, which is why the benchmark code uses `db100k`
+names. Local result tables should state the actual fixture shape when it
+matters. The performance goal is the Datalevin planning shape: ordered
+index/range scans, same-entity merge scans, predicate pushdown, and minimal
+host result materialization.
+
 The q5 row is the next read-query pressure point. It joins two entity variables
 through a shared value (`:age`) and should drive reusable hash/merge join
 operators rather than another star-query recognizer.
@@ -351,6 +372,15 @@ Remaining performance work:
   at DataScript parity, q2-switch/q3/q4/q5/qpred1/qpred2 are ahead of
   DataScript, and q1 is effectively at parity at roughly 0.30 ms versus
   DataScript at roughly 0.29 ms.
+- Same-entity star/projection now has an early all-current merge-stream
+  operator for fixed filters plus projected attrs. It aligns entity-sorted
+  `AVET(attr,value)` filter ranges and `AEVT(attr)` output ranges together,
+  which is the Datalevin-style direction for q2/q3/q4. The current narrow
+  implementation improves q2 rows to roughly 0.95 ms and q4 rows to roughly
+  2.1 ms in the short local Clojure wrapper harness, but it is still well above
+  the published Datalevin target. The next work is to make this the primary
+  physical star operator and reduce Clojure/JVM materialization overhead for
+  returned row vectors/sets.
 - q1's remaining cost is mostly host result-shape overhead. Prepared
   diagnostic rows show q1 improves from roughly 0.30 ms for
   Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`, so the
