@@ -382,8 +382,12 @@
         ^longs entities (aget columns 0)
         ^longs values (aget columns 1)
         n (alength entities)]
-    (mapv (fn [index] [(long (aget entities index)) (long (aget values index))])
-          (range n))))
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget entities index)) (long (aget values index))]))
+        (persistent! out)))))
 
 (defn- entity-int-pair-set [columns]
   (let [^objects columns columns
@@ -403,10 +407,14 @@
         ^objects strings (aget columns 1)
         ^longs values (aget columns 2)
         n (alength entities)]
-    (mapv (fn [index] [(long (aget entities index))
-                       (aget strings index)
-                       (long (aget values index))])
-          (range n))))
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget entities index))
+                           (aget strings index)
+                           (long (aget values index))]))
+        (persistent! out)))))
 
 (defn- entity-string-int-triple-set [columns]
   (let [^objects columns columns

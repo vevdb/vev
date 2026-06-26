@@ -284,6 +284,13 @@ temporary `Typed-Relation` just to read `:find` and `:with` values. This keeps
 the final projection on column indexes while removing one whole-column copy
 from the successful typed result path.
 
+Fifteenth slice implemented: the indexed star-query prototypes now include a
+borrowed entity-stream merge helper for all-current cardinality-one workloads.
+It aligns fixed-value `AVET` filter ranges and projected `AEVT` attr ranges by
+entity id, then emits q3/q4-style projected rows from the aligned streams. This
+is still in the indexed prototype layer, but it is the intended shape for the
+future relation-native star/merge-scan operator.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the

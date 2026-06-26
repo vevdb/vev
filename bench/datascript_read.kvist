@@ -1,0 +1,199 @@
+(package main)
+
+(import arr "kvist:arr")
+(import fmt "core:fmt")
+(import time "core:time")
+(import bench "./support")
+(import vev "../src/vev")
+
+(defstruct Query-Timing {
+  label: string
+  rows: int
+  timing: bench.Timing
+})
+
+(defn person-name [i: int] -> string
+  (case (% i 8)
+    0 "Ivan"
+    1 "Petr"
+    2 "Sergei"
+    3 "Oleg"
+    4 "Yuri"
+    5 "Dmitry"
+    6 "Fedor"
+    :else "Denis"))
+
+(defn person-last-name [i: int] -> string
+  (case (% i 6)
+    0 "Ivanov"
+    1 "Petrov"
+    2 "Sidorov"
+    3 "Kovalev"
+    4 "Kuznetsov"
+    :else "Voronoi"))
+
+(defn person-sex [i: int] -> string
+  (if (= (% i 2) 0)
+    ":male"
+    ":female"))
+
+(defn person-age [i: int] -> i64
+  (i64 (% i 100)))
+
+(defn person-salary [i: int] -> i64
+  (i64 (% (* i 7919) 100000)))
+
+(defn seed-schema [conn: ^vev.Conn]
+  (let [tx (make [dynamic]vev.Tx-Data 0 10)]
+    (defer (delete tx))
+    (arr.push! tx (vev.add 101 ":db/ident" (vev.value-keyword ":name")))
+    (arr.push! tx (vev.add 101 ":db/valueType" (vev.value-keyword ":db.type/string")))
+    (arr.push! tx (vev.add 102 ":db/ident" (vev.value-keyword ":last-name")))
+    (arr.push! tx (vev.add 102 ":db/valueType" (vev.value-keyword ":db.type/string")))
+    (arr.push! tx (vev.add 103 ":db/ident" (vev.value-keyword ":sex")))
+    (arr.push! tx (vev.add 103 ":db/valueType" (vev.value-keyword ":db.type/keyword")))
+    (arr.push! tx (vev.add 104 ":db/ident" (vev.value-keyword ":age")))
+    (arr.push! tx (vev.add 104 ":db/valueType" (vev.value-keyword ":db.type/long")))
+    (arr.push! tx (vev.add 105 ":db/ident" (vev.value-keyword ":salary")))
+    (arr.push! tx (vev.add 105 ":db/valueType" (vev.value-keyword ":db.type/long")))
+    (discard (vev.transact-tx-data conn (slice tx 0)))))
+
+(defn seed-people [conn: ^vev.Conn, n: int]
+  (let [tx (make [dynamic]vev.Tx-Data 0 (* n 5))]
+    (defer (delete tx))
+    (for [i (arr.range 1 (+ n 1))]
+      (let [entity (u64 i)]
+        (arr.push! tx (vev.add entity ":name" (vev.value-string (person-name i))))
+        (arr.push! tx (vev.add entity ":last-name" (vev.value-string (person-last-name i))))
+        (arr.push! tx (vev.add entity ":sex" (vev.value-keyword (person-sex i))))
+        (arr.push! tx (vev.add entity ":age" (vev.value-int (person-age i))))
+        (arr.push! tx (vev.add entity ":salary" (vev.value-int (person-salary i))))))
+    (discard (vev.transact-tx-data conn (slice tx 0)))))
+
+(defn prepare [text: string] -> vev.Prepared-Query
+  (vev.prepare-query-text text))
+
+(defn time-entity-column [db: vev.DB, prepared: vev.Prepared-Query, warmups: int, samples-count: int] -> Query-Timing
+  (let [warmup-index 0]
+    (while (< warmup-index warmups)
+      (let [[entities ok] (vev.q-query-entity-column db prepared.query ([]vev.Query-Input []))]
+        (delete entities)
+        (when (not ok)
+          (fmt.println "entity-column benchmark did not match query shape")))
+      (set! warmup-index (+ warmup-index 1))))
+  (let [samples (make [dynamic]f64 0 samples-count)
+        rows 0
+        sample-index 0]
+    (defer (delete samples))
+    (while (< sample-index samples-count)
+      (let [start (time.now)
+            [entities _] (vev.q-query-entity-column db prepared.query ([]vev.Query-Input []))
+            elapsed (bench.elapsed-us start)]
+        (set! rows (count entities))
+        (arr.push! samples elapsed)
+        (delete entities))
+      (set! sample-index (+ sample-index 1)))
+    (Query-Timing {rows: rows timing: (bench.timing-from-samples (slice samples 0))})))
+
+(defn time-pair-columns [db: vev.DB, prepared: vev.Prepared-Query, inputs: []vev.Query-Input, warmups: int, samples-count: int] -> Query-Timing
+  (let [warmup-index 0]
+    (while (< warmup-index warmups)
+      (let [[columns ok] (vev.q-query-entity-int-pair-columns db prepared.query inputs)]
+        (vev.delete-entity-int-pair-columns columns)
+        (when (not ok)
+          (fmt.println "pair-column benchmark did not match query shape")))
+      (set! warmup-index (+ warmup-index 1))))
+  (let [samples (make [dynamic]f64 0 samples-count)
+        rows 0
+        sample-index 0]
+    (defer (delete samples))
+    (while (< sample-index samples-count)
+      (let [start (time.now)
+            [columns _] (vev.q-query-entity-int-pair-columns db prepared.query inputs)
+            elapsed (bench.elapsed-us start)]
+        (set! rows (count columns.entities))
+        (arr.push! samples elapsed)
+        (vev.delete-entity-int-pair-columns columns))
+      (set! sample-index (+ sample-index 1)))
+    (Query-Timing {rows: rows timing: (bench.timing-from-samples (slice samples 0))})))
+
+(defn time-triple-columns [db: vev.DB, prepared: vev.Prepared-Query, warmups: int, samples-count: int] -> Query-Timing
+  (let [warmup-index 0]
+    (while (< warmup-index warmups)
+      (let [[columns ok] (vev.q-query-entity-string-int-triples db prepared.query ([]vev.Query-Input []))]
+        (vev.delete-entity-string-int-triples columns)
+        (when (not ok)
+          (fmt.println "triple-column benchmark did not match query shape")))
+      (set! warmup-index (+ warmup-index 1))))
+  (let [samples (make [dynamic]f64 0 samples-count)
+        rows 0
+        sample-index 0]
+    (defer (delete samples))
+    (while (< sample-index samples-count)
+      (let [start (time.now)
+            [columns _] (vev.q-query-entity-string-int-triples db prepared.query ([]vev.Query-Input []))
+            elapsed (bench.elapsed-us start)]
+        (set! rows (count columns.entities))
+        (arr.push! samples elapsed)
+        (vev.delete-entity-string-int-triples columns))
+      (set! sample-index (+ sample-index 1)))
+    (Query-Timing {rows: rows timing: (bench.timing-from-samples (slice samples 0))})))
+
+(defn time-result-set [db: vev.DB, prepared: vev.Prepared-Query, warmups: int, samples-count: int] -> Query-Timing
+  (let [warmup-index 0]
+    (while (< warmup-index warmups)
+      (let [result (vev.q-query db prepared.query)]
+        (vev.delete-result-set-shallow result)
+        (when (not result.ok)
+          (fmt.println result.error)))
+      (set! warmup-index (+ warmup-index 1))))
+  (let [samples (make [dynamic]f64 0 samples-count)
+        rows 0
+        sample-index 0]
+    (defer (delete samples))
+    (while (< sample-index samples-count)
+      (let [start (time.now)
+            result (vev.q-query db prepared.query)
+            elapsed (bench.elapsed-us start)]
+        (set! rows (count result.rows))
+        (arr.push! samples elapsed)
+        (vev.delete-result-set-shallow result))
+      (set! sample-index (+ sample-index 1)))
+    (Query-Timing {rows: rows timing: (bench.timing-from-samples (slice samples 0))})))
+
+(defn print-timing [label: string, result: Query-Timing]
+  (fmt.printf
+    "engine=vev-native workload=%s rows=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f\n"
+    label
+    result.rows
+    result.timing.min-us
+    result.timing.median-us
+    result.timing.p90-us
+    result.timing.max-us))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        people-count 20000]
+    (seed-schema (addr conn))
+    (seed-people (addr conn) people-count)
+    (let [q1 (prepare "[:find ?e :where [?e :name \"Ivan\"]]")
+          q2 (prepare "[:find ?e ?a :where [?e :name \"Ivan\"] [?e :age ?a]]")
+          q2-switch (prepare "[:find ?e ?a :where [?e :age ?a] [?e :name \"Ivan\"]]")
+          q3 (prepare "[:find ?e ?a :where [?e :name \"Ivan\"] [?e :age ?a] [?e :sex :male]]")
+          q4 (prepare "[:find ?e ?l ?a :where [?e :name \"Ivan\"] [?e :last-name ?l] [?e :age ?a] [?e :sex :male]]")
+          q5 (prepare "[:find ?e1 ?l ?a :where [?e :name \"Ivan\"] [?e :age ?a] [?e1 :age ?a] [?e1 :last-name ?l]]")
+          qpred1 (prepare "[:find ?e ?s :where [?e :salary ?s] [(> ?s 50000)]]")
+          qpred2 (prepare "[:find ?e ?s :in $ ?min-s :where [?e :salary ?s] [(> ?s ?min-s)]]")
+          qpred2-inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 50000))])
+          warmups 20
+          samples 50]
+      (print-timing "q1-entity-column" (time-entity-column conn.db q1 warmups samples))
+      (print-timing "q2-pair-columns" (time-pair-columns conn.db q2 ([]vev.Query-Input []) warmups samples))
+      (print-timing "q2-switch-pair-columns" (time-pair-columns conn.db q2-switch ([]vev.Query-Input []) warmups samples))
+      (print-timing "q3-pair-columns" (time-pair-columns conn.db q3 ([]vev.Query-Input []) warmups samples))
+      (print-timing "q4-triple-columns" (time-triple-columns conn.db q4 warmups samples))
+      (print-timing "q5-result-set" (time-result-set conn.db q5 warmups samples))
+      (print-timing "q5-triple-columns" (time-triple-columns conn.db q5 warmups samples))
+      (print-timing "qpred1-pair-columns" (time-pair-columns conn.db qpred1 ([]vev.Query-Input []) warmups samples))
+      (print-timing "qpred2-pair-columns" (time-pair-columns conn.db qpred2 qpred2-inputs warmups samples)))))

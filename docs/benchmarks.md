@@ -46,6 +46,49 @@ merge-scan operator instead of clause-order-sensitive hash joins. Vev should
 use these rows to drive reusable star-query and planner work rather than adding
 query-name-specific fast paths.
 
+Published Datalevin target latencies for this benchmark shape should be treated
+as Vev's near-term read-query performance target, not merely DataScript parity:
+
+| Query | Datomic ms | DataScript ms | Datalevin ms | Required Vev lesson |
+|---|---:|---:|---:|---|
+| `q1` | 1.0 | 0.25 | 0.22 | Bound AVET lookup plus cheap result materialization |
+| `q2` | 2.0 | 1.1 | 0.25 | Same-entity merge scan for additional attrs |
+| `q2-switch` | 9.6 | 2.2 | 0.24 | Clause-order-independent planning |
+| `q3` | 2.7 | 1.7 | 0.13 | Push low-selectivity filters into the same star scan |
+| `q4` | 3.7 | 2.5 | 0.14 | Add extra projected attrs with negligible overhead |
+| `qpred1` | 5.4 | 3.7 | 1.0 | Rewrite value predicates into AVET range scans |
+| `qpred2` | 6.6 | 6.1 | 0.99 | Substitute scalar inputs before range planning |
+
+The local benchmark fixture currently defaults to 20k people, matching the
+checked-out Datalevin `datascript-bench` fixture. With the five benchmark attrs
+this is a 100k-datom database, which is why the benchmark code uses `db100k`
+names. Local result tables should state the actual fixture shape when it
+matters. The performance goal is the Datalevin planning shape: ordered
+index/range scans, same-entity merge scans, predicate pushdown, and minimal
+host result materialization.
+
+There are two useful read-benchmark views:
+
+- `bench/datascript_bench/run_compare.sh` measures the public Clojure API
+  against DataScript and optionally Datalevin/Datomic.
+- `bench/datascript_read.kvist` measures native engine column paths directly
+  on a 20k entity / 100k datom fixture. Use this when deciding whether a
+  slowdown belongs to the query engine or to C ABI / Java / Clojure result
+  materialization.
+
+The current q2/q3/q4 same-entity star-query work follows Datalevin's planning
+idea: scan a selective AVET range, then advance through the sorted EAVT entity
+starts while fetching same-entity cardinality-one attrs. This avoids restarting
+an entity lookup for every candidate row and is the general operator direction
+for native Vev, not a benchmark-specific shortcut.
+
+The current qpred path follows Datalevin's predicate-pushdown idea for typed
+long attrs: `[(> ?s 50000)]` lowers to integer AVET range bounds, not a full
+attribute scan plus generic predicate filtering. DB values now also carry small
+schema caches for value type and cardinality-many attrs so hot optimized
+queries do not repeatedly rediscover basic schema metadata through datom
+queries.
+
 The q5 row is the next read-query pressure point. It joins two entity variables
 through a shared value (`:age`) and should drive reusable hash/merge join
 operators rather than another star-query recognizer.
@@ -338,24 +381,40 @@ Remaining performance work:
   layer, not only the current two-attr projection path.
 - Equality self-join planning has a first indexed operator for the
   `datascript-bench` q5 shape: filter the left side, collect distinct join
-  values, then scan the right `avet` range once per join value. On the 20k
-  benchmark row this brings Vev to roughly 106 ms versus DataScript at roughly
-  139 ms in the short local harness. General relation hash joins are also in
-  place for one primitive common variable, with fallback to the older nested
-  join when lookup-ref/source semantics require it.
-- Same-entity star/projection queries now use a general entity-local EAV span
-  lookup inspired by Datalevin's sorted entity-local scans. Vev records each
-  entity's contiguous range in `eavt`, then cardinality-one attr fetches search
-  that small range instead of running a global `(entity, attr)` lower-bound for
-  every candidate. In the latest 20k local `datascript-bench` comparison, q2 is
-  at DataScript parity, q2-switch/q3/q4/q5/qpred1/qpred2 are ahead of
-  DataScript, and q1 is effectively at parity at roughly 0.30 ms versus
-  DataScript at roughly 0.29 ms.
-- q1's remaining cost is mostly host result-shape overhead. Prepared
+  values, then scan the right `avet` range once per join value. The native q5
+  result-set path is around 4ms for 5000 rows. The typed triple-column ABI plus
+  batched borrowed string pointer/length metadata brings the public Clojure row
+  to around 19ms, and the sampled string-dictionary path brings it to around
+  17ms versus DataScript around 144ms. Remaining q5 work should target
+  larger-grained Java/Clojure materialization for string/value rows and broader
+  physical-operator integration, not the indexed self-join itself. General
+  relation hash joins are also in place for one primitive common variable, with
+  fallback to the older nested join when lookup-ref/source semantics require it.
+- Same-entity star/projection queries use two reusable indexed shapes inspired
+  by Datalevin's sorted scans. Single-filter star queries such as q2 use an
+  advancing entity-local `eavt` cursor for cardinality-one attr fetches, which
+  avoids restarting a global `(entity, attr)` lookup for each candidate. Queries
+  with two or more fixed same-entity filters, such as q3/q4, now use the
+  all-current merge-stream operator: it aligns entity-sorted
+  `AVET(attr,value)` filter ranges and `AEVT(attr)` output ranges together.
+  The latest 20k local `datascript-bench` comparison has Vev ahead of
+  DataScript on q1/q2/q2-switch/q3/q4/qpred1/qpred2, with q2 at about 1.5x,
+  q2-switch at about 3.3x, q3 at about 1.8x, and q4 at about 1.9x. This is
+  still above the published Datalevin target, so the next work is to fold these
+  paths into the normal physical relation operator layer and reduce
+  Clojure/JVM materialization overhead for returned row vectors/sets.
+- q1 and q5's remaining costs are mostly host result-shape overhead. Prepared
   diagnostic rows show q1 improves from roughly 0.30 ms for
-  Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`, so the
-  next q1 work should target set/vector materialization through the Clojure
-  adapter and native result API, not index lookup.
+  Datomic/DataScript-style `q` to roughly 0.09 ms for prepared `rows`; q5 still
+  shows a native/public gap for string-heavy rows even after the typed
+  triple-column ABI and batched borrowed string accessors. The next work should
+  target string-heavy Java materialization and set/vector construction through
+  the Clojure adapter, not index lookup. Current diagnostic rows show q2/qpred
+  pair-column extraction is close to the native path, while q5 column extraction
+  is still dominated by string handling across the Java/Clojure boundary. The
+  triple-column ABI now exposes an optional per-result string dictionary for
+  repeated string-heavy rows, but native result construction is still several
+  times faster than the host-facing row shape.
 - The relation engine now has a DataScript-shaped compound primitive hash join
   for relations with one or more common primitive variables. It uses
   length-prefixed compound keys and preserves the existing semantic fallback
