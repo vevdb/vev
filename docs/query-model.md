@@ -291,6 +291,14 @@ entity id, then emits q3/q4-style projected rows from the aligned streams. This
 is still in the indexed prototype layer, but it is the intended shape for the
 future relation-native star/merge-scan operator.
 
+Sixteenth slice implemented: the shared-value entity join prototype now
+materializes the projected cardinality-one output attr once as an entity-keyed
+table, then scans the right-side join-value `AVET` ranges and probes that table
+instead of doing a fresh entity/attr lookup for every right candidate. This is
+the q5 pressure-point shape from `datascript-bench`, but the operator lesson is
+general: separate index scans and projected attr materialization should feed a
+join/projection operator instead of repeating random per-row index probes.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. Recursive rule groups are still handled by the

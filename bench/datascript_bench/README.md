@@ -225,6 +225,10 @@ When there are two or more same-entity filters, the column paths now use the
 indexed star merge stream instead of repeated entity-local value probes. That
 keeps q3/q4 clause-order-independent and moves them closer to Datalevin's
 merge-scan behavior without making the single-filter q2 path slower.
+For q5-style shared-value joins, the engine now materializes the projected
+cardinality-one output attr once by entity and probes that table while scanning
+the right-side join-value ranges. This avoids repeating random entity/attr
+lookups for every joined candidate in the typed column path.
 
 Native engine-only read timings are available through:
 

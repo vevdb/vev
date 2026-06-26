@@ -9509,17 +9509,27 @@
   (let [out-stats stats
         seen-join-values (set.empty string)
         join-values (make [dynamic]Value)
-        indexes (slice db.avet 0)
-        left-low (lower-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
-        left-high (upper-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)]
+        output-by-entity (make (map u64 Value))
+        avet-indexes (slice db.avet 0)
+        aevt-indexes (slice db.aevt 0)
+        left-low (lower-bound-index db avet-indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        left-high (upper-bound-index db avet-indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        output-low (lower-bound-index db aevt-indexes "aevt" 0 plan.output-attr (Value {}))
+        output-high (upper-bound-index db aevt-indexes "aevt" 0 plan.output-attr (Value {}))]
     (defer (delete seen-join-values))
     (defer (delete join-values))
+    (defer (delete output-by-entity))
     (set! out-stats.steps 1)
     (set! out-stats.clauses 4)
     (set! out-stats.clause-candidates (- left-high left-low))
+    (let [output-index output-low]
+      (while (< output-index output-high)
+        (let [datom db.datoms[aevt-indexes[output-index]]]
+          (mmap.assoc! output-by-entity datom.e datom.v))
+        (set! output-index (+ output-index 1))))
     (let [left-index left-low]
       (while (< left-index left-high)
-        (let [left-datom db.datoms[indexes[left-index]]
+        (let [left-datom db.datoms[avet-indexes[left-index]]
               [join-value join-ok] (cardinality-one-value-fast-all-current db left-datom.e plan.join-attr)]
           (when join-ok
             (let [[join-key join-key-ok] (primitive-value-dedupe-key join-value)]
@@ -9533,21 +9543,21 @@
         (set! left-index (+ left-index 1))))
     (let [right-candidates 0]
       (for [join-value join-values]
-        (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
-              right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)]
+        (let [right-low (lower-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
+              right-high (upper-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)]
           (set! right-candidates (+ right-candidates (- right-high right-low)))))
       (let [rows (make [dynamic]Result-Row 0 right-candidates)]
         (for [join-value join-values]
-          (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
-                right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)
+          (let [right-low (lower-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
+                right-high (upper-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
                 right-index right-low]
-        (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- right-high right-low)))
-        (while (< right-index right-high)
-          (let [right-datom db.datoms[indexes[right-index]]
-                [output output-ok] (cardinality-one-value-fast-all-current db right-datom.e plan.output-attr)]
-            (when output-ok
-              (append-three-value-row! (addr rows) (value-entity right-datom.e) output join-value)))
-          (set! right-index (+ right-index 1)))))
+            (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- right-high right-low)))
+            (while (< right-index right-high)
+              (let [right-datom db.datoms[avet-indexes[right-index]]
+                    [output output-ok] (mmap.get output-by-entity right-datom.e)]
+                (when output-ok
+                  (append-three-value-row! (addr rows) (value-entity right-datom.e) output join-value)))
+              (set! right-index (+ right-index 1)))))
         (set! out-stats.max-intermediate-bindings (count rows))
         (set! out-stats.output-rows (count rows))
         (profiled-result-set (result-set-ok rows) out-stats)))))
@@ -9555,14 +9565,25 @@
 (defn q-entity-value-self-join-triples [db: DB, plan: Entity-Value-Self-Join-Plan] -> Entity-String-Int-Triples
   (let [seen-join-values (set.empty string)
         join-values (make [dynamic]Value)
-        indexes (slice db.avet 0)
-        left-low (lower-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
-        left-high (upper-bound-index db indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)]
+        output-by-entity (make (map u64 string))
+        avet-indexes (slice db.avet 0)
+        aevt-indexes (slice db.aevt 0)
+        left-low (lower-bound-index db avet-indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        left-high (upper-bound-index db avet-indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        output-low (lower-bound-index db aevt-indexes "aevt" 0 plan.output-attr (Value {}))
+        output-high (upper-bound-index db aevt-indexes "aevt" 0 plan.output-attr (Value {}))]
     (defer (delete seen-join-values))
     (defer (delete join-values))
+    (defer (delete output-by-entity))
+    (let [output-index output-low]
+      (while (< output-index output-high)
+        (let [datom db.datoms[aevt-indexes[output-index]]]
+          (when (= datom.v.kind .String)
+            (mmap.assoc! output-by-entity datom.e datom.v.text)))
+        (set! output-index (+ output-index 1))))
     (let [left-index left-low]
       (while (< left-index left-high)
-        (let [left-datom db.datoms[indexes[left-index]]
+        (let [left-datom db.datoms[avet-indexes[left-index]]
               [join-value join-ok] (cardinality-one-value-fast-all-current db left-datom.e plan.join-attr)]
           (when (and join-ok (= join-value.kind .Int))
             (let [[join-key join-key-ok] (primitive-value-dedupe-key join-value)]
@@ -9576,21 +9597,21 @@
         (set! left-index (+ left-index 1))))
     (let [right-candidates 0]
       (for [join-value join-values]
-        (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
-              right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)]
+        (let [right-low (lower-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
+              right-high (upper-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)]
           (set! right-candidates (+ right-candidates (- right-high right-low)))))
       (let [out (Entity-String-Int-Triples {entities: (make [dynamic]u64 0 right-candidates)
                                             strings: (make [dynamic]string 0 right-candidates)
                                             ints: (make [dynamic]i64 0 right-candidates)})]
         (for [join-value join-values]
-          (let [right-low (lower-bound-index db indexes "avet" 0 plan.join-attr join-value)
-                right-high (upper-bound-index db indexes "avet" 0 plan.join-attr join-value)
+          (let [right-low (lower-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
+                right-high (upper-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
                 right-index right-low]
             (while (< right-index right-high)
-              (let [right-datom db.datoms[indexes[right-index]]
-                    [output output-ok] (cardinality-one-value-fast-all-current db right-datom.e plan.output-attr)]
-                (when (and output-ok (= output.kind .String))
-                  (append-entity-string-int-triple! (addr out) right-datom.e output.text join-value.int-value)))
+              (let [right-datom db.datoms[avet-indexes[right-index]]
+                    [output output-ok] (mmap.get output-by-entity right-datom.e)]
+                (when output-ok
+                  (append-entity-string-int-triple! (addr out) right-datom.e output join-value.int-value)))
               (set! right-index (+ right-index 1)))))
         out))))
 
