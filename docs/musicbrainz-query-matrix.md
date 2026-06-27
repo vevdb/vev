@@ -39,6 +39,8 @@ values preserved as UUID literals. `bench/musicbrainz_import_subset.kvist`
 imports either a single tx file or staged schema/value tx files.
 `bench/musicbrainz_query_profile.kvist` can now run either the deterministic
 mini fixture or the imported real subset.
+`scripts/musicbrainz_clojure_vev_matrix.sh` runs a small public Clojure wrapper
+smoke through `vev.core`, Java FFM, the C ABI, and `libvev`.
 
 Real-data import status:
 
@@ -50,8 +52,15 @@ Real-data import status:
 | 50k/100k/200k/400k staged subsets | Passing | Latest 400k local run is about 6.9s total |
 | Full 763,274-item subset | Passing | Chunked staged import preserves expected tutorial rows; latest local import is about 16.5s |
 
-Real-data query comparison against local Datomic is active for the first
-tutorial-shaped batches:
+Real-data query comparison against local Datomic is active and the full current
+matrix passes:
+
+```bash
+scripts/compare_musicbrainz_query_matrix.sh --workload all --samples 1 --warmups 0
+```
+
+Latest full verifier status: all listed rows match Datomic by row count and
+portable fingerprint.
 
 | Workload | Vev rows/fingerprint | Datomic rows/fingerprint | Status | Current signal |
 | --- | --- | --- | --- | --- |
@@ -67,6 +76,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
 | `musicbrainz-real-beatles-duration-stats` | `4 / 9880798d00baf3e0` | `4 / 9880798d00baf3e0` | Equal rows | Grouped median/avg aggregate with `:with` duplicate preservation over real track durations |
+| `musicbrainz-real-beatles-duration-sum` | `4 / 773afe226788bffa` | `4 / 773afe226788bffa` | Equal rows | Grouped sum aggregate with `:with` duplicate preservation over real track durations |
 | `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
 | `musicbrainz-real-selected-artists-releases` | `28 / 4887ecaa409643d2` | `28 / 4887ecaa409643d2` | Equal rows | Collection input binding over two artist names |
 | `musicbrainz-real-release-date` | `3 / 8853c19c0b82edfa` | `3 / 8853c19c0b82edfa` | Equal rows | Tuple-shaped release date projection over selected releases |
@@ -85,10 +95,16 @@ tutorial-shaped batches:
 | `musicbrainz-real-strs-beatles-releases` | `16 / 3fda7a2cf91332d1` | `16 / 3fda7a2cf91332d1` | Equal rows | Datomic-style `:strs` return-map rows compare as map-shaped results |
 | `musicbrainz-real-syms-beatles-releases` | `16 / 18143fc0c84f8091` | `16 / 18143fc0c84f8091` | Equal rows | Datomic-style `:syms` return-map rows compare as map-shaped results |
 | `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Pure rule-body planner keeps the composed track/release join selective |
+| `musicbrainz-real-rule-short-track` | `135 / ea50e22c017fe85c` | `135 / ea50e22c017fe85c` | Equal rows | Rule with host input `?max` plus predicate body over real track durations |
 | `musicbrainz-real-pull-release` | `5 / 974ce160e8be7539` | `5 / 974ce160e8be7539` | Equal rows | Pull expression in query result over selected release names |
 | `musicbrainz-real-dynamic-pull-release` | `17 / 16930ebda61a7b2c` | `17 / 16930ebda61a7b2c` | Equal rows | Day-of-Datomic `d/query`-style pull pattern supplied through `:in` |
 | `musicbrainz-real-pull-release-nested` | `5 / f4f5c38625cab0c7` | `5 / f4f5c38625cab0c7` | Equal rows | Nested pull query over release media and tracks |
 | `musicbrainz-real-direct-pull-artist` | `1 / 0a11a6da90ea3115` | `1 / 0a11a6da90ea3115` | Equal rows | Direct pull by `:artist/gid` lookup ref |
+| `musicbrainz-real-direct-pull-artist-wildcard` | `1 / 996526d8caead8bb` | `1 / 996526d8caead8bb` | Equal rows | Direct wildcard pull `[*]` by `:artist/gid`; fingerprints strip imported `:db/id` values because Vev remaps Datomic eids |
+| `musicbrainz-real-direct-pull-artist-releases` | `1 / 78d748d66cc33844` | `1 / 78d748d66cc33844` | Equal rows | Direct reverse-ref pull through `:release/_artists` by `:artist/gid` lookup ref |
+| `musicbrainz-real-direct-pull-artist-releases-limit` | `1 / cc1f2e27d4ab3f6f` | `1 / cc1f2e27d4ab3f6f` | Equal rows | Pull `limit` option over reverse `:release/_artists` many-valued relationship |
+| `musicbrainz-real-direct-pull-artist-default` | `1 / 90667f13a2d95b66` | `1 / 90667f13a2d95b66` | Equal rows | Pull `default` option over missing `:artist/gender` on The Beatles |
+| `musicbrainz-real-direct-pull-artist-alias` | `1 / b9c707e2c34fb125` | `1 / b9c707e2c34fb125` | Equal rows | Pull `:as` aliasing plus `:default` over missing `:artist/gender` |
 | `musicbrainz-real-direct-pull-many-artists` | `2 / 3b0d165020d81f40` | `2 / 3b0d165020d81f40` | Equal rows | Direct pull-many by `:artist/gid` lookup refs |
 | `musicbrainz-real-direct-pull-release` | `1 / 4e62d7d5775bd426` | `1 / 4e62d7d5775bd426` | Equal rows | Direct nested pull by `:release/gid` lookup ref |
 
@@ -96,8 +112,23 @@ The row fingerprints are generated from sorted projected EDN-ish row keys.
 Floating values are serialized with Vev's explicit `[:vev/float "..."]` shape
 on both sides before fingerprinting. Pull comparison rows keep Vev pull
 patterns in canonical attr order where Datomic map rendering sorts keys, so row
-fingerprints remain strict equality checks. Both initial clause-order queries
-have also been checked with explicit sorted row dumps and `diff`.
+fingerprints remain strict equality checks. Wildcard pull rows strip `:db/id`
+from fingerprinting because the MusicBrainz exporter deliberately remaps
+Datomic eids into compact Vev ids. Both initial clause-order queries have also
+been checked with explicit sorted row dumps and `diff`.
+
+Use `scripts/compare_musicbrainz_query_matrix.sh --workload <name-or-suffix>`
+to verify selected rows against Datomic. The script builds the Vev profiler,
+runs both engines, and fails if any Datomic workload has a different Vev row
+count or fingerprint. `--workload all` verifies the full current matrix.
+
+The Datomic comparison currently measures native Vev query/profile binaries
+against Clojure Datomic peer queries. The public Clojure Vev wrapper path is
+tracked separately by `scripts/musicbrainz_clojure_vev_matrix.sh`. Its default
+500-value smoke verifies host API correctness and query overhead, but wrapper
+EDN transaction loading is not yet the right full-size MusicBrainz setup path:
+the durable-storage phase should make the full host comparison open a prebuilt
+Vev database before timing Clojure query calls.
 
 ## Covered
 
@@ -121,11 +152,15 @@ These workshop shapes are covered by passing Vev tests:
 | `get-else` | workshop query examples | EDN text query |
 | Enum refs through `:db/ident` | artist type/gender query | mini fixture plus restored-sample comparison row |
 | Aggregates | min/max, sum, count/count-distinct | EDN text aggregate queries |
-| Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg also have a restored-sample comparison row |
+| Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg and grouped sum also have restored-sample comparison rows |
 | Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |
+| Reverse-ref pull | artist to releases via `:release/_artists` | direct lookup-ref pull plus restored-sample comparison row |
+| Pull limit option | `(limit :release/_artists 2)` | restored-sample comparison row |
+| Pull default option | `[:artist/gender :default "group"]` | restored-sample comparison row |
+| Pull alias option | `[:artist/name :as :artist]` | restored-sample comparison row |
 | Dynamic pull pattern input | `music_brainz.clj` | `pattern` supplied through `:in` in query result pull expressions |
-| Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` |
-| Rule input `%` | `track-release`, `track-info`, `short-track` | `q-text-with-rules` |
+| Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` plus restored-sample id-insensitive comparison row |
+| Rule input `%` | `track-release`, `track-info`, `short-track` | `q-text-with-rules`; real Datomic comparison rows cover `track-info` and input-parameter `short-track` |
 | `d/query` map query form | `music_brainz.clj` | EDN map-form query text |
 | Split/composed rules | `music_brainz.clj` `track-artist`/`track-release`/`track-info` | `q-text-with-rules` |
 | `not` and `not-join` | original `query.clj` | mbrainz-shaped EDN text queries |
@@ -150,6 +185,7 @@ These should be ported next using the mini fixture first, then the restored
 | Shape | Source | Notes |
 | --- | --- | --- |
 | Additional Day-of-Datomic host snippets | `music_brainz.clj` | Keep porting examples that exercise host presentation rather than engine syntax |
+| Restored-sample `stddev` aggregate row | `query.clj` statistics examples | Vev and Datomic agree to normal floating precision, but strict fingerprints differ in last-bit JVM/native formatting; add a deliberate float-tolerant verifier path before moving this into the main table |
 
 ## Host Or Datomic-Specific Later
 
@@ -165,16 +201,20 @@ These are not current blockers for the Vev engine:
 | Arbitrary JVM calls such as `System/getProperties` or method calls | Host/JVM-specific |
 | Datomic timeout object shape | Host/API behavior; Vev can expose a native timeout later |
 
-## Next Batch
+## Follow-Up
 
-1. Expand the real Datomic comparison matrix with additional Day-of-Datomic
-   host snippets that exercise presentation/API shape rather than new engine
-   syntax.
-2. Add larger or more varied MusicBrainz/Day-of-Datomic workloads before doing
-   further query-planner work; the current rows no longer expose a clear slow
-   planner outlier.
-3. Keep full-import storage architecture work on the roadmap: the next write
+This phase is complete enough to stop being the main active development track.
+Further MusicBrainz work should be targeted:
+
+1. Add a deliberate float-tolerant verifier mode, then move the restored-sample
+   `stddev` row from pending into the strict/normalized matrix.
+2. Add Day-of-Datomic host snippets only when they exercise a real Vev host API
+   shape, not just Clojure presentation.
+3. Use the full matrix as a regression gate while durable storage and host API
+   work continue.
+4. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
-4. Keep Datomic-shaped request-map ergonomics backed by the existing EDN
-   map-query engine path as the host wrappers grow.
+5. After durable DB open is available through the host wrappers, promote the
+   Clojure wrapper MusicBrainz harness from smoke to full Vev-vs-Datomic
+   query benchmark.

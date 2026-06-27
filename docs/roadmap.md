@@ -197,25 +197,28 @@ Initial scope:
 - store expected query results in Vev tests or benchmark fixtures
 - report Datomic vs Vev timings as comparative ratios, not raw claims
 
-Status: active phase. The basic SQLite reopen/query loop exists, host
-connection wrappers can reach it, and the remaining storage architecture work
-is known. The current mini MusicBrainz fixture covers tutorial-shaped EDN
-queries, pulls, rules, SQLite reopen, and query profiling. The 1968-1973 sample
-backup is locally restorable and smoke-tested against Datomic. Vev has a
-Datomic-to-Vev subset exporter that preserves UUID values and remaps Datomic
-eids into compact Vev ids, plus staged schema/value/chunked import. The current
-full 763,274-item exported subset imports locally and the real Datomic
-comparison matrix covers clause-order joins, aggregates, relation inputs,
+Status: current correctness phase complete. The basic SQLite reopen/query loop
+exists, host connection wrappers can reach it, and the remaining storage
+architecture work is known. The current mini MusicBrainz fixture covers
+tutorial-shaped EDN queries, pulls, rules, SQLite reopen, and query profiling.
+The 1968-1973 sample backup is locally restorable and smoke-tested against
+Datomic. Vev has a Datomic-to-Vev subset exporter that preserves UUID values
+and remaps Datomic eids into compact Vev ids, plus staged schema/value/chunked
+import. The current full 763,274-item exported subset imports locally and the
+full real Datomic comparison matrix passes by row count and portable
+fingerprint. Coverage includes clause-order joins, aggregates, relation inputs,
 not/or groups, rule calls, pull expressions, nested release/media/track pull,
 direct lookup-ref pull, dynamic pull pattern inputs, `get-else`, restored
 `get-some`, `missing?`, `:keys`/`:strs`/`:syms` return-map rows, dynamic attrs,
 collection/tuple/scalar find specs, function expressions, enum refs through
-`:db/ident`, grouped median/avg aggregates with `:with`, Datomic-style tagged
-UUID literals, the query-stats tutorial traversal, and top-n aggregates. The
-next larger step is continuing Day-of-Datomic
-host/tutorial snippets before doing more planner work. See
-`docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the active
-work plan.
+`:db/ident`, grouped median/avg/sum aggregates with `:with`, direct wildcard
+pull `[*]`, direct reverse-ref pull through `:release/_artists`, pull `limit`
+over that reverse many-valued relationship, pull `default` over missing
+`:artist/gender`, pull `:as` aliasing, Datomic-style tagged UUID literals, the
+query-stats tutorial traversal, input-parameter rule predicates, and top-n
+aggregates. Further MusicBrainz work should be targeted regression coverage
+rather than the main development track. See `docs/musicbrainz.md` and
+`docs/musicbrainz-query-matrix.md`.
 
 ## Phase 5b: External Optimizer Benchmarks
 

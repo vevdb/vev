@@ -17,7 +17,11 @@
      [?a :artist/name ?artist-name]
      (track-release ?t ?r)
      [?r :release/name ?album]
-     [?r :release/year ?year]]])
+     [?r :release/year ?year]]
+    [(short-track ?a ?t ?len ?max)
+     [?t :track/artists ?a]
+     [?t :track/duration ?len]
+     [(< ?len ?max)]]])
 
 (def queries
   [{:name "musicbrainz-real-release-first"
@@ -129,6 +133,17 @@
     :args []}
    {:name "musicbrainz-real-beatles-duration-stats"
     :query '[:find ?year (median ?millis) (avg ?millis)
+             :with ?track
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?release :release/artists ?artist]
+             [?release :release/year ?year]
+             [?release :release/media ?medium]
+             [?medium :medium/tracks ?track]
+             [?track :track/duration ?millis]]
+    :args []}
+   {:name "musicbrainz-real-beatles-duration-sum"
+    :query '[:find ?year (sum ?millis)
              :with ?track
              :where
              [?artist :artist/name "The Beatles"]
@@ -277,6 +292,14 @@
              (track-info ?track ?track-name ?artist-name ?album ?year)
              [(< ?year 1970)]]
     :args [musicbrainz-rules "The Beatles"]}
+   {:name "musicbrainz-real-rule-short-track"
+    :query '[:find ?track-name ?len
+             :in $ % ?max
+             :where
+             [?artist :artist/name "The Beatles"]
+             (short-track ?artist ?track ?len ?max)
+             [?track :track/name ?track-name]]
+    :args [musicbrainz-rules 200000]}
    {:name "musicbrainz-real-pull-release"
     :query '[:find (pull ?release [:release/name :release/year])
              :in $ [?release-name ...]
@@ -307,6 +330,27 @@
     :kind :pull
     :pattern '[:artist/gid :artist/name :artist/startYear]
     :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
+   {:name "musicbrainz-real-direct-pull-artist-wildcard"
+    :kind :pull
+    :pattern '[*]
+    :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]
+    :strip-db-id true}
+   {:name "musicbrainz-real-direct-pull-artist-releases"
+    :kind :pull
+    :pattern '[:artist/name {:release/_artists [:release/name :release/year]}]
+    :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
+   {:name "musicbrainz-real-direct-pull-artist-releases-limit"
+    :kind :pull
+    :pattern '[:artist/name {(limit :release/_artists 2) [:release/name :release/year]}]
+    :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
+   {:name "musicbrainz-real-direct-pull-artist-default"
+    :kind :pull
+    :pattern '[[:artist/gender :default "group"] :artist/name]
+    :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
+   {:name "musicbrainz-real-direct-pull-artist-alias"
+    :kind :pull
+    :pattern '[[:artist/name :as :artist] [:artist/gender :default "group" :as :kind]]
+    :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
    {:name "musicbrainz-real-direct-pull-many-artists"
     :kind :pull-many
     :pattern '[:artist/gid :artist/name :artist/startYear]
@@ -335,21 +379,27 @@
    seed
    (seq (.toArray (.codePoints text)))))
 
-(defn canonical-text [value]
+(defn canonical-text-with-options [value {:keys [strip-db-id]}]
   (cond
     (map? value)
     (str "{"
          (str/join " "
                    (map (fn [[k v]]
-                          (str (canonical-text k) " " (canonical-text v)))
-                        (sort-by (comp canonical-text key) value)))
+                          (str (canonical-text-with-options k {:strip-db-id strip-db-id})
+                               " "
+                               (canonical-text-with-options v {:strip-db-id strip-db-id})))
+                        (sort-by
+                         (comp #(canonical-text-with-options % {:strip-db-id strip-db-id}) key)
+                         (if strip-db-id
+                           (dissoc value :db/id)
+                           value))))
          "}")
 
     (sequential? value)
-    (str "[" (str/join " " (map canonical-text value)) "]")
+    (str "[" (str/join " " (map #(canonical-text-with-options % {:strip-db-id strip-db-id}) value)) "]")
 
     (set? value)
-    (str "#{" (str/join " " (sort (map canonical-text value))) "}")
+    (str "#{" (str/join " " (sort (map #(canonical-text-with-options % {:strip-db-id strip-db-id}) value))) "}")
 
     (instance? java.util.UUID value)
     (str value)
@@ -361,9 +411,15 @@
     :else
     (pr-str value)))
 
-(defn result-row-key [row]
+(defn canonical-text [value]
+  (canonical-text-with-options value {:strip-db-id false}))
+
+(defn result-row-key-with-options [row options]
   (let [values (if (sequential? row) row [row])]
-    (str/join "|" (map canonical-text values))))
+    (str/join "|" (map #(canonical-text-with-options % options) values))))
+
+(defn result-row-key [row]
+  (result-row-key-with-options row {:strip-db-id false}))
 
 (defn result-rows [result result-kind]
   (case result-kind
@@ -371,15 +427,18 @@
     :scalar [result]
     result))
 
-(defn result-fingerprint [rows]
+(defn result-fingerprint-with-options [rows options]
   (let [hash (reduce
               (fn [hash key]
                 (fingerprint-text (fingerprint-text hash key) "\n"))
               fingerprint-seed
-              (sort (map result-row-key rows)))
+              (sort (map #(result-row-key-with-options % options) rows)))
         hex (.toString (biginteger hash) 16)]
     (str (apply str (repeat (max 0 (- 16 (count hex))) "0"))
          hex)))
+
+(defn result-fingerprint [rows]
+  (result-fingerprint-with-options rows {:strip-db-id false}))
 
 (defn result-row-count [rows]
   (count rows))
@@ -400,9 +459,12 @@
      :p90 (nth xs (idx 0.9))
      :max (last xs)}))
 
-(defn print-result-rows [workload rows]
-  (doseq [key (sort (map result-row-key rows))]
+(defn print-result-rows-with-options [workload rows options]
+  (doseq [key (sort (map #(result-row-key-with-options % options) rows))]
     (println (format "row engine=datomic workload=%s key=%s" workload key))))
+
+(defn print-result-rows [workload rows]
+  (print-result-rows-with-options workload rows {:strip-db-id false}))
 
 (defn run-query [db warmups samples print-rows? {:keys [name query args result-kind]}]
   (dotimes [_ warmups]
@@ -434,7 +496,8 @@
 
 (defn run-workload [db warmups samples print-rows? workload]
   (if (:kind workload)
-    (let [name (:name workload)]
+    (let [name (:name workload)
+          options {:strip-db-id (boolean (:strip-db-id workload))}]
       (dotimes [_ warmups]
         (workload-result db workload))
       (let [sample-us (doall
@@ -448,13 +511,13 @@
           "engine=datomic workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
           name
           (result-row-count rows)
-          (result-fingerprint rows)
+          (result-fingerprint-with-options rows options)
           (:min t)
           (:median t)
           (:p90 t)
           (:max t)))
         (when print-rows?
-          (print-result-rows name rows))))
+          (print-result-rows-with-options name rows options))))
     (run-query db warmups samples print-rows? workload)))
 
 (defn parse-int-arg [args name default-value]

@@ -51,6 +51,9 @@
 (def beatles-duration-stats-query
   "[:find ?year (median ?millis) (avg ?millis) :with ?track :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/year ?year] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/duration ?millis]]")
 
+(def beatles-duration-sum-query
+  "[:find ?year (sum ?millis) :with ?track :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/year ?year] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/duration ?millis]]")
+
 (def lookup-country-query
   "[:find ?name :where [[:country/name \"United Kingdom\"] :country/name ?name]]")
 
@@ -103,10 +106,13 @@
   "[:find ?artist-name ?release-name :syms artist release :where [?artist :artist/name \"The Beatles\"] [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
 
 (def musicbrainz-rules
-  "[[(track-release ?t ?r) [?m :medium/tracks ?t] [?r :release/media ?m]] [(track-info ?t ?track-name ?artist-name ?album ?year) [?t :track/name ?track-name] [?t :track/artists ?a] [?a :artist/name ?artist-name] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]]]")
+  "[[(track-release ?t ?r) [?m :medium/tracks ?t] [?r :release/media ?m]] [(track-info ?t ?track-name ?artist-name ?album ?year) [?t :track/name ?track-name] [?t :track/artists ?a] [?a :artist/name ?artist-name] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]] [(short-track ?a ?t ?len ?max) [?t :track/artists ?a] [?t :track/duration ?len] [(< ?len ?max)]]]")
 
 (def rule-track-info-query
   "[:find ?track-name ?album ?year :in $ % ?artist-name :where (track-info ?track ?track-name ?artist-name ?album ?year) [(< ?year 1970)]]")
+
+(def rule-short-track-query
+  "[:find ?track-name ?len :in $ % ?max :where [?artist :artist/name \"The Beatles\"] (short-track ?artist ?track ?len ?max) [?track :track/name ?track-name]]")
 
 (def pull-release-query
   "[:find (pull ?release [:release/name :release/year]) :in $ [?release-name ...] :where [?release :release/name ?release-name]]")
@@ -119,6 +125,21 @@
 
 (def direct-artist-pull-pattern
   "[:artist/gid :artist/name :artist/startYear]")
+
+(def direct-artist-wildcard-pull-pattern
+  "[*]")
+
+(def direct-artist-releases-pull-pattern
+  "[:artist/name {:release/_artists [:release/name :release/year]}]")
+
+(def direct-artist-releases-limit-pull-pattern
+  "[:artist/name {(limit :release/_artists 2) [:release/name :release/year]}]")
+
+(def direct-artist-default-pull-pattern
+  "[[:artist/gender :default \"group\"] :artist/name]")
+
+(def direct-artist-alias-pull-pattern
+  "[[:artist/name :as :artist] [:artist/gender :default \"group\" :as :kind]]")
 
 (def direct-release-pull-pattern
   "[:release/gid {:release/media [:medium/position :medium/trackCount {:medium/tracks [:track/duration :track/name :track/position]}]} :release/name :release/year]")
@@ -253,12 +274,60 @@
     (count value.items)
     1))
 
-(defn value-result-fingerprint [value: vev.Value] -> u64
+(defn value-canonical-text-without-db-id [value: vev.Value] -> string
+  (case value.kind
+    .Vector (let [parts (make [dynamic]string) :defer
+                  owned-parts (make [dynamic]string) :defer]
+              (arr.push! parts "[")
+              (for [item index value.items]
+                (when (> index 0)
+                  (arr.push! parts " "))
+                (let [item-text (value-canonical-text-without-db-id item)]
+                  (arr.push! parts item-text)
+                  (arr.push! owned-parts item-text)))
+              (arr.push! parts "]")
+              (let [out (strings.concatenate (slice parts 0))]
+                (for [part owned-parts]
+                  (delete part))
+                out))
+    .Map (let [entries (make [dynamic]string) :defer]
+           (let [index 0]
+             (while (< (+ index 1) (count value.items))
+               (let [key value.items[index]
+                     map-value value.items[(+ index 1)]]
+                 (when (not (and (= key.kind .Keyword) (= key.text ":db/id")))
+                   (let [key-text (value-canonical-text-without-db-id key)
+                         value-text (value-canonical-text-without-db-id map-value)
+                         parts ([]string [key-text " " value-text])
+                         entry (strings.concatenate parts)]
+                     (delete key-text)
+                     (delete value-text)
+                     (arr.push! entries entry))))
+               (set! index (+ index 2))))
+           (arr.sort! entries)
+           (let [parts (make [dynamic]string) :defer]
+             (arr.push! parts "{")
+             (for [entry index entries]
+               (when (> index 0)
+                 (arr.push! parts " "))
+               (arr.push! parts entry))
+             (arr.push! parts "}")
+             (let [out (strings.concatenate (slice parts 0))]
+               (for [entry entries]
+                 (delete entry))
+               out)))
+    :else (vev.value-serializable-text value)))
+
+(defn value-result-fingerprint-with [value: vev.Value, strip-db-id: bool] -> u64
   (let [keys (make [dynamic]string) :defer]
     (if (= value.kind .Vector)
       (for [item value.items]
-        (arr.push! keys (vev.value-serializable-text item)))
-      (arr.push! keys (vev.value-serializable-text value)))
+        (arr.push! keys (if strip-db-id
+                          (value-canonical-text-without-db-id item)
+                          (vev.value-serializable-text item))))
+      (arr.push! keys (if strip-db-id
+                        (value-canonical-text-without-db-id value)
+                        (vev.value-serializable-text value))))
     (arr.sort! keys)
     (let [hash (u64 0)]
       (for [key keys]
@@ -267,6 +336,12 @@
       (for [key keys]
         (delete key))
       hash)))
+
+(defn value-result-fingerprint [value: vev.Value] -> u64
+  (value-result-fingerprint-with value false))
+
+(defn value-result-fingerprint-without-db-id [value: vev.Value] -> u64
+  (value-result-fingerprint-with value true))
 
 (defn tuple-value-row-key [value: vev.Value] -> string
   (let [parts (make [dynamic]string) :defer
@@ -539,6 +614,17 @@
       (fmt.printf "row engine=vev workload=%s key=%s\n" workload key)
       (delete key))))
 
+(defn print-value-rows-without-db-id [workload: string, value: vev.Value]
+  (let [keys (make [dynamic]string) :defer]
+    (if (= value.kind .Vector)
+      (for [item value.items]
+        (arr.push! keys (value-canonical-text-without-db-id item)))
+      (arr.push! keys (value-canonical-text-without-db-id value)))
+    (arr.sort! keys)
+    (for [key keys]
+      (fmt.printf "row engine=vev workload=%s key=%s\n" workload key)
+      (delete key))))
+
 (defn time-direct-pull-artist [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
   (for [warmup-index (arr.range 0 warmups)]
     (discard warmup-index)
@@ -554,6 +640,91 @@
         (arr.push! samples elapsed)))
     (value-timing
       (vev.pull-text-lookup-ref-value db direct-artist-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+      (bench.timing-from-samples (slice samples 0)))))
+
+(defn time-direct-pull-artist-wildcard [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (discard (vev.pull-text-lookup-ref-value db direct-artist-wildcard-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            value (vev.pull-text-lookup-ref-value db direct-artist-wildcard-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+            elapsed (bench.elapsed-us start)]
+        (discard value)
+        (arr.push! samples elapsed)))
+    (value-timing
+      (vev.pull-text-lookup-ref-value db direct-artist-wildcard-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+      (bench.timing-from-samples (slice samples 0)))))
+
+(defn time-direct-pull-artist-releases [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (discard (vev.pull-text-lookup-ref-value db direct-artist-releases-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            value (vev.pull-text-lookup-ref-value db direct-artist-releases-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+            elapsed (bench.elapsed-us start)]
+        (discard value)
+        (arr.push! samples elapsed)))
+    (value-timing
+      (vev.pull-text-lookup-ref-value db direct-artist-releases-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+      (bench.timing-from-samples (slice samples 0)))))
+
+(defn time-direct-pull-artist-releases-limit [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (discard (vev.pull-text-lookup-ref-value db direct-artist-releases-limit-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            value (vev.pull-text-lookup-ref-value db direct-artist-releases-limit-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+            elapsed (bench.elapsed-us start)]
+        (discard value)
+        (arr.push! samples elapsed)))
+    (value-timing
+      (vev.pull-text-lookup-ref-value db direct-artist-releases-limit-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+      (bench.timing-from-samples (slice samples 0)))))
+
+(defn time-direct-pull-artist-default [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (discard (vev.pull-text-lookup-ref-value db direct-artist-default-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            value (vev.pull-text-lookup-ref-value db direct-artist-default-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+            elapsed (bench.elapsed-us start)]
+        (discard value)
+        (arr.push! samples elapsed)))
+    (value-timing
+      (vev.pull-text-lookup-ref-value db direct-artist-default-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+      (bench.timing-from-samples (slice samples 0)))))
+
+(defn time-direct-pull-artist-alias [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (discard (vev.pull-text-lookup-ref-value db direct-artist-alias-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            value (vev.pull-text-lookup-ref-value db direct-artist-alias-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+            elapsed (bench.elapsed-us start)]
+        (discard value)
+        (arr.push! samples elapsed)))
+    (value-timing
+      (vev.pull-text-lookup-ref-value db direct-artist-alias-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
       (bench.timing-from-samples (slice samples 0)))))
 
 (defn time-direct-pull-many-artists [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
@@ -605,6 +776,19 @@
   (when print-rows
     (print-value-rows workload measured.value)))
 
+(defn print-value-workload-without-db-id! [workload: string, measured: Value-Timing, print-rows: bool]
+  (fmt.printf
+    "engine=vev workload=%s ok=true rows=%d fingerprint=%016x min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f\n"
+    workload
+    (value-result-row-count measured.value)
+    (value-result-fingerprint-without-db-id measured.value)
+    measured.timing.min-us
+    measured.timing.median-us
+    measured.timing.p90-us
+    measured.timing.max-us)
+  (when print-rows
+    (print-value-rows-without-db-id workload measured.value)))
+
 (defn main []
   (defer (free_all context.allocator))
   (let [selected (cli.option os.args "--workload" "all")
@@ -630,6 +814,7 @@
         dynamic-pull-release-input ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Led Zeppelin"))
                                                        (vev.query-input-pull-pattern ([]vev.Pull-Spec [(vev.pull-spec ":release/name" ([]vev.Pull-Spec []))]))])
         relation-artist-release-input ([]vev.Query-Input [(vev.query-input-relation ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Abbey Road") (vev.value-string "Miles Davis") (vev.value-string "Bitches Brew")]) 2)])
+        short-track-input ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 200000))])
         selected-releases-input ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "Abbey Road") (vev.value-string "In a Silent Way")]))])]
     (when (= dataset "real")
       (when (not (load-real! (addr conn) schema-path values-path values-prefix values-chunks progress))
@@ -646,6 +831,7 @@
           track-count-workload (fmt.tprintf "musicbrainz-%s-beatles-track-count" dataset)
           min-max-duration-workload (fmt.tprintf "musicbrainz-%s-beatles-min-max-duration" dataset)
           beatles-duration-stats-workload (fmt.tprintf "musicbrainz-%s-beatles-duration-stats" dataset)
+          beatles-duration-sum-workload (fmt.tprintf "musicbrainz-%s-beatles-duration-sum" dataset)
           lookup-country-workload (fmt.tprintf "musicbrainz-%s-lookup-country" dataset)
           selected-artists-releases-workload (fmt.tprintf "musicbrainz-%s-selected-artists-releases" dataset)
           release-date-workload (fmt.tprintf "musicbrainz-%s-release-date" dataset)
@@ -664,10 +850,16 @@
           strs-beatles-releases-workload (fmt.tprintf "musicbrainz-%s-strs-beatles-releases" dataset)
           syms-beatles-releases-workload (fmt.tprintf "musicbrainz-%s-syms-beatles-releases" dataset)
           rule-track-info-workload (fmt.tprintf "musicbrainz-%s-rule-track-info" dataset)
+          rule-short-track-workload (fmt.tprintf "musicbrainz-%s-rule-short-track" dataset)
           pull-release-workload (fmt.tprintf "musicbrainz-%s-pull-release" dataset)
           dynamic-pull-release-workload (fmt.tprintf "musicbrainz-%s-dynamic-pull-release" dataset)
           pull-release-nested-workload (fmt.tprintf "musicbrainz-%s-pull-release-nested" dataset)
           direct-pull-artist-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist" dataset)
+          direct-pull-artist-wildcard-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist-wildcard" dataset)
+          direct-pull-artist-releases-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist-releases" dataset)
+          direct-pull-artist-releases-limit-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist-releases-limit" dataset)
+          direct-pull-artist-default-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist-default" dataset)
+          direct-pull-artist-alias-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist-alias" dataset)
           direct-pull-many-artists-workload (fmt.tprintf "musicbrainz-%s-direct-pull-many-artists" dataset)
           direct-pull-release-workload (fmt.tprintf "musicbrainz-%s-direct-pull-release" dataset)]
       (when (should-run? selected release-first-workload)
@@ -694,6 +886,8 @@
         (print-workload! conn.db min-max-duration-workload min-max-duration-query no-inputs warmups samples print-rows))
       (when (should-run? selected beatles-duration-stats-workload)
         (print-workload! conn.db beatles-duration-stats-workload beatles-duration-stats-query no-inputs warmups samples print-rows))
+      (when (should-run? selected beatles-duration-sum-workload)
+        (print-workload! conn.db beatles-duration-sum-workload beatles-duration-sum-query no-inputs warmups samples print-rows))
       (when (should-run? selected lookup-country-workload)
         (print-workload! conn.db lookup-country-workload lookup-country-query no-inputs warmups samples print-rows))
       (when (should-run? selected selected-artists-releases-workload)
@@ -730,6 +924,8 @@
         (print-keyed-workload! conn.db syms-beatles-releases-workload syms-beatles-releases-query ":syms" warmups samples print-rows))
       (when (should-run? selected rule-track-info-workload)
         (print-workload-with-rules! conn.db rule-track-info-workload rule-track-info-query beatles-input musicbrainz-rules true warmups samples print-rows))
+      (when (should-run? selected rule-short-track-workload)
+        (print-workload-with-rules! conn.db rule-short-track-workload rule-short-track-query short-track-input musicbrainz-rules true warmups samples print-rows))
       (when (should-run? selected pull-release-workload)
         (print-workload! conn.db pull-release-workload pull-release-query selected-releases-input warmups samples print-rows))
       (when (should-run? selected dynamic-pull-release-workload)
@@ -738,6 +934,16 @@
         (print-workload! conn.db pull-release-nested-workload pull-release-nested-query selected-releases-input warmups samples print-rows))
       (when (should-run? selected direct-pull-artist-workload)
         (print-value-workload! direct-pull-artist-workload (time-direct-pull-artist conn.db warmups samples) print-rows))
+      (when (should-run? selected direct-pull-artist-wildcard-workload)
+        (print-value-workload-without-db-id! direct-pull-artist-wildcard-workload (time-direct-pull-artist-wildcard conn.db warmups samples) print-rows))
+      (when (should-run? selected direct-pull-artist-releases-workload)
+        (print-value-workload! direct-pull-artist-releases-workload (time-direct-pull-artist-releases conn.db warmups samples) print-rows))
+      (when (should-run? selected direct-pull-artist-releases-limit-workload)
+        (print-value-workload! direct-pull-artist-releases-limit-workload (time-direct-pull-artist-releases-limit conn.db warmups samples) print-rows))
+      (when (should-run? selected direct-pull-artist-default-workload)
+        (print-value-workload! direct-pull-artist-default-workload (time-direct-pull-artist-default conn.db warmups samples) print-rows))
+      (when (should-run? selected direct-pull-artist-alias-workload)
+        (print-value-workload! direct-pull-artist-alias-workload (time-direct-pull-artist-alias conn.db warmups samples) print-rows))
       (when (should-run? selected direct-pull-many-artists-workload)
         (print-value-workload! direct-pull-many-artists-workload (time-direct-pull-many-artists conn.db warmups samples) print-rows))
       (when (should-run? selected direct-pull-release-workload)

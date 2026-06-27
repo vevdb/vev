@@ -1,6 +1,8 @@
 # MusicBrainz / Day Of Datomic Workload
 
-MusicBrainz/Day-of-Datomic is the next active Vev validation phase.
+MusicBrainz/Day-of-Datomic is the current real-workload validation suite for
+Vev. The initial correctness phase is complete enough to use as a regression
+gate while development moves back toward durable storage and host API work.
 
 The goal is not to invent a new benchmark. The goal is to make existing
 Datomic tutorial material work against Vev with minimal translation, then use
@@ -96,8 +98,10 @@ aggregates, prepared EDN text input, collection binding, tuple binding,
 relation binding, scalar/tuple/collection find specs, rule-backed queries,
 duration function expressions, return maps, enum refs through `:db/ident`,
 `get-else`, statistics aggregates, and nested pull through
-release/media/tracks. It also covers wildcard pull, map-form EDN queries,
-split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`, dynamic
+release/media/tracks. It also covers wildcard pull, reverse-ref pull, pull
+`limit`, pull `default`, pull `:as` aliasing, map-form EDN queries,
+split/composed rules, input-parameter rule predicates, `not`/`not-join`,
+`or`/`or-join`, `get-some`, dynamic
 pull pattern inputs, `missing?`, lookup-ref inputs, dynamic attr inputs, top-n
 aggregates, and the Day-of-Datomic query-stats final John Lennon pre-1970
 tracks example. Restored `get-some` rows now match Datomic's attr-entity
@@ -107,10 +111,13 @@ semantics by projecting the attr through `:db/ident`. The detailed coverage ledg
 The restored Datomic comparison matrix now also covers release date
 projection, `get-else`, restored `get-some`, `:keys`/`:strs`/`:syms`
 return-map rows, collection/tuple/scalar find specs, function expressions,
-enum refs through `:db/ident`, grouped median/avg aggregates with `:with`,
-dynamic pull pattern input, Datomic-style tagged UUID literals, `missing?`,
-dynamic attr input, query-stats tutorial traversal, and top-n aggregate rows
-against the real 1968-1973 sample.
+enum refs through `:db/ident`, grouped median/avg/sum aggregates with `:with`,
+direct wildcard pull `[*]`, direct reverse-ref pull through
+`:release/_artists`, pull `limit` over that reverse many-valued relationship,
+pull `default` over missing `:artist/gender`, pull `:as` aliasing, dynamic
+pull pattern input, Datomic-style tagged UUID literals, `missing?`, dynamic
+attr input, query-stats tutorial traversal, input-parameter rule predicates,
+and top-n aggregate rows against the real 1968-1973 sample.
 
 The restored sample forced one real Vev data-model addition: UUID values.
 MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use
@@ -194,45 +201,61 @@ Local Datomic comparison is available through:
 scripts/musicbrainz_sample.sh query-matrix-datomic --samples 2 --warmups 1
 ```
 
-The first real comparison rows are now equal against Datomic:
+The preferred correctness check is the combined verifier:
 
-- `musicbrainz-real-release-first`: 96 rows,
-  fingerprint `0ea8943f9ef3eb03`
-- `musicbrainz-real-track-first`: 89 rows,
-  fingerprint `9902d35f51335e40`
+```bash
+scripts/compare_musicbrainz_query_matrix.sh --workload release-first
+```
 
-Current timings show Vev is now fast on these ordinary multi-hop
-clause/predicate joins after dependency-aware clause planning. The imported Vev
-subset returns the same projected rows as Datomic for these tutorial shapes.
-Pure rule-expanded joins made from data clauses and rule calls now use a
+It builds the Vev MusicBrainz profiler, imports the restored Vev export, runs
+the same selected workload against local Datomic, and fails if row counts or
+portable fingerprints differ. Use `--workload all` for the full current matrix.
+
+The full current comparison matrix now passes against Datomic:
+
+```bash
+scripts/compare_musicbrainz_query_matrix.sh --workload all --samples 1 --warmups 0
+```
+
+Current timings show Vev is fast on ordinary multi-hop clause/predicate joins
+after dependency-aware clause planning. The imported Vev subset returns the
+same projected rows as Datomic for the current tutorial-shaped matrix. Pure
+rule-expanded joins made from data clauses and rule calls now use a
 dependency-aware rule-body planner. Bounded `or`/`or-join` and
-`not`/`not-join` now reuse the planned group-clause path, so the current
-real-data matrix no longer exposes a clear slow query-planner outlier.
+`not`/`not-join` reuse the planned group-clause path, so the current real-data
+matrix no longer exposes a clear slow query-planner outlier.
 
-## Work Items
+## Current Work Items
 
 1. Build a Datomic-to-Vev export/import path for the restored 1968-1973 sample.
-   Status: first exporter/import smoke exists. Next work is making staged
-   5k/50k/full imports fast enough to use routinely.
+   Status: done for the current chunked export/import path.
 2. Port the `day-of-datomic-conj/src/music_brainz.clj` query set into a Vev
    fixture file, marking each form as passing, Vev-difference, or pending.
-   Track this in `docs/musicbrainz-query-matrix.md`.
+   Status: current engine-relevant matrix passes; remaining snippets are host
+   presentation or optional follow-up.
 3. Expand the mini fixture only when it exposes a missing semantic shape; the
    restored sample is now the main correctness/performance target.
 4. Add an importer that converts the Datomic dataset into Vev EDN transaction
    text or prepared `Tx-Data` values.
+   Status: done for EDN transaction text export/import.
 5. Add a small query fixture file containing Datomic tutorial queries, expected
    result normalization rules, and notes for any deliberate Vev differences.
+   Status: `docs/musicbrainz-query-matrix.md` plus the Vev/Datomic runners are
+   the current fixture.
 6. Add a Vev harness that can run:
    - in-memory import and query
    - SQLite import, close/reopen, and query
    - optional Datomic comparison when the local Datomic process/database is
      available
    Status: in-memory real import/query and Datomic comparison exist for the
-   first two clause-order joins.
+   current query matrix. `scripts/compare_musicbrainz_query_matrix.sh` verifies
+   selected rows or the full matrix by comparing Vev and Datomic row counts and
+   fingerprints.
 7. Record comparisons as result equality plus relative timing ratios. Avoid
    unsupported raw timing claims until the harness has stable warmup and repeat
    behavior.
+   Status: current docs record single-sample local timings as development
+   signals; repeatable benchmarking can be tightened later.
 
 ## Expected Pressure Points
 

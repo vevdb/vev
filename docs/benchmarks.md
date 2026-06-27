@@ -199,6 +199,7 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-beatles-track-count` | 3531 | 3150 | 1 | `0000000007068a26` |
 | `musicbrainz-real-beatles-min-max-duration` | 2967 | 10409 | 1 | `9c45e54f061af2f6` |
 | `musicbrainz-real-beatles-duration-stats` | 5975 | 83762 | 4 | `9880798d00baf3e0` |
+| `musicbrainz-real-beatles-duration-sum` | 4405 | 86912 | 4 | `773afe226788bffa` |
 | `musicbrainz-real-lookup-country` | 51 | 3371 | 1 | `4167e0bf9abd1220` |
 | `musicbrainz-real-selected-artists-releases` | 520 | 5625 | 28 | `4887ecaa409643d2` |
 | `musicbrainz-real-release-date` | 496 | 59046 | 3 | `8853c19c0b82edfa` |
@@ -217,10 +218,16 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-strs-beatles-releases` | 759 | 42006 | 16 | `3fda7a2cf91332d1` |
 | `musicbrainz-real-syms-beatles-releases` | 562 | 39944 | 16 | `18143fc0c84f8091` |
 | `musicbrainz-real-rule-track-info` | 48552 | 320417 | 90 | `5f20ceb057e27418` |
+| `musicbrainz-real-rule-short-track` | 14817 | 69136 | 135 | `ea50e22c017fe85c` |
 | `musicbrainz-real-pull-release` | 545 | 4042 | 5 | `974ce160e8be7539` |
 | `musicbrainz-real-dynamic-pull-release` | 1381 | 46875 | 17 | `16930ebda61a7b2c` |
 | `musicbrainz-real-pull-release-nested` | 485 | 95232 | 5 | `f4f5c38625cab0c7` |
 | `musicbrainz-real-direct-pull-artist` | 51 | 4899 | 1 | `0a11a6da90ea3115` |
+| `musicbrainz-real-direct-pull-artist-wildcard` | 167 | 13568 | 1 | `996526d8caead8bb` |
+| `musicbrainz-real-direct-pull-artist-releases` | 516 | 57976 | 1 | `78d748d66cc33844` |
+| `musicbrainz-real-direct-pull-artist-releases-limit` | 161 | 24115 | 1 | `cc1f2e27d4ab3f6f` |
+| `musicbrainz-real-direct-pull-artist-default` | 132 | 17613 | 1 | `90667f13a2d95b66` |
+| `musicbrainz-real-direct-pull-artist-alias` | 119 | 12645 | 1 | `b9c707e2c34fb125` |
 | `musicbrainz-real-direct-pull-many-artists` | 45 | 2539 | 2 | `3b0d165020d81f40` |
 | `musicbrainz-real-direct-pull-release` | 147 | 21235 | 1 | `4e62d7d5775bd426` |
 
@@ -246,6 +253,53 @@ write-side architecture issue is whole-array DB/index ownership and publication
 as DB values grow. The likely direction is a shared/chunked immutable index
 representation or a bulk builder that can apply several value chunks and publish
 one DB snapshot.
+
+## MusicBrainz Clojure Host Wrapper
+
+`scripts/musicbrainz_clojure_vev_matrix.sh` runs MusicBrainz-shaped queries
+through the public Clojure wrapper (`vev.core`), Java FFM wrapper, C ABI, and
+`libvev`. This is a host API benchmark, not the main Datomic comparison.
+
+The default command intentionally uses the small staged 500-value export and a
+positive-result smoke query:
+
+```sh
+scripts/musicbrainz_clojure_vev_matrix.sh --samples 3 --warmups 1
+```
+
+Latest local smoke:
+
+```text
+engine=clojure-vev workload=musicbrainz-real-load ok=true stage=schema tx_us=486336
+engine=clojure-vev workload=musicbrainz-real-load ok=true stage=values tx_us=3239488
+engine=clojure-vev workload=musicbrainz-real-load ok=true total_us=3726538
+engine=clojure-vev workload=musicbrainz-smoke-country-names ok=true rows=257 fingerprint=fd7d4b4cd5dd243c min_us=2055 median_us=2409 p90_us=2409 max_us=3194
+```
+
+The important current signal is the boundary: query execution through the public
+Clojure API works and produces stable fingerprints, but setup through wrapper
+EDN transaction text is not a realistic full-size MusicBrainz benchmark path. A
+5k staged export loaded through `vev/transact-text!` took about 140s locally,
+while native Vev imports the full 763k-datom chunked subset in about 16.5s. The
+full host benchmark should therefore open a prebuilt durable Vev database, or
+use a native bulk-load step, before timing Clojure query calls.
+
+Representative real workloads are still available with `--workload` and the
+full chunked export arguments:
+
+```sh
+scripts/musicbrainz_clojure_vev_matrix.sh \
+  --workload beatles-releases \
+  --schema build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn \
+  --values "" \
+  --values-prefix build/musicbrainz/vev-mbrainz-subset-full-chunked \
+  --values-chunks 8
+```
+
+Do not compare those setup-inclusive Clojure timings directly to the native Vev
+versus Datomic table. The durable-storage phase should make this an
+apples-to-apples Clojure Vev versus Clojure Datomic query benchmark by removing
+wrapper load/setup from the measured path.
 
 ## Query And Rule Baseline
 
