@@ -15,6 +15,7 @@ SCHEMA="$ROOT/build/musicbrainz/vev-mbrainz-subset-500-schema.edn"
 VALUES="$ROOT/build/musicbrainz/vev-mbrainz-subset-500-values.edn"
 VALUES_PREFIX="$ROOT/build/musicbrainz/vev-mbrainz-subset-full-chunked"
 VALUES_CHUNKS="8"
+PRINT_ROWS="false"
 
 usage() {
   cat <<EOF
@@ -33,6 +34,7 @@ options:
   --values path         Vev exported single values EDN path
   --values-prefix path  Vev exported chunk prefix
   --values-chunks n     number of Vev value chunks; default: 8
+  --print-rows true     print canonical row keys; default: false
   -h, --help            show this help
 EOF
 }
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --values) VALUES="$2"; shift 2 ;;
     --values-prefix) VALUES_PREFIX="$2"; shift 2 ;;
     --values-chunks) VALUES_CHUNKS="$2"; shift 2 ;;
+    --print-rows) PRINT_ROWS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
       usage >&2
@@ -79,4 +82,5 @@ clojure \
   --values-chunks "$VALUES_CHUNKS" \
   --workload "$WORKLOAD" \
   --samples "$SAMPLES" \
-  --warmups "$WARMUPS"
+  --warmups "$WARMUPS" \
+  --print-rows "$PRINT_ROWS"

@@ -2457,6 +2457,48 @@
     .Ignore (query-input-scalar (value-nil))
     :else (query-input-scalar value)))
 
+(defn query-input-spec-pull-pattern? [query-value: Query, spec: Query-Input-Spec] -> bool
+  (when (not (= spec.kind .Scalar))
+    (return false))
+  (for [pull-find query-value.pulls]
+    (when (and pull-find.has-pattern-var
+               (= pull-find.pattern-var spec.name))
+      (return true)))
+  false)
+
+(defn pull-spec-owned [spec: Pull-Spec] -> Pull-Spec
+  (let [pattern (make [dynamic]Pull-Spec 0 (count spec.pattern))]
+    (for [child spec.pattern]
+      (arr.push! pattern (pull-spec-owned child)))
+    (Pull-Spec {a: (string-owned spec.a)
+                pattern: (slice pattern 0)
+                limit: spec.limit
+                has-limit: spec.has-limit
+                has-default: spec.has-default
+                default-value: (value-owned spec.default-value)
+                has-alias: spec.has-alias
+                alias: (string-owned spec.alias)
+                alias-kind: spec.alias-kind
+                has-xform: spec.has-xform
+                xform: (string-owned spec.xform)
+                has-recursion: spec.has-recursion
+                recursion-depth: spec.recursion-depth})))
+
+(defn pull-pattern-owned [pattern: []Pull-Spec] -> [dynamic]Pull-Spec
+  (let [out (make [dynamic]Pull-Spec 0 (count pattern))]
+    (for [spec pattern]
+      (arr.push! out (pull-spec-owned spec)))
+    out))
+
+(defn query-input-pull-pattern-from-node [doc: EDN-Doc, node-index: int] -> [input: Query-Input, ok: bool, error: string]
+  (when (or (= node-index -1) (not (= doc.nodes[node-index].kind .Vector)))
+    (return (query-input-scalar (value-nil)) false "pull pattern input must be an EDN vector"))
+  (let [[pattern pattern-ok pattern-error] (edn-pull-specs doc node-index)]
+    (when (not pattern-ok)
+      (return (query-input-scalar (value-nil)) false pattern-error))
+    (let [owned (pull-pattern-owned (slice pattern 0))]
+      (return (query-input-pull-pattern (slice owned 0)) true ""))))
+
 (defn parse-query-inputs-text-for-query [query-value: Query, text: string] -> [inputs: [dynamic]Query-Input, ok: bool, error: string]
   (let [out (make [dynamic]Query-Input)
         doc (empty-edn-doc)
@@ -2476,7 +2518,13 @@
             (delete doc.nodes)
             (return out false value-error))
           (if (< index (count specs))
-            (arr.push! out (query-input-from-value-for-spec specs[index] value))
+            (if (query-input-spec-pull-pattern? query-value specs[index])
+              (let [[input input-ok input-error] (query-input-pull-pattern-from-node doc cursor)]
+                (when (not input-ok)
+                  (delete doc.nodes)
+                  (return out false input-error))
+                (arr.push! out input))
+              (arr.push! out (query-input-from-value-for-spec specs[index] value)))
             (arr.push! out (query-input-scalar value))))
         (set! index (+ index 1))
         (set! cursor doc.nodes[cursor].next-sibling)))
