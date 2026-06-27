@@ -1,3 +1,6 @@
+;; Copyright (c) Andreas Flakstad and Vev contributors
+;; SPDX-License-Identifier: EPL-2.0
+
 (ns smoke
   (:require [vev.core :as vev]))
 
@@ -49,6 +52,18 @@
         (println "query-map:" requested)
         (when-not (= #{["Ada"]} requested)
           (throw (ex-info "unexpected query map output" {:rows requested}))))
+
+      (let [db (vev/db conn)
+            keyed (vev/query
+                   {:query '[:find ?name ?email
+                             :keys name email
+                             :in $ ?email
+                             :where [?e :user/email ?email]
+                             [?e :user/name ?name]]
+                    :args [db "ada@example.com"]})]
+        (println "query-map keys:" keyed)
+        (when-not (= #{{:name "Ada" :email "ada@example.com"}} keyed)
+          (throw (ex-info "unexpected query map keyed output" {:rows keyed}))))
 
       (vev/transact! conn
                      [[:db/add 90 :db/ident :user/email]

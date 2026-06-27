@@ -1,3 +1,6 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
 #include "vev.h"
 #include <node_api.h>
 #include <stdio.h>

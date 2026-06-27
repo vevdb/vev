@@ -1,3 +1,6 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
 "use strict";
 
 const vev = require("./vev");

@@ -71,3 +71,23 @@ When evaluating a feature, ask:
 > Does this make immutable database values easier to understand, use, preserve, or distribute?
 
 If not, it probably belongs outside the core.
+
+## License
+
+Vev is licensed under the Eclipse Public License 2.0. See [LICENSE](LICENSE).
+
+## Acknowledgements
+
+Vev is shaped by the Datomic family of ideas and by the open-source Datalog
+work around it. In particular, the project uses DataScript as a semantic
+compatibility target, Datalevin as an implementation and benchmark reference,
+and Day of Datomic / Datomic MusicBrainz material as workload inspiration.
+
+Those projects remain under their own licenses:
+
+* [DataScript](https://github.com/tonsky/datascript), Eclipse Public License 1.0.
+* [Datalevin](https://github.com/datalevin/datalevin), Eclipse Public License 2.0.
+* [Day of Datomic Cloud](https://github.com/cognitect-labs/day-of-datomic-cloud), Eclipse Public License 1.0.
+
+Any copied or adapted material from those projects should retain its original
+copyright notices and license terms.

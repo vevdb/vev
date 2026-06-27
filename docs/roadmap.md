@@ -201,14 +201,17 @@ Status: active phase. The basic SQLite reopen/query loop exists, host
 connection wrappers can reach it, and the remaining storage architecture work
 is known. The current mini MusicBrainz fixture covers tutorial-shaped EDN
 queries, pulls, rules, SQLite reopen, and query profiling. The 1968-1973 sample
-backup is locally restorable and smoke-tested against Datomic. Vev now has a
-first Datomic-to-Vev subset exporter that preserves UUID values and remaps
-Datomic eids into compact Vev ids, plus a staged schema/value import smoke.
-Small real-data imports pass. The next larger step is improving generic bulk
-transaction performance enough to import 50k/full restored MusicBrainz subsets
-routinely, then comparing the same query matrix against local Datomic. See
-`docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the active
-work plan.
+backup is locally restorable and smoke-tested against Datomic. Vev has a
+Datomic-to-Vev subset exporter that preserves UUID values and remaps Datomic
+eids into compact Vev ids, plus staged schema/value/chunked import. The current
+full 763,274-item exported subset imports locally and the real Datomic
+comparison matrix covers clause-order joins, aggregates, relation inputs,
+not/or groups, rule calls, pull expressions, nested release/media/track pull,
+direct lookup-ref pull, `get-else`, dynamic attrs, and top-n aggregates. The
+next larger step is fixing the restored-data `get-some` attr-id gap and then
+continuing Day-of-Datomic host/tutorial snippets before doing more planner
+work. See `docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the
+active work plan.
 
 ## Phase 5b: External Optimizer Benchmarks
 

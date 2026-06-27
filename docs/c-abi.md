@@ -446,6 +446,8 @@ Rust:
 - `DB.queryColumns` exposes a first generic Java column facade over the current
   optimized entity, entity/int, and entity/string/int result shapes
 - immutable DB snapshots can be queried after the connection has advanced
+- `Vev.query(Map.of("query", ..., "args", List.of(db, ...)))` provides a
+  Datomic-shaped request-map convenience for host examples
 
 The Clojure adapter still uses the direct shape-specific Java methods on hot
 `q`/`rows` paths. The generic Java facade is useful for API direction, but a
@@ -477,6 +479,33 @@ try (Vev.DurableConnection durable = vev.connect("app.vev.sqlite")) {
     try (Vev.DB db = durable.db()) {
         // query db with prepared queries
     }
+}
+```
+
+Java callers that want a Datomic-style request-map shape can run a one-shot
+query through `Vev.queryRows`, or use `Vev.queryMaps` for `:keys`/`:strs`/
+`:syms` return-map queries:
+
+```java
+try (Vev.DB db = conn.db()) {
+    List<List<Object>> rows = vev.queryRows(Map.of(
+        "query", """
+            [:find ?name
+             :in $ ?email
+             :where [?e :user/email ?email]
+                    [?e :user/name ?name]]
+            """,
+        "args", List.of(db, "ada@example.com")));
+
+    List<Map<Object, Object>> maps = vev.queryMaps(Map.of(
+        "query", """
+            [:find ?name ?email
+             :keys name email
+             :in $ ?email
+             :where [?e :user/email ?email]
+                    [?e :user/name ?name]]
+            """,
+        "args", List.of(db, "ada@example.com")));
 }
 ```
 

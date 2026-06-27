@@ -55,26 +55,35 @@ tutorial-shaped batches:
 
 | Workload | Vev rows/fingerprint | Datomic rows/fingerprint | Status | Current signal |
 | --- | --- | --- | --- | --- |
-| `musicbrainz-real-release-first` | `96 / 0ea8943f9ef3eb03` | `96 / 0ea8943f9ef3eb03` | Equal rows | Vev is currently much slower on this restored-sample join |
-| `musicbrainz-real-track-first` | `89 / 9902d35f51335e40` | `89 / 9902d35f51335e40` | Equal rows | Same semantics; worse clause order remains a useful planner target |
+| `musicbrainz-real-release-first` | `96 / 0ea8943f9ef3eb03` | `96 / 0ea8943f9ef3eb03` | Equal rows | Dependency-aware clause planning now keeps this selective and fast |
+| `musicbrainz-real-track-first` | `89 / 9902d35f51335e40` | `89 / 9902d35f51335e40` | Equal rows | Clause order no longer creates the large track/release cross product |
 | `musicbrainz-real-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Constant artist lookup plus release join is fast in Vev |
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
 | `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
 | `musicbrainz-real-selected-artists-releases` | `28 / 4887ecaa409643d2` | `28 / 4887ecaa409643d2` | Equal rows | Collection input binding over two artist names |
-| `musicbrainz-real-not-beatles-male` | `1 / ea45bdc7e8b8201b` | `1 / ea45bdc7e8b8201b` | Equal rows | Bounded `not` query |
-| `musicbrainz-real-or-two-artists` | `2 / de67eb0f77cf6b42` | `2 / de67eb0f77cf6b42` | Equal rows | Bounded `or` query |
+| `musicbrainz-real-release-date` | `3 / 8853c19c0b82edfa` | `3 / 8853c19c0b82edfa` | Equal rows | Tuple-shaped release date projection over selected releases |
+| `musicbrainz-real-fallback-start-month` | `2 / ea197a760bcc6589` | `2 / ea197a760bcc6589` | Equal rows | `get-else` over selected artists with mixed present/default values |
+| `musicbrainz-real-dynamic-attr` | `482 / ffee4f7469006cd3` | `482 / ffee4f7469006cd3` | Equal rows | Dynamic attr input binding over `:artist/country` |
+| `musicbrainz-real-top-duration` | `1 / 949eb8db5ef70199` | `1 / 949eb8db5ef70199` | Equal rows | Top-n min/max aggregates over all track durations |
+| `musicbrainz-real-not-beatles-male` | `1 / ea45bdc7e8b8201b` | `1 / ea45bdc7e8b8201b` | Equal rows | Bounded `not` query uses planned group clauses |
+| `musicbrainz-real-or-two-artists` | `2 / de67eb0f77cf6b42` | `2 / de67eb0f77cf6b42` | Equal rows | Bounded `or` query uses planned branch clauses |
 | `musicbrainz-real-relation-artist-release` | `2 / cb2f30e6783d093d` | `2 / cb2f30e6783d093d` | Equal rows | Relation tuple input for artist/release pairs |
-| `musicbrainz-real-not-join-release` | `1 / b6368059dfc36ef8` | `1 / b6368059dfc36ef8` | Equal rows | Bounded `not-join` over selected releases |
-| `musicbrainz-real-or-join-release` | `2 / 5f5db031e99d9c11` | `2 / 5f5db031e99d9c11` | Equal rows | Bounded `or-join` over selected releases |
+| `musicbrainz-real-not-join-release` | `1 / b6368059dfc36ef8` | `1 / b6368059dfc36ef8` | Equal rows | Bounded `not-join` over selected releases uses planned group clauses |
+| `musicbrainz-real-or-join-release` | `2 / 5f5db031e99d9c11` | `2 / 5f5db031e99d9c11` | Equal rows | Bounded `or-join` over selected releases uses planned branch clauses |
 | `musicbrainz-real-map-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Vev uses EDN map query text; Datomic harness uses the equivalent vector query |
-| `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Rule input `%` with composed track/release join |
+| `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Pure rule-body planner keeps the composed track/release join selective |
 | `musicbrainz-real-pull-release` | `5 / 974ce160e8be7539` | `5 / 974ce160e8be7539` | Equal rows | Pull expression in query result over selected release names |
+| `musicbrainz-real-pull-release-nested` | `5 / f4f5c38625cab0c7` | `5 / f4f5c38625cab0c7` | Equal rows | Nested pull query over release media and tracks |
+| `musicbrainz-real-direct-pull-artist` | `1 / 0a11a6da90ea3115` | `1 / 0a11a6da90ea3115` | Equal rows | Direct pull by `:artist/gid` lookup ref |
+| `musicbrainz-real-direct-pull-many-artists` | `2 / 3b0d165020d81f40` | `2 / 3b0d165020d81f40` | Equal rows | Direct pull-many by `:artist/gid` lookup refs |
+| `musicbrainz-real-direct-pull-release` | `1 / 4e62d7d5775bd426` | `1 / 4e62d7d5775bd426` | Equal rows | Direct nested pull by `:release/gid` lookup ref |
 
 The row fingerprints are generated from sorted projected EDN-ish row keys. Pull
-maps are rendered into canonical value text before fingerprinting so Datomic map
-iteration order does not affect comparisons. Both initial clause-order queries
-have also been checked with explicit sorted row dumps and `diff`.
+comparison rows keep Vev pull patterns in canonical attr order where Datomic
+map rendering sorts keys, so row fingerprints remain strict equality checks.
+Both initial clause-order queries have also been checked with explicit sorted
+row dumps and `diff`.
 
 ## Covered
 
@@ -99,19 +108,22 @@ These workshop shapes are covered by passing Vev tests:
 | Enum refs through `:db/ident` | artist type/gender query | ident entity joins |
 | Aggregates | min/max, sum, count/count-distinct | EDN text aggregate queries |
 | Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query |
-| Nested pull | release media and tracks | `pull-text` |
+| Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |
 | Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` |
 | Rule input `%` | `track-release`, `track-info`, `short-track` | `q-text-with-rules` |
 | `d/query` map query form | `music_brainz.clj` | EDN map-form query text |
 | Split/composed rules | `music_brainz.clj` `track-artist`/`track-release`/`track-info` | `q-text-with-rules` |
 | `not` and `not-join` | original `query.clj` | mbrainz-shaped EDN text queries |
 | `or` and `or-join` | original `query.clj` | mbrainz-shaped EDN text queries |
-| `get-some` | original `query.clj` | country/artist attr query |
+| `get-some` | original `query.clj` | mini fixture covered; restored-sample exact attr-id semantics remain pending |
 | Lookup-ref inputs | original `query.clj` country examples | inline lookup-ref and query input lookup-ref |
 | Dynamic attr input | original `query.clj` | `:artist/country` as collection input |
 | Top-n aggregates | original `query.clj` | min/max duration vectors |
 | Query profiling | `music_brainz.clj` query-stats walkthrough | Vev profile assertions on tutorial-shaped joins |
 | Clause-order profiling | `music_brainz.clj` comparison examples | `bench/musicbrainz_query_profile.kvist` |
+| Host-facing `d/query` equivalent with `:query`/`:args` | `music_brainz.clj` | Clojure `vev/query` and Java `Vev.queryRows(Map.of(...))` request-map wrappers |
+| Clojure return-map rows | `music_brainz.clj` | Clojure `q`/`rows`/`query` return maps for `:keys`, `:strs`, and `:syms` on plain query forms |
+| Java return-map rows | `music_brainz.clj` | Java `Vev.queryMaps(Map.of(...))` return maps for `:keys`, `:strs`, and `:syms` query text |
 
 ## Pending Tutorial Coverage
 
@@ -120,7 +132,8 @@ These should be ported next using the mini fixture first, then the restored
 
 | Shape | Source | Notes |
 | --- | --- | --- |
-| Host-facing `d/query` equivalent with `:query`/`:args` | `music_brainz.clj` | Clojure wrapper supports `vev/query {:query ... :args [...]}` |
+| Restored-data `get-some` attr identity | `query.clj` | Datomic returns the numeric attr entity id for `?attr`; Vev currently has mini coverage but returns no row on the restored sample shape |
+| Additional Day-of-Datomic host snippets | `music_brainz.clj` | Keep porting examples that exercise host presentation rather than engine syntax |
 
 ## Host Or Datomic-Specific Later
 
@@ -138,11 +151,14 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Expand the real Datomic comparison matrix beyond the current fifteen rows:
-   direct pull API examples, pull-many, return-map host wrappers, and Java
-   Datomic-shaped request-map wrapper ergonomics.
-2. Keep full-import storage architecture work on the roadmap: the next write
+1. Expand the real Datomic comparison matrix with additional Day-of-Datomic
+   host snippets that exercise presentation/API shape rather than new engine
+   syntax.
+2. Add larger or more varied MusicBrainz/Day-of-Datomic workloads before doing
+   further query-planner work; the current rows no longer expose a clear slow
+   planner outlier.
+3. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
-3. Add Datomic-shaped request-map ergonomics in the remaining host adapters
-   where useful, backed by the existing EDN map-query engine path.
+4. Keep Datomic-shaped request-map ergonomics backed by the existing EDN
+   map-query engine path as the host wrappers grow.

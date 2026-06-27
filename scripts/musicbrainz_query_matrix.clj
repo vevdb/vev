@@ -1,3 +1,6 @@
+;; Copyright (c) Andreas Flakstad and Vev contributors
+;; SPDX-License-Identifier: EPL-2.0
+
 (ns musicbrainz-query-matrix
   (:require [clojure.string :as str]
             [datomic.api :as d]))
@@ -79,6 +82,35 @@
              [?release :release/artists ?artist]
              [?release :release/name ?release-name]]
     :args [["The Beatles" "Miles Davis"]]}
+   {:name "musicbrainz-real-release-date"
+    :query '[:find ?release-name ?year ?month ?day
+             :in $ [?release-name ...]
+             :where
+             [?release :release/name ?release-name]
+             [?release :release/year ?year]
+             [?release :release/month ?month]
+             [?release :release/day ?day]]
+    :args [["Abbey Road" "In a Silent Way" "Bitches Brew"]]}
+   {:name "musicbrainz-real-fallback-start-month"
+    :query '[:find ?artist-name ?month
+             :in $ [?artist-name ...]
+             :where
+             [?artist :artist/name ?artist-name]
+             [(get-else $ ?artist :artist/startMonth "N/A") ?month]]
+    :args [["The Beatles" "Miles Davis"]]}
+   {:name "musicbrainz-real-dynamic-attr"
+    :query '[:find ?artist-name
+             :in $ ?country-name [?reference ...]
+             :where
+             [?country :country/name ?country-name]
+             [?artist ?reference ?country]
+             [?artist :artist/name ?artist-name]]
+    :args ["United Kingdom" [:artist/country]]}
+   {:name "musicbrainz-real-top-duration"
+    :query '[:find (min 2 ?millis) (max 2 ?millis)
+             :where
+             [?track :track/duration ?millis]]
+    :args []}
    {:name "musicbrainz-real-not-beatles-male"
     :query '[:find ?artist-name
              :where
@@ -140,7 +172,40 @@
              :in $ [?release-name ...]
              :where
              [?release :release/name ?release-name]]
-    :args [["Abbey Road" "In a Silent Way"]]}])
+    :args [["Abbey Road" "In a Silent Way"]]}
+   {:name "musicbrainz-real-pull-release-nested"
+    :query '[:find (pull ?release [:release/gid
+                                    :release/name
+                                    :release/year
+                                    {:release/media [:medium/position
+                                                     :medium/trackCount
+                                                     {:medium/tracks [:track/position
+                                                                      :track/name
+                                                                      :track/duration]}]}])
+             :in $ [?release-name ...]
+             :where
+             [?release :release/name ?release-name]]
+    :args [["Abbey Road" "In a Silent Way"]]}
+   {:name "musicbrainz-real-direct-pull-artist"
+    :kind :pull
+    :pattern '[:artist/gid :artist/name :artist/startYear]
+    :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
+   {:name "musicbrainz-real-direct-pull-many-artists"
+    :kind :pull-many
+    :pattern '[:artist/gid :artist/name :artist/startYear]
+    :entities [[:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]
+               [:artist/gid #uuid "561d854a-6a28-4aa7-8c99-323e6ce46c2a"]]}
+   {:name "musicbrainz-real-direct-pull-release"
+    :kind :pull
+    :pattern '[:release/gid
+               :release/name
+               :release/year
+               {:release/media [:medium/position
+                                :medium/trackCount
+                                {:medium/tracks [:track/position
+                                                 :track/name
+                                                 :track/duration]}]}]
+    :entity [:release/gid #uuid "eca8996a-a637-3259-ba07-d2573c601a1b"]}])
 
 (def uint64-modulus 18446744073709551616N)
 (def fingerprint-seed 0N)
@@ -168,6 +233,9 @@
 
     (set? value)
     (str "#{" (str/join " " (sort (map canonical-text value))) "}")
+
+    (instance? java.util.UUID value)
+    (str value)
 
     :else
     (pr-str value)))
@@ -227,6 +295,36 @@
     (when print-rows?
       (print-result-rows name result))))
 
+(defn workload-result [db {:keys [kind query args pattern entity entities]}]
+  (case kind
+    :pull [(d/pull db pattern entity)]
+    :pull-many (d/pull-many db pattern entities)
+    (apply d/q query db args)))
+
+(defn run-workload [db warmups samples print-rows? workload]
+  (if (:kind workload)
+    (let [name (:name workload)]
+      (dotimes [_ warmups]
+        (workload-result db workload))
+      (let [sample-us (doall
+                       (for [_ (range samples)]
+                         (second (elapsed-us #(workload-result db workload)))))
+            result (workload-result db workload)
+            t (timing sample-us)]
+        (println
+         (format
+          "engine=datomic workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
+          name
+          (count result)
+          (result-fingerprint result)
+          (:min t)
+          (:median t)
+          (:p90 t)
+          (:max t)))
+        (when print-rows?
+          (print-result-rows name result))))
+    (run-query db warmups samples print-rows? workload)))
+
 (defn parse-int-arg [args name default-value]
   (let [idx (.indexOf args name)]
     (if (and (>= idx 0) (< (inc idx) (count args)))
@@ -255,7 +353,7 @@
         db (d/db conn)]
     (doseq [query queries
             :when (should-run? selected (:name query))]
-      (run-query db warmups samples print-rows? query))
+      (run-workload db warmups samples print-rows? query))
     (shutdown-agents)
     (System/exit 0)))
 

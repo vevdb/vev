@@ -1,3 +1,6 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
 "use strict";
 
 const nativePath = process.env.VEV_NODE_NATIVE || "./vev_native.node";

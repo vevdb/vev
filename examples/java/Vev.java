@@ -1,3 +1,6 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
 package vev;
 
 import java.lang.foreign.Arena;
@@ -10,7 +13,9 @@ import java.lang.invoke.MethodHandle;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.lang.ref.Cleaner;
 import java.util.UUID;
 
@@ -335,6 +340,57 @@ public final class Vev {
         }
     }
 
+    public ResultSet query(Map<String, ?> request) throws Throwable {
+        Object query = request.get("query");
+        Object args = request.get("args");
+        if (!(query instanceof String queryText)) {
+            throw new IllegalArgumentException("query request requires string key: query");
+        }
+        if (!(args instanceof List<?> argList) || argList.isEmpty()) {
+            throw new IllegalArgumentException("query request requires non-empty list key: args");
+        }
+
+        Object source = argList.get(0);
+        String inputs = inputsEdn(argList.subList(1, argList.size()));
+        try (PreparedQuery prepared = prepare(queryText)) {
+            if (source instanceof Connection conn) {
+                return conn.query(prepared, inputs);
+            }
+            if (source instanceof DurableConnection conn) {
+                try (DB db = conn.db()) {
+                    return db.query(prepared, inputs);
+                }
+            }
+            if (source instanceof SQLiteConnection conn) {
+                try (DB db = conn.db()) {
+                    return db.query(prepared, inputs);
+                }
+            }
+            if (source instanceof DB db) {
+                return db.query(prepared, inputs);
+            }
+            throw new IllegalArgumentException("query request first arg must be a Vev connection or DB");
+        }
+    }
+
+    public List<List<Object>> queryRows(Map<String, ?> request) throws Throwable {
+        try (ResultSet result = query(request)) {
+            return result.rows();
+        }
+    }
+
+    public List<Map<Object, Object>> queryMaps(Map<String, ?> request) throws Throwable {
+        Object query = request.get("query");
+        if (!(query instanceof String queryText)) {
+            throw new IllegalArgumentException("query request requires string key: query");
+        }
+        ReturnKeys returnKeys = returnKeys(queryText);
+        if (returnKeys == null) {
+            throw new IllegalArgumentException("query does not contain :keys, :strs, or :syms");
+        }
+        return rowsToMaps(returnKeys.keys(), queryRows(request));
+    }
+
     public TxBuilder txBuilder(int capacity) throws Throwable {
         MemorySegment raw = (MemorySegment) txCreate.invoke(Math.max(0, capacity));
         if (isNull(raw)) throw new IllegalStateException("failed to create transaction builder");
@@ -432,6 +488,110 @@ public final class Vev {
         return array;
     }
 
+    private static String inputsEdn(List<?> inputs) {
+        StringBuilder out = new StringBuilder();
+        out.append("[");
+        for (int i = 0; i < inputs.size(); i++) {
+            if (i > 0) out.append(" ");
+            appendEdn(out, inputs.get(i));
+        }
+        out.append("]");
+        return out.toString();
+    }
+
+    private static void appendEdn(StringBuilder out, Object value) {
+        if (value == null) {
+            out.append("nil");
+        } else if (value instanceof String text) {
+            appendEdnString(out, text);
+        } else if (value instanceof Keyword keyword) {
+            out.append(keyword.text());
+        } else if (value instanceof Entity entity) {
+            out.append("[:vev/entity ").append(entity.id()).append("]");
+        } else if (value instanceof Number || value instanceof Boolean) {
+            out.append(value);
+        } else if (value instanceof List<?> items) {
+            out.append("[");
+            for (int i = 0; i < items.size(); i++) {
+                if (i > 0) out.append(" ");
+                appendEdn(out, items.get(i));
+            }
+            out.append("]");
+        } else {
+            throw new IllegalArgumentException("unsupported EDN input value: " + value);
+        }
+    }
+
+    private static void appendEdnString(StringBuilder out, String text) {
+        out.append('"');
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            switch (ch) {
+                case '\\' -> out.append("\\\\");
+                case '"' -> out.append("\\\"");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> out.append(ch);
+            }
+        }
+        out.append('"');
+    }
+
+    private static ReturnKeys returnKeys(String queryText) {
+        String normalized = queryText
+            .replace('[', ' ')
+            .replace(']', ' ')
+            .replace('{', ' ')
+            .replace('}', ' ')
+            .replace('(', ' ')
+            .replace(')', ' ');
+        String[] tokens = normalized.trim().isEmpty() ? new String[0] : normalized.trim().split("\\s+");
+        for (int index = 0; index < tokens.length; index++) {
+            String token = tokens[index];
+            if (":keys".equals(token) || ":strs".equals(token) || ":syms".equals(token)) {
+                List<Object> keys = new ArrayList<>();
+                for (int keyIndex = index + 1; keyIndex < tokens.length; keyIndex++) {
+                    String key = stripStringToken(tokens[keyIndex]);
+                    if (":in".equals(key) || ":where".equals(key) || ":with".equals(key)) {
+                        break;
+                    }
+                    keys.add(returnKey(token, key));
+                }
+                return new ReturnKeys(token, keys);
+            }
+        }
+        return null;
+    }
+
+    private static String stripStringToken(String token) {
+        if (token.length() >= 2 && token.startsWith("\"") && token.endsWith("\"")) {
+            return token.substring(1, token.length() - 1);
+        }
+        return token;
+    }
+
+    private static Object returnKey(String marker, String key) {
+        return switch (marker) {
+            case ":keys" -> new Keyword(key.startsWith(":") ? key : ":" + key);
+            case ":syms" -> new Symbol(key.startsWith(":") ? key.substring(1) : key);
+            default -> key.startsWith(":") ? key.substring(1) : key;
+        };
+    }
+
+    private static List<Map<Object, Object>> rowsToMaps(List<Object> keys, List<List<Object>> rows) {
+        List<Map<Object, Object>> out = new ArrayList<>(rows.size());
+        for (List<Object> row : rows) {
+            Map<Object, Object> item = new LinkedHashMap<>();
+            int count = Math.min(keys.size(), row.size());
+            for (int index = 0; index < count; index++) {
+                item.put(keys.get(index), row.get(index));
+            }
+            out.add(item);
+        }
+        return out;
+    }
+
     private static final class NativeHandle implements Runnable {
         private final MethodHandle closeHandle;
         private MemorySegment raw;
@@ -456,7 +616,10 @@ public final class Vev {
     }
 
     public record Entity(long id) {}
+    public record Keyword(String text) {}
+    public record Symbol(String text) {}
     public record Entry(Object key, Object value) {}
+    public record ReturnKeys(String marker, List<Object> keys) {}
 
     public record ColumnResult(int rowCount, int[] kinds, Object[] columns) {
         public List<List<Object>> rows() {

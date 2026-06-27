@@ -187,28 +187,46 @@ Datomic MusicBrainz database. Latest single-sample local run:
 
 | Workload | Vev us | Datomic us | Rows | Fingerprint |
 |---|---:|---:|---:|---|
-| `musicbrainz-real-release-first` | 367782 | 81208 | 96 | `0ea8943f9ef3eb03` |
-| `musicbrainz-real-track-first` | 997562 | 114190 | 89 | `9902d35f51335e40` |
-| `musicbrainz-real-beatles-releases` | 391 | 1395 | 16 | `c57b012eecfd45ed` |
-| `musicbrainz-real-beatles-track-count` | 3529 | 3492 | 1 | `0000000007068a26` |
-| `musicbrainz-real-beatles-min-max-duration` | 2981 | 10998 | 1 | `9c45e54f061af2f6` |
-| `musicbrainz-real-lookup-country` | 36 | 4731 | 1 | `4167e0bf9abd1220` |
-| `musicbrainz-real-selected-artists-releases` | 528 | 5737 | 28 | `4887ecaa409643d2` |
-| `musicbrainz-real-not-beatles-male` | 7121 | 5225 | 1 | `ea45bdc7e8b8201b` |
-| `musicbrainz-real-or-two-artists` | 20761 | 2299 | 2 | `de67eb0f77cf6b42` |
-| `musicbrainz-real-relation-artist-release` | 149 | 8265 | 2 | `cb2f30e6783d093d` |
-| `musicbrainz-real-not-join-release` | 17284 | 4128 | 1 | `b6368059dfc36ef8` |
-| `musicbrainz-real-or-join-release` | 17652 | 1204 | 2 | `5f5db031e99d9c11` |
-| `musicbrainz-real-map-beatles-releases` | 342 | 566 | 16 | `c57b012eecfd45ed` |
-| `musicbrainz-real-rule-track-info` | 1833670 | 289896 | 90 | `5f20ceb057e27418` |
-| `musicbrainz-real-pull-release` | 246 | 3492 | 5 | `974ce160e8be7539` |
+| `musicbrainz-real-release-first` | 2967 | 82193 | 96 | `0ea8943f9ef3eb03` |
+| `musicbrainz-real-track-first` | 3644 | 105229 | 89 | `9902d35f51335e40` |
+| `musicbrainz-real-beatles-releases` | 454 | 1300 | 16 | `c57b012eecfd45ed` |
+| `musicbrainz-real-beatles-track-count` | 3531 | 3150 | 1 | `0000000007068a26` |
+| `musicbrainz-real-beatles-min-max-duration` | 2967 | 10409 | 1 | `9c45e54f061af2f6` |
+| `musicbrainz-real-lookup-country` | 51 | 3371 | 1 | `4167e0bf9abd1220` |
+| `musicbrainz-real-selected-artists-releases` | 520 | 5625 | 28 | `4887ecaa409643d2` |
+| `musicbrainz-real-release-date` | 496 | 59046 | 3 | `8853c19c0b82edfa` |
+| `musicbrainz-real-fallback-start-month` | 186 | 62173 | 2 | `ea197a760bcc6589` |
+| `musicbrainz-real-dynamic-attr` | 2750 | 56087 | 482 | `ffee4f7469006cd3` |
+| `musicbrainz-real-top-duration` | 10924079 | 145754 | 1 | `949eb8db5ef70199` |
+| `musicbrainz-real-not-beatles-male` | 359 | 5810 | 1 | `ea45bdc7e8b8201b` |
+| `musicbrainz-real-or-two-artists` | 177 | 2231 | 2 | `de67eb0f77cf6b42` |
+| `musicbrainz-real-relation-artist-release` | 134 | 9320 | 2 | `cb2f30e6783d093d` |
+| `musicbrainz-real-not-join-release` | 256 | 3917 | 1 | `b6368059dfc36ef8` |
+| `musicbrainz-real-or-join-release` | 271 | 1222 | 2 | `5f5db031e99d9c11` |
+| `musicbrainz-real-map-beatles-releases` | 330 | 565 | 16 | `c57b012eecfd45ed` |
+| `musicbrainz-real-rule-track-info` | 48552 | 320417 | 90 | `5f20ceb057e27418` |
+| `musicbrainz-real-pull-release` | 545 | 4042 | 5 | `974ce160e8be7539` |
+| `musicbrainz-real-pull-release-nested` | 485 | 95232 | 5 | `f4f5c38625cab0c7` |
+| `musicbrainz-real-direct-pull-artist` | 51 | 4899 | 1 | `0a11a6da90ea3115` |
+| `musicbrainz-real-direct-pull-many-artists` | 45 | 2539 | 2 | `3b0d165020d81f40` |
+| `musicbrainz-real-direct-pull-release` | 147 | 21235 | 1 | `4e62d7d5775bd426` |
 
 This snapshot says Vev is already strong on indexed lookup, bounded relation
-input, and selected collection-input joins, but the restored-sample multi-hop
-track/release joins, rule-expanded track/release joins, and bounded
-`or`/`not-join` forms still need planner work. Those slower rows should drive
-general clause planning, rule planning, disjunction planning, and anti-join
-planning rather than workload-specific shortcuts.
+input, direct lookup-ref pull, direct lookup-ref pull-many, nested release/media
+pull, selected collection-input joins, `get-else`, dynamic attr inputs, ordinary
+multi-hop clause/predicate joins, and pure
+non-recursive rule bodies made from data clauses plus rule calls. The
+restored-sample `release-first`/`track-first` rows use dependency-aware clause
+planning with lazy candidate-count tie-breaking instead of eager full-relation
+materialization. The `rule-track-info` row uses the same idea inside pure rule
+bodies while preserving DataScript source-order behavior for predicates,
+functions, `not`, `or`, and other effectful/error-sensitive rule steps.
+Bounded `not`, `not-join`, `or`, and `or-join` rows now reuse the same
+dependency-aware data-clause group planner. The top-n duration aggregate is a
+correctness/parity row and currently exposes a performance outlier because it
+scans all track durations in memory. The next planner/index work should come
+from this kind of real row or larger Datalevin benchmark families, rather than
+workload-specific shortcuts.
 
 The next import-performance work is no longer basic feasibility. The remaining
 write-side architecture issue is whole-array DB/index ownership and publication
@@ -736,15 +754,15 @@ Current local correctness/performance snapshot:
 
 ```text
 engine=vev workload=musicbrainz-real-load ok=true datoms=763274 current=763274 import_us=16740120
-engine=vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03 min_us=363141 median_us=367726 p90_us=367726 max_us=367726 steps=8 clauses=7 candidates=248057 max_bindings=265 output_rows=96
-engine=vev workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40 min_us=970834 median_us=988852 p90_us=988852 max_us=988852 steps=9 clauses=8 candidates=349462 max_bindings=244 output_rows=89
+engine=vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03 min_us=2967 median_us=2967 p90_us=2967 max_us=2967 steps=8 clauses=425 candidates=708 max_bindings=265 output_rows=96
+engine=vev workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40 min_us=3644 median_us=3644 p90_us=3644 max_us=3644 steps=9 clauses=669 candidates=931 max_bindings=265 output_rows=89
 engine=vev workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprint=c57b012eecfd45ed min_us=412 steps=3 clauses=55 candidates=107 max_bindings=53 output_rows=16
 engine=vev workload=musicbrainz-real-beatles-track-count ok=true rows=1 fingerprint=0000000007068a26 min_us=3600 steps=3 clauses=490 candidates=977 max_bindings=488 output_rows=1
 engine=vev workload=musicbrainz-real-beatles-min-max-duration ok=true rows=1 fingerprint=9c45e54f061af2f6 min_us=2934 steps=3 clauses=490 candidates=976 max_bindings=488 output_rows=1
 engine=vev workload=musicbrainz-real-lookup-country ok=true rows=1 fingerprint=4167e0bf9abd1220 min_us=40 steps=1 clauses=1 candidates=1 max_bindings=1 output_rows=1
 engine=vev workload=musicbrainz-real-selected-artists-releases ok=true rows=28 fingerprint=4887ecaa409643d2 min_us=513 steps=3 clauses=69 candidates=132 max_bindings=65 output_rows=28
-engine=vev workload=musicbrainz-real-not-beatles-male ok=true rows=1 fingerprint=ea45bdc7e8b8201b min_us=6901 steps=3 clauses=2 candidates=4602 max_bindings=1 output_rows=1
-engine=vev workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerprint=de67eb0f77cf6b42 min_us=20061 steps=2 clauses=1 candidates=4601 max_bindings=2 output_rows=2
+engine=vev workload=musicbrainz-real-not-beatles-male ok=true rows=1 fingerprint=ea45bdc7e8b8201b min_us=359 steps=3 clauses=2 candidates=2 max_bindings=1 output_rows=1
+engine=vev workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerprint=de67eb0f77cf6b42 min_us=177 steps=2 clauses=2 candidates=2 max_bindings=2 output_rows=2
 
 engine=datomic workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03
 engine=datomic workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40
@@ -760,7 +778,8 @@ engine=datomic workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerpri
 The first restored-sample query batch matches Datomic exactly after
 normalization. The aggregate rows are bounded to Beatles tracks rather than
 global track scans so the default matrix stays useful during normal development;
-global aggregate scans can be added later as explicit stress workloads. Vev is
-currently slower on the multi-join clause-order rows, so the next useful query
-work is planner/index improvement on real MusicBrainz-shaped joins rather than
-more synthetic micro-optimization.
+global aggregate scans can be added later as explicit stress workloads. Vev now
+keeps the multi-join clause-order rows selective through dependency-aware
+clause/predicate planning, and pure rule-expanded joins use the same planning
+idea inside rule bodies. The remaining MusicBrainz query-performance pressure
+is bounded `or`/`or-join` and `not`/`not-join` planning.

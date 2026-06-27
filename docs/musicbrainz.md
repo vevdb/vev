@@ -101,6 +101,13 @@ split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`,
 lookup-ref inputs, dynamic attr inputs, and top-n aggregates. The detailed
 coverage ledger is `docs/musicbrainz-query-matrix.md`.
 
+The restored Datomic comparison matrix now also covers release date
+projection, `get-else`, dynamic attr input, and top-n aggregate rows against
+the real 1968-1973 sample. One promoted `get-some` shape exposed a remaining
+restored-data gap: Datomic returns the numeric attr entity id for `?attr`, while
+Vev's mini fixture covers the shape but the restored-sample row currently
+returns no result.
+
 The restored sample forced one real Vev data-model addition: UUID values.
 MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use
 `:db.type/uuid`, so Vev now parses EDN UUID literals as a distinct primitive
@@ -170,11 +177,12 @@ cd /Users/andreas/Projects/kvist
 ```
 
 The same runner now also accepts `--dataset real` plus staged schema/value
-paths. It imports the restored exported subset, runs the same clause-order query
-shapes, and prints row counts, portable result fingerprints, timing samples,
-step count, clause count, candidate count, maximum intermediate bindings, and
-output rows. `--print-rows true` prints sorted projected row keys for direct
-`diff` against Datomic.
+paths. It imports the restored exported subset, runs the same clause-order,
+rule, aggregate, not/or, relation-input, pull, nested pull, and direct
+lookup-ref pull shapes, and prints row counts, portable result fingerprints,
+timing samples, step count, clause count, candidate count, maximum intermediate
+bindings, and output rows. `--print-rows true` prints sorted projected row keys
+for direct `diff` against Datomic.
 
 Local Datomic comparison is available through:
 
@@ -189,10 +197,13 @@ The first real comparison rows are now equal against Datomic:
 - `musicbrainz-real-track-first`: 89 rows,
   fingerprint `9902d35f51335e40`
 
-Current timings show Datomic is still much faster on these restored-sample
-joins. That is useful pressure on the next query-planner/index work; the
-important correctness result is that the imported Vev subset now returns the
-same projected rows for these tutorial shapes.
+Current timings show Vev is now fast on these ordinary multi-hop
+clause/predicate joins after dependency-aware clause planning. The imported Vev
+subset returns the same projected rows as Datomic for these tutorial shapes.
+Pure rule-expanded joins made from data clauses and rule calls now use a
+dependency-aware rule-body planner. Bounded `or`/`or-join` and
+`not`/`not-join` now reuse the planned group-clause path, so the current
+real-data matrix no longer exposes a clear slow query-planner outlier.
 
 ## Work Items
 

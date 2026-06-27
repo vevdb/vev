@@ -1,3 +1,6 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
 (package vev)
 
 (import core-strings "core:strings")
@@ -5340,6 +5343,36 @@
       (set! i (+ i 1)))
     best))
 
+(defn clause-candidate-count-estimate [db: DB, sources: []DB-Source, clause: Clause, binding: Binding] -> int
+  (when clause.has-source
+    (let [[source-db source-ok] (source-db-lookup db sources clause.source)]
+      (when source-ok
+        (let [candidates (clause-candidate-indexes source-db (unsourced-clause clause) binding) :defer]
+          (return (count candidates))))))
+  (let [candidates (clause-candidate-indexes db clause binding) :defer]
+    (count candidates)))
+
+(defn best-clause-index-estimated [db: DB, sources: []DB-Source, clauses: []Clause, binding: Binding] -> int
+  (let [best 0
+        best-score (clause-selectivity-score clauses[0] binding)
+        best-count -1
+        i 1]
+    (while (< i (count clauses))
+      (let [score (clause-selectivity-score clauses[i] binding)]
+        (when (< score best-score)
+          (set! best i)
+          (set! best-score score)
+          (set! best-count -1))
+        (when (= score best-score)
+          (when (< best-count 0)
+            (set! best-count (clause-candidate-count-estimate db sources clauses[best] binding)))
+          (let [candidate-count (clause-candidate-count-estimate db sources clauses[i] binding)]
+            (when (< candidate-count best-count)
+              (set! best i)
+              (set! best-count candidate-count)))))
+      (set! i (+ i 1)))
+    best))
+
 (defn relation-source-row-matches? [clause: Clause, row: Value, binding: ^Binding] -> bool
   (when (and (= clause.source-width 1)
              (not (= row.kind .Vector)))
@@ -5445,6 +5478,22 @@
         (append-bindings-after-clause-profiled! out source-db (unsourced-clause clause-value) binding stats)
         (return))))
   (append-bindings-after-clause-profiled! out db clause-value binding stats))
+
+(defn bindings-after-planned-clauses [db: DB, sources: []DB-Source, bindings: []Binding, clauses: []Clause] -> [dynamic]Binding
+  (let [current (arr.into [dynamic]Binding bindings)
+        remaining (arr.into [dynamic]Clause clauses)]
+    (defer (delete remaining))
+    (while (and (> (count current) 0)
+                (> (count remaining) 0))
+      (let [clause-index (best-clause-index-estimated db sources (slice remaining 0) current[0])
+            clause remaining[clause-index]
+            next (make [dynamic]Binding)]
+        (for [binding current]
+          (append-bindings-after-clause-with-sources! (addr next) db sources clause binding))
+        (delete current)
+        (set! current next)
+        (arr.remove-ordered-at! remaining clause-index)))
+    current))
 
 (defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
   (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
@@ -5557,10 +5606,8 @@
 
 (defn bindings-after-clause-group-with-sources-and-fns [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings ([dynamic]Binding [binding])]
-    (for [clause group.clauses]
-      (let [next-bindings (make [dynamic]Binding)]
-        (for [candidate-binding bindings]
-          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause candidate-binding))
+    (when (> (count group.clauses) 0)
+      (let [next-bindings (bindings-after-planned-clauses db sources (slice bindings 0) (slice group.clauses 0))]
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
@@ -6589,6 +6636,99 @@
 (defn bindings-after-rule-body-ordered-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
   (bindings-after-rule-body-ordered-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))
 
+(defn rule-body-pure-clause-call? [rule: Rule] -> bool
+  (when (= (count rule.body-steps) 0)
+    (return false))
+  (for [step rule.body-steps]
+    (when (not (or (= step.kind .Clause)
+                   (= step.kind .RuleCall)))
+      (return false)))
+  true)
+
+(defn rule-call-bound-arg-count [call: Rule-Call, binding: Binding] -> int
+  (let [out 0]
+    (for [arg call.args]
+      (when (= arg.kind .Var)
+        (let [[_ ok] (binding-lookup binding arg.name)]
+          (when ok
+            (set! out (+ out 1)))))
+      (when (or (= arg.kind .Value)
+                (= arg.kind .LookupRef))
+        (set! out (+ out 1))))
+    out))
+
+(defn rule-call-ready-for-binding? [rules: []Rule, call: Rule-Call, binding: Binding] -> bool
+  (let [available (binding-available-vars binding) :defer
+        [ok _] (validate-rule-call-required-bindings (slice available 0) rules call)]
+    ok))
+
+(defn rule-call-selectivity-score [call: Rule-Call, binding: Binding] -> int
+  (let [bound-count (rule-call-bound-arg-count call binding)]
+    (cond
+      (>= bound-count 2) 1
+      (= bound-count 1) 2
+      :else 6)))
+
+(defn best-ready-rule-body-step-index [db: DB, rules: []Rule, rule: Rule, steps: []Query-Step, binding: Binding, source: string, has-source: bool] -> [index: int, ok: bool]
+  (let [best -1
+        best-score 0
+        best-count -1]
+    (for [step step-index steps]
+      (let [ready false
+            score 0
+            candidate-count -1]
+        (when (= step.kind .Clause)
+          (let [clause (rule-clause-with-source rule.clauses[step.index] source has-source)]
+            (set! ready true)
+            (set! score (clause-selectivity-score clause binding))
+            (when (and (>= best 0)
+                       (= score best-score))
+              (set! candidate-count (clause-candidate-count-estimate db ([]DB-Source []) clause binding)))))
+        (when (= step.kind .RuleCall)
+          (let [call rule.rule-calls[step.index]]
+            (when (rule-call-ready-for-binding? rules call binding)
+              (set! ready true)
+              (set! score (rule-call-selectivity-score call binding)))))
+        (when ready
+          (when (or (= best -1)
+                    (< score best-score))
+            (set! best step-index)
+            (set! best-score score)
+            (set! best-count candidate-count))
+          (when (and (not (= best step-index))
+                     (= score best-score))
+            (when (< best-count 0)
+              (let [best-step steps[best]]
+                (if (= best-step.kind .Clause)
+                  (let [best-clause (rule-clause-with-source rule.clauses[best-step.index] source has-source)]
+                    (set! best-count (clause-candidate-count-estimate db ([]DB-Source []) best-clause binding)))
+                  (set! best-count 0))))
+            (let [count-estimate (if (>= candidate-count 0) candidate-count 0)]
+              (when (< count-estimate best-count)
+                (set! best step-index)
+                (set! best-count count-estimate)))))))
+    (return best (>= best 0))))
+
+(defn bindings-after-rule-body-planned-clause-call-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (let [bindings (make [dynamic]Binding)
+        remaining (arr.into [dynamic]Query-Step (slice rule.body-steps 0))]
+    (defer (delete remaining))
+    (arr.push! bindings initial)
+    (while (and (> (count bindings) 0)
+                (> (count remaining) 0))
+      (let [[step-index step-ok] (best-ready-rule-body-step-index db rules rule (slice remaining 0) bindings[0] source has-source)]
+        (when (not step-ok)
+          (delete bindings)
+          (return (make [dynamic]Binding)))
+        (let [step remaining[step-index]
+              next-raw (bindings-after-rule-step-depth-with-fns db rules rule (slice bindings 0) step depth source has-source registry)
+              next (unique-bindings (slice next-raw 0))]
+          (delete next-raw)
+          (delete bindings)
+          (set! bindings next)
+          (arr.remove-ordered-at! remaining step-index))))
+    bindings))
+
 (defn bindings-after-rule-body-grouped-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [clauses (rule-clauses-with-source rule.clauses source has-source)
         group (not-group-simple (slice clauses 0))
@@ -6645,9 +6785,11 @@
   (bindings-after-rule-body-grouped-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))
 
 (defn bindings-after-rule-body-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
-  (if (> (count rule.body-steps) 0)
-    (bindings-after-rule-body-ordered-depth-with-fns db rules rule initial depth source has-source registry)
-    (bindings-after-rule-body-grouped-depth-with-fns db rules rule initial depth source has-source registry)))
+  (if (rule-body-pure-clause-call? rule)
+    (bindings-after-rule-body-planned-clause-call-depth-with-fns db rules rule initial depth source has-source registry)
+    (if (> (count rule.body-steps) 0)
+      (bindings-after-rule-body-ordered-depth-with-fns db rules rule initial depth source has-source registry)
+      (bindings-after-rule-body-grouped-depth-with-fns db rules rule initial depth source has-source registry))))
 
 (defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
   (bindings-after-rule-body-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))
@@ -8679,13 +8821,18 @@
         out (make [dynamic]Value)]
     (defer (delete sorted))
     (sort-values! (addr sorted))
-    (let [take-count (min limit (count sorted))
-          start (if max? (- (count sorted) take-count) 0)
-          end (+ start take-count)
-          index start]
-      (while (< index end)
-        (arr.push! out sorted[index])
-        (set! index (+ index 1)))
+    (let [take-count (min limit (count sorted))]
+      (if max?
+        (let [index (count sorted)
+              remaining take-count]
+          (while (> remaining 0)
+            (set! index (- index 1))
+            (arr.push! out sorted[index])
+            (set! remaining (- remaining 1))))
+        (let [index 0]
+          (while (< index take-count)
+            (arr.push! out sorted[index])
+            (set! index (+ index 1)))))
       (Value {kind: .Vector items: out}))))
 
 (defn sorted-values-vector [values: []Value, descending?: bool] -> Value
@@ -9200,7 +9347,7 @@
         remaining (arr.into [dynamic]Clause clauses)]
     (defer (delete remaining))
     (while (and (> (count current) 0) (> (count remaining) 0))
-      (let [clause-index (best-clause-index (slice remaining 0) current[0])
+      (let [clause-index (best-clause-index-estimated db sources (slice remaining 0) current[0])
             clause remaining[clause-index]
             next (make [dynamic]Binding)]
         (set! stats^.steps (+ stats^.steps 1))
@@ -9287,11 +9434,19 @@
         (return true)))
     false))
 
+(defn query-uses-source-input-clause? [query: Query] -> bool
+  (for [clause-value query.clauses]
+    (when (and clause-value.has-source
+               (query-source-input? query clause-value.source))
+      (return true)))
+  false)
+
 (defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
   (when (not (query-steps-are-relation-engine-supported? query))
     (return false))
   (when (and (= (count sources) 0)
-             (query-steps-are-clauses? query))
+             (not (query-uses-primary-relation-db-source? query))
+             (not (query-uses-source-input-clause? query)))
     (return false))
   (when (and (query-uses-primary-relation-db-source? query)
              (or (> (count query.predicates) 0)
@@ -9591,7 +9746,87 @@
 (defn bindings-after-ordered-where [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input] -> [dynamic]Binding
   (bindings-after-ordered-where-with-fns db sources query inputs ([]Native-Query-Fn [])))
 
+(defn query-steps-are-clauses-and-predicates? [query: Query] -> bool
+  (when (= (count query.where-steps) 0)
+    (return false))
+  (for [step query.where-steps]
+    (when (not (or (= step.kind .Clause)
+                   (= step.kind .Predicate)))
+      (return false)))
+  true)
+
+(defn binding-available-vars [binding: Binding] -> [dynamic]string
+  (let [out (make [dynamic]string 0 (count binding.items))]
+    (for [item binding.items]
+      (append-var-once! (addr out) item.name))
+    out))
+
+(defn query-step-ready-for-binding? [query: ^Query, step: Query-Step, binding: Binding, registry: []Native-Query-Fn] -> bool
+  (when (= step.kind .Clause)
+    (return true))
+  (let [available (binding-available-vars binding) :defer
+        [ok _] (validate-query-ordered-step-with-fns (addr available) query^ step registry)]
+    ok))
+
+(defn best-ready-clause-step-index [db: DB, sources: []DB-Source, query: ^Query, steps: []Query-Step, binding: Binding, registry: []Native-Query-Fn] -> [index: int, ok: bool]
+  (let [best -1
+        best-score 0
+        best-count -1]
+    (for [step step-index steps]
+      (when (and (= step.kind .Clause)
+                 (query-step-ready-for-binding? query step binding registry))
+        (let [clause query^.clauses[step.index]
+              score (clause-selectivity-score clause binding)]
+          (when (or (= best -1)
+                    (< score best-score))
+            (set! best step-index)
+            (set! best-score score)
+            (set! best-count -1))
+          (when (and (not (= best -1))
+                     (= score best-score)
+                     (not (= step-index best)))
+            (when (< best-count 0)
+              (set! best-count (clause-candidate-count-estimate db sources query^.clauses[steps[best].index] binding)))
+            (let [candidate-count (clause-candidate-count-estimate db sources clause binding)]
+              (when (< candidate-count best-count)
+                (set! best step-index)
+                (set! best-count candidate-count)))))))
+    (return best (>= best 0))))
+
+(defn first-ready-predicate-step-index [query: ^Query, steps: []Query-Step, binding: Binding, registry: []Native-Query-Fn] -> [index: int, ok: bool]
+  (for [step step-index steps]
+    (when (and (= step.kind .Predicate)
+               (query-step-ready-for-binding? query step binding registry))
+      (return step-index true)))
+  (return -1 false))
+
+(defn bindings-after-dependency-planned-where-profiled-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (let [bindings (bindings-from-inputs db query^ inputs)
+        remaining (arr.into [dynamic]Query-Step (slice query^.where-steps 0))]
+    (defer (delete remaining))
+    (set! stats^.input-bindings (count bindings))
+    (query-stats-observe-bindings! stats (count bindings))
+    (while (and (> (count bindings) 0)
+                (> (count remaining) 0))
+      (let [[predicate-index predicate-ok] (first-ready-predicate-step-index query (slice remaining 0) bindings[0] registry)
+            [clause-index clause-ok] (best-ready-clause-step-index db sources query (slice remaining 0) bindings[0] registry)
+            chosen-index (if (and predicate-ok (> (count bindings) 1))
+                           predicate-index
+                           (if clause-ok clause-index predicate-index))]
+        (when (< chosen-index 0)
+          (delete bindings)
+          (return (make [dynamic]Binding)))
+        (let [step remaining[chosen-index]
+              next-bindings (bindings-after-query-step-profiled-with-fns db sources query (slice bindings 0) step registry stats)]
+          (delete bindings)
+          (set! bindings next-bindings)
+          (query-stats-observe-bindings! stats (count bindings))
+          (arr.remove-ordered-at! remaining chosen-index))))
+    bindings))
+
 (defn bindings-after-ordered-where-profiled-with-fns [db: DB, sources: []DB-Source, query: ^Query, inputs: []Query-Input, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
+  (when (query-steps-are-clauses-and-predicates? query^)
+    (return (bindings-after-dependency-planned-where-profiled-with-fns db sources query inputs registry stats)))
   (let [bindings (bindings-from-inputs db query^ inputs)
         step-index 0]
     (set! stats^.input-bindings (count bindings))

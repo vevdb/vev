@@ -1,3 +1,6 @@
+;; Copyright (c) Andreas Flakstad and Vev contributors
+;; SPDX-License-Identifier: EPL-2.0
+
 (ns vev.core
   (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
@@ -300,6 +303,53 @@
     :else
     nil))
 
+(defn- marker-key [marker value]
+  (case marker
+    :keys (cond
+            (keyword? value) value
+            (symbol? value) (keyword (name value))
+            (string? value) (keyword value)
+            :else value)
+    :strs (cond
+            (keyword? value) (name value)
+            (symbol? value) (name value)
+            :else value)
+    :syms (cond
+            (keyword? value) (symbol (name value))
+            (string? value) (symbol value)
+            :else value)))
+
+(defn- query-return-map [query]
+  (let [from-map (fn [query]
+                   (some (fn [marker]
+                           (when-let [items (get query marker)]
+                             {:marker marker
+                              :keys (mapv #(marker-key marker %) items)}))
+                         [:keys :strs :syms]))
+        from-vector (fn [query]
+                      (loop [items (seq query)]
+                        (when-let [item (first items)]
+                          (if (#{:keys :strs :syms} item)
+                            {:marker item
+                             :keys (mapv #(marker-key item %)
+                                         (take-while #(not (#{:in :where :with} %))
+                                                     (rest items)))}
+                            (recur (rest items))))))]
+    (cond
+      (map? query) (from-map query)
+      (vector? query) (from-vector query)
+      (string? query) (try
+                        (query-return-map (edn/read-string query))
+                        (catch Exception _ nil))
+      :else nil)))
+
+(defn- keyed-rows [return-map rows]
+  (let [keys (:keys return-map)]
+    (mapv (fn [row] (zipmap keys row)) rows)))
+
+(defn- keyed-set [return-map rows]
+  (set (keyed-rows return-map rows)))
+
 (defn- split-rules-input [query inputs]
   (let [in-forms (query-in-forms query)
         inputv (vec inputs)]
@@ -550,14 +600,17 @@
                              entity-string-int-triple-rows)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
-          (query-output source prepared rules inputs
-                        rows-from-result
-                        entity-column-rows
-                        entity-int-pair-rows
-                        entity-string-int-triple-rows))))))
+          (let [result (query-output source prepared rules inputs
+                                     rows-from-result
+                                     entity-column-rows
+                                     entity-int-pair-rows
+                                     entity-string-int-triple-rows)]
+            (if-let [return-map (query-return-map query)]
+              (keyed-rows return-map result)
+              result)))))))
 
 (defn q
-  "Run a query and return a set of row vectors."
+  "Run a query and return a set of row vectors, or maps for :keys/:strs/:syms queries."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
     (if (instance? PreparedQuery query)
@@ -568,11 +621,14 @@
                              entity-string-int-triple-set)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
-          (query-output source prepared rules inputs
-                        q-from-result
-                        entity-column-set
-                        entity-int-pair-set
-                        entity-string-int-triple-set))))))
+          (let [result (query-output source prepared rules inputs
+                                     rows-from-result
+                                     entity-column-rows
+                                     entity-int-pair-rows
+                                     entity-string-int-triple-rows)]
+            (if-let [return-map (query-return-map query)]
+              (keyed-set return-map result)
+              (set result))))))))
 
 (defn query
   "Run a Datomic-style query.
