@@ -130,6 +130,13 @@ Generate staged schema/value EDN from the restored Datomic sample:
 scripts/musicbrainz_sample.sh export-subset-split build/musicbrainz/vev-mbrainz-subset-5000 5000
 ```
 
+For larger imports, generate chunked value files so the loader does not keep
+the entire prepared transaction in memory:
+
+```sh
+scripts/musicbrainz_sample.sh export-subset-chunks build/musicbrainz/vev-mbrainz-subset-full-chunked 0 100000
+```
+
 Build and run the Vev import smoke:
 
 ```sh
@@ -140,6 +147,11 @@ cd /Users/andreas/Projects/kvist
 /Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
   --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-schema.edn \
   --values /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-values.edn
+
+/Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn \
+  --values-prefix /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked \
+  --values-chunks 8
 ```
 
 Current local 5k staged result:
@@ -150,8 +162,24 @@ engine=vev workload=musicbrainz-import ok=true mode=split datoms=5293 current=52
 
 The relevant signal is the ratio inside Vev: EDN parse is already small for
 this slice, and the generic explicit-id bulk transaction path is now fast enough
-for routine MusicBrainz query-matrix work. The next import performance check is
-scale: run the same staged path at 50k and then against the full restored subset.
+for routine MusicBrainz query-matrix work.
+
+Larger local staged results:
+
+```text
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=50293 current=50293 parse_us=96954 tx_us=1252737 import_us=1349691 artist_rows=1 artist_us=224 release_rows=0 release_us=109
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=100293 current=100293 parse_us=180390 tx_us=1866802 import_us=2047192 artist_rows=1 artist_us=63 release_rows=0 release_us=58
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=200293 current=200293 parse_us=353777 tx_us=3343986 import_us=3697763 artist_rows=1 artist_us=68 release_rows=16 release_us=343
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=400293 current=400293 parse_us=707762 tx_us=6209406 import_us=6917168 artist_rows=1 artist_us=237 release_rows=16 release_us=516
+```
+
+The full 762,981-value import now parses and resolves quickly, but exposing it
+as one huge prepared transaction keeps too much transaction data resident.
+Chunk-file import avoids that memory shape, but repeated chunks expose the next
+engine bottleneck: append-only index merging/copying against an already large
+DB. The next import-performance work should move from transaction validation
+to shared/chunked immutable index storage or a bulk index builder that can
+append several value chunks and publish one DB snapshot.
 
 ## Query And Rule Baseline
 

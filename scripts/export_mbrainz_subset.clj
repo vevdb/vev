@@ -170,6 +170,33 @@
      :values-items (:items values-result)
      :items (+ (:items schema-result) (:items values-result))}))
 
+(defn write-chunked-items! [out-prefix items chunk-size]
+  (loop [remaining items
+         chunk-index 0
+         total 0]
+    (let [chunk (doall (take chunk-size remaining))]
+      (if (empty? chunk)
+        {:chunks chunk-index
+         :items total}
+        (let [path (format "%s-values-%04d.edn" out-prefix chunk-index)
+              result (write-items! path chunk)]
+          (recur (drop chunk-size remaining)
+                 (inc chunk-index)
+                 (+ total (:items result))))))))
+
+(defn write-split-chunked-export! [db out-prefix value-limit chunk-size]
+  (let [remap (make-remapper)
+        schema-path (str out-prefix "-schema.edn")
+        schema-result (write-items! schema-path (concat (schema-tx db remap) (ident-tx db remap)))
+        values-result (write-chunked-items! out-prefix (limited (value-tx db remap) value-limit) chunk-size)]
+    {:path out-prefix
+     :schema-path schema-path
+     :schema-items (:items schema-result)
+     :values-prefix out-prefix
+     :value-chunks (:chunks values-result)
+     :values-items (:items values-result)
+     :items (+ (:items schema-result) (:items values-result))}))
+
 (defn -main [& args]
   (let [uri (or (first args) default-uri)
         out-path (or (second args) default-out)
@@ -177,12 +204,25 @@
                 (parse-long limit-text)
                 default-limit)
         mode (or (nth args 3 nil) "single")
+        chunk-size (if-let [chunk-text (nth args 4 nil)]
+                     (parse-long chunk-text)
+                     100000)
         conn (d/connect uri)
         db (d/db conn)
-        result (if (= mode "split")
-                 (write-split-export! db out-path limit)
-                 (write-export! db out-path limit))]
-    (if (= mode "split")
+        result (cond
+                 (= mode "split") (write-split-export! db out-path limit)
+                 (= mode "split-chunks") (write-split-chunked-export! db out-path limit chunk-size)
+                 :else (write-export! db out-path limit))]
+    (if (= mode "split-chunks")
+      (println (str "exported prefix=" (:path result)
+                    " schema_path=" (:schema-path result)
+                    " schema_items=" (:schema-items result)
+                    " values_prefix=" (:values-prefix result)
+                    " value_chunks=" (:value-chunks result)
+                    " values_items=" (:values-items result)
+                    " items=" (:items result)
+                    " basis_t=" (d/basis-t db)))
+      (if (= mode "split")
       (println (str "exported prefix=" (:path result)
                     " schema_path=" (:schema-path result)
                     " schema_items=" (:schema-items result)
@@ -192,7 +232,7 @@
                     " basis_t=" (d/basis-t db)))
       (println (str "exported path=" (:path result)
                     " items=" (:items result)
-                    " basis_t=" (d/basis-t db))))
+                    " basis_t=" (d/basis-t db)))))
     (shutdown-agents)
     (System/exit 0)))
 

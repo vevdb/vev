@@ -37,6 +37,9 @@ commands:
   export-subset-split
                     start Datomic, export schema/values EDN files, then stop
                     optional args: [output-prefix] [value-limit]
+  export-subset-chunks
+                    start Datomic, export schema EDN plus chunked value EDN files
+                    optional args: [output-prefix] [value-limit] [chunk-size]
   prepare           download, extract, write-config, start, restore
   status            print local paths and transactor status
 
@@ -173,6 +176,17 @@ export-subset-split() {
     "$ROOT/scripts/export_mbrainz_subset.clj" "$DB_URI" "$out_prefix" "$limit" split
 }
 
+export-subset-chunks() {
+  require-datomic
+  start
+  trap stop EXIT
+  local out_prefix="${1:-$WORK_DIR/vev-mbrainz-subset}"
+  local limit="${2:-0}"
+  local chunk_size="${3:-100000}"
+  clojure -Sdeps '{:deps {com.datomic/peer {:mvn/version "1.0.7277"}}}' -M \
+    "$ROOT/scripts/export_mbrainz_subset.clj" "$DB_URI" "$out_prefix" "$limit" split-chunks "$chunk_size"
+}
+
 status() {
   cat <<EOF
 DATOMIC_HOME=$DATOMIC_HOME
@@ -200,6 +214,7 @@ case "${1:-}" in
   smoke-datomic) smoke-datomic ;;
   export-subset) shift; export-subset "$@" ;;
   export-subset-split) shift; export-subset-split "$@" ;;
+  export-subset-chunks) shift; export-subset-chunks "$@" ;;
   prepare) download; extract; write-config; start; restore ;;
   status) status ;;
   ""|-h|--help|help) usage ;;
