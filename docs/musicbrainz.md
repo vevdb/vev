@@ -1,6 +1,8 @@
 # MusicBrainz / Day Of Datomic Workload
 
-MusicBrainz/Day-of-Datomic is the next active Vev validation phase.
+MusicBrainz/Day-of-Datomic is the current real-workload validation suite for
+Vev. The initial correctness phase is complete enough to use as a regression
+gate while development moves back toward durable storage and host API work.
 
 The goal is not to invent a new benchmark. The goal is to make existing
 Datomic tutorial material work against Vev with minimal translation, then use
@@ -209,35 +211,37 @@ It builds the Vev MusicBrainz profiler, imports the restored Vev export, runs
 the same selected workload against local Datomic, and fails if row counts or
 portable fingerprints differ. Use `--workload all` for the full current matrix.
 
-The first real comparison rows are now equal against Datomic:
+The full current comparison matrix now passes against Datomic:
 
-- `musicbrainz-real-release-first`: 96 rows,
-  fingerprint `0ea8943f9ef3eb03`
-- `musicbrainz-real-track-first`: 89 rows,
-  fingerprint `9902d35f51335e40`
+```bash
+scripts/compare_musicbrainz_query_matrix.sh --workload all --samples 1 --warmups 0
+```
 
-Current timings show Vev is now fast on these ordinary multi-hop
-clause/predicate joins after dependency-aware clause planning. The imported Vev
-subset returns the same projected rows as Datomic for these tutorial shapes.
-Pure rule-expanded joins made from data clauses and rule calls now use a
+Current timings show Vev is fast on ordinary multi-hop clause/predicate joins
+after dependency-aware clause planning. The imported Vev subset returns the
+same projected rows as Datomic for the current tutorial-shaped matrix. Pure
+rule-expanded joins made from data clauses and rule calls now use a
 dependency-aware rule-body planner. Bounded `or`/`or-join` and
-`not`/`not-join` now reuse the planned group-clause path, so the current
-real-data matrix no longer exposes a clear slow query-planner outlier.
+`not`/`not-join` reuse the planned group-clause path, so the current real-data
+matrix no longer exposes a clear slow query-planner outlier.
 
-## Work Items
+## Current Work Items
 
 1. Build a Datomic-to-Vev export/import path for the restored 1968-1973 sample.
-   Status: first exporter/import smoke exists. Next work is making staged
-   5k/50k/full imports fast enough to use routinely.
+   Status: done for the current chunked export/import path.
 2. Port the `day-of-datomic-conj/src/music_brainz.clj` query set into a Vev
    fixture file, marking each form as passing, Vev-difference, or pending.
-   Track this in `docs/musicbrainz-query-matrix.md`.
+   Status: current engine-relevant matrix passes; remaining snippets are host
+   presentation or optional follow-up.
 3. Expand the mini fixture only when it exposes a missing semantic shape; the
    restored sample is now the main correctness/performance target.
 4. Add an importer that converts the Datomic dataset into Vev EDN transaction
    text or prepared `Tx-Data` values.
+   Status: done for EDN transaction text export/import.
 5. Add a small query fixture file containing Datomic tutorial queries, expected
    result normalization rules, and notes for any deliberate Vev differences.
+   Status: `docs/musicbrainz-query-matrix.md` plus the Vev/Datomic runners are
+   the current fixture.
 6. Add a Vev harness that can run:
    - in-memory import and query
    - SQLite import, close/reopen, and query
@@ -250,6 +254,8 @@ real-data matrix no longer exposes a clear slow query-planner outlier.
 7. Record comparisons as result equality plus relative timing ratios. Avoid
    unsupported raw timing claims until the harness has stable warmup and repeat
    behavior.
+   Status: current docs record single-sample local timings as development
+   signals; repeatable benchmarking can be tightened later.
 
 ## Expected Pressure Points
 

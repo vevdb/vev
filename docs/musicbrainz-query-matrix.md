@@ -50,8 +50,15 @@ Real-data import status:
 | 50k/100k/200k/400k staged subsets | Passing | Latest 400k local run is about 6.9s total |
 | Full 763,274-item subset | Passing | Chunked staged import preserves expected tutorial rows; latest local import is about 16.5s |
 
-Real-data query comparison against local Datomic is active for the first
-tutorial-shaped batches:
+Real-data query comparison against local Datomic is active and the full current
+matrix passes:
+
+```bash
+scripts/compare_musicbrainz_query_matrix.sh --workload all --samples 1 --warmups 0
+```
+
+Latest full verifier status: all listed rows match Datomic by row count and
+portable fingerprint.
 
 | Workload | Vev rows/fingerprint | Datomic rows/fingerprint | Status | Current signal |
 | --- | --- | --- | --- | --- |
@@ -184,16 +191,17 @@ These are not current blockers for the Vev engine:
 | Arbitrary JVM calls such as `System/getProperties` or method calls | Host/JVM-specific |
 | Datomic timeout object shape | Host/API behavior; Vev can expose a native timeout later |
 
-## Next Batch
+## Follow-Up
 
-1. Expand the real Datomic comparison matrix with additional Day-of-Datomic
-   host snippets that exercise presentation/API shape rather than new engine
-   syntax, and run them through `compare_musicbrainz_query_matrix.sh`.
-2. Add larger or more varied MusicBrainz/Day-of-Datomic workloads before doing
-   further query-planner work; the current rows no longer expose a clear slow
-   planner outlier.
-3. Keep full-import storage architecture work on the roadmap: the next write
+This phase is complete enough to stop being the main active development track.
+Further MusicBrainz work should be targeted:
+
+1. Add a deliberate float-tolerant verifier mode, then move the restored-sample
+   `stddev` row from pending into the strict/normalized matrix.
+2. Add Day-of-Datomic host snippets only when they exercise a real Vev host API
+   shape, not just Clojure presentation.
+3. Use the full matrix as a regression gate while durable storage and host API
+   work continue.
+4. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
-4. Keep Datomic-shaped request-map ergonomics backed by the existing EDN
-   map-query engine path as the host wrappers grow.
