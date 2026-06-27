@@ -1,15 +1,114 @@
 (package main)
 
+(import arr "kvist:arr")
 (import cli "kvist:cli")
 (import fmt "core:fmt")
 (import os "core:os")
+(import strconv "core:strconv")
 (import time "core:time")
 (import vev "../src/vev")
 
 (defn elapsed-us [start: time.Time] -> f64
   (/ (f64 (time.duration_nanoseconds (time.since start))) 1000.0))
 
-(defn transact-file! [conn: ^vev.Conn, path: string] -> [ok: bool, error: string, parse-us: f64, tx-us: f64]
+(defn int-option [name: string, default-value: int] -> int
+  (let [text (cli.option os.args name "")]
+    (when (= text "")
+      (return default-value))
+    (let [[parsed ok] (strconv.parse_int text)]
+      (if ok
+        (int parsed)
+        default-value))))
+
+(defn transact-prepared-chunked! [conn: ^vev.Conn, prepared: vev.Prepared-Tx-Data, chunk-size: int, label: string, progress: bool] -> [ok: bool, error: string, tx-us: f64]
+  (let [tx-start (time.now)]
+    (if (<= chunk-size 0)
+      (let [report (vev.transact-prepared conn prepared)
+            tx-elapsed-us (elapsed-us tx-start)]
+        (when (not report.ok)
+          (let [error report.error]
+            (vev.delete-tx-report-shallow report)
+            (return false error tx-elapsed-us)))
+        (vev.delete-live-tx-report-shallow report)
+        (return true "" tx-elapsed-us))
+      (let [start 0]
+        (while (< start (count prepared.tx-data))
+          (let [end (min (+ start chunk-size) (count prepared.tx-data))
+                chunk-start (time.now)
+                report (vev.transact-tx-data conn (slice prepared.tx-data start end))]
+            (when progress
+              (fmt.printf "progress stage=%s event=chunk start=%d end=%d ok=%v chunk_us=%.0f datoms=%d current=%d\n" label start end report.ok (elapsed-us chunk-start) (count conn^.db.datoms) (count conn^.db.current)))
+            (when (not report.ok)
+              (let [error report.error
+                    tx-elapsed-us (elapsed-us tx-start)]
+                (vev.delete-tx-report-shallow report)
+                (return false error tx-elapsed-us)))
+            (vev.delete-live-tx-report-shallow report)
+            (set! start end)))
+        (return true "" (elapsed-us tx-start))))))
+
+(defn diagnose-prepared! [conn: ^vev.Conn, prepared: vev.Prepared-Tx-Data, label: string]
+  (let [resolve-start (time.now)
+        resolved (vev.resolve-tx-data-for-tx conn^.db (slice prepared.tx-data 0) conn^.next-tx)
+        resolve-us (elapsed-us resolve-start)]
+    (fmt.printf "diagnose stage=%s step=resolve ok=%v tx_data=%d ops=%d us=%.0f error=%s\n" label resolved.ok (count prepared.tx-data) (count resolved.ops) resolve-us resolved.error)
+    (when (not resolved.ok)
+      (delete resolved.ops)
+      (delete resolved.tx-meta)
+      (delete resolved.tempids)
+      (return))
+    (let [expand-start (time.now)
+          expanded (vev.expand-tuple-ops conn^.db (slice resolved.ops 0))
+          expand-us (elapsed-us expand-start)
+          expanded-schema-changed (vev.ops-modify-validation-schema? (slice expanded 0))
+          ordered-start (time.now)
+          ordered-append-only-ok (and (not expanded-schema-changed)
+                                      (vev.append-only-ordered-new-entity-ops-eligible? conn^.db (slice expanded 0)))
+          ordered-us (elapsed-us ordered-start)
+          compact-start (time.now)
+          compacted (vev.compact-redundant-add-ops-with-ordered (slice expanded 0) ordered-append-only-ok)
+          compact-us (elapsed-us compact-start)
+          schema-changed (vev.ops-modify-validation-schema? (slice compacted 0))
+          eligible-start (time.now)
+          append-only-ok (or ordered-append-only-ok
+                             (and (not schema-changed)
+                                  (vev.append-only-ops-eligible? conn^.db (slice compacted 0))))
+          append-only-reason (if schema-changed
+                               "schema-changed"
+                               (vev.append-only-ops-ineligible-reason conn^.db (slice compacted 0)))
+          eligible-us (elapsed-us eligible-start)
+          validate-start (time.now)
+          [valid valid-error] (vev.validate-ops conn^.db (slice compacted 0))
+          validate-us (elapsed-us validate-start)]
+      (fmt.printf "diagnose stage=%s step=expand ops=%d expanded=%d us=%.0f\n" label (count resolved.ops) (count expanded) expand-us)
+      (fmt.printf "diagnose stage=%s step=ordered-new-entities ok=%v us=%.0f\n" label ordered-append-only-ok ordered-us)
+      (fmt.printf "diagnose stage=%s step=compact expanded=%d compacted=%d us=%.0f\n" label (count expanded) (count compacted) compact-us)
+      (fmt.printf "diagnose stage=%s step=eligible schema_changed=%v append_only=%v reason=%s us=%.0f\n" label schema-changed append-only-ok (if append-only-ok "eligible" append-only-reason) eligible-us)
+      (fmt.printf "diagnose stage=%s step=validate ok=%v us=%.0f error=%s\n" label valid validate-us valid-error)
+      (when (and valid append-only-ok)
+        (let [log-start (time.now)
+              after-datoms (vev.clone-datoms conn^.db.datoms)
+              start-index (count after-datoms)]
+          (for [op compacted]
+            (arr.push! after-datoms
+              (vev.Datom {e: op.e
+                          a: op.a
+                          v: op.v
+                          tx: conn^.next-tx
+                          added: true})))
+          (let [log-us (elapsed-us log-start)
+                publish-start (time.now)
+                after-db (vev.build-db-append-only conn^.db after-datoms start-index)
+                publish-us (elapsed-us publish-start)]
+            (fmt.printf "diagnose stage=%s step=publish start=%d added=%d total=%d log_us=%.0f build_us=%.0f\n" label start-index (count compacted) (count after-db.datoms) log-us publish-us)
+            (vev.delete-owned-db after-db))))
+      (delete compacted)
+      (delete expanded))
+    (delete resolved.ops)
+    (delete resolved.tx-meta)
+    (delete resolved.tempids)))
+
+(defn transact-file! [conn: ^vev.Conn, path: string, chunk-size: int, label: string, progress: bool] -> [ok: bool, error: string, parse-us: f64, tx-us: f64]
   (let [[data read-err] (os.read_entire_file path context.allocator)]
     (when (!= read-err nil)
       (return false (fmt.tprintf "read_failed:%s" path) 0.0 0.0))
@@ -17,44 +116,142 @@
     (let [parse-start (time.now)
           prepared (vev.prepare-tx-text (string data))
           parse-elapsed-us (elapsed-us parse-start)]
+      (when progress
+        (fmt.printf "progress stage=%s event=parsed items=%d parse_us=%.0f\n" label (count prepared.tx-data) parse-elapsed-us))
       (when (not prepared.ok)
         (let [error prepared.error]
           (vev.delete-prepared-tx-data-shallow prepared)
           (return false error parse-elapsed-us 0.0)))
-      (let [tx-start (time.now)
-            report (vev.transact-prepared conn prepared)
-            tx-elapsed-us (elapsed-us tx-start)]
+      (let [[tx-ok tx-error tx-elapsed-us] (transact-prepared-chunked! conn prepared chunk-size label progress)]
+      (when progress
+        (fmt.printf "progress stage=%s event=transacted ok=%v tx_us=%.0f datoms=%d current=%d\n" label tx-ok tx-elapsed-us (count conn^.db.datoms) (count conn^.db.current)))
       (vev.delete-prepared-tx-data-shallow prepared)
-      (when (not report.ok)
-        (let [error report.error]
-          (vev.delete-tx-report-shallow report)
-          (return false error parse-elapsed-us tx-elapsed-us)))
-      (vev.delete-live-tx-report-shallow report)
+      (when (not tx-ok)
+        (return false tx-error parse-elapsed-us tx-elapsed-us))
       (return true "" parse-elapsed-us tx-elapsed-us)))))
+
+(defn diagnose-file! [conn: ^vev.Conn, path: string, label: string] -> [ok: bool, error: string, parse-us: f64]
+  (let [[data read-err] (os.read_entire_file path context.allocator)]
+    (when (!= read-err nil)
+      (return false (fmt.tprintf "read_failed:%s" path) 0.0))
+    (defer (delete data))
+    (let [parse-start (time.now)
+          prepared (vev.prepare-tx-text (string data))
+          parse-elapsed-us (elapsed-us parse-start)]
+      (fmt.printf "diagnose stage=%s step=parse ok=%v items=%d us=%.0f error=%s\n" label prepared.ok (count prepared.tx-data) parse-elapsed-us prepared.error)
+      (when (not prepared.ok)
+        (let [error prepared.error]
+          (vev.delete-prepared-tx-data-shallow prepared)
+          (return false error parse-elapsed-us)))
+      (diagnose-prepared! conn prepared label)
+      (vev.delete-prepared-tx-data-shallow prepared)
+      (return true "" parse-elapsed-us))))
+
+(defn transact-chunk-files! [conn: ^vev.Conn, values-prefix: string, chunk-count: int, progress: bool] -> [ok: bool, error: string, parse-us: f64, tx-us: f64]
+  (let [total-parse-us 0.0
+        total-tx-us 0.0
+        index 0]
+    (while (< index chunk-count)
+      (let [path (fmt.tprintf "%s-values-%04d.edn" values-prefix index)
+            label (fmt.tprintf "values-%04d" index)
+            [ok error chunk-parse-us chunk-tx-us] (transact-file! conn path 0 label progress)]
+        (set! total-parse-us (+ total-parse-us chunk-parse-us))
+        (set! total-tx-us (+ total-tx-us chunk-tx-us))
+      (when (not ok)
+        (return false error total-parse-us total-tx-us))
+      (when progress
+        (let [artist-result (vev.q-text conn^.db "[:find ?e :where [?e :artist/name \"The Beatles\"]]")]
+          (fmt.printf "progress stage=%s event=smoke artist_rows=%d\n" label (count artist-result.rows))
+          (vev.delete-result-set-shallow artist-result))))
+      (set! index (+ index 1)))
+    (return true "" total-parse-us total-tx-us)))
+
+(defn diagnose-chunk-file! [conn: ^vev.Conn, values-prefix: string, chunk-index: int, progress: bool] -> [ok: bool, error: string, parse-us: f64, tx-us: f64]
+  (let [total-parse-us 0.0
+        total-tx-us 0.0
+        index 0]
+    (while (< index chunk-index)
+      (let [path (fmt.tprintf "%s-values-%04d.edn" values-prefix index)
+            label (fmt.tprintf "values-%04d" index)
+            [ok error chunk-parse-us chunk-tx-us] (transact-file! conn path 0 label progress)]
+        (set! total-parse-us (+ total-parse-us chunk-parse-us))
+        (set! total-tx-us (+ total-tx-us chunk-tx-us))
+        (when (not ok)
+          (return false error total-parse-us total-tx-us)))
+      (set! index (+ index 1)))
+    (let [target-path (fmt.tprintf "%s-values-%04d.edn" values-prefix chunk-index)
+          target-label (fmt.tprintf "values-%04d" chunk-index)
+          [diag-ok diag-error diag-parse-us] (diagnose-file! conn target-path target-label)]
+      (set! total-parse-us (+ total-parse-us diag-parse-us))
+      (when (not diag-ok)
+        (return false diag-error total-parse-us total-tx-us))
+      (return true "" total-parse-us total-tx-us))))
 
 (defn main []
   (defer (free_all context.allocator))
   (let [path (cli.option os.args "--input" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset.edn")
         schema-path (cli.option os.args "--schema" "")
         values-path (cli.option os.args "--values" "")
-        split-mode (and (not (= schema-path "")) (not (= values-path "")))
+        values-prefix (cli.option os.args "--values-prefix" "")
+        values-chunks (int-option "--values-chunks" 0)
+        diagnose-chunk-index (int-option "--diagnose-chunk-index" -1)
+        chunk-size (int-option "--chunk-size" 0)
+        progress (= (cli.option os.args "--progress" "false") "true")
+        diagnose (= (cli.option os.args "--diagnose" "false") "true")
+        chunk-file-mode (and (not (= schema-path "")) (not (= values-prefix "")) (> values-chunks 0))
+        split-mode (and (not (= schema-path ""))
+                        (or (not (= values-path "")) chunk-file-mode))
         conn (vev.create-conn)
         parse-us 0.0
         tx-us 0.0]
     (if split-mode
-      (let [[schema-ok schema-error schema-parse-us schema-tx-us] (transact-file! (addr conn) schema-path)]
+      (let [[schema-ok schema-error schema-parse-us schema-tx-us] (transact-file! (addr conn) schema-path 0 "schema" progress)]
         (set! parse-us (+ parse-us schema-parse-us))
         (set! tx-us (+ tx-us schema-tx-us))
         (when (not schema-ok)
           (fmt.printf "engine=vev workload=musicbrainz-import ok=false mode=split stage=schema error=%s parse_us=%.0f tx_us=%.0f import_us=%.0f\n" schema-error parse-us tx-us (+ parse-us tx-us))
           (return))
-        (let [[values-ok values-error values-parse-us values-tx-us] (transact-file! (addr conn) values-path)]
+        (when (and diagnose (not chunk-file-mode))
+          (let [[diag-ok diag-error diag-parse-us] (diagnose-file! (addr conn) values-path "values")]
+            (set! parse-us (+ parse-us diag-parse-us))
+            (when (not diag-ok)
+              (fmt.printf "engine=vev workload=musicbrainz-import ok=false mode=diagnose stage=values error=%s parse_us=%.0f tx_us=%.0f import_us=%.0f\n" diag-error parse-us tx-us (+ parse-us tx-us)))
+            (return)))
+        (let [values-ok false
+              values-error ""
+              values-parse-us 0.0
+              values-tx-us 0.0]
+          (cond
+            (and chunk-file-mode (>= diagnose-chunk-index 0))
+            (do
+              (let [[chunk-ok chunk-error chunk-parse-us chunk-tx-us] (diagnose-chunk-file! (addr conn) values-prefix diagnose-chunk-index progress)]
+                (set! values-ok chunk-ok)
+                (set! values-error chunk-error)
+                (set! values-parse-us chunk-parse-us)
+                (set! values-tx-us chunk-tx-us)
+                (set! parse-us (+ parse-us values-parse-us))
+                (set! tx-us (+ tx-us values-tx-us))
+                (when (not values-ok)
+                  (fmt.printf "engine=vev workload=musicbrainz-import ok=false mode=diagnose-chunk stage=values error=%s parse_us=%.0f tx_us=%.0f import_us=%.0f\n" values-error parse-us tx-us (+ parse-us tx-us))))
+              (return))
+            chunk-file-mode
+            (let [[chunk-ok chunk-error chunk-parse-us chunk-tx-us] (transact-chunk-files! (addr conn) values-prefix values-chunks progress)]
+              (set! values-ok chunk-ok)
+              (set! values-error chunk-error)
+              (set! values-parse-us chunk-parse-us)
+              (set! values-tx-us chunk-tx-us))
+            :else
+            (let [[file-ok file-error file-parse-us file-tx-us] (transact-file! (addr conn) values-path chunk-size "values" progress)]
+              (set! values-ok file-ok)
+              (set! values-error file-error)
+              (set! values-parse-us file-parse-us)
+              (set! values-tx-us file-tx-us)))
           (set! parse-us (+ parse-us values-parse-us))
           (set! tx-us (+ tx-us values-tx-us))
           (when (not values-ok)
             (fmt.printf "engine=vev workload=musicbrainz-import ok=false mode=split stage=values error=%s parse_us=%.0f tx_us=%.0f import_us=%.0f\n" values-error parse-us tx-us (+ parse-us tx-us))
             (return))))
-      (let [[ok error single-parse-us single-tx-us] (transact-file! (addr conn) path)]
+      (let [[ok error single-parse-us single-tx-us] (transact-file! (addr conn) path chunk-size "single" progress)]
         (set! parse-us single-parse-us)
         (set! tx-us single-tx-us)
         (when (not ok)

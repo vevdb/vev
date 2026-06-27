@@ -145,13 +145,18 @@ Current status:
 - 100-item compact-id single-file import passes.
 - 500-value staged import passes.
 - 5,000-value staged import passes and queries successfully.
-- EDN parse time is already small for this slice; transaction time dominates.
-- 5,000 staged values currently take roughly 50 seconds to transact, so bulk
-  transaction/index validation is now the next concrete engine bottleneck.
+- 50k, 100k, 200k, 400k, and the current full chunked staged import run locally
+  and preserve the expected tutorial query results for the sampled slice.
+- EDN parse time is already small for these slices; transaction/index
+  publication dominates.
 
 The important finding is functional rather than cosmetic: MusicBrainz import is
-now correct for a real restored Datomic-derived slice, but Vev needs a proper
-bulk transaction path before larger MusicBrainz imports are useful.
+now correct for a real restored Datomic-derived slice. Full chunked import uses
+separate schema/value files and releases each parsed value chunk after applying
+it. A parsed-string lifetime bug was fixed by making DB log datoms own their
+attribute/value payloads; chunked imports no longer depend on input file buffers
+remaining alive. The remaining import work is reducing whole-array DB/index
+publication costs as database values grow.
 
 The mini fixture also exercises Vev query profiling for MusicBrainz-shaped
 joins. `src/vev_tests/musicbrainz_test.kvist` asserts that profiled EDN and
@@ -164,11 +169,30 @@ cd /Users/andreas/Projects/kvist
 ./kvist run /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist
 ```
 
-Current mini-fixture output reports one release-first and one track-first
-workload with row counts, timing samples, step count, clause count, candidate
-count, maximum intermediate bindings, and output rows. These numbers are useful
-for regression tracking, not for final Datomic comparison; the next comparison
-target is still the restored 1968-1973 sample.
+The same runner now also accepts `--dataset real` plus staged schema/value
+paths. It imports the restored exported subset, runs the same clause-order query
+shapes, and prints row counts, portable result fingerprints, timing samples,
+step count, clause count, candidate count, maximum intermediate bindings, and
+output rows. `--print-rows true` prints sorted projected row keys for direct
+`diff` against Datomic.
+
+Local Datomic comparison is available through:
+
+```bash
+scripts/musicbrainz_sample.sh query-matrix-datomic --samples 2 --warmups 1
+```
+
+The first real comparison rows are now equal against Datomic:
+
+- `musicbrainz-real-release-first`: 96 rows,
+  fingerprint `0ea8943f9ef3eb03`
+- `musicbrainz-real-track-first`: 89 rows,
+  fingerprint `9902d35f51335e40`
+
+Current timings show Datomic is still much faster on these restored-sample
+joins. That is useful pressure on the next query-planner/index work; the
+important correctness result is that the imported Vev subset now returns the
+same projected rows for these tutorial shapes.
 
 ## Work Items
 
@@ -189,6 +213,8 @@ target is still the restored 1968-1973 sample.
    - SQLite import, close/reopen, and query
    - optional Datomic comparison when the local Datomic process/database is
      available
+   Status: in-memory real import/query and Datomic comparison exist for the
+   first two clause-order joins.
 7. Record comparisons as result equality plus relative timing ratios. Avoid
    unsupported raw timing claims until the harness has stable warmup and repeat
    behavior.

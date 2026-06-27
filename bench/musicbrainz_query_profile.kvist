@@ -5,6 +5,7 @@
 (import cli "kvist:cli")
 (import fmt "core:fmt")
 (import os "core:os")
+(import strings "core:strings")
 (import time "core:time")
 (import vev "../src/vev")
 
@@ -16,6 +17,48 @@
 
 (def track-first-query
   "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?title] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t]]")
+
+(def beatles-releases-query
+  "[:find ?release-name :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
+
+(def track-count-query
+  "[:find (count ?track) :where [?artist :artist/name \"The Beatles\"] [?track :track/artists ?artist] [?track :track/name]]")
+
+(def min-max-duration-query
+  "[:find (min ?dur) (max ?dur) :where [?artist :artist/name \"The Beatles\"] [?track :track/artists ?artist] [?track :track/duration ?dur]]")
+
+(def lookup-country-query
+  "[:find ?name :where [[:country/name \"United Kingdom\"] :country/name ?name]]")
+
+(def selected-artists-releases-query
+  "[:find ?artist-name ?release-name :in $ [?artist-name ...] :where [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
+
+(def not-beatles-male-query
+  "[:find ?artist-name :where [?artist :artist/name \"The Beatles\"] (not [?artist :artist/gender :artist.gender/male]) [?artist :artist/name ?artist-name]]")
+
+(def or-two-artists-query
+  "[:find ?artist-name :where (or [?artist :artist/name \"The Beatles\"] [?artist :artist/name \"Miles Davis\"]) [?artist :artist/name ?artist-name]]")
+
+(def relation-artist-release-query
+  "[:find ?artist-name ?release-name :in $ [[?artist-name ?release-name]] :where [?artist :artist/name ?artist-name] [?release :release/name ?release-name] [?release :release/artists ?artist]]")
+
+(def not-join-release-query
+  "[:find ?release-name :in $ [?release-name ...] :where [?release :release/name ?release-name] (not-join [?release] [?release :release/artists ?artist] [?artist :artist/name \"The Beatles\"])]")
+
+(def or-join-release-query
+  "[:find ?release-name :in $ [?release-name ...] :where [?release :release/name ?release-name] (or-join [?release] (and [?release :release/artists ?artist] [?artist :artist/name \"The Beatles\"]) [?release :release/year 1969])]")
+
+(def map-beatles-releases-query
+  "{:find [?release-name] :where [[?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/name ?release-name]]}")
+
+(def musicbrainz-rules
+  "[[(track-release ?t ?r) [?m :medium/tracks ?t] [?r :release/media ?m]] [(track-info ?t ?track-name ?artist-name ?album ?year) [?t :track/name ?track-name] [?t :track/artists ?a] [?a :artist/name ?artist-name] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]]]")
+
+(def rule-track-info-query
+  "[:find ?track-name ?album ?year :in $ % ?artist-name :where (track-info ?track ?track-name ?artist-name ?album ?year) [(< ?year 1970)]]")
+
+(def pull-release-query
+  "[:find (pull ?release [:release/name :release/year]) :in $ [?release-name ...] :where [?release :release/name ?release-name]]")
 
 (defstruct Profile-Timing {
   profiled: vev.Profiled-Result-Set
@@ -33,30 +76,123 @@
     (vev.delete-live-tx-report-shallow report)
     conn))
 
-(defn time-profiled-query [db: vev.DB, query: string, inputs: []vev.Query-Input, warmups: int, samples-count: int] -> Profile-Timing
+(defn load-tx-file! [conn: ^vev.Conn, path: string, label: string, progress: bool] -> bool
+  (let [[data read-err] (os.read_entire_file path context.allocator)]
+    (when (!= read-err nil)
+      (fmt.printf "engine=vev workload=musicbrainz-real-load ok=false stage=%s error=read_failed path=%s\n" label path)
+      (return false))
+    (defer (delete data))
+    (let [parse-start (time.now)
+          prepared (vev.prepare-tx-text (string data))
+          parse-us (bench.elapsed-us parse-start)]
+      (when (not prepared.ok)
+        (fmt.printf "engine=vev workload=musicbrainz-real-load ok=false stage=%s error=%s parse_us=%.0f\n" label prepared.error parse-us)
+        (vev.delete-prepared-tx-data-shallow prepared)
+        (return false))
+      (let [tx-start (time.now)
+            report (vev.transact-prepared conn prepared)
+            tx-us (bench.elapsed-us tx-start)]
+        (when progress
+          (fmt.printf "progress stage=%s items=%d ok=%v parse_us=%.0f tx_us=%.0f datoms=%d current=%d\n" label (count prepared.tx-data) report.ok parse-us tx-us (count conn^.db.datoms) (count conn^.db.current)))
+        (vev.delete-prepared-tx-data-shallow prepared)
+        (when (not report.ok)
+          (fmt.printf "engine=vev workload=musicbrainz-real-load ok=false stage=%s error=%s parse_us=%.0f tx_us=%.0f\n" label report.error parse-us tx-us)
+          (vev.delete-tx-report-shallow report)
+          (return false))
+        (vev.delete-live-tx-report-shallow report)
+        (return true)))))
+
+(defn load-real! [conn: ^vev.Conn, schema-path: string, values-path: string, values-prefix: string, values-chunks: int, progress: bool] -> bool
+  (let [start (time.now)]
+    (when (not (load-tx-file! conn schema-path "schema" progress))
+      (return false))
+    (if (> values-chunks 0)
+      (let [index 0]
+        (while (< index values-chunks)
+          (let [path (fmt.tprintf "%s-values-%04d.edn" values-prefix index)
+                label (fmt.tprintf "values-%04d" index)]
+            (when (not (load-tx-file! conn path label progress))
+              (return false)))
+          (set! index (+ index 1))))
+      (when (not (load-tx-file! conn values-path "values" progress))
+        (return false)))
+    (fmt.printf "engine=vev workload=musicbrainz-real-load ok=true datoms=%d current=%d import_us=%.0f\n" (count conn^.db.datoms) (count conn^.db.current) (bench.elapsed-us start))
+    (return true)))
+
+(defn time-profiled-query [db: vev.DB, query: string, inputs: []vev.Query-Input, rules: string, use-rules: bool, warmups: int, samples-count: int] -> Profile-Timing
   (for [warmup-index (arr.range 0 warmups)]
     (discard warmup-index)
-    (let [warmup (vev.q-text-profiled-with-inputs db query inputs)]
+    (let [warmup (if use-rules
+                   (vev.q-text-profiled-with-rules db query rules inputs)
+                   (vev.q-text-profiled-with-inputs db query inputs))]
       (vev.delete-profiled-result-set-shallow warmup)))
   (let [samples (make [dynamic]f64 0 samples-count)]
     (defer (delete samples))
     (for [sample-index (arr.range 0 samples-count)]
       (discard sample-index)
       (let [start (time.now)
-            profiled (vev.q-text-profiled-with-inputs db query inputs)
+            profiled (if use-rules
+                       (vev.q-text-profiled-with-rules db query rules inputs)
+                       (vev.q-text-profiled-with-inputs db query inputs))
             elapsed (bench.elapsed-us start)]
         (arr.push! samples elapsed)
         (vev.delete-profiled-result-set-shallow profiled)))
     (profile-timing
-      (vev.q-text-profiled-with-inputs db query inputs)
+      (if use-rules
+        (vev.q-text-profiled-with-rules db query rules inputs)
+        (vev.q-text-profiled-with-inputs db query inputs))
       (bench.timing-from-samples (slice samples 0)))))
 
-(defn print-profile [workload: string, result: Profile-Timing]
+(defn fingerprint-text [seed: u64, text: string] -> u64
+  (let [out seed]
+    (for [ch text]
+      (set! out (+ (* out 131) (u64 ch))))
+    out))
+
+(defn result-row-key [db: vev.DB, row: vev.Result-Row] -> string
+  (let [parts (make [dynamic]string) :defer
+        owned-parts (make [dynamic]string) :defer]
+    (for [value index row.values]
+      (when (> index 0)
+        (let [[separator _] (strings.clone "|")]
+          (arr.push! parts separator)
+          (arr.push! owned-parts separator)))
+      (let [text (vev.value-serializable-text value)]
+        (arr.push! parts text)
+        (arr.push! owned-parts text)))
+    (for [pull row.pulls]
+      (when (> (count parts) 0)
+        (let [[separator _] (strings.clone "|")]
+          (arr.push! parts separator)
+          (arr.push! owned-parts separator)))
+      (let [text (vev.value-serializable-text (vev.pull-result-value db pull))]
+        (arr.push! parts text)
+        (arr.push! owned-parts text)))
+    (let [out (strings.concatenate (slice parts 0))]
+      (for [part owned-parts]
+        (delete part))
+      out)))
+
+(defn result-fingerprint [db: vev.DB, result: vev.Result-Set] -> u64
+  (let [keys (make [dynamic]string) :defer]
+    (for [row result.rows]
+      (arr.push! keys (result-row-key db row)))
+    (arr.sort! keys)
+    (let [hash (u64 0)]
+      (for [key keys]
+        (set! hash (fingerprint-text hash key))
+        (set! hash (fingerprint-text hash "\n")))
+      (for [key keys]
+        (delete key))
+      hash)))
+
+(defn print-profile [db: vev.DB, workload: string, result: Profile-Timing]
   (fmt.printf
-    "engine=vev workload=%s ok=%v rows=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
+    "engine=vev workload=%s ok=%v rows=%d fingerprint=%016x min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
     workload
     result.profiled.result.ok
     (count result.profiled.result.rows)
+    (result-fingerprint db result.profiled.result)
     result.timing.min-us
     result.timing.median-us
     result.timing.p90-us
@@ -67,22 +203,96 @@
     result.profiled.stats.max-intermediate-bindings
     result.profiled.stats.output-rows))
 
+(defn print-result-rows [db: vev.DB, workload: string, result: vev.Result-Set]
+  (let [keys (make [dynamic]string) :defer]
+    (for [row result.rows]
+      (arr.push! keys (result-row-key db row)))
+    (arr.sort! keys)
+    (for [key keys]
+      (fmt.printf "row engine=vev workload=%s key=%s\n" workload key)
+      (delete key))))
+
 (defn should-run? [selected: string, workload: string] -> bool
   (or (= selected "all")
-      (= selected workload)))
+      (= selected workload)
+      (= selected (strings.trim_prefix workload "musicbrainz-mini-"))
+      (= selected (strings.trim_prefix workload "musicbrainz-real-"))))
+
+(defn print-workload-with-rules! [db: vev.DB, workload: string, query: string, inputs: []vev.Query-Input, rules: string, use-rules: bool, warmups: int, samples: int, print-rows: bool]
+  (let [result (time-profiled-query db query inputs rules use-rules warmups samples)]
+    (print-profile db workload result)
+    (when print-rows
+      (print-result-rows db workload result.profiled.result))
+    (vev.delete-profiled-result-set-shallow result.profiled)))
+
+(defn print-workload! [db: vev.DB, workload: string, query: string, inputs: []vev.Query-Input, warmups: int, samples: int, print-rows: bool]
+  (print-workload-with-rules! db workload query inputs "" false warmups samples print-rows))
 
 (defn main []
   (defer (free_all context.allocator))
   (let [selected (cli.option os.args "--workload" "all")
+        dataset (cli.option os.args "--dataset" "mini")
+        schema-path (cli.option os.args "--schema" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn")
+        values-path (cli.option os.args "--values" "")
+        values-prefix (cli.option os.args "--values-prefix" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked")
+        values-chunks (max 0 (cli.int-option os.args "--values-chunks" 8))
+        progress (= (cli.option os.args "--progress" "false") "true")
+        print-rows (= (cli.option os.args "--print-rows" "false") "true")
         warmups (max 0 (cli.int-option os.args "--warmups" 10))
         samples (max 1 (cli.int-option os.args "--samples" 25))
-        conn (seed-mini)
-        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))])]
-    (when (should-run? selected "release-first")
-      (let [result (time-profiled-query conn.db release-first-query inputs warmups samples)]
-        (print-profile "musicbrainz-release-first" result)
-        (vev.delete-profiled-result-set-shallow result.profiled)))
-    (when (should-run? selected "track-first")
-      (let [result (time-profiled-query conn.db track-first-query inputs warmups samples)]
-        (print-profile "musicbrainz-track-first" result)
-        (vev.delete-profiled-result-set-shallow result.profiled)))))
+        conn (if (= dataset "real")
+               (vev.create-conn)
+               (seed-mini))
+        no-inputs ([]vev.Query-Input [])
+        beatles-input ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))])
+        selected-artists-input ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Miles Davis")]))])
+        relation-artist-release-input ([]vev.Query-Input [(vev.query-input-relation ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Abbey Road") (vev.value-string "Miles Davis") (vev.value-string "Bitches Brew")]) 2)])
+        selected-releases-input ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "Abbey Road") (vev.value-string "In a Silent Way")]))])]
+    (when (= dataset "real")
+      (when (not (load-real! (addr conn) schema-path values-path values-prefix values-chunks progress))
+        (return)))
+    (let [release-first-workload (fmt.tprintf "musicbrainz-%s-release-first" dataset)
+          track-first-workload (fmt.tprintf "musicbrainz-%s-track-first" dataset)
+          beatles-releases-workload (fmt.tprintf "musicbrainz-%s-beatles-releases" dataset)
+          track-count-workload (fmt.tprintf "musicbrainz-%s-beatles-track-count" dataset)
+          min-max-duration-workload (fmt.tprintf "musicbrainz-%s-beatles-min-max-duration" dataset)
+          lookup-country-workload (fmt.tprintf "musicbrainz-%s-lookup-country" dataset)
+          selected-artists-releases-workload (fmt.tprintf "musicbrainz-%s-selected-artists-releases" dataset)
+          not-beatles-male-workload (fmt.tprintf "musicbrainz-%s-not-beatles-male" dataset)
+          or-two-artists-workload (fmt.tprintf "musicbrainz-%s-or-two-artists" dataset)
+          relation-artist-release-workload (fmt.tprintf "musicbrainz-%s-relation-artist-release" dataset)
+          not-join-release-workload (fmt.tprintf "musicbrainz-%s-not-join-release" dataset)
+          or-join-release-workload (fmt.tprintf "musicbrainz-%s-or-join-release" dataset)
+          map-beatles-releases-workload (fmt.tprintf "musicbrainz-%s-map-beatles-releases" dataset)
+          rule-track-info-workload (fmt.tprintf "musicbrainz-%s-rule-track-info" dataset)
+          pull-release-workload (fmt.tprintf "musicbrainz-%s-pull-release" dataset)]
+      (when (should-run? selected release-first-workload)
+        (print-workload! conn.db release-first-workload release-first-query beatles-input warmups samples print-rows))
+      (when (should-run? selected track-first-workload)
+        (print-workload! conn.db track-first-workload track-first-query beatles-input warmups samples print-rows))
+      (when (should-run? selected beatles-releases-workload)
+        (print-workload! conn.db beatles-releases-workload beatles-releases-query no-inputs warmups samples print-rows))
+      (when (should-run? selected track-count-workload)
+        (print-workload! conn.db track-count-workload track-count-query no-inputs warmups samples print-rows))
+      (when (should-run? selected min-max-duration-workload)
+        (print-workload! conn.db min-max-duration-workload min-max-duration-query no-inputs warmups samples print-rows))
+      (when (should-run? selected lookup-country-workload)
+        (print-workload! conn.db lookup-country-workload lookup-country-query no-inputs warmups samples print-rows))
+      (when (should-run? selected selected-artists-releases-workload)
+        (print-workload! conn.db selected-artists-releases-workload selected-artists-releases-query selected-artists-input warmups samples print-rows))
+      (when (should-run? selected not-beatles-male-workload)
+        (print-workload! conn.db not-beatles-male-workload not-beatles-male-query no-inputs warmups samples print-rows))
+      (when (should-run? selected or-two-artists-workload)
+        (print-workload! conn.db or-two-artists-workload or-two-artists-query no-inputs warmups samples print-rows))
+      (when (should-run? selected relation-artist-release-workload)
+        (print-workload! conn.db relation-artist-release-workload relation-artist-release-query relation-artist-release-input warmups samples print-rows))
+      (when (should-run? selected not-join-release-workload)
+        (print-workload! conn.db not-join-release-workload not-join-release-query selected-releases-input warmups samples print-rows))
+      (when (should-run? selected or-join-release-workload)
+        (print-workload! conn.db or-join-release-workload or-join-release-query selected-releases-input warmups samples print-rows))
+      (when (should-run? selected map-beatles-releases-workload)
+        (print-workload! conn.db map-beatles-releases-workload map-beatles-releases-query no-inputs warmups samples print-rows))
+      (when (should-run? selected rule-track-info-workload)
+        (print-workload-with-rules! conn.db rule-track-info-workload rule-track-info-query beatles-input musicbrainz-rules true warmups samples print-rows))
+      (when (should-run? selected pull-release-workload)
+        (print-workload! conn.db pull-release-workload pull-release-query selected-releases-input warmups samples print-rows)))))

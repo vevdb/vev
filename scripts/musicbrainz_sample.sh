@@ -32,11 +32,17 @@ commands:
   stop              stop the transactor started by this script
   restore           restore the sample backup into $DB_URI
   smoke-datomic     start Datomic, run a tiny peer query, then stop Datomic
+  query-matrix-datomic
+                    start Datomic, run the MusicBrainz query matrix, then stop
+                    optional args: passed to scripts/musicbrainz_query_matrix.clj
   export-subset     start Datomic, export Vev-compatible subset EDN, then stop
                     optional args: [output-path] [item-limit]
   export-subset-split
                     start Datomic, export schema/values EDN files, then stop
                     optional args: [output-prefix] [value-limit]
+  export-subset-chunks
+                    start Datomic, export schema EDN plus chunked value EDN files
+                    optional args: [output-prefix] [value-limit] [chunk-size]
   prepare           download, extract, write-config, start, restore
   status            print local paths and transactor status
 
@@ -98,6 +104,9 @@ is-running() {
 start() {
   require-datomic
   write-config
+  if [[ -f "$PID_FILE" ]] && ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    rm -f "$PID_FILE"
+  fi
   if is-running; then
     echo "start: already running pid=$(cat "$PID_FILE")"
     return
@@ -123,8 +132,16 @@ stop() {
     local pid
     pid="$(cat "$PID_FILE")"
     kill "$pid"
+    for _ in {1..20}; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.25
+    done
+    rm -f "$PID_FILE"
     echo "stop: pid=$pid"
   else
+    rm -f "$PID_FILE"
     echo "stop: not running"
   fi
 }
@@ -153,6 +170,14 @@ smoke-datomic() {
 (System/exit 0)"
 }
 
+query-matrix-datomic() {
+  require-datomic
+  start
+  trap stop EXIT
+  clojure -Sdeps '{:deps {com.datomic/peer {:mvn/version "1.0.7277"}}}' -M \
+    "$ROOT/scripts/musicbrainz_query_matrix.clj" "$@"
+}
+
 export-subset() {
   require-datomic
   start
@@ -171,6 +196,17 @@ export-subset-split() {
   local limit="${2:-0}"
   clojure -Sdeps '{:deps {com.datomic/peer {:mvn/version "1.0.7277"}}}' -M \
     "$ROOT/scripts/export_mbrainz_subset.clj" "$DB_URI" "$out_prefix" "$limit" split
+}
+
+export-subset-chunks() {
+  require-datomic
+  start
+  trap stop EXIT
+  local out_prefix="${1:-$WORK_DIR/vev-mbrainz-subset}"
+  local limit="${2:-0}"
+  local chunk_size="${3:-100000}"
+  clojure -Sdeps '{:deps {com.datomic/peer {:mvn/version "1.0.7277"}}}' -M \
+    "$ROOT/scripts/export_mbrainz_subset.clj" "$DB_URI" "$out_prefix" "$limit" split-chunks "$chunk_size"
 }
 
 status() {
@@ -198,8 +234,10 @@ case "${1:-}" in
   stop) stop ;;
   restore) restore ;;
   smoke-datomic) smoke-datomic ;;
+  query-matrix-datomic) shift; query-matrix-datomic "$@" ;;
   export-subset) shift; export-subset "$@" ;;
   export-subset-split) shift; export-subset-split "$@" ;;
+  export-subset-chunks) shift; export-subset-chunks "$@" ;;
   prepare) download; extract; write-config; start; restore ;;
   status) status ;;
   ""|-h|--help|help) usage ;;

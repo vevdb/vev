@@ -117,6 +117,11 @@
 (defn keep-none [db: vev.DB, datom: vev.Datom] -> bool
   false)
 
+(t.deftest keyword-compare-handles-leading-slash
+  (defer (free_all context.allocator))
+  (t.is (vev.keyword-less? "/artist" ":artist/name"))
+  (t.is (not (vev.keyword-less? ":artist/name" "/artist"))))
+
 (defn birthday-by-name [db: vev.DB, name: string] -> vev.Tx-Fn-Result
   (for [datom-index db.eavt]
     (let [datom db.datoms[datom-index]]
@@ -2630,6 +2635,25 @@
       (t.is (= map-collection-return-map.error ":keys does not work with collection :find"))
       (t.is (not map-scalar-return-map.ok))
       (t.is (= map-scalar-return-map.error ":keys does not work with single-scalar :find"))))
+
+(t.deftest transact-prepared-owns-parsed-text-values
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        [tx-text tx-text-err] (strings.clone "[{:db/id 77 :user/name \"Source Buffer Name\"}]")]
+    (t.is (= tx-text-err nil))
+    (let [prepared (vev.prepare-tx-text tx-text)
+          report (vev.transact-prepared (addr conn) prepared)]
+      (t.is report.ok)
+      (vev.delete-live-tx-report-shallow report)
+      (vev.delete-prepared-tx-data-shallow prepared))
+    (delete tx-text)
+    (let [[noise noise-err] (strings.clone "[{:db/id 88 :user/name \"Different Allocated Text\"}]")
+          result (vev.q-text conn.db "[:find ?name :where [77 :user/name ?name]]")]
+      (t.is (= noise-err nil))
+      (t.is (= (count result.rows) 1))
+      (t.is (row-text? result.rows[0] 0 "Source Buffer Name"))
+      (delete noise)
+      (vev.delete-result-set-shallow result))))
 
 (t.deftest datascript-parser-tx-text-subset
   (defer (free_all context.allocator))

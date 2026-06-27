@@ -130,6 +130,13 @@ Generate staged schema/value EDN from the restored Datomic sample:
 scripts/musicbrainz_sample.sh export-subset-split build/musicbrainz/vev-mbrainz-subset-5000 5000
 ```
 
+For larger imports, generate chunked value files so the loader does not keep
+the entire prepared transaction in memory:
+
+```sh
+scripts/musicbrainz_sample.sh export-subset-chunks build/musicbrainz/vev-mbrainz-subset-full-chunked 0 100000
+```
+
 Build and run the Vev import smoke:
 
 ```sh
@@ -140,18 +147,74 @@ cd /Users/andreas/Projects/kvist
 /Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
   --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-schema.edn \
   --values /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-values.edn
+
+/Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn \
+  --values-prefix /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked \
+  --values-chunks 8
 ```
 
 Current local 5k staged result:
 
 ```text
-engine=vev workload=musicbrainz-import ok=true mode=split datoms=5293 current=5293 parse_us=11051 tx_us=50623664 import_us=50634715 artist_rows=0 artist_us=1286 release_rows=0 release_us=429
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=5293 current=5293 parse_us=10858 tx_us=506981 import_us=517839 artist_rows=0 artist_us=168 release_rows=0 release_us=152
 ```
 
 The relevant signal is the ratio inside Vev: EDN parse is already small for
-this slice, while transaction validation/index work dominates. The next import
-performance work should target the generic bulk transaction path, not the EDN
-reader.
+this slice, and the generic explicit-id bulk transaction path is now fast enough
+for routine MusicBrainz query-matrix work. The importer now stores owned DB
+datom attr/value payloads for parsed EDN tx data, so chunked imports no longer
+depend on the lifetime of each input file buffer.
+
+Larger local staged results:
+
+```text
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=50293 current=50293 parse_us=96954 tx_us=1252737 import_us=1349691 artist_rows=1 artist_us=224 release_rows=0 release_us=109
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=100293 current=100293 parse_us=180390 tx_us=1866802 import_us=2047192 artist_rows=1 artist_us=63 release_rows=0 release_us=58
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=200293 current=200293 parse_us=353777 tx_us=3343986 import_us=3697763 artist_rows=1 artist_us=68 release_rows=16 release_us=343
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=400293 current=400293 parse_us=697118 tx_us=6133631 import_us=6830749 artist_rows=1 artist_us=269 release_rows=16 release_us=459
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=763274 current=763274 parse_us=1399660 tx_us=15109942 import_us=16509602 artist_rows=1 artist_us=13 release_rows=16 release_us=413
+```
+
+The full row is the chunk-file import path with 8 value chunks. It validates
+that Vev can import the current Datomic-derived subset without retaining one
+huge prepared transaction. Progress output also checks the `"The Beatles"`
+artist query after each chunk; this caught the previous parsed-string lifetime
+bug.
+
+The real-data query matrix compares Vev row fingerprints with a local restored
+Datomic MusicBrainz database. Latest single-sample local run:
+
+| Workload | Vev us | Datomic us | Rows | Fingerprint |
+|---|---:|---:|---:|---|
+| `musicbrainz-real-release-first` | 367782 | 81208 | 96 | `0ea8943f9ef3eb03` |
+| `musicbrainz-real-track-first` | 997562 | 114190 | 89 | `9902d35f51335e40` |
+| `musicbrainz-real-beatles-releases` | 391 | 1395 | 16 | `c57b012eecfd45ed` |
+| `musicbrainz-real-beatles-track-count` | 3529 | 3492 | 1 | `0000000007068a26` |
+| `musicbrainz-real-beatles-min-max-duration` | 2981 | 10998 | 1 | `9c45e54f061af2f6` |
+| `musicbrainz-real-lookup-country` | 36 | 4731 | 1 | `4167e0bf9abd1220` |
+| `musicbrainz-real-selected-artists-releases` | 528 | 5737 | 28 | `4887ecaa409643d2` |
+| `musicbrainz-real-not-beatles-male` | 7121 | 5225 | 1 | `ea45bdc7e8b8201b` |
+| `musicbrainz-real-or-two-artists` | 20761 | 2299 | 2 | `de67eb0f77cf6b42` |
+| `musicbrainz-real-relation-artist-release` | 149 | 8265 | 2 | `cb2f30e6783d093d` |
+| `musicbrainz-real-not-join-release` | 17284 | 4128 | 1 | `b6368059dfc36ef8` |
+| `musicbrainz-real-or-join-release` | 17652 | 1204 | 2 | `5f5db031e99d9c11` |
+| `musicbrainz-real-map-beatles-releases` | 342 | 566 | 16 | `c57b012eecfd45ed` |
+| `musicbrainz-real-rule-track-info` | 1833670 | 289896 | 90 | `5f20ceb057e27418` |
+| `musicbrainz-real-pull-release` | 246 | 3492 | 5 | `974ce160e8be7539` |
+
+This snapshot says Vev is already strong on indexed lookup, bounded relation
+input, and selected collection-input joins, but the restored-sample multi-hop
+track/release joins, rule-expanded track/release joins, and bounded
+`or`/`not-join` forms still need planner work. Those slower rows should drive
+general clause planning, rule planning, disjunction planning, and anti-join
+planning rather than workload-specific shortcuts.
+
+The next import-performance work is no longer basic feasibility. The remaining
+write-side architecture issue is whole-array DB/index ownership and publication
+as DB values grow. The likely direction is a shared/chunked immutable index
+representation or a bulk builder that can apply several value chunks and publish
+one DB snapshot.
 
 ## Query And Rule Baseline
 
@@ -620,12 +683,12 @@ Remaining performance work:
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.
 
-## MusicBrainz Mini Profile
+## MusicBrainz Query Profile
 
 `bench/musicbrainz_query_profile.kvist` runs the deterministic MusicBrainz mini
-fixture from `docs/musicbrainz.md` as a profiling benchmark. It is meant to
-catch planner regressions and compare clause-order shapes before the restored
-1968-1973 sample is available.
+fixture from `docs/musicbrainz.md` or the imported restored 1968-1973 subset.
+It catches planner regressions, compares clause-order shapes, and now provides
+the Vev side of the local Datomic comparison.
 
 Run:
 
@@ -634,13 +697,70 @@ cd /Users/andreas/Projects/kvist
 ./kvist run /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist
 ```
 
+Build and run the real imported subset:
+
+```bash
+cd /Users/andreas/Projects/kvist
+./kvist build /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist \
+  --out /Users/andreas/Projects/vev/build/bench/musicbrainz_query_profile
+
+/Users/andreas/Projects/vev/build/bench/musicbrainz_query_profile \
+  --dataset real \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn \
+  --values-prefix /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked \
+  --values-chunks 8 \
+  --samples 2 \
+  --warmups 1
+```
+
+Run the Datomic side:
+
+```bash
+scripts/musicbrainz_sample.sh query-matrix-datomic --samples 2 --warmups 1
+```
+
 Current workloads:
 
-- `musicbrainz-release-first`: starts from artist, release, year, medium, track
-- `musicbrainz-track-first`: starts from artist and track, then joins release,
+- `musicbrainz-mini-release-first` / `musicbrainz-real-release-first`: starts
+  from artist, release, year, medium, track
+- `musicbrainz-mini-track-first` / `musicbrainz-real-track-first`: starts from
+  artist and track, then joins release,
   medium, and track
 
 The output includes timing samples plus Vev profile counters:
-`steps`, `clauses`, `candidates`, `max_bindings`, and `output_rows`. Treat this
-as a local regression signal; Datomic comparison should use the restored sample
-database.
+`steps`, `clauses`, `candidates`, `max_bindings`, and `output_rows`. The real
+runner also prints a portable sorted-row fingerprint; `--print-rows true` dumps
+the normalized row keys for direct comparison.
+
+Current local correctness/performance snapshot:
+
+```text
+engine=vev workload=musicbrainz-real-load ok=true datoms=763274 current=763274 import_us=16740120
+engine=vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03 min_us=363141 median_us=367726 p90_us=367726 max_us=367726 steps=8 clauses=7 candidates=248057 max_bindings=265 output_rows=96
+engine=vev workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40 min_us=970834 median_us=988852 p90_us=988852 max_us=988852 steps=9 clauses=8 candidates=349462 max_bindings=244 output_rows=89
+engine=vev workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprint=c57b012eecfd45ed min_us=412 steps=3 clauses=55 candidates=107 max_bindings=53 output_rows=16
+engine=vev workload=musicbrainz-real-beatles-track-count ok=true rows=1 fingerprint=0000000007068a26 min_us=3600 steps=3 clauses=490 candidates=977 max_bindings=488 output_rows=1
+engine=vev workload=musicbrainz-real-beatles-min-max-duration ok=true rows=1 fingerprint=9c45e54f061af2f6 min_us=2934 steps=3 clauses=490 candidates=976 max_bindings=488 output_rows=1
+engine=vev workload=musicbrainz-real-lookup-country ok=true rows=1 fingerprint=4167e0bf9abd1220 min_us=40 steps=1 clauses=1 candidates=1 max_bindings=1 output_rows=1
+engine=vev workload=musicbrainz-real-selected-artists-releases ok=true rows=28 fingerprint=4887ecaa409643d2 min_us=513 steps=3 clauses=69 candidates=132 max_bindings=65 output_rows=28
+engine=vev workload=musicbrainz-real-not-beatles-male ok=true rows=1 fingerprint=ea45bdc7e8b8201b min_us=6901 steps=3 clauses=2 candidates=4602 max_bindings=1 output_rows=1
+engine=vev workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerprint=de67eb0f77cf6b42 min_us=20061 steps=2 clauses=1 candidates=4601 max_bindings=2 output_rows=2
+
+engine=datomic workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03
+engine=datomic workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40
+engine=datomic workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprint=c57b012eecfd45ed
+engine=datomic workload=musicbrainz-real-beatles-track-count ok=true rows=1 fingerprint=0000000007068a26
+engine=datomic workload=musicbrainz-real-beatles-min-max-duration ok=true rows=1 fingerprint=9c45e54f061af2f6
+engine=datomic workload=musicbrainz-real-lookup-country ok=true rows=1 fingerprint=4167e0bf9abd1220
+engine=datomic workload=musicbrainz-real-selected-artists-releases ok=true rows=28 fingerprint=4887ecaa409643d2
+engine=datomic workload=musicbrainz-real-not-beatles-male ok=true rows=1 fingerprint=ea45bdc7e8b8201b
+engine=datomic workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerprint=de67eb0f77cf6b42
+```
+
+The first restored-sample query batch matches Datomic exactly after
+normalization. The aggregate rows are bounded to Beatles tracks rather than
+global track scans so the default matrix stays useful during normal development;
+global aggregate scans can be added later as explicit stress workloads. Vev is
+currently slower on the multi-join clause-order rows, so the next useful query
+work is planner/index improvement on real MusicBrainz-shaped joins rather than
+more synthetic micro-optimization.
