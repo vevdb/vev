@@ -7,6 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JAVA_OUT="$ROOT/build/examples/java"
 LIB="$ROOT/build/lib/libvev.dylib"
+URI=""
 WORKLOAD="country-names"
 SAMPLES="10"
 WARMUPS="5"
@@ -27,6 +28,7 @@ options:
   --samples n           timing samples; default: 10
   --warmups n           warmups; default: 5
   --lib path            libvev dynamic library path
+  --uri uri             open an existing durable Vev DB and skip EDN loading
   --schema path         Vev exported schema EDN path
   --values path         Vev exported single values EDN path
   --values-prefix path  Vev exported chunk prefix
@@ -41,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --samples) SAMPLES="$2"; shift 2 ;;
     --warmups) WARMUPS="$2"; shift 2 ;;
     --lib) LIB="$2"; shift 2 ;;
+    --uri) URI="$2"; shift 2 ;;
     --schema) SCHEMA="$2"; shift 2 ;;
     --values) VALUES="$2"; shift 2 ;;
     --values-prefix) VALUES_PREFIX="$2"; shift 2 ;;
@@ -69,6 +72,7 @@ clojure \
   -Sdeps "{:paths [\"$JAVA_OUT\" \"$ROOT/clients/clojure/src\"]}" \
   -M "$ROOT/scripts/musicbrainz_clojure_vev_matrix.clj" \
   --lib "$LIB" \
+  --uri "$URI" \
   --schema "$SCHEMA" \
   --values "$VALUES" \
   --values-prefix "$VALUES_PREFIX" \

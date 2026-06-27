@@ -41,6 +41,8 @@ imports either a single tx file or staged schema/value tx files.
 mini fixture or the imported real subset.
 `scripts/musicbrainz_clojure_vev_matrix.sh` runs a small public Clojure wrapper
 smoke through `vev.core`, Java FFM, the C ABI, and `libvev`.
+`bench/musicbrainz_import_subset.kvist --sqlite-output <path>` can create the
+durable Vev DB that the host wrapper opens with `--uri` for query-only timing.
 
 Real-data import status:
 
@@ -127,8 +129,11 @@ against Clojure Datomic peer queries. The public Clojure Vev wrapper path is
 tracked separately by `scripts/musicbrainz_clojure_vev_matrix.sh`. Its default
 500-value smoke verifies host API correctness and query overhead, but wrapper
 EDN transaction loading is not yet the right full-size MusicBrainz setup path:
-the durable-storage phase should make the full host comparison open a prebuilt
-Vev database before timing Clojure query calls.
+full host comparison should use a prebuilt SQLite-backed Vev database via
+`--uri` before timing Clojure query calls. The first full durable-open Clojure
+checks pass for `release-first` and `beatles-releases` with fingerprints matching
+the native/Datomic matrix; the remaining host-benchmark work is to run the whole
+matrix and compare it to a same-process Clojure Datomic peer run.
 
 ## Covered
 
@@ -215,6 +220,7 @@ Further MusicBrainz work should be targeted:
 4. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
-5. After durable DB open is available through the host wrappers, promote the
-   Clojure wrapper MusicBrainz harness from smoke to full Vev-vs-Datomic
-   query benchmark.
+5. Promote the Clojure wrapper MusicBrainz harness from smoke to full
+   Vev-vs-Datomic query benchmark by running the whole workload matrix through
+   a prebuilt `--sqlite-output` DB, host-side `--uri` open, and same-process
+   Clojure Datomic peer queries.

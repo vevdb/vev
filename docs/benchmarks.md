@@ -154,6 +154,19 @@ cd /Users/andreas/Projects/kvist
   --values-chunks 8
 ```
 
+Add `--sqlite-output <path>` to persist the imported DB into the current SQLite
+store format after the native import completes. This is the preferred setup for
+host-language MusicBrainz query benchmarks, because it keeps Clojure/Java setup
+out of query timing:
+
+```sh
+/Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn \
+  --values-prefix /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked \
+  --values-chunks 8 \
+  --sqlite-output /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-full.sqlite
+```
+
 Current local 5k staged result:
 
 ```text
@@ -296,10 +309,47 @@ scripts/musicbrainz_clojure_vev_matrix.sh \
   --values-chunks 8
 ```
 
+For query-only host timing against a prebuilt durable Vev DB, pass `--uri`:
+
+```sh
+scripts/musicbrainz_clojure_vev_matrix.sh \
+  --uri build/musicbrainz/vev-mbrainz-full.sqlite \
+  --workload beatles-releases
+```
+
+Rebuild `build/lib/libvev.dylib` before host comparisons:
+
+```sh
+scripts/build_c_abi.sh
+```
+
+Latest 500-value durable-open smoke:
+
+```text
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=793 current=793 parse_us=4805 tx_us=496293 import_us=501098 artist_rows=0 artist_us=211 release_rows=0 release_us=95
+engine=vev workload=musicbrainz-import-persist ok=true path=build/musicbrainz/tmp-vev-host-smoke.sqlite persist_us=15306 error=
+engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/tmp-vev-host-smoke.sqlite info={:backend :sqlite, :path "build/musicbrainz/tmp-vev-host-smoke.sqlite", :basis-t 2, :tx-count 2, :tx-ids [1 2]}
+engine=clojure-vev workload=musicbrainz-smoke-country-names ok=true rows=257 fingerprint=fd7d4b4cd5dd243c min_us=2131 median_us=2714 p90_us=2714 max_us=3003
+```
+
+Latest full durable-open Clojure wrapper checks after rebuilding `libvev`:
+
+```text
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=763274 current=763274 parse_us=1427493 tx_us=15500566 import_us=16928059 artist_rows=1 artist_us=103 release_rows=16 release_us=365
+engine=vev workload=musicbrainz-import-persist ok=true path=build/musicbrainz/vev-mbrainz-full-host.sqlite persist_us=4606362 error=
+engine=vev workload=musicbrainz-import-reopened-release-first ok=true rows=96 query_us=3279 steps=8 clauses=425 candidates=708 max_bindings=265 output_rows=96
+engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/vev-mbrainz-full-host.sqlite open_us=9496874 info={:backend :sqlite, :path "build/musicbrainz/vev-mbrainz-full-host.sqlite", :basis-t 9, :tx-count 9, :tx-ids [1 2 3 4 5 6 7 8 9]}
+engine=clojure-vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03 min_us=3918 median_us=4129 p90_us=4488 max_us=4787
+engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/vev-mbrainz-full-host.sqlite open_us=9431441 info={:backend :sqlite, :path "build/musicbrainz/vev-mbrainz-full-host.sqlite", :basis-t 9, :tx-count 9, :tx-ids [1 2 3 4 5 6 7 8 9]}
+engine=clojure-vev workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprint=c57b012eecfd45ed min_us=1096 median_us=1219 p90_us=1219 max_us=1432
+```
+
 Do not compare those setup-inclusive Clojure timings directly to the native Vev
-versus Datomic table. The durable-storage phase should make this an
-apples-to-apples Clojure Vev versus Clojure Datomic query benchmark by removing
-wrapper load/setup from the measured path.
+versus Datomic table. The `--sqlite-output` plus `--uri` path is the route to an
+apples-to-apples Clojure Vev versus Clojure Datomic query benchmark because it
+removes wrapper load/setup from the measured path; the remaining work is to
+run the full workload matrix through the public wrapper and compare it to a
+same-process Clojure Datomic peer matrix.
 
 ## Query And Rule Baseline
 

@@ -170,6 +170,10 @@
 (defn result-row-count [rows]
   (count rows))
 
+(defn result-row-key [row]
+  (let [values (if (sequential? row) row [row])]
+    (str/join "|" (map canonical-text values))))
+
 (defn hex64 [value]
   (let [hex (.toString (biginteger value) 16)
         padded (str "0000000000000000" hex)]
@@ -181,7 +185,7 @@
     (fn [hash key]
       (fingerprint-text (fingerprint-text hash key) "\n"))
     0N
-    (sort (map canonical-text rows)))))
+    (sort (map result-row-key rows)))))
 
 (defn elapsed-us [f]
   (let [start (System/nanoTime)
@@ -269,6 +273,7 @@
 (defn -main [& raw-args]
   (let [args (vec raw-args)
         lib (parse-arg args "--lib" default-lib)
+        uri (parse-arg args "--uri" "")
         schema (parse-arg args "--schema" default-schema)
         values (parse-arg args "--values" default-values)
         values-prefix (parse-arg args "--values-prefix" default-values-prefix)
@@ -276,11 +281,25 @@
         selected (parse-arg args "--workload" "country-names")
         warmups (parse-int-arg args "--warmups" 5)
         samples (parse-int-arg args "--samples" 10)]
-    (with-open [conn (vev/create-conn lib)]
-      (load-real! conn schema values values-prefix values-chunks)
-      (with-open [db (vev/db conn)]
-        (doseq [workload workloads
-                :when (should-run? selected (:name workload))]
-          (run-workload db warmups samples workload))))))
+    (if (seq uri)
+      (let [[conn open-us] (elapsed-us #(vev/connect lib uri))]
+        (try
+          (println
+           (format "engine=clojure-vev workload=musicbrainz-real-open ok=true uri=%s open_us=%.0f info=%s"
+                   uri
+                   open-us
+                   (pr-str (vev/connection-info conn))))
+          (with-open [db (vev/db conn)]
+            (doseq [workload workloads
+                    :when (should-run? selected (:name workload))]
+              (run-workload db warmups samples workload)))
+          (finally
+            (.close conn))))
+      (with-open [conn (vev/create-conn lib)]
+        (load-real! conn schema values values-prefix values-chunks)
+        (with-open [db (vev/db conn)]
+          (doseq [workload workloads
+                  :when (should-run? selected (:name workload))]
+            (run-workload db warmups samples workload)))))))
 
 (apply -main *command-line-args*)
