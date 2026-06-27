@@ -107,6 +107,11 @@ from fingerprinting because the MusicBrainz exporter deliberately remaps
 Datomic eids into compact Vev ids. Both initial clause-order queries have also
 been checked with explicit sorted row dumps and `diff`.
 
+Use `scripts/compare_musicbrainz_query_matrix.sh --workload <name-or-suffix>`
+to verify selected rows against Datomic. The script builds the Vev profiler,
+runs both engines, and fails if any Datomic workload has a different Vev row
+count or fingerprint. `--workload all` verifies the full current matrix.
+
 ## Covered
 
 These workshop shapes are covered by passing Vev tests:
@@ -181,7 +186,7 @@ These are not current blockers for the Vev engine:
 
 1. Expand the real Datomic comparison matrix with additional Day-of-Datomic
    host snippets that exercise presentation/API shape rather than new engine
-   syntax.
+   syntax, and run them through `compare_musicbrainz_query_matrix.sh`.
 2. Add larger or more varied MusicBrainz/Day-of-Datomic workloads before doing
    further query-planner work; the current rows no longer expose a clear slow
    planner outlier.

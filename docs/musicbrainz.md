@@ -199,6 +199,16 @@ Local Datomic comparison is available through:
 scripts/musicbrainz_sample.sh query-matrix-datomic --samples 2 --warmups 1
 ```
 
+The preferred correctness check is the combined verifier:
+
+```bash
+scripts/compare_musicbrainz_query_matrix.sh --workload release-first
+```
+
+It builds the Vev MusicBrainz profiler, imports the restored Vev export, runs
+the same selected workload against local Datomic, and fails if row counts or
+portable fingerprints differ. Use `--workload all` for the full current matrix.
+
 The first real comparison rows are now equal against Datomic:
 
 - `musicbrainz-real-release-first`: 96 rows,
@@ -234,7 +244,9 @@ real-data matrix no longer exposes a clear slow query-planner outlier.
    - optional Datomic comparison when the local Datomic process/database is
      available
    Status: in-memory real import/query and Datomic comparison exist for the
-   first two clause-order joins.
+   current query matrix. `scripts/compare_musicbrainz_query_matrix.sh` verifies
+   selected rows or the full matrix by comparing Vev and Datomic row counts and
+   fingerprints.
 7. Record comparisons as result equality plus relative timing ratios. Avoid
    unsupported raw timing claims until the harness has stable warmup and repeat
    behavior.
