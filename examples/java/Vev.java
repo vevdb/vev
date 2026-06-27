@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.lang.ref.Cleaner;
 import java.util.UUID;
 
@@ -335,6 +336,45 @@ public final class Vev {
         }
     }
 
+    public ResultSet query(Map<String, ?> request) throws Throwable {
+        Object query = request.get("query");
+        Object args = request.get("args");
+        if (!(query instanceof String queryText)) {
+            throw new IllegalArgumentException("query request requires string key: query");
+        }
+        if (!(args instanceof List<?> argList) || argList.isEmpty()) {
+            throw new IllegalArgumentException("query request requires non-empty list key: args");
+        }
+
+        Object source = argList.get(0);
+        String inputs = inputsEdn(argList.subList(1, argList.size()));
+        try (PreparedQuery prepared = prepare(queryText)) {
+            if (source instanceof Connection conn) {
+                return conn.query(prepared, inputs);
+            }
+            if (source instanceof DurableConnection conn) {
+                try (DB db = conn.db()) {
+                    return db.query(prepared, inputs);
+                }
+            }
+            if (source instanceof SQLiteConnection conn) {
+                try (DB db = conn.db()) {
+                    return db.query(prepared, inputs);
+                }
+            }
+            if (source instanceof DB db) {
+                return db.query(prepared, inputs);
+            }
+            throw new IllegalArgumentException("query request first arg must be a Vev connection or DB");
+        }
+    }
+
+    public List<List<Object>> queryRows(Map<String, ?> request) throws Throwable {
+        try (ResultSet result = query(request)) {
+            return result.rows();
+        }
+    }
+
     public TxBuilder txBuilder(int capacity) throws Throwable {
         MemorySegment raw = (MemorySegment) txCreate.invoke(Math.max(0, capacity));
         if (isNull(raw)) throw new IllegalStateException("failed to create transaction builder");
@@ -432,6 +472,56 @@ public final class Vev {
         return array;
     }
 
+    private static String inputsEdn(List<?> inputs) {
+        StringBuilder out = new StringBuilder();
+        out.append("[");
+        for (int i = 0; i < inputs.size(); i++) {
+            if (i > 0) out.append(" ");
+            appendEdn(out, inputs.get(i));
+        }
+        out.append("]");
+        return out.toString();
+    }
+
+    private static void appendEdn(StringBuilder out, Object value) {
+        if (value == null) {
+            out.append("nil");
+        } else if (value instanceof String text) {
+            appendEdnString(out, text);
+        } else if (value instanceof Keyword keyword) {
+            out.append(keyword.text());
+        } else if (value instanceof Entity entity) {
+            out.append("[:vev/entity ").append(entity.id()).append("]");
+        } else if (value instanceof Number || value instanceof Boolean) {
+            out.append(value);
+        } else if (value instanceof List<?> items) {
+            out.append("[");
+            for (int i = 0; i < items.size(); i++) {
+                if (i > 0) out.append(" ");
+                appendEdn(out, items.get(i));
+            }
+            out.append("]");
+        } else {
+            throw new IllegalArgumentException("unsupported EDN input value: " + value);
+        }
+    }
+
+    private static void appendEdnString(StringBuilder out, String text) {
+        out.append('"');
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            switch (ch) {
+                case '\\' -> out.append("\\\\");
+                case '"' -> out.append("\\\"");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> out.append(ch);
+            }
+        }
+        out.append('"');
+    }
+
     private static final class NativeHandle implements Runnable {
         private final MethodHandle closeHandle;
         private MemorySegment raw;
@@ -456,6 +546,7 @@ public final class Vev {
     }
 
     public record Entity(long id) {}
+    public record Keyword(String text) {}
     public record Entry(Object key, Object value) {}
 
     public record ColumnResult(int rowCount, int[] kinds, Object[] columns) {

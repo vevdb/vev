@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Arrays;
+import java.util.Map;
 
 public final class Smoke {
     private static void deleteSqliteFiles(Path path) throws Exception {
@@ -36,6 +37,21 @@ public final class Smoke {
             System.out.println("input-collection: " + collectionText);
             if (!collectionText.contains("\"Ada\"") || !collectionText.contains("\"Grace\"")) {
                 throw new IllegalStateException("unexpected collection query output");
+            }
+
+            try (Vev.DB db = conn.db()) {
+                List<List<Object>> requestRows = vev.queryRows(Map.of(
+                    "query", """
+                        [:find ?name
+                         :in $ ?email
+                         :where [?e :user/email ?email]
+                                [?e :user/name ?name]]
+                        """,
+                    "args", List.of(db, "ada@example.com")));
+                System.out.println("query request rows: " + requestRows);
+                if (!requestRows.equals(List.of(List.of("Ada")))) {
+                    throw new IllegalStateException("unexpected query request rows");
+                }
             }
 
             conn.transact("""
