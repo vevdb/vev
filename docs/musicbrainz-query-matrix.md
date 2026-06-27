@@ -85,6 +85,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-strs-beatles-releases` | `16 / 3fda7a2cf91332d1` | `16 / 3fda7a2cf91332d1` | Equal rows | Datomic-style `:strs` return-map rows compare as map-shaped results |
 | `musicbrainz-real-syms-beatles-releases` | `16 / 18143fc0c84f8091` | `16 / 18143fc0c84f8091` | Equal rows | Datomic-style `:syms` return-map rows compare as map-shaped results |
 | `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Pure rule-body planner keeps the composed track/release join selective |
+| `musicbrainz-real-rule-short-track` | `135 / ea50e22c017fe85c` | `135 / ea50e22c017fe85c` | Equal rows | Rule with host input `?max` plus predicate body over real track durations |
 | `musicbrainz-real-pull-release` | `5 / 974ce160e8be7539` | `5 / 974ce160e8be7539` | Equal rows | Pull expression in query result over selected release names |
 | `musicbrainz-real-dynamic-pull-release` | `17 / 16930ebda61a7b2c` | `17 / 16930ebda61a7b2c` | Equal rows | Day-of-Datomic `d/query`-style pull pattern supplied through `:in` |
 | `musicbrainz-real-pull-release-nested` | `5 / f4f5c38625cab0c7` | `5 / f4f5c38625cab0c7` | Equal rows | Nested pull query over release media and tracks |
@@ -136,7 +137,7 @@ These workshop shapes are covered by passing Vev tests:
 | Pull alias option | `[:artist/name :as :artist]` | restored-sample comparison row |
 | Dynamic pull pattern input | `music_brainz.clj` | `pattern` supplied through `:in` in query result pull expressions |
 | Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` plus restored-sample id-insensitive comparison row |
-| Rule input `%` | `track-release`, `track-info`, `short-track` | `q-text-with-rules` |
+| Rule input `%` | `track-release`, `track-info`, `short-track` | `q-text-with-rules`; real Datomic comparison rows cover `track-info` and input-parameter `short-track` |
 | `d/query` map query form | `music_brainz.clj` | EDN map-form query text |
 | Split/composed rules | `music_brainz.clj` `track-artist`/`track-release`/`track-info` | `q-text-with-rules` |
 | `not` and `not-join` | original `query.clj` | mbrainz-shaped EDN text queries |

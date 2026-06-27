@@ -17,7 +17,11 @@
      [?a :artist/name ?artist-name]
      (track-release ?t ?r)
      [?r :release/name ?album]
-     [?r :release/year ?year]]])
+     [?r :release/year ?year]]
+    [(short-track ?a ?t ?len ?max)
+     [?t :track/artists ?a]
+     [?t :track/duration ?len]
+     [(< ?len ?max)]]])
 
 (def queries
   [{:name "musicbrainz-real-release-first"
@@ -277,6 +281,14 @@
              (track-info ?track ?track-name ?artist-name ?album ?year)
              [(< ?year 1970)]]
     :args [musicbrainz-rules "The Beatles"]}
+   {:name "musicbrainz-real-rule-short-track"
+    :query '[:find ?track-name ?len
+             :in $ % ?max
+             :where
+             [?artist :artist/name "The Beatles"]
+             (short-track ?artist ?track ?len ?max)
+             [?track :track/name ?track-name]]
+    :args [musicbrainz-rules 200000]}
    {:name "musicbrainz-real-pull-release"
     :query '[:find (pull ?release [:release/name :release/year])
              :in $ [?release-name ...]
