@@ -1081,7 +1081,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- delete-pull-spec-containers [specs: []vev.Pull-Spec]
   (for [spec specs]
-    (delete-pull-spec-containers spec.pattern)
+    (delete-pull-spec-containers (slice spec.pattern 0))
     (delete spec.pattern)))
 
 (defn- tx-report-handle-from-value [value: vev.Value] -> Vev-Tx-Report
@@ -1151,7 +1151,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (delete input.lookup-values))
     .PullPattern
       (do
-        (delete-pull-spec-containers input.pattern)
+        (delete-pull-spec-containers (slice input.pattern 0))
         (delete input.pattern))
     :else (do)))
 
@@ -1194,7 +1194,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (abi-stmt-push-input (rawptr stmt) (vev.query-input-collection-lookup-refs (slice attrs 0) (slice values 0))))
 
 (defn- stmt-push-pull-pattern! [stmt: Vev-Stmt, pattern: [dynamic]vev.Pull-Spec]
-  (abi-stmt-push-input (rawptr stmt) (vev.query-input-pull-pattern (slice pattern 0))))
+  (abi-stmt-push-input (rawptr stmt) (vev.query-input-pull-pattern-owned pattern)))
 
 (defn- stmt-push-db-source! [stmt: Vev-Stmt, name: string, db: Vev-DB]
   (let [retained (abi-retain-db (rawptr db))
@@ -2905,6 +2905,63 @@ abi_free_stmt :: proc(stmt: rawptr) {
           out (value-handle-from-value pulled)]
       (delete pattern)
       (delete ids)
+      out)))
+
+@export
+(defn vev_pull_many_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, entities: rawptr, entity-count: int] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil)
+            (= (rawptr pattern) nil)
+            (< entity-count 0)
+            (and (> entity-count 0) (= entities nil)))
+    (return (Vev-Value-Handle nil)))
+  (let [ids (make [dynamic]u64 0 entity-count)
+        db-ptr-value (db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        index 0]
+    (while (< index entity-count)
+      (arr.push! ids (abi-u64-at entities index))
+      (set! index (+ index 1)))
+    (let [pulled (vev.pull-many-prepared-value db-ptr-value^ pattern-ptr^ (slice ids 0))
+          out (value-handle-from-value pulled)]
+      (delete ids)
+      out)))
+
+@export
+(defn vev_pull_many_lookup_ref_uuid_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, attr: cstring, values: rawptr, value-count: int] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil)
+            (= (rawptr pattern) nil)
+            (= attr nil)
+            (< value-count 0)
+            (and (> value-count 0) (= values nil)))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        attrs (make [dynamic]string 0 value-count)
+        lookup-values (make [dynamic]vev.Value 0 value-count)
+        db-ptr-value (db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        index 0]
+    (while (< index value-count)
+      (let [value-c (abi-cstring-at values index)]
+        (when (= value-c nil)
+          (delete attr-text)
+          (delete attrs)
+          (for [value lookup-values]
+            (vev.delete-owned-value value))
+          (delete lookup-values)
+          (return (Vev-Value-Handle nil)))
+        (let [value-text (text-from-c value-c)]
+          (arr.push! attrs attr-text)
+          (arr.push! lookup-values (vev.value-uuid value-text))))
+      (set! index (+ index 1)))
+    (let [pulled (vev.pull-many-prepared-lookup-refs-value db-ptr-value^ pattern-ptr^ (slice attrs 0) (slice lookup-values 0))
+          out (value-handle-from-value pulled)]
+      (delete attr-text)
+      (delete attrs)
+      (for [value lookup-values]
+        (vev.delete-owned-value value))
+      (delete lookup-values)
       out)))
 
 @export

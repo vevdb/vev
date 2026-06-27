@@ -547,7 +547,7 @@
              (apply vev/rows (:query workload) db (:args workload))
              (apply vev/q (:query workload) db (:args workload)))
     :pull [(vev/pull db (or prepared-pattern (:pattern workload)) (:entity workload))]
-    :pull-many (vev/pull-many db (:pattern workload) (:entities workload))))
+    :pull-many (vev/pull-many db (or prepared-pattern (:pattern workload)) (:entities workload))))
 
 (defn run-workload [db warmups samples print-rows? workload]
   (let [run (fn [prepared-pattern]
@@ -572,7 +572,8 @@
                   (:max t)))
                 (when print-rows?
                   (print-result-rows (:name workload) rows fingerprint-options))))]
-    (if (= :pull (:kind workload))
+    (if (or (= :pull (:kind workload))
+            (= :pull-many (:kind workload)))
       (with-open [prepared-pattern (vev/prepare-pull-pattern db (:pattern workload))]
         (run prepared-pattern))
       (run nil))))

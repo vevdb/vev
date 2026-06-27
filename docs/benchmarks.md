@@ -378,21 +378,22 @@ rows:
 | `top-duration` | 481 | 32,496 | 67.6x faster |
 | `rule-track-info` | 49,161 | 181,332 | 3.7x faster |
 | `pull-release` | 519 | 326 | 0.6x |
-| `direct-pull-artist` | 274 | 43 | host wrapper overhead remains visible |
+| `direct-pull-artist` | 263 | 43 | host wrapper overhead remains visible |
 | `direct-pull-artist-releases` | 1,305 | 289 | 0.2x |
-| `direct-pull-many-artists` | 161 | 23 | 0.1x |
+| `direct-pull-many-artists` | 461 | 23 | host wrapper path now uses prepared same-attr UUID lookup-ref batch |
 
 This host-wrapper comparison is deliberately separate from the stronger native
 Vev versus Datomic table above. The `--sqlite-output` plus `--uri` path removes
 wrapper EDN loading from query timing, but Clojure/Java FFM materialization and
 plain Clojure value equality still matter. The wrapper harness now preserves
 query pull-expression rows with `vev/rows` so repeated pull maps do not collapse
-under Clojure set equality. Direct `:pull` workloads now prepare the pull
-pattern once per workload run through the public Clojure/Java/C ABI prepared
-pull-pattern handle, so repeated direct pulls no longer include pull-pattern
-EDN parsing in every measured call. Remaining host-performance work is mostly
-result materialization and tiny-call overhead around direct pull and pull-many,
-not query-engine correctness.
+under Clojure set equality. Direct `:pull` and `:pull-many` workloads now
+prepare the pull pattern once per workload run through the public
+Clojure/Java/C ABI prepared pull-pattern handle. Same-attribute UUID lookup-ref
+`pull-many` calls also use a batch host entry point, so repeated direct pulls no
+longer include pull-pattern EDN parsing or one native call per lookup ref.
+Remaining host-performance work is mostly result materialization and tiny-call
+overhead around direct pull and pull-many, not query-engine correctness.
 
 ## Query And Rule Baseline
 

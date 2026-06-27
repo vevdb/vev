@@ -15,6 +15,7 @@ The current shape is intentionally narrow:
 - opaque result handles for typed row/value access
 - borrowed value handles for nested vector/map/pull traversal
 - owned value handles for direct pull entry points
+- prepared pull-pattern handles for direct pull and pull-many
 - explicit prepared-query and statement error accessors
 - callback traversal for nested value trees
 - callback traversal for typed result rows
@@ -267,6 +268,22 @@ unsigned long long entity_ids[] = {1, 2};
 vev_value_handle_t many_pull =
     vev_pull_many_edn(retained_snapshot, "[:user/name]", entity_ids, 2);
 vev_value_handle_free(many_pull);
+
+vev_prepared_pull_pattern_t many_pattern =
+    vev_prepare_pull_pattern_edn("[:artist/name]");
+const char *artist_gids[] = {
+    "9974da98-8338-3cff-8a28-11b70c224c5b",
+    "65f4f0c5-ef9e-490c-aee3-909e7ae6b2ab",
+};
+vev_value_handle_t many_lookup_pull =
+    vev_pull_many_lookup_ref_uuid_prepared(
+        retained_snapshot,
+        many_pattern,
+        ":artist/gid",
+        artist_gids,
+        2);
+vev_value_handle_free(many_lookup_pull);
+vev_prepared_pull_pattern_free(many_pattern);
 
 vev_tx_report_t with_report =
     vev_with_edn_report(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
@@ -947,6 +964,8 @@ Direct pull entry points use owned value handles:
 - `vev_pull_lookup_ref_int_edn`
 - `vev_pull_lookup_ref_int_prepared`
 - `vev_pull_many_edn`
+- `vev_pull_many_prepared`
+- `vev_pull_many_lookup_ref_uuid_prepared`
 - `vev_value_handle_value`
 - `vev_value_handle_edn`
 - `vev_value_handle_free`

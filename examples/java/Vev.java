@@ -133,6 +133,8 @@ public final class Vev {
     private final MethodHandle pullLookupRefIntEdn;
     private final MethodHandle pullLookupRefIntPrepared;
     private final MethodHandle pullManyEdn;
+    private final MethodHandle pullManyPrepared;
+    private final MethodHandle pullManyLookupRefUuidPrepared;
     private final MethodHandle valueHandleFree;
     private final MethodHandle valueHandleValue;
     private final MethodHandle valueHandleEdn;
@@ -272,6 +274,8 @@ public final class Vev {
         this.pullLookupRefIntEdn = downcall("vev_pull_lookup_ref_int_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefIntPrepared = downcall("vev_pull_lookup_ref_int_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.pullManyPrepared = downcall("vev_pull_many_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.pullManyLookupRefUuidPrepared = downcall("vev_pull_many_lookup_ref_uuid_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.valueHandleFree = downcall("vev_value_handle_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.valueHandleValue = downcall("vev_value_handle_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.valueHandleEdn = downcall("vev_value_handle_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -1288,6 +1292,38 @@ public final class Vev {
                      longArray(local, entities),
                      entities.length))) {
                 return value.value();
+            }
+        }
+
+        public Object pullMany(PreparedPullPattern pattern, long... entities) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle value = new ValueHandle((MemorySegment) pullManyPrepared.invoke(
+                     handle.raw,
+                     pattern.raw,
+                     longArray(local, entities),
+                     entities.length))) {
+                return value.value();
+            }
+        }
+
+        public Object pullManyLookupRefUuid(PreparedPullPattern pattern, String attr, UUID... values) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment array = local.allocateArray(ValueLayout.ADDRESS, values.length);
+                for (int i = 0; i < values.length; i++) {
+                    array.setAtIndex(ValueLayout.ADDRESS, i, local.allocateUtf8String(values[i].toString()));
+                }
+                try (ValueHandle value = new ValueHandle((MemorySegment) pullManyLookupRefUuidPrepared.invoke(
+                         handle.raw,
+                         pattern.raw,
+                         local.allocateUtf8String(attr),
+                         array,
+                         values.length))) {
+                    return value.value();
+                }
             }
         }
 

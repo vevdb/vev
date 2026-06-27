@@ -141,9 +141,11 @@ pass fixed an input ownership bug where pull pattern strings parsed from EDN
 input text could outlive their parser document and render corrupted pull keys.
 The wrapper harness uses row-preserving `vev/rows` for query pull expressions
 so repeated pull maps do not collapse under Clojure set equality. Direct pull
-workloads in the host wrapper matrix prepare pull patterns once per workload
-run through the public prepared pull-pattern handle exposed by the C ABI, Java
-wrapper, and Clojure wrapper.
+and pull-many workloads in the host wrapper matrix prepare pull patterns once
+per workload run through the public prepared pull-pattern handle exposed by the
+C ABI, Java wrapper, and Clojure wrapper. The same-attribute UUID lookup-ref
+pull-many case also uses a batch C ABI entry point so Clojure callers do not
+fall back to one native direct-pull call per entity.
 
 ## Covered
 

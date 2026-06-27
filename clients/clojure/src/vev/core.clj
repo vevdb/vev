@@ -731,6 +731,18 @@
            (.pull (:native db) ^Vev$PreparedPullPattern (:native pattern) (long eid))
            (.pull (:native db) (edn-text pattern) (long eid))))))))
 
+(defn- same-uuid-lookup-refs [eids]
+  (when (seq eids)
+    (let [attr (ffirst eids)]
+      (when (and (keyword? attr)
+                 (every? #(and (vector? %)
+                               (= 2 (count %))
+                               (= attr (first %))
+                               (instance? java.util.UUID (second %)))
+                         eids))
+        {:attr attr
+         :values (mapv second eids)}))))
+
 (defn pull-many
   "Pull several entities, preserving input order."
   [source pattern eids]
@@ -738,10 +750,25 @@
     (with-db-source
       source
       (fn [db]
-        (clj-value (.pullMany (:native db)
-                              (edn-text pattern)
-                              (long-array eids)))))
-    (mapv #(pull source pattern %) eids)))
+        (clj-value
+         (if (instance? PreparedPullPattern pattern)
+           (.pullMany (:native db)
+                      ^Vev$PreparedPullPattern (:native pattern)
+                      (long-array eids))
+           (.pullMany (:native db)
+                      (edn-text pattern)
+                      (long-array eids))))))
+    (if-let [{:keys [attr values]} (and (instance? PreparedPullPattern pattern)
+                                        (same-uuid-lookup-refs eids))]
+      (with-db-source
+        source
+        (fn [db]
+          (clj-value
+           (.pullManyLookupRefUuid (:native db)
+                                   ^Vev$PreparedPullPattern (:native pattern)
+                                   (edn-text attr)
+                                   (into-array java.util.UUID values)))))
+      (mapv #(pull source pattern %) eids))))
 
 (defn rows-legacy
   "Deprecated connection-first row helper kept for early examples."

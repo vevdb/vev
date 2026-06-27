@@ -181,6 +181,11 @@ Use `pull-many` for the same pattern over multiple entity ids:
 Remaining pull work is exact edge rendering and host API shape, not the basic
 pull model.
 
+The host API now has reusable prepared pull-pattern values for single pull and
+pull-many. Clojure/Java/C callers can prepare a Datomic-shaped pull pattern
+once, reuse it across immutable DB snapshots, and use the same API for direct
+entity ids or same-attribute UUID lookup-ref batches.
+
 ## Pull semantics
 
 Pull should:

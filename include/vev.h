@@ -333,6 +333,17 @@ vev_value_handle_t vev_pull_many_edn(
     const char *pattern_text,
     const unsigned long long *entities,
     int entity_count);
+vev_value_handle_t vev_pull_many_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const unsigned long long *entities,
+    int entity_count);
+vev_value_handle_t vev_pull_many_lookup_ref_uuid_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    const char **values,
+    int value_count);
 void vev_value_handle_free(vev_value_handle_t handle);
 vev_value_t vev_value_handle_value(vev_value_handle_t handle);
 const char *vev_value_handle_edn(vev_value_handle_t handle);
