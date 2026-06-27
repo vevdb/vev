@@ -119,6 +119,7 @@ public final class Vev {
     private final MethodHandle pullEdn;
     private final MethodHandle pullLookupRefStringEdn;
     private final MethodHandle pullLookupRefKeywordEdn;
+    private final MethodHandle pullLookupRefUuidEdn;
     private final MethodHandle pullLookupRefEntityEdn;
     private final MethodHandle pullLookupRefIntEdn;
     private final MethodHandle pullManyEdn;
@@ -247,6 +248,7 @@ public final class Vev {
         this.pullEdn = downcall("vev_pull_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullLookupRefKeywordEdn = downcall("vev_pull_lookup_ref_keyword_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullLookupRefUuidEdn = downcall("vev_pull_lookup_ref_uuid_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullLookupRefEntityEdn = downcall("vev_pull_lookup_ref_entity_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefIntEdn = downcall("vev_pull_lookup_ref_int_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
@@ -1128,6 +1130,18 @@ public final class Vev {
                      local.allocateUtf8String(pattern),
                      local.allocateUtf8String(attr),
                      local.allocateUtf8String(value)))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullLookupRefUuid(String pattern, String attr, UUID value) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefUuidEdn.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(pattern),
+                     local.allocateUtf8String(attr),
+                     local.allocateUtf8String(value.toString())))) {
                 return pulled.value();
             }
         }

@@ -130,10 +130,13 @@ tracked separately by `scripts/musicbrainz_clojure_vev_matrix.sh`. Its default
 500-value smoke verifies host API correctness and query overhead, but wrapper
 EDN transaction loading is not yet the right full-size MusicBrainz setup path:
 full host comparison should use a prebuilt SQLite-backed Vev database via
-`--uri` before timing Clojure query calls. The first full durable-open Clojure
-checks pass for `release-first` and `beatles-releases` with fingerprints matching
-the native/Datomic matrix; the remaining host-benchmark work is to run the whole
-matrix and compare it to a same-process Clojure Datomic peer run.
+`--uri` before timing Clojure query calls. The current durable-open Clojure
+wrapper matrix covers 11 representative rows with fingerprints matching the
+native/Datomic matrix. This pass fixed UUID lookup-ref pull support through the
+C ABI/Java/Clojure stack and uses row-preserving `vev/rows` for query pull
+expressions so repeated pull maps do not collapse under Clojure set equality.
+The remaining host-benchmark work is to run the whole 43-row matrix and compare
+it to a same-process Clojure Datomic peer run.
 
 ## Covered
 
@@ -220,7 +223,7 @@ Further MusicBrainz work should be targeted:
 4. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
-5. Promote the Clojure wrapper MusicBrainz harness from smoke to full
-   Vev-vs-Datomic query benchmark by running the whole workload matrix through
-   a prebuilt `--sqlite-output` DB, host-side `--uri` open, and same-process
-   Clojure Datomic peer queries.
+5. Promote the Clojure wrapper MusicBrainz harness from the current 11-row
+   representative comparison to the full 43-row Vev-vs-Datomic query benchmark
+   using a prebuilt `--sqlite-output` DB, host-side `--uri` open, and
+   same-process Clojure Datomic peer queries.

@@ -694,6 +694,9 @@
              (keyword? value)
              (.pullLookupRefKeyword (:native db) pattern-text attr-text (str value))
 
+             (instance? java.util.UUID value)
+             (.pullLookupRefUuid (:native db) pattern-text attr-text value)
+
              (integer? value)
              (.pullLookupRefInt (:native db) pattern-text attr-text (long value))
 
@@ -703,7 +706,7 @@
              :else
              (throw (ex-info "unsupported lookup-ref pull value"
                              {:value value
-                              :supported #{:string :keyword :integer :entity}}))))
+                              :supported #{:string :keyword :uuid :integer :entity}}))))
          (.pull (:native db) (edn-text pattern) (long eid)))))))
 
 (defn pull-many

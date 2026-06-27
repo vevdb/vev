@@ -106,6 +106,7 @@
     :args [musicbrainz-rules "The Beatles"]}
    {:name "musicbrainz-real-pull-release"
     :kind :query
+    :preserve-rows true
     :query '[:find (pull ?release [:release/name :release/year])
              :in $ [?release-name ...]
              :where
@@ -246,7 +247,9 @@
 
 (defn workload-result [db workload]
   (case (:kind workload)
-    :query (apply vev/q (:query workload) db (:args workload))
+    :query (if (:preserve-rows workload)
+             (apply vev/rows (:query workload) db (:args workload))
+             (apply vev/q (:query workload) db (:args workload)))
     :pull [(vev/pull db (:pattern workload) (:entity workload))]
     :pull-many (vev/pull-many db (:pattern workload) (:entities workload))))
 

@@ -332,24 +332,53 @@ engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/
 engine=clojure-vev workload=musicbrainz-smoke-country-names ok=true rows=257 fingerprint=fd7d4b4cd5dd243c min_us=2131 median_us=2714 p90_us=2714 max_us=3003
 ```
 
-Latest full durable-open Clojure wrapper checks after rebuilding `libvev`:
+Latest full durable-open representative Clojure wrapper checks after rebuilding
+`libvev`:
 
 ```text
 engine=vev workload=musicbrainz-import ok=true mode=split datoms=763274 current=763274 parse_us=1427493 tx_us=15500566 import_us=16928059 artist_rows=1 artist_us=103 release_rows=16 release_us=365
 engine=vev workload=musicbrainz-import-persist ok=true path=build/musicbrainz/vev-mbrainz-full-host.sqlite persist_us=4606362 error=
 engine=vev workload=musicbrainz-import-reopened-release-first ok=true rows=96 query_us=3279 steps=8 clauses=425 candidates=708 max_bindings=265 output_rows=96
-engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/vev-mbrainz-full-host.sqlite open_us=9496874 info={:backend :sqlite, :path "build/musicbrainz/vev-mbrainz-full-host.sqlite", :basis-t 9, :tx-count 9, :tx-ids [1 2 3 4 5 6 7 8 9]}
-engine=clojure-vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03 min_us=3918 median_us=4129 p90_us=4488 max_us=4787
-engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/vev-mbrainz-full-host.sqlite open_us=9431441 info={:backend :sqlite, :path "build/musicbrainz/vev-mbrainz-full-host.sqlite", :basis-t 9, :tx-count 9, :tx-ids [1 2 3 4 5 6 7 8 9]}
-engine=clojure-vev workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprint=c57b012eecfd45ed min_us=1096 median_us=1219 p90_us=1219 max_us=1432
+engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/vev-mbrainz-full-host.sqlite open_us=9080210 info={:backend :sqlite, :path "build/musicbrainz/vev-mbrainz-full-host.sqlite", :basis-t 9, :tx-count 9, :tx-ids [1 2 3 4 5 6 7 8 9]}
+engine=clojure-vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03 min_us=3842 median_us=3895 p90_us=3895 max_us=4265
+engine=clojure-vev workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40 min_us=4012 median_us=4056 p90_us=4056 max_us=4142
+engine=clojure-vev workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprint=c57b012eecfd45ed min_us=522 median_us=538 p90_us=538 max_us=564
+engine=clojure-vev workload=musicbrainz-real-beatles-duration-sum ok=true rows=4 fingerprint=773afe226788bffa min_us=4238 median_us=4338 p90_us=4338 max_us=4922
+engine=clojure-vev workload=musicbrainz-real-missing-start-year ok=true rows=1637 fingerprint=f5e245cdd9911040 min_us=16095 median_us=16929 p90_us=16929 max_us=17353
+engine=clojure-vev workload=musicbrainz-real-top-duration ok=true rows=1 fingerprint=949eb8db5ef70199 min_us=11311490 median_us=11345753 p90_us=11345753 max_us=11390944
+engine=clojure-vev workload=musicbrainz-real-rule-track-info ok=true rows=90 fingerprint=5f20ceb057e27418 min_us=48876 median_us=49161 p90_us=49161 max_us=49457
+engine=clojure-vev workload=musicbrainz-real-pull-release ok=true rows=5 fingerprint=974ce160e8be7539 min_us=444 median_us=519 p90_us=519 max_us=680
+engine=clojure-vev workload=musicbrainz-real-direct-pull-artist ok=true rows=1 fingerprint=0a11a6da90ea3115 min_us=107 median_us=155 p90_us=155 max_us=186
+engine=clojure-vev workload=musicbrainz-real-direct-pull-artist-releases ok=true rows=1 fingerprint=78d748d66cc33844 min_us=1167 median_us=1305 p90_us=1305 max_us=1635
+engine=clojure-vev workload=musicbrainz-real-direct-pull-many-artists ok=true rows=2 fingerprint=3b0d165020d81f40 min_us=135 median_us=161 p90_us=161 max_us=329
 ```
 
-Do not compare those setup-inclusive Clojure timings directly to the native Vev
-versus Datomic table. The `--sqlite-output` plus `--uri` path is the route to an
-apples-to-apples Clojure Vev versus Clojure Datomic query benchmark because it
-removes wrapper load/setup from the measured path; the remaining work is to
-run the full workload matrix through the public wrapper and compare it to a
-same-process Clojure Datomic peer matrix.
+The same-process Clojure Datomic peer run with `--samples 3 --warmups 1`
+provides the first host-to-host comparison for these representative rows:
+
+| Workload | Clojure Vev median us | Datomic median us | Vev/Datomic signal |
+| --- | ---: | ---: | ---: |
+| `release-first` | 3,895 | 5,061 | 1.3x faster |
+| `track-first` | 4,056 | 47,961 | 11.8x faster |
+| `beatles-releases` | 538 | 561 | parity |
+| `beatles-duration-sum` | 4,338 | 2,913 | 0.7x |
+| `missing-start-year` | 16,929 | 8,837 | 0.5x |
+| `top-duration` | 11,345,753 | 32,491 | 0.003x |
+| `rule-track-info` | 49,161 | 181,332 | 3.7x faster |
+| `pull-release` | 519 | 326 | 0.6x |
+| `direct-pull-artist` | 155 | 43 | 0.3x |
+| `direct-pull-artist-releases` | 1,305 | 289 | 0.2x |
+| `direct-pull-many-artists` | 161 | 23 | 0.1x |
+
+This host-wrapper comparison is deliberately separate from the stronger native
+Vev versus Datomic table above. The `--sqlite-output` plus `--uri` path removes
+wrapper EDN loading from query timing, but Clojure/Java FFM materialization and
+plain Clojure value equality still matter. The wrapper harness now preserves
+query pull-expression rows with `vev/rows` so repeated pull maps do not collapse
+under Clojure set equality. The remaining work is to expand the public wrapper
+matrix to all 43 native/Datomic rows and then optimize the clear host-facing
+gaps: top-n aggregates, broad negative/missing scans, and tiny direct pull
+overhead.
 
 ## Query And Rule Baseline
 
