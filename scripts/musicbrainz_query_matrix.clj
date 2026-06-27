@@ -98,6 +98,13 @@
              [?artist :artist/name ?artist-name]
              [(get-else $ ?artist :artist/startMonth "N/A") ?month]]
     :args [["The Beatles" "Miles Davis"]]}
+   {:name "musicbrainz-real-get-some-country"
+    :query '[:find ?attr-ident ?name
+             :where
+             [?entity :country/name "United Kingdom"]
+             [(get-some $ ?entity :country/name :artist/name) [?attr ?name]]
+             [?attr :db/ident ?attr-ident]]
+    :args []}
    {:name "musicbrainz-real-dynamic-attr"
     :query '[:find ?artist-name
              :in $ ?country-name [?reference ...]

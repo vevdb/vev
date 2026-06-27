@@ -207,11 +207,11 @@ eids into compact Vev ids, plus staged schema/value/chunked import. The current
 full 763,274-item exported subset imports locally and the real Datomic
 comparison matrix covers clause-order joins, aggregates, relation inputs,
 not/or groups, rule calls, pull expressions, nested release/media/track pull,
-direct lookup-ref pull, `get-else`, dynamic attrs, and top-n aggregates. The
-next larger step is fixing the restored-data `get-some` attr-id gap and then
-continuing Day-of-Datomic host/tutorial snippets before doing more planner
-work. See `docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the
-active work plan.
+direct lookup-ref pull, `get-else`, restored `get-some`, dynamic attrs, and
+top-n aggregates. The next larger step is continuing Day-of-Datomic
+host/tutorial snippets before doing more planner work. See
+`docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the active
+work plan.
 
 ## Phase 5b: External Optimizer Benchmarks
 
