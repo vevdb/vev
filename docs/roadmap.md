@@ -208,9 +208,10 @@ full 763,274-item exported subset imports locally and the real Datomic
 comparison matrix covers clause-order joins, aggregates, relation inputs,
 not/or groups, rule calls, pull expressions, nested release/media/track pull,
 direct lookup-ref pull, dynamic pull pattern inputs, `get-else`, restored
-`get-some`, `missing?`, `:keys` return-map rows, dynamic attrs, the
-query-stats tutorial traversal, and top-n aggregates. The next larger step is continuing Day-of-Datomic
-host/tutorial snippets before doing more planner work. See
+`get-some`, `missing?`, `:keys`/`:strs`/`:syms` return-map rows, dynamic attrs,
+the query-stats tutorial traversal, and top-n aggregates. The next larger step
+is continuing Day-of-Datomic host/tutorial snippets before doing more planner
+work. See
 `docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the active
 work plan.
 

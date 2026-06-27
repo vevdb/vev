@@ -78,6 +78,12 @@
 (def keys-beatles-releases-query
   "[:find ?artist-name ?release-name :keys artist release :where [?artist :artist/name \"The Beatles\"] [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
 
+(def strs-beatles-releases-query
+  "[:find ?artist-name ?release-name :strs artist release :where [?artist :artist/name \"The Beatles\"] [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
+
+(def syms-beatles-releases-query
+  "[:find ?artist-name ?release-name :syms artist release :where [?artist :artist/name \"The Beatles\"] [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
+
 (def musicbrainz-rules
   "[[(track-release ?t ?r) [?m :medium/tracks ?t] [?r :release/media ?m]] [(track-info ?t ?track-name ?artist-name ?album ?year) [?t :track/name ?track-name] [?t :track/artists ?a] [?a :artist/name ?artist-name] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]]]")
 
@@ -341,21 +347,28 @@
 (defn print-workload! [db: vev.DB, workload: string, query: string, inputs: []vev.Query-Input, warmups: int, samples: int, print-rows: bool]
   (print-workload-with-rules! db workload query inputs "" false warmups samples print-rows))
 
-(defn time-keyed-query [db: vev.DB, query: string, warmups: int, samples-count: int] -> Keyed-Timing
+(defn q-text-keyed [db: vev.DB, query: string, kind: string] -> [dynamic]vev.Keyed-Row
+  (if (= kind ":strs")
+    (return (vev.q-text-strs db query)))
+  (if (= kind ":syms")
+    (return (vev.q-text-syms db query)))
+  (vev.q-text-keys db query))
+
+(defn time-keyed-query [db: vev.DB, query: string, kind: string, warmups: int, samples-count: int] -> Keyed-Timing
   (for [warmup-index (arr.range 0 warmups)]
     (discard warmup-index)
-    (discard (vev.q-text-keys db query)))
+    (discard (q-text-keyed db query kind)))
   (let [samples (make [dynamic]f64 0 samples-count)]
     (defer (delete samples))
     (for [sample-index (arr.range 0 samples-count)]
       (discard sample-index)
       (let [start (time.now)
-            rows (vev.q-text-keys db query)
+            rows (q-text-keyed db query kind)
             elapsed (bench.elapsed-us start)]
         (discard rows)
         (arr.push! samples elapsed)))
     (keyed-timing
-      (vev.q-text-keys db query)
+      (q-text-keyed db query kind)
       (bench.timing-from-samples (slice samples 0)))))
 
 (defn print-keyed-rows [workload: string, rows: []vev.Keyed-Row]
@@ -366,8 +379,8 @@
     (for [key keys]
       (fmt.printf "row engine=vev workload=%s key=%s\n" workload key))))
 
-(defn print-keyed-workload! [db: vev.DB, workload: string, query: string, warmups: int, samples: int, print-rows: bool]
-  (let [measured (time-keyed-query db query warmups samples)]
+(defn print-keyed-workload! [db: vev.DB, workload: string, query: string, kind: string, warmups: int, samples: int, print-rows: bool]
+  (let [measured (time-keyed-query db query kind warmups samples)]
     (fmt.printf
       "engine=vev workload=%s ok=true rows=%d fingerprint=%016x min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f\n"
       workload
@@ -507,6 +520,8 @@
           or-join-release-workload (fmt.tprintf "musicbrainz-%s-or-join-release" dataset)
           map-beatles-releases-workload (fmt.tprintf "musicbrainz-%s-map-beatles-releases" dataset)
           keys-beatles-releases-workload (fmt.tprintf "musicbrainz-%s-keys-beatles-releases" dataset)
+          strs-beatles-releases-workload (fmt.tprintf "musicbrainz-%s-strs-beatles-releases" dataset)
+          syms-beatles-releases-workload (fmt.tprintf "musicbrainz-%s-syms-beatles-releases" dataset)
           rule-track-info-workload (fmt.tprintf "musicbrainz-%s-rule-track-info" dataset)
           pull-release-workload (fmt.tprintf "musicbrainz-%s-pull-release" dataset)
           dynamic-pull-release-workload (fmt.tprintf "musicbrainz-%s-dynamic-pull-release" dataset)
@@ -555,7 +570,11 @@
       (when (should-run? selected map-beatles-releases-workload)
         (print-workload! conn.db map-beatles-releases-workload map-beatles-releases-query no-inputs warmups samples print-rows))
       (when (should-run? selected keys-beatles-releases-workload)
-        (print-keyed-workload! conn.db keys-beatles-releases-workload keys-beatles-releases-query warmups samples print-rows))
+        (print-keyed-workload! conn.db keys-beatles-releases-workload keys-beatles-releases-query ":keys" warmups samples print-rows))
+      (when (should-run? selected strs-beatles-releases-workload)
+        (print-keyed-workload! conn.db strs-beatles-releases-workload strs-beatles-releases-query ":strs" warmups samples print-rows))
+      (when (should-run? selected syms-beatles-releases-workload)
+        (print-keyed-workload! conn.db syms-beatles-releases-workload syms-beatles-releases-query ":syms" warmups samples print-rows))
       (when (should-run? selected rule-track-info-workload)
         (print-workload-with-rules! conn.db rule-track-info-workload rule-track-info-query beatles-input musicbrainz-rules true warmups samples print-rows))
       (when (should-run? selected pull-release-workload)
