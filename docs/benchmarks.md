@@ -379,8 +379,8 @@ rows:
 | `rule-track-info` | 49,161 | 181,332 | 3.7x faster |
 | `pull-release` | 519 | 326 | 0.6x |
 | `direct-pull-artist` | 235 | 43 | host wrapper overhead remains visible |
-| `direct-pull-artist-releases` | 2,275 | 289 | broad host pull materialization remains visible |
-| `direct-pull-many-artists` | 438 | 23 | host wrapper path now uses prepared same-attr UUID lookup-ref batch |
+| `direct-pull-artist-releases` | 2,203 | 289 | broad host pull materialization remains visible |
+| `direct-pull-many-artists` | 415 | 23 | host wrapper path now uses prepared same-attr UUID lookup-ref batch |
 
 This host-wrapper comparison is deliberately separate from the stronger native
 Vev versus Datomic table above. The `--sqlite-output` plus `--uri` path removes
@@ -394,9 +394,10 @@ Clojure/Java/C ABI prepared pull-pattern handle. Same-attribute UUID lookup-ref
 longer include pull-pattern EDN parsing or one native call per lookup ref.
 Java value-tree conversion now reads strings through borrowed value text views
 instead of allocating/freeing a native C string for every pull key and scalar
-text. Remaining host-performance work is mostly result materialization and
-tiny-call overhead around direct pull and pull-many, not query-engine
-correctness.
+text, and the Clojure wrapper now builds pull maps directly instead of through
+a lazy pair sequence. Remaining host-performance work is mostly result
+materialization and tiny-call overhead around direct pull and pull-many, not
+query-engine correctness.
 
 ## Query And Rule Baseline
 

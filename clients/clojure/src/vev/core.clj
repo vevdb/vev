@@ -42,11 +42,13 @@
     (.id ^Vev$Entity value)
 
     (instance? Vev$MapValue value)
-    (into {}
-          (map (fn [entry]
-                 [(key-value (clj-value (.key entry)))
-                  (clj-value (.value entry))]))
-          (.entries ^Vev$MapValue value))
+    (persistent!
+     (reduce (fn [out entry]
+               (assoc! out
+                       (key-value (clj-value (.key entry)))
+                       (clj-value (.value entry))))
+             (transient {})
+             (.entries ^Vev$MapValue value)))
 
     (instance? java.util.List value)
     (mapv clj-value value)
