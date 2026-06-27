@@ -13,8 +13,11 @@
     :else (throw (ex-info "expected native library path" {:value value}))))
 
 (defn- edn-text [value]
-  (if (string? value)
-    value
+  (cond
+    (string? value) value
+    (keyword? value) (str value)
+    (symbol? value) (str value)
+    :else
     (binding [*print-namespace-maps* false]
       (pr-str value))))
 
