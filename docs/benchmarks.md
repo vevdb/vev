@@ -145,13 +145,13 @@ cd /Users/andreas/Projects/kvist
 Current local 5k staged result:
 
 ```text
-engine=vev workload=musicbrainz-import ok=true mode=split datoms=5293 current=5293 parse_us=11051 tx_us=50623664 import_us=50634715 artist_rows=0 artist_us=1286 release_rows=0 release_us=429
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=5293 current=5293 parse_us=10858 tx_us=506981 import_us=517839 artist_rows=0 artist_us=168 release_rows=0 release_us=152
 ```
 
 The relevant signal is the ratio inside Vev: EDN parse is already small for
-this slice, while transaction validation/index work dominates. The next import
-performance work should target the generic bulk transaction path, not the EDN
-reader.
+this slice, and the generic explicit-id bulk transaction path is now fast enough
+for routine MusicBrainz query-matrix work. The next import performance check is
+scale: run the same staged path at 50k and then against the full restored subset.
 
 ## Query And Rule Baseline
 

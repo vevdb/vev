@@ -83,6 +83,8 @@
   vaet: [dynamic]int
   schema-value-types: map[string]string
   schema-cardinality-many: set[string]
+  schema-unique: set[string]
+  schema-ref: set[string]
 })
 
 (defstruct Serializable-DB {
@@ -1435,9 +1437,11 @@
     (arr.sort! current)
     current))
 
-(defn build-schema-caches [datoms: []Datom, current: []int] -> [value-types: map[string]string, cardinality-many: set[string]]
+(defn build-schema-caches [datoms: []Datom, current: []int] -> [value-types: map[string]string, cardinality-many: set[string], unique: set[string], refs: set[string]]
   (let [out-value-types (mmap.empty string string)
-        out-cardinality-many (set.empty string)]
+        out-cardinality-many (set.empty string)
+        out-unique (set.empty string)
+        out-ref (set.empty string)]
     (for [ident-index current]
       (let [ident-datom datoms[ident-index]]
         (when (and (= ident-datom.a ":db/ident")
@@ -1449,12 +1453,20 @@
                   (cond
                     (and (= prop.a ":db/valueType")
                          (= prop.v.kind .Keyword))
-                      (mmap.assoc! out-value-types attr prop.v.text)
+                      (do
+                        (mmap.assoc! out-value-types attr prop.v.text)
+                        (when (= prop.v.text ":db.type/ref")
+                          (set.add! out-ref attr)))
                     (and (= prop.a ":db/cardinality")
                          (= prop.v.kind .Keyword)
                          (= prop.v.text ":db.cardinality/many"))
-                      (set.add! out-cardinality-many attr)))))))))
-    (return out-value-types out-cardinality-many)))
+                      (set.add! out-cardinality-many attr)
+                    (and (= prop.a ":db/unique")
+                         (= prop.v.kind .Keyword)
+                         (or (= prop.v.text ":db.unique/identity")
+                             (= prop.v.text ":db.unique/value")))
+                      (set.add! out-unique attr)))))))))
+    (return out-value-types out-cardinality-many out-unique out-ref)))
 
 (defn int-lower-bound [xs: []int, value: int] -> int
   (let [low 0
@@ -1471,7 +1483,7 @@
         eavt (build-index slice-datoms "eavt")
         [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
         current (build-current-index slice-datoms)
-        [schema-value-types schema-cardinality-many] (build-schema-caches slice-datoms (slice current 0))]
+        [schema-value-types schema-cardinality-many schema-unique schema-ref] (build-schema-caches slice-datoms (slice current 0))]
     (DB {datoms: datoms
          current: current
          eavt: eavt
@@ -1481,12 +1493,20 @@
          avet: (build-index slice-datoms "avet")
          vaet: (build-index slice-datoms "vaet")
          schema-value-types: schema-value-types
-         schema-cardinality-many: schema-cardinality-many})))
+         schema-cardinality-many: schema-cardinality-many
+         schema-unique: schema-unique
+         schema-ref: schema-ref})))
 
 (defn clone-schema-value-types [schema: map[string]string] -> map[string]string
   (mmap.merge schema (mmap.empty string string)))
 
 (defn clone-schema-cardinality-many [schema: set[string]] -> set[string]
+  (set.union schema (set.empty string)))
+
+(defn clone-schema-unique [schema: set[string]] -> set[string]
+  (set.union schema (set.empty string)))
+
+(defn clone-schema-ref [schema: set[string]] -> set[string]
   (set.union schema (set.empty string)))
 
 (defn clone-db [db: DB] -> DB
@@ -1499,7 +1519,9 @@
         avet (arr.into [dynamic]int (slice db.avet 0))
         vaet (arr.into [dynamic]int (slice db.vaet 0))
         schema-value-types (clone-schema-value-types db.schema-value-types)
-        schema-cardinality-many (clone-schema-cardinality-many db.schema-cardinality-many)]
+        schema-cardinality-many (clone-schema-cardinality-many db.schema-cardinality-many)
+        schema-unique (clone-schema-unique db.schema-unique)
+        schema-ref (clone-schema-ref db.schema-ref)]
     (DB {datoms: datoms
          current: current
          eavt: eavt
@@ -1509,7 +1531,9 @@
          avet: avet
          vaet: vaet
          schema-value-types: schema-value-types
-         schema-cardinality-many: schema-cardinality-many})))
+         schema-cardinality-many: schema-cardinality-many
+         schema-unique: schema-unique
+         schema-ref: schema-ref})))
 
 (defn build-db-append-only-merged [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
   (let [slice-datoms (slice datoms 0)
@@ -1529,7 +1553,9 @@
          avet: (append-index slice-datoms (slice db.avet 0) start-index "avet")
          vaet: (append-index slice-datoms (slice db.vaet 0) start-index "vaet")
          schema-value-types: (clone-schema-value-types db.schema-value-types)
-         schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)})))
+         schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)
+         schema-unique: (clone-schema-unique db.schema-unique)
+         schema-ref: (clone-schema-ref db.schema-ref)})))
 
 (defn build-db-append-only-new-entities [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
   (let [slice-datoms (slice datoms 0)
@@ -1553,7 +1579,9 @@
          avet: (append-index slice-datoms (slice db.avet 0) start-index "avet")
          vaet: (append-index slice-datoms (slice db.vaet 0) start-index "vaet")
          schema-value-types: (clone-schema-value-types db.schema-value-types)
-         schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)})))
+         schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)
+         schema-unique: (clone-schema-unique db.schema-unique)
+         schema-ref: (clone-schema-ref db.schema-ref)})))
 
 (defn build-db-append-only [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
   (if (added-entities-after-existing? db (slice datoms 0) start-index)

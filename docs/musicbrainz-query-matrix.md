@@ -44,8 +44,8 @@ Real-data import status:
 | --- | --- | --- |
 | 100-item single-file subset | Passing | Confirms compact eid remap and UUID/value parsing |
 | 500-value staged subset | Passing | Confirms schema-first/value-second import path |
-| 5,000-value staged subset | Passing but slow | Parse is fast; transaction validation/index work dominates |
-| Full 763,274-item subset | Pending | Blocked on bulk transaction performance |
+| 5,000-value staged subset | Passing | Bulk explicit-id transaction path is practical; latest local run is about 0.55s total |
+| Full 763,274-item subset | Pending | Next scale check after 50k staged import |
 
 ## Covered
 
@@ -109,9 +109,8 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Improve bulk transaction performance enough that 50k/full restored
-   MusicBrainz subset imports are practical. The current 5k staged import
-   passes but is too slow for routine query-matrix work.
+1. Run 50k staged import, then the full restored MusicBrainz subset, to verify
+   the direct bulk transaction path keeps scaling.
 2. Run the existing matrix against the imported real subset and local Datomic,
    comparing result sets before timing.
 3. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where

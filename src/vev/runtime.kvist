@@ -2972,8 +2972,7 @@
   (schema-bool? db attr ":db/index"))
 
 (defn schema-ref? [db: DB, attr: string] -> bool
-  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-    (and has-type (= schema-type ":db.type/ref"))))
+  (set.contains? db.schema-ref attr))
 
 (defn schema-ref-target? [db: DB, attr: string] -> bool
   (if (reverse-attr? attr)
@@ -3031,10 +3030,7 @@
   false)
 
 (defn schema-unique? [db: DB, attr: string] -> bool
-  (let [[unique has-unique] (schema-keyword db attr ":db/unique")]
-    (and has-unique
-         (or (= unique ":db.unique/identity")
-             (= unique ":db.unique/value")))))
+  (set.contains? db.schema-unique attr))
 
 (defn schema-unique-identity? [db: DB, attr: string] -> bool
   (let [[unique has-unique] (schema-keyword db attr ":db/unique")]
@@ -3052,11 +3048,7 @@
   (set.contains? db.schema-cardinality-many attr))
 
 (defn tx-op-cardinality-one? [db: DB, op: Tx-Op] -> bool
-  (let [[cardinality has-cardinality] (schema-keyword db op.a ":db/cardinality")]
-    (when (and has-cardinality
-               (= cardinality ":db.cardinality/many"))
-      (return false))
-    true))
+  (not (set.contains? db.schema-cardinality-many op.a)))
 
 (defn resolve-ref-component-value [db: DB, value: Value] -> [resolved: Value, ok: bool, error: string]
   (cond
@@ -3902,7 +3894,6 @@
             (current-tx-value? data.v)
             (ref-string-value? db data.a data.v)
             (ref-negative-int-value? db data.a data.v)
-            (schema-unique? db data.a)
             (reverse-attr? data.a))
     (return false))
   true)
@@ -4229,6 +4220,10 @@
             (let [op (tx-add e data.a v)]
               (when data.has-tempid
                 (set! op.tuple-identity true))
+              (when data.has-lookup-ref
+                (let [lookup-tuple-attrs (schema-tuple-attrs current-db data.lookup-attr) :defer]
+                  (when (> (count lookup-tuple-attrs) 0)
+                    (set! op.tuple-identity true))))
               (set! op.map-group data.map-group)
               (arr.push! resolved-ops op)))))))
     (Resolved-Tx {ok: true error: "" ops: resolved-ops tx-meta: resolved-meta tempids: resolved-tempids})))
@@ -4245,7 +4240,7 @@
       (defer (delete tuple-attrs))
       (when (> (count tuple-attrs) 0)
         (return false "cannot modify tuple attrs directly"))))
-  (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
+  (let [[schema-type has-type] (mmap.get db.schema-value-types op.a)]
     (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
       (return false "schema value type mismatch")))
   (return true ""))
@@ -4270,6 +4265,12 @@
       (= op.a ":db/isComponent")))
 
 (defn ops-require-incremental-validation? [before: DB, ops: []Tx-Op] -> bool
+  (for [op ops]
+    (when (op-modifies-validation-schema? op)
+      (return true)))
+  false)
+
+(defn ops-modify-validation-schema? [ops: []Tx-Op] -> bool
   (for [op ops]
     (when (op-modifies-validation-schema? op)
       (return true)))
@@ -4342,13 +4343,23 @@
           (return false error)))
       (when (schema-unique? before op.a)
         (when (unique-conflict? before op)
-          (return false "schema unique conflict"))
+          (let [tuple-attrs (schema-tuple-attrs before op.a) :defer]
+            (if (and (not op.tuple-identity)
+                     (= (count tuple-attrs) 0)
+                     (schema-unique-identity? before op.a))
+              (return false "conflicting upsert")
+              (return false "schema unique conflict"))))
         (let [[key key-ok] (unique-op-value-key op)]
           (when (not key-ok)
             (return false "schema unique value unsupported"))
           (let [[existing existing-ok] (mmap.get seen-unique key)]
             (when (and existing-ok (not (= existing op.e)))
-              (return false "schema unique conflict")))
+              (let [tuple-attrs (schema-tuple-attrs before op.a) :defer]
+                (if (and (not op.tuple-identity)
+                         (= (count tuple-attrs) 0)
+                         (schema-unique-identity? before op.a))
+                  (return false "conflicting upsert")
+                  (return false "schema unique conflict")))))
           (mmap.assoc! seen-unique key op.e))))))
   (return true ""))
 
@@ -4719,7 +4730,9 @@
         tx-data (make [dynamic]Datom 0 (count expanded-ops))
         seen-ea (set.empty string)
         tx conn^.next-tx
-        append-only-ok (append-only-ops-eligible? before (slice expanded-ops 0))]
+        schema-changed (ops-modify-validation-schema? (slice expanded-ops 0))
+        append-only-ok (and (not schema-changed)
+                            (append-only-ops-eligible? before (slice expanded-ops 0)))]
     (defer (delete seen-ea))
     (let [[valid error] (validate-ops before (slice expanded-ops 0))]
       (when (not valid)
@@ -4877,6 +4890,8 @@
   (delete db.vaet)
   (delete db.schema-value-types)
   (delete db.schema-cardinality-many)
+  (delete db.schema-unique)
+  (delete db.schema-ref)
   (delete db.datoms))
 
 (defn serializable [db: DB] -> Serializable-DB
@@ -5028,14 +5043,13 @@
   (match-term? term actual binding))
 
 (defn ref-entity-literal [db: DB, attr: string, value: Value] -> [resolved: Value, ok: bool]
-  (let [[schema-type has-type] (schema-keyword db attr ":db/valueType")]
-    (when (and has-type (= schema-type ":db.type/ref"))
-      (if (= value.kind .Int)
-        (return (value-entity (u64 value.int-value)) true)
-        (when (= value.kind .Keyword)
-          (let [[entity ok] (schema-entity-for-attr db value.text)]
-            (when ok
-              (return (value-entity entity) true)))))))
+  (when (schema-ref? db attr)
+    (if (= value.kind .Int)
+      (return (value-entity (u64 value.int-value)) true)
+      (when (= value.kind .Keyword)
+        (let [[entity ok] (schema-entity-for-attr db value.text)]
+          (when ok
+            (return (value-entity entity) true))))))
   (return value false))
 
 (defn match-clause-value-term? [db: DB, attr: string, term: Term, actual: Value, binding: ^Binding] -> bool
