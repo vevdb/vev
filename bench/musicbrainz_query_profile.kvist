@@ -27,6 +27,15 @@
 (def beatles-releases-query
   "[:find ?release-name :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
 
+(def beatles-short-track-collection-query
+  "[:find [?track-name ...] :where [?artist :artist/name \"The Beatles\"] [?track :track/artists ?artist] [?track :track/name ?track-name] [?track :track/duration ?duration] [(< ?duration 300000)]]")
+
+(def abbey-road-release-date-tuple-query
+  "[:find [?year ?month ?day] :where [?release :release/name \"Abbey Road\"] [?release :release/month 9] [?release :release/day 26] [?release :release/year ?year] [?release :release/month ?month] [?release :release/day ?day]]")
+
+(def beatles-start-year-scalar-query
+  "[:find ?year . :where [?artist :artist/name \"The Beatles\"] [?artist :artist/startYear ?year]]")
+
 (def track-count-query
   "[:find (count ?track) :where [?artist :artist/name \"The Beatles\"] [?track :track/artists ?artist] [?track :track/name]]")
 
@@ -124,6 +133,19 @@
   timing: bench.Timing
 })
 
+(defenum Find-Value-Kind [
+  Collection
+  Tuple
+  Scalar
+])
+
+(defstruct Find-Value-Timing {
+  value: vev.Value
+  ok: bool
+  kind: Find-Value-Kind
+  timing: bench.Timing
+})
+
 (defn profile-timing [profiled: vev.Profiled-Result-Set, timing: bench.Timing] -> Profile-Timing
   (Profile-Timing {profiled: profiled timing: timing}))
 
@@ -132,6 +154,9 @@
 
 (defn keyed-timing [rows: [dynamic]vev.Keyed-Row, timing: bench.Timing] -> Keyed-Timing
   (Keyed-Timing {rows: rows timing: timing}))
+
+(defn find-value-timing [value: vev.Value, ok: bool, kind: Find-Value-Kind, timing: bench.Timing] -> Find-Value-Timing
+  (Find-Value-Timing {value: value ok: ok kind: kind timing: timing}))
 
 (defn seed-mini [] -> vev.Conn
   (let [conn (vev.create-conn)
@@ -225,6 +250,53 @@
       (for [item value.items]
         (arr.push! keys (vev.value-serializable-text item)))
       (arr.push! keys (vev.value-serializable-text value)))
+    (arr.sort! keys)
+    (let [hash (u64 0)]
+      (for [key keys]
+        (set! hash (fingerprint-text hash key))
+        (set! hash (fingerprint-text hash "\n")))
+      (for [key keys]
+        (delete key))
+      hash)))
+
+(defn tuple-value-row-key [value: vev.Value] -> string
+  (let [parts (make [dynamic]string) :defer
+        owned-parts (make [dynamic]string) :defer]
+    (if (= value.kind .Vector)
+      (for [item index value.items]
+        (when (> index 0)
+          (let [[separator _] (strings.clone "|")]
+            (arr.push! parts separator)
+            (arr.push! owned-parts separator)))
+        (let [text (vev.value-serializable-text item)]
+          (arr.push! parts text)
+          (arr.push! owned-parts text)))
+      (let [text (vev.value-serializable-text value)]
+        (arr.push! parts text)
+        (arr.push! owned-parts text)))
+    (let [out (strings.concatenate (slice parts 0))]
+      (for [part owned-parts]
+        (delete part))
+      out)))
+
+(defn find-value-row-count [measured: Find-Value-Timing] -> int
+  (case measured.kind
+    .Collection (if (= measured.value.kind .Vector)
+                  (return (count measured.value.items))
+                  (return 1))
+    .Tuple (return 1)
+    .Scalar (return 1))
+  1)
+
+(defn find-value-fingerprint [measured: Find-Value-Timing] -> u64
+  (let [keys (make [dynamic]string) :defer]
+    (case measured.kind
+      .Collection (if (= measured.value.kind .Vector)
+                    (for [item measured.value.items]
+                      (arr.push! keys (vev.value-serializable-text item)))
+                    (arr.push! keys (vev.value-serializable-text measured.value)))
+      .Tuple (arr.push! keys (tuple-value-row-key measured.value))
+      .Scalar (arr.push! keys (vev.value-serializable-text measured.value)))
     (arr.sort! keys)
     (let [hash (u64 0)]
       (for [key keys]
@@ -346,6 +418,60 @@
 
 (defn print-workload! [db: vev.DB, workload: string, query: string, inputs: []vev.Query-Input, warmups: int, samples: int, print-rows: bool]
   (print-workload-with-rules! db workload query inputs "" false warmups samples print-rows))
+
+(defn run-find-value [db: vev.DB, query: string, kind: Find-Value-Kind] -> [value: vev.Value, ok: bool]
+  (case kind
+    .Collection (return (vev.value-vector (slice (vev.q-text-collection db query) 0)) true)
+    .Tuple (return (vev.value-vector (slice (vev.q-text-tuple db query) 0)) true)
+    .Scalar (let [[value ok] (vev.q-text-scalar db query)]
+              (return value ok)))
+  (return (vev.value-nil) false))
+
+(defn time-find-value-query [db: vev.DB, query: string, kind: Find-Value-Kind, warmups: int, samples-count: int] -> Find-Value-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (let [[value _] (run-find-value db query kind)]
+      (discard value)))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            [value _] (run-find-value db query kind)
+            elapsed (bench.elapsed-us start)]
+        (discard value)
+        (arr.push! samples elapsed)))
+    (let [[value ok] (run-find-value db query kind)]
+      (find-value-timing value ok kind (bench.timing-from-samples (slice samples 0))))))
+
+(defn print-find-value-rows [workload: string, measured: Find-Value-Timing]
+  (let [keys (make [dynamic]string) :defer]
+    (case measured.kind
+      .Collection (if (= measured.value.kind .Vector)
+                    (for [item measured.value.items]
+                      (arr.push! keys (vev.value-serializable-text item)))
+                    (arr.push! keys (vev.value-serializable-text measured.value)))
+      .Tuple (arr.push! keys (tuple-value-row-key measured.value))
+      .Scalar (arr.push! keys (vev.value-serializable-text measured.value)))
+    (arr.sort! keys)
+    (for [key keys]
+      (fmt.printf "row engine=vev workload=%s key=%s\n" workload key)
+      (delete key))))
+
+(defn print-find-value-workload! [db: vev.DB, workload: string, query: string, kind: Find-Value-Kind, warmups: int, samples: int, print-rows: bool]
+  (let [measured (time-find-value-query db query kind warmups samples)]
+    (fmt.printf
+      "engine=vev workload=%s ok=%v rows=%d fingerprint=%016x min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f\n"
+      workload
+      measured.ok
+      (find-value-row-count measured)
+      (find-value-fingerprint measured)
+      measured.timing.min-us
+      measured.timing.median-us
+      measured.timing.p90-us
+      measured.timing.max-us)
+    (when print-rows
+      (print-find-value-rows workload measured))))
 
 (defn q-text-keyed [db: vev.DB, query: string, kind: string] -> [dynamic]vev.Keyed-Row
   (if (= kind ":strs")
@@ -503,6 +629,9 @@
           track-first-workload (fmt.tprintf "musicbrainz-%s-track-first" dataset)
           john-lennon-pre-1970-tracks-workload (fmt.tprintf "musicbrainz-%s-john-lennon-pre-1970-tracks" dataset)
           beatles-releases-workload (fmt.tprintf "musicbrainz-%s-beatles-releases" dataset)
+          beatles-short-track-collection-workload (fmt.tprintf "musicbrainz-%s-beatles-short-track-collection" dataset)
+          abbey-road-release-date-tuple-workload (fmt.tprintf "musicbrainz-%s-abbey-road-release-date-tuple" dataset)
+          beatles-start-year-scalar-workload (fmt.tprintf "musicbrainz-%s-beatles-start-year-scalar" dataset)
           track-count-workload (fmt.tprintf "musicbrainz-%s-beatles-track-count" dataset)
           min-max-duration-workload (fmt.tprintf "musicbrainz-%s-beatles-min-max-duration" dataset)
           lookup-country-workload (fmt.tprintf "musicbrainz-%s-lookup-country" dataset)
@@ -537,6 +666,12 @@
         (print-workload! conn.db john-lennon-pre-1970-tracks-workload john-lennon-pre-1970-tracks-query john-lennon-input warmups samples print-rows))
       (when (should-run? selected beatles-releases-workload)
         (print-workload! conn.db beatles-releases-workload beatles-releases-query no-inputs warmups samples print-rows))
+      (when (should-run? selected beatles-short-track-collection-workload)
+        (print-find-value-workload! conn.db beatles-short-track-collection-workload beatles-short-track-collection-query .Collection warmups samples print-rows))
+      (when (should-run? selected abbey-road-release-date-tuple-workload)
+        (print-find-value-workload! conn.db abbey-road-release-date-tuple-workload abbey-road-release-date-tuple-query .Tuple warmups samples print-rows))
+      (when (should-run? selected beatles-start-year-scalar-workload)
+        (print-find-value-workload! conn.db beatles-start-year-scalar-workload beatles-start-year-scalar-query .Scalar warmups samples print-rows))
       (when (should-run? selected track-count-workload)
         (print-workload! conn.db track-count-workload track-count-query no-inputs warmups samples print-rows))
       (when (should-run? selected min-max-duration-workload)

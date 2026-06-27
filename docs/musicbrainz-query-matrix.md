@@ -59,6 +59,9 @@ tutorial-shaped batches:
 | `musicbrainz-real-track-first` | `89 / 9902d35f51335e40` | `89 / 9902d35f51335e40` | Equal rows | Clause order no longer creates the large track/release cross product |
 | `musicbrainz-real-john-lennon-pre-1970-tracks` | `18 / 4598839c2af58631` | `18 / 4598839c2af58631` | Equal rows | Day-of-Datomic final query-stats example with release/media/track traversal |
 | `musicbrainz-real-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Constant artist lookup plus release join is fast in Vev |
+| `musicbrainz-real-beatles-short-track-collection` | `140 / 50498f806d973af7` | `140 / 50498f806d973af7` | Equal rows | Collection find spec `:find [?track-name ...]` over real track rows |
+| `musicbrainz-real-abbey-road-release-date-tuple` | `1 / 732a43b5597588ae` | `1 / 732a43b5597588ae` | Equal rows | Tuple find spec `:find [?year ?month ?day]` over a selected release date |
+| `musicbrainz-real-beatles-start-year-scalar` | `1 / 0000000363d12a10` | `1 / 0000000363d12a10` | Equal rows | Scalar find spec `:find ?year .` over artist start year |
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
 | `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
@@ -105,9 +108,9 @@ These workshop shapes are covered by passing Vev tests:
 | Tuple binding | `:in $ [?artist-name ?release-name]` | `query-input-collection` tuple value |
 | Relation binding | `:in $ [[?artist-name ?release-name]]` | `query-input-relation` |
 | Relation find spec | `:find ?artist-name ?release-name` | `q-text` result rows |
-| Collection find spec | `:find [?release-name ...]` | `q-text-collection` |
-| Tuple find spec | `:find [?year ?month ?day]` | `q-text-tuple` |
-| Scalar find spec | `:find ?year .` | `q-text-scalar` |
+| Collection find spec | `:find [?release-name ...]` | mini fixture plus restored-sample comparison row |
+| Tuple find spec | `:find [?year ?month ?day]` | mini fixture plus restored-sample comparison row |
+| Scalar find spec | `:find ?year .` | mini fixture plus restored-sample comparison row |
 | Return maps | `:keys artist release` | `q-text-keys` |
 | Predicate expressions | `[(< ?year 1970)]`, `[(> ?duration ...)]` | query predicates |
 | Function expressions | `[(quot ?millis 60000) ?minutes]` | query functions |
@@ -154,6 +157,7 @@ These are not current blockers for the Vev engine:
 | Datomic peer cache/io-stats details | Datomic implementation-specific |
 | Datomic log APIs: `d/log`, `tx-ids`, `tx-data` | Future time/log/durability phase |
 | Fulltext query `(fulltext $ :attr q)` | Requires a fulltext index design |
+| Tagged EDN reader literals such as `#uuid "..."` | Vev supports bare UUID tokens today; Datomic reader-tag spelling should be added to the EDN parser |
 | Arbitrary JVM calls such as `System/getProperties` or method calls | Host/JVM-specific |
 | Datomic timeout object shape | Host/API behavior; Vev can expose a native timeout later |
 

@@ -67,6 +67,34 @@
              [?release :release/artists ?artist]
              [?release :release/name ?release-name]]
     :args []}
+   {:name "musicbrainz-real-beatles-short-track-collection"
+    :result-kind :collection
+    :query '[:find [?track-name ...]
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?track :track/artists ?artist]
+             [?track :track/name ?track-name]
+             [?track :track/duration ?duration]
+             [(< ?duration 300000)]]
+    :args []}
+   {:name "musicbrainz-real-abbey-road-release-date-tuple"
+    :result-kind :tuple
+    :query '[:find [?year ?month ?day]
+             :where
+             [?release :release/name "Abbey Road"]
+             [?release :release/month 9]
+             [?release :release/day 26]
+             [?release :release/year ?year]
+             [?release :release/month ?month]
+             [?release :release/day ?day]]
+    :args []}
+   {:name "musicbrainz-real-beatles-start-year-scalar"
+    :result-kind :scalar
+    :query '[:find ?year .
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?artist :artist/startYear ?year]]
+    :args []}
    {:name "musicbrainz-real-beatles-track-count"
     :query '[:find (count ?track)
              :where
@@ -304,6 +332,12 @@
   (let [values (if (sequential? row) row [row])]
     (str/join "|" (map canonical-text values))))
 
+(defn result-rows [result result-kind]
+  (case result-kind
+    :tuple (if (seq result) [result] [])
+    :scalar [result]
+    result))
+
 (defn result-fingerprint [rows]
   (let [hash (reduce
               (fn [hash key]
@@ -313,6 +347,9 @@
         hex (.toString (biginteger hash) 16)]
     (str (apply str (repeat (max 0 (- 16 (count hex))) "0"))
          hex)))
+
+(defn result-row-count [rows]
+  (count rows))
 
 (defn elapsed-us [f]
   (let [start (System/nanoTime)
@@ -334,26 +371,27 @@
   (doseq [key (sort (map result-row-key rows))]
     (println (format "row engine=datomic workload=%s key=%s" workload key))))
 
-(defn run-query [db warmups samples print-rows? {:keys [name query args]}]
+(defn run-query [db warmups samples print-rows? {:keys [name query args result-kind]}]
   (dotimes [_ warmups]
     (apply d/q query db args))
   (let [sample-us (doall
                    (for [_ (range samples)]
                      (second (elapsed-us #(apply d/q query db args)))))
         result (apply d/q query db args)
+        rows (result-rows result result-kind)
         t (timing sample-us)]
     (println
      (format
       "engine=datomic workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
       name
-      (count result)
-      (result-fingerprint result)
+      (result-row-count rows)
+      (result-fingerprint rows)
       (:min t)
       (:median t)
       (:p90 t)
       (:max t)))
     (when print-rows?
-      (print-result-rows name result))))
+      (print-result-rows name rows))))
 
 (defn workload-result [db {:keys [kind query args pattern entity entities]}]
   (case kind
@@ -370,19 +408,20 @@
                        (for [_ (range samples)]
                          (second (elapsed-us #(workload-result db workload)))))
             result (workload-result db workload)
+            rows (result-rows result (:result-kind workload))
             t (timing sample-us)]
         (println
          (format
           "engine=datomic workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
           name
-          (count result)
-          (result-fingerprint result)
+          (result-row-count rows)
+          (result-fingerprint rows)
           (:min t)
           (:median t)
           (:p90 t)
           (:max t)))
         (when print-rows?
-          (print-result-rows name result))))
+          (print-result-rows name rows))))
     (run-query db warmups samples print-rows? workload)))
 
 (defn parse-int-arg [args name default-value]
