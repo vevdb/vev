@@ -50,6 +50,18 @@
         (when-not (= #{["Ada"]} requested)
           (throw (ex-info "unexpected query map output" {:rows requested}))))
 
+      (let [db (vev/db conn)
+            keyed (vev/query
+                   {:query '[:find ?name ?email
+                             :keys name email
+                             :in $ ?email
+                             :where [?e :user/email ?email]
+                             [?e :user/name ?name]]
+                    :args [db "ada@example.com"]})]
+        (println "query-map keys:" keyed)
+        (when-not (= #{{:name "Ada" :email "ada@example.com"}} keyed)
+          (throw (ex-info "unexpected query map keyed output" {:rows keyed}))))
+
       (vev/transact! conn
                      [[:db/add 90 :db/ident :user/email]
                       [:db/add 90 :db/unique :db.unique/identity]])

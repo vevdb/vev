@@ -41,6 +41,18 @@ For Datomic `d/query`-style host code, use `query` with a request map:
    :args [db "ada@example.com"]})
 ```
 
+Return-map markers produce Clojure maps:
+
+```clojure
+(vev/q
+  '[:find ?name ?email
+    :keys name email
+    :where [?e :user/name ?name]
+           [?e :user/email ?email]]
+  db)
+;; => #{{:name "Ada", :email "ada@example.com"}}
+```
+
 Inputs are passed as ordinary arguments after the query and DB:
 
 ```clojure
