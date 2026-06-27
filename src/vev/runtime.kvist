@@ -103,6 +103,27 @@
       (arr.push! out (tx-data-owned data)))
     out))
 
+(defn get-some-owned [clause: Get-Some] -> Get-Some
+  (let [attrs (arr.into [dynamic]string (slice clause.attrs 0))]
+    (Get-Some {e: clause.e
+               attrs: attrs
+               out-attr: clause.out-attr
+               out-value: clause.out-value})))
+
+(defn get-some-slice-owned [clauses: []Get-Some] -> [dynamic]Get-Some
+  (let [out (make [dynamic]Get-Some 0 (count clauses))]
+    (for [clause clauses]
+      (arr.push! out (get-some-owned clause)))
+    out))
+
+(defn delete-get-some [clause: Get-Some]
+  (delete clause.attrs))
+
+(defn delete-get-somes [clauses: [dynamic]Get-Some]
+  (for [clause clauses]
+    (delete-get-some clause))
+  (delete clauses))
+
 
 (defn query-with-rules [query: Query, rules: []Rule] -> Query
   (let [out query]
@@ -128,7 +149,7 @@
         rule-calls (arr.into [dynamic]Rule-Call (slice query.rule-calls 0))
         rule-call-plans (clone-rule-call-plans (slice query.rule-call-plans 0))
         get-elses (arr.into [dynamic]Get-Else (slice query.get-elses 0))
-        get-somes (arr.into [dynamic]Get-Some (slice query.get-somes 0))
+        get-somes (get-some-slice-owned (slice query.get-somes 0))
         grounds (arr.into [dynamic]Ground (slice query.grounds 0))
         not-groups (arr.into [dynamic]Not-Group (slice query.not-groups 0))
         or-groups (arr.into [dynamic]Or-Group (slice query.or-groups 0))
@@ -176,7 +197,7 @@
   (delete query.rule-calls)
   (delete-rule-call-plans query.rule-call-plans)
   (delete query.get-elses)
-  (delete query.get-somes)
+  (delete-get-somes query.get-somes)
   (delete query.grounds)
   (delete query.not-groups)
   (delete query.or-groups)
@@ -5665,6 +5686,12 @@
         (binding-with-value binding clause.out value)
         (binding-with-value binding clause.out clause.default-value)))))
 
+(defn get-some-attr-result-value [db: DB, attr: string] -> Value
+  (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
+    (if schema-ok
+      (value-entity schema-e)
+      (value-keyword attr))))
+
 (defn apply-get-some [db: DB, binding: Binding, clause: Get-Some] -> [next: Binding, ok: bool]
   (let [[entity entity-ok] (resolve-entity-term db clause.e binding)]
     (when (not (and entity-ok (= entity.kind .Entity)))
@@ -5672,7 +5699,7 @@
     (for [attr clause.attrs]
       (let [[value value-ok] (pull-attr-value db entity.entity attr)]
         (when value-ok
-          (let [[with-attr attr-ok] (binding-with-value binding clause.out-attr (value-keyword attr))]
+          (let [[with-attr attr-ok] (binding-with-value binding clause.out-attr (get-some-attr-result-value db attr))]
             (when (not attr-ok)
               (return with-attr false))
             (return (binding-with-value with-attr clause.out-value value))))))
@@ -8248,7 +8275,7 @@
     (for [name vars]
       (arr.push! inner name))
     (let [[joined _] (core-strings.join (slice inner 0) " ")]
-      (core-strings.concatenate ([]string ["[" joined "]"])))))
+      (return (core-strings.concatenate ([]string ["[" joined "]"]))))))
 
 (defn query-potential-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)
@@ -8860,21 +8887,23 @@
         (value-int sorted[mid])
         (value-int (/ (+ sorted[(- mid 1)] sorted[mid]) 2))))))
 
-(defn variance-int [values: []i64] -> Value
+(defn variance-float [values: []i64] -> Value
   (when (= (count values) 0)
     (return (value-int 0)))
-  (let [sum: i64 0]
+  (let [sum: f64 0]
     (for [value values]
-      (set! sum (+ sum value)))
-    (let [mean (/ sum (i64 (count values)))
-          squared: i64 0]
+      (set! sum (+ sum (f64 value))))
+    (let [mean (/ sum (f64 (count values)))
+          squared: f64 0]
       (for [value values]
-        (let [diff (- value mean)]
+        (let [diff (- (f64 value) mean)]
           (set! squared (+ squared (* diff diff)))))
-      (value-int (/ squared (i64 (count values)))))))
+      (value-float (/ squared (f64 (count values)))))))
 
 (defn stddev-float [values: []i64] -> Value
-  (let [variance (variance-int values)]
+  (let [variance (variance-float values)]
+    (when (= variance.kind .Float)
+      (return (value-float (math.sqrt variance.float-value))))
     (value-float (math.sqrt (f64 variance.int-value)))))
 
 (defn aggregate-function-name [binding: Binding, aggregate: Aggregate-Find] -> [name: string, ok: bool]
@@ -9039,7 +9068,7 @@
     (when (= aggregate.op "median")
       (return (median-int (slice aggregate-ints 0))))
     (when (= aggregate.op "variance")
-      (return (variance-int (slice aggregate-ints 0))))
+      (return (variance-float (slice aggregate-ints 0))))
     (when (= aggregate.op "stddev")
       (return (stddev-float (slice aggregate-ints 0))))
     (when (= aggregate.op "aggregate")
@@ -11439,7 +11468,7 @@
     (let [rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice bindings 0) registry)]
       (delete bindings)
       (set! stats.output-rows (count rows))
-      (profiled-result-set (result-set-ok rows) stats)))))
+      (return (profiled-result-set (result-set-ok rows) stats))))))
 
 (defn q-query-with-sources-and-fns [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Result-Set
   (q-query-profiled-with-sources-and-fns db query inputs sources registry).result)

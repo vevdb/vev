@@ -97,16 +97,20 @@ relation binding, scalar/tuple/collection find specs, rule-backed queries,
 duration function expressions, return maps, enum refs through `:db/ident`,
 `get-else`, statistics aggregates, and nested pull through
 release/media/tracks. It also covers wildcard pull, map-form EDN queries,
-split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`,
-lookup-ref inputs, dynamic attr inputs, and top-n aggregates. The detailed
-coverage ledger is `docs/musicbrainz-query-matrix.md`.
+split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`, dynamic
+pull pattern inputs, `missing?`, lookup-ref inputs, dynamic attr inputs, top-n
+aggregates, and the Day-of-Datomic query-stats final John Lennon pre-1970
+tracks example. Restored `get-some` rows now match Datomic's attr-entity
+semantics by projecting the attr through `:db/ident`. The detailed coverage ledger is
+`docs/musicbrainz-query-matrix.md`.
 
 The restored Datomic comparison matrix now also covers release date
-projection, `get-else`, dynamic attr input, and top-n aggregate rows against
-the real 1968-1973 sample. One promoted `get-some` shape exposed a remaining
-restored-data gap: Datomic returns the numeric attr entity id for `?attr`, while
-Vev's mini fixture covers the shape but the restored-sample row currently
-returns no result.
+projection, `get-else`, restored `get-some`, `:keys`/`:strs`/`:syms`
+return-map rows, collection/tuple/scalar find specs, function expressions,
+enum refs through `:db/ident`, grouped median/avg aggregates with `:with`,
+dynamic pull pattern input, Datomic-style tagged UUID literals, `missing?`,
+dynamic attr input, query-stats tutorial traversal, and top-n aggregate rows
+against the real 1968-1973 sample.
 
 The restored sample forced one real Vev data-model addition: UUID values.
 MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use

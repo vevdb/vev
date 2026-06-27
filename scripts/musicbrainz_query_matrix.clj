@@ -47,12 +47,71 @@
              [?r :release/media ?m]
              [?m :medium/tracks ?t]]
     :args ["The Beatles"]}
+   {:name "musicbrainz-real-john-lennon-pre-1970-tracks"
+    :query '[:find ?title ?album ?year
+             :in $ ?artist-name
+             :where
+             [?a :artist/name ?artist-name]
+             [?r :release/artists ?a]
+             [?r :release/year ?year]
+             [?r :release/name ?album]
+             [(< ?year 1970)]
+             [?r :release/media ?m]
+             [?m :medium/tracks ?t]
+             [?t :track/name ?title]]
+    :args ["John Lennon"]}
    {:name "musicbrainz-real-beatles-releases"
     :query '[:find ?release-name
              :where
              [?artist :artist/name "The Beatles"]
              [?release :release/artists ?artist]
              [?release :release/name ?release-name]]
+    :args []}
+   {:name "musicbrainz-real-beatles-short-track-collection"
+    :result-kind :collection
+    :query '[:find [?track-name ...]
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?track :track/artists ?artist]
+             [?track :track/name ?track-name]
+             [?track :track/duration ?duration]
+             [(< ?duration 300000)]]
+    :args []}
+   {:name "musicbrainz-real-abbey-road-release-date-tuple"
+    :result-kind :tuple
+    :query '[:find [?year ?month ?day]
+             :where
+             [?release :release/gid #uuid "eca8996a-a637-3259-ba07-d2573c601a1b"]
+             [?release :release/year ?year]
+             [?release :release/month ?month]
+             [?release :release/day ?day]]
+    :args []}
+   {:name "musicbrainz-real-beatles-start-year-scalar"
+    :result-kind :scalar
+    :query '[:find ?year .
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?artist :artist/startYear ?year]]
+    :args []}
+   {:name "musicbrainz-real-abbey-road-track-minutes"
+    :query '[:find ?track-name ?minutes
+             :where
+             [?release :release/gid #uuid "eca8996a-a637-3259-ba07-d2573c601a1b"]
+             [?release :release/media ?medium]
+             [?medium :medium/tracks ?track]
+             [?track :track/name ?track-name]
+             [?track :track/duration ?millis]
+             [(quot ?millis 60000) ?minutes]]
+    :args []}
+   {:name "musicbrainz-real-miles-enum-id"
+    :query '[:find ?id ?type ?gender
+             :where
+             [?artist :artist/name "Miles Davis"]
+             [?artist :artist/gid ?id]
+             [?artist :artist/type ?type-entity]
+             [?type-entity :db/ident ?type]
+             [?artist :artist/gender ?gender-entity]
+             [?gender-entity :db/ident ?gender]]
     :args []}
    {:name "musicbrainz-real-beatles-track-count"
     :query '[:find (count ?track)
@@ -67,6 +126,17 @@
              [?artist :artist/name "The Beatles"]
              [?track :track/artists ?artist]
              [?track :track/duration ?dur]]
+    :args []}
+   {:name "musicbrainz-real-beatles-duration-stats"
+    :query '[:find ?year (median ?millis) (avg ?millis)
+             :with ?track
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?release :release/artists ?artist]
+             [?release :release/year ?year]
+             [?release :release/media ?medium]
+             [?medium :medium/tracks ?track]
+             [?track :track/duration ?millis]]
     :args []}
    {:name "musicbrainz-real-lookup-country"
     :query '[:find ?name
@@ -98,6 +168,19 @@
              [?artist :artist/name ?artist-name]
              [(get-else $ ?artist :artist/startMonth "N/A") ?month]]
     :args [["The Beatles" "Miles Davis"]]}
+   {:name "musicbrainz-real-get-some-country"
+    :query '[:find ?attr-ident ?name
+             :where
+             [?entity :country/name "United Kingdom"]
+             [(get-some $ ?entity :country/name :artist/name) [?attr ?name]]
+             [?attr :db/ident ?attr-ident]]
+    :args []}
+   {:name "musicbrainz-real-missing-start-year"
+    :query '[:find ?artist-name
+             :where
+             [?artist :artist/name ?artist-name]
+             [(missing? $ ?artist :artist/startYear)]]
+    :args []}
    {:name "musicbrainz-real-dynamic-attr"
     :query '[:find ?artist-name
              :in $ ?country-name [?reference ...]
@@ -160,6 +243,33 @@
              [?release :release/artists ?artist]
              [?release :release/name ?release-name]]
     :args []}
+   {:name "musicbrainz-real-keys-beatles-releases"
+    :query '[:find ?artist-name ?release-name
+             :keys artist release
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?artist :artist/name ?artist-name]
+             [?release :release/artists ?artist]
+             [?release :release/name ?release-name]]
+    :args []}
+   {:name "musicbrainz-real-strs-beatles-releases"
+    :query '[:find ?artist-name ?release-name
+             :strs artist release
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?artist :artist/name ?artist-name]
+             [?release :release/artists ?artist]
+             [?release :release/name ?release-name]]
+    :args []}
+   {:name "musicbrainz-real-syms-beatles-releases"
+    :query '[:find ?artist-name ?release-name
+             :syms artist release
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?artist :artist/name ?artist-name]
+             [?release :release/artists ?artist]
+             [?release :release/name ?release-name]]
+    :args []}
    {:name "musicbrainz-real-rule-track-info"
     :query '[:find ?track-name ?album ?year
              :in $ % ?artist-name
@@ -173,6 +283,13 @@
              :where
              [?release :release/name ?release-name]]
     :args [["Abbey Road" "In a Silent Way"]]}
+   {:name "musicbrainz-real-dynamic-pull-release"
+    :query '[:find (pull ?release pattern)
+             :in $ ?artist-name pattern
+             :where
+             [?artist :artist/name ?artist-name]
+             [?release :release/artists ?artist]]
+    :args ["Led Zeppelin" [:release/name]]}
    {:name "musicbrainz-real-pull-release-nested"
     :query '[:find (pull ?release [:release/gid
                                     :release/name
@@ -237,12 +354,22 @@
     (instance? java.util.UUID value)
     (str value)
 
+    (or (instance? Double value)
+        (instance? Float value))
+    (str "[:vev/float \"" value "\"]")
+
     :else
     (pr-str value)))
 
 (defn result-row-key [row]
   (let [values (if (sequential? row) row [row])]
     (str/join "|" (map canonical-text values))))
+
+(defn result-rows [result result-kind]
+  (case result-kind
+    :tuple (if (seq result) [result] [])
+    :scalar [result]
+    result))
 
 (defn result-fingerprint [rows]
   (let [hash (reduce
@@ -253,6 +380,9 @@
         hex (.toString (biginteger hash) 16)]
     (str (apply str (repeat (max 0 (- 16 (count hex))) "0"))
          hex)))
+
+(defn result-row-count [rows]
+  (count rows))
 
 (defn elapsed-us [f]
   (let [start (System/nanoTime)
@@ -274,26 +404,27 @@
   (doseq [key (sort (map result-row-key rows))]
     (println (format "row engine=datomic workload=%s key=%s" workload key))))
 
-(defn run-query [db warmups samples print-rows? {:keys [name query args]}]
+(defn run-query [db warmups samples print-rows? {:keys [name query args result-kind]}]
   (dotimes [_ warmups]
     (apply d/q query db args))
   (let [sample-us (doall
                    (for [_ (range samples)]
                      (second (elapsed-us #(apply d/q query db args)))))
         result (apply d/q query db args)
+        rows (result-rows result result-kind)
         t (timing sample-us)]
     (println
      (format
       "engine=datomic workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
       name
-      (count result)
-      (result-fingerprint result)
+      (result-row-count rows)
+      (result-fingerprint rows)
       (:min t)
       (:median t)
       (:p90 t)
       (:max t)))
     (when print-rows?
-      (print-result-rows name result))))
+      (print-result-rows name rows))))
 
 (defn workload-result [db {:keys [kind query args pattern entity entities]}]
   (case kind
@@ -310,19 +441,20 @@
                        (for [_ (range samples)]
                          (second (elapsed-us #(workload-result db workload)))))
             result (workload-result db workload)
+            rows (result-rows result (:result-kind workload))
             t (timing sample-us)]
         (println
          (format
           "engine=datomic workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
           name
-          (count result)
-          (result-fingerprint result)
+          (result-row-count rows)
+          (result-fingerprint rows)
           (:min t)
           (:median t)
           (:p90 t)
           (:max t)))
         (when print-rows?
-          (print-result-rows name result))))
+          (print-result-rows name rows))))
     (run-query db warmups samples print-rows? workload)))
 
 (defn parse-int-arg [args name default-value]
