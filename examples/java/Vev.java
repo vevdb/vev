@@ -152,7 +152,8 @@ public final class Vev {
     private final MethodHandle resultValueBool;
     private final MethodHandle resultValueText;
     private final MethodHandle valueKind;
-    private final MethodHandle valueText;
+    private final MethodHandle valueTextData;
+    private final MethodHandle valueTextLen;
     private final MethodHandle valueEntity;
     private final MethodHandle valueInt;
     private final MethodHandle valueFloat;
@@ -293,7 +294,8 @@ public final class Vev {
         this.resultValueBool = downcall("vev_result_value_bool", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultValueText = downcall("vev_result_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.valueKind = downcall("vev_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
-        this.valueText = downcall("vev_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.valueTextData = downcall("vev_value_text_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.valueTextLen = downcall("vev_value_text_len", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.valueEntity = downcall("vev_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         this.valueInt = downcall("vev_value_int", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         this.valueFloat = downcall("vev_value_float", FunctionDescriptor.of(ValueLayout.JAVA_DOUBLE, ValueLayout.ADDRESS));
@@ -453,7 +455,8 @@ public final class Vev {
     }
 
     private String textOf(MemorySegment value) throws Throwable {
-        return ownedString((MemorySegment) valueText.invoke(value));
+        int length = (int) valueTextLen.invoke(value);
+        return borrowedUtf8String((MemorySegment) valueTextData.invoke(value), length);
     }
 
     private String borrowedUtf8String(MemorySegment data, int length) {

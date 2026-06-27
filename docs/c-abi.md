@@ -969,12 +969,19 @@ Direct pull entry points use owned value handles:
 - `vev_value_handle_value`
 - `vev_value_handle_edn`
 - `vev_value_handle_free`
+- `vev_value_text_data`
+- `vev_value_text_len`
 
 `vev_value_visit` streams any nested `vev_value_t` tree through a C callback.
 It emits `VEV_VALUE_VISIT_VALUE` for every node and `VEV_VALUE_VISIT_END` after
 each vector/map container. The callback receives borrowed handles; callers must
 copy strings or EDN text they want to retain after the owning result/report is
 freed.
+
+`vev_value_text` returns an owned C string for string-like values. Hosts that
+are walking many nested pull values can avoid that allocation by using the
+borrowed `vev_value_text_data` plus `vev_value_text_len` pair. That byte view is
+valid only while the owning result, report, or value handle remains alive.
 
 `vev_result_visit` streams a typed result handle by row. It emits
 `VEV_RESULT_VISIT_ROW_BEGIN`, `VEV_RESULT_VISIT_VALUE`,

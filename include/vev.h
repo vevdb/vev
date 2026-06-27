@@ -370,6 +370,8 @@ long long vev_value_int(vev_value_t value);
 double vev_value_float(vev_value_t value);
 bool vev_value_bool(vev_value_t value);
 const char *vev_value_text(vev_value_t value);
+const void *vev_value_text_data(vev_value_t value);
+int vev_value_text_len(vev_value_t value);
 const char *vev_value_edn(vev_value_t value);
 int vev_value_item_count(vev_value_t value);
 vev_value_t vev_value_item(vev_value_t value, int index);
