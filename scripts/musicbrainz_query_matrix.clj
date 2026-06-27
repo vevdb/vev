@@ -140,7 +140,16 @@
              :in $ [?release-name ...]
              :where
              [?release :release/name ?release-name]]
-    :args [["Abbey Road" "In a Silent Way"]]}])
+    :args [["Abbey Road" "In a Silent Way"]]}
+   {:name "musicbrainz-real-direct-pull-artist"
+    :kind :pull
+    :pattern '[:artist/gid :artist/name :artist/startYear]
+    :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
+   {:name "musicbrainz-real-direct-pull-many-artists"
+    :kind :pull-many
+    :pattern '[:artist/gid :artist/name :artist/startYear]
+    :entities [[:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]
+               [:artist/gid #uuid "561d854a-6a28-4aa7-8c99-323e6ce46c2a"]]}])
 
 (def uint64-modulus 18446744073709551616N)
 (def fingerprint-seed 0N)
@@ -168,6 +177,9 @@
 
     (set? value)
     (str "#{" (str/join " " (sort (map canonical-text value))) "}")
+
+    (instance? java.util.UUID value)
+    (str value)
 
     :else
     (pr-str value)))
@@ -227,6 +239,36 @@
     (when print-rows?
       (print-result-rows name result))))
 
+(defn workload-result [db {:keys [kind query args pattern entity entities]}]
+  (case kind
+    :pull [(d/pull db pattern entity)]
+    :pull-many (d/pull-many db pattern entities)
+    (apply d/q query db args)))
+
+(defn run-workload [db warmups samples print-rows? workload]
+  (if (:kind workload)
+    (let [name (:name workload)]
+      (dotimes [_ warmups]
+        (workload-result db workload))
+      (let [sample-us (doall
+                       (for [_ (range samples)]
+                         (second (elapsed-us #(workload-result db workload)))))
+            result (workload-result db workload)
+            t (timing sample-us)]
+        (println
+         (format
+          "engine=datomic workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
+          name
+          (count result)
+          (result-fingerprint result)
+          (:min t)
+          (:median t)
+          (:p90 t)
+          (:max t)))
+        (when print-rows?
+          (print-result-rows name result))))
+    (run-query db warmups samples print-rows? workload)))
+
 (defn parse-int-arg [args name default-value]
   (let [idx (.indexOf args name)]
     (if (and (>= idx 0) (< (inc idx) (count args)))
@@ -255,7 +297,7 @@
         db (d/db conn)]
     (doseq [query queries
             :when (should-run? selected (:name query))]
-      (run-query db warmups samples print-rows? query))
+      (run-workload db warmups samples print-rows? query))
     (shutdown-agents)
     (System/exit 0)))
 

@@ -70,6 +70,8 @@ tutorial-shaped batches:
 | `musicbrainz-real-map-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Vev uses EDN map query text; Datomic harness uses the equivalent vector query |
 | `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Rule input `%` with composed track/release join |
 | `musicbrainz-real-pull-release` | `5 / 974ce160e8be7539` | `5 / 974ce160e8be7539` | Equal rows | Pull expression in query result over selected release names |
+| `musicbrainz-real-direct-pull-artist` | `1 / 0a11a6da90ea3115` | `1 / 0a11a6da90ea3115` | Equal rows | Direct pull by `:artist/gid` lookup ref |
+| `musicbrainz-real-direct-pull-many-artists` | `2 / 3b0d165020d81f40` | `2 / 3b0d165020d81f40` | Equal rows | Direct pull-many by `:artist/gid` lookup refs |
 
 The row fingerprints are generated from sorted projected EDN-ish row keys. Pull
 maps are rendered into canonical value text before fingerprinting so Datomic map
@@ -121,7 +123,6 @@ These should be ported next using the mini fixture first, then the restored
 
 | Shape | Source | Notes |
 | --- | --- | --- |
-| Direct host pull examples | `music_brainz.clj` | Engine and wrappers support pull; add real matrix rows for direct pull/pull-many |
 | Return-map host examples | `music_brainz.clj` | Engine supports return-map markers; add host adapter smoke/matrix examples |
 
 ## Host Or Datomic-Specific Later
@@ -140,8 +141,8 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Expand the real Datomic comparison matrix beyond the current fifteen rows:
-   direct pull API examples, pull-many, and return-map host wrappers.
+1. Expand the real Datomic comparison matrix beyond the current seventeen rows:
+   return-map host wrappers and richer direct pull examples.
 2. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.

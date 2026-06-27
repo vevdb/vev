@@ -187,28 +187,31 @@ Datomic MusicBrainz database. Latest single-sample local run:
 
 | Workload | Vev us | Datomic us | Rows | Fingerprint |
 |---|---:|---:|---:|---|
-| `musicbrainz-real-release-first` | 367782 | 81208 | 96 | `0ea8943f9ef3eb03` |
-| `musicbrainz-real-track-first` | 997562 | 114190 | 89 | `9902d35f51335e40` |
-| `musicbrainz-real-beatles-releases` | 391 | 1395 | 16 | `c57b012eecfd45ed` |
-| `musicbrainz-real-beatles-track-count` | 3529 | 3492 | 1 | `0000000007068a26` |
-| `musicbrainz-real-beatles-min-max-duration` | 2981 | 10998 | 1 | `9c45e54f061af2f6` |
-| `musicbrainz-real-lookup-country` | 36 | 4731 | 1 | `4167e0bf9abd1220` |
-| `musicbrainz-real-selected-artists-releases` | 528 | 5737 | 28 | `4887ecaa409643d2` |
-| `musicbrainz-real-not-beatles-male` | 7121 | 5225 | 1 | `ea45bdc7e8b8201b` |
-| `musicbrainz-real-or-two-artists` | 20761 | 2299 | 2 | `de67eb0f77cf6b42` |
-| `musicbrainz-real-relation-artist-release` | 149 | 8265 | 2 | `cb2f30e6783d093d` |
-| `musicbrainz-real-not-join-release` | 17284 | 4128 | 1 | `b6368059dfc36ef8` |
-| `musicbrainz-real-or-join-release` | 17652 | 1204 | 2 | `5f5db031e99d9c11` |
-| `musicbrainz-real-map-beatles-releases` | 342 | 566 | 16 | `c57b012eecfd45ed` |
-| `musicbrainz-real-rule-track-info` | 1833670 | 289896 | 90 | `5f20ceb057e27418` |
-| `musicbrainz-real-pull-release` | 246 | 3492 | 5 | `974ce160e8be7539` |
+| `musicbrainz-real-release-first` | 360388 | 82193 | 96 | `0ea8943f9ef3eb03` |
+| `musicbrainz-real-track-first` | 997198 | 105229 | 89 | `9902d35f51335e40` |
+| `musicbrainz-real-beatles-releases` | 454 | 1300 | 16 | `c57b012eecfd45ed` |
+| `musicbrainz-real-beatles-track-count` | 3531 | 3150 | 1 | `0000000007068a26` |
+| `musicbrainz-real-beatles-min-max-duration` | 2967 | 10409 | 1 | `9c45e54f061af2f6` |
+| `musicbrainz-real-lookup-country` | 51 | 3371 | 1 | `4167e0bf9abd1220` |
+| `musicbrainz-real-selected-artists-releases` | 520 | 5625 | 28 | `4887ecaa409643d2` |
+| `musicbrainz-real-not-beatles-male` | 6846 | 5810 | 1 | `ea45bdc7e8b8201b` |
+| `musicbrainz-real-or-two-artists` | 20424 | 2231 | 2 | `de67eb0f77cf6b42` |
+| `musicbrainz-real-relation-artist-release` | 134 | 9320 | 2 | `cb2f30e6783d093d` |
+| `musicbrainz-real-not-join-release` | 17295 | 3917 | 1 | `b6368059dfc36ef8` |
+| `musicbrainz-real-or-join-release` | 17490 | 1222 | 2 | `5f5db031e99d9c11` |
+| `musicbrainz-real-map-beatles-releases` | 330 | 565 | 16 | `c57b012eecfd45ed` |
+| `musicbrainz-real-rule-track-info` | 1842997 | 320417 | 90 | `5f20ceb057e27418` |
+| `musicbrainz-real-pull-release` | 545 | 4042 | 5 | `974ce160e8be7539` |
+| `musicbrainz-real-direct-pull-artist` | 51 | 4899 | 1 | `0a11a6da90ea3115` |
+| `musicbrainz-real-direct-pull-many-artists` | 45 | 2539 | 2 | `3b0d165020d81f40` |
 
 This snapshot says Vev is already strong on indexed lookup, bounded relation
-input, and selected collection-input joins, but the restored-sample multi-hop
-track/release joins, rule-expanded track/release joins, and bounded
-`or`/`not-join` forms still need planner work. Those slower rows should drive
-general clause planning, rule planning, disjunction planning, and anti-join
-planning rather than workload-specific shortcuts.
+input, direct lookup-ref pull, direct lookup-ref pull-many, and selected
+collection-input joins, but the restored-sample multi-hop track/release joins,
+rule-expanded track/release joins, and bounded `or`/`not-join` forms still need
+planner work. Those slower rows should drive general clause planning, rule
+planning, disjunction planning, and anti-join planning rather than
+workload-specific shortcuts.
 
 The next import-performance work is no longer basic feasibility. The remaining
 write-side architecture issue is whole-array DB/index ownership and publication
