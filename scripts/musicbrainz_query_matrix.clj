@@ -82,6 +82,35 @@
              [?release :release/artists ?artist]
              [?release :release/name ?release-name]]
     :args [["The Beatles" "Miles Davis"]]}
+   {:name "musicbrainz-real-release-date"
+    :query '[:find ?release-name ?year ?month ?day
+             :in $ [?release-name ...]
+             :where
+             [?release :release/name ?release-name]
+             [?release :release/year ?year]
+             [?release :release/month ?month]
+             [?release :release/day ?day]]
+    :args [["Abbey Road" "In a Silent Way" "Bitches Brew"]]}
+   {:name "musicbrainz-real-fallback-start-month"
+    :query '[:find ?artist-name ?month
+             :in $ [?artist-name ...]
+             :where
+             [?artist :artist/name ?artist-name]
+             [(get-else $ ?artist :artist/startMonth "N/A") ?month]]
+    :args [["The Beatles" "Miles Davis"]]}
+   {:name "musicbrainz-real-dynamic-attr"
+    :query '[:find ?artist-name
+             :in $ ?country-name [?reference ...]
+             :where
+             [?country :country/name ?country-name]
+             [?artist ?reference ?country]
+             [?artist :artist/name ?artist-name]]
+    :args ["United Kingdom" [:artist/country]]}
+   {:name "musicbrainz-real-top-duration"
+    :query '[:find (min 2 ?millis) (max 2 ?millis)
+             :where
+             [?track :track/duration ?millis]]
+    :args []}
    {:name "musicbrainz-real-not-beatles-male"
     :query '[:find ?artist-name
              :where

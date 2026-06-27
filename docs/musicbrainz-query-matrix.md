@@ -62,6 +62,10 @@ tutorial-shaped batches:
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
 | `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
 | `musicbrainz-real-selected-artists-releases` | `28 / 4887ecaa409643d2` | `28 / 4887ecaa409643d2` | Equal rows | Collection input binding over two artist names |
+| `musicbrainz-real-release-date` | `3 / 8853c19c0b82edfa` | `3 / 8853c19c0b82edfa` | Equal rows | Tuple-shaped release date projection over selected releases |
+| `musicbrainz-real-fallback-start-month` | `2 / ea197a760bcc6589` | `2 / ea197a760bcc6589` | Equal rows | `get-else` over selected artists with mixed present/default values |
+| `musicbrainz-real-dynamic-attr` | `482 / ffee4f7469006cd3` | `482 / ffee4f7469006cd3` | Equal rows | Dynamic attr input binding over `:artist/country` |
+| `musicbrainz-real-top-duration` | `1 / 949eb8db5ef70199` | `1 / 949eb8db5ef70199` | Equal rows | Top-n min/max aggregates over all track durations |
 | `musicbrainz-real-not-beatles-male` | `1 / ea45bdc7e8b8201b` | `1 / ea45bdc7e8b8201b` | Equal rows | Bounded `not` query uses planned group clauses |
 | `musicbrainz-real-or-two-artists` | `2 / de67eb0f77cf6b42` | `2 / de67eb0f77cf6b42` | Equal rows | Bounded `or` query uses planned branch clauses |
 | `musicbrainz-real-relation-artist-release` | `2 / cb2f30e6783d093d` | `2 / cb2f30e6783d093d` | Equal rows | Relation tuple input for artist/release pairs |
@@ -111,7 +115,7 @@ These workshop shapes are covered by passing Vev tests:
 | Split/composed rules | `music_brainz.clj` `track-artist`/`track-release`/`track-info` | `q-text-with-rules` |
 | `not` and `not-join` | original `query.clj` | mbrainz-shaped EDN text queries |
 | `or` and `or-join` | original `query.clj` | mbrainz-shaped EDN text queries |
-| `get-some` | original `query.clj` | country/artist attr query |
+| `get-some` | original `query.clj` | mini fixture covered; restored-sample exact attr-id semantics remain pending |
 | Lookup-ref inputs | original `query.clj` country examples | inline lookup-ref and query input lookup-ref |
 | Dynamic attr input | original `query.clj` | `:artist/country` as collection input |
 | Top-n aggregates | original `query.clj` | min/max duration vectors |
@@ -128,6 +132,7 @@ These should be ported next using the mini fixture first, then the restored
 
 | Shape | Source | Notes |
 | --- | --- | --- |
+| Restored-data `get-some` attr identity | `query.clj` | Datomic returns the numeric attr entity id for `?attr`; Vev currently has mini coverage but returns no row on the restored sample shape |
 | Additional Day-of-Datomic host snippets | `music_brainz.clj` | Keep porting examples that exercise host presentation rather than engine syntax |
 
 ## Host Or Datomic-Specific Later

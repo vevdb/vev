@@ -194,6 +194,10 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-beatles-min-max-duration` | 2967 | 10409 | 1 | `9c45e54f061af2f6` |
 | `musicbrainz-real-lookup-country` | 51 | 3371 | 1 | `4167e0bf9abd1220` |
 | `musicbrainz-real-selected-artists-releases` | 520 | 5625 | 28 | `4887ecaa409643d2` |
+| `musicbrainz-real-release-date` | 496 | 59046 | 3 | `8853c19c0b82edfa` |
+| `musicbrainz-real-fallback-start-month` | 186 | 62173 | 2 | `ea197a760bcc6589` |
+| `musicbrainz-real-dynamic-attr` | 2750 | 56087 | 482 | `ffee4f7469006cd3` |
+| `musicbrainz-real-top-duration` | 10924079 | 145754 | 1 | `949eb8db5ef70199` |
 | `musicbrainz-real-not-beatles-male` | 359 | 5810 | 1 | `ea45bdc7e8b8201b` |
 | `musicbrainz-real-or-two-artists` | 177 | 2231 | 2 | `de67eb0f77cf6b42` |
 | `musicbrainz-real-relation-artist-release` | 134 | 9320 | 2 | `cb2f30e6783d093d` |
@@ -209,8 +213,8 @@ Datomic MusicBrainz database. Latest single-sample local run:
 
 This snapshot says Vev is already strong on indexed lookup, bounded relation
 input, direct lookup-ref pull, direct lookup-ref pull-many, nested release/media
-pull, selected collection-input joins, ordinary multi-hop clause/predicate joins,
-and pure
+pull, selected collection-input joins, `get-else`, dynamic attr inputs, ordinary
+multi-hop clause/predicate joins, and pure
 non-recursive rule bodies made from data clauses plus rule calls. The
 restored-sample `release-first`/`track-first` rows use dependency-aware clause
 planning with lazy candidate-count tie-breaking instead of eager full-relation
@@ -218,10 +222,11 @@ materialization. The `rule-track-info` row uses the same idea inside pure rule
 bodies while preserving DataScript source-order behavior for predicates,
 functions, `not`, `or`, and other effectful/error-sensitive rule steps.
 Bounded `not`, `not-join`, `or`, and `or-join` rows now reuse the same
-dependency-aware data-clause group planner, so the current real-data matrix no
-longer has an obvious slow query-planner outlier. The next planner work should
-come from additional Day-of-Datomic/MusicBrainz queries or larger Datalevin
-benchmark families, rather than workload-specific shortcuts.
+dependency-aware data-clause group planner. The top-n duration aggregate is a
+correctness/parity row and currently exposes a performance outlier because it
+scans all track durations in memory. The next planner/index work should come
+from this kind of real row or larger Datalevin benchmark families, rather than
+workload-specific shortcuts.
 
 The next import-performance work is no longer basic feasibility. The remaining
 write-side architecture issue is whole-array DB/index ownership and publication
