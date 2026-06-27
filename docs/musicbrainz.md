@@ -97,7 +97,7 @@ relation binding, scalar/tuple/collection find specs, rule-backed queries,
 duration function expressions, return maps, enum refs through `:db/ident`,
 `get-else`, statistics aggregates, and nested pull through
 release/media/tracks. It also covers wildcard pull, reverse-ref pull, pull
-`limit`, pull `default`, map-form EDN queries, split/composed rules,
+`limit`, pull `default`, pull `:as` aliasing, map-form EDN queries, split/composed rules,
 `not`/`not-join`, `or`/`or-join`, `get-some`, dynamic
 pull pattern inputs, `missing?`, lookup-ref inputs, dynamic attr inputs, top-n
 aggregates, and the Day-of-Datomic query-stats final John Lennon pre-1970
@@ -112,9 +112,9 @@ enum refs through `:db/ident`, grouped median/avg aggregates with `:with`,
 direct wildcard pull `[*]`, direct reverse-ref pull through
 `:release/_artists`, pull `limit` over that reverse many-valued relationship,
 pull `default` over missing `:artist/gender`, dynamic pull pattern input,
-Datomic-style tagged UUID literals, `missing?`, dynamic attr input,
-query-stats tutorial traversal, and top-n aggregate rows against the real
-1968-1973 sample.
+pull `:as` aliasing, dynamic pull pattern input, Datomic-style tagged UUID
+literals, `missing?`, dynamic attr input, query-stats tutorial traversal, and
+top-n aggregate rows against the real 1968-1973 sample.
 
 The restored sample forced one real Vev data-model addition: UUID values.
 MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use

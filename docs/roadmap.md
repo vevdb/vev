@@ -213,8 +213,8 @@ collection/tuple/scalar find specs, function expressions, enum refs through
 `:db/ident`, grouped median/avg aggregates with `:with`, direct wildcard pull
 `[*]`, direct reverse-ref pull through `:release/_artists`, pull `limit` over
 that reverse many-valued relationship, pull `default` over missing
-`:artist/gender`, Datomic-style tagged UUID literals, the query-stats tutorial
-traversal, and top-n aggregates. The next larger step is continuing Day-of-Datomic
+`:artist/gender`, pull `:as` aliasing, Datomic-style tagged UUID literals, the
+query-stats tutorial traversal, and top-n aggregates. The next larger step is continuing Day-of-Datomic
 host/tutorial snippets before doing more planner work. See
 `docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the active
 work plan.
