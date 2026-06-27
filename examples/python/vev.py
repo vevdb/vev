@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import pathlib
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,7 @@ VEV_VALUE_KEYWORD = 6
 VEV_VALUE_SYMBOL = 7
 VEV_VALUE_VECTOR = 8
 VEV_VALUE_MAP = 9
+VEV_VALUE_UUID = 10
 
 VEV_RESULT_VISIT_ROW_BEGIN = 1
 VEV_RESULT_VISIT_VALUE = 2
@@ -499,6 +501,8 @@ class Library:
             return self.owned_text(self.lib.vev_value_text(value))
         if kind == VEV_VALUE_SYMBOL:
             return self.owned_text(self.lib.vev_value_text(value))
+        if kind == VEV_VALUE_UUID:
+            return uuid.UUID(self.owned_text(self.lib.vev_value_text(value)))
         if kind == VEV_VALUE_VECTOR:
             return [
                 self.value_to_python(self.lib.vev_value_item(value, index))

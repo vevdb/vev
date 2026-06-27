@@ -262,6 +262,7 @@ func (q *PreparedQuery) QueryRows(conn *Conn, inputs string) (*ResultSet, error)
 type Entity uint64
 type Keyword string
 type Symbol string
+type UUID string
 
 type MapEntry struct {
 	Key   Value
@@ -290,6 +291,10 @@ func mapGet(value Value, key string) (Value, bool) {
 			if string(k) == key {
 				return item.Value, true
 			}
+		case UUID:
+			if string(k) == key {
+				return item.Value, true
+			}
 		}
 	}
 	return nil, false
@@ -313,6 +318,8 @@ func valueFromC(value C.vev_value_t) Value {
 		return Keyword(ownedString(C.vev_value_text(value)))
 	case C.VEV_VALUE_SYMBOL:
 		return Symbol(ownedString(C.vev_value_text(value)))
+	case C.VEV_VALUE_UUID:
+		return UUID(ownedString(C.vev_value_text(value)))
 	case C.VEV_VALUE_VECTOR:
 		count := int(C.vev_value_item_count(value))
 		out := make([]Value, 0, count)

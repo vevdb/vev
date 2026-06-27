@@ -35,6 +35,7 @@ enum {
     VEV_VALUE_SYMBOL = 7,
     VEV_VALUE_VECTOR = 8,
     VEV_VALUE_MAP = 9,
+    VEV_VALUE_UUID = 10,
 };
 
 enum {

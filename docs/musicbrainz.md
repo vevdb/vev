@@ -101,6 +101,11 @@ split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`,
 lookup-ref inputs, dynamic attr inputs, and top-n aggregates. The detailed
 coverage ledger is `docs/musicbrainz-query-matrix.md`.
 
+The restored sample forced one real Vev data-model addition: UUID values.
+MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use
+`:db.type/uuid`, so Vev now parses EDN UUID literals as a distinct primitive
+value kind instead of stringifying them during import.
+
 The mini fixture also exercises Vev query profiling for MusicBrainz-shaped
 joins. `src/vev_tests/musicbrainz_test.kvist` asserts that profiled EDN and
 prepared EDN queries return the expected rows and non-empty planner/profile

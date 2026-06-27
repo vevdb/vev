@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.lang.ref.Cleaner;
+import java.util.UUID;
 
 public final class Vev {
     private static final Linker LINKER = Linker.nativeLinker();
@@ -376,6 +377,7 @@ public final class Vev {
             case 4 -> (double) valueFloat.invoke(value);
             case 5 -> (boolean) valueBool.invoke(value);
             case 2, 6, 7 -> textOf(value);
+            case 10 -> UUID.fromString(textOf(value));
             case 8 -> {
                 int count = (int) valueItemCount.invoke(value);
                 List<Object> items = new ArrayList<>(count);
@@ -403,6 +405,7 @@ public final class Vev {
             case 0 -> null;
             case 1 -> new Entity((long) resultValueEntity.invoke(result, row, column));
             case 2, 6, 7 -> ownedString((MemorySegment) resultValueText.invoke(result, row, column));
+            case 10 -> UUID.fromString(ownedString((MemorySegment) resultValueText.invoke(result, row, column)));
             case 3 -> (long) resultValueInt.invoke(result, row, column);
             case 5 -> (boolean) resultValueBool.invoke(result, row, column);
             default -> valueToJava((MemorySegment) resultValue.invoke(result, row, column));

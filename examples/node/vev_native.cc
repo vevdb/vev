@@ -115,7 +115,8 @@ napi_value owned_text_value(napi_env env, const char *text) {
 
 napi_value map_key_string(napi_env env, vev_value_t value) {
   int kind = vev_value_kind(value);
-  if (kind == VEV_VALUE_STRING || kind == VEV_VALUE_KEYWORD || kind == VEV_VALUE_SYMBOL) {
+  if (kind == VEV_VALUE_STRING || kind == VEV_VALUE_KEYWORD || kind == VEV_VALUE_SYMBOL ||
+      kind == VEV_VALUE_UUID) {
     return owned_text_value(env, vev_value_text(value));
   }
   return owned_text_value(env, vev_value_edn(value));
@@ -153,6 +154,7 @@ napi_value js_value(napi_env env, vev_value_t value) {
     return out;
   case VEV_VALUE_KEYWORD:
   case VEV_VALUE_SYMBOL:
+  case VEV_VALUE_UUID:
     return owned_text_value(env, vev_value_text(value));
   case VEV_VALUE_VECTOR: {
     int count = vev_value_item_count(value);
