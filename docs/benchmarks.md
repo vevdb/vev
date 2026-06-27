@@ -714,6 +714,9 @@ engine=vev workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprin
 engine=vev workload=musicbrainz-real-beatles-track-count ok=true rows=1 fingerprint=0000000007068a26 min_us=3600 steps=3 clauses=490 candidates=977 max_bindings=488 output_rows=1
 engine=vev workload=musicbrainz-real-beatles-min-max-duration ok=true rows=1 fingerprint=9c45e54f061af2f6 min_us=2934 steps=3 clauses=490 candidates=976 max_bindings=488 output_rows=1
 engine=vev workload=musicbrainz-real-lookup-country ok=true rows=1 fingerprint=4167e0bf9abd1220 min_us=40 steps=1 clauses=1 candidates=1 max_bindings=1 output_rows=1
+engine=vev workload=musicbrainz-real-selected-artists-releases ok=true rows=28 fingerprint=4887ecaa409643d2 min_us=513 steps=3 clauses=69 candidates=132 max_bindings=65 output_rows=28
+engine=vev workload=musicbrainz-real-not-beatles-male ok=true rows=1 fingerprint=ea45bdc7e8b8201b min_us=6901 steps=3 clauses=2 candidates=4602 max_bindings=1 output_rows=1
+engine=vev workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerprint=de67eb0f77cf6b42 min_us=20061 steps=2 clauses=1 candidates=4601 max_bindings=2 output_rows=2
 
 engine=datomic workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03
 engine=datomic workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40
@@ -721,6 +724,9 @@ engine=datomic workload=musicbrainz-real-beatles-releases ok=true rows=16 finger
 engine=datomic workload=musicbrainz-real-beatles-track-count ok=true rows=1 fingerprint=0000000007068a26
 engine=datomic workload=musicbrainz-real-beatles-min-max-duration ok=true rows=1 fingerprint=9c45e54f061af2f6
 engine=datomic workload=musicbrainz-real-lookup-country ok=true rows=1 fingerprint=4167e0bf9abd1220
+engine=datomic workload=musicbrainz-real-selected-artists-releases ok=true rows=28 fingerprint=4887ecaa409643d2
+engine=datomic workload=musicbrainz-real-not-beatles-male ok=true rows=1 fingerprint=ea45bdc7e8b8201b
+engine=datomic workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerprint=de67eb0f77cf6b42
 ```
 
 The first restored-sample query batch matches Datomic exactly after

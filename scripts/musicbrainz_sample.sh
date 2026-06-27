@@ -104,6 +104,9 @@ is-running() {
 start() {
   require-datomic
   write-config
+  if [[ -f "$PID_FILE" ]] && ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    rm -f "$PID_FILE"
+  fi
   if is-running; then
     echo "start: already running pid=$(cat "$PID_FILE")"
     return
@@ -129,8 +132,16 @@ stop() {
     local pid
     pid="$(cat "$PID_FILE")"
     kill "$pid"
+    for _ in {1..20}; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.25
+    done
+    rm -f "$PID_FILE"
     echo "stop: pid=$pid"
   else
+    rm -f "$PID_FILE"
     echo "stop: not running"
   fi
 }

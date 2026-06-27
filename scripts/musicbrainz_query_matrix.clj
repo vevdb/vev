@@ -58,6 +58,28 @@
              :where
              [?country :country/name "United Kingdom"]
              [?country :country/name ?name]]
+    :args []}
+   {:name "musicbrainz-real-selected-artists-releases"
+    :query '[:find ?artist-name ?release-name
+             :in $ [?artist-name ...]
+             :where
+             [?artist :artist/name ?artist-name]
+             [?release :release/artists ?artist]
+             [?release :release/name ?release-name]]
+    :args [["The Beatles" "Miles Davis"]]}
+   {:name "musicbrainz-real-not-beatles-male"
+    :query '[:find ?artist-name
+             :where
+             [?artist :artist/name "The Beatles"]
+             (not [?artist :artist/gender :artist.gender/male])
+             [?artist :artist/name ?artist-name]]
+    :args []}
+   {:name "musicbrainz-real-or-two-artists"
+    :query '[:find ?artist-name
+             :where
+             (or [?artist :artist/name "The Beatles"]
+                 [?artist :artist/name "Miles Davis"])
+             [?artist :artist/name ?artist-name]]
     :args []}])
 
 (def uint64-modulus 18446744073709551616N)
