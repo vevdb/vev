@@ -180,6 +180,13 @@
              :where
              [?release :release/name ?release-name]]
     :args [["Abbey Road" "In a Silent Way"]]}
+   {:name "musicbrainz-real-dynamic-pull-release"
+    :query '[:find (pull ?release pattern)
+             :in $ ?artist-name pattern
+             :where
+             [?artist :artist/name ?artist-name]
+             [?release :release/artists ?artist]]
+    :args ["Led Zeppelin" [:release/name]]}
    {:name "musicbrainz-real-pull-release-nested"
     :query '[:find (pull ?release [:release/gid
                                     :release/name

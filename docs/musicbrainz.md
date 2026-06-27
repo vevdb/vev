@@ -97,15 +97,15 @@ relation binding, scalar/tuple/collection find specs, rule-backed queries,
 duration function expressions, return maps, enum refs through `:db/ident`,
 `get-else`, statistics aggregates, and nested pull through
 release/media/tracks. It also covers wildcard pull, map-form EDN queries,
-split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`,
-lookup-ref inputs, dynamic attr inputs, and top-n aggregates. Restored
-`get-some` rows now match Datomic's attr-entity semantics by projecting the
-attr through `:db/ident`. The detailed coverage ledger is
+split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`, dynamic
+pull pattern inputs, lookup-ref inputs, dynamic attr inputs, and top-n
+aggregates. Restored `get-some` rows now match Datomic's attr-entity semantics
+by projecting the attr through `:db/ident`. The detailed coverage ledger is
 `docs/musicbrainz-query-matrix.md`.
 
 The restored Datomic comparison matrix now also covers release date
-projection, `get-else`, restored `get-some`, dynamic attr input, and top-n
-aggregate rows against the real 1968-1973 sample.
+projection, `get-else`, restored `get-some`, dynamic pull pattern input,
+dynamic attr input, and top-n aggregate rows against the real 1968-1973 sample.
 
 The restored sample forced one real Vev data-model addition: UUID values.
 MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use

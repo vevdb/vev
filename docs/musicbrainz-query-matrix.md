@@ -75,6 +75,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-map-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Vev uses EDN map query text; Datomic harness uses the equivalent vector query |
 | `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Pure rule-body planner keeps the composed track/release join selective |
 | `musicbrainz-real-pull-release` | `5 / 974ce160e8be7539` | `5 / 974ce160e8be7539` | Equal rows | Pull expression in query result over selected release names |
+| `musicbrainz-real-dynamic-pull-release` | `17 / 16930ebda61a7b2c` | `17 / 16930ebda61a7b2c` | Equal rows | Day-of-Datomic `d/query`-style pull pattern supplied through `:in` |
 | `musicbrainz-real-pull-release-nested` | `5 / f4f5c38625cab0c7` | `5 / f4f5c38625cab0c7` | Equal rows | Nested pull query over release media and tracks |
 | `musicbrainz-real-direct-pull-artist` | `1 / 0a11a6da90ea3115` | `1 / 0a11a6da90ea3115` | Equal rows | Direct pull by `:artist/gid` lookup ref |
 | `musicbrainz-real-direct-pull-many-artists` | `2 / 3b0d165020d81f40` | `2 / 3b0d165020d81f40` | Equal rows | Direct pull-many by `:artist/gid` lookup refs |
@@ -110,6 +111,7 @@ These workshop shapes are covered by passing Vev tests:
 | Aggregates | min/max, sum, count/count-distinct | EDN text aggregate queries |
 | Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query |
 | Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |
+| Dynamic pull pattern input | `music_brainz.clj` | `pattern` supplied through `:in` in query result pull expressions |
 | Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` |
 | Rule input `%` | `track-release`, `track-info`, `short-track` | `q-text-with-rules` |
 | `d/query` map query form | `music_brainz.clj` | EDN map-form query text |
