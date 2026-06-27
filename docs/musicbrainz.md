@@ -145,18 +145,18 @@ Current status:
 - 100-item compact-id single-file import passes.
 - 500-value staged import passes.
 - 5,000-value staged import passes and queries successfully.
-- 50k, 100k, 200k, and 400k staged imports run locally and preserve the expected
-  tutorial query results for the sampled slice.
+- 50k, 100k, 200k, 400k, and the current full chunked staged import run locally
+  and preserve the expected tutorial query results for the sampled slice.
 - EDN parse time is already small for these slices; transaction/index
-  publication and overwrite handling dominate.
+  publication dominates.
 
 The important finding is functional rather than cosmetic: MusicBrainz import is
-now correct for a real restored Datomic-derived slice. Larger value imports are
-not purely append-only: the source can include repeated cardinality-one attrs
-with later values, so the normal transaction path must handle bulk overwrites
-without rebuilding a temporary DB per overwrite. That path is now in place; the
-remaining import work is reducing whole-array DB/index publication costs and
-supporting full chunked import without retaining one huge prepared transaction.
+now correct for a real restored Datomic-derived slice. Full chunked import uses
+separate schema/value files and releases each parsed value chunk after applying
+it. A parsed-string lifetime bug was fixed by making DB log datoms own their
+attribute/value payloads; chunked imports no longer depend on input file buffers
+remaining alive. The remaining import work is reducing whole-array DB/index
+publication costs as database values grow.
 
 The mini fixture also exercises Vev query profiling for MusicBrainz-shaped
 joins. `src/vev_tests/musicbrainz_test.kvist` asserts that profiled EDN and

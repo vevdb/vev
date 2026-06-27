@@ -200,10 +200,9 @@ Current implementation status and later order:
    ops target genuinely absent entities. Ordered absent-entity imports enforce
    cardinality-one and cardinality-many duplicate rules locally, and
    append-only index maintenance extends the `eavt` entity table when new entity
-   ids sort after existing ids. MusicBrainz value imports also exercise the
-   non-append-only overwrite path: repeated cardinality-one attrs are handled by
-   direct current-value lookup instead of rebuilding a temporary DB for each
-   overwrite.
+   ids sort after existing ids. Parsed EDN transaction values are cloned into
+   DB log datoms, so chunked imports are independent from per-file input buffer
+   lifetimes.
    The benchmark now separates snapshot, resolution, apply, log copy,
    incremental index build, and SQLite append cost. The next write-performance
    milestone, when we return to storage, is replacing whole-array DB/index
