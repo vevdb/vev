@@ -39,6 +39,8 @@ values preserved as UUID literals. `bench/musicbrainz_import_subset.kvist`
 imports either a single tx file or staged schema/value tx files.
 `bench/musicbrainz_query_profile.kvist` can now run either the deterministic
 mini fixture or the imported real subset.
+`scripts/musicbrainz_clojure_vev_matrix.sh` runs a small public Clojure wrapper
+smoke through `vev.core`, Java FFM, the C ABI, and `libvev`.
 
 Real-data import status:
 
@@ -119,6 +121,14 @@ Use `scripts/compare_musicbrainz_query_matrix.sh --workload <name-or-suffix>`
 to verify selected rows against Datomic. The script builds the Vev profiler,
 runs both engines, and fails if any Datomic workload has a different Vev row
 count or fingerprint. `--workload all` verifies the full current matrix.
+
+The Datomic comparison currently measures native Vev query/profile binaries
+against Clojure Datomic peer queries. The public Clojure Vev wrapper path is
+tracked separately by `scripts/musicbrainz_clojure_vev_matrix.sh`. Its default
+500-value smoke verifies host API correctness and query overhead, but wrapper
+EDN transaction loading is not yet the right full-size MusicBrainz setup path:
+the durable-storage phase should make the full host comparison open a prebuilt
+Vev database before timing Clojure query calls.
 
 ## Covered
 
@@ -205,3 +215,6 @@ Further MusicBrainz work should be targeted:
 4. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
+5. After durable DB open is available through the host wrappers, promote the
+   Clojure wrapper MusicBrainz harness from smoke to full Vev-vs-Datomic
+   query benchmark.

@@ -254,6 +254,53 @@ as DB values grow. The likely direction is a shared/chunked immutable index
 representation or a bulk builder that can apply several value chunks and publish
 one DB snapshot.
 
+## MusicBrainz Clojure Host Wrapper
+
+`scripts/musicbrainz_clojure_vev_matrix.sh` runs MusicBrainz-shaped queries
+through the public Clojure wrapper (`vev.core`), Java FFM wrapper, C ABI, and
+`libvev`. This is a host API benchmark, not the main Datomic comparison.
+
+The default command intentionally uses the small staged 500-value export and a
+positive-result smoke query:
+
+```sh
+scripts/musicbrainz_clojure_vev_matrix.sh --samples 3 --warmups 1
+```
+
+Latest local smoke:
+
+```text
+engine=clojure-vev workload=musicbrainz-real-load ok=true stage=schema tx_us=486336
+engine=clojure-vev workload=musicbrainz-real-load ok=true stage=values tx_us=3239488
+engine=clojure-vev workload=musicbrainz-real-load ok=true total_us=3726538
+engine=clojure-vev workload=musicbrainz-smoke-country-names ok=true rows=257 fingerprint=fd7d4b4cd5dd243c min_us=2055 median_us=2409 p90_us=2409 max_us=3194
+```
+
+The important current signal is the boundary: query execution through the public
+Clojure API works and produces stable fingerprints, but setup through wrapper
+EDN transaction text is not a realistic full-size MusicBrainz benchmark path. A
+5k staged export loaded through `vev/transact-text!` took about 140s locally,
+while native Vev imports the full 763k-datom chunked subset in about 16.5s. The
+full host benchmark should therefore open a prebuilt durable Vev database, or
+use a native bulk-load step, before timing Clojure query calls.
+
+Representative real workloads are still available with `--workload` and the
+full chunked export arguments:
+
+```sh
+scripts/musicbrainz_clojure_vev_matrix.sh \
+  --workload beatles-releases \
+  --schema build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn \
+  --values "" \
+  --values-prefix build/musicbrainz/vev-mbrainz-subset-full-chunked \
+  --values-chunks 8
+```
+
+Do not compare those setup-inclusive Clojure timings directly to the native Vev
+versus Datomic table. The durable-storage phase should make this an
+apples-to-apples Clojure Vev versus Clojure Datomic query benchmark by removing
+wrapper load/setup from the measured path.
+
 ## Query And Rule Baseline
 
 Run Vev from the Kvist repo root so macro loading uses the normal compiler
