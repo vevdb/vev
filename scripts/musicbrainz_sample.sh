@@ -32,6 +32,9 @@ commands:
   stop              stop the transactor started by this script
   restore           restore the sample backup into $DB_URI
   smoke-datomic     start Datomic, run a tiny peer query, then stop Datomic
+  query-matrix-datomic
+                    start Datomic, run the MusicBrainz query matrix, then stop
+                    optional args: passed to scripts/musicbrainz_query_matrix.clj
   export-subset     start Datomic, export Vev-compatible subset EDN, then stop
                     optional args: [output-path] [item-limit]
   export-subset-split
@@ -156,6 +159,14 @@ smoke-datomic() {
 (System/exit 0)"
 }
 
+query-matrix-datomic() {
+  require-datomic
+  start
+  trap stop EXIT
+  clojure -Sdeps '{:deps {com.datomic/peer {:mvn/version "1.0.7277"}}}' -M \
+    "$ROOT/scripts/musicbrainz_query_matrix.clj" "$@"
+}
+
 export-subset() {
   require-datomic
   start
@@ -212,6 +223,7 @@ case "${1:-}" in
   stop) stop ;;
   restore) restore ;;
   smoke-datomic) smoke-datomic ;;
+  query-matrix-datomic) shift; query-matrix-datomic "$@" ;;
   export-subset) shift; export-subset "$@" ;;
   export-subset-split) shift; export-subset-split "$@" ;;
   export-subset-chunks) shift; export-subset-chunks "$@" ;;

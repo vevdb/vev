@@ -655,12 +655,12 @@ Remaining performance work:
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.
 
-## MusicBrainz Mini Profile
+## MusicBrainz Query Profile
 
 `bench/musicbrainz_query_profile.kvist` runs the deterministic MusicBrainz mini
-fixture from `docs/musicbrainz.md` as a profiling benchmark. It is meant to
-catch planner regressions and compare clause-order shapes before the restored
-1968-1973 sample is available.
+fixture from `docs/musicbrainz.md` or the imported restored 1968-1973 subset.
+It catches planner regressions, compares clause-order shapes, and now provides
+the Vev side of the local Datomic comparison.
 
 Run:
 
@@ -669,13 +669,53 @@ cd /Users/andreas/Projects/kvist
 ./kvist run /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist
 ```
 
+Build and run the real imported subset:
+
+```bash
+cd /Users/andreas/Projects/kvist
+./kvist build /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist \
+  --out /Users/andreas/Projects/vev/build/bench/musicbrainz_query_profile
+
+/Users/andreas/Projects/vev/build/bench/musicbrainz_query_profile \
+  --dataset real \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn \
+  --values-prefix /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked \
+  --values-chunks 8 \
+  --samples 2 \
+  --warmups 1
+```
+
+Run the Datomic side:
+
+```bash
+scripts/musicbrainz_sample.sh query-matrix-datomic --samples 2 --warmups 1
+```
+
 Current workloads:
 
-- `musicbrainz-release-first`: starts from artist, release, year, medium, track
-- `musicbrainz-track-first`: starts from artist and track, then joins release,
+- `musicbrainz-mini-release-first` / `musicbrainz-real-release-first`: starts
+  from artist, release, year, medium, track
+- `musicbrainz-mini-track-first` / `musicbrainz-real-track-first`: starts from
+  artist and track, then joins release,
   medium, and track
 
 The output includes timing samples plus Vev profile counters:
-`steps`, `clauses`, `candidates`, `max_bindings`, and `output_rows`. Treat this
-as a local regression signal; Datomic comparison should use the restored sample
-database.
+`steps`, `clauses`, `candidates`, `max_bindings`, and `output_rows`. The real
+runner also prints a portable sorted-row fingerprint; `--print-rows true` dumps
+the normalized row keys for direct comparison.
+
+Current local correctness/performance snapshot:
+
+```text
+engine=vev workload=musicbrainz-real-load ok=true datoms=763274 current=763274 import_us=16740120
+engine=vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03 min_us=363141 median_us=367726 p90_us=367726 max_us=367726 steps=8 clauses=7 candidates=248057 max_bindings=265 output_rows=96
+engine=vev workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40 min_us=970834 median_us=988852 p90_us=988852 max_us=988852 steps=9 clauses=8 candidates=349462 max_bindings=244 output_rows=89
+
+engine=datomic workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03
+engine=datomic workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40
+```
+
+The first two restored-sample query result sets match Datomic exactly after
+normalization. Vev is currently slower on these joins, so the next useful query
+work is planner/index improvement on real MusicBrainz-shaped joins rather than
+more synthetic micro-optimization.

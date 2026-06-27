@@ -37,6 +37,8 @@ The restored Datomic 1968-1973 sample is also available locally through
 Vev-compatible EDN from Datomic with compact remapped entity ids and UUID
 values preserved as UUID literals. `bench/musicbrainz_import_subset.kvist`
 imports either a single tx file or staged schema/value tx files.
+`bench/musicbrainz_query_profile.kvist` can now run either the deterministic
+mini fixture or the imported real subset.
 
 Real-data import status:
 
@@ -46,7 +48,18 @@ Real-data import status:
 | 500-value staged subset | Passing | Confirms schema-first/value-second import path |
 | 5,000-value staged subset | Passing | Bulk explicit-id transaction path is practical; latest local run is about 0.55s total |
 | 50k/100k/200k/400k staged subsets | Passing | Latest 400k local run is about 6.9s total |
-| Full 763,274-item subset | Partial | Full value tx parses/resolves quickly; one huge prepared tx and repeated chunk commits expose the next DB/index publication bottleneck |
+| Full 763,274-item subset | Passing | Chunked staged import preserves expected tutorial rows; latest local import is about 16.5s |
+
+Real-data query comparison against local Datomic is active for the first two
+clause-order tutorial shapes:
+
+| Workload | Vev rows/fingerprint | Datomic rows/fingerprint | Status | Current signal |
+| --- | --- | --- | --- | --- |
+| `musicbrainz-real-release-first` | `96 / 0ea8943f9ef3eb03` | `96 / 0ea8943f9ef3eb03` | Equal rows | Vev is currently much slower on this restored-sample join |
+| `musicbrainz-real-track-first` | `89 / 9902d35f51335e40` | `89 / 9902d35f51335e40` | Equal rows | Same semantics; worse clause order remains a useful planner target |
+
+The row fingerprints are generated from sorted projected EDN-ish row keys. Both
+queries have also been checked with explicit sorted row dumps and `diff`.
 
 ## Covered
 
@@ -110,8 +123,9 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Run the existing matrix against the imported real subset and local Datomic,
-   comparing result sets before timing.
+1. Expand the real Datomic comparison matrix beyond the two clause-order joins:
+   aggregates, rules, pull, lookup refs, collection/relation inputs, `not`,
+   `or`, and map query form.
 2. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.

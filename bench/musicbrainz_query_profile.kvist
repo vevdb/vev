@@ -5,6 +5,7 @@
 (import cli "kvist:cli")
 (import fmt "core:fmt")
 (import os "core:os")
+(import strings "core:strings")
 (import time "core:time")
 (import vev "../src/vev")
 
@@ -33,6 +34,49 @@
     (vev.delete-live-tx-report-shallow report)
     conn))
 
+(defn load-tx-file! [conn: ^vev.Conn, path: string, label: string, progress: bool] -> bool
+  (let [[data read-err] (os.read_entire_file path context.allocator)]
+    (when (!= read-err nil)
+      (fmt.printf "engine=vev workload=musicbrainz-real-load ok=false stage=%s error=read_failed path=%s\n" label path)
+      (return false))
+    (defer (delete data))
+    (let [parse-start (time.now)
+          prepared (vev.prepare-tx-text (string data))
+          parse-us (bench.elapsed-us parse-start)]
+      (when (not prepared.ok)
+        (fmt.printf "engine=vev workload=musicbrainz-real-load ok=false stage=%s error=%s parse_us=%.0f\n" label prepared.error parse-us)
+        (vev.delete-prepared-tx-data-shallow prepared)
+        (return false))
+      (let [tx-start (time.now)
+            report (vev.transact-prepared conn prepared)
+            tx-us (bench.elapsed-us tx-start)]
+        (when progress
+          (fmt.printf "progress stage=%s items=%d ok=%v parse_us=%.0f tx_us=%.0f datoms=%d current=%d\n" label (count prepared.tx-data) report.ok parse-us tx-us (count conn^.db.datoms) (count conn^.db.current)))
+        (vev.delete-prepared-tx-data-shallow prepared)
+        (when (not report.ok)
+          (fmt.printf "engine=vev workload=musicbrainz-real-load ok=false stage=%s error=%s parse_us=%.0f tx_us=%.0f\n" label report.error parse-us tx-us)
+          (vev.delete-tx-report-shallow report)
+          (return false))
+        (vev.delete-live-tx-report-shallow report)
+        (return true)))))
+
+(defn load-real! [conn: ^vev.Conn, schema-path: string, values-path: string, values-prefix: string, values-chunks: int, progress: bool] -> bool
+  (let [start (time.now)]
+    (when (not (load-tx-file! conn schema-path "schema" progress))
+      (return false))
+    (if (> values-chunks 0)
+      (let [index 0]
+        (while (< index values-chunks)
+          (let [path (fmt.tprintf "%s-values-%04d.edn" values-prefix index)
+                label (fmt.tprintf "values-%04d" index)]
+            (when (not (load-tx-file! conn path label progress))
+              (return false)))
+          (set! index (+ index 1))))
+      (when (not (load-tx-file! conn values-path "values" progress))
+        (return false)))
+    (fmt.printf "engine=vev workload=musicbrainz-real-load ok=true datoms=%d current=%d import_us=%.0f\n" (count conn^.db.datoms) (count conn^.db.current) (bench.elapsed-us start))
+    (return true)))
+
 (defn time-profiled-query [db: vev.DB, query: string, inputs: []vev.Query-Input, warmups: int, samples-count: int] -> Profile-Timing
   (for [warmup-index (arr.range 0 warmups)]
     (discard warmup-index)
@@ -51,12 +95,48 @@
       (vev.q-text-profiled-with-inputs db query inputs)
       (bench.timing-from-samples (slice samples 0)))))
 
+(defn fingerprint-text [seed: u64, text: string] -> u64
+  (let [out seed]
+    (for [ch text]
+      (set! out (+ (* out 131) (u64 ch))))
+    out))
+
+(defn result-row-key [row: vev.Result-Row] -> string
+  (let [parts (make [dynamic]string) :defer
+        owned-parts (make [dynamic]string) :defer]
+    (for [value index row.values]
+      (when (> index 0)
+        (let [[separator _] (strings.clone "|")]
+          (arr.push! parts separator)
+          (arr.push! owned-parts separator)))
+      (let [text (vev.value-serializable-text value)]
+        (arr.push! parts text)
+        (arr.push! owned-parts text)))
+    (let [out (strings.concatenate (slice parts 0))]
+      (for [part owned-parts]
+        (delete part))
+      out)))
+
+(defn result-fingerprint [result: vev.Result-Set] -> u64
+  (let [keys (make [dynamic]string) :defer]
+    (for [row result.rows]
+      (arr.push! keys (result-row-key row)))
+    (arr.sort! keys)
+    (let [hash (u64 0)]
+      (for [key keys]
+        (set! hash (fingerprint-text hash key))
+        (set! hash (fingerprint-text hash "\n")))
+      (for [key keys]
+        (delete key))
+      hash)))
+
 (defn print-profile [workload: string, result: Profile-Timing]
   (fmt.printf
-    "engine=vev workload=%s ok=%v rows=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
+    "engine=vev workload=%s ok=%v rows=%d fingerprint=%016x min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
     workload
     result.profiled.result.ok
     (count result.profiled.result.rows)
+    (result-fingerprint result.profiled.result)
     result.timing.min-us
     result.timing.median-us
     result.timing.p90-us
@@ -67,6 +147,15 @@
     result.profiled.stats.max-intermediate-bindings
     result.profiled.stats.output-rows))
 
+(defn print-result-rows [workload: string, result: vev.Result-Set]
+  (let [keys (make [dynamic]string) :defer]
+    (for [row result.rows]
+      (arr.push! keys (result-row-key row)))
+    (arr.sort! keys)
+    (for [key keys]
+      (fmt.printf "row engine=vev workload=%s key=%s\n" workload key)
+      (delete key))))
+
 (defn should-run? [selected: string, workload: string] -> bool
   (or (= selected "all")
       (= selected workload)))
@@ -74,15 +163,31 @@
 (defn main []
   (defer (free_all context.allocator))
   (let [selected (cli.option os.args "--workload" "all")
+        dataset (cli.option os.args "--dataset" "mini")
+        schema-path (cli.option os.args "--schema" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn")
+        values-path (cli.option os.args "--values" "")
+        values-prefix (cli.option os.args "--values-prefix" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked")
+        values-chunks (max 0 (cli.int-option os.args "--values-chunks" 8))
+        progress (= (cli.option os.args "--progress" "false") "true")
+        print-rows (= (cli.option os.args "--print-rows" "false") "true")
         warmups (max 0 (cli.int-option os.args "--warmups" 10))
         samples (max 1 (cli.int-option os.args "--samples" 25))
-        conn (seed-mini)
+        conn (if (= dataset "real")
+               (vev.create-conn)
+               (seed-mini))
         inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))])]
+    (when (= dataset "real")
+      (when (not (load-real! (addr conn) schema-path values-path values-prefix values-chunks progress))
+        (return)))
     (when (should-run? selected "release-first")
       (let [result (time-profiled-query conn.db release-first-query inputs warmups samples)]
-        (print-profile "musicbrainz-release-first" result)
+        (print-profile (fmt.tprintf "musicbrainz-%s-release-first" dataset) result)
+        (when print-rows
+          (print-result-rows (fmt.tprintf "musicbrainz-%s-release-first" dataset) result.profiled.result))
         (vev.delete-profiled-result-set-shallow result.profiled)))
     (when (should-run? selected "track-first")
       (let [result (time-profiled-query conn.db track-first-query inputs warmups samples)]
-        (print-profile "musicbrainz-track-first" result)
+        (print-profile (fmt.tprintf "musicbrainz-%s-track-first" dataset) result)
+        (when print-rows
+          (print-result-rows (fmt.tprintf "musicbrainz-%s-track-first" dataset) result.profiled.result))
         (vev.delete-profiled-result-set-shallow result.profiled)))))

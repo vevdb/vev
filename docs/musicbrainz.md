@@ -169,11 +169,30 @@ cd /Users/andreas/Projects/kvist
 ./kvist run /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist
 ```
 
-Current mini-fixture output reports one release-first and one track-first
-workload with row counts, timing samples, step count, clause count, candidate
-count, maximum intermediate bindings, and output rows. These numbers are useful
-for regression tracking, not for final Datomic comparison; the next comparison
-target is still the restored 1968-1973 sample.
+The same runner now also accepts `--dataset real` plus staged schema/value
+paths. It imports the restored exported subset, runs the same clause-order query
+shapes, and prints row counts, portable result fingerprints, timing samples,
+step count, clause count, candidate count, maximum intermediate bindings, and
+output rows. `--print-rows true` prints sorted projected row keys for direct
+`diff` against Datomic.
+
+Local Datomic comparison is available through:
+
+```bash
+scripts/musicbrainz_sample.sh query-matrix-datomic --samples 2 --warmups 1
+```
+
+The first real comparison rows are now equal against Datomic:
+
+- `musicbrainz-real-release-first`: 96 rows,
+  fingerprint `0ea8943f9ef3eb03`
+- `musicbrainz-real-track-first`: 89 rows,
+  fingerprint `9902d35f51335e40`
+
+Current timings show Datomic is still much faster on these restored-sample
+joins. That is useful pressure on the next query-planner/index work; the
+important correctness result is that the imported Vev subset now returns the
+same projected rows for these tutorial shapes.
 
 ## Work Items
 
@@ -194,6 +213,8 @@ target is still the restored 1968-1973 sample.
    - SQLite import, close/reopen, and query
    - optional Datomic comparison when the local Datomic process/database is
      available
+   Status: in-memory real import/query and Datomic comparison exist for the
+   first two clause-order joins.
 7. Record comparisons as result equality plus relative timing ratios. Avoid
    unsupported raw timing claims until the harness has stable warmup and repeat
    behavior.
