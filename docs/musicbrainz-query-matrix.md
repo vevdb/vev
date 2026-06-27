@@ -68,10 +68,13 @@ tutorial-shaped batches:
 | `musicbrainz-real-not-join-release` | `1 / b6368059dfc36ef8` | `1 / b6368059dfc36ef8` | Equal rows | Bounded `not-join` over selected releases |
 | `musicbrainz-real-or-join-release` | `2 / 5f5db031e99d9c11` | `2 / 5f5db031e99d9c11` | Equal rows | Bounded `or-join` over selected releases |
 | `musicbrainz-real-map-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Vev uses EDN map query text; Datomic harness uses the equivalent vector query |
+| `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Rule input `%` with composed track/release join |
+| `musicbrainz-real-pull-release` | `5 / 974ce160e8be7539` | `5 / 974ce160e8be7539` | Equal rows | Pull expression in query result over selected release names |
 
-The row fingerprints are generated from sorted projected EDN-ish row keys. Both
-initial clause-order queries have also been checked with explicit sorted row
-dumps and `diff`.
+The row fingerprints are generated from sorted projected EDN-ish row keys. Pull
+maps are rendered into canonical value text before fingerprinting so Datomic map
+iteration order does not affect comparisons. Both initial clause-order queries
+have also been checked with explicit sorted row dumps and `diff`.
 
 ## Covered
 
@@ -135,9 +138,9 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Expand the real Datomic comparison matrix beyond the current thirteen rows:
-   rules, pull, pull-in-query, and Datomic-shaped host `d/query` wrapper
-   ergonomics.
+1. Expand the real Datomic comparison matrix beyond the current fifteen rows:
+   direct pull API examples, pull-many, return-map host wrappers, and
+   Datomic-shaped host `d/query` wrapper ergonomics.
 2. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.

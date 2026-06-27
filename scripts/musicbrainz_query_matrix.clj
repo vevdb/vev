@@ -4,6 +4,18 @@
 
 (def default-uri "datomic:dev://localhost:4334/mbrainz-1968-1973")
 
+(def musicbrainz-rules
+  '[[(track-release ?t ?r)
+     [?m :medium/tracks ?t]
+     [?r :release/media ?m]]
+    [(track-info ?t ?track-name ?artist-name ?album ?year)
+     [?t :track/name ?track-name]
+     [?t :track/artists ?a]
+     [?a :artist/name ?artist-name]
+     (track-release ?t ?r)
+     [?r :release/name ?album]
+     [?r :release/year ?year]]])
+
 (def queries
   [{:name "musicbrainz-real-release-first"
     :query '[:find ?title ?album ?year
@@ -115,7 +127,20 @@
              [?artist :artist/name "The Beatles"]
              [?release :release/artists ?artist]
              [?release :release/name ?release-name]]
-    :args []}])
+    :args []}
+   {:name "musicbrainz-real-rule-track-info"
+    :query '[:find ?track-name ?album ?year
+             :in $ % ?artist-name
+             :where
+             (track-info ?track ?track-name ?artist-name ?album ?year)
+             [(< ?year 1970)]]
+    :args [musicbrainz-rules "The Beatles"]}
+   {:name "musicbrainz-real-pull-release"
+    :query '[:find (pull ?release [:release/name :release/year])
+             :in $ [?release-name ...]
+             :where
+             [?release :release/name ?release-name]]
+    :args [["Abbey Road" "In a Silent Way"]]}])
 
 (def uint64-modulus 18446744073709551616N)
 (def fingerprint-seed 0N)
@@ -128,9 +153,28 @@
    seed
    (seq (.toArray (.codePoints text)))))
 
+(defn canonical-text [value]
+  (cond
+    (map? value)
+    (str "{"
+         (str/join " "
+                   (map (fn [[k v]]
+                          (str (canonical-text k) " " (canonical-text v)))
+                        (sort-by (comp canonical-text key) value)))
+         "}")
+
+    (sequential? value)
+    (str "[" (str/join " " (map canonical-text value)) "]")
+
+    (set? value)
+    (str "#{" (str/join " " (sort (map canonical-text value))) "}")
+
+    :else
+    (pr-str value)))
+
 (defn result-row-key [row]
   (let [values (if (sequential? row) row [row])]
-    (str/join "|" (map pr-str values))))
+    (str/join "|" (map canonical-text values))))
 
 (defn result-fingerprint [rows]
   (let [hash (reduce
