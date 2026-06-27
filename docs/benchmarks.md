@@ -194,11 +194,11 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-beatles-min-max-duration` | 2967 | 10409 | 1 | `9c45e54f061af2f6` |
 | `musicbrainz-real-lookup-country` | 51 | 3371 | 1 | `4167e0bf9abd1220` |
 | `musicbrainz-real-selected-artists-releases` | 520 | 5625 | 28 | `4887ecaa409643d2` |
-| `musicbrainz-real-not-beatles-male` | 6846 | 5810 | 1 | `ea45bdc7e8b8201b` |
-| `musicbrainz-real-or-two-artists` | 20424 | 2231 | 2 | `de67eb0f77cf6b42` |
+| `musicbrainz-real-not-beatles-male` | 359 | 5810 | 1 | `ea45bdc7e8b8201b` |
+| `musicbrainz-real-or-two-artists` | 177 | 2231 | 2 | `de67eb0f77cf6b42` |
 | `musicbrainz-real-relation-artist-release` | 134 | 9320 | 2 | `cb2f30e6783d093d` |
-| `musicbrainz-real-not-join-release` | 17295 | 3917 | 1 | `b6368059dfc36ef8` |
-| `musicbrainz-real-or-join-release` | 17490 | 1222 | 2 | `5f5db031e99d9c11` |
+| `musicbrainz-real-not-join-release` | 256 | 3917 | 1 | `b6368059dfc36ef8` |
+| `musicbrainz-real-or-join-release` | 271 | 1222 | 2 | `5f5db031e99d9c11` |
 | `musicbrainz-real-map-beatles-releases` | 330 | 565 | 16 | `c57b012eecfd45ed` |
 | `musicbrainz-real-rule-track-info` | 48552 | 320417 | 90 | `5f20ceb057e27418` |
 | `musicbrainz-real-pull-release` | 545 | 4042 | 5 | `974ce160e8be7539` |
@@ -214,9 +214,11 @@ planning with lazy candidate-count tie-breaking instead of eager full-relation
 materialization. The `rule-track-info` row uses the same idea inside pure rule
 bodies while preserving DataScript source-order behavior for predicates,
 functions, `not`, `or`, and other effectful/error-sensitive rule steps.
-Remaining slower rows are primarily bounded `or`/`not-join` forms. Those should
-drive general disjunction planning and anti-join planning rather than
-workload-specific shortcuts.
+Bounded `not`, `not-join`, `or`, and `or-join` rows now reuse the same
+dependency-aware data-clause group planner, so the current real-data matrix no
+longer has an obvious slow query-planner outlier. The next planner work should
+come from additional Day-of-Datomic/MusicBrainz queries or larger Datalevin
+benchmark families, rather than workload-specific shortcuts.
 
 The next import-performance work is no longer basic feasibility. The remaining
 write-side architecture issue is whole-array DB/index ownership and publication
@@ -751,8 +753,8 @@ engine=vev workload=musicbrainz-real-beatles-track-count ok=true rows=1 fingerpr
 engine=vev workload=musicbrainz-real-beatles-min-max-duration ok=true rows=1 fingerprint=9c45e54f061af2f6 min_us=2934 steps=3 clauses=490 candidates=976 max_bindings=488 output_rows=1
 engine=vev workload=musicbrainz-real-lookup-country ok=true rows=1 fingerprint=4167e0bf9abd1220 min_us=40 steps=1 clauses=1 candidates=1 max_bindings=1 output_rows=1
 engine=vev workload=musicbrainz-real-selected-artists-releases ok=true rows=28 fingerprint=4887ecaa409643d2 min_us=513 steps=3 clauses=69 candidates=132 max_bindings=65 output_rows=28
-engine=vev workload=musicbrainz-real-not-beatles-male ok=true rows=1 fingerprint=ea45bdc7e8b8201b min_us=6901 steps=3 clauses=2 candidates=4602 max_bindings=1 output_rows=1
-engine=vev workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerprint=de67eb0f77cf6b42 min_us=20061 steps=2 clauses=1 candidates=4601 max_bindings=2 output_rows=2
+engine=vev workload=musicbrainz-real-not-beatles-male ok=true rows=1 fingerprint=ea45bdc7e8b8201b min_us=359 steps=3 clauses=2 candidates=2 max_bindings=1 output_rows=1
+engine=vev workload=musicbrainz-real-or-two-artists ok=true rows=2 fingerprint=de67eb0f77cf6b42 min_us=177 steps=2 clauses=2 candidates=2 max_bindings=2 output_rows=2
 
 engine=datomic workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03
 engine=datomic workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40

@@ -5476,6 +5476,22 @@
         (return))))
   (append-bindings-after-clause-profiled! out db clause-value binding stats))
 
+(defn bindings-after-planned-clauses [db: DB, sources: []DB-Source, bindings: []Binding, clauses: []Clause] -> [dynamic]Binding
+  (let [current (arr.into [dynamic]Binding bindings)
+        remaining (arr.into [dynamic]Clause clauses)]
+    (defer (delete remaining))
+    (while (and (> (count current) 0)
+                (> (count remaining) 0))
+      (let [clause-index (best-clause-index-estimated db sources (slice remaining 0) current[0])
+            clause remaining[clause-index]
+            next (make [dynamic]Binding)]
+        (for [binding current]
+          (append-bindings-after-clause-with-sources! (addr next) db sources clause binding))
+        (delete current)
+        (set! current next)
+        (arr.remove-ordered-at! remaining clause-index)))
+    current))
+
 (defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
   (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
         [a-value a-ok] (resolve-term clause.a binding)
@@ -5587,10 +5603,8 @@
 
 (defn bindings-after-clause-group-with-sources-and-fns [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings ([dynamic]Binding [binding])]
-    (for [clause group.clauses]
-      (let [next-bindings (make [dynamic]Binding)]
-        (for [candidate-binding bindings]
-          (append-bindings-after-clause-with-sources! (addr next-bindings) db sources clause candidate-binding))
+    (when (> (count group.clauses) 0)
+      (let [next-bindings (bindings-after-planned-clauses db sources (slice bindings 0) (slice group.clauses 0))]
         (delete bindings)
         (set! bindings next-bindings)
         (when (= (count bindings) 0)
