@@ -109,7 +109,7 @@ semantics by projecting the attr through `:db/ident`. The detailed coverage ledg
 The restored Datomic comparison matrix now also covers release date
 projection, `get-else`, restored `get-some`, `:keys`/`:strs`/`:syms`
 return-map rows, collection/tuple/scalar find specs, function expressions,
-enum refs through `:db/ident`, grouped median/avg aggregates with `:with`,
+enum refs through `:db/ident`, grouped median/avg/sum aggregates with `:with`,
 direct wildcard pull `[*]`, direct reverse-ref pull through
 `:release/_artists`, pull `limit` over that reverse many-valued relationship,
 pull `default` over missing `:artist/gender`, pull `:as` aliasing, dynamic

@@ -142,6 +142,17 @@
              [?medium :medium/tracks ?track]
              [?track :track/duration ?millis]]
     :args []}
+   {:name "musicbrainz-real-beatles-duration-sum"
+    :query '[:find ?year (sum ?millis)
+             :with ?track
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?release :release/artists ?artist]
+             [?release :release/year ?year]
+             [?release :release/media ?medium]
+             [?medium :medium/tracks ?track]
+             [?track :track/duration ?millis]]
+    :args []}
    {:name "musicbrainz-real-lookup-country"
     :query '[:find ?name
              :where

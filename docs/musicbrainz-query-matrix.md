@@ -67,6 +67,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
 | `musicbrainz-real-beatles-duration-stats` | `4 / 9880798d00baf3e0` | `4 / 9880798d00baf3e0` | Equal rows | Grouped median/avg aggregate with `:with` duplicate preservation over real track durations |
+| `musicbrainz-real-beatles-duration-sum` | `4 / 773afe226788bffa` | `4 / 773afe226788bffa` | Equal rows | Grouped sum aggregate with `:with` duplicate preservation over real track durations |
 | `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
 | `musicbrainz-real-selected-artists-releases` | `28 / 4887ecaa409643d2` | `28 / 4887ecaa409643d2` | Equal rows | Collection input binding over two artist names |
 | `musicbrainz-real-release-date` | `3 / 8853c19c0b82edfa` | `3 / 8853c19c0b82edfa` | Equal rows | Tuple-shaped release date projection over selected releases |
@@ -134,7 +135,7 @@ These workshop shapes are covered by passing Vev tests:
 | `get-else` | workshop query examples | EDN text query |
 | Enum refs through `:db/ident` | artist type/gender query | mini fixture plus restored-sample comparison row |
 | Aggregates | min/max, sum, count/count-distinct | EDN text aggregate queries |
-| Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg also have a restored-sample comparison row |
+| Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg and grouped sum also have restored-sample comparison rows |
 | Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |
 | Reverse-ref pull | artist to releases via `:release/_artists` | direct lookup-ref pull plus restored-sample comparison row |
 | Pull limit option | `(limit :release/_artists 2)` | restored-sample comparison row |
@@ -167,6 +168,7 @@ These should be ported next using the mini fixture first, then the restored
 | Shape | Source | Notes |
 | --- | --- | --- |
 | Additional Day-of-Datomic host snippets | `music_brainz.clj` | Keep porting examples that exercise host presentation rather than engine syntax |
+| Restored-sample `stddev` aggregate row | `query.clj` statistics examples | Vev and Datomic agree to normal floating precision, but strict fingerprints differ in last-bit JVM/native formatting; add a deliberate float-tolerant verifier path before moving this into the main table |
 
 ## Host Or Datomic-Specific Later
 

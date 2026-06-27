@@ -210,7 +210,7 @@ not/or groups, rule calls, pull expressions, nested release/media/track pull,
 direct lookup-ref pull, dynamic pull pattern inputs, `get-else`, restored
 `get-some`, `missing?`, `:keys`/`:strs`/`:syms` return-map rows, dynamic attrs,
 collection/tuple/scalar find specs, function expressions, enum refs through
-`:db/ident`, grouped median/avg aggregates with `:with`, direct wildcard pull
+`:db/ident`, grouped median/avg/sum aggregates with `:with`, direct wildcard pull
 `[*]`, direct reverse-ref pull through `:release/_artists`, pull `limit` over
 that reverse many-valued relationship, pull `default` over missing
 `:artist/gender`, pull `:as` aliasing, Datomic-style tagged UUID literals, the
