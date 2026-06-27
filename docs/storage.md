@@ -1,7 +1,14 @@
 # Storage
 
-Vev's durable storage phase is now active. The storage layer must preserve the
-existing semantic model:
+Vev has completed the first durable SQLite proof phase. Durable storage is not
+production-complete, but the basic semantic loop is now real and measured:
+open, write, close, reopen, query, transaction metadata, host connection
+handles, and Datalevin-style write-bench scaffolding all exist. The next active
+project phase is MusicBrainz/Day-of-Datomic workload validation. Further
+storage architecture work should resume when that workload or larger durable
+benchmarks make the current representation the limiting factor.
+
+The storage layer must preserve the existing semantic model:
 
 - DB values are immutable snapshots.
 - Transactions append facts and retractions with stable tx ids.
@@ -22,7 +29,7 @@ This is deliberately a scaffold, not the final SQLite backend. Its job is to
 make the durable open/write/close/reopen/query loop real while the storage
 boundary is still small.
 
-The SQLite-backed slice now persists datoms as rows:
+The SQLite-backed slice persists datoms as rows:
 
 - `save-db-sqlite`
 - `load-db-sqlite`
@@ -120,15 +127,52 @@ onto Vev's durable API:
 - end-to-end call latency and commit-path latency reporting
 
 This harness is intentionally smaller than the final external benchmark. It is
-for regular development runs while the durable path is still changing, but it
-now accepts `--total`, `--report-every`, `--mixed-operations`, `--batch`, and
-`--seed-batch` so larger runs can be launched without source edits. It uses a
-plain long `:item/key`, matching Datalevin's write-bench schema. The next
-measurement step is scaling this harness to the upstream Datalevin
-`write-bench` totals and comparing pure write and mixed read/write behavior
-directly.
+for regular development runs and accepts `--total`, `--report-every`,
+`--mixed-operations`, `--batch`, and `--seed-batch` so larger runs can be
+launched without source edits. It also has `--workload pure|mixed|both` and
+`--path`, which allows the Datalevin-style sequence of writing a durable store
+first and then running mixed read/write against the same store. It uses a plain
+long `:item/key`, matching Datalevin's write-bench schema.
 
-## SQLite Backend Plan
+A 10k-row local run on June 26, 2026 shows the current durable shape clearly:
+
+- batch-100 pure write: about 13k writes/second by 10k rows
+- batch-1 pure write: about 544 writes/second by 10k rows
+- mixed read/write over a 10k-row store: about 184 writes/second
+
+The batch-1 and mixed curves point at the same bottleneck: each successful
+connection transaction produces a new immutable `DB` value by copying the datom
+log plus `current`, `eavt`, `aevt`, `avet`, and `vaet` index arrays. That is
+semantically correct and keeps DB values immutable, but it is not the final
+durable write representation. The next storage implementation work should move
+`DB` internals toward shared immutable index storage or chunked index pages so a
+new DB value can share old index pages and only add/replace the affected tail
+or page set. Special reportless fast paths are not the desired fix; transaction
+reports, listeners, and `db` snapshots still need correct immutable values.
+
+## Deferred Storage Architecture Work
+
+The current SQLite path is good enough to move on from the first durability
+phase. The known follow-up is architectural rather than a small local
+optimization:
+
+1. Replace whole-array DB/index ownership copies with shared immutable DB/index
+   storage or chunked index pages.
+2. Preserve ordinary immutable DB snapshot semantics: reports, listeners, host
+   handles, and `db` values must still see stable values after later writes.
+3. Keep SQLite as the durable log and metadata backend until measurements show
+   that persisted logical indexes are needed.
+4. Scale `bench/write_bench.kvist` to upstream Datalevin write-bench sizes only
+   after the shared-index representation exists or after MusicBrainz shows the
+   current path is acceptable for imports.
+5. Add persisted materialized current-datom/index structures only after reopen
+   or query measurements prove full in-memory rebuild is the bottleneck.
+
+Special reportless fast paths are not the desired fix. They would make the
+benchmark look better while dodging the core requirement that Vev DB values are
+immutable values applications can pass around.
+
+## SQLite Backend Shape
 
 SQLite is the first production durable backend.
 
@@ -142,13 +186,13 @@ Initial schema direction:
 - optional persisted logical index tables/pages once full-load rebuild is too
   slow
 
-Implementation order:
+Current implementation status and later order:
 
 1. Add storage-level metadata inspection/replay APIs only where concrete tools
    need them.
 2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
    cost measurements require persisted logical indexes.
-3. Continue the append-only transaction path. The current implementation avoids
+3. Continue the append-only transaction path when storage work resumes. The current implementation avoids
    full index rebuilds for conservative direct add-only transactions, skips
    full-schema validation for ordinary non-schema transactions, and clones
    reportable DB snapshots from existing indexes instead of rebuilding them.
@@ -160,8 +204,8 @@ Implementation order:
    existing ids.
    The benchmark now separates snapshot, resolution, apply, log copy,
    incremental index build, and SQLite append cost. The next write-performance
-   milestone is reducing the remaining report/index ownership-copy overhead
-   before introducing a more complex shared DB/index representation.
+   milestone, when we return to storage, is replacing whole-array DB/index
+   ownership copies with a shared immutable DB/index representation.
 4. Move selected logical indexes to persisted structures only after benchmarks
    show full rebuild is the bottleneck.
 5. Keep extending the new `bench/write_bench.kvist` harness until it can run at
@@ -177,6 +221,9 @@ Non-goals for the first SQLite backend:
 
 ## Validation Workloads
 
-MusicBrainz/Datomic workshop data should validate the durable backend once
-basic SQLite reopen/query works. Datalevin `write-bench` becomes relevant after
-SQLite commit semantics and batch append behavior are both measured.
+MusicBrainz/Datomic workshop data is now the next validation workload. See
+`docs/musicbrainz.md` for the active plan. It should validate that the current
+in-memory and SQLite-backed paths preserve the same Datomic-shaped semantics
+under realistic query, pull, schema, ident, and import pressure. Datalevin
+`write-bench` remains the later durable-write comparison once the shared
+immutable index-storage work resumes.

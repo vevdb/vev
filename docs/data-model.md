@@ -118,7 +118,8 @@ The engine supports:
 - tuple schema attributes
 
 Supported value types are `:db.type/string`, `:db.type/long`,
-`:db.type/boolean`, `:db.type/ref`, and `:db.type/keyword`.
+`:db.type/boolean`, `:db.type/ref`, `:db.type/keyword`,
+`:db.type/symbol`, `:db.type/tuple`, and `:db.type/uuid`.
 
 ## Tempids
 

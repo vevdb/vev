@@ -1,0 +1,84 @@
+(package main)
+
+(import cli "kvist:cli")
+(import fmt "core:fmt")
+(import os "core:os")
+(import time "core:time")
+(import vev "../src/vev")
+
+(defn elapsed-us [start: time.Time] -> f64
+  (/ (f64 (time.duration_nanoseconds (time.since start))) 1000.0))
+
+(defn transact-file! [conn: ^vev.Conn, path: string] -> [ok: bool, error: string, parse-us: f64, tx-us: f64]
+  (let [[data read-err] (os.read_entire_file path context.allocator)]
+    (when (!= read-err nil)
+      (return false (fmt.tprintf "read_failed:%s" path) 0.0 0.0))
+    (defer (delete data))
+    (let [parse-start (time.now)
+          prepared (vev.prepare-tx-text (string data))
+          parse-elapsed-us (elapsed-us parse-start)]
+      (when (not prepared.ok)
+        (let [error prepared.error]
+          (vev.delete-prepared-tx-data-shallow prepared)
+          (return false error parse-elapsed-us 0.0)))
+      (let [tx-start (time.now)
+            report (vev.transact-prepared conn prepared)
+            tx-elapsed-us (elapsed-us tx-start)]
+      (vev.delete-prepared-tx-data-shallow prepared)
+      (when (not report.ok)
+        (let [error report.error]
+          (vev.delete-tx-report-shallow report)
+          (return false error parse-elapsed-us tx-elapsed-us)))
+      (vev.delete-live-tx-report-shallow report)
+      (return true "" parse-elapsed-us tx-elapsed-us)))))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [path (cli.option os.args "--input" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset.edn")
+        schema-path (cli.option os.args "--schema" "")
+        values-path (cli.option os.args "--values" "")
+        split-mode (and (not (= schema-path "")) (not (= values-path "")))
+        conn (vev.create-conn)
+        parse-us 0.0
+        tx-us 0.0]
+    (if split-mode
+      (let [[schema-ok schema-error schema-parse-us schema-tx-us] (transact-file! (addr conn) schema-path)]
+        (set! parse-us (+ parse-us schema-parse-us))
+        (set! tx-us (+ tx-us schema-tx-us))
+        (when (not schema-ok)
+          (fmt.printf "engine=vev workload=musicbrainz-import ok=false mode=split stage=schema error=%s parse_us=%.0f tx_us=%.0f import_us=%.0f\n" schema-error parse-us tx-us (+ parse-us tx-us))
+          (return))
+        (let [[values-ok values-error values-parse-us values-tx-us] (transact-file! (addr conn) values-path)]
+          (set! parse-us (+ parse-us values-parse-us))
+          (set! tx-us (+ tx-us values-tx-us))
+          (when (not values-ok)
+            (fmt.printf "engine=vev workload=musicbrainz-import ok=false mode=split stage=values error=%s parse_us=%.0f tx_us=%.0f import_us=%.0f\n" values-error parse-us tx-us (+ parse-us tx-us))
+            (return))))
+      (let [[ok error single-parse-us single-tx-us] (transact-file! (addr conn) path)]
+        (set! parse-us single-parse-us)
+        (set! tx-us single-tx-us)
+        (when (not ok)
+          (fmt.printf "engine=vev workload=musicbrainz-import ok=false mode=single error=%s parse_us=%.0f tx_us=%.0f import_us=%.0f\n" error parse-us tx-us (+ parse-us tx-us))
+          (return))))
+      (let [artist-start (time.now)
+            artist-result (vev.q-text conn.db "[:find ?e :where [?e :artist/name \"The Beatles\"]]")
+            artist-us (elapsed-us artist-start)
+            release-start (time.now)
+            release-result (vev.q-text
+                             conn.db
+                             "[:find ?release-name :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
+            release-us (elapsed-us release-start)]
+        (fmt.printf
+          "engine=vev workload=musicbrainz-import ok=true mode=%s datoms=%d current=%d parse_us=%.0f tx_us=%.0f import_us=%.0f artist_rows=%d artist_us=%.0f release_rows=%d release_us=%.0f\n"
+          (if split-mode "split" "single")
+          (count conn.db.datoms)
+          (count conn.db.current)
+          parse-us
+          tx-us
+          (+ parse-us tx-us)
+          (count artist-result.rows)
+          artist-us
+          (count release-result.rows)
+          release-us)
+        (vev.delete-result-set-shallow artist-result)
+        (vev.delete-result-set-shallow release-result))))

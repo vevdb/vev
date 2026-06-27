@@ -118,6 +118,41 @@ Vev now exposes the optional `datascript-bench` rule rows by name through the
 Clojure adapter using the same DataScript-style `:in $ %` rules input shape as
 the upstream benchmark.
 
+## MusicBrainz Import Smoke
+
+The MusicBrainz phase has a real-data import smoke for the restored Datomic
+1968-1973 sample. It is not a final benchmark yet; it exists to reveal import,
+schema, EDN, and transaction-indexing bottlenecks on Datomic-shaped data.
+
+Generate staged schema/value EDN from the restored Datomic sample:
+
+```sh
+scripts/musicbrainz_sample.sh export-subset-split build/musicbrainz/vev-mbrainz-subset-5000 5000
+```
+
+Build and run the Vev import smoke:
+
+```sh
+cd /Users/andreas/Projects/kvist
+./kvist build /Users/andreas/Projects/vev/bench/musicbrainz_import_subset.kvist \
+  --out /Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset
+
+/Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-schema.edn \
+  --values /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-values.edn
+```
+
+Current local 5k staged result:
+
+```text
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=5293 current=5293 parse_us=11051 tx_us=50623664 import_us=50634715 artist_rows=0 artist_us=1286 release_rows=0 release_us=429
+```
+
+The relevant signal is the ratio inside Vev: EDN parse is already small for
+this slice, while transaction validation/index work dominates. The next import
+performance work should target the generic bulk transaction path, not the EDN
+reader.
+
 ## Query And Rule Baseline
 
 Run Vev from the Kvist repo root so macro loading uses the normal compiler
@@ -285,8 +320,23 @@ The default run is intentionally small. Scale and select workloads with:
   --total 10000 --report-every 1000 --mixed-operations 10000 --batch 100
 ```
 
+To mirror Datalevin's upstream sequence, run pure writes into a durable store
+and then run mixed read/write against that same store:
+
+```sh
+/Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/build/write-bench \
+  --workload pure --path /tmp/vev-write-bench.sqlite \
+  --total 1000000 --report-every 10000 --batch 100
+
+/Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/build/write-bench \
+  --workload mixed --path /tmp/vev-write-bench.sqlite \
+  --total 1000000 --mixed-operations 2000000 --report-every 10000
+```
+
 Options:
 
+- `--workload`: `both` for the local default, `pure`, or `mixed`
+- `--path`: SQLite file for single-workload runs; `both` uses derived temp paths
 - `--total`: pure-write rows to transact and mixed-read/write seed size
 - `--report-every`: row interval for progress samples
 - `--mixed-operations`: total alternating read/write operations
@@ -327,9 +377,14 @@ development. The schema intentionally matches Datalevin's write-bench shape:
 key as unique identity sent the harness through upsert/uniqueness work and made
 the benchmark measure a different workload. With the corrected plain-key shape,
 the small pure-write harness is in the same broad throughput range as the
-published Datalevin write-bench discussion. The next step is to scale this
-harness up and wire Vev into Datalevin's upstream `write-bench` shape for
-direct comparison.
+published Datalevin write-bench discussion. A larger 10k local run shows the
+next real bottleneck: batch-100 pure write is still around 13k writes/second,
+but batch-1 pure write drops to roughly 544 writes/second by 10k rows and mixed
+read/write drops to roughly 184 writes/second. That points at per-commit
+immutable DB/index copying, not EDN parsing or SQLite binding. The next storage
+performance work should therefore introduce shared immutable DB/index storage
+before chasing smaller loop-level optimizations. After that, wire Vev into
+Datalevin's upstream `write-bench` shape for direct comparison.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured
@@ -564,3 +619,28 @@ Remaining performance work:
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.
+
+## MusicBrainz Mini Profile
+
+`bench/musicbrainz_query_profile.kvist` runs the deterministic MusicBrainz mini
+fixture from `docs/musicbrainz.md` as a profiling benchmark. It is meant to
+catch planner regressions and compare clause-order shapes before the restored
+1968-1973 sample is available.
+
+Run:
+
+```bash
+cd /Users/andreas/Projects/kvist
+./kvist run /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist
+```
+
+Current workloads:
+
+- `musicbrainz-release-first`: starts from artist, release, year, medium, track
+- `musicbrainz-track-first`: starts from artist and track, then joins release,
+  medium, and track
+
+The output includes timing samples plus Vev profile counters:
+`steps`, `clauses`, `candidates`, `max_bindings`, and `output_rows`. Treat this
+as a local regression signal; Datomic comparison should use the restored sample
+database.

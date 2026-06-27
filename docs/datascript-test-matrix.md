@@ -17,8 +17,10 @@ Status:
 - `interop`: requires EDN/text APIs, parser frontend, or C ABI-facing shape
 - `host`: Clojure/JVM/runtime behavior, not core engine semantics
 
-Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 354
-tests successfully. The most important remaining gaps are no longer basic
+Current local baseline: `kvist test src/vev_tests/vev_test.kvist` runs 364
+tests successfully. The new MusicBrainz mini workload is separate and runs with
+`kvist test src/vev_tests/musicbrainz_test.kvist`. The most important
+remaining gaps are no longer basic
 Datalog syntax or transaction shape coverage; they are exact parser validation,
 host wrapper ergonomics, query planner/operator maturity, and generic
 semi-naive rule optimization.
@@ -96,11 +98,14 @@ These are useful, but not the next engine-parity gate.
    `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
    because EDN text/prepared APIs are the compatibility route for non-Kvist
    consumers.
-2. Continue SQLite storage work with write/reopen measurements and metadata
-   inspection only where concrete tools need it.
-3. Replace the current rule/fixpoint and aggregate hot paths with measured
+2. Grow the MusicBrainz/Day-of-Datomic workload from the mini EDN fixture into
+   the upstream `Datomic/mbrainz-sample` schema/query set and the 1968-1973
+   sample backup.
+3. Continue SQLite storage work with write/reopen measurements and metadata
+   inspection only where MusicBrainz or larger write-bench runs need it.
+4. Replace the current rule/fixpoint and aggregate hot paths with measured
    implementations. The current engine is semantically useful, but DataScript
    parity also needs predictable performance on recursive rules and large
    relations.
-4. Keep Kvist literal macros aligned with the typed AST as ergonomic sugar, not
+5. Keep Kvist literal macros aligned with the typed AST as ergonomic sugar, not
    as the definition of compatibility.

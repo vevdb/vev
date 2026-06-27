@@ -1,0 +1,88 @@
+(package main)
+
+(import arr "kvist:arr")
+(import bench "./support")
+(import cli "kvist:cli")
+(import fmt "core:fmt")
+(import os "core:os")
+(import time "core:time")
+(import vev "../src/vev")
+
+(def musicbrainz-mini-tx
+  "[{:db/id 100 :db/ident :country/name :db/valueType :db.type/string :db/unique :db.unique/identity} {:db/id 101 :db/ident :artist/name :db/valueType :db.type/string :db/unique :db.unique/identity} {:db/id 102 :db/ident :artist/country :db/valueType :db.type/ref} {:db/id 103 :db/ident :artist/type :db/valueType :db.type/ref} {:db/id 104 :db/ident :artist/startYear :db/valueType :db.type/long} {:db/id 105 :db/ident :artist/startMonth :db/valueType :db.type/long} {:db/id 106 :db/ident :artist/startDay :db/valueType :db.type/long} {:db/id 107 :db/ident :artist/gender :db/valueType :db.type/ref} {:db/id 108 :db/ident :artist/gid :db/valueType :db.type/string :db/unique :db.unique/identity} {:db/id 110 :db/ident :release/name :db/valueType :db.type/string} {:db/id 111 :db/ident :release/year :db/valueType :db.type/long} {:db/id 112 :db/ident :release/artists :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} {:db/id 113 :db/ident :release/country :db/valueType :db.type/ref} {:db/id 114 :db/ident :release/media :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} {:db/id 115 :db/ident :release/artistCredit :db/valueType :db.type/string} {:db/id 120 :db/ident :medium/tracks :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} {:db/id 121 :db/ident :medium/trackCount :db/valueType :db.type/long} {:db/id 122 :db/ident :medium/position :db/valueType :db.type/long} {:db/id 123 :db/ident :medium/name :db/valueType :db.type/string} {:db/id 130 :db/ident :track/name :db/valueType :db.type/string} {:db/id 131 :db/ident :track/duration :db/valueType :db.type/long} {:db/id 132 :db/ident :track/artists :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} {:db/id 133 :db/ident :track/position :db/valueType :db.type/long} {:db/id 210 :db/ident :artist.type/group} {:db/id 211 :db/ident :artist.type/person} {:db/id 212 :db/ident :artist.gender/male} {:db/id 201 :country/name \"United Kingdom\"} {:db/id 202 :country/name \"United States\"} {:db/id 301 :artist/name \"The Beatles\" :artist/gid \"beatles-gid\" :artist/country 201 :artist/type 210 :artist/startYear 1960 :artist/startMonth 8 :artist/startDay 17} {:db/id 302 :artist/name \"Miles Davis\" :artist/gid \"miles-gid\" :artist/country 202 :artist/type 211 :artist/gender 212 :artist/startYear 1944} {:db/id 401 :release/name \"Abbey Road\" :release/year 1969 :release/artists [301] :release/country 201 :release/media [601] :release/artistCredit \"The Beatles\"} {:db/id 402 :release/name \"Kind of Blue\" :release/year 1959 :release/artists [302] :release/country 202 :release/media [602] :release/artistCredit \"Miles Davis\"} {:db/id 501 :track/name \"Come Together\" :track/duration 259000 :track/artists [301] :track/position 1} {:db/id 502 :track/name \"Something\" :track/duration 182000 :track/artists [301] :track/position 2} {:db/id 503 :track/name \"So What\" :track/duration 545000 :track/artists [302] :track/position 1} {:db/id 601 :medium/name \"CD 1\" :medium/position 1 :medium/trackCount 2 :medium/tracks [501 502]} {:db/id 602 :medium/name \"CD 1\" :medium/position 1 :medium/trackCount 1 :medium/tracks [503]}]")
+
+(def release-first-query
+  "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t] [?t :track/name ?title]]")
+
+(def track-first-query
+  "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?title] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t]]")
+
+(defstruct Profile-Timing {
+  profiled: vev.Profiled-Result-Set
+  timing: bench.Timing
+})
+
+(defn profile-timing [profiled: vev.Profiled-Result-Set, timing: bench.Timing] -> Profile-Timing
+  (Profile-Timing {profiled: profiled timing: timing}))
+
+(defn seed-mini [] -> vev.Conn
+  (let [conn (vev.create-conn)
+        report (vev.transact-text (addr conn) musicbrainz-mini-tx)]
+    (when (not report.ok)
+      (fmt.printf "engine=vev workload=musicbrainz-mini-seed ok=false error=%s\n" report.error))
+    (vev.delete-live-tx-report-shallow report)
+    conn))
+
+(defn time-profiled-query [db: vev.DB, query: string, inputs: []vev.Query-Input, warmups: int, samples-count: int] -> Profile-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (let [warmup (vev.q-text-profiled-with-inputs db query inputs)]
+      (vev.delete-profiled-result-set-shallow warmup)))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            profiled (vev.q-text-profiled-with-inputs db query inputs)
+            elapsed (bench.elapsed-us start)]
+        (arr.push! samples elapsed)
+        (vev.delete-profiled-result-set-shallow profiled)))
+    (profile-timing
+      (vev.q-text-profiled-with-inputs db query inputs)
+      (bench.timing-from-samples (slice samples 0)))))
+
+(defn print-profile [workload: string, result: Profile-Timing]
+  (fmt.printf
+    "engine=vev workload=%s ok=%v rows=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
+    workload
+    result.profiled.result.ok
+    (count result.profiled.result.rows)
+    result.timing.min-us
+    result.timing.median-us
+    result.timing.p90-us
+    result.timing.max-us
+    result.profiled.stats.steps
+    result.profiled.stats.clauses
+    result.profiled.stats.clause-candidates
+    result.profiled.stats.max-intermediate-bindings
+    result.profiled.stats.output-rows))
+
+(defn should-run? [selected: string, workload: string] -> bool
+  (or (= selected "all")
+      (= selected workload)))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [selected (cli.option os.args "--workload" "all")
+        warmups (max 0 (cli.int-option os.args "--warmups" 10))
+        samples (max 1 (cli.int-option os.args "--samples" 25))
+        conn (seed-mini)
+        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))])]
+    (when (should-run? selected "release-first")
+      (let [result (time-profiled-query conn.db release-first-query inputs warmups samples)]
+        (print-profile "musicbrainz-release-first" result)
+        (vev.delete-profiled-result-set-shallow result.profiled)))
+    (when (should-run? selected "track-first")
+      (let [result (time-profiled-query conn.db track-first-query inputs warmups samples)]
+        (print-profile "musicbrainz-track-first" result)
+        (vev.delete-profiled-result-set-shallow result.profiled)))))

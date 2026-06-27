@@ -23,6 +23,7 @@ const VEV_VALUE_KEYWORD: c_int = 6;
 const VEV_VALUE_SYMBOL: c_int = 7;
 const VEV_VALUE_VECTOR: c_int = 8;
 const VEV_VALUE_MAP: c_int = 9;
+const VEV_VALUE_UUID: c_int = 10;
 
 #[link(name = "vev")]
 unsafe extern "C" {
@@ -147,6 +148,7 @@ enum Value {
     Bool(bool),
     Keyword(String),
     Symbol(String),
+    Uuid(String),
     Vector(Vec<Value>),
     Map(Vec<(Value, Value)>),
 }
@@ -155,7 +157,7 @@ impl Value {
     fn map_get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Map(items) => items.iter().find_map(|(k, v)| match k {
-                Value::Keyword(text) | Value::String(text) | Value::Symbol(text) if text == key => {
+                Value::Keyword(text) | Value::String(text) | Value::Symbol(text) | Value::Uuid(text) if text == key => {
                     Some(v)
                 }
                 _ => None,
@@ -194,6 +196,7 @@ impl Library {
             VEV_VALUE_BOOL => Value::Bool(unsafe { vev_value_bool(value) }),
             VEV_VALUE_KEYWORD => Value::Keyword(unsafe { Self::owned_string(vev_value_text(value)) }),
             VEV_VALUE_SYMBOL => Value::Symbol(unsafe { Self::owned_string(vev_value_text(value)) }),
+            VEV_VALUE_UUID => Value::Uuid(unsafe { Self::owned_string(vev_value_text(value)) }),
             VEV_VALUE_VECTOR => {
                 let count = unsafe { vev_value_item_count(value) };
                 let mut out = Vec::with_capacity(count as usize);

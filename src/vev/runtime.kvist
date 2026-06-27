@@ -15,6 +15,7 @@
     .String (value-string (string-owned value.text))
     .Keyword (value-keyword (string-owned value.text))
     .Symbol (value-symbol (string-owned value.text))
+    .Uuid (value-uuid (string-owned value.text))
     .Vector
       (let [items (make [dynamic]Value 0 (count value.items))]
         (for [item value.items]
@@ -32,6 +33,7 @@
     .String (delete value.text)
     .Keyword (delete value.text)
     .Symbol (delete value.text)
+    .Uuid (delete value.text)
     .Vector
       (do
         (for [item value.items]
@@ -433,6 +435,7 @@
     .Bool (return .Bool true)
     .Keyword (return .Keyword true)
     .Symbol (return .Symbol true)
+    .Uuid (return .Uuid true)
     :else (return .Nil false)))
 
 (defn relation-column-add! [column: ^Relation-Column, value: Value] -> bool
@@ -453,7 +456,8 @@
       .Float (arr.push! column^.floats value.float-value)
       .Bool (arr.push! column^.bools value.bool-value)
       .Keyword (arr.push! column^.texts value.text)
-      .Symbol (arr.push! column^.texts value.text))
+      .Symbol (arr.push! column^.texts value.text)
+      .Uuid (arr.push! column^.texts value.text))
     true))
 
 (defn relation-column-can-add? [column: Relation-Column, value: Value] -> bool
@@ -639,7 +643,8 @@
             (return "b:true" true)
             (return "b:false" true))
     .Keyword (return (fmt.tprintf "k:%s" column.texts[row]) true)
-    .Symbol (return (fmt.tprintf "y:%s" column.texts[row]) true))
+    .Symbol (return (fmt.tprintf "y:%s" column.texts[row]) true)
+    .Uuid (return (fmt.tprintf "u:%s" column.texts[row]) true))
   (return "" false))
 
 (defn typed-relations-compatible-common? [left: Typed-Relation, right: Typed-Relation, common: []string] -> bool
@@ -680,7 +685,8 @@
     .Float (return (value-float column.floats[row]) true)
     .Bool (return (value-bool column.bools[row]) true)
     .Keyword (return (value-keyword column.texts[row]) true)
-    .Symbol (return (value-symbol column.texts[row]) true))
+    .Symbol (return (value-symbol column.texts[row]) true)
+    .Uuid (return (value-uuid column.texts[row]) true))
   (return (Value {}) false))
 
 (defn query-relations-compatible-common? [left: Query-Relation, right: Query-Relation, common: []string] -> bool
@@ -1730,6 +1736,7 @@
   (case value.kind
     .String (return value.text true)
     .Keyword (return value.text true)
+    .Uuid (return value.text true)
     .Int (return (fmt.tprintf "%d" value.int-value) true)
     .Float (return (fmt.tprintf "%v" value.float-value) true)
     .Bool (if value.bool-value
@@ -1750,6 +1757,7 @@
             (return "b:false" true))
     .Keyword (return (fmt.tprintf "k:%s" value.text) true)
     .Symbol (return (fmt.tprintf "y:%s" value.text) true)
+    .Uuid (return (fmt.tprintf "u:%s" value.text) true)
     .Nil (return "n:" true)
     :else (return "" false)))
 
@@ -2986,6 +2994,7 @@
     (= schema-type ":db.type/keyword") (= value.kind .Keyword)
     (= schema-type ":db.type/symbol") (= value.kind .Symbol)
     (= schema-type ":db.type/tuple") (= value.kind .Vector)
+    (= schema-type ":db.type/uuid") (= value.kind .Uuid)
     :else true))
 
 (defn valid-tuple-attrs-value? [db: DB, value: Value] -> bool
@@ -4239,12 +4248,6 @@
   (let [[schema-type has-type] (schema-keyword db op.a ":db/valueType")]
     (when (and has-type (not (value-matches-schema-type? op.v schema-type)))
       (return false "schema value type mismatch")))
-  (let [[unique has-unique] (schema-keyword db op.a ":db/unique")]
-    (when (and has-unique
-               (or (= unique ":db.unique/identity")
-                   (= unique ":db.unique/value"))
-               (unique-conflict? db op))
-      (return false "schema unique conflict")))
   (return true ""))
 
 (defn validate-op-entity-ids [op: Tx-Op] -> [ok: bool, error: string]
@@ -4269,11 +4272,19 @@
 (defn ops-require-incremental-validation? [before: DB, ops: []Tx-Op] -> bool
   (for [op ops]
     (when (op-modifies-validation-schema? op)
-      (return true))
-    (when (and (= op.kind .Add)
-               (schema-unique? before op.a))
       (return true)))
   false)
+
+(defn unique-op-value-key [op: Tx-Op] -> [key: string, ok: bool]
+  (if (= op.v.kind .Vector)
+    (let [[value-key value-ok] (row-values-dedupe-key (slice op.v.items 0))]
+      (when (not value-ok)
+        (return "" false))
+      (return (fmt.tprintf "%d:%s:%d:%s" (count op.a) op.a (count value-key) value-key) true))
+    (let [[value-key value-ok] (primitive-value-dedupe-key op.v)]
+      (when (not value-ok)
+        (return "" false))
+      (return (fmt.tprintf "%d:%s:%d:%s" (count op.a) op.a (count value-key) value-key) true))))
 
 (defn validate-final-schema [scratch-datoms: []Datom] -> [ok: bool, error: string]
   (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
@@ -4319,6 +4330,8 @@
   (return true ""))
 
 (defn validate-ops-batch-against-before [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
+  (let [seen-unique (mmap.empty string u64)]
+    (defer (delete seen-unique))
   (for [op ops]
     (let [[entity-ok entity-error] (validate-op-entity-ids op)]
       (when (not entity-ok)
@@ -4326,7 +4339,17 @@
     (when (= op.kind .Add)
       (let [[ok error] (validate-add-op before op)]
         (when (not ok)
-          (return false error)))))
+          (return false error)))
+      (when (schema-unique? before op.a)
+        (when (unique-conflict? before op)
+          (return false "schema unique conflict"))
+        (let [[key key-ok] (unique-op-value-key op)]
+          (when (not key-ok)
+            (return false "schema unique value unsupported"))
+          (let [[existing existing-ok] (mmap.get seen-unique key)]
+            (when (and existing-ok (not (= existing op.e)))
+              (return false "schema unique conflict")))
+          (mmap.assoc! seen-unique key op.e))))))
   (return true ""))
 
 (defn validate-tuple-schema [db: DB] -> [ok: bool, error: string]
@@ -4392,7 +4415,8 @@
           (= value ":db.type/ref")
           (= value ":db.type/keyword")
           (= value ":db.type/symbol")
-          (= value ":db.type/tuple"))
+          (= value ":db.type/tuple")
+          (= value ":db.type/uuid"))
     (= schema-attr ":db/cardinality")
       (or (= value ":db.cardinality/one")
           (= value ":db.cardinality/many"))
@@ -4441,7 +4465,10 @@
               scratch (build-db scratch-owned)
               [ok error] (validate-add-op scratch op)]
           (when (not ok)
-            (return false error))))
+            (return false error))
+          (when (and (schema-unique? scratch op.a)
+                     (unique-conflict? scratch op))
+            (return false "schema unique conflict"))))
       (arr.push! scratch-datoms
         (Datom {e: op.e
                 a: op.a
@@ -4549,6 +4576,12 @@
 (defn entity-attr-seen? [seen: set[string], entity: u64, attr: string] -> bool
   (set.contains? seen (entity-attr-key entity attr)))
 
+(defn op-fact-key [op: Tx-Op] -> [key: string, ok: bool]
+  (let [[value-key value-ok] (primitive-value-dedupe-key op.v)]
+    (when (not value-ok)
+      (return "" false))
+    (return (fmt.tprintf "%d:%d:%s:%d:%s" op.e (count op.a) op.a (count value-key) value-key) true)))
+
 (defn append-cardinality-one-retractions! [before: DB, seen-ea: set[string], after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
@@ -4653,9 +4686,11 @@
   (when (append-only-ordered-new-entity-ops-eligible? before ops)
     (return true))
   (let [seen-ea (set.empty string)
+        seen-facts (set.empty string)
         all-new-entities (append-only-ops-all-new-entities? before ops)]
     (defer (delete seen-ea))
-    (for [op index ops]
+    (defer (delete seen-facts))
+    (for [op ops]
       (when (not (= op.kind .Add))
         (return false))
       (when (and (not all-new-entities)
@@ -4669,8 +4704,12 @@
             (return false))
           (set.add! seen-ea (entity-attr-key op.e op.a)))
         (do
-          (when (prior-add-op-fact-exists? ops index op)
-            (return false))
+          (let [[fact-key fact-ok] (op-fact-key op)]
+            (when (not fact-ok)
+              (return false))
+            (when (set.contains? seen-facts fact-key)
+              (return false))
+            (set.add! seen-facts fact-key))
           (set.add! seen-ea (entity-attr-key op.e op.a))))))
   true)
 

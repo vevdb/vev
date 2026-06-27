@@ -60,10 +60,13 @@ semantics or required native interop, not on already-covered syntax families.
 1. Tighten parser validation against the upstream parser namespaces. Query,
    pull, rule, return-map, and transaction text parsing are broad now, but
    malformed-shape handling still trails DataScript.
-2. Continue the SQLite storage backend behind the storage-neutral
-   `connect`/durable-connection boundary with write/reopen measurements and
-   metadata inspection only where real tools need it.
-3. Package or broaden host wrapper ergonomics when concrete
+2. Use the MusicBrainz/Day-of-Datomic workload in `docs/musicbrainz.md` to
+   validate real Datomic-shaped tutorial usage across in-memory and
+   SQLite-backed paths.
+3. Continue the SQLite storage backend behind the storage-neutral
+   `connect`/durable-connection boundary only when MusicBrainz or larger
+   write-bench runs justify the shared immutable index-storage work.
+4. Package or broaden host wrapper ergonomics when concrete
    Java/Clojure/Python/Rust usage needs more than the current durable smokes.
 
 ## Query And Rules Engine State
