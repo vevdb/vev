@@ -75,6 +75,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-not-join-release` | `1 / b6368059dfc36ef8` | `1 / b6368059dfc36ef8` | Equal rows | Bounded `not-join` over selected releases uses planned group clauses |
 | `musicbrainz-real-or-join-release` | `2 / 5f5db031e99d9c11` | `2 / 5f5db031e99d9c11` | Equal rows | Bounded `or-join` over selected releases uses planned branch clauses |
 | `musicbrainz-real-map-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Vev uses EDN map query text; Datomic harness uses the equivalent vector query |
+| `musicbrainz-real-keys-beatles-releases` | `16 / 2476cdd6c54275f1` | `16 / 2476cdd6c54275f1` | Equal rows | Datomic-style `:keys` return-map rows compare as map-shaped results |
 | `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Pure rule-body planner keeps the composed track/release join selective |
 | `musicbrainz-real-pull-release` | `5 / 974ce160e8be7539` | `5 / 974ce160e8be7539` | Equal rows | Pull expression in query result over selected release names |
 | `musicbrainz-real-dynamic-pull-release` | `17 / 16930ebda61a7b2c` | `17 / 16930ebda61a7b2c` | Equal rows | Day-of-Datomic `d/query`-style pull pattern supplied through `:in` |
@@ -129,8 +130,7 @@ These workshop shapes are covered by passing Vev tests:
 | Query-stats final production query | `music_brainz.clj` John Lennon pre-1970 tracks | real Datomic comparison row plus mini profile assertion |
 | Clause-order profiling | `music_brainz.clj` comparison examples | `bench/musicbrainz_query_profile.kvist` |
 | Host-facing `d/query` equivalent with `:query`/`:args` | `music_brainz.clj` | Clojure `vev/query` and Java `Vev.queryRows(Map.of(...))` request-map wrappers |
-| Clojure return-map rows | `music_brainz.clj` | Clojure `q`/`rows`/`query` return maps for `:keys`, `:strs`, and `:syms` on plain query forms |
-| Java return-map rows | `music_brainz.clj` | Java `Vev.queryMaps(Map.of(...))` return maps for `:keys`, `:strs`, and `:syms` query text |
+| Return-map rows | `music_brainz.clj` | `:keys` has a restored-sample Datomic comparison row; Clojure and Java wrappers also cover `:keys`, `:strs`, and `:syms` on plain query forms |
 
 ## Pending Tutorial Coverage
 

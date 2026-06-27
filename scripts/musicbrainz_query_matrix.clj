@@ -186,6 +186,15 @@
              [?release :release/artists ?artist]
              [?release :release/name ?release-name]]
     :args []}
+   {:name "musicbrainz-real-keys-beatles-releases"
+    :query '[:find ?artist-name ?release-name
+             :keys artist release
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?artist :artist/name ?artist-name]
+             [?release :release/artists ?artist]
+             [?release :release/name ?release-name]]
+    :args []}
    {:name "musicbrainz-real-rule-track-info"
     :query '[:find ?track-name ?album ?year
              :in $ % ?artist-name

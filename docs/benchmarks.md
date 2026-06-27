@@ -207,6 +207,7 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-not-join-release` | 256 | 3917 | 1 | `b6368059dfc36ef8` |
 | `musicbrainz-real-or-join-release` | 271 | 1222 | 2 | `5f5db031e99d9c11` |
 | `musicbrainz-real-map-beatles-releases` | 330 | 565 | 16 | `c57b012eecfd45ed` |
+| `musicbrainz-real-keys-beatles-releases` | 731 | 45501 | 16 | `2476cdd6c54275f1` |
 | `musicbrainz-real-rule-track-info` | 48552 | 320417 | 90 | `5f20ceb057e27418` |
 | `musicbrainz-real-pull-release` | 545 | 4042 | 5 | `974ce160e8be7539` |
 | `musicbrainz-real-dynamic-pull-release` | 1381 | 46875 | 17 | `16930ebda61a7b2c` |
