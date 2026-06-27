@@ -710,12 +710,23 @@ Current local correctness/performance snapshot:
 engine=vev workload=musicbrainz-real-load ok=true datoms=763274 current=763274 import_us=16740120
 engine=vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03 min_us=363141 median_us=367726 p90_us=367726 max_us=367726 steps=8 clauses=7 candidates=248057 max_bindings=265 output_rows=96
 engine=vev workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40 min_us=970834 median_us=988852 p90_us=988852 max_us=988852 steps=9 clauses=8 candidates=349462 max_bindings=244 output_rows=89
+engine=vev workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprint=c57b012eecfd45ed min_us=412 steps=3 clauses=55 candidates=107 max_bindings=53 output_rows=16
+engine=vev workload=musicbrainz-real-beatles-track-count ok=true rows=1 fingerprint=0000000007068a26 min_us=3600 steps=3 clauses=490 candidates=977 max_bindings=488 output_rows=1
+engine=vev workload=musicbrainz-real-beatles-min-max-duration ok=true rows=1 fingerprint=9c45e54f061af2f6 min_us=2934 steps=3 clauses=490 candidates=976 max_bindings=488 output_rows=1
+engine=vev workload=musicbrainz-real-lookup-country ok=true rows=1 fingerprint=4167e0bf9abd1220 min_us=40 steps=1 clauses=1 candidates=1 max_bindings=1 output_rows=1
 
 engine=datomic workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03
 engine=datomic workload=musicbrainz-real-track-first ok=true rows=89 fingerprint=9902d35f51335e40
+engine=datomic workload=musicbrainz-real-beatles-releases ok=true rows=16 fingerprint=c57b012eecfd45ed
+engine=datomic workload=musicbrainz-real-beatles-track-count ok=true rows=1 fingerprint=0000000007068a26
+engine=datomic workload=musicbrainz-real-beatles-min-max-duration ok=true rows=1 fingerprint=9c45e54f061af2f6
+engine=datomic workload=musicbrainz-real-lookup-country ok=true rows=1 fingerprint=4167e0bf9abd1220
 ```
 
-The first two restored-sample query result sets match Datomic exactly after
-normalization. Vev is currently slower on these joins, so the next useful query
+The first restored-sample query batch matches Datomic exactly after
+normalization. The aggregate rows are bounded to Beatles tracks rather than
+global track scans so the default matrix stays useful during normal development;
+global aggregate scans can be added later as explicit stress workloads. Vev is
+currently slower on the multi-join clause-order rows, so the next useful query
 work is planner/index improvement on real MusicBrainz-shaped joins rather than
 more synthetic micro-optimization.

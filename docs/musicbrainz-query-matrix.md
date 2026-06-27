@@ -50,16 +50,21 @@ Real-data import status:
 | 50k/100k/200k/400k staged subsets | Passing | Latest 400k local run is about 6.9s total |
 | Full 763,274-item subset | Passing | Chunked staged import preserves expected tutorial rows; latest local import is about 16.5s |
 
-Real-data query comparison against local Datomic is active for the first two
-clause-order tutorial shapes:
+Real-data query comparison against local Datomic is active for the first
+tutorial-shaped batch:
 
 | Workload | Vev rows/fingerprint | Datomic rows/fingerprint | Status | Current signal |
 | --- | --- | --- | --- | --- |
 | `musicbrainz-real-release-first` | `96 / 0ea8943f9ef3eb03` | `96 / 0ea8943f9ef3eb03` | Equal rows | Vev is currently much slower on this restored-sample join |
 | `musicbrainz-real-track-first` | `89 / 9902d35f51335e40` | `89 / 9902d35f51335e40` | Equal rows | Same semantics; worse clause order remains a useful planner target |
+| `musicbrainz-real-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Constant artist lookup plus release join is fast in Vev |
+| `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
+| `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
+| `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
 
 The row fingerprints are generated from sorted projected EDN-ish row keys. Both
-queries have also been checked with explicit sorted row dumps and `diff`.
+initial clause-order queries have also been checked with explicit sorted row
+dumps and `diff`.
 
 ## Covered
 
@@ -123,9 +128,8 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Expand the real Datomic comparison matrix beyond the two clause-order joins:
-   aggregates, rules, pull, lookup refs, collection/relation inputs, `not`,
-   `or`, and map query form.
+1. Expand the real Datomic comparison matrix beyond the first six rows: rules,
+   pull, collection/relation inputs, `not`, `or`, and map query form.
 2. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.

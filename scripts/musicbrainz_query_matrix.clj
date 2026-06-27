@@ -31,7 +31,34 @@
              [?r :release/name ?album]
              [?r :release/media ?m]
              [?m :medium/tracks ?t]]
-    :args ["The Beatles"]}])
+    :args ["The Beatles"]}
+   {:name "musicbrainz-real-beatles-releases"
+    :query '[:find ?release-name
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?release :release/artists ?artist]
+             [?release :release/name ?release-name]]
+    :args []}
+   {:name "musicbrainz-real-beatles-track-count"
+    :query '[:find (count ?track)
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?track :track/artists ?artist]
+             [?track :track/name]]
+    :args []}
+   {:name "musicbrainz-real-beatles-min-max-duration"
+    :query '[:find (min ?dur) (max ?dur)
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?track :track/artists ?artist]
+             [?track :track/duration ?dur]]
+    :args []}
+   {:name "musicbrainz-real-lookup-country"
+    :query '[:find ?name
+             :where
+             [?country :country/name "United Kingdom"]
+             [?country :country/name ?name]]
+    :args []}])
 
 (def uint64-modulus 18446744073709551616N)
 (def fingerprint-seed 0N)
@@ -45,7 +72,8 @@
    (seq (.toArray (.codePoints text)))))
 
 (defn result-row-key [row]
-  (str/join "|" (map pr-str row)))
+  (let [values (if (sequential? row) row [row])]
+    (str/join "|" (map pr-str values))))
 
 (defn result-fingerprint [rows]
   (let [hash (reduce

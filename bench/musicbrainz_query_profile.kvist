@@ -18,6 +18,18 @@
 (def track-first-query
   "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?title] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t]]")
 
+(def beatles-releases-query
+  "[:find ?release-name :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
+
+(def track-count-query
+  "[:find (count ?track) :where [?artist :artist/name \"The Beatles\"] [?track :track/artists ?artist] [?track :track/name]]")
+
+(def min-max-duration-query
+  "[:find (min ?dur) (max ?dur) :where [?artist :artist/name \"The Beatles\"] [?track :track/artists ?artist] [?track :track/duration ?dur]]")
+
+(def lookup-country-query
+  "[:find ?name :where [[:country/name \"United Kingdom\"] :country/name ?name]]")
+
 (defstruct Profile-Timing {
   profiled: vev.Profiled-Result-Set
   timing: bench.Timing
@@ -158,7 +170,16 @@
 
 (defn should-run? [selected: string, workload: string] -> bool
   (or (= selected "all")
-      (= selected workload)))
+      (= selected workload)
+      (= selected (strings.trim_prefix workload "musicbrainz-mini-"))
+      (= selected (strings.trim_prefix workload "musicbrainz-real-"))))
+
+(defn print-workload! [db: vev.DB, workload: string, query: string, inputs: []vev.Query-Input, warmups: int, samples: int, print-rows: bool]
+  (let [result (time-profiled-query db query inputs warmups samples)]
+    (print-profile workload result)
+    (when print-rows
+      (print-result-rows workload result.profiled.result))
+    (vev.delete-profiled-result-set-shallow result.profiled)))
 
 (defn main []
   (defer (free_all context.allocator))
@@ -175,19 +196,26 @@
         conn (if (= dataset "real")
                (vev.create-conn)
                (seed-mini))
-        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))])]
+        no-inputs ([]vev.Query-Input [])
+        beatles-input ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))])]
     (when (= dataset "real")
       (when (not (load-real! (addr conn) schema-path values-path values-prefix values-chunks progress))
         (return)))
-    (when (should-run? selected "release-first")
-      (let [result (time-profiled-query conn.db release-first-query inputs warmups samples)]
-        (print-profile (fmt.tprintf "musicbrainz-%s-release-first" dataset) result)
-        (when print-rows
-          (print-result-rows (fmt.tprintf "musicbrainz-%s-release-first" dataset) result.profiled.result))
-        (vev.delete-profiled-result-set-shallow result.profiled)))
-    (when (should-run? selected "track-first")
-      (let [result (time-profiled-query conn.db track-first-query inputs warmups samples)]
-        (print-profile (fmt.tprintf "musicbrainz-%s-track-first" dataset) result)
-        (when print-rows
-          (print-result-rows (fmt.tprintf "musicbrainz-%s-track-first" dataset) result.profiled.result))
-        (vev.delete-profiled-result-set-shallow result.profiled)))))
+    (let [release-first-workload (fmt.tprintf "musicbrainz-%s-release-first" dataset)
+          track-first-workload (fmt.tprintf "musicbrainz-%s-track-first" dataset)
+          beatles-releases-workload (fmt.tprintf "musicbrainz-%s-beatles-releases" dataset)
+          track-count-workload (fmt.tprintf "musicbrainz-%s-beatles-track-count" dataset)
+          min-max-duration-workload (fmt.tprintf "musicbrainz-%s-beatles-min-max-duration" dataset)
+          lookup-country-workload (fmt.tprintf "musicbrainz-%s-lookup-country" dataset)]
+      (when (should-run? selected release-first-workload)
+        (print-workload! conn.db release-first-workload release-first-query beatles-input warmups samples print-rows))
+      (when (should-run? selected track-first-workload)
+        (print-workload! conn.db track-first-workload track-first-query beatles-input warmups samples print-rows))
+      (when (should-run? selected beatles-releases-workload)
+        (print-workload! conn.db beatles-releases-workload beatles-releases-query no-inputs warmups samples print-rows))
+      (when (should-run? selected track-count-workload)
+        (print-workload! conn.db track-count-workload track-count-query no-inputs warmups samples print-rows))
+      (when (should-run? selected min-max-duration-workload)
+        (print-workload! conn.db min-max-duration-workload min-max-duration-query no-inputs warmups samples print-rows))
+      (when (should-run? selected lookup-country-workload)
+        (print-workload! conn.db lookup-country-workload lookup-country-query no-inputs warmups samples print-rows)))))
