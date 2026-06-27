@@ -62,6 +62,8 @@ tutorial-shaped batches:
 | `musicbrainz-real-beatles-short-track-collection` | `140 / 50498f806d973af7` | `140 / 50498f806d973af7` | Equal rows | Collection find spec `:find [?track-name ...]` over real track rows |
 | `musicbrainz-real-abbey-road-release-date-tuple` | `1 / 732a43b4c30e7be0` | `1 / 732a43b4c30e7be0` | Equal rows | Tuple find spec `:find [?year ?month ?day]` selected by Datomic-style `#uuid` literal |
 | `musicbrainz-real-beatles-start-year-scalar` | `1 / 0000000363d12a10` | `1 / 0000000363d12a10` | Equal rows | Scalar find spec `:find ?year .` over artist start year |
+| `musicbrainz-real-abbey-road-track-minutes` | `17 / 0f96f2c36020d31d` | `17 / 0f96f2c36020d31d` | Equal rows | Query function expression `(quot ?millis 60000)` over real track durations |
+| `musicbrainz-real-miles-enum-id` | `1 / 732425642d9c79c5` | `1 / 732425642d9c79c5` | Equal rows | Enum refs joined through `:db/ident` plus UUID projection |
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
 | `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
@@ -113,9 +115,9 @@ These workshop shapes are covered by passing Vev tests:
 | Scalar find spec | `:find ?year .` | mini fixture plus restored-sample comparison row |
 | Return maps | `:keys artist release` | `q-text-keys` |
 | Predicate expressions | `[(< ?year 1970)]`, `[(> ?duration ...)]` | query predicates |
-| Function expressions | `[(quot ?millis 60000) ?minutes]` | query functions |
+| Function expressions | `[(quot ?millis 60000) ?minutes]` | mini fixture plus restored-sample comparison row |
 | `get-else` | workshop query examples | EDN text query |
-| Enum refs through `:db/ident` | artist type/gender query | ident entity joins |
+| Enum refs through `:db/ident` | artist type/gender query | mini fixture plus restored-sample comparison row |
 | Aggregates | min/max, sum, count/count-distinct | EDN text aggregate queries |
 | Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query |
 | Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |

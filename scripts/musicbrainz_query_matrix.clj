@@ -93,6 +93,26 @@
              [?artist :artist/name "The Beatles"]
              [?artist :artist/startYear ?year]]
     :args []}
+   {:name "musicbrainz-real-abbey-road-track-minutes"
+    :query '[:find ?track-name ?minutes
+             :where
+             [?release :release/gid #uuid "eca8996a-a637-3259-ba07-d2573c601a1b"]
+             [?release :release/media ?medium]
+             [?medium :medium/tracks ?track]
+             [?track :track/name ?track-name]
+             [?track :track/duration ?millis]
+             [(quot ?millis 60000) ?minutes]]
+    :args []}
+   {:name "musicbrainz-real-miles-enum-id"
+    :query '[:find ?id ?type ?gender
+             :where
+             [?artist :artist/name "Miles Davis"]
+             [?artist :artist/gid ?id]
+             [?artist :artist/type ?type-entity]
+             [?type-entity :db/ident ?type]
+             [?artist :artist/gender ?gender-entity]
+             [?gender-entity :db/ident ?gender]]
+    :args []}
    {:name "musicbrainz-real-beatles-track-count"
     :query '[:find (count ?track)
              :where
