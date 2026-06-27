@@ -116,6 +116,7 @@ These workshop shapes are covered by passing Vev tests:
 | Clause-order profiling | `music_brainz.clj` comparison examples | `bench/musicbrainz_query_profile.kvist` |
 | Host-facing `d/query` equivalent with `:query`/`:args` | `music_brainz.clj` | Clojure `vev/query` and Java `Vev.queryRows(Map.of(...))` request-map wrappers |
 | Clojure return-map rows | `music_brainz.clj` | Clojure `q`/`rows`/`query` return maps for `:keys`, `:strs`, and `:syms` on plain query forms |
+| Java return-map rows | `music_brainz.clj` | Java `Vev.queryMaps(Map.of(...))` return maps for `:keys`, `:strs`, and `:syms` query text |
 
 ## Pending Tutorial Coverage
 
@@ -124,7 +125,7 @@ These should be ported next using the mini fixture first, then the restored
 
 | Shape | Source | Notes |
 | --- | --- | --- |
-| Java return-map rows | `music_brainz.clj` | Engine supports return-map markers; Java wrapper still returns raw row vectors |
+| Additional Day-of-Datomic host snippets | `music_brainz.clj` | Keep porting examples that exercise host presentation rather than engine syntax |
 
 ## Host Or Datomic-Specific Later
 
@@ -143,7 +144,7 @@ These are not current blockers for the Vev engine:
 ## Next Batch
 
 1. Expand the real Datomic comparison matrix beyond the current seventeen rows:
-   richer direct pull examples and Java return-map wrappers.
+   richer direct pull examples and additional Day-of-Datomic host snippets.
 2. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.

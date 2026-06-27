@@ -52,6 +52,22 @@ public final class Smoke {
                 if (!requestRows.equals(List.of(List.of("Ada")))) {
                     throw new IllegalStateException("unexpected query request rows");
                 }
+
+                List<Map<Object, Object>> requestMaps = vev.queryMaps(Map.of(
+                    "query", """
+                        [:find ?name ?email
+                         :keys name email
+                         :in $ ?email
+                         :where [?e :user/email ?email]
+                                [?e :user/name ?name]]
+                        """,
+                    "args", List.of(db, "ada@example.com")));
+                System.out.println("query request maps: " + requestMaps);
+                if (!requestMaps.equals(List.of(Map.of(
+                        new Vev.Keyword(":name"), "Ada",
+                        new Vev.Keyword(":email"), "ada@example.com")))) {
+                    throw new IllegalStateException("unexpected query request maps");
+                }
             }
 
             conn.transact("""

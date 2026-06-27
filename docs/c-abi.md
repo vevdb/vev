@@ -483,13 +483,24 @@ try (Vev.DurableConnection durable = vev.connect("app.vev.sqlite")) {
 ```
 
 Java callers that want a Datomic-style request-map shape can run a one-shot
-query through `Vev.queryRows`:
+query through `Vev.queryRows`, or use `Vev.queryMaps` for `:keys`/`:strs`/
+`:syms` return-map queries:
 
 ```java
 try (Vev.DB db = conn.db()) {
     List<List<Object>> rows = vev.queryRows(Map.of(
         "query", """
             [:find ?name
+             :in $ ?email
+             :where [?e :user/email ?email]
+                    [?e :user/name ?name]]
+            """,
+        "args", List.of(db, "ada@example.com")));
+
+    List<Map<Object, Object>> maps = vev.queryMaps(Map.of(
+        "query", """
+            [:find ?name ?email
+             :keys name email
              :in $ ?email
              :where [?e :user/email ?email]
                     [?e :user/name ?name]]
