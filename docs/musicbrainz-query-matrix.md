@@ -110,10 +110,10 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Fix full-import DB/index publication: avoid retaining one huge prepared
-   transaction, and avoid repeated whole-index merge/copy work for chunked
-   imports. The likely direction is a bulk index builder or shared/chunked
-   immutable index storage.
+1. Finish full-import publication architecture: avoid retaining one huge
+   prepared transaction, and avoid repeated whole-array DB/index ownership work
+   for chunked imports. The likely direction is a bulk index builder or
+   shared/chunked immutable index storage.
 2. Run the existing matrix against the imported real subset and local Datomic,
    comparing result sets before timing.
 3. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where

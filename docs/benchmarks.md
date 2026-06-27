@@ -162,7 +162,10 @@ engine=vev workload=musicbrainz-import ok=true mode=split datoms=5293 current=52
 
 The relevant signal is the ratio inside Vev: EDN parse is already small for
 this slice, and the generic explicit-id bulk transaction path is now fast enough
-for routine MusicBrainz query-matrix work.
+for routine MusicBrainz query-matrix work. Larger value slices are not purely
+append-only in the Datomic sense: the source can contain repeated
+cardinality-one attrs with later values, so Vev must keep the normal retraction
+semantics fast rather than forcing every import through the append-only builder.
 
 Larger local staged results:
 
@@ -170,16 +173,23 @@ Larger local staged results:
 engine=vev workload=musicbrainz-import ok=true mode=split datoms=50293 current=50293 parse_us=96954 tx_us=1252737 import_us=1349691 artist_rows=1 artist_us=224 release_rows=0 release_us=109
 engine=vev workload=musicbrainz-import ok=true mode=split datoms=100293 current=100293 parse_us=180390 tx_us=1866802 import_us=2047192 artist_rows=1 artist_us=63 release_rows=0 release_us=58
 engine=vev workload=musicbrainz-import ok=true mode=split datoms=200293 current=200293 parse_us=353777 tx_us=3343986 import_us=3697763 artist_rows=1 artist_us=68 release_rows=16 release_us=343
-engine=vev workload=musicbrainz-import ok=true mode=split datoms=400293 current=400293 parse_us=707762 tx_us=6209406 import_us=6917168 artist_rows=1 artist_us=237 release_rows=16 release_us=516
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=490708 current=309878 parse_us=697430 tx_us=6575087 import_us=7272517 artist_rows=1 artist_us=256 release_rows=16 release_us=447
 ```
 
-The full 762,981-value import now parses and resolves quickly, but exposing it
-as one huge prepared transaction keeps too much transaction data resident.
-Chunk-file import avoids that memory shape, but repeated chunks expose the next
-engine bottleneck: append-only index merging/copying against an already large
-DB. The next import-performance work should move from transaction validation
-to shared/chunked immutable index storage or a bulk index builder that can
-append several value chunks and publish one DB snapshot.
+The 400k row currently includes about 90k transaction retractions from
+cardinality-one overwrites. The optimized path avoids building a temporary DB
+for each overwrite and uses direct current-value lookup instead. A diagnostic
+run for the same 400k value file currently shows parse ~0.70s, resolve ~0.30s,
+dedupe/compact ~0.91s, eligibility ~0.48s, validation ~0.68s, and the final
+transaction around 6.1s for the value stage.
+
+The full 762,981-value import parses and resolves quickly, but exposing it as
+one huge prepared transaction keeps too much transaction data resident.
+Chunk-file import avoids that memory shape, but repeated chunks still expose
+the next engine bottleneck: whole-array DB/index ownership and publication
+against an already large DB. The next import-performance work should move from
+per-op validation to shared/chunked immutable index storage or a bulk index
+builder that can apply several value chunks and publish one DB snapshot.
 
 ## Query And Rule Baseline
 

@@ -1,5 +1,6 @@
 (package main)
 
+(import arr "kvist:arr")
 (import cli "kvist:cli")
 (import fmt "core:fmt")
 (import os "core:os")
@@ -59,17 +60,49 @@
     (let [expand-start (time.now)
           expanded (vev.expand-tuple-ops conn^.db (slice resolved.ops 0))
           expand-us (elapsed-us expand-start)
-          schema-changed (vev.ops-modify-validation-schema? (slice expanded 0))
+          expanded-schema-changed (vev.ops-modify-validation-schema? (slice expanded 0))
+          ordered-start (time.now)
+          ordered-append-only-ok (and (not expanded-schema-changed)
+                                      (vev.append-only-ordered-new-entity-ops-eligible? conn^.db (slice expanded 0)))
+          ordered-us (elapsed-us ordered-start)
+          compact-start (time.now)
+          compacted (vev.compact-redundant-add-ops-with-ordered (slice expanded 0) ordered-append-only-ok)
+          compact-us (elapsed-us compact-start)
+          schema-changed (vev.ops-modify-validation-schema? (slice compacted 0))
           eligible-start (time.now)
-          append-only-ok (and (not schema-changed)
-                              (vev.append-only-ops-eligible? conn^.db (slice expanded 0)))
+          append-only-ok (or ordered-append-only-ok
+                             (and (not schema-changed)
+                                  (vev.append-only-ops-eligible? conn^.db (slice compacted 0))))
+          append-only-reason (if schema-changed
+                               "schema-changed"
+                               (vev.append-only-ops-ineligible-reason conn^.db (slice compacted 0)))
           eligible-us (elapsed-us eligible-start)
           validate-start (time.now)
-          [valid valid-error] (vev.validate-ops conn^.db (slice expanded 0))
+          [valid valid-error] (vev.validate-ops conn^.db (slice compacted 0))
           validate-us (elapsed-us validate-start)]
       (fmt.printf "diagnose stage=%s step=expand ops=%d expanded=%d us=%.0f\n" label (count resolved.ops) (count expanded) expand-us)
-      (fmt.printf "diagnose stage=%s step=eligible schema_changed=%v append_only=%v us=%.0f\n" label schema-changed append-only-ok eligible-us)
+      (fmt.printf "diagnose stage=%s step=ordered-new-entities ok=%v us=%.0f\n" label ordered-append-only-ok ordered-us)
+      (fmt.printf "diagnose stage=%s step=compact expanded=%d compacted=%d us=%.0f\n" label (count expanded) (count compacted) compact-us)
+      (fmt.printf "diagnose stage=%s step=eligible schema_changed=%v append_only=%v reason=%s us=%.0f\n" label schema-changed append-only-ok (if append-only-ok "eligible" append-only-reason) eligible-us)
       (fmt.printf "diagnose stage=%s step=validate ok=%v us=%.0f error=%s\n" label valid validate-us valid-error)
+      (when (and valid append-only-ok)
+        (let [log-start (time.now)
+              after-datoms (vev.clone-datoms conn^.db.datoms)
+              start-index (count after-datoms)]
+          (for [op compacted]
+            (arr.push! after-datoms
+              (vev.Datom {e: op.e
+                          a: op.a
+                          v: op.v
+                          tx: conn^.next-tx
+                          added: true})))
+          (let [log-us (elapsed-us log-start)
+                publish-start (time.now)
+                after-db (vev.build-db-append-only conn^.db after-datoms start-index)
+                publish-us (elapsed-us publish-start)]
+            (fmt.printf "diagnose stage=%s step=publish start=%d added=%d total=%d log_us=%.0f build_us=%.0f\n" label start-index (count compacted) (count after-db.datoms) log-us publish-us)
+            (vev.delete-owned-db after-db))))
+      (delete compacted)
       (delete expanded))
     (delete resolved.ops)
     (delete resolved.tx-meta)

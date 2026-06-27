@@ -145,13 +145,18 @@ Current status:
 - 100-item compact-id single-file import passes.
 - 500-value staged import passes.
 - 5,000-value staged import passes and queries successfully.
-- EDN parse time is already small for this slice; transaction time dominates.
-- 5,000 staged values currently take roughly 50 seconds to transact, so bulk
-  transaction/index validation is now the next concrete engine bottleneck.
+- 50k, 100k, 200k, and 400k staged imports run locally and preserve the expected
+  tutorial query results for the sampled slice.
+- EDN parse time is already small for these slices; transaction/index
+  publication and overwrite handling dominate.
 
 The important finding is functional rather than cosmetic: MusicBrainz import is
-now correct for a real restored Datomic-derived slice, but Vev needs a proper
-bulk transaction path before larger MusicBrainz imports are useful.
+now correct for a real restored Datomic-derived slice. Larger value imports are
+not purely append-only: the source can include repeated cardinality-one attrs
+with later values, so the normal transaction path must handle bulk overwrites
+without rebuilding a temporary DB per overwrite. That path is now in place; the
+remaining import work is reducing whole-array DB/index publication costs and
+supporting full chunked import without retaining one huge prepared transaction.
 
 The mini fixture also exercises Vev query profiling for MusicBrainz-shaped
 joins. `src/vev_tests/musicbrainz_test.kvist` asserts that profiled EDN and

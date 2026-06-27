@@ -4596,11 +4596,52 @@
 (defn append-cardinality-one-retractions! [before: DB, seen-ea: set[string], after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
   (when (not (= op.kind .Add))
     (return))
+  (when (not (tx-op-cardinality-one? before op))
+    (return))
+  (if (entity-attr-seen? seen-ea op.e op.a)
+    (let [index (- (count after-datoms^) 1)]
+      (while (>= index 0)
+        (let [datom after-datoms^[index]]
+          (when (and (= datom.e op.e)
+                     (= datom.a op.a))
+            (when (and datom.added
+                       (not (value-equal? datom.v op.v)))
+              (let [retract (Datom {e: datom.e
+                                    a: datom.a
+                                    v: datom.v
+                                    tx: tx
+                                    added: false})]
+                (arr.push! after-datoms^ retract)
+                (arr.push! tx-data^ retract)))
+            (return)))
+        (set! index (- index 1))))
+    (do
+      (when (not (current-db-attr-exists? before op.e op.a))
+        (return))
+      (let [indexes (slice before.eavt 0)
+            low (lower-bound-index before indexes "eavt-ea" op.e op.a (Value {}))
+            high (upper-bound-index before indexes "eavt-ea" op.e op.a (Value {}))]
+        (for [datom-index (slice indexes low high)]
+          (let [datom before.datoms[datom-index]]
+            (when (and (datom-current-at? before datom-index)
+                       (not (value-equal? datom.v op.v)))
+              (let [retract (Datom {e: datom.e
+                                    a: datom.a
+                                    v: datom.v
+                                    tx: tx
+                                    added: false})]
+                (arr.push! after-datoms^ retract)
+                (arr.push! tx-data^ retract)))))))))
+
+(defn append-cardinality-one-retractions-conservative! [before: DB, seen-ea: set[string], after-datoms: ^[dynamic]Datom, tx-data: ^[dynamic]Datom, op: Tx-Op, tx: u64]
+  (when (not (= op.kind .Add))
+    (return))
   (when (not (or (current-db-attr-exists? before op.e op.a)
                  (entity-attr-seen? seen-ea op.e op.a)))
     (return))
   (let [current (build-db (clone-datoms after-datoms^))]
     (when (not (tx-op-cardinality-one? current op))
+      (delete-owned-db current)
       (return))
     (let [indexes (slice current.eavt 0)
           low (lower-bound-index current indexes "eavt-ea" op.e op.a (Value {}))
@@ -4613,9 +4654,10 @@
                                   a: datom.a
                                   v: datom.v
                                   tx: tx
-                             added: false})]
+                                  added: false})]
               (arr.push! after-datoms^ retract)
-              (arr.push! tx-data^ retract))))))))
+              (arr.push! tx-data^ retract))))))
+    (delete-owned-db current)))
 
 (defn current-op-value-exists-in-log? [datoms: []Datom, op: Tx-Op] -> bool
   (for [datom index datoms]
@@ -4652,6 +4694,22 @@
       (set! prior (+ prior 1))))
   false)
 
+(defn compact-redundant-add-ops [ops: []Tx-Op] -> [dynamic]Tx-Op
+  (let [out (make [dynamic]Tx-Op 0 (count ops))
+        seen-facts (set.empty string)]
+    (defer (delete seen-facts))
+    (for [op ops]
+      (let [keep true]
+        (when (= op.kind .Add)
+          (let [[fact-key fact-ok] (op-fact-key op)]
+            (when fact-ok
+              (if (set.contains? seen-facts fact-key)
+                (set! keep false)
+                (set.add! seen-facts fact-key)))))
+        (when keep
+          (arr.push! out op))))
+    out))
+
 (defn db-next-entity-id-fast [db: DB] -> u64
   (when (= (count db.eavt) 0)
     (return 1))
@@ -4664,19 +4722,30 @@
         (return false))))
   true)
 
+(defn append-only-ops-all-entities-absent? [db: DB, ops: []Tx-Op] -> bool
+  (let [last-entity (u64 0)
+        have-last false]
+    (for [op ops]
+      (when (or (not have-last)
+                (not (= op.e last-entity)))
+        (let [[_ _ exists] (eavt-entity-range db op.e)]
+          (when exists
+            (return false)))
+        (set! last-entity op.e)
+        (set! have-last true))))
+  true)
+
 (defn append-only-ordered-new-entity-ops-eligible? [before: DB, ops: []Tx-Op] -> bool
   (when (= (count ops) 0)
     (return true))
-  (let [next-e (db-next-entity-id-fast before)
-        current-entity (u64 0)
+  (let [current-entity (u64 0)
         current-attrs (set.empty string)
+        current-facts (set.empty string)
         first true]
     (defer (delete current-attrs))
+    (defer (delete current-facts))
     (for [op ops]
-      (when (or (not (= op.kind .Add))
-                (< op.e next-e))
-        (return false))
-      (when (not (schema-cardinality-one? before op.a))
+      (when (not (= op.kind .Add))
         (return false))
       (when (and (not first)
                  (< op.e current-entity))
@@ -4685,20 +4754,39 @@
                 (not (= op.e current-entity)))
         (when (not first)
           (delete current-attrs)
-          (set! current-attrs (set.empty string)))
+          (delete current-facts)
+          (set! current-attrs (set.empty string))
+          (set! current-facts (set.empty string)))
+        (let [[_ _ exists] (eavt-entity-range before op.e)]
+          (when exists
+            (return false)))
         (set! current-entity op.e)
         (set! first false))
-      (when (set.contains? current-attrs op.a)
-        (return false))
-      (set.add! current-attrs op.a)))
+      (if (schema-cardinality-one? before op.a)
+        (do
+          (when (set.contains? current-attrs op.a)
+            (return false))
+          (set.add! current-attrs op.a))
+        (let [[fact-key fact-ok] (op-fact-key op)]
+          (when (not fact-ok)
+            (return false))
+          (when (set.contains? current-facts fact-key)
+            (return false))
+          (set.add! current-facts fact-key)))))
   true)
+
+(defn compact-redundant-add-ops-with-ordered [ops: []Tx-Op, ordered-append-only-ok: bool] -> [dynamic]Tx-Op
+  (if ordered-append-only-ok
+    (arr.into [dynamic]Tx-Op ops)
+    (compact-redundant-add-ops ops)))
 
 (defn append-only-ops-eligible? [before: DB, ops: []Tx-Op] -> bool
   (when (append-only-ordered-new-entity-ops-eligible? before ops)
     (return true))
   (let [seen-ea (set.empty string)
         seen-facts (set.empty string)
-        all-new-entities (append-only-ops-all-new-entities? before ops)]
+        all-new-entities (or (append-only-ops-all-new-entities? before ops)
+                             (append-only-ops-all-entities-absent? before ops))]
     (defer (delete seen-ea))
     (defer (delete seen-facts))
     (for [op ops]
@@ -4724,23 +4812,62 @@
           (set.add! seen-ea (entity-attr-key op.e op.a))))))
   true)
 
+(defn append-only-ops-ineligible-reason [before: DB, ops: []Tx-Op] -> string
+  (when (append-only-ordered-new-entity-ops-eligible? before ops)
+    (return "eligible:ordered-new-entities"))
+  (let [seen-ea (set.empty string)
+        seen-facts (set.empty string)
+        all-new-entities (or (append-only-ops-all-new-entities? before ops)
+                             (append-only-ops-all-entities-absent? before ops))]
+    (defer (delete seen-ea))
+    (defer (delete seen-facts))
+    (for [op ops]
+      (when (not (= op.kind .Add))
+        (return "non-add-op"))
+      (when (and (not all-new-entities)
+                 (current-db-fact-exists? before op))
+        (return "existing-fact"))
+      (if (schema-cardinality-one? before op.a)
+        (do
+          (when (and (not all-new-entities)
+                     (current-db-attr-exists? before op.e op.a))
+            (return "existing-cardinality-one-attr"))
+          (when (entity-attr-seen? seen-ea op.e op.a)
+            (return "duplicate-cardinality-one-attr-in-tx"))
+          (set.add! seen-ea (entity-attr-key op.e op.a)))
+        (do
+          (let [[fact-key fact-ok] (op-fact-key op)]
+            (when (not fact-ok)
+              (return "unkeyable-fact"))
+            (when (set.contains? seen-facts fact-key)
+              (return "duplicate-fact-in-tx"))
+            (set.add! seen-facts fact-key))
+          (set.add! seen-ea (entity-attr-key op.e op.a))))))
+  "eligible:general")
+
 (defn transact-ops-with-tempids-from-before [conn: ^Conn, before: DB, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [expanded-ops (expand-tuple-ops before ops)
+        expanded-schema-changed (ops-modify-validation-schema? (slice expanded-ops 0))
+        ordered-append-only-ok (and (not expanded-schema-changed)
+                                    (append-only-ordered-new-entity-ops-eligible? before (slice expanded-ops 0)))
+        compacted-ops (compact-redundant-add-ops-with-ordered (slice expanded-ops 0) ordered-append-only-ok)
         after-datoms (clone-datoms conn^.db.datoms)
-        tx-data (make [dynamic]Datom 0 (count expanded-ops))
+        tx-data (make [dynamic]Datom 0 (count compacted-ops))
         seen-ea (set.empty string)
         tx conn^.next-tx
-        schema-changed (ops-modify-validation-schema? (slice expanded-ops 0))
-        append-only-ok (and (not schema-changed)
-                            (append-only-ops-eligible? before (slice expanded-ops 0)))]
+        schema-changed (ops-modify-validation-schema? (slice compacted-ops 0))
+        append-only-ok (or ordered-append-only-ok
+                           (and (not schema-changed)
+                                (append-only-ops-eligible? before (slice compacted-ops 0))))]
     (defer (delete seen-ea))
-    (let [[valid error] (validate-ops before (slice expanded-ops 0))]
+    (let [[valid error] (validate-ops before (slice compacted-ops 0))]
       (when (not valid)
         (delete expanded-ops)
+        (delete compacted-ops)
         (delete tempids)
         (return (failed-tx-report before error))))
     (if append-only-ok
-      (for [op expanded-ops]
+      (for [op compacted-ops]
         (let [datom (Datom {e: op.e
                             a: op.a
                             v: op.v
@@ -4748,11 +4875,13 @@
                             added: true})]
           (arr.push! after-datoms datom)
           (arr.push! tx-data datom)))
-      (for [op expanded-ops]
+      (for [op compacted-ops]
         (let [apply-op (or (= op.kind .Add)
                            (current-op-value-exists-in-log? (slice after-datoms 0) op))]
           (when apply-op
-            (append-cardinality-one-retractions! before seen-ea (addr after-datoms) (addr tx-data) op tx)
+            (if schema-changed
+              (append-cardinality-one-retractions-conservative! before seen-ea (addr after-datoms) (addr tx-data) op tx)
+              (append-cardinality-one-retractions! before seen-ea (addr after-datoms) (addr tx-data) op tx))
             (let [datom (Datom {e: op.e
                                 a: op.a
                                 v: op.v
@@ -4763,6 +4892,7 @@
           (when (= op.kind .Add)
             (set.add! seen-ea (entity-attr-key op.e op.a))))))
     (delete expanded-ops)
+    (delete compacted-ops)
     (let [after (if append-only-ok
                   (build-db-append-only before after-datoms (count conn^.db.datoms))
                   (build-db after-datoms))]
