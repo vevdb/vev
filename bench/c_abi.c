@@ -1,3 +1,6 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

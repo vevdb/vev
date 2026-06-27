@@ -1,3 +1,6 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
 export class Conn {
   transact(tx: string): string;
   queryText(query: string, inputs?: string): string;
