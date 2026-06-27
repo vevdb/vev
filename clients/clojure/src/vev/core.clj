@@ -4,7 +4,7 @@
 (ns vev.core
   (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
-           [vev Vev Vev$Entity Vev$MapValue]))
+           [vev Vev Vev$Entity Vev$MapValue Vev$PreparedPullPattern]))
 
 (defn- path [value]
   (cond
@@ -80,6 +80,11 @@
   (->DB (:engine db) (.retain (:native db))))
 
 (defrecord PreparedQuery [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
+(defrecord PreparedPullPattern [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
@@ -279,6 +284,12 @@
   [source query]
   (let [engine (:engine source)]
     (->PreparedQuery engine (.prepare engine (edn-text query)))))
+
+(defn prepare-pull-pattern
+  "Prepare a pull pattern from Clojure data or EDN text."
+  [source pattern]
+  (let [engine (:engine source)]
+    (->PreparedPullPattern engine (.preparePullPattern engine (edn-text pattern)))))
 
 (defn- source? [value]
   (or (instance? Conn value)
@@ -684,30 +695,41 @@
        (if (and (vector? eid)
                 (= 2 (count eid))
                 (keyword? (first eid)))
-         (let [pattern-text (edn-text pattern)
-               attr-text (edn-text (first eid))
+         (let [attr-text (edn-text (first eid))
                value (second eid)]
            (cond
              (string? value)
-             (.pullLookupRefString (:native db) pattern-text attr-text value)
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefString (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text value)
+               (.pullLookupRefString (:native db) (edn-text pattern) attr-text value))
 
              (keyword? value)
-             (.pullLookupRefKeyword (:native db) pattern-text attr-text (str value))
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefKeyword (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text (str value))
+               (.pullLookupRefKeyword (:native db) (edn-text pattern) attr-text (str value)))
 
              (instance? java.util.UUID value)
-             (.pullLookupRefUuid (:native db) pattern-text attr-text value)
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefUuid (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text value)
+               (.pullLookupRefUuid (:native db) (edn-text pattern) attr-text value))
 
              (integer? value)
-             (.pullLookupRefInt (:native db) pattern-text attr-text (long value))
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefInt (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text (long value))
+               (.pullLookupRefInt (:native db) (edn-text pattern) attr-text (long value)))
 
              (instance? Vev$Entity value)
-             (.pullLookupRefEntity (:native db) pattern-text attr-text (.id ^Vev$Entity value))
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefEntity (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text (.id ^Vev$Entity value))
+               (.pullLookupRefEntity (:native db) (edn-text pattern) attr-text (.id ^Vev$Entity value)))
 
              :else
              (throw (ex-info "unsupported lookup-ref pull value"
                              {:value value
                               :supported #{:string :keyword :uuid :integer :entity}}))))
-         (.pull (:native db) (edn-text pattern) (long eid)))))))
+         (if (instance? PreparedPullPattern pattern)
+           (.pull (:native db) ^Vev$PreparedPullPattern (:native pattern) (long eid))
+           (.pull (:native db) (edn-text pattern) (long eid))))))))
 
 (defn pull-many
   "Pull several entities, preserving input order."

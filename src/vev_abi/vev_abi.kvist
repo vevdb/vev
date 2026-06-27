@@ -27,6 +27,11 @@ ABI_Prepared_Query :: struct {
     query: vev__Prepared_Query,
 }
 
+ABI_Prepared_Pull_Pattern :: struct {
+    source: string,
+    pattern: vev__Prepared_Pull_Pattern,
+}
+
 ABI_DB_Storage :: struct {
     db: vev__DB,
     refs: int,
@@ -261,6 +266,22 @@ abi_prepared_query_ptr :: proc(query: rawptr) -> ^vev__Prepared_Query {
 
 abi_free_prepared_query :: proc(query: rawptr) {
     wrapper := (^ABI_Prepared_Query)(query)
+    delete(wrapper.source)
+    free(wrapper)
+}
+
+abi_alloc_prepared_pull_pattern :: proc(source: string) -> rawptr {
+    wrapper := new(ABI_Prepared_Pull_Pattern)
+    wrapper.source = source
+    return rawptr(wrapper)
+}
+
+abi_prepared_pull_pattern_ptr :: proc(pattern: rawptr) -> ^vev__Prepared_Pull_Pattern {
+    return &((^ABI_Prepared_Pull_Pattern)(pattern))^.pattern
+}
+
+abi_free_prepared_pull_pattern :: proc(pattern: rawptr) {
+    wrapper := (^ABI_Prepared_Pull_Pattern)(pattern)
     delete(wrapper.source)
     free(wrapper)
 }
@@ -907,6 +928,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (def Vev-SQLite-Conn (distinct rawptr))
 (def Vev-DB (distinct rawptr))
 (def Vev-Prepared-Query (distinct rawptr))
+(def Vev-Prepared-Pull-Pattern (distinct rawptr))
 (def Vev-Result (distinct rawptr))
 (def Vev-U64-Array (distinct rawptr))
 (def Vev-Entity-Int-Pairs (distinct rawptr))
@@ -948,6 +970,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- prepared-query-ptr [query: Vev-Prepared-Query] -> ^vev.Prepared-Query
   (abi-prepared-query-ptr (rawptr query)))
+
+(defn- prepared-pull-pattern-ptr [pattern: Vev-Prepared-Pull-Pattern] -> ^vev.Prepared-Pull-Pattern
+  (abi-prepared-pull-pattern-ptr (rawptr pattern)))
 
 (defn- db-ptr [db: Vev-DB] -> ^vev.DB
   (abi-db-ptr (rawptr db)))
@@ -1863,6 +1888,44 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (c-string-owned ptr^.error)))
 
 @export
+(defn vev_prepare_pull_pattern_edn :abi "c" [pattern-text: cstring] -> Vev-Prepared-Pull-Pattern
+  (odin "context = runtime.default_context()")
+  (when (= pattern-text nil)
+    (return (Vev-Prepared-Pull-Pattern nil)))
+  (let [source (text-from-c pattern-text)
+        prepared (abi-alloc-prepared-pull-pattern source)
+        ptr (prepared-pull-pattern-ptr (Vev-Prepared-Pull-Pattern prepared))]
+    (set! ptr^ (vev.prepare-pull-pattern-text source))
+    (Vev-Prepared-Pull-Pattern prepared)))
+
+@export
+(defn vev_prepared_pull_pattern_free :abi "c" [pattern: Vev-Prepared-Pull-Pattern]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr pattern) nil)
+    (return))
+  (let [ptr (prepared-pull-pattern-ptr pattern)]
+    (delete ptr^.pattern)
+    (when (> (count ptr^.error) 0)
+      (delete ptr^.error))
+    (abi-free-prepared-pull-pattern (rawptr pattern))))
+
+@export
+(defn vev_prepared_pull_pattern_ok :abi "c" [pattern: Vev-Prepared-Pull-Pattern] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr pattern) nil)
+    (return false))
+  (let [ptr (prepared-pull-pattern-ptr pattern)]
+    ptr^.ok))
+
+@export
+(defn vev_prepared_pull_pattern_error :abi "c" [pattern: Vev-Prepared-Pull-Pattern] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr pattern) nil)
+    (return (c-string-owned "null prepared pull pattern")))
+  (let [ptr (prepared-pull-pattern-ptr pattern)]
+    (c-string-owned ptr^.error)))
+
+@export
 (defn vev_stmt_create :abi "c" [query: Vev-Prepared-Query] -> Vev-Stmt
   (odin "context = runtime.default_context()")
   (when (= (rawptr query) nil)
@@ -2667,6 +2730,16 @@ abi_free_stmt :: proc(stmt: rawptr) {
     out))
 
 @export
+(defn vev_pull_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, entity: u64] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr pattern) nil))
+    (return (Vev-Value-Handle nil)))
+  (let [db-ptr-value (db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        value (vev.pull-prepared-value db-ptr-value^ pattern-ptr^ entity)]
+    (value-handle-from-value value)))
+
+@export
 (defn vev_pull_lookup_ref_string_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, value: cstring] -> Vev-Value-Handle
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= pattern-text nil) (= attr nil) (= value nil))
@@ -2678,6 +2751,21 @@ abi_free_stmt :: proc(stmt: rawptr) {
         pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-string value-text))
         out (value-handle-from-value pulled)]
     (delete pattern)
+    (delete attr-text)
+    (delete value-text)
+    out))
+
+@export
+(defn vev_pull_lookup_ref_string_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, attr: cstring, value: cstring] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr pattern) nil) (= attr nil) (= value nil))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        value-text (text-from-c value)
+        db-ptr-value (db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-string value-text))
+        out (value-handle-from-value pulled)]
     (delete attr-text)
     (delete value-text)
     out))
@@ -2699,6 +2787,21 @@ abi_free_stmt :: proc(stmt: rawptr) {
     out))
 
 @export
+(defn vev_pull_lookup_ref_keyword_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, attr: cstring, value: cstring] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr pattern) nil) (= attr nil) (= value nil))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        value-text (text-from-c value)
+        db-ptr-value (db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-keyword value-text))
+        out (value-handle-from-value pulled)]
+    (delete attr-text)
+    (delete value-text)
+    out))
+
+@export
 (defn vev_pull_lookup_ref_uuid_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, value: cstring] -> Vev-Value-Handle
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= pattern-text nil) (= attr nil) (= value nil))
@@ -2710,6 +2813,21 @@ abi_free_stmt :: proc(stmt: rawptr) {
         pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-uuid value-text))
         out (value-handle-from-value pulled)]
     (delete pattern)
+    (delete attr-text)
+    (delete value-text)
+    out))
+
+@export
+(defn vev_pull_lookup_ref_uuid_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, attr: cstring, value: cstring] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr pattern) nil) (= attr nil) (= value nil))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        value-text (text-from-c value)
+        db-ptr-value (db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-uuid value-text))
+        out (value-handle-from-value pulled)]
     (delete attr-text)
     (delete value-text)
     out))
@@ -2729,6 +2847,19 @@ abi_free_stmt :: proc(stmt: rawptr) {
     out))
 
 @export
+(defn vev_pull_lookup_ref_entity_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, attr: cstring, value: u64] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr pattern) nil) (= attr nil))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        db-ptr-value (db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-entity value))
+        out (value-handle-from-value pulled)]
+    (delete attr-text)
+    out))
+
+@export
 (defn vev_pull_lookup_ref_int_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, value: i64] -> Vev-Value-Handle
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= pattern-text nil) (= attr nil))
@@ -2739,6 +2870,19 @@ abi_free_stmt :: proc(stmt: rawptr) {
         pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-int value))
         out (value-handle-from-value pulled)]
     (delete pattern)
+    (delete attr-text)
+    out))
+
+@export
+(defn vev_pull_lookup_ref_int_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, attr: cstring, value: i64] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr pattern) nil) (= attr nil))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        db-ptr-value (db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-int value))
+        out (value-handle-from-value pulled)]
     (delete attr-text)
     out))
 

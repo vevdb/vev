@@ -8862,6 +8862,197 @@
             (set! index (+ index 1)))))
       (Value {kind: .Vector items: out}))))
 
+(defn query-attr-top-n-aggregate-plan [query: Query] -> [plan: Attr-Top-N-Aggregate-Plan, ok: bool]
+  (let [out (empty-attr-top-n-aggregate-plan)]
+    (when (not (and (= (count query.find) 0)
+                    (= (count query.with) 0)
+                    (= (count query.inputs) 0)
+                    (= (count query.collection-inputs) 0)
+                    (= (count query.tuple-inputs) 0)
+                    (= (count query.relation-inputs) 0)
+                    (= (count query.input-specs) 0)
+                    (= (count query.pulls) 0)
+                    (> (count query.aggregates) 0)
+                    (= (count query.rules) 0)
+                    (= (count query.rule-calls) 0)
+                    (= (count query.predicates) 0)
+                    (= (count query.function-clauses) 0)
+                    (= (count query.get-elses) 0)
+                    (= (count query.get-somes) 0)
+                    (= (count query.grounds) 0)
+                    (= (count query.not-groups) 0)
+                    (= (count query.or-groups) 0)
+                    (= (count query.clauses) 1)
+                    (= (count query.where-steps) 1)
+                    (= query.where-steps[0].kind .Clause)))
+      (return out false))
+    (let [query-clause: Clause query.clauses[0]]
+      (when (or query-clause.has-source
+                (not (= query-clause.e.kind .Var))
+                (not (= query-clause.a.kind .Value))
+                (not (= query-clause.a.value.kind .Keyword))
+                (not (= query-clause.v.kind .Var))
+                (not (= query-clause.tx-term.kind .Wildcard))
+                (not (= query-clause.op-term.kind .Wildcard)))
+        (return out false))
+      (for [aggregate query.aggregates]
+        (when (or (not (or (= aggregate.op "min")
+                           (= aggregate.op "max")))
+                  (not aggregate.has-limit)
+                  aggregate.has-limit-var
+                  (<= aggregate.limit 0)
+                  (not (= aggregate.var query-clause.v.name)))
+          (return out false))
+        (when (> (count aggregate.args) 0)
+          (when (not (and (= (count aggregate.args) 1)
+                          (= aggregate.args[0].kind .Var)
+                          (= aggregate.args[0].name query-clause.v.name)))
+            (return out false))))
+      (return (Attr-Top-N-Aggregate-Plan {attr: query-clause.a.value.text
+                                          value-var: query-clause.v.name})
+              true))))
+
+(defn attr-top-n-values [db: DB, plan: Attr-Top-N-Aggregate-Plan, aggregate: Aggregate-Find, inspected: ^int] -> Value
+  (let [indexes (slice db.avet 0)
+        attr-prefix ([]Value [(value-keyword plan.attr)])
+        low (lower-bound-index-values db indexes "avet" attr-prefix)
+        high (upper-bound-index-values db indexes "avet" attr-prefix)
+        out (make [dynamic]Value)
+        all-current (all-datoms-current? db)
+        last-value (Value {})
+        has-last false]
+    (if (= aggregate.op "max")
+      (let [i high]
+        (while (and (> i low)
+                    (< (count out) aggregate.limit))
+          (set! i (- i 1))
+          (set! inspected^ (+ inspected^ 1))
+          (let [datom-index indexes[i]
+                datom db.datoms[datom-index]]
+            (when (or all-current (datom-current-at? db datom-index))
+              (when (not (and has-last (value-equal? datom.v last-value)))
+                (arr.push! out datom.v)
+                (set! last-value datom.v)
+                (set! has-last true))))))
+      (let [i low]
+        (while (and (< i high)
+                    (< (count out) aggregate.limit))
+          (set! inspected^ (+ inspected^ 1))
+          (let [datom-index indexes[i]
+                datom db.datoms[datom-index]]
+            (when (or all-current (datom-current-at? db datom-index))
+              (when (not (and has-last (value-equal? datom.v last-value)))
+                (arr.push! out datom.v)
+                (set! last-value datom.v)
+                (set! has-last true))))
+          (set! i (+ i 1)))))
+    (Value {kind: .Vector items: out})))
+
+(defn q-attr-top-n-aggregate-profiled [db: DB, query: Query, plan: Attr-Top-N-Aggregate-Plan, stats: Query-Stats] -> Profiled-Result-Set
+  (let [out-stats stats
+        values (make [dynamic]Value 0 (count query.aggregates))
+        pulls (make [dynamic]Pull-Result)
+        rows (make [dynamic]Result-Row)
+        inspected 0]
+    (set! out-stats.steps 1)
+    (set! out-stats.clauses 1)
+    (for [aggregate query.aggregates]
+      (arr.push! values (attr-top-n-values db plan aggregate (addr inspected))))
+    (set! out-stats.clause-candidates inspected)
+    (arr.push! rows (Result-Row {values: values pulls: pulls}))
+    (set! out-stats.output-rows 1)
+    (profiled-result-set (result-set-ok rows) out-stats)))
+
+(defn query-missing-attr-projection-plan [db: DB, query: Query] -> [plan: Missing-Attr-Projection-Plan, ok: bool]
+  (let [out (empty-missing-attr-projection-plan)]
+    (when (not (and (= (count query.find) 1)
+                    (= (count query.with) 0)
+                    (= (count query.inputs) 0)
+                    (= (count query.collection-inputs) 0)
+                    (= (count query.tuple-inputs) 0)
+                    (= (count query.relation-inputs) 0)
+                    (= (count query.input-specs) 0)
+                    (= (count query.pulls) 0)
+                    (= (count query.aggregates) 0)
+                    (= (count query.rules) 0)
+                    (= (count query.rule-calls) 0)
+                    (= (count query.predicates) 0)
+                    (= (count query.function-clauses) 0)
+                    (= (count query.get-elses) 0)
+                    (= (count query.get-somes) 0)
+                    (= (count query.grounds) 0)
+                    (= (count query.or-groups) 0)
+                    (= (count query.not-groups) 1)
+                    (= (count query.clauses) 1)
+                    (= (count query.where-steps) 2)))
+      (return out false))
+    (when (not (and (= query.where-steps[0].kind .Clause)
+                    (= query.where-steps[1].kind .Not)))
+      (return out false))
+    (let [value-clause: Clause query.clauses[0]
+          group query.not-groups[0]]
+      (when (or value-clause.has-source
+                (not (= value-clause.e.kind .Var))
+                (not (= value-clause.a.kind .Value))
+                (not (= value-clause.a.value.kind .Keyword))
+                (not (= value-clause.v.kind .Var))
+                (not (= value-clause.v.name query.find[0]))
+                (not (= value-clause.tx-term.kind .Wildcard))
+                (not (= value-clause.op-term.kind .Wildcard))
+                (not (schema-cardinality-one? db value-clause.a.value.text))
+                group.has-join
+                (not (= (count group.clauses) 1))
+                (> (count group.not-groups) 0))
+        (return out false))
+      (let [missing-clause: Clause group.clauses[0]]
+        (when (or missing-clause.has-source
+                  (not (= missing-clause.e.kind .Var))
+                  (not (= missing-clause.e.name value-clause.e.name))
+                  (not (= missing-clause.a.kind .Value))
+                  (not (= missing-clause.a.value.kind .Keyword))
+                  (not (= missing-clause.v.kind .Wildcard)))
+          (return out false))
+        (return (Missing-Attr-Projection-Plan {entity-var: value-clause.e.name
+                                               value-var: value-clause.v.name
+                                               value-attr: value-clause.a.value.text
+                                               missing-attr: missing-clause.a.value.text})
+                true)))))
+
+(defn q-missing-attr-projection-profiled [db: DB, plan: Missing-Attr-Projection-Plan, stats: Query-Stats] -> Profiled-Result-Set
+  (let [out-stats stats
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 plan.value-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 plan.value-attr (Value {}))
+        rows (make [dynamic]Result-Row)
+        seen (set.empty string)
+        i low]
+    (defer (delete seen))
+    (set! out-stats.steps 1)
+    (set! out-stats.clauses 2)
+    (set! out-stats.clause-candidates (- high low))
+    (while (< i high)
+      (let [datom-index indexes[i]
+            datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (current-attr-exists? db datom.e plan.missing-attr)))
+          (let [[key key-ok] (primitive-value-dedupe-key datom.v)]
+            (if key-ok
+              (when (not (set.contains? seen key))
+                (set.add! seen key)
+                (let [values (make [dynamic]Value 0 1)
+                      pulls (make [dynamic]Pull-Result)]
+                  (arr.push! values datom.v)
+                  (arr.push! rows (Result-Row {values: values pulls: pulls}))))
+              (let [dedupe-values ([]Value [datom.v])]
+                (when (not (row-values-exist? (slice rows 0) dedupe-values))
+                  (let [values (make [dynamic]Value 0 1)
+                        pulls (make [dynamic]Pull-Result)]
+                    (arr.push! values datom.v)
+                    (arr.push! rows (Result-Row {values: values pulls: pulls})))))))))
+      (set! i (+ i 1)))
+    (set! out-stats.output-rows (count rows))
+    (profiled-result-set (result-set-ok rows) out-stats)))
+
 (defn sorted-values-vector [values: []Value, descending?: bool] -> Value
   (let [sorted (arr.into [dynamic]Value values)
         out (make [dynamic]Value)]
@@ -10193,6 +10384,18 @@
   output-attr: string
 })
 
+(defstruct Attr-Top-N-Aggregate-Plan {
+  attr: string
+  value-var: string
+})
+
+(defstruct Missing-Attr-Projection-Plan {
+  entity-var: string
+  value-var: string
+  value-attr: string
+  missing-attr: string
+})
+
 (defn empty-two-attr-entity-projection [] -> Two-Attr-Entity-Projection
   (Two-Attr-Entity-Projection {}))
 
@@ -10255,6 +10458,12 @@
 
 (defn empty-entity-value-self-join-plan [] -> Entity-Value-Self-Join-Plan
   (Entity-Value-Self-Join-Plan {}))
+
+(defn empty-attr-top-n-aggregate-plan [] -> Attr-Top-N-Aggregate-Plan
+  (Attr-Top-N-Aggregate-Plan {}))
+
+(defn empty-missing-attr-projection-plan [] -> Missing-Attr-Projection-Plan
+  (Missing-Attr-Projection-Plan {}))
 
 (defn query-two-attr-entity-projection [query: Query] -> [projection: Two-Attr-Entity-Projection, ok: bool]
   (when (not (and (= (count query.find) 2)
@@ -11303,6 +11512,12 @@
         [valid error] (validate-query-call-with-fns db query inputs sources registry)]
     (when (not valid)
       (return (profiled-result-set (result-set-error error) stats)))
+  (let [[attr-top-n-plan attr-top-n-ok] (query-attr-top-n-aggregate-plan query)]
+    (when attr-top-n-ok
+      (return (q-attr-top-n-aggregate-profiled db query attr-top-n-plan stats))))
+  (let [[missing-plan missing-ok] (query-missing-attr-projection-plan db query)]
+    (when missing-ok
+      (return (q-missing-attr-projection-profiled db missing-plan stats))))
   (let [[self-join-plan self-join-ok] (query-entity-value-self-join-plan db query)]
     (when self-join-ok
       (return (q-entity-value-self-join-profiled db self-join-plan stats))))

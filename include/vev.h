@@ -15,6 +15,7 @@ typedef void *vev_connection_t;
 typedef void *vev_sqlite_conn_t;
 typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
+typedef void *vev_prepared_pull_pattern_t;
 typedef void *vev_result_t;
 typedef void *vev_u64_array_t;
 typedef void *vev_entity_int_pairs_t;
@@ -269,9 +270,22 @@ const void *vev_entity_string_int_triples_string_data(vev_entity_string_int_trip
 int vev_entity_string_int_triples_string_len(vev_entity_string_int_triples_t triples, int index);
 
 vev_value_handle_t vev_pull_edn(vev_db_t db, const char *pattern_text, unsigned long long entity);
+vev_prepared_pull_pattern_t vev_prepare_pull_pattern_edn(const char *pattern_text);
+bool vev_prepared_pull_pattern_ok(vev_prepared_pull_pattern_t pattern);
+const char *vev_prepared_pull_pattern_error(vev_prepared_pull_pattern_t pattern);
+void vev_prepared_pull_pattern_free(vev_prepared_pull_pattern_t pattern);
+vev_value_handle_t vev_pull_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    unsigned long long entity);
 vev_value_handle_t vev_pull_lookup_ref_string_edn(
     vev_db_t db,
     const char *pattern_text,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_lookup_ref_string_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
     const char *attr,
     const char *value);
 vev_value_handle_t vev_pull_lookup_ref_keyword_edn(
@@ -279,14 +293,39 @@ vev_value_handle_t vev_pull_lookup_ref_keyword_edn(
     const char *pattern_text,
     const char *attr,
     const char *value);
+vev_value_handle_t vev_pull_lookup_ref_keyword_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_lookup_ref_uuid_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_lookup_ref_uuid_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    const char *value);
 vev_value_handle_t vev_pull_lookup_ref_entity_edn(
     vev_db_t db,
     const char *pattern_text,
     const char *attr,
     unsigned long long value);
+vev_value_handle_t vev_pull_lookup_ref_entity_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    unsigned long long value);
 vev_value_handle_t vev_pull_lookup_ref_int_edn(
     vev_db_t db,
     const char *pattern_text,
+    const char *attr,
+    long long value);
+vev_value_handle_t vev_pull_lookup_ref_int_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
     const char *attr,
     long long value);
 vev_value_handle_t vev_pull_many_edn(

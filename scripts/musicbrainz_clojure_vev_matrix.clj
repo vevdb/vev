@@ -541,36 +541,41 @@
      (format "engine=clojure-vev workload=musicbrainz-real-load ok=true total_us=%.0f"
              elapsed))))
 
-(defn workload-result [db workload]
+(defn workload-result [db workload prepared-pattern]
   (case (:kind workload)
     :query (if (:preserve-rows workload)
              (apply vev/rows (:query workload) db (:args workload))
              (apply vev/q (:query workload) db (:args workload)))
-    :pull [(vev/pull db (:pattern workload) (:entity workload))]
+    :pull [(vev/pull db (or prepared-pattern (:pattern workload)) (:entity workload))]
     :pull-many (vev/pull-many db (:pattern workload) (:entities workload))))
 
 (defn run-workload [db warmups samples print-rows? workload]
-  (dotimes [_ warmups]
-    (workload-result db workload))
-  (let [sample-us (doall
-                   (for [_ (range samples)]
-                     (second (elapsed-us #(workload-result db workload)))))
-        result (workload-result db workload)
-        rows (result-rows result)
-        fingerprint-options {:strip-db-id (:strip-db-id workload)}
-        t (timing sample-us)]
-    (println
-     (format
-      "engine=clojure-vev workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
-      (:name workload)
-      (result-row-count rows)
-      (result-fingerprint rows fingerprint-options)
-      (:min t)
-      (:median t)
-      (:p90 t)
-      (:max t)))
-    (when print-rows?
-      (print-result-rows (:name workload) rows fingerprint-options))))
+  (let [run (fn [prepared-pattern]
+              (dotimes [_ warmups]
+                (workload-result db workload prepared-pattern))
+              (let [sample-us (doall
+                               (for [_ (range samples)]
+                                 (second (elapsed-us #(workload-result db workload prepared-pattern)))))
+                    result (workload-result db workload prepared-pattern)
+                    rows (result-rows result)
+                    fingerprint-options {:strip-db-id (:strip-db-id workload)}
+                    t (timing sample-us)]
+                (println
+                 (format
+                  "engine=clojure-vev workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
+                  (:name workload)
+                  (result-row-count rows)
+                  (result-fingerprint rows fingerprint-options)
+                  (:min t)
+                  (:median t)
+                  (:p90 t)
+                  (:max t)))
+                (when print-rows?
+                  (print-result-rows (:name workload) rows fingerprint-options))))]
+    (if (= :pull (:kind workload))
+      (with-open [prepared-pattern (vev/prepare-pull-pattern db (:pattern workload))]
+        (run prepared-pattern))
+      (run nil))))
 
 (defn -main [& raw-args]
   (let [args (vec raw-args)

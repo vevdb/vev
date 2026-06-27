@@ -252,6 +252,17 @@ vev_value_handle_t keyword_lookup_pull =
         ":active");
 vev_value_handle_free(keyword_lookup_pull);
 
+vev_prepared_pull_pattern_t pull_pattern =
+    vev_prepare_pull_pattern_edn("[:user/name]");
+vev_value_handle_t prepared_lookup_pull =
+    vev_pull_lookup_ref_string_prepared(
+        retained_snapshot,
+        pull_pattern,
+        ":user/email",
+        "ada@example.com");
+vev_value_handle_free(prepared_lookup_pull);
+vev_prepared_pull_pattern_free(pull_pattern);
+
 unsigned long long entity_ids[] = {1, 2};
 vev_value_handle_t many_pull =
     vev_pull_many_edn(retained_snapshot, "[:user/name]", entity_ids, 2);
@@ -920,10 +931,21 @@ connection or DB snapshot lifetime.
 Direct pull entry points use owned value handles:
 
 - `vev_pull_edn`
+- `vev_prepare_pull_pattern_edn`
+- `vev_prepared_pull_pattern_ok`
+- `vev_prepared_pull_pattern_error`
+- `vev_prepared_pull_pattern_free`
+- `vev_pull_prepared`
 - `vev_pull_lookup_ref_string_edn`
+- `vev_pull_lookup_ref_string_prepared`
 - `vev_pull_lookup_ref_keyword_edn`
+- `vev_pull_lookup_ref_keyword_prepared`
+- `vev_pull_lookup_ref_uuid_edn`
+- `vev_pull_lookup_ref_uuid_prepared`
 - `vev_pull_lookup_ref_entity_edn`
+- `vev_pull_lookup_ref_entity_prepared`
 - `vev_pull_lookup_ref_int_edn`
+- `vev_pull_lookup_ref_int_prepared`
 - `vev_pull_many_edn`
 - `vev_value_handle_value`
 - `vev_value_handle_edn`

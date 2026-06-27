@@ -105,29 +105,36 @@
                        pulled)
             (throw (ex-info "unexpected pull result" {:pull pulled}))))
 
-        (let [db (vev/db conn)
-              lookup-pull (vev/pull db
-                                    [:user/name]
-                                    [:user/email "ada@example.com"])
-              keyword-lookup-pull (vev/pull db
-                                            [:user/name]
-                                            [:user/status :active])
-              int-lookup-pull (vev/pull db
+        (let [db (vev/db conn)]
+          (with-open [prepared-pattern (vev/prepare-pull-pattern db [:user/name])]
+            (let [lookup-pull (vev/pull db
                                         [:user/name]
-                                        [:user/code 1001])
-              many-pull (vev/pull-many db [:user/name] [1 2])]
-          (println "lookup pull:" lookup-pull)
-          (println "keyword lookup pull:" keyword-lookup-pull)
-          (println "int lookup pull:" int-lookup-pull)
-          (println "pull many:" many-pull)
-          (when-not (= {:user/name "Ada"} lookup-pull)
-            (throw (ex-info "unexpected lookup-ref pull" {:pull lookup-pull})))
-          (when-not (= {:user/name "Ada"} keyword-lookup-pull)
-            (throw (ex-info "unexpected keyword lookup-ref pull" {:pull keyword-lookup-pull})))
-          (when-not (= {:user/name "Ada"} int-lookup-pull)
-            (throw (ex-info "unexpected int lookup-ref pull" {:pull int-lookup-pull})))
-          (when-not (= #{"Ada" "Grace"} (set (map :user/name many-pull)))
-            (throw (ex-info "unexpected pull-many" {:pull many-pull}))))
+                                        [:user/email "ada@example.com"])
+                  prepared-lookup-pull (vev/pull db
+                                                 prepared-pattern
+                                                 [:user/email "ada@example.com"])
+                  keyword-lookup-pull (vev/pull db
+                                                [:user/name]
+                                                [:user/status :active])
+                  int-lookup-pull (vev/pull db
+                                            [:user/name]
+                                            [:user/code 1001])
+                  many-pull (vev/pull-many db [:user/name] [1 2])]
+              (println "lookup pull:" lookup-pull)
+              (println "prepared lookup pull:" prepared-lookup-pull)
+              (println "keyword lookup pull:" keyword-lookup-pull)
+              (println "int lookup pull:" int-lookup-pull)
+              (println "pull many:" many-pull)
+              (when-not (= {:user/name "Ada"} lookup-pull)
+                (throw (ex-info "unexpected lookup-ref pull" {:pull lookup-pull})))
+              (when-not (= {:user/name "Ada"} prepared-lookup-pull)
+                (throw (ex-info "unexpected prepared lookup-ref pull" {:pull prepared-lookup-pull})))
+              (when-not (= {:user/name "Ada"} keyword-lookup-pull)
+                (throw (ex-info "unexpected keyword lookup-ref pull" {:pull keyword-lookup-pull})))
+              (when-not (= {:user/name "Ada"} int-lookup-pull)
+                (throw (ex-info "unexpected int lookup-ref pull" {:pull int-lookup-pull})))
+              (when-not (= #{"Ada" "Grace"} (set (map :user/name many-pull)))
+                (throw (ex-info "unexpected pull-many" {:pull many-pull}))))))
 
         (let [db (vev/db conn)
               immutable-report (vev/with db [{:db/id 4 :user/name "Barbara"}])

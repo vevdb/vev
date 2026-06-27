@@ -218,9 +218,9 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-release-date` | 496 | 59046 | 3 | `8853c19c0b82edfa` |
 | `musicbrainz-real-fallback-start-month` | 186 | 62173 | 2 | `ea197a760bcc6589` |
 | `musicbrainz-real-get-some-country` | 379 | 22529 | 1 | `7e762f127575592a` |
-| `musicbrainz-real-missing-start-year` | 15022 | 74139 | 1637 | `f5e245cdd9911040` |
+| `musicbrainz-real-missing-start-year` | 7710 | 12922 | 1637 | `f5e245cdd9911040` |
 | `musicbrainz-real-dynamic-attr` | 2750 | 56087 | 482 | `ffee4f7469006cd3` |
-| `musicbrainz-real-top-duration` | 10924079 | 145754 | 1 | `949eb8db5ef70199` |
+| `musicbrainz-real-top-duration` | 17 | 32496 | 1 | `949eb8db5ef70199` |
 | `musicbrainz-real-not-beatles-male` | 359 | 5810 | 1 | `ea45bdc7e8b8201b` |
 | `musicbrainz-real-or-two-artists` | 177 | 2231 | 2 | `de67eb0f77cf6b42` |
 | `musicbrainz-real-relation-artist-release` | 134 | 9320 | 2 | `cb2f30e6783d093d` |
@@ -255,10 +255,12 @@ materialization. The `rule-track-info` row uses the same idea inside pure rule
 bodies while preserving DataScript source-order behavior for predicates,
 functions, `not`, `or`, and other effectful/error-sensitive rule steps.
 Bounded `not`, `not-join`, `or`, and `or-join` rows now reuse the same
-dependency-aware data-clause group planner. The top-n duration aggregate is a
-correctness/parity row and currently exposes a performance outlier because it
-scans all track durations in memory. The next planner/index work should come
-from this kind of real row or larger Datalevin benchmark families, rather than
+dependency-aware data-clause group planner. Single-attr top-n min/max aggregate
+queries now use AVET range scans and stop after the requested distinct values.
+Broad cardinality-one `missing?` projections now scan the projected attr range
+directly and filter missing attrs through current indexes, avoiding full
+relation materialization. The next planner/index work should come from this
+kind of real row or larger Datalevin benchmark families, rather than
 workload-specific shortcuts.
 
 The next import-performance work is no longer basic feasibility. The remaining
@@ -372,11 +374,11 @@ rows:
 | `track-first` | 4,056 | 47,961 | 11.8x faster |
 | `beatles-releases` | 538 | 561 | parity |
 | `beatles-duration-sum` | 4,338 | 2,913 | 0.7x |
-| `missing-start-year` | 16,929 | 8,837 | 0.5x |
-| `top-duration` | 11,345,753 | 32,491 | 0.003x |
+| `missing-start-year` | 11,801 | 12,922 | parity/faster in latest focused run |
+| `top-duration` | 481 | 32,496 | 67.6x faster |
 | `rule-track-info` | 49,161 | 181,332 | 3.7x faster |
 | `pull-release` | 519 | 326 | 0.6x |
-| `direct-pull-artist` | 155 | 43 | 0.3x |
+| `direct-pull-artist` | 274 | 43 | host wrapper overhead remains visible |
 | `direct-pull-artist-releases` | 1,305 | 289 | 0.2x |
 | `direct-pull-many-artists` | 161 | 23 | 0.1x |
 
@@ -385,9 +387,12 @@ Vev versus Datomic table above. The `--sqlite-output` plus `--uri` path removes
 wrapper EDN loading from query timing, but Clojure/Java FFM materialization and
 plain Clojure value equality still matter. The wrapper harness now preserves
 query pull-expression rows with `vev/rows` so repeated pull maps do not collapse
-under Clojure set equality. The remaining host-performance work is to optimize
-the clear gaps surfaced by the matrix: top-n aggregates, broad
-negative/missing scans, and tiny direct pull overhead.
+under Clojure set equality. Direct `:pull` workloads now prepare the pull
+pattern once per workload run through the public Clojure/Java/C ABI prepared
+pull-pattern handle, so repeated direct pulls no longer include pull-pattern
+EDN parsing in every measured call. Remaining host-performance work is mostly
+result materialization and tiny-call overhead around direct pull and pull-many,
+not query-engine correctness.
 
 ## Query And Rule Baseline
 
