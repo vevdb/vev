@@ -18,6 +18,7 @@ typedef void *vev_prepared_query_t;
 typedef void *vev_prepared_pull_pattern_t;
 typedef void *vev_result_t;
 typedef void *vev_u64_array_t;
+typedef void *vev_string_array_t;
 typedef void *vev_entity_int_pairs_t;
 typedef void *vev_entity_string_int_triples_t;
 typedef void *vev_stmt_t;
@@ -237,10 +238,18 @@ vev_u64_array_t vev_query_db_prepared_entity_column_with_inputs(
     vev_db_t db,
     vev_prepared_query_t query,
     const char *inputs_text);
+vev_string_array_t vev_query_db_prepared_string_column_with_inputs(
+    vev_db_t db,
+    vev_prepared_query_t query,
+    const char *inputs_text);
 void vev_u64_array_free(vev_u64_array_t array);
 int vev_u64_array_count(vev_u64_array_t array);
 unsigned long long vev_u64_array_value(vev_u64_array_t array, int index);
 const unsigned long long *vev_u64_array_data(vev_u64_array_t array);
+void vev_string_array_free(vev_string_array_t array);
+int vev_string_array_count(vev_string_array_t array);
+const void *const *vev_string_array_data_array(vev_string_array_t array);
+const int *vev_string_array_lengths_data(vev_string_array_t array);
 vev_entity_int_pairs_t vev_query_db_prepared_entity_int_pairs_with_inputs(
     vev_db_t db,
     vev_prepared_query_t query,
@@ -362,6 +371,8 @@ unsigned long long vev_result_value_entity(vev_result_t result, int row, int col
 long long vev_result_value_int(vev_result_t result, int row, int column);
 bool vev_result_value_bool(vev_result_t result, int row, int column);
 const char *vev_result_value_text(vev_result_t result, int row, int column);
+const void *vev_result_value_text_data(vev_result_t result, int row, int column);
+int vev_result_value_text_len(vev_result_t result, int row, int column);
 const char *vev_result_value_edn(vev_result_t result, int row, int column);
 
 int vev_value_kind(vev_value_t value);

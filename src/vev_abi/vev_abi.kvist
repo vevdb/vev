@@ -50,6 +50,12 @@ ABI_U64_Array :: struct {
     values: [dynamic]u64,
 }
 
+ABI_String_Array :: struct {
+    values: [dynamic]string,
+    data: [dynamic]rawptr,
+    lengths: [dynamic]i32,
+}
+
 ABI_Entity_Int_Pairs :: struct {
     entities: [dynamic]u64,
     values: [dynamic]i64,
@@ -500,6 +506,57 @@ abi_free_u64_array :: proc(array: rawptr) {
         return
     }
     delete(wrapper.values)
+    free(wrapper)
+}
+
+abi_alloc_string_array :: proc(values: [dynamic]string) -> rawptr {
+    wrapper := new(ABI_String_Array)
+    wrapper.values = values
+    wrapper.data = make([dynamic]rawptr, 0, len(values))
+    wrapper.lengths = make([dynamic]i32, 0, len(values))
+    for text in values {
+        if len(text) == 0 {
+            append(&wrapper.data, nil)
+        } else {
+            append(&wrapper.data, raw_data(text))
+        }
+        append(&wrapper.lengths, i32(len(text)))
+    }
+    return rawptr(wrapper)
+}
+
+abi_string_array_count :: proc(array: rawptr) -> int {
+    wrapper := (^ABI_String_Array)(array)
+    if wrapper == nil {
+        return 0
+    }
+    return len(wrapper.values)
+}
+
+abi_string_array_data_array :: proc(array: rawptr) -> rawptr {
+    wrapper := (^ABI_String_Array)(array)
+    if wrapper == nil || len(wrapper.data) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.data[0])
+}
+
+abi_string_array_lengths_data :: proc(array: rawptr) -> rawptr {
+    wrapper := (^ABI_String_Array)(array)
+    if wrapper == nil || len(wrapper.lengths) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.lengths[0])
+}
+
+abi_free_string_array :: proc(array: rawptr) {
+    wrapper := (^ABI_String_Array)(array)
+    if wrapper == nil {
+        return
+    }
+    delete(wrapper.values)
+    delete(wrapper.data)
+    delete(wrapper.lengths)
     free(wrapper)
 }
 
@@ -956,6 +1013,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (def Vev-Prepared-Pull-Pattern (distinct rawptr))
 (def Vev-Result (distinct rawptr))
 (def Vev-U64-Array (distinct rawptr))
+(def Vev-String-Array (distinct rawptr))
 (def Vev-Entity-Int-Pairs (distinct rawptr))
 (def Vev-Entity-String-Int-Triples (distinct rawptr))
 (def Vev-Stmt (distinct rawptr))
@@ -2532,6 +2590,36 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (Vev-U64-Array (abi-alloc-u64-array entities))))))
 
 @export
+(defn vev_query_db_prepared_string_column_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-String-Array
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
+    (return (Vev-String-Array nil)))
+  (let [inputs-text-value (text-from-c inputs-text)
+        db-ptr-value (db-ptr db)
+        query-ptr-value (prepared-query-ptr query)]
+    (when (not query-ptr-value^.ok)
+      (delete inputs-text-value)
+      (return (Vev-String-Array nil)))
+    (when (= inputs-text-value "[]")
+      (delete inputs-text-value)
+      (let [[values values-ok] (vev.q-query-string-column db-ptr-value^ query-ptr-value^.query ([]vev.Query-Input []))]
+        (when (not values-ok)
+          (delete values)
+          (return (Vev-String-Array nil)))
+        (return (Vev-String-Array (abi-alloc-string-array values)))))
+    (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+      (delete inputs-text-value)
+      (when (not input-ok)
+        (delete inputs)
+        (return (Vev-String-Array nil)))
+      (let [[values values-ok] (vev.q-query-string-column db-ptr-value^ query-ptr-value^.query (slice inputs 0))]
+        (delete inputs)
+        (when (not values-ok)
+          (delete values)
+          (return (Vev-String-Array nil)))
+        (Vev-String-Array (abi-alloc-string-array values))))))
+
+@export
 (defn vev_u64_array_free :abi "c" [array: Vev-U64-Array]
   (odin "context = runtime.default_context()")
   (when (= (rawptr array) nil)
@@ -2552,6 +2640,28 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn vev_u64_array_data :abi "c" [array: Vev-U64-Array] -> rawptr
   (odin "context = runtime.default_context()")
   (u64-array-data array))
+
+@export
+(defn vev_string_array_free :abi "c" [array: Vev-String-Array]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr array) nil)
+    (return))
+  (abi-free-string-array (rawptr array)))
+
+@export
+(defn vev_string_array_count :abi "c" [array: Vev-String-Array] -> int
+  (odin "context = runtime.default_context()")
+  (abi-string-array-count (rawptr array)))
+
+@export
+(defn vev_string_array_data_array :abi "c" [array: Vev-String-Array] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-string-array-data-array (rawptr array)))
+
+@export
+(defn vev_string_array_lengths_data :abi "c" [array: Vev-String-Array] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-string-array-lengths-data (rawptr array)))
 
 @export
 (defn vev_query_db_prepared_entity_int_pairs_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-Entity-Int-Pairs
@@ -3119,6 +3229,16 @@ abi_free_stmt :: proc(stmt: rawptr) {
       .Symbol (c-string-owned value.text)
       .Uuid (c-string-owned value.text)
       :else (c-string-owned ""))))
+
+@export
+(defn vev_result_value_text_data :abi "c" [result: Vev-Result, row: int, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-value-text-data (abi-result-value-ptr (rawptr result) row column)))
+
+@export
+(defn vev_result_value_text_len :abi "c" [result: Vev-Result, row: int, column: int] -> int
+  (odin "context = runtime.default_context()")
+  (abi-value-text-len (abi-result-value-ptr (rawptr result) row column)))
 
 @export
 (defn vev_result_value_edn :abi "c" [result: Vev-Result, row: int, column: int] -> cstring

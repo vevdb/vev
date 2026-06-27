@@ -873,6 +873,8 @@ Current result-handle accessors:
 - `vev_result_value_int`
 - `vev_result_value_bool`
 - `vev_result_value_text`
+- `vev_result_value_text_data`
+- `vev_result_value_text_len`
 - `vev_result_value_edn`
 - `vev_result_pull_count`
 - `vev_result_pull`
@@ -890,6 +892,10 @@ For hot flat query shapes, the ABI also exposes column-oriented handles:
 - `vev_query_db_prepared_entity_column_with_inputs`
 - `vev_u64_array_count`
 - `vev_u64_array_data`
+- `vev_query_db_prepared_string_column_with_inputs`
+- `vev_string_array_count`
+- `vev_string_array_data_array`
+- `vev_string_array_lengths_data`
 - `vev_query_db_prepared_entity_int_pairs_with_inputs`
 - `vev_entity_int_pairs_count`
 - `vev_entity_int_pairs_entities_data`
@@ -909,9 +915,11 @@ For hot flat query shapes, the ABI also exposes column-oriented handles:
 
 These are lower-level than the generic result API, but are the right shape for
 language adapters that want to avoid per-cell value handles for common
-`[:find ?e]`, `[:find ?e ?n]`, and `[:find ?e ?s ?n]` queries. Column pointers
-are borrowed and remain valid until the corresponding column handle is freed.
-For string columns, prefer
+`[:find ?e]`, `[:find ?text]`, `[:find ?e ?n]`, and `[:find ?e ?s ?n]`
+queries. Column pointers are borrowed and remain valid until the corresponding
+column handle is freed. Single string-column results use
+`vev_string_array_data_array` plus `vev_string_array_lengths_data`. For
+entity/string/int columns, prefer
 `vev_entity_string_int_triples_string_data_array` plus
 `vev_entity_string_int_triples_string_lengths_data` so host adapters can read
 all borrowed UTF-8 byte pointers and lengths without one ABI call per cell.

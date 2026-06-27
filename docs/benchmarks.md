@@ -374,13 +374,13 @@ rows:
 | `track-first` | 4,056 | 47,961 | 11.8x faster |
 | `beatles-releases` | 538 | 561 | parity |
 | `beatles-duration-sum` | 4,338 | 2,913 | 0.7x |
-| `missing-start-year` | 11,801 | 12,922 | parity/faster in latest focused run |
-| `top-duration` | 481 | 32,496 | 67.6x faster |
+| `missing-start-year` | 7,742 | 12,922 | 1.7x faster in latest focused run |
+| `top-duration` | 491 | 32,496 | 66.2x faster |
 | `rule-track-info` | 49,161 | 181,332 | 3.7x faster |
 | `pull-release` | 519 | 326 | 0.6x |
 | `direct-pull-artist` | 225 | 43 | host wrapper overhead remains visible |
 | `direct-pull-artist-releases` | 2,203 | 289 | broad host pull materialization remains visible |
-| `direct-pull-many-artists` | 408 | 23 | host wrapper path now uses prepared same-attr UUID lookup-ref batch |
+| `direct-pull-many-artists` | 366 | 23 | host wrapper path now uses prepared same-attr UUID lookup-ref batch |
 
 This host-wrapper comparison is deliberately separate from the stronger native
 Vev versus Datomic table above. The `--sqlite-output` plus `--uri` path removes
@@ -396,9 +396,12 @@ Java value-tree conversion now reads strings through borrowed value text views
 instead of allocating/freeing a native C string for every pull key and scalar
 text, and the Clojure wrapper now builds pull maps directly instead of through
 a lazy pair sequence. Lookup-ref attrs and other simple keyword/symbol EDN
-fragments also bypass the generic EDN printer. Remaining host-performance work
-is mostly result materialization and tiny-call overhead around direct pull and
-pull-many, not query-engine correctness.
+fragments also bypass the generic EDN printer. Single string-column query
+results use a typed C ABI array path, and broad `missing?` string projections
+avoid native `ResultSet` row/value materialization before Java reads borrowed
+UTF-8 slices. Remaining host-performance work is mostly result materialization
+and tiny-call overhead around direct pull and pull-many, not query-engine
+correctness.
 
 ## Query And Rule Baseline
 

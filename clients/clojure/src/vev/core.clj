@@ -470,6 +470,23 @@
       :else
       nil)))
 
+(defn- string-column [source ^PreparedQuery prepared inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? DB source)
+      (.queryStringColumn (:native source) (:native prepared) input-edn)
+
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryStringColumn (:native snapshot) (:native prepared) input-edn))
+
+      (instance? SQLiteConn source)
+      (with-open [snapshot (db source)]
+        (.queryStringColumn (:native snapshot) (:native prepared) input-edn))
+
+      :else
+      nil)))
+
 (defn- entity-int-pair-columns [source ^PreparedQuery prepared inputs]
   (let [input-edn (inputs-text inputs)]
     (cond
@@ -522,6 +539,26 @@
       (if (< index n)
         (recur (inc index)
                (conj! out [(long (aget ids index))]))
+        (persistent! out)))))
+
+(defn- string-column-rows [values]
+  (let [^objects values values
+        n (alength values)]
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget values index)]))
+        (persistent! out)))))
+
+(defn- string-column-set [values]
+  (let [^objects values values
+        n (alength values)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget values index)]))
         (persistent! out)))))
 
 (defn- entity-int-pair-rows [columns]
@@ -578,16 +615,18 @@
                            (long (aget values index))]))
         (persistent! out)))))
 
-(defn- optimized-query-output [source prepared inputs entity-fn pair-fn triple-fn]
+(defn- optimized-query-output [source prepared inputs entity-fn string-fn pair-fn triple-fn]
   (if-let [ids (entity-column source prepared inputs)]
     (entity-fn ids)
-    (if-let [columns (entity-int-pair-columns source prepared inputs)]
-      (pair-fn columns)
-      (when-let [columns (entity-string-int-triples source prepared inputs)]
-        (triple-fn columns)))))
+    (if-let [values (string-column source prepared inputs)]
+      (string-fn values)
+      (if-let [columns (entity-int-pair-columns source prepared inputs)]
+        (pair-fn columns)
+        (when-let [columns (entity-string-int-triples source prepared inputs)]
+          (triple-fn columns))))))
 
-(defn- prepared-query-output [source prepared inputs result-fn entity-fn pair-fn triple-fn]
-  (or (optimized-query-output source prepared inputs entity-fn pair-fn triple-fn)
+(defn- prepared-query-output [source prepared inputs result-fn entity-fn string-fn pair-fn triple-fn]
+  (or (optimized-query-output source prepared inputs entity-fn string-fn pair-fn triple-fn)
       (with-open [result (apply query-result source prepared inputs)]
         (result-fn result))))
 
@@ -596,11 +635,11 @@
   [^PreparedQuery prepared ^DB db & inputs]
   (edn/read-string (.profileEdn (:native db) (:native prepared) (inputs-text inputs))))
 
-(defn- query-output [source prepared rules inputs result-fn entity-fn pair-fn triple-fn]
+(defn- query-output [source prepared rules inputs result-fn entity-fn string-fn pair-fn triple-fn]
   (if rules
     (with-open [result (apply query-result-with-rules source prepared rules inputs)]
       (result-fn result))
-    (prepared-query-output source prepared inputs result-fn entity-fn pair-fn triple-fn)))
+    (prepared-query-output source prepared inputs result-fn entity-fn string-fn pair-fn triple-fn)))
 
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
@@ -612,6 +651,7 @@
       (prepared-query-output source query inputs
                              rows-from-result
                              entity-column-rows
+                             string-column-rows
                              entity-int-pair-rows
                              entity-string-int-triple-rows)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
@@ -619,6 +659,7 @@
           (let [result (query-output source prepared rules inputs
                                      rows-from-result
                                      entity-column-rows
+                                     string-column-rows
                                      entity-int-pair-rows
                                      entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
@@ -633,6 +674,7 @@
       (prepared-query-output source query inputs
                              q-from-result
                              entity-column-set
+                             string-column-set
                              entity-int-pair-set
                              entity-string-int-triple-set)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
@@ -640,6 +682,7 @@
           (let [result (query-output source prepared rules inputs
                                      rows-from-result
                                      entity-column-rows
+                                     string-column-rows
                                      entity-int-pair-rows
                                      entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]

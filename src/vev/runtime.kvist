@@ -9053,6 +9053,30 @@
     (set! out-stats.output-rows (count rows))
     (profiled-result-set (result-set-ok rows) out-stats)))
 
+(defn q-missing-attr-string-column [db: DB, plan: Missing-Attr-Projection-Plan] -> [values: [dynamic]string, ok: bool]
+  (let [out (make [dynamic]string)
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 plan.value-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 plan.value-attr (Value {}))
+        seen (set.empty string)
+        i low]
+    (defer (delete seen))
+    (while (< i high)
+      (let [datom-index indexes[i]
+            datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (not (current-attr-exists? db datom.e plan.missing-attr)))
+          (when (not (or (= datom.v.kind .String)
+                         (= datom.v.kind .Keyword)
+                         (= datom.v.kind .Symbol)
+                         (= datom.v.kind .Uuid)))
+            (return out false))
+          (when (not (set.contains? seen datom.v.text))
+            (set.add! seen datom.v.text)
+            (arr.push! out (string-owned datom.v.text)))))
+      (set! i (+ i 1)))
+    (return out true)))
+
 (defn sorted-values-vector [values: []Value, descending?: bool] -> Value
   (let [sorted (arr.into [dynamic]Value values)
         out (make [dynamic]Value)]
@@ -10236,6 +10260,32 @@
                       (set.add! seen datom.e)
                       (arr.push! out datom.e)))))
               (set! i (+ i 1)))))))
+      (return out true))))
+
+(defn q-query-string-column [db: DB, query: Query, inputs: []Query-Input] -> [values: [dynamic]string, ok: bool]
+  (let [out (make [dynamic]string)]
+    (when (not (and (= (count query.find) 1)
+                    (= (count query.pulls) 0)
+                    (= (count query.aggregates) 0)))
+      (return out false))
+    (let [[missing-plan missing-ok] (query-missing-attr-projection-plan db query)]
+      (when missing-ok
+        (delete out)
+        (return (q-missing-attr-string-column db missing-plan))))
+    (let [result (q-query-with-inputs db query inputs)]
+      (defer (delete-result-set-shallow result))
+      (when (not result.ok)
+        (return out false))
+      (for [row result.rows]
+        (when (not (= (count row.values) 1))
+          (return out false))
+        (let [value row.values[0]]
+          (if (or (= value.kind .String)
+                  (= value.kind .Keyword)
+                  (= value.kind .Symbol)
+                  (= value.kind .Uuid))
+            (arr.push! out (string-owned value.text))
+            (return out false))))
       (return out true))))
 
 (defstruct Distinct-Attr-Value {

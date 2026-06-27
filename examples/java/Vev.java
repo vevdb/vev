@@ -91,10 +91,15 @@ public final class Vev {
     private final MethodHandle queryDbPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedProfileEdnWithInputs;
     private final MethodHandle queryDbPreparedEntityColumnWithInputs;
+    private final MethodHandle queryDbPreparedStringColumnWithInputs;
     private final MethodHandle u64ArrayFree;
     private final MethodHandle u64ArrayCount;
     private final MethodHandle u64ArrayValue;
     private final MethodHandle u64ArrayData;
+    private final MethodHandle stringArrayFree;
+    private final MethodHandle stringArrayCount;
+    private final MethodHandle stringArrayDataArray;
+    private final MethodHandle stringArrayLengthsData;
     private final MethodHandle queryDbPreparedEntityIntPairsWithInputs;
     private final MethodHandle entityIntPairsFree;
     private final MethodHandle entityIntPairsCount;
@@ -150,7 +155,8 @@ public final class Vev {
     private final MethodHandle resultValueEntity;
     private final MethodHandle resultValueInt;
     private final MethodHandle resultValueBool;
-    private final MethodHandle resultValueText;
+    private final MethodHandle resultValueTextData;
+    private final MethodHandle resultValueTextLen;
     private final MethodHandle valueKind;
     private final MethodHandle valueTextData;
     private final MethodHandle valueTextLen;
@@ -233,10 +239,15 @@ public final class Vev {
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedProfileEdnWithInputs = downcall("vev_query_db_prepared_profile_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityColumnWithInputs = downcall("vev_query_db_prepared_entity_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedStringColumnWithInputs = downcall("vev_query_db_prepared_string_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.u64ArrayFree = downcall("vev_u64_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.u64ArrayCount = downcall("vev_u64_array_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.u64ArrayValue = downcall("vev_u64_array_value", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.u64ArrayData = downcall("vev_u64_array_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.stringArrayFree = downcall("vev_string_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.stringArrayCount = downcall("vev_string_array_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.stringArrayDataArray = downcall("vev_string_array_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.stringArrayLengthsData = downcall("vev_string_array_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityIntPairsWithInputs = downcall("vev_query_db_prepared_entity_int_pairs_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityIntPairsFree = downcall("vev_entity_int_pairs_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.entityIntPairsCount = downcall("vev_entity_int_pairs_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
@@ -292,7 +303,8 @@ public final class Vev {
         this.resultValueEntity = downcall("vev_result_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultValueInt = downcall("vev_result_value_int", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultValueBool = downcall("vev_result_value_bool", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
-        this.resultValueText = downcall("vev_result_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueTextData = downcall("vev_result_value_text_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueTextLen = downcall("vev_result_value_text_len", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.valueKind = downcall("vev_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.valueTextData = downcall("vev_value_text_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.valueTextLen = downcall("vev_value_text_len", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
@@ -459,6 +471,11 @@ public final class Vev {
         return borrowedUtf8String((MemorySegment) valueTextData.invoke(value), length);
     }
 
+    private String resultTextOf(MemorySegment result, int row, int column) throws Throwable {
+        int length = (int) resultValueTextLen.invoke(result, row, column);
+        return borrowedUtf8String((MemorySegment) resultValueTextData.invoke(result, row, column), length);
+    }
+
     private String borrowedUtf8String(MemorySegment data, int length) {
         if (length <= 0) return "";
         if (isNull(data)) return "";
@@ -502,8 +519,8 @@ public final class Vev {
         return switch (kind) {
             case 0 -> null;
             case 1 -> new Entity((long) resultValueEntity.invoke(result, row, column));
-            case 2, 6, 7 -> ownedString((MemorySegment) resultValueText.invoke(result, row, column));
-            case 10 -> UUID.fromString(ownedString((MemorySegment) resultValueText.invoke(result, row, column)));
+            case 2, 6, 7 -> resultTextOf(result, row, column);
+            case 10 -> UUID.fromString(resultTextOf(result, row, column));
             case 3 -> (long) resultValueInt.invoke(result, row, column);
             case 5 -> (boolean) resultValueBool.invoke(result, row, column);
             default -> valueToJava((MemorySegment) resultValue.invoke(result, row, column));
@@ -965,6 +982,34 @@ public final class Vev {
             }
         }
 
+        public String[] queryStringColumn(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedStringColumnWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) stringArrayCount.invoke(raw);
+                    if (count == 0) return new String[0];
+                    MemorySegment dataArrayRaw = (MemorySegment) stringArrayDataArray.invoke(raw);
+                    MemorySegment lengthsRaw = (MemorySegment) stringArrayLengthsData.invoke(raw);
+                    if (isNull(dataArrayRaw) || isNull(lengthsRaw)) return new String[0];
+                    MemorySegment dataArray = dataArrayRaw.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+                    int[] lengths = lengthsRaw.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+                    String[] out = new String[count];
+                    for (int index = 0; index < count; index++) {
+                        MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
+                        out[index] = borrowedUtf8String(data, lengths[index]);
+                    }
+                    return out;
+                } finally {
+                    stringArrayFree.invoke(raw);
+                }
+            }
+        }
+
         public long[][] queryEntityIntPairs(PreparedQuery query, String inputs) throws Throwable {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
@@ -1084,6 +1129,13 @@ public final class Vev {
                     entities.length,
                     new int[] { COLUMN_ENTITY },
                     new Object[] { entities });
+            }
+            String[] strings = queryStringColumn(query, inputs);
+            if (strings != null) {
+                return new ColumnResult(
+                    strings.length,
+                    new int[] { COLUMN_STRING },
+                    new Object[] { strings });
             }
             long[][] pairs = queryEntityIntPairColumns(query, inputs);
             if (pairs != null) {
