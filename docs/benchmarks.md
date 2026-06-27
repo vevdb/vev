@@ -182,6 +182,31 @@ huge prepared transaction. Progress output also checks the `"The Beatles"`
 artist query after each chunk; this caught the previous parsed-string lifetime
 bug.
 
+The real-data query matrix compares Vev row fingerprints with a local restored
+Datomic MusicBrainz database. Latest single-sample local run:
+
+| Workload | Vev us | Datomic us | Rows | Fingerprint |
+|---|---:|---:|---:|---|
+| `musicbrainz-real-release-first` | 361171 | 84113 | 96 | `0ea8943f9ef3eb03` |
+| `musicbrainz-real-track-first` | 961366 | 103459 | 89 | `9902d35f51335e40` |
+| `musicbrainz-real-beatles-releases` | 457 | 1544 | 16 | `c57b012eecfd45ed` |
+| `musicbrainz-real-beatles-track-count` | 3467 | 3230 | 1 | `0000000007068a26` |
+| `musicbrainz-real-beatles-min-max-duration` | 2899 | 14717 | 1 | `9c45e54f061af2f6` |
+| `musicbrainz-real-lookup-country` | 35 | 4698 | 1 | `4167e0bf9abd1220` |
+| `musicbrainz-real-selected-artists-releases` | 515 | 5669 | 28 | `4887ecaa409643d2` |
+| `musicbrainz-real-not-beatles-male` | 6872 | 5313 | 1 | `ea45bdc7e8b8201b` |
+| `musicbrainz-real-or-two-artists` | 20512 | 2536 | 2 | `de67eb0f77cf6b42` |
+| `musicbrainz-real-relation-artist-release` | 139 | 8667 | 2 | `cb2f30e6783d093d` |
+| `musicbrainz-real-not-join-release` | 16840 | 3842 | 1 | `b6368059dfc36ef8` |
+| `musicbrainz-real-or-join-release` | 17095 | 1116 | 2 | `5f5db031e99d9c11` |
+| `musicbrainz-real-map-beatles-releases` | 338 | 593 | 16 | `c57b012eecfd45ed` |
+
+This snapshot says Vev is already strong on indexed lookup, bounded relation
+input, and selected collection-input joins, but the restored-sample multi-hop
+track/release joins and bounded `or`/`not-join` forms still need planner work.
+Those slower rows should drive general clause planning, disjunction planning,
+and anti-join planning rather than workload-specific shortcuts.
+
 The next import-performance work is no longer basic feasibility. The remaining
 write-side architecture issue is whole-array DB/index ownership and publication
 as DB values grow. The likely direction is a shared/chunked immutable index

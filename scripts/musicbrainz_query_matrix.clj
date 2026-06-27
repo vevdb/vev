@@ -80,6 +80,41 @@
              (or [?artist :artist/name "The Beatles"]
                  [?artist :artist/name "Miles Davis"])
              [?artist :artist/name ?artist-name]]
+    :args []}
+   {:name "musicbrainz-real-relation-artist-release"
+    :query '[:find ?artist-name ?release-name
+             :in $ [[?artist-name ?release-name]]
+             :where
+             [?artist :artist/name ?artist-name]
+             [?release :release/name ?release-name]
+             [?release :release/artists ?artist]]
+    :args [[["The Beatles" "Abbey Road"]
+            ["Miles Davis" "Bitches Brew"]]]}
+   {:name "musicbrainz-real-not-join-release"
+    :query '[:find ?release-name
+             :in $ [?release-name ...]
+             :where
+             [?release :release/name ?release-name]
+             (not-join [?release]
+                       [?release :release/artists ?artist]
+                       [?artist :artist/name "The Beatles"])]
+    :args [["Abbey Road" "In a Silent Way"]]}
+   {:name "musicbrainz-real-or-join-release"
+    :query '[:find ?release-name
+             :in $ [?release-name ...]
+             :where
+             [?release :release/name ?release-name]
+             (or-join [?release]
+                      (and [?release :release/artists ?artist]
+                           [?artist :artist/name "The Beatles"])
+                      [?release :release/year 1969])]
+    :args [["Abbey Road" "In a Silent Way"]]}
+   {:name "musicbrainz-real-map-beatles-releases"
+    :query '[:find ?release-name
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?release :release/artists ?artist]
+             [?release :release/name ?release-name]]
     :args []}])
 
 (def uint64-modulus 18446744073709551616N)

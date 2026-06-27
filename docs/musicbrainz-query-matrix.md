@@ -51,7 +51,7 @@ Real-data import status:
 | Full 763,274-item subset | Passing | Chunked staged import preserves expected tutorial rows; latest local import is about 16.5s |
 
 Real-data query comparison against local Datomic is active for the first
-tutorial-shaped batch:
+tutorial-shaped batches:
 
 | Workload | Vev rows/fingerprint | Datomic rows/fingerprint | Status | Current signal |
 | --- | --- | --- | --- | --- |
@@ -64,6 +64,10 @@ tutorial-shaped batch:
 | `musicbrainz-real-selected-artists-releases` | `28 / 4887ecaa409643d2` | `28 / 4887ecaa409643d2` | Equal rows | Collection input binding over two artist names |
 | `musicbrainz-real-not-beatles-male` | `1 / ea45bdc7e8b8201b` | `1 / ea45bdc7e8b8201b` | Equal rows | Bounded `not` query |
 | `musicbrainz-real-or-two-artists` | `2 / de67eb0f77cf6b42` | `2 / de67eb0f77cf6b42` | Equal rows | Bounded `or` query |
+| `musicbrainz-real-relation-artist-release` | `2 / cb2f30e6783d093d` | `2 / cb2f30e6783d093d` | Equal rows | Relation tuple input for artist/release pairs |
+| `musicbrainz-real-not-join-release` | `1 / b6368059dfc36ef8` | `1 / b6368059dfc36ef8` | Equal rows | Bounded `not-join` over selected releases |
+| `musicbrainz-real-or-join-release` | `2 / 5f5db031e99d9c11` | `2 / 5f5db031e99d9c11` | Equal rows | Bounded `or-join` over selected releases |
+| `musicbrainz-real-map-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Vev uses EDN map query text; Datomic harness uses the equivalent vector query |
 
 The row fingerprints are generated from sorted projected EDN-ish row keys. Both
 initial clause-order queries have also been checked with explicit sorted row
@@ -131,8 +135,9 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Expand the real Datomic comparison matrix beyond the first nine rows: rules,
-   pull, relation tuple input, `not-join`, `or-join`, and map query form.
+1. Expand the real Datomic comparison matrix beyond the current thirteen rows:
+   rules, pull, pull-in-query, and Datomic-shaped host `d/query` wrapper
+   ergonomics.
 2. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
