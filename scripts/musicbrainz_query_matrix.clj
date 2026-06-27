@@ -127,6 +127,17 @@
              [?track :track/artists ?artist]
              [?track :track/duration ?dur]]
     :args []}
+   {:name "musicbrainz-real-beatles-duration-stats"
+    :query '[:find ?year (median ?millis) (avg ?millis)
+             :with ?track
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?release :release/artists ?artist]
+             [?release :release/year ?year]
+             [?release :release/media ?medium]
+             [?medium :medium/tracks ?track]
+             [?track :track/duration ?millis]]
+    :args []}
    {:name "musicbrainz-real-lookup-country"
     :query '[:find ?name
              :where
@@ -342,6 +353,10 @@
 
     (instance? java.util.UUID value)
     (str value)
+
+    (or (instance? Double value)
+        (instance? Float value))
+    (str "[:vev/float \"" value "\"]")
 
     :else
     (pr-str value)))

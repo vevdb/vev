@@ -66,6 +66,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-miles-enum-id` | `1 / 732425642d9c79c5` | `1 / 732425642d9c79c5` | Equal rows | Enum refs joined through `:db/ident` plus UUID projection |
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
+| `musicbrainz-real-beatles-duration-stats` | `4 / 9880798d00baf3e0` | `4 / 9880798d00baf3e0` | Equal rows | Grouped median/avg aggregate with `:with` duplicate preservation over real track durations |
 | `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
 | `musicbrainz-real-selected-artists-releases` | `28 / 4887ecaa409643d2` | `28 / 4887ecaa409643d2` | Equal rows | Collection input binding over two artist names |
 | `musicbrainz-real-release-date` | `3 / 8853c19c0b82edfa` | `3 / 8853c19c0b82edfa` | Equal rows | Tuple-shaped release date projection over selected releases |
@@ -91,11 +92,12 @@ tutorial-shaped batches:
 | `musicbrainz-real-direct-pull-many-artists` | `2 / 3b0d165020d81f40` | `2 / 3b0d165020d81f40` | Equal rows | Direct pull-many by `:artist/gid` lookup refs |
 | `musicbrainz-real-direct-pull-release` | `1 / 4e62d7d5775bd426` | `1 / 4e62d7d5775bd426` | Equal rows | Direct nested pull by `:release/gid` lookup ref |
 
-The row fingerprints are generated from sorted projected EDN-ish row keys. Pull
-comparison rows keep Vev pull patterns in canonical attr order where Datomic
-map rendering sorts keys, so row fingerprints remain strict equality checks.
-Both initial clause-order queries have also been checked with explicit sorted
-row dumps and `diff`.
+The row fingerprints are generated from sorted projected EDN-ish row keys.
+Floating values are serialized with Vev's explicit `[:vev/float "..."]` shape
+on both sides before fingerprinting. Pull comparison rows keep Vev pull
+patterns in canonical attr order where Datomic map rendering sorts keys, so row
+fingerprints remain strict equality checks. Both initial clause-order queries
+have also been checked with explicit sorted row dumps and `diff`.
 
 ## Covered
 
@@ -119,7 +121,7 @@ These workshop shapes are covered by passing Vev tests:
 | `get-else` | workshop query examples | EDN text query |
 | Enum refs through `:db/ident` | artist type/gender query | mini fixture plus restored-sample comparison row |
 | Aggregates | min/max, sum, count/count-distinct | EDN text aggregate queries |
-| Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query |
+| Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg also have a restored-sample comparison row |
 | Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |
 | Dynamic pull pattern input | `music_brainz.clj` | `pattern` supplied through `:in` in query result pull expressions |
 | Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` |
