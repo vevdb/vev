@@ -89,6 +89,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-dynamic-pull-release` | `17 / 16930ebda61a7b2c` | `17 / 16930ebda61a7b2c` | Equal rows | Day-of-Datomic `d/query`-style pull pattern supplied through `:in` |
 | `musicbrainz-real-pull-release-nested` | `5 / f4f5c38625cab0c7` | `5 / f4f5c38625cab0c7` | Equal rows | Nested pull query over release media and tracks |
 | `musicbrainz-real-direct-pull-artist` | `1 / 0a11a6da90ea3115` | `1 / 0a11a6da90ea3115` | Equal rows | Direct pull by `:artist/gid` lookup ref |
+| `musicbrainz-real-direct-pull-artist-wildcard` | `1 / 996526d8caead8bb` | `1 / 996526d8caead8bb` | Equal rows | Direct wildcard pull `[*]` by `:artist/gid`; fingerprints strip imported `:db/id` values because Vev remaps Datomic eids |
 | `musicbrainz-real-direct-pull-many-artists` | `2 / 3b0d165020d81f40` | `2 / 3b0d165020d81f40` | Equal rows | Direct pull-many by `:artist/gid` lookup refs |
 | `musicbrainz-real-direct-pull-release` | `1 / 4e62d7d5775bd426` | `1 / 4e62d7d5775bd426` | Equal rows | Direct nested pull by `:release/gid` lookup ref |
 
@@ -96,8 +97,10 @@ The row fingerprints are generated from sorted projected EDN-ish row keys.
 Floating values are serialized with Vev's explicit `[:vev/float "..."]` shape
 on both sides before fingerprinting. Pull comparison rows keep Vev pull
 patterns in canonical attr order where Datomic map rendering sorts keys, so row
-fingerprints remain strict equality checks. Both initial clause-order queries
-have also been checked with explicit sorted row dumps and `diff`.
+fingerprints remain strict equality checks. Wildcard pull rows strip `:db/id`
+from fingerprinting because the MusicBrainz exporter deliberately remaps
+Datomic eids into compact Vev ids. Both initial clause-order queries have also
+been checked with explicit sorted row dumps and `diff`.
 
 ## Covered
 
@@ -124,7 +127,7 @@ These workshop shapes are covered by passing Vev tests:
 | Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg also have a restored-sample comparison row |
 | Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |
 | Dynamic pull pattern input | `music_brainz.clj` | `pattern` supplied through `:in` in query result pull expressions |
-| Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` |
+| Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` plus restored-sample id-insensitive comparison row |
 | Rule input `%` | `track-release`, `track-info`, `short-track` | `q-text-with-rules` |
 | `d/query` map query form | `music_brainz.clj` | EDN map-form query text |
 | Split/composed rules | `music_brainz.clj` `track-artist`/`track-release`/`track-info` | `q-text-with-rules` |

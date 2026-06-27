@@ -210,9 +210,9 @@ not/or groups, rule calls, pull expressions, nested release/media/track pull,
 direct lookup-ref pull, dynamic pull pattern inputs, `get-else`, restored
 `get-some`, `missing?`, `:keys`/`:strs`/`:syms` return-map rows, dynamic attrs,
 collection/tuple/scalar find specs, function expressions, enum refs through
-`:db/ident`, grouped median/avg aggregates with `:with`, Datomic-style tagged
-UUID literals, the query-stats tutorial traversal, and top-n aggregates. The
-next larger step is continuing Day-of-Datomic
+`:db/ident`, grouped median/avg aggregates with `:with`, direct wildcard pull
+`[*]`, Datomic-style tagged UUID literals, the query-stats tutorial traversal,
+and top-n aggregates. The next larger step is continuing Day-of-Datomic
 host/tutorial snippets before doing more planner work. See
 `docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the active
 work plan.
