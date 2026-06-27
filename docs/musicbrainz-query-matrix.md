@@ -68,7 +68,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-not-join-release` | `1 / b6368059dfc36ef8` | `1 / b6368059dfc36ef8` | Equal rows | Bounded `not-join` over selected releases |
 | `musicbrainz-real-or-join-release` | `2 / 5f5db031e99d9c11` | `2 / 5f5db031e99d9c11` | Equal rows | Bounded `or-join` over selected releases |
 | `musicbrainz-real-map-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Vev uses EDN map query text; Datomic harness uses the equivalent vector query |
-| `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Rule input `%` with composed track/release join |
+| `musicbrainz-real-rule-track-info` | `90 / 5f20ceb057e27418` | `90 / 5f20ceb057e27418` | Equal rows | Pure rule-body planner keeps the composed track/release join selective |
 | `musicbrainz-real-pull-release` | `5 / 974ce160e8be7539` | `5 / 974ce160e8be7539` | Equal rows | Pull expression in query result over selected release names |
 | `musicbrainz-real-direct-pull-artist` | `1 / 0a11a6da90ea3115` | `1 / 0a11a6da90ea3115` | Equal rows | Direct pull by `:artist/gid` lookup ref |
 | `musicbrainz-real-direct-pull-many-artists` | `2 / 3b0d165020d81f40` | `2 / 3b0d165020d81f40` | Equal rows | Direct pull-many by `:artist/gid` lookup refs |
@@ -143,8 +143,8 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Take on the remaining real-data planner gaps: rule-expanded track/release
-   joins, bounded `or`/`or-join`, and bounded `not`/`not-join`.
+1. Take on the remaining real-data planner gaps: bounded `or`/`or-join` and
+   bounded `not`/`not-join`.
 2. Expand the real Datomic comparison matrix beyond the current seventeen rows:
    richer direct pull examples and additional Day-of-Datomic host snippets.
 3. Keep full-import storage architecture work on the roadmap: the next write

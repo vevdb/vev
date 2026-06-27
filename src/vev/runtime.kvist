@@ -6619,6 +6619,99 @@
 (defn bindings-after-rule-body-ordered-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
   (bindings-after-rule-body-ordered-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))
 
+(defn rule-body-pure-clause-call? [rule: Rule] -> bool
+  (when (= (count rule.body-steps) 0)
+    (return false))
+  (for [step rule.body-steps]
+    (when (not (or (= step.kind .Clause)
+                   (= step.kind .RuleCall)))
+      (return false)))
+  true)
+
+(defn rule-call-bound-arg-count [call: Rule-Call, binding: Binding] -> int
+  (let [out 0]
+    (for [arg call.args]
+      (when (= arg.kind .Var)
+        (let [[_ ok] (binding-lookup binding arg.name)]
+          (when ok
+            (set! out (+ out 1)))))
+      (when (or (= arg.kind .Value)
+                (= arg.kind .LookupRef))
+        (set! out (+ out 1))))
+    out))
+
+(defn rule-call-ready-for-binding? [rules: []Rule, call: Rule-Call, binding: Binding] -> bool
+  (let [available (binding-available-vars binding) :defer
+        [ok _] (validate-rule-call-required-bindings (slice available 0) rules call)]
+    ok))
+
+(defn rule-call-selectivity-score [call: Rule-Call, binding: Binding] -> int
+  (let [bound-count (rule-call-bound-arg-count call binding)]
+    (cond
+      (>= bound-count 2) 1
+      (= bound-count 1) 2
+      :else 6)))
+
+(defn best-ready-rule-body-step-index [db: DB, rules: []Rule, rule: Rule, steps: []Query-Step, binding: Binding, source: string, has-source: bool] -> [index: int, ok: bool]
+  (let [best -1
+        best-score 0
+        best-count -1]
+    (for [step step-index steps]
+      (let [ready false
+            score 0
+            candidate-count -1]
+        (when (= step.kind .Clause)
+          (let [clause (rule-clause-with-source rule.clauses[step.index] source has-source)]
+            (set! ready true)
+            (set! score (clause-selectivity-score clause binding))
+            (when (and (>= best 0)
+                       (= score best-score))
+              (set! candidate-count (clause-candidate-count-estimate db ([]DB-Source []) clause binding)))))
+        (when (= step.kind .RuleCall)
+          (let [call rule.rule-calls[step.index]]
+            (when (rule-call-ready-for-binding? rules call binding)
+              (set! ready true)
+              (set! score (rule-call-selectivity-score call binding)))))
+        (when ready
+          (when (or (= best -1)
+                    (< score best-score))
+            (set! best step-index)
+            (set! best-score score)
+            (set! best-count candidate-count))
+          (when (and (not (= best step-index))
+                     (= score best-score))
+            (when (< best-count 0)
+              (let [best-step steps[best]]
+                (if (= best-step.kind .Clause)
+                  (let [best-clause (rule-clause-with-source rule.clauses[best-step.index] source has-source)]
+                    (set! best-count (clause-candidate-count-estimate db ([]DB-Source []) best-clause binding)))
+                  (set! best-count 0))))
+            (let [count-estimate (if (>= candidate-count 0) candidate-count 0)]
+              (when (< count-estimate best-count)
+                (set! best step-index)
+                (set! best-count count-estimate)))))))
+    (return best (>= best 0))))
+
+(defn bindings-after-rule-body-planned-clause-call-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
+  (let [bindings (make [dynamic]Binding)
+        remaining (arr.into [dynamic]Query-Step (slice rule.body-steps 0))]
+    (defer (delete remaining))
+    (arr.push! bindings initial)
+    (while (and (> (count bindings) 0)
+                (> (count remaining) 0))
+      (let [[step-index step-ok] (best-ready-rule-body-step-index db rules rule (slice remaining 0) bindings[0] source has-source)]
+        (when (not step-ok)
+          (delete bindings)
+          (return (make [dynamic]Binding)))
+        (let [step remaining[step-index]
+              next-raw (bindings-after-rule-step-depth-with-fns db rules rule (slice bindings 0) step depth source has-source registry)
+              next (unique-bindings (slice next-raw 0))]
+          (delete next-raw)
+          (delete bindings)
+          (set! bindings next)
+          (arr.remove-ordered-at! remaining step-index))))
+    bindings))
+
 (defn bindings-after-rule-body-grouped-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [clauses (rule-clauses-with-source rule.clauses source has-source)
         group (not-group-simple (slice clauses 0))
@@ -6675,9 +6768,11 @@
   (bindings-after-rule-body-grouped-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))
 
 (defn bindings-after-rule-body-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
-  (if (> (count rule.body-steps) 0)
-    (bindings-after-rule-body-ordered-depth-with-fns db rules rule initial depth source has-source registry)
-    (bindings-after-rule-body-grouped-depth-with-fns db rules rule initial depth source has-source registry)))
+  (if (rule-body-pure-clause-call? rule)
+    (bindings-after-rule-body-planned-clause-call-depth-with-fns db rules rule initial depth source has-source registry)
+    (if (> (count rule.body-steps) 0)
+      (bindings-after-rule-body-ordered-depth-with-fns db rules rule initial depth source has-source registry)
+      (bindings-after-rule-body-grouped-depth-with-fns db rules rule initial depth source has-source registry))))
 
 (defn bindings-after-rule-body-depth [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool] -> [dynamic]Binding
   (bindings-after-rule-body-depth-with-fns db rules rule initial depth source has-source ([]Native-Query-Fn [])))

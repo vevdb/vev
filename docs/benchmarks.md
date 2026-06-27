@@ -200,20 +200,23 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-not-join-release` | 17295 | 3917 | 1 | `b6368059dfc36ef8` |
 | `musicbrainz-real-or-join-release` | 17490 | 1222 | 2 | `5f5db031e99d9c11` |
 | `musicbrainz-real-map-beatles-releases` | 330 | 565 | 16 | `c57b012eecfd45ed` |
-| `musicbrainz-real-rule-track-info` | 1842997 | 320417 | 90 | `5f20ceb057e27418` |
+| `musicbrainz-real-rule-track-info` | 48552 | 320417 | 90 | `5f20ceb057e27418` |
 | `musicbrainz-real-pull-release` | 545 | 4042 | 5 | `974ce160e8be7539` |
 | `musicbrainz-real-direct-pull-artist` | 51 | 4899 | 1 | `0a11a6da90ea3115` |
 | `musicbrainz-real-direct-pull-many-artists` | 45 | 2539 | 2 | `3b0d165020d81f40` |
 
 This snapshot says Vev is already strong on indexed lookup, bounded relation
 input, direct lookup-ref pull, direct lookup-ref pull-many, selected
-collection-input joins, and ordinary multi-hop clause/predicate joins. The
-restored-sample `release-first`/`track-first` rows now use dependency-aware
-clause planning with lazy candidate-count tie-breaking instead of eager
-full-relation materialization. Remaining slower rows are primarily
-rule-expanded track/release joins and bounded `or`/`not-join` forms. Those
-should drive general rule planning, disjunction planning, and anti-join
-planning rather than workload-specific shortcuts.
+collection-input joins, ordinary multi-hop clause/predicate joins, and pure
+non-recursive rule bodies made from data clauses plus rule calls. The
+restored-sample `release-first`/`track-first` rows use dependency-aware clause
+planning with lazy candidate-count tie-breaking instead of eager full-relation
+materialization. The `rule-track-info` row uses the same idea inside pure rule
+bodies while preserving DataScript source-order behavior for predicates,
+functions, `not`, `or`, and other effectful/error-sensitive rule steps.
+Remaining slower rows are primarily bounded `or`/`not-join` forms. Those should
+drive general disjunction planning and anti-join planning rather than
+workload-specific shortcuts.
 
 The next import-performance work is no longer basic feasibility. The remaining
 write-side architecture issue is whole-array DB/index ownership and publication
@@ -767,5 +770,6 @@ normalization. The aggregate rows are bounded to Beatles tracks rather than
 global track scans so the default matrix stays useful during normal development;
 global aggregate scans can be added later as explicit stress workloads. Vev now
 keeps the multi-join clause-order rows selective through dependency-aware
-clause/predicate planning. The remaining MusicBrainz query-performance pressure
-is rule-expanded joins and bounded `or`/`not-join` planning.
+clause/predicate planning, and pure rule-expanded joins use the same planning
+idea inside rule bodies. The remaining MusicBrainz query-performance pressure
+is bounded `or`/`or-join` and `not`/`not-join` planning.

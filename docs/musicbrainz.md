@@ -192,8 +192,9 @@ The first real comparison rows are now equal against Datomic:
 Current timings show Vev is now fast on these ordinary multi-hop
 clause/predicate joins after dependency-aware clause planning. The imported Vev
 subset returns the same projected rows as Datomic for these tutorial shapes.
-The next query-planner pressure is rule-expanded joins plus bounded
-`or`/`not-join` forms.
+Pure rule-expanded joins made from data clauses and rule calls now use a
+dependency-aware rule-body planner, so the remaining query-planner pressure is
+bounded `or`/`or-join` and `not`/`not-join`.
 
 ## Work Items
 
