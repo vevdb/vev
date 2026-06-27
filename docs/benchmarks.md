@@ -584,3 +584,28 @@ Remaining performance work:
 - Keep expanding benchmark coverage from real Datomic/DataScript-style
   workloads, including MusicBrainz-shaped queries, so performance work stays
   tied to database behavior rather than isolated microbenchmarks.
+
+## MusicBrainz Mini Profile
+
+`bench/musicbrainz_query_profile.kvist` runs the deterministic MusicBrainz mini
+fixture from `docs/musicbrainz.md` as a profiling benchmark. It is meant to
+catch planner regressions and compare clause-order shapes before the restored
+1968-1973 sample is available.
+
+Run:
+
+```bash
+cd /Users/andreas/Projects/kvist
+./kvist run /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist
+```
+
+Current workloads:
+
+- `musicbrainz-release-first`: starts from artist, release, year, medium, track
+- `musicbrainz-track-first`: starts from artist and track, then joins release,
+  medium, and track
+
+The output includes timing samples plus Vev profile counters:
+`steps`, `clauses`, `candidates`, `max_bindings`, and `output_rows`. Treat this
+as a local regression signal; Datomic comparison should use the restored sample
+database.

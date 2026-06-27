@@ -199,9 +199,11 @@ Initial scope:
 
 Status: active next phase. The basic SQLite reopen/query loop exists, host
 connection wrappers can reach it, and the remaining storage architecture work
-is known. MusicBrainz should now validate that Vev follows real Datomic
-tutorial material before we return to deeper storage architecture or planner
-work. See `docs/musicbrainz.md` for the active work plan.
+is known. The current mini MusicBrainz fixture covers tutorial-shaped EDN
+queries, pulls, rules, SQLite reopen, and query profiling. The next larger step
+is restoring the 1968-1973 sample, importing it into Vev, and comparing the same
+query matrix against local Datomic. See `docs/musicbrainz.md` and
+`docs/musicbrainz-query-matrix.md` for the active work plan.
 
 ## Phase 5b: External Optimizer Benchmarks
 

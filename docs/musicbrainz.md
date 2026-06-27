@@ -85,6 +85,23 @@ split/composed rules, `not`/`not-join`, `or`/`or-join`, `get-some`,
 lookup-ref inputs, dynamic attr inputs, and top-n aggregates. The detailed
 coverage ledger is `docs/musicbrainz-query-matrix.md`.
 
+The mini fixture also exercises Vev query profiling for MusicBrainz-shaped
+joins. `src/vev_tests/musicbrainz_test.kvist` asserts that profiled EDN and
+prepared EDN queries return the expected rows and non-empty planner/profile
+statistics. `bench/musicbrainz_query_profile.kvist` is the small standalone
+runner for clause-order timings and profile counters:
+
+```bash
+cd /Users/andreas/Projects/kvist
+./kvist run /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist
+```
+
+Current mini-fixture output reports one release-first and one track-first
+workload with row counts, timing samples, step count, clause count, candidate
+count, maximum intermediate bindings, and output rows. These numbers are useful
+for regression tracking, not for final Datomic comparison; the next comparison
+target is still the restored 1968-1973 sample.
+
 ## Work Items
 
 1. Download or locate the 1968-1973 mbrainz backup from the sample repo README,

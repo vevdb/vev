@@ -66,6 +66,8 @@ These workshop shapes are covered by passing Vev tests:
 | Lookup-ref inputs | original `query.clj` country examples | inline lookup-ref and query input lookup-ref |
 | Dynamic attr input | original `query.clj` | `:artist/country` as collection input |
 | Top-n aggregates | original `query.clj` | min/max duration vectors |
+| Query profiling | `music_brainz.clj` query-stats walkthrough | Vev profile assertions on tutorial-shaped joins |
+| Clause-order profiling | `music_brainz.clj` comparison examples | `bench/musicbrainz_query_profile.kvist` |
 
 ## Pending Tutorial Coverage
 
@@ -74,8 +76,6 @@ These should be ported next using the mini fixture first, then the restored
 
 | Shape | Source | Notes |
 | --- | --- | --- |
-| Query-stats walkthrough | `music_brainz.clj` | Vev has profiling APIs; port as Vev profile assertions rather than Datomic `:query-stats` object parity |
-| Clause-order performance comparison | `music_brainz.clj` | Should become a benchmark/profiling fixture, not only a correctness test |
 | Host-facing `d/query` equivalent with `:query`/`:args` | `music_brainz.clj` | Engine accepts map-form text; higher-level Clojure/Java wrapper helper still needs Datomic-shaped ergonomics |
 
 ## Host Or Datomic-Specific Later
@@ -94,11 +94,9 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Add a small benchmark/profile fixture for the clause-order examples once
-   correctness forms are stable.
-2. Restore the 1968-1973 mbrainz sample into local Datomic and record the exact
+1. Restore the 1968-1973 mbrainz sample into local Datomic and record the exact
    URI/path in `docs/musicbrainz.md`.
-3. Build the Vev importer for the restored sample and run the matrix against
+2. Build the Vev importer for the restored sample and run the matrix against
    both Datomic and Vev.
-4. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where
+3. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where
    useful, backed by the existing EDN map-query engine path.
