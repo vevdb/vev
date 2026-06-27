@@ -198,6 +198,7 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-release-date` | 496 | 59046 | 3 | `8853c19c0b82edfa` |
 | `musicbrainz-real-fallback-start-month` | 186 | 62173 | 2 | `ea197a760bcc6589` |
 | `musicbrainz-real-get-some-country` | 379 | 22529 | 1 | `7e762f127575592a` |
+| `musicbrainz-real-missing-start-year` | 15022 | 74139 | 1637 | `f5e245cdd9911040` |
 | `musicbrainz-real-dynamic-attr` | 2750 | 56087 | 482 | `ffee4f7469006cd3` |
 | `musicbrainz-real-top-duration` | 10924079 | 145754 | 1 | `949eb8db5ef70199` |
 | `musicbrainz-real-not-beatles-male` | 359 | 5810 | 1 | `ea45bdc7e8b8201b` |

@@ -118,6 +118,12 @@
              [(get-some $ ?entity :country/name :artist/name) [?attr ?name]]
              [?attr :db/ident ?attr-ident]]
     :args []}
+   {:name "musicbrainz-real-missing-start-year"
+    :query '[:find ?artist-name
+             :where
+             [?artist :artist/name ?artist-name]
+             [(missing? $ ?artist :artist/startYear)]]
+    :args []}
    {:name "musicbrainz-real-dynamic-attr"
     :query '[:find ?artist-name
              :in $ ?country-name [?reference ...]
