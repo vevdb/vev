@@ -32,6 +32,11 @@ commands:
   stop              stop the transactor started by this script
   restore           restore the sample backup into $DB_URI
   smoke-datomic     start Datomic, run a tiny peer query, then stop Datomic
+  export-subset     start Datomic, export Vev-compatible subset EDN, then stop
+                    optional args: [output-path] [item-limit]
+  export-subset-split
+                    start Datomic, export schema/values EDN files, then stop
+                    optional args: [output-prefix] [value-limit]
   prepare           download, extract, write-config, start, restore
   status            print local paths and transactor status
 
@@ -148,6 +153,26 @@ smoke-datomic() {
 (System/exit 0)"
 }
 
+export-subset() {
+  require-datomic
+  start
+  trap stop EXIT
+  local out_path="${1:-$WORK_DIR/vev-mbrainz-subset.edn}"
+  local limit="${2:-0}"
+  clojure -Sdeps '{:deps {com.datomic/peer {:mvn/version "1.0.7277"}}}' -M \
+    "$ROOT/scripts/export_mbrainz_subset.clj" "$DB_URI" "$out_path" "$limit"
+}
+
+export-subset-split() {
+  require-datomic
+  start
+  trap stop EXIT
+  local out_prefix="${1:-$WORK_DIR/vev-mbrainz-subset}"
+  local limit="${2:-0}"
+  clojure -Sdeps '{:deps {com.datomic/peer {:mvn/version "1.0.7277"}}}' -M \
+    "$ROOT/scripts/export_mbrainz_subset.clj" "$DB_URI" "$out_prefix" "$limit" split
+}
+
 status() {
   cat <<EOF
 DATOMIC_HOME=$DATOMIC_HOME
@@ -173,6 +198,8 @@ case "${1:-}" in
   stop) stop ;;
   restore) restore ;;
   smoke-datomic) smoke-datomic ;;
+  export-subset) shift; export-subset "$@" ;;
+  export-subset-split) shift; export-subset-split "$@" ;;
   prepare) download; extract; write-config; start; restore ;;
   status) status ;;
   ""|-h|--help|help) usage ;;

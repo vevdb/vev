@@ -32,6 +32,21 @@ media, and tracks. It intentionally uses the same core attr names as
 - `:medium/tracks`, `:medium/trackCount`, `:medium/position`, `:medium/name`
 - `:track/name`, `:track/duration`, `:track/artists`, `:track/position`
 
+The restored Datomic 1968-1973 sample is also available locally through
+`scripts/musicbrainz_sample.sh`. The current real-data bridge exports
+Vev-compatible EDN from Datomic with compact remapped entity ids and UUID
+values preserved as UUID literals. `bench/musicbrainz_import_subset.kvist`
+imports either a single tx file or staged schema/value tx files.
+
+Real-data import status:
+
+| Workload | Status | Notes |
+| --- | --- | --- |
+| 100-item single-file subset | Passing | Confirms compact eid remap and UUID/value parsing |
+| 500-value staged subset | Passing | Confirms schema-first/value-second import path |
+| 5,000-value staged subset | Passing but slow | Parse is fast; transaction validation/index work dominates |
+| Full 763,274-item subset | Pending | Blocked on bulk transaction performance |
+
 ## Covered
 
 These workshop shapes are covered by passing Vev tests:
@@ -94,7 +109,10 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Build the Vev exporter/importer path for the restored 1968-1973 sample and
-   run the matrix against both Datomic and Vev.
-2. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where
+1. Improve bulk transaction performance enough that 50k/full restored
+   MusicBrainz subset imports are practical. The current 5k staged import
+   passes but is too slow for routine query-matrix work.
+2. Run the existing matrix against the imported real subset and local Datomic,
+   comparing result sets before timing.
+3. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where
    useful, backed by the existing EDN map-query engine path.

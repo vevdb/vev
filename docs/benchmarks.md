@@ -118,6 +118,41 @@ Vev now exposes the optional `datascript-bench` rule rows by name through the
 Clojure adapter using the same DataScript-style `:in $ %` rules input shape as
 the upstream benchmark.
 
+## MusicBrainz Import Smoke
+
+The MusicBrainz phase has a real-data import smoke for the restored Datomic
+1968-1973 sample. It is not a final benchmark yet; it exists to reveal import,
+schema, EDN, and transaction-indexing bottlenecks on Datomic-shaped data.
+
+Generate staged schema/value EDN from the restored Datomic sample:
+
+```sh
+scripts/musicbrainz_sample.sh export-subset-split build/musicbrainz/vev-mbrainz-subset-5000 5000
+```
+
+Build and run the Vev import smoke:
+
+```sh
+cd /Users/andreas/Projects/kvist
+./kvist build /Users/andreas/Projects/vev/bench/musicbrainz_import_subset.kvist \
+  --out /Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset
+
+/Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-schema.edn \
+  --values /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-values.edn
+```
+
+Current local 5k staged result:
+
+```text
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=5293 current=5293 parse_us=11051 tx_us=50623664 import_us=50634715 artist_rows=0 artist_us=1286 release_rows=0 release_us=429
+```
+
+The relevant signal is the ratio inside Vev: EDN parse is already small for
+this slice, while transaction validation/index work dominates. The next import
+performance work should target the generic bulk transaction path, not the EDN
+reader.
+
 ## Query And Rule Baseline
 
 Run Vev from the Kvist repo root so macro loading uses the normal compiler

@@ -106,6 +106,53 @@ MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use
 `:db.type/uuid`, so Vev now parses EDN UUID literals as a distinct primitive
 value kind instead of stringifying them during import.
 
+The restored sample also forced a real import-shape decision: Datomic entity
+ids are larger than Vev's current explicit entity-id range. The current
+MusicBrainz exporter remaps Datomic eids into a compact Vev id space while
+preserving all ref values through the same remap table. This is appropriate for
+sample/database import tooling; Vev-native databases still allocate their own
+ids.
+
+`scripts/export_mbrainz_subset.clj` and `scripts/musicbrainz_sample.sh` now
+export Vev-compatible EDN transaction files from the restored Datomic sample.
+The exporter can write either one transaction file or staged files:
+
+```bash
+scripts/musicbrainz_sample.sh export-subset build/musicbrainz/vev-mbrainz-subset.edn
+scripts/musicbrainz_sample.sh export-subset-split build/musicbrainz/vev-mbrainz-subset-5000 5000
+```
+
+The full current subset export writes 763,274 transaction items, about 41 MB,
+from restored Datomic basis t `148253`. The staged export writes schema/ident
+facts separately from value facts so Vev can transact schema first and bulk
+values second.
+
+`bench/musicbrainz_import_subset.kvist` is the current Vev import smoke. It can
+load either a single EDN tx file or staged schema/value files:
+
+```bash
+cd /Users/andreas/Projects/kvist
+./kvist build /Users/andreas/Projects/vev/bench/musicbrainz_import_subset.kvist \
+  --out /Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset
+
+/Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-schema.edn \
+  --values /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-values.edn
+```
+
+Current status:
+
+- 100-item compact-id single-file import passes.
+- 500-value staged import passes.
+- 5,000-value staged import passes and queries successfully.
+- EDN parse time is already small for this slice; transaction time dominates.
+- 5,000 staged values currently take roughly 50 seconds to transact, so bulk
+  transaction/index validation is now the next concrete engine bottleneck.
+
+The important finding is functional rather than cosmetic: MusicBrainz import is
+now correct for a real restored Datomic-derived slice, but Vev needs a proper
+bulk transaction path before larger MusicBrainz imports are useful.
+
 The mini fixture also exercises Vev query profiling for MusicBrainz-shaped
 joins. `src/vev_tests/musicbrainz_test.kvist` asserts that profiled EDN and
 prepared EDN queries return the expected rows and non-empty planner/profile
@@ -126,8 +173,8 @@ target is still the restored 1968-1973 sample.
 ## Work Items
 
 1. Build a Datomic-to-Vev export/import path for the restored 1968-1973 sample.
-   The export should start with datoms needed by the current query matrix, then
-   grow toward full sample coverage.
+   Status: first exporter/import smoke exists. Next work is making staged
+   5k/50k/full imports fast enough to use routinely.
 2. Port the `day-of-datomic-conj/src/music_brainz.clj` query set into a Vev
    fixture file, marking each form as passing, Vev-difference, or pending.
    Track this in `docs/musicbrainz-query-matrix.md`.

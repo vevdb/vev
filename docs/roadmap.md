@@ -65,7 +65,7 @@ Non-goal:
 Status: mostly satisfied as the current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 364 tests. Remaining work is concentrated in exact
+suite currently passes 365 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
 and durable storage integration.
@@ -197,14 +197,18 @@ Initial scope:
 - store expected query results in Vev tests or benchmark fixtures
 - report Datomic vs Vev timings as comparative ratios, not raw claims
 
-Status: active next phase. The basic SQLite reopen/query loop exists, host
+Status: active phase. The basic SQLite reopen/query loop exists, host
 connection wrappers can reach it, and the remaining storage architecture work
 is known. The current mini MusicBrainz fixture covers tutorial-shaped EDN
 queries, pulls, rules, SQLite reopen, and query profiling. The 1968-1973 sample
-backup is locally restorable and smoke-tested against Datomic. The next larger
-step is exporting/importing that restored sample into Vev and comparing the
-same query matrix against local Datomic. See `docs/musicbrainz.md` and
-`docs/musicbrainz-query-matrix.md` for the active work plan.
+backup is locally restorable and smoke-tested against Datomic. Vev now has a
+first Datomic-to-Vev subset exporter that preserves UUID values and remaps
+Datomic eids into compact Vev ids, plus a staged schema/value import smoke.
+Small real-data imports pass. The next larger step is improving generic bulk
+transaction performance enough to import 50k/full restored MusicBrainz subsets
+routinely, then comparing the same query matrix against local Datomic. See
+`docs/musicbrainz.md` and `docs/musicbrainz-query-matrix.md` for the active
+work plan.
 
 ## Phase 5b: External Optimizer Benchmarks
 
