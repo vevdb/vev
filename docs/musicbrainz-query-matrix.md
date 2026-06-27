@@ -120,7 +120,7 @@ These should be ported next using the mini fixture first, then the restored
 
 | Shape | Source | Notes |
 | --- | --- | --- |
-| Host-facing `d/query` equivalent with `:query`/`:args` | `music_brainz.clj` | Engine accepts map-form text; higher-level Clojure/Java wrapper helper still needs Datomic-shaped ergonomics |
+| Host-facing `d/query` equivalent with `:query`/`:args` | `music_brainz.clj` | Clojure wrapper supports `vev/query {:query ... :args [...]}` |
 
 ## Host Or Datomic-Specific Later
 
@@ -139,10 +139,10 @@ These are not current blockers for the Vev engine:
 ## Next Batch
 
 1. Expand the real Datomic comparison matrix beyond the current fifteen rows:
-   direct pull API examples, pull-many, return-map host wrappers, and
-   Datomic-shaped host `d/query` wrapper ergonomics.
+   direct pull API examples, pull-many, return-map host wrappers, and Java
+   Datomic-shaped request-map wrapper ergonomics.
 2. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
-3. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where
-   useful, backed by the existing EDN map-query engine path.
+3. Add Datomic-shaped request-map ergonomics in the remaining host adapters
+   where useful, backed by the existing EDN map-query engine path.

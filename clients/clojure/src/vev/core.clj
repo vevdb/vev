@@ -574,6 +574,23 @@
                         entity-int-pair-set
                         entity-string-int-triple-set))))))
 
+(defn query
+  "Run a Datomic-style query.
+
+  With one argument, accepts a map shaped like `{:query q :args [db ...]}` and
+  returns the same set-of-row-vectors shape as `q`."
+  ([request]
+   (when-not (map? request)
+     (throw (ex-info "expected query request map" {:request request})))
+   (let [{query :query args :args} request]
+     (when-not query
+       (throw (ex-info "query request requires :query" {:request request})))
+     (when-not (vector? args)
+       (throw (ex-info "query request requires vector :args" {:request request})))
+     (apply q query args)))
+  ([query source & inputs]
+   (apply q query source inputs)))
+
 (defn scalar
   "Run a query expected to return one value."
   [query source & inputs]
@@ -608,30 +625,30 @@
     source
     (fn [db]
       (clj-value
-        (if (and (vector? eid)
-                 (= 2 (count eid))
-                 (keyword? (first eid)))
-          (let [pattern-text (edn-text pattern)
-                attr-text (edn-text (first eid))
-                value (second eid)]
-            (cond
-              (string? value)
-              (.pullLookupRefString (:native db) pattern-text attr-text value)
+       (if (and (vector? eid)
+                (= 2 (count eid))
+                (keyword? (first eid)))
+         (let [pattern-text (edn-text pattern)
+               attr-text (edn-text (first eid))
+               value (second eid)]
+           (cond
+             (string? value)
+             (.pullLookupRefString (:native db) pattern-text attr-text value)
 
-              (keyword? value)
-              (.pullLookupRefKeyword (:native db) pattern-text attr-text (str value))
+             (keyword? value)
+             (.pullLookupRefKeyword (:native db) pattern-text attr-text (str value))
 
-              (integer? value)
-              (.pullLookupRefInt (:native db) pattern-text attr-text (long value))
+             (integer? value)
+             (.pullLookupRefInt (:native db) pattern-text attr-text (long value))
 
-              (instance? Vev$Entity value)
-              (.pullLookupRefEntity (:native db) pattern-text attr-text (.id ^Vev$Entity value))
+             (instance? Vev$Entity value)
+             (.pullLookupRefEntity (:native db) pattern-text attr-text (.id ^Vev$Entity value))
 
-              :else
-              (throw (ex-info "unsupported lookup-ref pull value"
-                              {:value value
-                               :supported #{:string :keyword :integer :entity}}))))
-          (.pull (:native db) (edn-text pattern) (long eid)))))))
+             :else
+             (throw (ex-info "unsupported lookup-ref pull value"
+                             {:value value
+                              :supported #{:string :keyword :integer :entity}}))))
+         (.pull (:native db) (edn-text pattern) (long eid)))))))
 
 (defn pull-many
   "Pull several entities, preserving input order."

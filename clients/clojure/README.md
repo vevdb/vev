@@ -30,6 +30,17 @@ text frontend used by C, Python, Rust, and Java callers.
 (vev/q '[:find ?name :where [?e :user/name ?name]] db)
 ```
 
+For Datomic `d/query`-style host code, use `query` with a request map:
+
+```clojure
+(vev/query
+  {:query '[:find ?name
+            :in $ ?email
+            :where [?e :user/email ?email]
+                   [?e :user/name ?name]]
+   :args [db "ada@example.com"]})
+```
+
 Inputs are passed as ordinary arguments after the query and DB:
 
 ```clojure
