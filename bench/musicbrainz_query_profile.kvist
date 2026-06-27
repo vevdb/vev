@@ -123,6 +123,9 @@
 (def direct-artist-wildcard-pull-pattern
   "[*]")
 
+(def direct-artist-releases-pull-pattern
+  "[:artist/name {:release/_artists [:release/name :release/year]}]")
+
 (def direct-release-pull-pattern
   "[:release/gid {:release/media [:medium/position :medium/trackCount {:medium/tracks [:track/duration :track/name :track/position]}]} :release/name :release/year]")
 
@@ -641,6 +644,23 @@
       (vev.pull-text-lookup-ref-value db direct-artist-wildcard-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
       (bench.timing-from-samples (slice samples 0)))))
 
+(defn time-direct-pull-artist-releases [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (discard (vev.pull-text-lookup-ref-value db direct-artist-releases-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            value (vev.pull-text-lookup-ref-value db direct-artist-releases-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+            elapsed (bench.elapsed-us start)]
+        (discard value)
+        (arr.push! samples elapsed)))
+    (value-timing
+      (vev.pull-text-lookup-ref-value db direct-artist-releases-pull-pattern ":artist/gid" (vev.value-uuid beatles-gid))
+      (bench.timing-from-samples (slice samples 0)))))
+
 (defn time-direct-pull-many-artists [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
   (let [attrs ([]string [":artist/gid" ":artist/gid"])
         values ([]vev.Value [(vev.value-uuid beatles-gid) (vev.value-uuid miles-gid)])]
@@ -767,6 +787,7 @@
           pull-release-nested-workload (fmt.tprintf "musicbrainz-%s-pull-release-nested" dataset)
           direct-pull-artist-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist" dataset)
           direct-pull-artist-wildcard-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist-wildcard" dataset)
+          direct-pull-artist-releases-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist-releases" dataset)
           direct-pull-many-artists-workload (fmt.tprintf "musicbrainz-%s-direct-pull-many-artists" dataset)
           direct-pull-release-workload (fmt.tprintf "musicbrainz-%s-direct-pull-release" dataset)]
       (when (should-run? selected release-first-workload)
@@ -839,6 +860,8 @@
         (print-value-workload! direct-pull-artist-workload (time-direct-pull-artist conn.db warmups samples) print-rows))
       (when (should-run? selected direct-pull-artist-wildcard-workload)
         (print-value-workload-without-db-id! direct-pull-artist-wildcard-workload (time-direct-pull-artist-wildcard conn.db warmups samples) print-rows))
+      (when (should-run? selected direct-pull-artist-releases-workload)
+        (print-value-workload! direct-pull-artist-releases-workload (time-direct-pull-artist-releases conn.db warmups samples) print-rows))
       (when (should-run? selected direct-pull-many-artists-workload)
         (print-value-workload! direct-pull-many-artists-workload (time-direct-pull-many-artists conn.db warmups samples) print-rows))
       (when (should-run? selected direct-pull-release-workload)

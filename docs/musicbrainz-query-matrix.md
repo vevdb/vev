@@ -90,6 +90,7 @@ tutorial-shaped batches:
 | `musicbrainz-real-pull-release-nested` | `5 / f4f5c38625cab0c7` | `5 / f4f5c38625cab0c7` | Equal rows | Nested pull query over release media and tracks |
 | `musicbrainz-real-direct-pull-artist` | `1 / 0a11a6da90ea3115` | `1 / 0a11a6da90ea3115` | Equal rows | Direct pull by `:artist/gid` lookup ref |
 | `musicbrainz-real-direct-pull-artist-wildcard` | `1 / 996526d8caead8bb` | `1 / 996526d8caead8bb` | Equal rows | Direct wildcard pull `[*]` by `:artist/gid`; fingerprints strip imported `:db/id` values because Vev remaps Datomic eids |
+| `musicbrainz-real-direct-pull-artist-releases` | `1 / 78d748d66cc33844` | `1 / 78d748d66cc33844` | Equal rows | Direct reverse-ref pull through `:release/_artists` by `:artist/gid` lookup ref |
 | `musicbrainz-real-direct-pull-many-artists` | `2 / 3b0d165020d81f40` | `2 / 3b0d165020d81f40` | Equal rows | Direct pull-many by `:artist/gid` lookup refs |
 | `musicbrainz-real-direct-pull-release` | `1 / 4e62d7d5775bd426` | `1 / 4e62d7d5775bd426` | Equal rows | Direct nested pull by `:release/gid` lookup ref |
 
@@ -126,6 +127,7 @@ These workshop shapes are covered by passing Vev tests:
 | Aggregates | min/max, sum, count/count-distinct | EDN text aggregate queries |
 | Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg also have a restored-sample comparison row |
 | Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |
+| Reverse-ref pull | artist to releases via `:release/_artists` | direct lookup-ref pull plus restored-sample comparison row |
 | Dynamic pull pattern input | `music_brainz.clj` | `pattern` supplied through `:in` in query result pull expressions |
 | Pull all `[*]` | `music_brainz.clj` | wildcard `pull-text` plus restored-sample id-insensitive comparison row |
 | Rule input `%` | `track-release`, `track-info`, `short-track` | `q-text-with-rules` |
