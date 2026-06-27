@@ -320,6 +320,10 @@
     :kind :pull
     :pattern '[:artist/name {(limit :release/_artists 2) [:release/name :release/year]}]
     :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
+   {:name "musicbrainz-real-direct-pull-artist-default"
+    :kind :pull
+    :pattern '[[:artist/gender :default "group"] :artist/name]
+    :entity [:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]}
    {:name "musicbrainz-real-direct-pull-many-artists"
     :kind :pull-many
     :pattern '[:artist/gid :artist/name :artist/startYear]

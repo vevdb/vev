@@ -224,6 +224,7 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-direct-pull-artist-wildcard` | 167 | 13568 | 1 | `996526d8caead8bb` |
 | `musicbrainz-real-direct-pull-artist-releases` | 516 | 57976 | 1 | `78d748d66cc33844` |
 | `musicbrainz-real-direct-pull-artist-releases-limit` | 161 | 24115 | 1 | `cc1f2e27d4ab3f6f` |
+| `musicbrainz-real-direct-pull-artist-default` | 132 | 17613 | 1 | `90667f13a2d95b66` |
 | `musicbrainz-real-direct-pull-many-artists` | 45 | 2539 | 2 | `3b0d165020d81f40` |
 | `musicbrainz-real-direct-pull-release` | 147 | 21235 | 1 | `4e62d7d5775bd426` |
 
