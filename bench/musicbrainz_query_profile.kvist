@@ -60,11 +60,18 @@
 (def pull-release-query
   "[:find (pull ?release [:release/name :release/year]) :in $ [?release-name ...] :where [?release :release/name ?release-name]]")
 
+(def pull-release-nested-query
+  "[:find (pull ?release [:release/gid {:release/media [:medium/position :medium/trackCount {:medium/tracks [:track/duration :track/name :track/position]}]} :release/name :release/year]) :in $ [?release-name ...] :where [?release :release/name ?release-name]]")
+
 (def direct-artist-pull-pattern
   "[:artist/gid :artist/name :artist/startYear]")
 
+(def direct-release-pull-pattern
+  "[:release/gid {:release/media [:medium/position :medium/trackCount {:medium/tracks [:track/duration :track/name :track/position]}]} :release/name :release/year]")
+
 (def beatles-gid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d")
 (def miles-gid "561d854a-6a28-4aa7-8c99-323e6ce46c2a")
+(def abbey-road-gid "eca8996a-a637-3259-ba07-d2573c601a1b")
 
 (defstruct Profile-Timing {
   profiled: vev.Profiled-Result-Set
@@ -309,6 +316,23 @@
         (vev.pull-many-text-lookup-refs-value db direct-artist-pull-pattern attrs values)
         (bench.timing-from-samples (slice samples 0))))))
 
+(defn time-direct-pull-release [db: vev.DB, warmups: int, samples-count: int] -> Value-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (discard (vev.pull-text-lookup-ref-value db direct-release-pull-pattern ":release/gid" (vev.value-uuid abbey-road-gid))))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            value (vev.pull-text-lookup-ref-value db direct-release-pull-pattern ":release/gid" (vev.value-uuid abbey-road-gid))
+            elapsed (bench.elapsed-us start)]
+        (discard value)
+        (arr.push! samples elapsed)))
+    (value-timing
+      (vev.pull-text-lookup-ref-value db direct-release-pull-pattern ":release/gid" (vev.value-uuid abbey-road-gid))
+      (bench.timing-from-samples (slice samples 0)))))
+
 (defn print-value-workload! [workload: string, measured: Value-Timing, print-rows: bool]
   (fmt.printf
     "engine=vev workload=%s ok=true rows=%d fingerprint=%016x min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f\n"
@@ -360,8 +384,10 @@
           map-beatles-releases-workload (fmt.tprintf "musicbrainz-%s-map-beatles-releases" dataset)
           rule-track-info-workload (fmt.tprintf "musicbrainz-%s-rule-track-info" dataset)
           pull-release-workload (fmt.tprintf "musicbrainz-%s-pull-release" dataset)
+          pull-release-nested-workload (fmt.tprintf "musicbrainz-%s-pull-release-nested" dataset)
           direct-pull-artist-workload (fmt.tprintf "musicbrainz-%s-direct-pull-artist" dataset)
-          direct-pull-many-artists-workload (fmt.tprintf "musicbrainz-%s-direct-pull-many-artists" dataset)]
+          direct-pull-many-artists-workload (fmt.tprintf "musicbrainz-%s-direct-pull-many-artists" dataset)
+          direct-pull-release-workload (fmt.tprintf "musicbrainz-%s-direct-pull-release" dataset)]
       (when (should-run? selected release-first-workload)
         (print-workload! conn.db release-first-workload release-first-query beatles-input warmups samples print-rows))
       (when (should-run? selected track-first-workload)
@@ -392,7 +418,11 @@
         (print-workload-with-rules! conn.db rule-track-info-workload rule-track-info-query beatles-input musicbrainz-rules true warmups samples print-rows))
       (when (should-run? selected pull-release-workload)
         (print-workload! conn.db pull-release-workload pull-release-query selected-releases-input warmups samples print-rows))
+      (when (should-run? selected pull-release-nested-workload)
+        (print-workload! conn.db pull-release-nested-workload pull-release-nested-query selected-releases-input warmups samples print-rows))
       (when (should-run? selected direct-pull-artist-workload)
         (print-value-workload! direct-pull-artist-workload (time-direct-pull-artist conn.db warmups samples) print-rows))
       (when (should-run? selected direct-pull-many-artists-workload)
-        (print-value-workload! direct-pull-many-artists-workload (time-direct-pull-many-artists conn.db warmups samples) print-rows)))))
+        (print-value-workload! direct-pull-many-artists-workload (time-direct-pull-many-artists conn.db warmups samples) print-rows))
+      (when (should-run? selected direct-pull-release-workload)
+        (print-value-workload! direct-pull-release-workload (time-direct-pull-release conn.db warmups samples) print-rows)))))

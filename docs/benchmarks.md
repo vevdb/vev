@@ -202,12 +202,15 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-map-beatles-releases` | 330 | 565 | 16 | `c57b012eecfd45ed` |
 | `musicbrainz-real-rule-track-info` | 48552 | 320417 | 90 | `5f20ceb057e27418` |
 | `musicbrainz-real-pull-release` | 545 | 4042 | 5 | `974ce160e8be7539` |
+| `musicbrainz-real-pull-release-nested` | 485 | 95232 | 5 | `f4f5c38625cab0c7` |
 | `musicbrainz-real-direct-pull-artist` | 51 | 4899 | 1 | `0a11a6da90ea3115` |
 | `musicbrainz-real-direct-pull-many-artists` | 45 | 2539 | 2 | `3b0d165020d81f40` |
+| `musicbrainz-real-direct-pull-release` | 147 | 21235 | 1 | `4e62d7d5775bd426` |
 
 This snapshot says Vev is already strong on indexed lookup, bounded relation
-input, direct lookup-ref pull, direct lookup-ref pull-many, selected
-collection-input joins, ordinary multi-hop clause/predicate joins, and pure
+input, direct lookup-ref pull, direct lookup-ref pull-many, nested release/media
+pull, selected collection-input joins, ordinary multi-hop clause/predicate joins,
+and pure
 non-recursive rule bodies made from data clauses plus rule calls. The
 restored-sample `release-first`/`track-first` rows use dependency-aware clause
 planning with lazy candidate-count tie-breaking instead of eager full-relation

@@ -170,11 +170,12 @@ cd /Users/andreas/Projects/kvist
 ```
 
 The same runner now also accepts `--dataset real` plus staged schema/value
-paths. It imports the restored exported subset, runs the same clause-order query
-shapes, and prints row counts, portable result fingerprints, timing samples,
-step count, clause count, candidate count, maximum intermediate bindings, and
-output rows. `--print-rows true` prints sorted projected row keys for direct
-`diff` against Datomic.
+paths. It imports the restored exported subset, runs the same clause-order,
+rule, aggregate, not/or, relation-input, pull, nested pull, and direct
+lookup-ref pull shapes, and prints row counts, portable result fingerprints,
+timing samples, step count, clause count, candidate count, maximum intermediate
+bindings, and output rows. `--print-rows true` prints sorted projected row keys
+for direct `diff` against Datomic.
 
 Local Datomic comparison is available through:
 

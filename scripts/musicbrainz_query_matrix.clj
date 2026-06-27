@@ -141,6 +141,19 @@
              :where
              [?release :release/name ?release-name]]
     :args [["Abbey Road" "In a Silent Way"]]}
+   {:name "musicbrainz-real-pull-release-nested"
+    :query '[:find (pull ?release [:release/gid
+                                    :release/name
+                                    :release/year
+                                    {:release/media [:medium/position
+                                                     :medium/trackCount
+                                                     {:medium/tracks [:track/position
+                                                                      :track/name
+                                                                      :track/duration]}]}])
+             :in $ [?release-name ...]
+             :where
+             [?release :release/name ?release-name]]
+    :args [["Abbey Road" "In a Silent Way"]]}
    {:name "musicbrainz-real-direct-pull-artist"
     :kind :pull
     :pattern '[:artist/gid :artist/name :artist/startYear]
@@ -149,7 +162,18 @@
     :kind :pull-many
     :pattern '[:artist/gid :artist/name :artist/startYear]
     :entities [[:artist/gid #uuid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"]
-               [:artist/gid #uuid "561d854a-6a28-4aa7-8c99-323e6ce46c2a"]]}])
+               [:artist/gid #uuid "561d854a-6a28-4aa7-8c99-323e6ce46c2a"]]}
+   {:name "musicbrainz-real-direct-pull-release"
+    :kind :pull
+    :pattern '[:release/gid
+               :release/name
+               :release/year
+               {:release/media [:medium/position
+                                :medium/trackCount
+                                {:medium/tracks [:track/position
+                                                 :track/name
+                                                 :track/duration]}]}]
+    :entity [:release/gid #uuid "eca8996a-a637-3259-ba07-d2573c601a1b"]}])
 
 (def uint64-modulus 18446744073709551616N)
 (def fingerprint-seed 0N)
