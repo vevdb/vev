@@ -348,6 +348,29 @@
                   (return cursor (edn-add-node! doc node) true ""))
                 (return cursor (edn-add-node! doc (edn-node .Symbol token)) true ""))))))))
 
+(defn read-edn-tagged-literal! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
+  (let [cursor i
+        n (kstr.count text)]
+    (while (and (< cursor n) (not (edn-delimiter? (kstr.get text cursor))))
+      (set! cursor (+ cursor 1)))
+    (let [tag (kstr.slice text i cursor)]
+      (when (not (= tag "#uuid"))
+        (return cursor -1 false "unsupported EDN tagged literal"))
+      (let [[after-value value-node value-ok value-error] (read-edn-form! doc text cursor)]
+        (when (not value-ok)
+          (return after-value -1 false value-error))
+        (let [value doc^.nodes[value-node]
+              uuid-text value.text]
+          (when (not (or (= value.kind .String)
+                         (= value.kind .Uuid)))
+            (return after-value -1 false "#uuid expects string UUID payload"))
+          (when (not (edn-uuid-token? uuid-text))
+            (return after-value -1 false "#uuid expects valid UUID payload"))
+          (set! value.kind .Uuid)
+          (set! value.text uuid-text)
+          (set! doc^.nodes[value-node] value)
+          (return after-value value-node true ""))))))
+
 (defn read-edn-form! [doc: ^EDN-Doc, text: string, i: int] -> [next: int, node: int, ok: bool, error: string]
   (let [cursor (edn-skip-ws text i)
         n (kstr.count text)]
@@ -360,6 +383,7 @@
         (= ch 123) (read-edn-container! doc text cursor .Map 125)
         (and (= ch 35) (< (+ cursor 1) n) (= (kstr.get text (+ cursor 1)) 123))
           (read-edn-container! doc text (+ cursor 1) .Set 125)
+        (= ch 35) (read-edn-tagged-literal! doc text cursor)
         (= ch 34) (read-edn-string! doc text cursor)
         (or (= ch 93) (= ch 41) (= ch 125))
           (return cursor -1 false "unexpected EDN closing delimiter")

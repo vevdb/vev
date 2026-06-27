@@ -107,8 +107,9 @@ semantics by projecting the attr through `:db/ident`. The detailed coverage ledg
 The restored Datomic comparison matrix now also covers release date
 projection, `get-else`, restored `get-some`, `:keys`/`:strs`/`:syms`
 return-map rows, collection/tuple/scalar find specs, dynamic pull pattern
-input, `missing?`, dynamic attr input, query-stats tutorial traversal, and
-top-n aggregate rows against the real 1968-1973 sample.
+input, Datomic-style tagged UUID literals, `missing?`, dynamic attr input,
+query-stats tutorial traversal, and top-n aggregate rows against the real
+1968-1973 sample.
 
 The restored sample forced one real Vev data-model addition: UUID values.
 MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use

@@ -81,9 +81,7 @@
     :result-kind :tuple
     :query '[:find [?year ?month ?day]
              :where
-             [?release :release/name "Abbey Road"]
-             [?release :release/month 9]
-             [?release :release/day 26]
+             [?release :release/gid #uuid "eca8996a-a637-3259-ba07-d2573c601a1b"]
              [?release :release/year ?year]
              [?release :release/month ?month]
              [?release :release/day ?day]]
