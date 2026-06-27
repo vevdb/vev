@@ -189,6 +189,7 @@ Datomic MusicBrainz database. Latest single-sample local run:
 |---|---:|---:|---:|---|
 | `musicbrainz-real-release-first` | 2967 | 82193 | 96 | `0ea8943f9ef3eb03` |
 | `musicbrainz-real-track-first` | 3644 | 105229 | 89 | `9902d35f51335e40` |
+| `musicbrainz-real-john-lennon-pre-1970-tracks` | 1636 | 69184 | 18 | `4598839c2af58631` |
 | `musicbrainz-real-beatles-releases` | 454 | 1300 | 16 | `c57b012eecfd45ed` |
 | `musicbrainz-real-beatles-track-count` | 3531 | 3150 | 1 | `0000000007068a26` |
 | `musicbrainz-real-beatles-min-max-duration` | 2967 | 10409 | 1 | `9c45e54f061af2f6` |

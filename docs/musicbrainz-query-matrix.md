@@ -57,6 +57,7 @@ tutorial-shaped batches:
 | --- | --- | --- | --- | --- |
 | `musicbrainz-real-release-first` | `96 / 0ea8943f9ef3eb03` | `96 / 0ea8943f9ef3eb03` | Equal rows | Dependency-aware clause planning now keeps this selective and fast |
 | `musicbrainz-real-track-first` | `89 / 9902d35f51335e40` | `89 / 9902d35f51335e40` | Equal rows | Clause order no longer creates the large track/release cross product |
+| `musicbrainz-real-john-lennon-pre-1970-tracks` | `18 / 4598839c2af58631` | `18 / 4598839c2af58631` | Equal rows | Day-of-Datomic final query-stats example with release/media/track traversal |
 | `musicbrainz-real-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Constant artist lookup plus release join is fast in Vev |
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
@@ -123,6 +124,7 @@ These workshop shapes are covered by passing Vev tests:
 | Dynamic attr input | original `query.clj` | `:artist/country` as collection input |
 | Top-n aggregates | original `query.clj` | min/max duration vectors |
 | Query profiling | `music_brainz.clj` query-stats walkthrough | Vev profile assertions on tutorial-shaped joins |
+| Query-stats final production query | `music_brainz.clj` John Lennon pre-1970 tracks | real Datomic comparison row plus mini profile assertion |
 | Clause-order profiling | `music_brainz.clj` comparison examples | `bench/musicbrainz_query_profile.kvist` |
 | Host-facing `d/query` equivalent with `:query`/`:args` | `music_brainz.clj` | Clojure `vev/query` and Java `Vev.queryRows(Map.of(...))` request-map wrappers |
 | Clojure return-map rows | `music_brainz.clj` | Clojure `q`/`rows`/`query` return maps for `:keys`, `:strs`, and `:syms` on plain query forms |

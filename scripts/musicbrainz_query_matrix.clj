@@ -47,6 +47,19 @@
              [?r :release/media ?m]
              [?m :medium/tracks ?t]]
     :args ["The Beatles"]}
+   {:name "musicbrainz-real-john-lennon-pre-1970-tracks"
+    :query '[:find ?title ?album ?year
+             :in $ ?artist-name
+             :where
+             [?a :artist/name ?artist-name]
+             [?r :release/artists ?a]
+             [?r :release/year ?year]
+             [?r :release/name ?album]
+             [(< ?year 1970)]
+             [?r :release/media ?m]
+             [?m :medium/tracks ?t]
+             [?t :track/name ?title]]
+    :args ["John Lennon"]}
    {:name "musicbrainz-real-beatles-releases"
     :query '[:find ?release-name
              :where
