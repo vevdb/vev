@@ -189,10 +189,11 @@ The first real comparison rows are now equal against Datomic:
 - `musicbrainz-real-track-first`: 89 rows,
   fingerprint `9902d35f51335e40`
 
-Current timings show Datomic is still much faster on these restored-sample
-joins. That is useful pressure on the next query-planner/index work; the
-important correctness result is that the imported Vev subset now returns the
-same projected rows for these tutorial shapes.
+Current timings show Vev is now fast on these ordinary multi-hop
+clause/predicate joins after dependency-aware clause planning. The imported Vev
+subset returns the same projected rows as Datomic for these tutorial shapes.
+The next query-planner pressure is rule-expanded joins plus bounded
+`or`/`not-join` forms.
 
 ## Work Items
 

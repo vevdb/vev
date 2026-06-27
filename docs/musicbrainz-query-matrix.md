@@ -55,8 +55,8 @@ tutorial-shaped batches:
 
 | Workload | Vev rows/fingerprint | Datomic rows/fingerprint | Status | Current signal |
 | --- | --- | --- | --- | --- |
-| `musicbrainz-real-release-first` | `96 / 0ea8943f9ef3eb03` | `96 / 0ea8943f9ef3eb03` | Equal rows | Vev is currently much slower on this restored-sample join |
-| `musicbrainz-real-track-first` | `89 / 9902d35f51335e40` | `89 / 9902d35f51335e40` | Equal rows | Same semantics; worse clause order remains a useful planner target |
+| `musicbrainz-real-release-first` | `96 / 0ea8943f9ef3eb03` | `96 / 0ea8943f9ef3eb03` | Equal rows | Dependency-aware clause planning now keeps this selective and fast |
+| `musicbrainz-real-track-first` | `89 / 9902d35f51335e40` | `89 / 9902d35f51335e40` | Equal rows | Clause order no longer creates the large track/release cross product |
 | `musicbrainz-real-beatles-releases` | `16 / c57b012eecfd45ed` | `16 / c57b012eecfd45ed` | Equal rows | Constant artist lookup plus release join is fast in Vev |
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
@@ -143,10 +143,12 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Expand the real Datomic comparison matrix beyond the current seventeen rows:
+1. Take on the remaining real-data planner gaps: rule-expanded track/release
+   joins, bounded `or`/`or-join`, and bounded `not`/`not-join`.
+2. Expand the real Datomic comparison matrix beyond the current seventeen rows:
    richer direct pull examples and additional Day-of-Datomic host snippets.
-2. Keep full-import storage architecture work on the roadmap: the next write
+3. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
-3. Keep Datomic-shaped request-map ergonomics backed by the existing EDN
+4. Keep Datomic-shaped request-map ergonomics backed by the existing EDN
    map-query engine path as the host wrappers grow.
