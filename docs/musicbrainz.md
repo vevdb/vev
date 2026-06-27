@@ -21,9 +21,25 @@ The project should not block MusicBrainz on the shared-index storage rewrite.
 The workload should instead tell us where that rewrite matters in practice.
 
 Initial local discovery did not find a checked-in full mbrainz/MusicBrainz dump
-under `/Users/andreas/Projects` or the nearby home-directory project tree. The
-current harness therefore starts with a deterministic mbrainz-shaped mini
-fixture and leaves the full dataset path as the next discovery/import step.
+under `/Users/andreas/Projects` or the nearby home-directory project tree, so
+the first harness starts with a deterministic mbrainz-shaped mini fixture.
+
+The 1968-1973 sample backup is now locally restorable with
+`scripts/musicbrainz_sample.sh`. It downloads and extracts the backup under the
+ignored `build/musicbrainz` directory, starts the local Datomic Pro install at
+`/Users/andreas/datomic/datomic-pro-1.0.7277`, and restores to:
+
+```text
+datomic:dev://localhost:4334/mbrainz-1968-1973
+```
+
+Local restore/smoke status:
+
+- backup source: `https://s3.amazonaws.com/mbrainz/datomic-mbrainz-1968-1973-backup-2017-07-20.tar`
+- local backup URI: `file://$repo/build/musicbrainz/mbrainz-1968-1973`
+- restored Datomic basis t: `148253`
+- `scripts/musicbrainz_sample.sh smoke-datomic` successfully reads datoms and
+  artist names from the restored database
 
 Primary upstream references:
 
@@ -104,15 +120,16 @@ target is still the restored 1968-1973 sample.
 
 ## Work Items
 
-1. Download or locate the 1968-1973 mbrainz backup from the sample repo README,
-   restore it into local Datomic, and document the exact local path/URI.
+1. Build a Datomic-to-Vev export/import path for the restored 1968-1973 sample.
+   The export should start with datoms needed by the current query matrix, then
+   grow toward full sample coverage.
 2. Port the `day-of-datomic-conj/src/music_brainz.clj` query set into a Vev
    fixture file, marking each form as passing, Vev-difference, or pending.
    Track this in `docs/musicbrainz-query-matrix.md`.
-3. Expand the mini fixture toward that query set while the full dataset path is
-   being located.
-4. Add an importer that converts the dataset into Vev EDN transaction text or
-   prepared `Tx-Data` values.
+3. Expand the mini fixture only when it exposes a missing semantic shape; the
+   restored sample is now the main correctness/performance target.
+4. Add an importer that converts the Datomic dataset into Vev EDN transaction
+   text or prepared `Tx-Data` values.
 5. Add a small query fixture file containing Datomic tutorial queries, expected
    result normalization rules, and notes for any deliberate Vev differences.
 6. Add a Vev harness that can run:

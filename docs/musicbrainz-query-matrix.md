@@ -94,9 +94,7 @@ These are not current blockers for the Vev engine:
 
 ## Next Batch
 
-1. Restore the 1968-1973 mbrainz sample into local Datomic and record the exact
-   URI/path in `docs/musicbrainz.md`.
-2. Build the Vev importer for the restored sample and run the matrix against
-   both Datomic and Vev.
-3. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where
+1. Build the Vev exporter/importer path for the restored 1968-1973 sample and
+   run the matrix against both Datomic and Vev.
+2. Add Datomic-shaped `d/query` wrapper ergonomics in the host adapters where
    useful, backed by the existing EDN map-query engine path.
