@@ -204,10 +204,23 @@ the existing dedupe/memo ownership pattern. Multi-branch materialized helper
 rules now also have a typed unique accumulator for compatible projected branch
 relations, so branch output can dedupe in typed columns instead of always
 materializing through generic `Binding` rows before rebuilding a relation. The
-broad path still pays for generic `Binding` construction in joins/results when
-an operator falls off the typed path. The next performance step is typed-first
-memo storage and more operators that can consume typed columns without
-materializing compatibility rows.
+initial query relation now also has a typed-first path for no-input, scalar
+`:in`, and simple collection `:in` queries. Ordered scalar/collection input
+specs and legacy scalar/collection inputs build typed rows directly for the
+common one-collection product shape, while source, lookup-ref collection,
+multi-collection product, tuple, relation, duplicate, and non-columnar inputs
+fall back to the compatibility binding expansion path. The broad path still
+pays for generic `Binding` construction in joins/results when an operator falls
+off the typed path. The next performance step is typed-first memo storage and
+more operators that can consume typed columns without materializing
+compatibility rows.
+Typed joins now also detect provably empty cases before falling back to generic
+binding joins: if either side is already an empty typed relation, or if common
+typed columns have incompatible primitive kinds, the engine returns an empty
+typed joined relation directly.
+Nested tuple and collection destructuring for `ground` and typed function
+outputs also have typed paths. Collection destructuring is handled as a fanout
+operator that can expand one input row into multiple typed output rows.
 
 ## Query Engine Strategy
 
@@ -500,12 +513,16 @@ attribute identity and value as typed output columns.
 `not` now streams over typed rows as a filter. Single ordinary DB-clause
 negative groups are tested as a typed anti-join: the clause scan resolves
 directly from typed row values and checks candidate datoms without building a
-`Binding`. Plain multi-clause unsourced DB negative groups now run each outer
-typed row through a branch-local typed relation, so inner clause matching can
-continue to use typed clause scans. Nested, `not-join`, and relation-source
-negative groups still materialize one binding at a time to reuse existing
-semantics, but the surviving output stays typed instead of allocating a full
-intermediate binding relation.
+`Binding`. Plain multi-clause DB negative groups, including source-qualified
+clauses and nested plain `not` groups, now run each outer typed row through a
+branch-local typed relation, so inner clause matching can continue to use typed
+clause scans recursively. `not-join`, branch-local relation-source matching,
+and operators outside the typed evaluator still materialize one binding at a
+time to reuse existing semantics, but the surviving output stays typed instead
+of allocating a full intermediate binding relation. Plain branch-local predicate
+and function steps preserve their source order in the group model and run on
+typed columns when the predicate/function operator is supported by the typed
+evaluator.
 
 `ground` now streams over typed rows too. Scalar ground clauses resolve their
 source term directly from typed input columns and append only newly produced
@@ -515,13 +532,16 @@ time, then append any produced rows back into typed columns.
 
 `or` now streams over typed rows with fanout. Simple branch groups made of one
 ordinary DB clause per branch run as typed clause scans and append branch output
-columns directly. Plain multi-clause unsourced DB branches now run as
-branch-local typed relation pipelines and append output by attribute name, so
-branches can use different clause orders without leaving typed columns.
-Branches with `or-join`, nested negatives, relation-source matching,
-predicates, functions, or more complex local pipelines reuse the existing
-single-binding branch semantics, and branch outputs are appended back into
-typed columns so `or` no longer forces a full relation materialization.
+columns directly. Plain multi-clause DB branches, including source-qualified
+clauses, now run as branch-local typed relation pipelines and append output by
+attribute name, so branches can use different clause orders without leaving
+typed columns. Plain branch-local predicate, function, and nested `not` steps
+use the same ordered typed pipeline when their operators are supported.
+Branches with `or-join`, branch-local relation-source matching, native or
+dynamic operators outside the typed evaluator, or more complex local pipelines
+reuse the existing single-binding branch semantics, and branch outputs are
+appended back into typed columns so `or` no longer forces a full relation
+materialization.
 
 Fallback rule calls now use the same streaming typed boundary. The preferred
 path is still the materialized rule relation plus typed join when eligible, but
@@ -566,6 +586,11 @@ Specialized materialized helper-rule producers are typed-only for two-parameter
 same-entity and derived-edge shapes. These producers now dedupe with primitive
 row keys and fill relation columns directly instead of storing both typed
 columns and compatibility `Binding` rows.
+
+Rule memo/body dedupe also has a typed path. When a `Query-Relation` already
+has typed columns, `query-relation-dedupe-step` dedupes directly by typed row
+keys and keeps the result typed-only, falling back to binding materialization
+only for unsupported row-key shapes.
 
 Generic bound-clause fallback also streams. The specialized entity-bound
 attribute clause remains the fastest path, and other bound shapes such as

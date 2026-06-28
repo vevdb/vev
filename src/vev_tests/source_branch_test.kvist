@@ -1,0 +1,109 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev-tests)
+
+(import t "kvist:test")
+(import vev "../vev")
+
+(defn source-branch-has-entity? [result: vev.Result-Set, entity: u64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .Entity)
+               (= row.values[0].entity entity))
+      (return true)))
+  false)
+
+(defn source-branch-has-text? [result: vev.Result-Set, text: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text))
+      (return true)))
+  false)
+
+(t.deftest source-db-multi-clause-not-or-branches-stay-typed
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        right (vev.create-conn)
+        _ (vev.transact-text
+            (addr left)
+            "[{:db/id 100 :db/ident :name :db/unique :db.unique/identity} [:db/add 1 :name \"Ivan\"] [:db/add 1 :id 1] [:db/add 2 :name \"Petr\"] [:db/add 2 :id 2] [:db/add 3 :name \"Oleg\"] [:db/add 3 :id 3]]")
+        _ (vev.transact-text
+            (addr right)
+            "[{:db/id 100 :db/ident :name :db/unique :db.unique/identity} [:db/add 3 :name \"Ivan\"] [:db/add 3 :id 3] [:db/add 1 :name \"Petr\"] [:db/add 1 :id 1] [:db/add 2 :name \"Oleg\"] [:db/add 2 :id 2]]")
+        inputs ([]vev.Query-Input [])
+        sources ([]vev.DB-Source [(vev.db-source "$1" left.db)
+                                  (vev.db-source "$2" right.db)])
+        not-result (vev.q-text-with-sources
+                     left.db
+                     "[:find ?e :in $1 $2 :where [$1 ?e :id] ($2 not-join [?e] [?e :id ?id] [?e :name \"Petr\"])]"
+                     inputs
+                     sources)
+        or-result (vev.q-text-with-sources
+                    left.db
+                    "[:find ?e :in $1 $2 :where [$1 ?e :id] ($2 or-join [?e] (and [?e :id ?id] [?e :name \"Ivan\"]) (and [?e :id ?id] [?e :name \"Oleg\"]))]"
+                    inputs
+                    sources)]
+    (t.is not-result.ok)
+    (t.is (= (count not-result.rows) 2))
+    (t.is (source-branch-has-entity? not-result 2))
+    (t.is (source-branch-has-entity? not-result 3))
+    (t.is or-result.ok)
+    (t.is (= (count or-result.rows) 2))
+    (t.is (source-branch-has-entity? or-result 2))
+    (t.is (source-branch-has-entity? or-result 3))))
+
+(t.deftest branch-local-predicates-and-functions-from-edn-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ivan\"] [:db/add 1 :id 1] [:db/add 1 :age 30] [:db/add 2 :name \"Petr\"] [:db/add 2 :id 2] [:db/add 2 :age 41] [:db/add 3 :name \"Oleg\"] [:db/add 3 :id 3] [:db/add 3 :age 50]]")
+        not-result (vev.q-text
+                     conn.db
+                     "[:find ?e :where [?e :id] (not [?e :age ?age] [(> ?age 40)])]")
+        or-result (vev.q-text
+                    conn.db
+                    "[:find ?label :where [?e :name ?name] (or (and [?e :id 1] [(str ?name \"!\") ?label]) (and [?e :id 2] [(str ?name \"?\") ?label]))]")
+        literal-result (vev.q conn.db
+                         [:find ?label
+                          :where
+                          [?e :name ?name]
+                          (or
+                            (and [?e :id 1]
+                                 [(str ?name "!") ?label])
+                            (and [?e :id 2]
+                                 [(str ?name "?") ?label]))])]
+    (t.is not-result.ok)
+    (t.is (= (count not-result.rows) 1))
+    (t.is (source-branch-has-entity? not-result 1))
+    (t.is or-result.ok)
+    (t.is (= (count or-result.rows) 2))
+    (t.is (source-branch-has-text? or-result "Ivan!"))
+    (t.is (source-branch-has-text? or-result "Petr?"))
+    (t.is literal-result.ok)
+    (t.is (= (count literal-result.rows) 2))
+    (t.is (source-branch-has-text? literal-result "Ivan!"))
+    (t.is (source-branch-has-text? literal-result "Petr?"))))
+
+(t.deftest nested-branch-local-not-from-edn-stays-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ivan\"] [:db/add 1 :id 1] [:db/add 1 :age 30] [:db/add 2 :name \"Petr\"] [:db/add 2 :id 2] [:db/add 2 :age 41] [:db/add 3 :name \"Oleg\"] [:db/add 3 :id 3] [:db/add 3 :age 50]]")
+        nested-not (vev.q-text
+                     conn.db
+                     "[:find ?e :where [?e :id] (not [?e :age ?age] (not [?e :name \"Petr\"]))]")
+        nested-or (vev.q-text
+                    conn.db
+                    "[:find ?e :where [?e :id] (or (and [?e :age ?age] (not [?e :name \"Petr\"])) (and [?e :age ?age] [?e :name \"Petr\"]))]")]
+    (t.is nested-not.ok)
+    (t.is (= (count nested-not.rows) 1))
+    (t.is (source-branch-has-entity? nested-not 2))
+    (t.is nested-or.ok nested-or.error)
+    (t.is (= (count nested-or.rows) 3))
+    (t.is (source-branch-has-entity? nested-or 1))
+    (t.is (source-branch-has-entity? nested-or 2))
+    (t.is (source-branch-has-entity? nested-or 3))))

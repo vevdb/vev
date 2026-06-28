@@ -37,6 +37,16 @@
       (return true)))
   false)
 
+(defn has-text-keyword-row? [result: vev.Result-Set, text: string, keyword: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text)
+               (= row.values[1].kind .Keyword)
+               (= row.values[1].text keyword))
+      (return true)))
+  false)
+
 (defn has-keyword-row? [result: vev.Result-Set, text: string] -> bool
   (for [row result.rows]
     (when (and (= (count row.values) 1)
@@ -93,6 +103,53 @@
     (delete materialized)
     (vev.delete-query-relation rel)))
 
+(t.deftest scalar-input-initial-relation-is-typed-only
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        prepared (vev.prepare-query-text "[:find ?e :in ?name :where [?e :name ?name]]")
+        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Ada"))])
+        [rel binding-count] (vev.query-relation-initial-from-inputs conn.db prepared.query inputs)
+        materialized (vev.query-relation-materialized-bindings rel)]
+    (t.is prepared.ok)
+    (t.is (= binding-count 1))
+    (t.is rel.has-typed-columns)
+    (t.is (= rel.typed-rows 1))
+    (t.is (= (count rel.tuples) 0))
+    (t.is (= (count rel.attrs) 1))
+    (t.is (= rel.attrs[0] "?name"))
+    (t.is (= rel.typed-columns[0].texts[0] "Ada"))
+    (t.is (= (count materialized) 1))
+    (t.is (= (count materialized[0].items) 1))
+    (for [binding materialized]
+      (delete binding.items))
+    (delete materialized)
+    (vev.delete-query-relation rel)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest collection-input-initial-relation-is-typed-only
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        prepared (vev.prepare-query-text "[:find ?e :in [?name ...] :where [?e :name ?name]]")
+        values ([]vev.Value [(vev.value-string "Ada") (vev.value-string "Bob")])
+        inputs ([]vev.Query-Input [(vev.query-input-collection values)])
+        [rel binding-count] (vev.query-relation-initial-from-inputs conn.db prepared.query inputs)
+        materialized (vev.query-relation-materialized-bindings rel)]
+    (t.is prepared.ok)
+    (t.is (= binding-count 2))
+    (t.is rel.has-typed-columns)
+    (t.is (= rel.typed-rows 2))
+    (t.is (= (count rel.tuples) 0))
+    (t.is (= (count rel.attrs) 1))
+    (t.is (= rel.attrs[0] "?name"))
+    (t.is (= rel.typed-columns[0].texts[0] "Ada"))
+    (t.is (= rel.typed-columns[0].texts[1] "Bob"))
+    (t.is (= (count materialized) 2))
+    (for [binding materialized]
+      (delete binding.items))
+    (delete materialized)
+    (vev.delete-query-relation rel)
+    (vev.delete-prepared-query-shallow prepared)))
+
 (t.deftest source-input-clause-producer-is-typed-only
   (defer (free_all context.allocator))
   (let [source (vev.value-vector
@@ -138,6 +195,142 @@
     (vev.delete-query-relation rel)
     (delete prepared-rules.rules)))
 
+(t.deftest typed-relation-dedupe-stays-typed
+  (defer (free_all context.allocator))
+  (let [source (vev.value-vector
+                 ([]vev.Value [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ada"))
+                               (vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ada"))
+                               (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Bob"))]))
+        clause (vev.Clause {e: (vev.term-var "?e")
+                            a: (vev.term-keyword ":name")
+                            v: (vev.term-var "?name")
+                            tx-term: (vev.term-wildcard)
+                            op-term: (vev.term-wildcard)
+                            source: "$rows"
+                            has-source: true
+                            source-width: 3})
+        rel (vev.query-relation-from-source-value-clause source clause)
+        deduped (vev.query-relation-dedupe-step rel)]
+    (t.is deduped.has-typed-columns)
+    (t.is (= deduped.typed-rows 2))
+    (t.is (= (count deduped.tuples) 0))
+    (t.is (= deduped.typed-columns[0].ints[0] 1))
+    (t.is (= deduped.typed-columns[0].ints[1] 2))
+    (vev.delete-query-relation deduped)
+    (vev.delete-query-relation rel)))
+
+(t.deftest typed-join-with-incompatible-common-column-is-empty
+  (defer (free_all context.allocator))
+  (let [left-source (vev.value-vector
+                      ([]vev.Value [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ada"))]))
+        right-source (vev.value-vector
+                       ([]vev.Value [(vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":status") (vev.value-keyword ":active"))]))
+        left-clause (vev.Clause {e: (vev.term-var "?e")
+                                 a: (vev.term-keyword ":name")
+                                 v: (vev.term-var "?x")
+                                 tx-term: (vev.term-wildcard)
+                                 op-term: (vev.term-wildcard)
+                                 source: "$left"
+                                 has-source: true
+                                 source-width: 3})
+        right-clause (vev.Clause {e: (vev.term-var "?other")
+                                  a: (vev.term-keyword ":status")
+                                  v: (vev.term-var "?x")
+                                  tx-term: (vev.term-wildcard)
+                                  op-term: (vev.term-wildcard)
+                                  source: "$right"
+                                  has-source: true
+                                  source-width: 3})
+        left-rel (vev.query-relation-from-source-value-clause left-source left-clause)
+        right-rel (vev.query-relation-from-source-value-clause right-source right-clause)
+        joined (vev.query-relation-join (vev.DB {}) ([]vev.DB-Source []) left-rel right-rel)]
+    (t.is left-rel.has-typed-columns)
+    (t.is right-rel.has-typed-columns)
+    (t.is (= left-rel.typed-columns[1].kind .String))
+    (t.is (= right-rel.typed-columns[1].kind .Keyword))
+    (t.is joined.has-typed-columns)
+    (t.is (= joined.typed-rows 0))
+    (t.is (= (count joined.tuples) 0))
+    (t.is (= (count joined.attrs) 3))
+    (vev.delete-query-relation joined)
+    (vev.delete-query-relation right-rel)
+    (vev.delete-query-relation left-rel)))
+
+(t.deftest nested-ground-binding-stays-typed
+  (defer (free_all context.allocator))
+  (let [rel (vev.query-relation-singleton)
+        nested (vev.value-vector2 (vev.value-int 2) (vev.value-int 3))
+        source (vev.value-vector2 (vev.value-int 1) nested)
+        binding (vev.input-binding-tuple
+                  ([]vev.Input-Binding [(vev.input-binding-var "?a")
+                                        (vev.input-binding-tuple
+                                          ([]vev.Input-Binding [(vev.input-binding-var "?b")
+                                                               (vev.input-binding-var "?c")]))]))
+        ground (vev.Ground {source: (vev.term-value source)
+                            binding: binding})
+        [out out-ok] (vev.query-relation-apply-ground-typed rel ground)]
+    (t.is out-ok)
+    (t.is out.has-typed-columns)
+    (t.is (= out.typed-rows 1))
+    (t.is (= (count out.tuples) 0))
+    (t.is (= (count out.attrs) 3))
+    (t.is (= out.typed-columns[0].ints[0] 1))
+    (t.is (= out.typed-columns[1].ints[0] 2))
+    (t.is (= out.typed-columns[2].ints[0] 3))
+    (vev.delete-query-relation out)
+    (vev.delete-query-relation rel)
+    (delete binding.items[1].items)
+    (delete binding.items)))
+
+(t.deftest nested-function-binding-stays-typed
+  (defer (free_all context.allocator))
+  (let [rel (vev.query-relation-singleton)
+        nested (vev.value-vector2 (vev.value-int 2) (vev.value-int 3))
+        binding (vev.input-binding-tuple
+                  ([]vev.Input-Binding [(vev.input-binding-var "?a")
+                                        (vev.input-binding-tuple
+                                          ([]vev.Input-Binding [(vev.input-binding-var "?b")
+                                                               (vev.input-binding-var "?c")]))]))
+        function (vev.Function-Clause {op: "vector"
+                                       terms: ([]vev.Term [(vev.term-int 1) (vev.term-value nested)])
+                                       out-binding: binding})
+        [out out-ok] (vev.query-relation-extend-function-typed rel function ([]vev.Native-Query-Fn []))]
+    (t.is out-ok)
+    (t.is out.has-typed-columns)
+    (t.is (= out.typed-rows 1))
+    (t.is (= (count out.tuples) 0))
+    (t.is (= (count out.attrs) 3))
+    (t.is (= out.typed-columns[0].ints[0] 1))
+    (t.is (= out.typed-columns[1].ints[0] 2))
+    (t.is (= out.typed-columns[2].ints[0] 3))
+    (vev.delete-query-relation out)
+    (vev.delete-query-relation rel)
+    (delete binding.items[1].items)
+    (delete binding.items)))
+
+(t.deftest repeated-nested-ground-binding-filters-typed
+  (defer (free_all context.allocator))
+  (let [rel (vev.query-relation-singleton)
+        source (vev.value-vector2 (vev.value-int 1)
+                                  (vev.value-vector2 (vev.value-int 1) (vev.value-int 2)))
+        binding (vev.input-binding-tuple
+                  ([]vev.Input-Binding [(vev.input-binding-var "?a")
+                                        (vev.input-binding-tuple
+                                          ([]vev.Input-Binding [(vev.input-binding-var "?a")
+                                                               (vev.input-binding-var "?a")]))]))
+        ground (vev.Ground {source: (vev.term-value source)
+                            binding: binding})
+        [out out-ok] (vev.query-relation-apply-ground-typed rel ground)]
+    (t.is out-ok)
+    (t.is out.has-typed-columns)
+    (t.is (= out.typed-rows 0))
+    (t.is (= (count out.tuples) 0))
+    (t.is (= (count out.attrs) 1))
+    (vev.delete-query-relation out)
+    (vev.delete-query-relation rel)
+    (delete binding.items[1].items)
+    (delete binding.items)))
+
 (t.deftest typed-rule-projection-materializes-for-binding-fallback-operators
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -159,6 +352,11 @@
                                 "[:find ?name ?len :in $ % :where (person ?e ?raw-name) [(vector ?raw-name 3) [?name ?len]]]"
                                 typed-relation-rules
                                 ([]vev.Query-Input []))
+        function-collection-result (vev.q-text-with-rules
+                                     conn.db
+                                     "[:find ?name ?tag :in $ % :where (person ?e ?name) [(vector :x :y) [?tag ...]]]"
+                                     typed-relation-rules
+                                     ([]vev.Query-Input []))
         not-result (vev.q-text-with-rules
                      conn.db
                      "[:find ?name :in $ % :where (person ?e ?name) (not [?e :blocked true])]"
@@ -231,6 +429,12 @@
     (t.is (= (count function-tuple-result.rows) 2))
     (t.is (has-text-int-row? function-tuple-result "Ada" 3))
     (t.is (has-text-int-row? function-tuple-result "Bob" 3))
+    (t.is function-collection-result.ok)
+    (t.is (= (count function-collection-result.rows) 4))
+    (t.is (has-text-keyword-row? function-collection-result "Ada" ":x"))
+    (t.is (has-text-keyword-row? function-collection-result "Ada" ":y"))
+    (t.is (has-text-keyword-row? function-collection-result "Bob" ":x"))
+    (t.is (has-text-keyword-row? function-collection-result "Bob" ":y"))
     (t.is not-result.ok)
     (t.is (= (count not-result.rows) 1))
     (t.is (has-text-row? not-result "Ada"))
