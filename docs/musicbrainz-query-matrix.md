@@ -78,6 +78,7 @@ portable fingerprint.
 | `musicbrainz-real-beatles-track-count` | `1 / 0000000007068a26` | `1 / 0000000007068a26` | Equal rows | Bounded aggregate over real imported data |
 | `musicbrainz-real-beatles-min-max-duration` | `1 / 9c45e54f061af2f6` | `1 / 9c45e54f061af2f6` | Equal rows | Bounded min/max aggregate over real imported data |
 | `musicbrainz-real-beatles-duration-stats` | `4 / 9880798d00baf3e0` | `4 / 9880798d00baf3e0` | Equal rows | Grouped median/avg aggregate with `:with` duplicate preservation over real track durations |
+| `musicbrainz-real-beatles-duration-stddev` | `4 / 1de88b32d5193758` | `4 / 1de88b32d5193758` | Equal rows | Grouped stddev aggregate with normalized six-decimal float fingerprints |
 | `musicbrainz-real-beatles-duration-sum` | `4 / 773afe226788bffa` | `4 / 773afe226788bffa` | Equal rows | Grouped sum aggregate with `:with` duplicate preservation over real track durations |
 | `musicbrainz-real-lookup-country` | `1 / 4167e0bf9abd1220` | `1 / 4167e0bf9abd1220` | Equal rows | Vev uses inline lookup-ref syntax; Datomic side uses equivalent entity pattern |
 | `musicbrainz-real-selected-artists-releases` | `28 / 4887ecaa409643d2` | `28 / 4887ecaa409643d2` | Equal rows | Collection input binding over two artist names |
@@ -112,7 +113,9 @@ portable fingerprint.
 
 The row fingerprints are generated from sorted projected EDN-ish row keys.
 Floating values are serialized with Vev's explicit `[:vev/float "..."]` shape
-on both sides before fingerprinting. Pull comparison rows keep Vev pull
+on both sides before fingerprinting. Workloads that intentionally compare
+floating statistical aggregates can opt into scaled normalized float tokens, as
+the stddev row does. Pull comparison rows keep Vev pull
 patterns in canonical attr order where Datomic map rendering sorts keys, so row
 fingerprints remain strict equality checks. Wildcard pull rows strip `:db/id`
 from fingerprinting because the MusicBrainz exporter deliberately remaps
@@ -169,7 +172,7 @@ These workshop shapes are covered by passing Vev tests:
 | `get-else` | workshop query examples | EDN text query |
 | Enum refs through `:db/ident` | artist type/gender query | mini fixture plus restored-sample comparison row |
 | Aggregates | min/max, sum, count/count-distinct | EDN text aggregate queries |
-| Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg and grouped sum also have restored-sample comparison rows |
+| Statistics aggregates | median, avg, stddev by release year | EDN text aggregate query; median/avg/stddev and grouped sum have restored-sample comparison rows |
 | Nested pull | release media and tracks | `pull-text` plus real Datomic comparison rows |
 | Reverse-ref pull | artist to releases via `:release/_artists` | direct lookup-ref pull plus restored-sample comparison row |
 | Pull limit option | `(limit :release/_artists 2)` | restored-sample comparison row |
@@ -202,7 +205,6 @@ These should be ported next using the mini fixture first, then the restored
 | Shape | Source | Notes |
 | --- | --- | --- |
 | Additional Day-of-Datomic host snippets | `music_brainz.clj` | Keep porting examples that exercise host presentation rather than engine syntax |
-| Restored-sample `stddev` aggregate row | `query.clj` statistics examples | Vev and Datomic agree to normal floating precision, but strict fingerprints differ in last-bit JVM/native formatting; add a deliberate float-tolerant verifier path before moving this into the main table |
 
 ## Host Or Datomic-Specific Later
 
@@ -223,15 +225,13 @@ These are not current blockers for the Vev engine:
 This phase is complete enough to stop being the main active development track.
 Further MusicBrainz work should be targeted:
 
-1. Add a deliberate float-tolerant verifier mode, then move the restored-sample
-   `stddev` row from pending into the strict/normalized matrix.
-2. Add Day-of-Datomic host snippets only when they exercise a real Vev host API
+1. Add Day-of-Datomic host snippets only when they exercise a real Vev host API
    shape, not just Clojure presentation.
-3. Use the full matrix as a regression gate while durable storage and host API
+2. Use the full matrix as a regression gate while durable storage and host API
    work continue.
-4. Keep full-import storage architecture work on the roadmap: the next write
+3. Keep full-import storage architecture work on the roadmap: the next write
    milestone is shared/chunked immutable DB indexes or a bulk builder, not basic
    import feasibility.
-5. Keep expanding host-to-host timing comparisons beyond the current
+4. Keep expanding host-to-host timing comparisons beyond the current
    representative Datomic subset, using the already passing full Clojure
    wrapper matrix as the correctness gate.

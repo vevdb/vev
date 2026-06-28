@@ -212,6 +212,7 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-beatles-track-count` | 3531 | 3150 | 1 | `0000000007068a26` |
 | `musicbrainz-real-beatles-min-max-duration` | 2967 | 10409 | 1 | `9c45e54f061af2f6` |
 | `musicbrainz-real-beatles-duration-stats` | 5975 | 83762 | 4 | `9880798d00baf3e0` |
+| `musicbrainz-real-beatles-duration-stddev` | 4267 | 81619 | 4 | `1de88b32d5193758` |
 | `musicbrainz-real-beatles-duration-sum` | 4405 | 86912 | 4 | `773afe226788bffa` |
 | `musicbrainz-real-lookup-country` | 51 | 3371 | 1 | `4167e0bf9abd1220` |
 | `musicbrainz-real-selected-artists-releases` | 520 | 5625 | 28 | `4887ecaa409643d2` |

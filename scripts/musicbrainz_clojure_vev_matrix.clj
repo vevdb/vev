@@ -161,6 +161,19 @@
              [?medium :medium/tracks ?track]
              [?track :track/duration ?millis]]
     :args []}
+   {:name "musicbrainz-real-beatles-duration-stddev"
+    :kind :query
+    :float-places 6
+    :query '[:find ?year (stddev ?millis)
+             :with ?track
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?release :release/artists ?artist]
+             [?release :release/year ?year]
+             [?release :release/media ?medium]
+             [?medium :medium/tracks ?track]
+             [?track :track/duration ?millis]]
+    :args []}
    {:name "musicbrainz-real-beatles-duration-sum"
     :kind :query
     :query '[:find ?year (sum ?millis)
@@ -449,7 +462,12 @@
 
     (or (instance? Double value)
         (instance? Float value))
-    (str "[:vev/float \"" value "\"]")
+    (if-let [float-places (:float-places options)]
+      (let [scale (Math/pow 10.0 (double float-places))]
+        (str "[:vev/float" float-places " "
+             (long (Math/round (* (double value) scale)))
+             "]"))
+      (str "[:vev/float \"" value "\"]"))
 
     :else
     (pr-str value))))
@@ -558,7 +576,8 @@
                                  (second (elapsed-us #(workload-result db workload prepared-pattern)))))
                     result (workload-result db workload prepared-pattern)
                     rows (result-rows result)
-                    fingerprint-options {:strip-db-id (:strip-db-id workload)}
+                    fingerprint-options {:strip-db-id (:strip-db-id workload)
+                                         :float-places (:float-places workload)}
                     t (timing sample-us)]
                 (println
                  (format
