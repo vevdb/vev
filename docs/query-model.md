@@ -180,10 +180,12 @@ remaining shared columns in candidate buckets, which is useful for Datomic-style
 joins such as `?entity/?attribute-value` pairs without relying on formatted
 compound string keys. Binary `=` / `!=` predicates over two typed variables can
 compare relation columns directly, avoiding per-row `Value` wrapper resolution
-for common filters. The broad path still pays for generic `Binding` construction
-in joins/results and final dedupe. The next performance step is
-columnar/streamed materialized rule relations and typed joins that avoid those
-remaining row-shaped costs.
+for common filters. Predicate and `not` filters now move surviving compatibility
+`Binding` rows into the filtered relation instead of cloning each row, matching
+the existing dedupe/memo ownership pattern. The broad path still pays for
+generic `Binding` construction in joins/results and final dedupe. The next
+performance step is columnar/streamed materialized rule relations and typed
+joins that avoid those remaining row-shaped costs.
 
 ## Query Engine Strategy
 
