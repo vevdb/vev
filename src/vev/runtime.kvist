@@ -10050,6 +10050,75 @@
       (delete bindings)
       projected)))
 
+(defn rule-call-distinct-var-projection? [rule: Rule, call: Rule-Call] -> bool
+  (when (not (= (count rule.params) (count call.args)))
+    (return false))
+  (let [seen (set.empty string)]
+    (defer (delete seen))
+    (for [arg call.args]
+      (when (not (= arg.kind .Var))
+        (return false))
+      (when (set.contains? seen arg.name)
+        (return false))
+      (set.add! seen arg.name))
+    true))
+
+(defn append-projected-rule-call-bindings-fast! [out: ^[dynamic]Binding, rel: Query-Relation, rule: Rule, call: Rule-Call] -> bool
+  (when (not (and rel.has-typed-columns
+                  (rule-call-distinct-var-projection? rule call)))
+    (return false))
+  (let [param-indexes (make [dynamic]int 0 (count rule.params)) :defer]
+    (for [param rule.params]
+      (let [[column-index column-ok] (query-relation-attr-index-lookup rel param)]
+        (when (not column-ok)
+          (return false))
+        (arr.push! param-indexes column-index)))
+    (let [row 0]
+      (while (< row rel.typed-rows)
+        (let [items (make [dynamic]Var-Binding 0 (count call.args))]
+          (for [arg arg-index call.args]
+            (let [[value value-ok] (typed-relation-column-value rel.typed-columns[param-indexes[arg-index]] row)]
+              (when (not value-ok)
+                (delete items)
+                (return false))
+              (arr.push! items (Var-Binding {name: arg.name value: value}))))
+          (arr.push! out^ (Binding {items: items})))
+        (set! row (+ row 1))))
+    true))
+
+(defn append-projected-rule-call-bindings! [out: ^[dynamic]Binding, rel: Query-Relation, rule: Rule, call: Rule-Call]
+  (when (append-projected-rule-call-bindings-fast! out rel rule call)
+    (return))
+  (let [projected (query-relation-project-rule-call rel rule call)]
+    (for [binding projected.tuples]
+      (arr.push! out^ (clone-binding binding)))
+    (delete-query-relation projected)))
+
+(defstruct Materialized-Rule-Cache-Entry {
+  name: string
+  rel: Query-Relation
+})
+
+(defn delete-materialized-rule-cache-entry [entry: Materialized-Rule-Cache-Entry]
+  (delete-query-relation entry.rel))
+
+(defn delete-materialized-rule-cache [cache: [dynamic]Materialized-Rule-Cache-Entry]
+  (for [entry cache]
+    (delete-materialized-rule-cache-entry entry))
+  (delete cache))
+
+(defn materialized-rule-cache-index [cache: []Materialized-Rule-Cache-Entry, name: string] -> [index: int, ok: bool]
+  (for [entry index cache]
+    (when (= entry.name name)
+      (return index true)))
+  (return 0 false))
+
+(defn materialized-rule-cache-store! [cache: ^[dynamic]Materialized-Rule-Cache-Entry, name: string, rel: Query-Relation]
+  (let [[_ exists] (materialized-rule-cache-index (slice cache^ 0) name)]
+    (when exists
+      (return)))
+  (arr.push! cache^ (Materialized-Rule-Cache-Entry {name: name rel: (query-relation-copy rel)})))
+
 (defn value-as-db-entity [value: Value] -> [entity: u64, ok: bool]
   (case value.kind
     .Entity (return value.entity true)
@@ -10209,11 +10278,20 @@
                                typed-rows: typed-rows
                                has-typed-columns: true}) true))))
 
-(defn query-relation-from-materialized-rule-call [db: DB, sources: []DB-Source, rules: []Rule, plan: Rule-Call-Plan, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, depth: int] -> [rel: Query-Relation, ok: bool]
+(defn query-relation-from-materialized-rule-call [db: DB, sources: []DB-Source, rules: []Rule, plan: Rule-Call-Plan, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, depth: int, cache: ^[dynamic]Materialized-Rule-Cache-Entry] -> [rel: Query-Relation, ok: bool]
   (when (or (> depth 8)
             (not (rule-call-can-materialize-relation? plan call)))
     (return (query-relation-empty) false))
   (let [out-bindings (make [dynamic]Binding)]
+    (when (= (count plan.rules) 1)
+      (let [[cached-index cached-ok] (materialized-rule-cache-index (slice cache^ 0) call.name)]
+        (when cached-ok
+          (append-projected-rule-call-bindings! (addr out-bindings) cache^[cached-index].rel plan.rules[0] call)
+          (let [unique (unique-bindings (slice out-bindings 0))
+                out (query-relation-from-bindings (slice unique 0))]
+            (delete out-bindings)
+            (delete unique)
+            (return out true)))))
     (for [rule plan.rules]
       (when (= rule.name call.name)
         (when (not (rule-body-relation-materializable? rule))
@@ -10223,23 +10301,21 @@
           (when derived-ok
             (let [[derived derived-built] (query-relation-from-derived-edge-rule db rule left-attr right-attr stats)]
               (when derived-built
-                (let [projected (query-relation-project-rule-call derived rule call)]
-                  (for [binding projected.tuples]
-                    (arr.push! out-bindings (clone-binding binding)))
-                  (delete-query-relation projected)
-                  (delete-query-relation derived)
-                  (continue)))
+                (when (= (count plan.rules) 1)
+                  (materialized-rule-cache-store! cache call.name derived))
+                (append-projected-rule-call-bindings! (addr out-bindings) derived rule call)
+                (delete-query-relation derived)
+                (continue))
               (delete-query-relation derived))))
         (let [[first-attr second-attr two-attr-ok] (rule-two-attr-same-entity rule)]
           (when two-attr-ok
             (let [[two-attr-rel two-attr-built] (query-relation-from-two-attr-same-entity-rule db rule first-attr second-attr stats)]
               (when two-attr-built
-                (let [projected (query-relation-project-rule-call two-attr-rel rule call)]
-                  (for [binding projected.tuples]
-                    (arr.push! out-bindings (clone-binding binding)))
-                  (delete-query-relation projected)
-                  (delete-query-relation two-attr-rel)
-                  (continue)))
+                (when (= (count plan.rules) 1)
+                  (materialized-rule-cache-store! cache call.name two-attr-rel))
+                (append-projected-rule-call-bindings! (addr out-bindings) two-attr-rel rule call)
+                (delete-query-relation two-attr-rel)
+                (continue))
               (delete-query-relation two-attr-rel))))
         (let [current (query-relation-singleton)]
           (if (> (count rule.body-steps) 0)
@@ -10256,7 +10332,7 @@
               (when (= step.kind .RuleCall)
                 (let [inner-call rule.rule-calls[step.index]
                       inner-plan (rule-call-plan rules inner-call.name)
-                      [inner-rel inner-ok] (query-relation-from-materialized-rule-call db sources rules inner-plan inner-call registry stats (+ depth 1))]
+                      [inner-rel inner-ok] (query-relation-from-materialized-rule-call db sources rules inner-plan inner-call registry stats (+ depth 1) cache)]
                   (delete-rule-call-plan inner-plan)
                   (when (not inner-ok)
                     (delete-query-relation current)
@@ -10281,7 +10357,7 @@
                   (set! current joined)))
               (for [inner-call rule.rule-calls]
                 (let [inner-plan (rule-call-plan rules inner-call.name)
-                      [inner-rel inner-ok] (query-relation-from-materialized-rule-call db sources rules inner-plan inner-call registry stats (+ depth 1))]
+                      [inner-rel inner-ok] (query-relation-from-materialized-rule-call db sources rules inner-plan inner-call registry stats (+ depth 1) cache)]
                   (delete-rule-call-plan inner-plan)
                   (when (not inner-ok)
                     (delete-query-relation current)
@@ -10294,21 +10370,20 @@
                     (delete-query-relation current)
                     (delete-query-relation inner-rel)
                     (set! current joined))))))
-          (let [projected (query-relation-project-rule-call current rule call)]
-            (for [binding projected.tuples]
-              (arr.push! out-bindings (clone-binding binding)))
-            (delete-query-relation projected)
-            (delete-query-relation current)))))
+          (when (= (count plan.rules) 1)
+            (materialized-rule-cache-store! cache call.name current))
+          (append-projected-rule-call-bindings! (addr out-bindings) current rule call)
+          (delete-query-relation current))))
     (let [unique (unique-bindings (slice out-bindings 0))
           out (query-relation-from-bindings (slice unique 0))]
       (delete out-bindings)
       (delete unique)
       (return out true))))
 
-(defn query-relation-apply-materialized-rule-call [db: DB, sources: []DB-Source, rel: Query-Relation, plan: Rule-Call-Plan, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
+(defn query-relation-apply-materialized-rule-call [db: DB, sources: []DB-Source, rel: Query-Relation, plan: Rule-Call-Plan, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, cache: ^[dynamic]Materialized-Rule-Cache-Entry] -> [out: Query-Relation, ok: bool]
   (when (not (rule-call-can-materialize-relation? plan call))
     (return (query-relation-empty) false))
-  (let [[rule-rel rule-ok] (query-relation-from-materialized-rule-call db sources (slice plan.rules 0) plan call registry stats 0)]
+  (let [[rule-rel rule-ok] (query-relation-from-materialized-rule-call db sources (slice plan.rules 0) plan call registry stats 0 cache)]
     (when (not rule-ok)
       (delete-query-relation rule-rel)
       (return (query-relation-empty) false))
@@ -10319,14 +10394,14 @@
       (delete-query-relation rule-rel)
       (return joined true))))
 
-(defn query-relation-apply-rule-call [db: DB, sources: []DB-Source, rules: []Rule, plans: []Rule-Call-Plan, rel: Query-Relation, call: Rule-Call, call-index: int, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+(defn query-relation-apply-rule-call [db: DB, sources: []DB-Source, rules: []Rule, plans: []Rule-Call-Plan, rel: Query-Relation, call: Rule-Call, call-index: int, registry: []Native-Query-Fn, stats: ^Query-Stats, cache: ^[dynamic]Materialized-Rule-Cache-Entry] -> Query-Relation
   (let [bindings (make [dynamic]Binding)
         use-cached-plan (< call-index (count plans))
         plan (if use-cached-plan plans[call-index] (rule-call-plan rules call.name))]
     (when (or (> (count rel.tuples) 128)
               (and (= (count rel.tuples) 1)
                    (= (count rel.attrs) 0)))
-      (let [[materialized materialized-ok] (query-relation-apply-materialized-rule-call db sources rel plan call registry stats)]
+      (let [[materialized materialized-ok] (query-relation-apply-materialized-rule-call db sources rel plan call registry stats cache)]
         (when materialized-ok
           (when (not use-cached-plan)
             (delete-rule-call-plan plan))
@@ -10430,7 +10505,9 @@
     current))
 
 (defn relation-engine-relation-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
-  (let [input-bindings (bindings-from-inputs db query inputs)]
+  (let [materialized-rule-cache (make [dynamic]Materialized-Rule-Cache-Entry)
+        input-bindings (bindings-from-inputs db query inputs)]
+    (defer (delete-materialized-rule-cache materialized-rule-cache))
     (set! stats^.input-bindings (count input-bindings))
     (query-stats-observe-bindings! stats (count input-bindings))
     (let [current (query-relation-from-bindings (slice input-bindings 0))]
@@ -10476,7 +10553,7 @@
           (set! current next)
           (query-stats-observe-bindings! stats (count current.tuples))))
       (when (= step.kind .RuleCall)
-        (let [next (query-relation-apply-rule-call db sources (slice query.rules 0) (slice query.rule-call-plans 0) current query.rule-calls[step.index] step.index registry stats)]
+        (let [next (query-relation-apply-rule-call db sources (slice query.rules 0) (slice query.rule-call-plans 0) current query.rule-calls[step.index] step.index registry stats (addr materialized-rule-cache))]
           (set! stats^.steps (+ stats^.steps 1))
           (delete-query-relation current)
           (set! current next)

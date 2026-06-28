@@ -164,10 +164,13 @@ per input row. Two important general shapes have direct builders:
 
 This is enough to turn math-bench Q2/Q3 from repeated rule expansion into three
 materialized rule calls. Direct physical builders now populate typed relation
-columns while keeping compatibility binding rows, but the broad path still pays
-for generic `Binding` projection in joins/results. The next performance step is
-columnar/streamed materialized rule relations and typed joins that avoid those
-remaining row-shaped costs.
+columns while keeping compatibility binding rows. Distinct-variable rule-call
+projection can read those typed columns directly, and single-branch
+materialized helper rules are cached per query execution so repeated calls such
+as `(univ ?x ?u)` / `(univ ?y ?u)` do not rebuild the same unprojected relation.
+The broad path still pays for generic `Binding` construction in joins/results
+and final dedupe. The next performance step is columnar/streamed materialized
+rule relations and typed joins that avoid those remaining row-shaped costs.
 
 ## Query Engine Strategy
 

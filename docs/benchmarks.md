@@ -143,10 +143,10 @@ EDN chunks, so query timings should be read separately from import timings.
 
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
-| `q1` | 0.51ms | 2 | Good selective/bound rule path |
-| `q2` | 11.2s | 34,073 | Rule expansion fixed; broad materialized-rule joins remain slow |
-| `q3` | 8.47s | 29,317 | Same remaining broad materialized-rule join cost plus predicate filtering |
-| `q4` | 1.46s | 135 | Completes through derived transitive closure; bound final lookup threshold was raised after this measurement |
+| `q1` | 0.53ms | 2 | Good selective/bound rule path |
+| `q2` | 7.38s | 34,073 | Broad materialized-rule joins remain slow, but projection and repeated materialization are reduced |
+| `q3` | 5.36s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering |
+| `q4` | 1.00s | 135 | Completes through derived transitive closure over a derived two-hop edge |
 
 Important result: Q4 originally did not finish within several minutes because
 `anc` recurses over derived rule `adv`, not over a direct DB ref attr. Vev now
@@ -173,15 +173,20 @@ path recognizes two important general physical shapes:
 - same-entity cardinality-one projections such as `[(univ ?c ?u) [?d :cid ?c] [?d :univ ?u]]`
 
 The remaining Q2/Q3 cost is not repeated rule invocation anymore
-(`rule_calls=3`). It is broad materialized relation construction and joins over
-hundreds of thousands of rows. The current join layer now uses typed hash joins
-for single-column joins too, with entity/int key normalization matching Vev
-query equality, and moderately sized bound clause steps use indexed bind joins
-instead of materializing a whole attr relation. Direct physical rule builders
-also fill typed relation columns while producing compatibility binding rows.
-The next engine work should make these rule relations more fully columnar/
-streamed and remove the remaining generic `Binding` projection and string-key
-hash costs from the broad path.
+(`rule_calls=3`). It is broad materialized joins and final dedupe over hundreds
+of thousands of rows. The current join layer now uses typed hash joins for
+single-column joins too, with entity/int key normalization matching Vev query
+equality, and moderately sized bound clause steps use indexed bind joins instead
+of materializing a whole attr relation. Direct physical rule builders fill typed
+relation columns while producing compatibility binding rows.
+
+Recent broad-rule work removed two more generic costs. Rule-call projection now
+has a typed fast path for distinct variable calls such as `(univ ?x ?u)`, and a
+query-local materialized-rule cache reuses single-branch helper rule relations
+such as `univ`/`area` when the same unprojected rule is called with different
+variable names. The next engine work should make these rule relations more
+fully columnar/streamed and remove the remaining generic `Binding` row
+construction, final dedupe, and string-key hash costs from the broad path.
 
 ## MusicBrainz Import Smoke
 

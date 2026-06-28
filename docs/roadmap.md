@@ -125,14 +125,16 @@ The active rule-engine pressure point is Datalevin `math-bench` Q2/Q3. Vev can
 recognize recursive transitive closure over a derived two-hop edge, which makes
 Q4 finish, and it can materialize pure non-recursive helper rules as relations.
 Q2/Q3 no longer spend hundreds of thousands of calls expanding `adv`/`univ`/
-`area`; they now execute three materialized rule calls. The remaining cost is
-constructing, projecting, and joining broad materialized rule relations while
-still carrying generic `Binding` rows. Recent work moved more of the path onto
-typed relation columns, including single-column typed hash joins with
-entity/int normalization and indexed bind-clause expansion for moderately sized
-relations. The next substantial planner work should remove the remaining
-generic row-shaped projection from materialized rule relations and prefer
-streamed/merge joins where the attrs and variable columns make that possible.
+`area`; they now execute three materialized rule calls. Recent work moved more
+of the path onto typed relation columns, including single-column typed hash
+joins with entity/int normalization, indexed bind-clause expansion for
+moderately sized relations, typed projection for distinct-var rule calls, and a
+query-local cache for single-branch materialized helper rules. The remaining
+cost is joining and deduping broad materialized rule relations while still
+carrying generic `Binding` rows as a compatibility veneer. The next substantial
+planner work should remove that remaining row-shaped construction from the
+materialized broad path and prefer streamed/merge joins where attrs and variable
+columns make that possible.
 
 The immediate implementation batch is:
 
@@ -140,11 +142,11 @@ The immediate implementation batch is:
    store hot rows as typed struct-of-arrays columns and keep the existing
    `Binding` API as a compatibility veneer during migration.
 2. Port materialized rule relations fully onto that storage first, because
-   math-bench Q2/Q3 are now dominated by broad `adv`/`univ`/`area` relation
-   projection and joins.
+   math-bench Q2/Q3 are now dominated by broad `adv`/`univ`/`area` joins and
+   final dedupe after projection/materialization reuse.
 3. Port one join family end-to-end, starting with primitive entity/int/string
-   columns and replacing the remaining compound string-key hash joins in the
-   hot path.
+   columns and replacing the remaining generic `Binding` row construction and
+   compound string-key hash joins in the hot path.
 4. Benchmark after each migration with `datascript-bench` q1-q5/qpred,
    `math-bench` q1-q4, and focused relation-source compound join tests.
 5. Then build the generic semi-naive rules engine on top of the improved
