@@ -1755,13 +1755,16 @@
 (defn delete-pull-result-shallow [result: Pull-Result]
   (delete-pull-attrs-shallow result.attrs))
 
-(defn delete-result-set-shallow [result: Result-Set]
-  (for [row result.rows]
+(defn delete-result-rows-shallow [rows: [dynamic]Result-Row]
+  (for [row rows]
     (delete row.values)
     (for [pull row.pulls]
       (delete-pull-result-shallow pull))
     (delete row.pulls))
-  (delete result.rows))
+  (delete rows))
+
+(defn delete-result-set-shallow [result: Result-Set]
+  (delete-result-rows-shallow result.rows))
 
 (defn delete-profiled-result-set-shallow [profiled: Profiled-Result-Set]
   (delete-result-set-shallow profiled.result))
@@ -10984,6 +10987,157 @@
 (defn aggregate-value-for-group [bindings: []Binding, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> Value
   (aggregate-value-for-group-with-fns bindings query aggregate group-values ([]Native-Query-Fn [])))
 
+(defn query-relation-typed-row-values-for-vars [rel: Query-Relation, row: int, names: []string] -> [values: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value 0 (count names))]
+    (for [name names]
+      (let [[value value-ok] (query-relation-typed-row-value rel row name)]
+        (if value-ok
+          (arr.push! out value)
+          (return out false))))
+    (return out true)))
+
+(defn query-relation-typed-row-resolve-term [rel: Query-Relation, row: int, term: Term] -> [value: Value, ok: bool]
+  (case term.kind
+    .Value (return term.value true)
+    .Var (return (query-relation-typed-row-value rel row term.name))
+    :else (return (Value {}) false)))
+
+(defn aggregate-supported-from-typed-relation? [aggregate: Aggregate-Find] -> bool
+  (and (not (= aggregate.op "aggregate"))
+       (not aggregate.has-function-var)
+       (not aggregate.has-limit-var)))
+
+(defn query-relation-typed-aggregate-key-values [rel: Query-Relation, row: int, query: Query, aggregate: Aggregate-Find] -> [values: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value)]
+    (for [name query.find]
+      (let [[value value-ok] (query-relation-typed-row-value rel row name)]
+        (if value-ok
+          (arr.push! out value)
+          (return out false))))
+    (for [name query.with]
+      (let [[value value-ok] (query-relation-typed-row-value rel row name)]
+        (if value-ok
+          (arr.push! out value)
+          (return out false))))
+    (if (> (count aggregate.args) 0)
+      (for [arg aggregate.args]
+        (let [[value value-ok] (query-relation-typed-row-resolve-term rel row arg)]
+          (if value-ok
+            (arr.push! out value)
+            (return out false))))
+      (let [[value value-ok] (query-relation-typed-row-value rel row aggregate.var)]
+        (if value-ok
+          (arr.push! out value)
+          (return out false))))
+    (return out true)))
+
+(defn aggregate-value-for-typed-group [rel: Query-Relation, query: Query, aggregate: Aggregate-Find, group-values: []Value] -> [value: Value, ok: bool]
+  (when (not (and rel.has-typed-columns
+                  (aggregate-supported-from-typed-relation? aggregate)))
+    (return (Value {}) false))
+  (let [current (aggregate-initial-value aggregate)
+        avg-count: i64 0
+        aggregate-ints (make [dynamic]i64)
+        aggregate-values (make [dynamic]Value)
+        distinct-values (make [dynamic]Value)
+        seen-keys (make [dynamic]Result-Row)
+        row 0]
+    (defer (delete aggregate-ints))
+    (defer (delete aggregate-values))
+    (defer (delete distinct-values))
+    (defer (delete seen-keys))
+    (while (< row rel.typed-rows)
+      (let [[row-group group-ok] (query-relation-typed-row-values-for-vars rel row (slice query.find 0))]
+        (when (and group-ok (values-equal? (slice row-group 0) group-values))
+          (let [[key key-ok] (query-relation-typed-aggregate-key-values rel row query aggregate)]
+            (when (and key-ok (not (row-values-exist? (slice seen-keys 0) (slice key 0))))
+              (arr.push! seen-keys (aggregate-key-row (slice key 0)))
+              (let [[input-value input-ok] (query-relation-typed-row-value rel row aggregate.var)]
+                (when input-ok
+                  (if (= aggregate.op "count")
+                    (set! current.int-value (+ current.int-value 1))
+                    (if (= aggregate.op "count-distinct")
+                      (when (not (value-exists? (slice distinct-values 0) input-value))
+                        (arr.push! distinct-values input-value))
+                      (do
+                        (when (and (or (= aggregate.op "median")
+                                       (= aggregate.op "variance")
+                                       (= aggregate.op "stddev"))
+                                   (= input-value.kind .Int))
+                          (arr.push! aggregate-ints input-value.int-value))
+                        (when (and aggregate.has-limit
+                                   (or (= aggregate.op "min")
+                                       (= aggregate.op "max")))
+                          (arr.push! aggregate-values input-value))
+                        (when (and (= aggregate.op "avg")
+                                   (or (= input-value.kind .Int)
+                                       (= input-value.kind .Float)))
+                          (set! avg-count (+ avg-count 1)))
+                        (set! current (apply-aggregate-value current aggregate input-value))))))))
+            (delete key)))
+        (delete row-group))
+      (set! row (+ row 1)))
+    (when (= aggregate.op "count-distinct")
+      (return (value-int (i64 (count distinct-values))) true))
+    (when (and aggregate.has-limit
+               (or (= aggregate.op "min")
+                   (= aggregate.op "max")))
+      (return (top-n-values (slice aggregate-values 0) aggregate.limit (= aggregate.op "max")) true))
+    (when (and (= aggregate.op "avg") (> avg-count 0))
+      (if (= current.kind .Float)
+        (return (value-float (/ current.float-value (f64 avg-count))) true)
+        (if (= (% current.int-value avg-count) 0)
+          (return (value-int (/ current.int-value avg-count)) true)
+          (return (value-float (/ (f64 current.int-value) (f64 avg-count))) true))))
+    (when (= aggregate.op "median")
+      (return (median-int (slice aggregate-ints 0)) true))
+    (when (= aggregate.op "variance")
+      (return (variance-float (slice aggregate-ints 0)) true))
+    (when (= aggregate.op "stddev")
+      (return (stddev-float (slice aggregate-ints 0)) true))
+    (return current true)))
+
+(defn aggregate-rows-for-typed-relation [query: Query, rel: Query-Relation] -> [rows: [dynamic]Result-Row, ok: bool]
+  (when (or (not rel.has-typed-columns)
+            (> (count query.pulls) 0))
+    (return (make [dynamic]Result-Row) false))
+  (for [aggregate query.aggregates]
+    (when (not (aggregate-supported-from-typed-relation? aggregate))
+      (return (make [dynamic]Result-Row) false)))
+  (let [out (make [dynamic]Result-Row)
+        row 0]
+    (when (and (= rel.typed-rows 0)
+               (= (count query.find) 0))
+      (let [values (make [dynamic]Value 0 (count query.aggregates))]
+        (for [aggregate query.aggregates]
+          (let [[aggregate-value aggregate-ok] (aggregate-value-for-typed-group rel query aggregate ([]Value []))]
+            (when (not aggregate-ok)
+              (delete values)
+              (return out false))
+            (arr.push! values aggregate-value)))
+        (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))))
+    (while (< row rel.typed-rows)
+      (let [[group-values group-ok] (query-relation-typed-row-values-for-vars rel row (slice query.find 0))]
+        (when group-ok
+          (when (not (row-value-prefix-exists? (slice out 0) (slice group-values 0)))
+            (let [values (arr.into [dynamic]Value (slice group-values 0))
+                  aggregate-ok true]
+              (for [aggregate query.aggregates]
+                (when aggregate-ok
+                  (let [[aggregate-value one-ok] (aggregate-value-for-typed-group rel query aggregate (slice group-values 0))]
+                    (if one-ok
+                      (arr.push! values aggregate-value)
+                      (set! aggregate-ok false)))))
+              (if aggregate-ok
+                (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
+                (do
+                  (delete values)
+                  (delete group-values)
+                  (return out false))))))
+        (delete group-values))
+      (set! row (+ row 1)))
+    (return out true)))
+
 (defn pull-pattern-input [query: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]
   (for [input-name index query.inputs]
     (when (= input-name name)
@@ -15057,14 +15211,21 @@
     (let [post-rel (relation-engine-relation-profiled db query inputs sources registry (addr stats))
           rows (make [dynamic]Result-Row)]
       (if (> (count query.aggregates) 0)
-        (let [materialized (query-relation-materialized-bindings post-rel) :defer]
-          (if (= (count query.find) 0)
-            (let [values (make [dynamic]Value 0 (count query.aggregates))
-                  pulls (make [dynamic]Pull-Result)]
-              (for [aggregate query.aggregates]
-                (arr.push! values (aggregate-value-for-group-with-fns (slice materialized 0) query aggregate ([]Value []) registry)))
-              (arr.push! rows (Result-Row {values: values pulls: pulls})))
-            (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice materialized 0) registry)))
+        (let [[typed-aggregate-rows typed-aggregate-ok] (aggregate-rows-for-typed-relation query post-rel)]
+          (if typed-aggregate-ok
+            (do
+              (delete rows)
+              (set! rows typed-aggregate-rows))
+            (do
+              (delete-result-rows-shallow typed-aggregate-rows)
+              (let [materialized (query-relation-materialized-bindings post-rel) :defer]
+                (if (= (count query.find) 0)
+                  (let [values (make [dynamic]Value 0 (count query.aggregates))
+                        pulls (make [dynamic]Pull-Result)]
+                    (for [aggregate query.aggregates]
+                      (arr.push! values (aggregate-value-for-group-with-fns (slice materialized 0) query aggregate ([]Value []) registry)))
+                    (arr.push! rows (Result-Row {values: values pulls: pulls})))
+                  (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice materialized 0) registry))))))
         (do
           (delete rows)
           (let [[typed-rows typed-ok] (result-rows-for-typed-relation query post-rel)]

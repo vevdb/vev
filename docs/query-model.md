@@ -458,10 +458,13 @@ allocation.
 
 The profiled query result boundary also treats compatibility bindings as an
 optional representation. Typed result rendering runs directly from typed
-columns; aggregate and fallback rendering materialize through the audited helper
-instead of reading `post-rel.tuples` directly. When the planner can trust
-relation uniqueness, typed result rendering now also skips the per-row dedupe
-value array and pushes projected result values directly.
+columns. Simple aggregate rendering can also read group keys, `:with` keys,
+dedupe keys, and aggregate input values directly from typed relation columns
+for no-pull queries; custom aggregate callbacks, function-var aggregates,
+limit-var aggregates, pull find expressions, and unsupported term shapes still
+fall back through the audited binding materialization helper. When the planner
+can trust relation uniqueness, typed result rendering now also skips the
+per-row dedupe value array and pushes projected result values directly.
 
 Binding-oriented relation-engine fallback operators now have an explicit
 typed-row boundary. Unsupported or final API paths still materialize through
