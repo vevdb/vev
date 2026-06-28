@@ -470,6 +470,12 @@ row at a time, then append any produced rows back into typed columns.
 single-binding branch semantics, and branch outputs are appended back into typed
 columns so `or` no longer forces a full relation materialization.
 
+Fallback rule calls now use the same streaming typed boundary. The preferred
+path is still the materialized rule relation plus typed join when eligible, but
+the remaining per-row fallback no longer materializes the whole input relation
+first: it converts one typed input row to a binding, reuses existing rule-call
+semantics, and appends outputs back into typed columns.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
