@@ -1,0 +1,41 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev-tests)
+
+(import t "kvist:test")
+(import vev "../vev")
+
+(defn relation-db-rows [] -> vev.Value
+  (vev.value-vector
+    ([]vev.Value [(vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan")]))
+                  (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 19)]))
+                  (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Petr")]))
+                  (vev.value-vector ([]vev.Value [(vev.value-int 2) (vev.value-keyword ":age") (vev.value-int 17)]))])))
+
+(t.deftest relation-db-uses-relation-engine-with-predicates-fns-and-rules
+  (defer (free_all context.allocator))
+  (let [rows (relation-db-rows)
+        predicate-result (vev.q-text-relation-db
+                           rows
+                           "[:find ?name :where [?e :age ?age] [(>= ?age 18)] [?e :name ?name]]")
+        registry ([]vev.Native-Query-Fn [(vev.query-fn "adult-age?" ">=")
+                                         (vev.query-fn "mk-keyword" "keyword")])
+        function-result (vev.q-text-relation-db-with-fns
+                          rows
+                          "[:find ?tag :where [?e :age ?age] [(adult-age? ?age 18)] [(mk-keyword \"adult\") ?tag]]"
+                          registry)
+        rule-result (vev.q-text-relation-db-with-rules
+                      rows
+                      "[:find ?name :in % :where (adult ?e) [?e :name ?name]]"
+                      "[[(adult ?e) [?e :age ?age] [(>= ?age 18)]]]"
+                      ([]vev.Query-Input []))]
+    (t.is predicate-result.ok)
+    (t.is (= (count predicate-result.rows) 1))
+    (t.is (= predicate-result.rows[0].values[0].text "Ivan"))
+    (t.is function-result.ok)
+    (t.is (= (count function-result.rows) 1))
+    (t.is (= function-result.rows[0].values[0].text ":adult"))
+    (t.is rule-result.ok)
+    (t.is (= (count rule-result.rows) 1))
+    (t.is (= rule-result.rows[0].values[0].text "Ivan"))))

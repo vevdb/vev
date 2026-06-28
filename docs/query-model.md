@@ -486,6 +486,14 @@ attribute clause remains the fastest path, and other bound shapes such as
 value-bound joins now convert one typed row to a binding, run the existing
 clause matcher, and write matching rows back into typed columns.
 
+Primary collection DB queries now preserve the full ordered query model when
+rewritten onto their synthetic relation source. The rewrite carries over
+`where-steps`, appends the synthetic source as an explicit input spec, and
+source-input clause relations project only query variables instead of carrying
+the whole source collection as a join column. This lets predicate, function,
+and rule queries over relation DB inputs use the same relation-engine path as
+ordinary DB-backed queries.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
@@ -501,9 +509,9 @@ Near-term query work should expand the relation engine in this order:
 
 1. Physical storage: replace generic `Binding` tuples with compact typed
    relation columns while keeping the same logical relation API.
-2. Source-qualified synthetic primary collection DB operators: move the
-   remaining collection-backed rule/predicate/function cases into the same
-   source-aware relation representation.
+2. Source-qualified collection operators: extend the source-aware relation
+   representation beyond primary relation DB inputs to named relation sources
+   and source-qualified nested rule bodies.
 3. Rules: move the positive-rule memo/delta evaluator from binding rows toward
    relation-native semi-naive behavior, then broaden it to richer rule bodies.
 

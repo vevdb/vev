@@ -289,6 +289,13 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
+(defn binding-without-name [binding: Binding, name: string] -> Binding
+  (let [items (make [dynamic]Var-Binding 0 (count binding.items))]
+    (for [item binding.items]
+      (when (not (= item.name name))
+        (arr.push! items item)))
+    (Binding {items: items})))
+
 (defn append-var-binding-attr! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, name: string, source: string]
   (when (= name "")
     (return))
@@ -11333,9 +11340,13 @@
     (when (not binding-ok)
       (return (query-relation-empty)))
     (let [out (bindings-after-relation-source-clause clause-value binding)
-          rel (query-relation-from-bindings (slice out 0))]
+          projected (make [dynamic]Binding 0 (count out))]
+      (for [item out]
+        (arr.push! projected (binding-without-name item clause-value.source)))
+      (let [rel (query-relation-from-bindings (slice projected 0))]
+        (delete projected)
       (delete out)
-      rel)))
+      rel))))
 
 (defn query-relation-from-db-clause [db: DB, clause-value: Clause, source: string] -> Query-Relation
   (let [[attrs attr-sources] (clause-output-attrs clause-value source)
@@ -13319,8 +13330,29 @@
     (arr.push! out source)
     out))
 
+(defn relation-db-input-specs [query-value: Query, source: string] -> [dynamic]Query-Input-Spec
+  (let [out (make [dynamic]Query-Input-Spec)]
+    (if (> (count query-value.input-specs) 0)
+      (for [spec query-value.input-specs]
+        (when (not (and (= spec.kind .Scalar)
+                        (= spec.name "$")))
+          (arr.push! out spec)))
+      (do
+        (for [input query-value.inputs]
+          (when (not (= input "$"))
+            (arr.push! out (Query-Input-Spec {kind: .Scalar name: input}))))
+        (for [input query-value.collection-inputs]
+          (arr.push! out (Query-Input-Spec {kind: .Collection name: input})))
+        (for [input query-value.tuple-inputs]
+          (arr.push! out (Query-Input-Spec {kind: .Tuple tuple: input}))
+        (for [input query-value.relation-inputs]
+          (arr.push! out (Query-Input-Spec {kind: .Relation relation: input}))))))
+    (arr.push! out (Query-Input-Spec {kind: .Scalar name: source}))
+    out))
+
 (defn relation-db-query [query-value: Query, source: string] -> Query
   (let [inputs (relation-db-inputs query-value source) :defer
+        input-specs (relation-db-input-specs query-value source) :defer
         clauses (rule-clauses-with-source (slice query-value.clauses 0) source true) :defer
         rule-calls (relation-db-rule-calls (slice query-value.rule-calls 0) source) :defer
         rules (make [dynamic]Rule) :defer
@@ -13332,26 +13364,29 @@
       (arr.push! not-groups (relation-db-not-group group source)))
     (for [group query-value.or-groups]
       (arr.push! or-groups (relation-db-or-group group source)))
-    (query-with-rules-input
-      (query (slice query-value.find 0)
-             (slice query-value.with 0)
-             (slice inputs 0)
-             (slice query-value.collection-inputs 0)
-             (slice query-value.tuple-inputs 0)
-             (slice query-value.relation-inputs 0)
-             (slice clauses 0)
-             (slice query-value.predicates 0)
-             (slice query-value.function-clauses 0)
-             (slice rules 0)
-             (slice rule-calls 0)
-             (slice query-value.get-elses 0)
-             (slice query-value.get-somes 0)
-             (slice query-value.grounds 0)
-             (slice not-groups 0)
-             (slice or-groups 0)
-             (slice query-value.pulls 0)
-             (slice query-value.aggregates 0))
-      query-value.has-rules-input)))
+    (let [out (query (slice query-value.find 0)
+                     (slice query-value.with 0)
+                     (slice inputs 0)
+                     (slice query-value.collection-inputs 0)
+                     (slice query-value.tuple-inputs 0)
+                     (slice query-value.relation-inputs 0)
+                     (slice clauses 0)
+                     (slice query-value.predicates 0)
+                     (slice query-value.function-clauses 0)
+                     (slice rules 0)
+                     (slice rule-calls 0)
+                     (slice query-value.get-elses 0)
+                     (slice query-value.get-somes 0)
+                     (slice query-value.grounds 0)
+                     (slice not-groups 0)
+                     (slice or-groups 0)
+                     (slice query-value.pulls 0)
+                     (slice query-value.aggregates 0))]
+      (delete out.input-specs)
+      (set! out.input-specs (arr.into [dynamic]Query-Input-Spec (slice input-specs 0)))
+      (query-with-rules-input
+        (query-with-where-steps out (slice query-value.where-steps 0))
+        query-value.has-rules-input))))
 
 (defn q-query-relation-db-with-fns [rows: Value, query-value: Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
   (let [source (primary-relation-db-source-name)
