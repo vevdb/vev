@@ -169,6 +169,53 @@ func (db *DB) QueryRows(query *PreparedQuery, inputs string) (*ResultSet, error)
 	return newResultSet(raw)
 }
 
+func (db *DB) QueryColumns(query *PreparedQuery, inputs string) (*ColumnResult, error) {
+	inputsText := cstring(inputs)
+	defer C.free(unsafe.Pointer(inputsText))
+	raw := C.vev_query_db_prepared_column_batch_with_inputs(db.raw, query.raw, inputsText)
+	if raw == nil {
+		return nil, nil
+	}
+	defer C.vev_column_batch_free(raw)
+
+	count := int(C.vev_column_batch_count(raw))
+	switch C.vev_column_batch_kind(raw) {
+	case C.VEV_COLUMN_BATCH_ENTITY:
+		return &ColumnResult{
+			Count:   count,
+			Kinds:   []int{ColumnEntity},
+			Columns: []any{entityColumn(C.vev_column_batch_entities_data(raw), count)},
+		}, nil
+	case C.VEV_COLUMN_BATCH_STRING:
+		return &ColumnResult{
+			Count:   count,
+			Kinds:   []int{ColumnString},
+			Columns: []any{stringColumn(raw, count)},
+		}, nil
+	case C.VEV_COLUMN_BATCH_ENTITY_INT:
+		return &ColumnResult{
+			Count: count,
+			Kinds: []int{ColumnEntity, ColumnInt},
+			Columns: []any{
+				entityColumn(C.vev_column_batch_entities_data(raw), count),
+				intColumn(C.vev_column_batch_ints_data(raw), count),
+			},
+		}, nil
+	case C.VEV_COLUMN_BATCH_ENTITY_STRING_INT:
+		return &ColumnResult{
+			Count: count,
+			Kinds: []int{ColumnEntity, ColumnString, ColumnInt},
+			Columns: []any{
+				entityColumn(C.vev_column_batch_entities_data(raw), count),
+				stringColumn(raw, count),
+				intColumn(C.vev_column_batch_ints_data(raw), count),
+			},
+		}, nil
+	default:
+		return nil, nil
+	}
+}
+
 func (db *DB) Pull(pattern string, entity uint64) (Value, error) {
 	patternText := cstring(pattern)
 	defer C.free(unsafe.Pointer(patternText))
@@ -267,6 +314,12 @@ type Keyword string
 type Symbol string
 type UUID string
 
+const (
+	ColumnEntity = 1
+	ColumnString = 2
+	ColumnInt    = 3
+)
+
 type MapEntry struct {
 	Key   Value
 	Value Value
@@ -274,6 +327,89 @@ type MapEntry struct {
 
 type MapValue []MapEntry
 type Value any
+
+type ColumnResult struct {
+	Count   int
+	Kinds   []int
+	Columns []any
+}
+
+func entityColumn(ptr *C.ulonglong, count int) []Entity {
+	if ptr == nil || count <= 0 {
+		return nil
+	}
+	values := unsafe.Slice(ptr, count)
+	out := make([]Entity, count)
+	for index, value := range values {
+		out[index] = Entity(value)
+	}
+	return out
+}
+
+func intColumn(ptr *C.longlong, count int) []int64 {
+	if ptr == nil || count <= 0 {
+		return nil
+	}
+	values := unsafe.Slice(ptr, count)
+	out := make([]int64, count)
+	for index, value := range values {
+		out[index] = int64(value)
+	}
+	return out
+}
+
+func stringColumn(batch C.vev_column_batch_t, count int) []string {
+	dictionaryCount := int(C.vev_column_batch_string_dictionary_count(batch))
+	dictionaryData := C.vev_column_batch_string_dictionary_data_array(batch)
+	dictionaryLengths := C.vev_column_batch_string_dictionary_lengths_data(batch)
+	stringIndices := C.vev_column_batch_string_indices_data(batch)
+	if dictionaryCount > 0 && dictionaryData != nil && dictionaryLengths != nil && stringIndices != nil {
+		data := unsafe.Slice(dictionaryData, dictionaryCount)
+		lengths := unsafe.Slice(dictionaryLengths, dictionaryCount)
+		indices := unsafe.Slice(stringIndices, count)
+		dictionary := make([]string, dictionaryCount)
+		for index := range dictionary {
+			dictionary[index] = C.GoStringN((*C.char)(data[index]), lengths[index])
+		}
+		out := make([]string, count)
+		for index, dictionaryIndex := range indices {
+			out[index] = dictionary[dictionaryIndex]
+		}
+		return out
+	}
+
+	stringData := C.vev_column_batch_string_data_array(batch)
+	stringLengths := C.vev_column_batch_string_lengths_data(batch)
+	if stringData == nil || stringLengths == nil || count <= 0 {
+		return nil
+	}
+	data := unsafe.Slice(stringData, count)
+	lengths := unsafe.Slice(stringLengths, count)
+	out := make([]string, count)
+	for index := range out {
+		out[index] = C.GoStringN((*C.char)(data[index]), lengths[index])
+	}
+	return out
+}
+
+func (r *ColumnResult) Rows() [][]Value {
+	rows := make([][]Value, 0, r.Count)
+	for row := 0; row < r.Count; row++ {
+		values := make([]Value, 0, len(r.Columns))
+		for _, column := range r.Columns {
+			switch valuesColumn := column.(type) {
+			case []Entity:
+				values = append(values, valuesColumn[row])
+			case []string:
+				values = append(values, valuesColumn[row])
+			case []int64:
+				values = append(values, valuesColumn[row])
+			}
+		}
+		rows = append(rows, values)
+	}
+	return rows
+}
 
 func mapGet(value Value, key string) (Value, bool) {
 	items, ok := value.(MapValue)
@@ -564,6 +700,26 @@ func main() {
 	}
 	sort.Strings(manyNames)
 	mustEqual("pull many", manyNames, []string{"Ada", "Grace"})
+
+	allEmailTexts, err := Prepare(`[:find ?email :where [?e :user/email ?email]]`)
+	if err != nil {
+		panic(err)
+	}
+	defer allEmailTexts.Close()
+	columns, err := snapshot.QueryColumns(allEmailTexts, "[]")
+	if err != nil {
+		panic(err)
+	}
+	if columns == nil {
+		panic("expected string column batch")
+	}
+	columnRows := columns.Rows()
+	sort.Slice(columnRows, func(i, j int) bool {
+		return fmt.Sprintf("%#v", columnRows[i]) < fmt.Sprintf("%#v", columnRows[j])
+	})
+	fmt.Println("column batch rows:", columnRows)
+	mustEqual("column batch kinds", columns.Kinds, []int{ColumnString})
+	mustEqual("column batch rows", columnRows, [][]Value{{"ada@example.com"}, {"grace@example.com"}})
 
 	conn.Transact(`[{:db/id 3 :user/name "Alan" :user/email "alan@example.com"}]`)
 	current := query.Query(conn, `["alan@example.com"]`)

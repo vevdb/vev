@@ -163,7 +163,7 @@ Status labels:
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
 
 - `done` Adopt column batches in host adapters.
-  Java `DB.queryColumns`, Python `DB.query_columns`, Rust `Db::query_columns`, and the Clojure optimized query path now prefer the generic column-batch handle for flat prepared query results, then fall back to the generic result API. Exact-shape C functions remain available for low-level callers.
+  Java `DB.queryColumns`, Python `DB.query_columns`, Rust `Db::query_columns`, Go `DB.QueryColumns`, and the Clojure optimized query path now prefer the generic column-batch handle for flat prepared query results, then fall back to the generic result API. Exact-shape C functions remain available for low-level callers.
 
 - `todo` Add generic query/parser AST visitors.
   Source validation, source-input validation, relation-DB query rewriting, and EDN query section parsing all hand-walk the same query or EDN shapes. A reusable visitor/mapper plus single-pass section indexing would reduce duplicate traversal logic.
