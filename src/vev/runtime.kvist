@@ -5846,14 +5846,19 @@
       (for [source-binding source-bindings]
         (arr.push! out^ source-binding)))
     (return))
-  (let [candidates (clause-candidate-indexes db clause-value binding)]
-    (defer (delete candidates))
-    (for [datom-index candidates]
-      (let [datom db.datoms[datom-index]]
-        (when (datom-current-at? db datom-index)
-          (let [next (clone-binding binding)]
-            (when (datom-clause-matches? db datom clause-value (addr next))
-              (arr.push! out^ next))))))))
+  (let [scan (clause-index-scan db clause-value binding)]
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (and (clause-index-scan-candidate? scan datom)
+                     (datom-current-at? db datom-index))
+            (let [next (clone-binding binding)]
+              (if (datom-clause-matches? db datom clause-value (addr next))
+                (arr.push! out^ next)
+                (delete next.items)))))
+        (set! scan-index (+ scan-index 1))))))
 
 (defn append-bindings-after-clause-profiled! [out: ^[dynamic]Binding, db: DB, clause-value: Clause, binding: Binding, stats: ^Query-Stats]
   (set! stats^.clauses (+ stats^.clauses 1))
@@ -5864,15 +5869,22 @@
       (for [source-binding source-bindings]
         (arr.push! out^ source-binding)))
     (return))
-  (let [candidates (clause-candidate-indexes db clause-value binding)]
-    (defer (delete candidates))
-    (set! stats^.clause-candidates (+ stats^.clause-candidates (count candidates)))
-    (for [datom-index candidates]
-      (let [datom db.datoms[datom-index]]
-        (when (datom-current-at? db datom-index)
-          (let [next (clone-binding binding)]
-            (when (datom-clause-matches? db datom clause-value (addr next))
-              (arr.push! out^ next))))))))
+  (let [scan (clause-index-scan db clause-value binding)
+        candidate-count 0]
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (clause-index-scan-candidate? scan datom)
+            (set! candidate-count (+ candidate-count 1))
+            (when (datom-current-at? db datom-index)
+              (let [next (clone-binding binding)]
+                (if (datom-clause-matches? db datom clause-value (addr next))
+                  (arr.push! out^ next)
+                  (delete next.items))))))
+        (set! scan-index (+ scan-index 1))))
+    (set! stats^.clause-candidates (+ stats^.clause-candidates candidate-count))))
 
 (defn append-bindings-after-clause-with-sources! [out: ^[dynamic]Binding, db: DB, sources: []DB-Source, clause-value: Clause, binding: Binding]
   (when clause-value.has-source
