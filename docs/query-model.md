@@ -487,9 +487,11 @@ attribute identity and value as typed output columns.
 time to reuse existing `not` semantics, but the surviving output stays typed
 instead of allocating a full intermediate binding relation.
 
-`ground` now streams over typed rows too. Scalar, tuple, collection, relation,
-and input-binding ground shapes reuse the existing binding semantics one input
-row at a time, then append any produced rows back into typed columns.
+`ground` now streams over typed rows too. Scalar ground clauses resolve their
+source term directly from typed input columns and append only newly produced
+output values as typed columns. Tuple, collection, relation, and input-binding
+ground shapes still reuse the existing binding semantics one input row at a
+time, then append any produced rows back into typed columns.
 
 `or` now streams over typed rows with fanout. Each branch reuses the existing
 single-binding branch semantics, and branch outputs are appended back into typed
