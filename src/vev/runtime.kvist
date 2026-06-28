@@ -7551,30 +7551,63 @@
     :else
       (make [dynamic]Binding)))
 
-(defn bindings-after-rule-body-memo [db: DB, memo: []Rule-Memo-Entry, rule: Rule] -> [dynamic]Binding
-  (let [bindings (make [dynamic]Binding)]
-    (arr.push! bindings (Binding {}))
+(defn query-relation-after-rule-step-memo [db: DB, memo: []Rule-Memo-Entry, rule: Rule, rel: Query-Relation, step: Query-Step, use-delta: bool, delta-call-index: int] -> [out: Query-Relation, ok: bool]
+  (case step.kind
+    .Clause
+      (let [clause-rel (query-relation-from-db-clause db rule.clauses[step.index] "")
+            joined (query-relation-join db ([]DB-Source []) rel clause-rel)]
+        (delete-query-relation clause-rel)
+        (return joined true))
+    .RuleCall
+      (let [bindings (make [dynamic]Binding)
+            materialized (query-relation-materialized-bindings rel) :defer
+            call rule.rule-calls[step.index]]
+        (for [binding materialized]
+          (let [rule-bindings (if (and use-delta (= step.index delta-call-index))
+                                (bindings-after-rule-call-from-memo-delta memo call binding)
+                                (bindings-after-rule-call-from-memo memo call binding))]
+            (for [rule-binding rule-bindings]
+              (arr.push! bindings rule-binding))
+            (delete rule-bindings)))
+        (let [next (query-relation-from-bindings (slice bindings 0))]
+          (delete bindings)
+          (return next true)))
+    :else
+      (return (query-relation-empty) false)))
+
+(defn query-relation-dedupe-step [rel: Query-Relation] -> Query-Relation
+  (let [materialized (query-relation-materialized-bindings rel)
+        unique (unique-bindings (slice materialized 0))
+        out (query-relation-from-bindings (slice unique 0))]
+    (delete materialized)
+    (delete unique)
+    out))
+
+(defn query-relation-after-rule-body-memo [db: DB, memo: []Rule-Memo-Entry, rule: Rule, use-delta: bool, delta-call-index: int] -> Query-Relation
+  (let [current (query-relation-singleton)]
     (for [step rule.body-steps]
-      (let [next-raw (bindings-after-rule-step-memo db memo rule (slice bindings 0) step)
-            next (unique-bindings (slice next-raw 0))]
-        (delete next-raw)
-        (delete bindings)
-        (set! bindings next)
-        (when (= (count bindings) 0)
-          (return bindings))))
+      (let [[next-raw next-ok] (query-relation-after-rule-step-memo db memo rule current step use-delta delta-call-index)]
+        (delete-query-relation current)
+        (when (not next-ok)
+          (delete-query-relation next-raw)
+          (return (query-relation-empty)))
+        (let [next (query-relation-dedupe-step next-raw)]
+          (delete-query-relation next-raw)
+          (set! current next)
+          (when (= (query-relation-row-count current) 0)
+            (return current)))))
+    current))
+
+(defn bindings-after-rule-body-memo [db: DB, memo: []Rule-Memo-Entry, rule: Rule] -> [dynamic]Binding
+  (let [rel (query-relation-after-rule-body-memo db memo rule false -1)
+        bindings (query-relation-materialized-bindings rel)]
+    (delete-query-relation rel)
     bindings))
 
 (defn bindings-after-rule-body-memo-with-delta [db: DB, memo: []Rule-Memo-Entry, rule: Rule, delta-call-index: int] -> [dynamic]Binding
-  (let [bindings (make [dynamic]Binding)]
-    (arr.push! bindings (Binding {}))
-    (for [step rule.body-steps]
-      (let [next-raw (bindings-after-rule-step-memo-with-delta db memo rule (slice bindings 0) step delta-call-index)
-            next (unique-bindings (slice next-raw 0))]
-        (delete next-raw)
-        (delete bindings)
-        (set! bindings next)
-        (when (= (count bindings) 0)
-          (return bindings))))
+  (let [rel (query-relation-after-rule-body-memo db memo rule true delta-call-index)
+        bindings (query-relation-materialized-bindings rel)]
+    (delete-query-relation rel)
     bindings))
 
 (defn first-rule-call-index [rule: Rule] -> [index: int, ok: bool]
@@ -8734,8 +8767,10 @@
   (let [inner (make [dynamic]string) :defer]
     (for [name vars]
       (arr.push! inner name))
-    (let [[joined _] (core-strings.join (slice inner 0) " ")]
-      (return (core-strings.concatenate ([]string ["[" joined "]"]))))))
+    (let [[joined _] (core-strings.join (slice inner 0) " ")
+          out (core-strings.concatenate ([]string ["[" joined "]"]))]
+      (delete joined)
+      (return out))))
 
 (defn query-potential-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)
@@ -8840,7 +8875,8 @@
       (when (not (string-slice-contains? (slice available 0) name))
         (append-var-once! (addr unknown) name)))
     (when (> (count unknown) 0)
-      (let [vars-text (query-var-list-text (slice unknown 0)) :defer]
+      (let [vars-text (query-var-list-text (slice unknown 0))]
+        (defer (delete vars-text))
         (return false (fmt.tprintf "Query for unknown vars: %s" vars-text))))
     (for [name find-vars]
       (when (string-slice-contains? (slice query-value.with 0) name)

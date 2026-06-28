@@ -137,6 +137,11 @@ inside the component. Memo tables keep set-backed primitive binding keys for
 duplicate detection, with structural scans only as a fallback for non-keyable
 outputs. The specialized linear and alternating transitive paths remain faster
 physical operators and run before the generic memo/delta path.
+Inside the generic memo/delta evaluator, plain DB data-clause steps now execute
+through the relation engine: the current rule body relation is joined with the
+clause relation and deduped at the existing per-step boundary. Rule-call steps
+still bridge through the memo/delta binding tables, so this is an intermediate
+state rather than a fully columnar recursive-rule engine.
 The linear transitive recognizer also handles a common derived-edge shape where
 the recursive edge is a non-recursive two-hop rule, such as `adv` in
 Datalevin's math-bench:
@@ -506,10 +511,12 @@ generic recursive fixpoint loop. The dependency graph also exposes strongly
 connected component metadata for recursive checks and rule grouping. Plain
 positive recursive rule groups can use component-local memoized execution with
 delta-driven iteration over each recursive rule-call position. Specialized
-transitive paths remain the fast path for common reachability shapes. The next
-rule-engine step is to move this binding-row memo/delta evaluator into
-relation-native operators and add measured handling for richer rule bodies using
-the dependency components as the stratification input.
+transitive paths remain the fast path for common reachability shapes. The
+generic memo/delta evaluator is now partially relation-native: DB clause steps
+run as relation joins, while rule-call memo/delta tables remain row-shaped. The
+next rule-engine step is to push those memo tables toward typed relation storage
+and add measured handling for richer rule bodies using the dependency components
+as the stratification input.
 
 Near-term query work should expand the relation engine in this order:
 
@@ -518,8 +525,10 @@ Near-term query work should expand the relation engine in this order:
 2. Source-qualified collection operators: extend the direct source-aware
    relation representation to deeper nested source-qualified groups and broader
    named source combinations.
-3. Rules: move the positive-rule memo/delta evaluator from binding rows toward
-   relation-native semi-naive behavior, then broaden it to richer rule bodies.
+3. Rules: continue moving the positive-rule memo/delta evaluator from binding
+   rows toward relation-native semi-naive behavior. DB clause steps are now
+   relation-native; rule-call memo/delta tables remain the main row-shaped
+   boundary.
 
 The transaction side has the same split:
 
