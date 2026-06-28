@@ -79,6 +79,65 @@
       (return true)))
   false)
 
+(t.deftest singleton-relation-is-typed-only
+  (defer (free_all context.allocator))
+  (let [rel (vev.query-relation-singleton)
+        materialized (vev.query-relation-materialized-bindings rel)]
+    (t.is rel.has-typed-columns)
+    (t.is (= rel.typed-rows 1))
+    (t.is (= (count rel.tuples) 0))
+    (t.is (= (count materialized) 1))
+    (t.is (= (count materialized[0].items) 0))
+    (for [binding materialized]
+      (delete binding.items))
+    (delete materialized)
+    (vev.delete-query-relation rel)))
+
+(t.deftest source-input-clause-producer-is-typed-only
+  (defer (free_all context.allocator))
+  (let [source (vev.value-vector
+                 ([]vev.Value [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ada"))
+                               (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Bob"))]))
+        clause (vev.Clause {e: (vev.term-var "?e")
+                            a: (vev.term-keyword ":name")
+                            v: (vev.term-var "?name")
+                            tx-term: (vev.term-wildcard)
+                            op-term: (vev.term-wildcard)
+                            source: "$rows"
+                            has-source: true
+                            source-width: 3})
+        rel (vev.query-relation-from-source-value-clause source clause)]
+    (t.is rel.has-typed-columns)
+    (t.is (= rel.typed-rows 2))
+    (t.is (= (count rel.tuples) 0))
+    (t.is (= (count rel.typed-columns) 2))
+    (t.is (= rel.typed-columns[0].ints[0] 1))
+    (t.is (= rel.typed-columns[0].ints[1] 2))
+    (t.is (= rel.typed-columns[1].texts[0] "Ada"))
+    (t.is (= rel.typed-columns[1].texts[1] "Bob"))
+    (vev.delete-query-relation rel)))
+
+(t.deftest two-attr-materialized-rule-producer-is-typed-only
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Bob\"] [:db/add 2 :age 41]]")
+        prepared-rules (vev.parse-rules-text "[[(name-age ?name ?age) [?e :name ?name] [?e :age ?age]]]")
+        stats (vev.query-stats-empty)
+        [rel rel-ok] (vev.query-relation-from-two-attr-same-entity-rule conn.db prepared-rules.rules[0] ":name" ":age" (addr stats))]
+    (t.is prepared-rules.ok)
+    (t.is rel-ok)
+    (t.is rel.has-typed-columns)
+    (t.is (= rel.typed-rows 2))
+    (t.is (= (count rel.tuples) 0))
+    (t.is (= rel.typed-columns[0].texts[0] "Ada"))
+    (t.is (= rel.typed-columns[1].ints[0] 37))
+    (t.is (= rel.typed-columns[0].texts[1] "Bob"))
+    (t.is (= rel.typed-columns[1].ints[1] 41))
+    (vev.delete-query-relation rel)
+    (delete prepared-rules.rules)))
+
 (t.deftest typed-rule-projection-materializes-for-binding-fallback-operators
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -95,6 +154,11 @@
                           "[:find ?name ?len :in $ % :where (person ?e ?name) [(count ?name) ?len]]"
                           typed-relation-rules
                           ([]vev.Query-Input []))
+        function-tuple-result (vev.q-text-with-rules
+                                conn.db
+                                "[:find ?name ?len :in $ % :where (person ?e ?raw-name) [(vector ?raw-name 3) [?name ?len]]]"
+                                typed-relation-rules
+                                ([]vev.Query-Input []))
         not-result (vev.q-text-with-rules
                      conn.db
                      "[:find ?name :in $ % :where (person ?e ?name) (not [?e :blocked true])]"
@@ -163,6 +227,10 @@
     (t.is (= (count function-result.rows) 2))
     (t.is (has-text-int-row? function-result "Ada" 3))
     (t.is (has-text-int-row? function-result "Bob" 3))
+    (t.is function-tuple-result.ok)
+    (t.is (= (count function-tuple-result.rows) 2))
+    (t.is (has-text-int-row? function-tuple-result "Ada" 3))
+    (t.is (has-text-int-row? function-tuple-result "Bob" 3))
     (t.is not-result.ok)
     (t.is (= (count not-result.rows) 1))
     (t.is (has-text-row? not-result "Ada"))

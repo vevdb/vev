@@ -118,6 +118,26 @@ def main() -> int:
             finally:
                 collection_query.close()
 
+            all_emails_query = conn.prepare(
+                """
+                [:find ?email
+                 :where [?e :user/email ?email]]
+                """
+            )
+            try:
+                with conn.db() as db:
+                    columns = db.query_columns(all_emails_query)
+                    if columns is None:
+                        raise RuntimeError("expected string column batch")
+                    emails = sorted(row[0] for row in columns.rows())
+                    print(f"column batch emails: {emails}")
+                    if columns.kinds != (vev.VEV_COLUMN_STRING,):
+                        raise RuntimeError("unexpected column batch kind")
+                    if emails != ["ada@example.com", "grace@example.com"]:
+                        raise RuntimeError("unexpected column batch rows")
+            finally:
+                all_emails_query.close()
+
             tuple_query = conn.prepare(
                 """
                 [:find ?e

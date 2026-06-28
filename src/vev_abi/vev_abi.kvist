@@ -44,6 +44,7 @@ ABI_DB :: struct {
 ABI_Result :: struct {
     result: vev__Result_Set,
     pull_values: [dynamic]vev__Value,
+    pull_offsets: [dynamic]int,
 }
 
 ABI_U64_Array :: struct {
@@ -353,6 +354,7 @@ abi_free_db_storage :: proc(storage: rawptr) {
 abi_alloc_result :: proc() -> rawptr {
     wrapper := new(ABI_Result)
     wrapper.pull_values = make([dynamic]vev__Value)
+    wrapper.pull_offsets = make([dynamic]int)
     return rawptr(wrapper)
 }
 
@@ -362,6 +364,10 @@ abi_result_ptr :: proc(result: rawptr) -> ^vev__Result_Set {
 
 abi_result_pull_values_ptr :: proc(result: rawptr) -> ^[dynamic]vev__Value {
     return &((^ABI_Result)(result))^.pull_values
+}
+
+abi_result_pull_offsets_ptr :: proc(result: rawptr) -> ^[dynamic]int {
+    return &((^ABI_Result)(result))^.pull_offsets
 }
 
 abi_value_ptr :: proc(value: rawptr) -> ^vev__Value {
@@ -478,6 +484,7 @@ abi_free_value_handle :: proc(handle: rawptr) {
 abi_free_result :: proc(result: rawptr) {
     wrapper := (^ABI_Result)(result)
     delete(wrapper.pull_values)
+    delete(wrapper.pull_offsets)
     free(wrapper)
 }
 
@@ -960,11 +967,10 @@ abi_result_pull_value_ptr :: proc(result: rawptr, row: int, pull: int) -> rawptr
     if wrapper == nil || row < 0 || pull < 0 || row >= len(wrapper.result.rows) || pull >= len(wrapper.result.rows[row].pulls) {
         return nil
     }
-    flat := 0
-    for i in 0..<row {
-        flat += len(wrapper.result.rows[i].pulls)
+    if row >= len(wrapper.pull_offsets) {
+        return nil
     }
-    flat += pull
+    flat := wrapper.pull_offsets[row] + pull
     if flat < 0 || flat >= len(wrapper.pull_values) {
         return nil
     }
@@ -1221,6 +1227,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- result-pull-values-ptr [result: Vev-Result] -> ^[dynamic]vev.Value
   (abi-result-pull-values-ptr (rawptr result)))
+
+(defn- result-pull-offsets-ptr [result: Vev-Result] -> ^[dynamic]int
+  (abi-result-pull-offsets-ptr (rawptr result)))
 
 (defn- u64-array-count [array: Vev-U64-Array] -> int
   (abi-u64-array-count (rawptr array)))
@@ -1548,8 +1557,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- result-store-pull-values! [result: Vev-Result, db: vev.DB]
   (let [ptr (result-ptr result)
-        pull-values (result-pull-values-ptr result)]
+        pull-values (result-pull-values-ptr result)
+        pull-offsets (result-pull-offsets-ptr result)]
     (for [row ptr^.rows]
+      (arr.push! pull-offsets^ (count pull-values^))
       (for [pull row.pulls]
         (let [rendered (vev.pull-result-value db pull)]
           (arr.push! pull-values^ (value-owned rendered))

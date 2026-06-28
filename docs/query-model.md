@@ -465,6 +465,11 @@ limit-var aggregates, pull find expressions, and unsupported term shapes still
 fall back through the audited binding materialization helper. When the planner
 can trust relation uniqueness, typed result rendering now also skips the
 per-row dedupe value array and pushes projected result values directly.
+Pull find rendering uses the same result boundary: the renderer can resolve
+pull entity vars from typed relation rows and render pull results directly from
+the chosen DB/source without first materializing the whole relation as
+`Binding` rows. If a pull pattern, source, or entity cannot be resolved from the
+typed row, the query falls back to the binding renderer.
 
 Binding-oriented relation-engine fallback operators now have an explicit
 typed-row boundary. Unsupported or final API paths still materialize through
@@ -557,6 +562,11 @@ memo/delta parameter relations and for materialized helper rule outputs, so
 general rule-call projection no longer has to allocate a temporary `Binding`
 for every typed result row.
 
+Specialized materialized helper-rule producers are typed-only for two-parameter
+same-entity and derived-edge shapes. These producers now dedupe with primitive
+row keys and fill relation columns directly instead of storing both typed
+columns and compatibility `Binding` rows.
+
 Generic bound-clause fallback also streams. The specialized entity-bound
 attribute clause remains the fastest path, and other bound shapes such as
 value-bound joins now convert one typed row to a binding, run the existing
@@ -593,7 +603,16 @@ Named relation-source inputs use the same direct source operator. Source clauses
 scan the source `Value` and emit only the variables introduced by the clause,
 instead of first binding the whole source collection and stripping it later.
 This covers ordinary named source clauses and source-qualified rule calls whose
-rule bodies read from the same relation source.
+rule bodies read from the same relation source. When the source values fit the
+typed column representation, the initial source-input `Query-Relation` now
+stores zero compatibility `Binding` rows; unsupported value kinds fall back to
+the binding-backed representation.
+
+The singleton relation is typed-only too: it is represented as one logical row
+with zero columns and no compatibility `Binding` tuple. Binding-oriented
+fallbacks still see the same empty binding through
+`query-relation-materialized-bindings`, keeping the row/binding boundary
+explicit.
 
 Bound relation-source input clauses now extend typed rows directly too. When a
 typed relation is already in flight and the next clause reads from a source

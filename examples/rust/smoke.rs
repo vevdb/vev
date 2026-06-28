@@ -4,9 +4,11 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int, c_ulonglong, c_void};
 use std::ptr;
+use std::slice;
 
 type VevConn = *mut c_void;
 type VevConnection = *mut c_void;
+type VevColumnBatch = *mut c_void;
 type VevDb = *mut c_void;
 type VevPreparedQuery = *mut c_void;
 type VevResult = *mut c_void;
@@ -27,6 +29,15 @@ const VEV_VALUE_SYMBOL: c_int = 7;
 const VEV_VALUE_VECTOR: c_int = 8;
 const VEV_VALUE_MAP: c_int = 9;
 const VEV_VALUE_UUID: c_int = 10;
+
+const VEV_COLUMN_BATCH_ENTITY: c_int = 1;
+const VEV_COLUMN_BATCH_STRING: c_int = 2;
+const VEV_COLUMN_BATCH_ENTITY_INT: c_int = 3;
+const VEV_COLUMN_BATCH_ENTITY_STRING_INT: c_int = 4;
+
+const VEV_COLUMN_ENTITY: c_int = 1;
+const VEV_COLUMN_STRING: c_int = 2;
+const VEV_COLUMN_INT: c_int = 3;
 
 #[link(name = "vev")]
 unsafe extern "C" {
@@ -97,11 +108,24 @@ unsafe extern "C" {
         query: VevPreparedQuery,
         inputs_text: *const c_char,
     ) -> VevResult;
-    fn vev_pull_edn(
+    fn vev_query_db_prepared_column_batch_with_inputs(
         db: VevDb,
-        pattern_text: *const c_char,
-        entity: c_ulonglong,
-    ) -> VevValueHandle;
+        query: VevPreparedQuery,
+        inputs_text: *const c_char,
+    ) -> VevColumnBatch;
+    fn vev_column_batch_free(batch: VevColumnBatch);
+    fn vev_column_batch_kind(batch: VevColumnBatch) -> c_int;
+    fn vev_column_batch_count(batch: VevColumnBatch) -> c_int;
+    fn vev_column_batch_entities_data(batch: VevColumnBatch) -> *const c_ulonglong;
+    fn vev_column_batch_ints_data(batch: VevColumnBatch) -> *const i64;
+    fn vev_column_batch_string_data_array(batch: VevColumnBatch) -> *const *const c_void;
+    fn vev_column_batch_string_lengths_data(batch: VevColumnBatch) -> *const c_int;
+    fn vev_column_batch_string_dictionary_count(batch: VevColumnBatch) -> c_int;
+    fn vev_column_batch_string_dictionary_data_array(batch: VevColumnBatch)
+        -> *const *const c_void;
+    fn vev_column_batch_string_dictionary_lengths_data(batch: VevColumnBatch) -> *const c_int;
+    fn vev_column_batch_string_indices_data(batch: VevColumnBatch) -> *const c_int;
+    fn vev_pull_edn(db: VevDb, pattern_text: *const c_char, entity: c_ulonglong) -> VevValueHandle;
     fn vev_pull_lookup_ref_string_edn(
         db: VevDb,
         pattern_text: *const c_char,
@@ -160,7 +184,12 @@ impl Value {
     fn map_get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Map(items) => items.iter().find_map(|(k, v)| match k {
-                Value::Keyword(text) | Value::String(text) | Value::Symbol(text) | Value::Uuid(text) if text == key => {
+                Value::Keyword(text)
+                | Value::String(text)
+                | Value::Symbol(text)
+                | Value::Uuid(text)
+                    if text == key =>
+                {
                     Some(v)
                 }
                 _ => None,
@@ -177,7 +206,9 @@ impl Library {
         if ptr.is_null() {
             return String::new();
         }
-        let out = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        let out = unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned();
         unsafe { vev_string_free(ptr) };
         out
     }
@@ -186,7 +217,55 @@ impl Library {
         if ptr.is_null() {
             return String::new();
         }
-        unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    unsafe fn borrowed_utf8(ptr: *const c_void, len: c_int) -> String {
+        if ptr.is_null() || len <= 0 {
+            return String::new();
+        }
+        let bytes = unsafe { slice::from_raw_parts(ptr as *const u8, len as usize) };
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    unsafe fn string_column(batch: VevColumnBatch, count: usize) -> Vec<String> {
+        let dictionary_count = unsafe { vev_column_batch_string_dictionary_count(batch) };
+        let dictionary_data = unsafe { vev_column_batch_string_dictionary_data_array(batch) };
+        let dictionary_lengths = unsafe { vev_column_batch_string_dictionary_lengths_data(batch) };
+        let string_indices = unsafe { vev_column_batch_string_indices_data(batch) };
+        if dictionary_count > 0
+            && !dictionary_data.is_null()
+            && !dictionary_lengths.is_null()
+            && !string_indices.is_null()
+        {
+            let data = unsafe { slice::from_raw_parts(dictionary_data, dictionary_count as usize) };
+            let lengths =
+                unsafe { slice::from_raw_parts(dictionary_lengths, dictionary_count as usize) };
+            let indices = unsafe { slice::from_raw_parts(string_indices, count) };
+            let dictionary: Vec<String> = data
+                .iter()
+                .zip(lengths.iter())
+                .map(|(text, len)| unsafe { Self::borrowed_utf8(*text, *len) })
+                .collect();
+            return indices
+                .iter()
+                .map(|index| dictionary[*index as usize].clone())
+                .collect();
+        }
+
+        let string_data = unsafe { vev_column_batch_string_data_array(batch) };
+        let string_lengths = unsafe { vev_column_batch_string_lengths_data(batch) };
+        if string_data.is_null() || string_lengths.is_null() {
+            return Vec::new();
+        }
+        let data = unsafe { slice::from_raw_parts(string_data, count) };
+        let lengths = unsafe { slice::from_raw_parts(string_lengths, count) };
+        data.iter()
+            .zip(lengths.iter())
+            .map(|(text, len)| unsafe { Self::borrowed_utf8(*text, *len) })
+            .collect()
     }
 
     unsafe fn value_to_rust(value: VevValue) -> Value {
@@ -197,7 +276,9 @@ impl Library {
             VEV_VALUE_INT => Value::Int(unsafe { vev_value_int(value) }),
             VEV_VALUE_FLOAT => Value::Float(unsafe { vev_value_float(value) }),
             VEV_VALUE_BOOL => Value::Bool(unsafe { vev_value_bool(value) }),
-            VEV_VALUE_KEYWORD => Value::Keyword(unsafe { Self::owned_string(vev_value_text(value)) }),
+            VEV_VALUE_KEYWORD => {
+                Value::Keyword(unsafe { Self::owned_string(vev_value_text(value)) })
+            }
             VEV_VALUE_SYMBOL => Value::Symbol(unsafe { Self::owned_string(vev_value_text(value)) }),
             VEV_VALUE_UUID => Value::Uuid(unsafe { Self::owned_string(vev_value_text(value)) }),
             VEV_VALUE_VECTOR => {
@@ -388,6 +469,23 @@ struct Db {
 }
 
 impl Db {
+    fn query_columns(
+        &self,
+        query: &PreparedQuery,
+        inputs: &str,
+    ) -> Result<Option<ColumnResult>, String> {
+        let inputs = cstring(inputs);
+        let raw = unsafe {
+            vev_query_db_prepared_column_batch_with_inputs(self.raw, query.raw, inputs.as_ptr())
+        };
+        if raw.is_null() {
+            return Ok(None);
+        }
+        let result = unsafe { ColumnResult::from_raw(raw) };
+        unsafe { vev_column_batch_free(raw) };
+        result
+    }
+
     fn with_report(&self, tx: &str) -> Result<TxReport, String> {
         let tx = cstring(tx);
         let raw = unsafe { vev_with_edn_report(self.raw, tx.as_ptr()) };
@@ -457,6 +555,91 @@ impl Drop for Db {
             unsafe { vev_db_release(self.raw) };
             self.raw = ptr::null_mut();
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Column {
+    Entity(Vec<u64>),
+    String(Vec<String>),
+    Int(Vec<i64>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ColumnResult {
+    count: usize,
+    kinds: Vec<c_int>,
+    columns: Vec<Column>,
+}
+
+impl ColumnResult {
+    unsafe fn from_raw(raw: VevColumnBatch) -> Result<Option<Self>, String> {
+        let kind = unsafe { vev_column_batch_kind(raw) };
+        let count = unsafe { vev_column_batch_count(raw) }.max(0) as usize;
+        let entities_data = unsafe { vev_column_batch_entities_data(raw) };
+        let ints_data = unsafe { vev_column_batch_ints_data(raw) };
+        let entities = || {
+            if entities_data.is_null() {
+                Vec::new()
+            } else {
+                unsafe { slice::from_raw_parts(entities_data, count) }
+                    .iter()
+                    .map(|value| *value as u64)
+                    .collect()
+            }
+        };
+        let ints = || {
+            if ints_data.is_null() {
+                Vec::new()
+            } else {
+                unsafe { slice::from_raw_parts(ints_data, count) }.to_vec()
+            }
+        };
+        let strings = || unsafe { Library::string_column(raw, count) };
+
+        match kind {
+            VEV_COLUMN_BATCH_ENTITY => Ok(Some(Self {
+                count,
+                kinds: vec![VEV_COLUMN_ENTITY],
+                columns: vec![Column::Entity(entities())],
+            })),
+            VEV_COLUMN_BATCH_STRING => Ok(Some(Self {
+                count,
+                kinds: vec![VEV_COLUMN_STRING],
+                columns: vec![Column::String(strings())],
+            })),
+            VEV_COLUMN_BATCH_ENTITY_INT => Ok(Some(Self {
+                count,
+                kinds: vec![VEV_COLUMN_ENTITY, VEV_COLUMN_INT],
+                columns: vec![Column::Entity(entities()), Column::Int(ints())],
+            })),
+            VEV_COLUMN_BATCH_ENTITY_STRING_INT => Ok(Some(Self {
+                count,
+                kinds: vec![VEV_COLUMN_ENTITY, VEV_COLUMN_STRING, VEV_COLUMN_INT],
+                columns: vec![
+                    Column::Entity(entities()),
+                    Column::String(strings()),
+                    Column::Int(ints()),
+                ],
+            })),
+            _ => Ok(None),
+        }
+    }
+
+    fn rows(&self) -> Vec<Vec<Value>> {
+        let mut out = Vec::with_capacity(self.count);
+        for row in 0..self.count {
+            let mut values = Vec::with_capacity(self.columns.len());
+            for column in &self.columns {
+                values.push(match column {
+                    Column::Entity(values) => Value::Entity(values[row]),
+                    Column::String(values) => Value::String(values[row].clone()),
+                    Column::Int(values) => Value::Int(values[row]),
+                });
+            }
+            out.push(values);
+        }
+        out
     }
 }
 
@@ -535,22 +718,21 @@ impl PreparedQuery {
         if raw.is_null() {
             Err("failed to create statement".to_string())
         } else {
-            Ok(Statement {
-                raw,
-                _query: self,
-            })
+            Ok(Statement { raw, _query: self })
         }
     }
 
     fn query_conn(&self, conn: &Conn, inputs: &str) -> Result<ResultSet, String> {
         let inputs = cstring(inputs);
-        let raw = unsafe { vev_query_prepared_result_with_inputs(conn.raw, self.raw, inputs.as_ptr()) };
+        let raw =
+            unsafe { vev_query_prepared_result_with_inputs(conn.raw, self.raw, inputs.as_ptr()) };
         ResultSet::new(raw)
     }
 
     fn query_db(&self, db: &Db, inputs: &str) -> Result<ResultSet, String> {
         let inputs = cstring(inputs);
-        let raw = unsafe { vev_query_db_prepared_result_with_inputs(db.raw, self.raw, inputs.as_ptr()) };
+        let raw =
+            unsafe { vev_query_db_prepared_result_with_inputs(db.raw, self.raw, inputs.as_ptr()) };
         ResultSet::new(raw)
     }
 }
@@ -584,9 +766,8 @@ impl Statement<'_> {
         unsafe { vev_stmt_clear(self.raw) };
         let owned: Vec<CString> = values.iter().map(|value| cstring(value)).collect();
         let ptrs: Vec<*const c_char> = owned.iter().map(|value| value.as_ptr()).collect();
-        if unsafe {
-            vev_stmt_bind_string_collection(self.raw, ptrs.as_ptr(), ptrs.len() as c_int)
-        } {
+        if unsafe { vev_stmt_bind_string_collection(self.raw, ptrs.as_ptr(), ptrs.len() as c_int) }
+        {
             Ok(self)
         } else {
             Err("failed to bind string collection".to_string())
@@ -665,7 +846,8 @@ impl ResultSet {
             }
             let pull_count = unsafe { vev_result_pull_count(self.raw, row) };
             for pull in 0..pull_count {
-                values.push(unsafe { Library::value_to_rust(vev_result_pull(self.raw, row, pull)) });
+                values
+                    .push(unsafe { Library::value_to_rust(vev_result_pull(self.raw, row, pull)) });
             }
             out.push(values);
         }
@@ -749,9 +931,17 @@ fn main() -> Result<(), String> {
                   [(= ?email ?needle)]]"#,
     )?;
     let mut stmt = email_query.statement()?;
-    let rows = stmt.bind_string("grace@example.com")?.query_conn(&conn)?.rows();
+    let rows = stmt
+        .bind_string("grace@example.com")?
+        .query_conn(&conn)?
+        .rows();
     println!("statement rows: {rows:?}");
-    if rows != vec![vec![Value::Entity(2), Value::String("grace@example.com".to_string())]] {
+    if rows
+        != vec![vec![
+            Value::Entity(2),
+            Value::String("grace@example.com".to_string()),
+        ]]
+    {
         return Err("unexpected statement rows".to_string());
     }
 
@@ -777,6 +967,24 @@ fn main() -> Result<(), String> {
     names.sort();
     if names != vec!["Ada".to_string(), "Grace".to_string()] {
         return Err("unexpected collection statement rows".to_string());
+    }
+
+    let all_email_texts = conn.prepare(r#"[:find ?email :where [?e :user/email ?email]]"#)?;
+    let column_db = conn.db()?;
+    let columns = column_db
+        .query_columns(&all_email_texts, "[]")?
+        .ok_or_else(|| "expected string column batch".to_string())?;
+    let mut column_rows = columns.rows();
+    column_rows.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+    println!("column batch rows: {column_rows:?}");
+    if columns.kinds != vec![VEV_COLUMN_STRING]
+        || column_rows
+            != vec![
+                vec![Value::String("ada@example.com".to_string())],
+                vec![Value::String("grace@example.com".to_string())],
+            ]
+    {
+        return Err("unexpected column batch rows".to_string());
     }
 
     let pull_query = conn.prepare(
@@ -866,7 +1074,12 @@ fn main() -> Result<(), String> {
         .bind_string("ada@example.com")?
         .query_db(&snapshot)?
         .rows();
-    if snapshot_stmt_rows != vec![vec![Value::Entity(1), Value::String("ada@example.com".to_string())]] {
+    if snapshot_stmt_rows
+        != vec![vec![
+            Value::Entity(1),
+            Value::String("ada@example.com".to_string()),
+        ]]
+    {
         return Err("unexpected snapshot statement rows".to_string());
     }
 
