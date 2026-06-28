@@ -537,7 +537,9 @@ the generic typed DB-clause path while preserving reverse attribute and
 same-variable semantics. Bound-clause extension now appends the existing typed
 input row plus newly produced clause values directly into the output columns,
 so matching candidate datoms no longer require a temporary `Binding` merely to
-cross the builder boundary.
+cross the builder boundary. Filter-only clauses with no newly introduced vars
+append the typed input row directly and avoid even an empty produced-value
+array.
 
 Rule-call projection itself is also typed for the common non-distinct cases.
 Distinct variable projections keep the fast column-clone path, while constants,
