@@ -418,6 +418,21 @@
   (set! builder^.typed-rows (+ builder^.typed-rows 1))
   true)
 
+(defn query-relation-builder-add-relation-row-by-attrs! [builder: ^Query-Relation-Builder, attrs: []string, rel: Query-Relation, row: int] -> bool
+  (when (not rel.has-typed-columns)
+    (return false))
+  (let [values (make [dynamic]Value 0 (count attrs)) :defer]
+    (for [name index attrs]
+      (let [[value value-ok] (query-relation-typed-row-value rel row name)]
+        (when (or (not value-ok)
+                  (not (relation-column-can-add? builder^.typed-columns[index] value)))
+          (return false))
+        (arr.push! values value)))
+    (for [value index values]
+      (discard (relation-column-add! (addr builder^.typed-columns[index]) value)))
+    (set! builder^.typed-rows (+ builder^.typed-rows 1))
+    true))
+
 (defn query-relation-from-bindings-with-source [bindings: []Binding, source: string] -> Query-Relation
   (let [attrs (make [dynamic]string)
         attr-sources (make [dynamic]string)
@@ -11584,6 +11599,43 @@
       (return false)))
   true)
 
+(defn plain-unsourced-db-clause-or-group? [group: Or-Group] -> bool
+  (when group.has-join
+    (return false))
+  (when (= (count group.branches) 0)
+    (return false))
+  (let [branch-index 0]
+    (while (< branch-index (count group.branches))
+      (let [branch group.branches[branch-index]]
+        (when (or branch.has-join
+                  (= (count branch.clauses) 0)
+                  (> (count branch.not-groups) 0))
+          (return false))
+        (let [clause-index 0]
+          (while (< clause-index (count branch.clauses))
+            (when branch.clauses[clause-index].has-source
+              (return false))
+            (set! clause-index (+ clause-index 1)))))
+      (set! branch-index (+ branch-index 1))))
+  true)
+
+(defn query-relation-apply-plain-or-branch-typed [db: DB, rel: Query-Relation, row: int, branch: Not-Group] -> [out: Query-Relation, ok: bool]
+  (let [[current current-ok] (query-relation-single-typed-row rel row)]
+    (when (not current-ok)
+      (delete-query-relation current)
+      (return (query-relation-empty) false))
+    (let [stats (query-stats-empty)]
+      (for [clause branch.clauses]
+        (let [[next next-ok] (query-relation-apply-bound-db-clause-typed-scan db current clause (addr stats))]
+          (delete-query-relation current)
+          (when (not next-ok)
+            (delete-query-relation next)
+            (return (query-relation-empty) false))
+          (set! current next)
+          (when (= (query-relation-row-count current) 0)
+            (return current true))))
+      (return current true))))
+
 (defn append-typed-or-branch-row! [builder: ^Query-Relation-Builder, attrs: []string, db: DB, sources: []DB-Source, rel: Query-Relation, row: int, clause-value: Clause, stats: ^Query-Stats] -> [ok: bool, supported: bool]
   (let [clause-db db
         clause clause-value]
@@ -11623,6 +11675,36 @@
                 (delete attr-sources)
                 (delete-query-relation-builder builder)
                 (return (query-relation-empty) false))))
+          (set! row (+ row 1)))
+        (return (Query-Relation {attrs: attrs
+                                 attr-sources: attr-sources
+                                 attr-index: (query-relation-attr-index (slice attrs 0))
+                                 tuples: builder.tuples
+                                 typed-columns: builder.typed-columns
+                                 typed-rows: builder.typed-rows
+                                 has-typed-columns: builder.typed-ok}) true)))
+    (when (plain-unsourced-db-clause-or-group? group)
+      (let [builder (query-relation-builder (slice attrs 0))
+            row 0]
+        (while (< row rel.typed-rows)
+          (for [branch group.branches]
+            (let [[branch-rel branch-ok] (query-relation-apply-plain-or-branch-typed db rel row branch)]
+              (when (not branch-ok)
+                (delete-query-relation branch-rel)
+                (delete attrs)
+                (delete attr-sources)
+                (delete-query-relation-builder builder)
+                (return (query-relation-empty) false))
+              (let [branch-row 0]
+                (while (< branch-row (query-relation-row-count branch-rel))
+                  (when (not (query-relation-builder-add-relation-row-by-attrs! (addr builder) (slice attrs 0) branch-rel branch-row))
+                    (delete-query-relation branch-rel)
+                    (delete attrs)
+                    (delete attr-sources)
+                    (delete-query-relation-builder builder)
+                    (return (query-relation-empty) false))
+                  (set! branch-row (+ branch-row 1))))
+              (delete-query-relation branch-rel)))
           (set! row (+ row 1)))
         (return (Query-Relation {attrs: attrs
                                  attr-sources: attr-sources

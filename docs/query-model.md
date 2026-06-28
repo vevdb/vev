@@ -501,10 +501,13 @@ time, then append any produced rows back into typed columns.
 
 `or` now streams over typed rows with fanout. Simple branch groups made of one
 ordinary DB clause per branch run as typed clause scans and append branch output
-columns directly. Branches with `or-join`, nested negatives, relation-source
-matching, or more complex local pipelines reuse the existing single-binding
-branch semantics, and branch outputs are appended back into typed columns so
-`or` no longer forces a full relation materialization.
+columns directly. Plain multi-clause unsourced DB branches now run as
+branch-local typed relation pipelines and append output by attribute name, so
+branches can use different clause orders without leaving typed columns.
+Branches with `or-join`, nested negatives, relation-source matching,
+predicates, functions, or more complex local pipelines reuse the existing
+single-binding branch semantics, and branch outputs are appended back into
+typed columns so `or` no longer forces a full relation materialization.
 
 Fallback rule calls now use the same streaming typed boundary. The preferred
 path is still the materialized rule relation plus typed join when eligible, but
