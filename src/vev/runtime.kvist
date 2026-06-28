@@ -7066,6 +7066,121 @@
             (return out false)))))
     (return out true)))
 
+(defstruct Typed-Input-Binding-Env {
+  names: [dynamic]string
+  values: [dynamic]Value
+})
+
+(defstruct Typed-Produced-Values {
+  values: [dynamic]Value
+})
+
+(defn typed-input-binding-env-empty [] -> Typed-Input-Binding-Env
+  (Typed-Input-Binding-Env {names: (make [dynamic]string)
+                            values: (make [dynamic]Value)}))
+
+(defn clone-typed-input-binding-env [env: Typed-Input-Binding-Env] -> Typed-Input-Binding-Env
+  (let [names (arr.into [dynamic]string (slice env.names 0))
+        values (arr.into [dynamic]Value (slice env.values 0))]
+    (Typed-Input-Binding-Env {names: names
+                              values: values})))
+
+(defn delete-typed-input-binding-env [env: Typed-Input-Binding-Env]
+  (let [names env.names
+        values env.values]
+    (delete names)
+    (delete values)))
+
+(defn delete-typed-input-binding-envs [envs: [dynamic]Typed-Input-Binding-Env]
+  (for [env envs]
+    (delete-typed-input-binding-env env))
+  (delete envs))
+
+(defn delete-typed-produced-values [rows: [dynamic]Typed-Produced-Values]
+  (for [row rows]
+    (let [values row.values]
+      (delete values)))
+  (delete rows))
+
+(defn typed-input-binding-env-bind-var! [rel: Query-Relation, row: int, env: ^Typed-Input-Binding-Env, name: string, value: Value] -> bool
+  (when (or (= name "")
+            (= name "_"))
+    (return true))
+  (when (not (query-relation-typed-row-var-agrees? rel row name value))
+    (return false))
+  (let [[existing-index existing-ok] (typed-binding-temp-index (slice env^.names 0) name)]
+    (if existing-ok
+      (predicate-value-equal? env^.values[existing-index] value)
+      (do
+        (arr.push! env^.names name)
+        (arr.push! env^.values value)
+        (return true)))))
+
+(defn typed-bind-input-pattern-envs [rel: Query-Relation, row: int, binding: Input-Binding, value: Value, env: Typed-Input-Binding-Env] -> [dynamic]Typed-Input-Binding-Env
+  (let [out (make [dynamic]Typed-Input-Binding-Env)]
+    (case binding.kind
+      .Ignore (arr.push! out (clone-typed-input-binding-env env))
+      .None (arr.push! out (clone-typed-input-binding-env env))
+      .Var
+        (do
+          (let [next (clone-typed-input-binding-env env)]
+            (if (typed-input-binding-env-bind-var! rel row (addr next) binding.name value)
+              (arr.push! out next)
+              (delete-typed-input-binding-env next))))
+      .Tuple
+        (when (and (= value.kind .Vector)
+                   (= (count binding.items) (count value.items)))
+          (let [current (make [dynamic]Typed-Input-Binding-Env)]
+            (arr.push! current (clone-typed-input-binding-env env))
+            (for [item index binding.items]
+              (let [next-current (make [dynamic]Typed-Input-Binding-Env)]
+                (for [candidate current]
+                  (let [bound (typed-bind-input-pattern-envs rel row item value.items[index] candidate)]
+                    (for [bound-item bound]
+                      (arr.push! next-current bound-item))
+                    (delete bound)
+                    (delete-typed-input-binding-env candidate)))
+                (delete current)
+                (set! current next-current)))
+            (for [candidate current]
+              (arr.push! out candidate))
+            (delete current)))
+      .Collection
+        (when (and (= value.kind .Vector)
+                   (= (count binding.items) 1))
+          (for [item value.items]
+            (let [bound (typed-bind-input-pattern-envs rel row binding.items[0] item env)]
+              (for [bound-item bound]
+                (arr.push! out bound-item))
+              (delete bound))))
+      :else (do))
+    out))
+
+(defn typed-produced-values-from-env [rel: Query-Relation, env: Typed-Input-Binding-Env, output-vars: []string] -> [produced: [dynamic]Value, ok: bool]
+  (let [out (make [dynamic]Value)]
+    (for [name output-vars]
+      (when (and (not (= name ""))
+                 (not (= name "_"))
+                 (not (query-relation-has-attr? rel name)))
+        (let [[index found] (typed-binding-temp-index (slice env.names 0) name)]
+          (if found
+            (arr.push! out env.values[index])
+            (return out false)))))
+    (return out true)))
+
+(defn typed-produced-value-rows-from-input-binding [rel: Query-Relation, row: int, binding: Input-Binding, value: Value, output-vars: []string] -> [produced: [dynamic]Typed-Produced-Values, ok: bool]
+  (let [out (make [dynamic]Typed-Produced-Values)
+        seed (typed-input-binding-env-empty)
+        envs (typed-bind-input-pattern-envs rel row binding value seed)]
+    (for [env envs]
+      (let [[values values-ok] (typed-produced-values-from-env rel env output-vars)]
+        (if values-ok
+          (arr.push! out (Typed-Produced-Values {values: values}))
+          (delete values))))
+    (delete-typed-input-binding-envs envs)
+    (delete-typed-input-binding-env seed)
+    (return out true)))
+
 (defn bindings-after-function-with-fns [bindings: []Binding, function: Function-Clause, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
@@ -11953,27 +12068,30 @@
                      typed-rows: builder.typed-rows
                      has-typed-columns: true})))
 
-(defn query-relation-extend-function-typed [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
-  (when (not rel.has-typed-columns)
-    (return (query-relation-empty) false))
-  (let [[_ op-ok] (typed-function-op-name function registry)]
-    (when (not op-ok)
-      (return (query-relation-empty) false)))
-  (when (not (= function.out-binding.kind .None))
-    (when (input-binding-contains-collection? function.out-binding)
-      (return (query-relation-empty) false))
-    (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
-          attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
-          output-vars (make [dynamic]string) :defer
-          seen-output-vars (set.empty string) :defer]
-      (append-input-binding-vars-indexed! (addr output-vars) (addr seen-output-vars) function.out-binding)
-      (for [name output-vars]
-        (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
-      (let [builder (query-relation-builder (slice attrs 0))
-            row 0]
-        (while (< row rel.typed-rows)
-          (let [[value value-ok] (typed-function-op-value rel row function registry)]
-            (when value-ok
+(defn query-relation-extend-function-out-binding-typed [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+        output-vars (make [dynamic]string) :defer
+        seen-output-vars (set.empty string) :defer]
+    (append-input-binding-vars-indexed! (addr output-vars) (addr seen-output-vars) function.out-binding)
+    (for [name output-vars]
+      (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
+    (let [builder (query-relation-builder (slice attrs 0))
+          row 0]
+      (while (< row rel.typed-rows)
+        (let [[value value-ok] (typed-function-op-value rel row function registry)]
+          (when value-ok
+            (if (input-binding-contains-collection? function.out-binding)
+              (let [[produced-rows produced-ok] (typed-produced-value-rows-from-input-binding rel row function.out-binding value (slice output-vars 0))]
+                (when produced-ok
+                  (for [produced produced-rows]
+                    (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced.values 0)))
+                      (delete-typed-produced-values produced-rows)
+                      (delete attrs)
+                      (delete attr-sources)
+                      (delete-query-relation-builder builder)
+                      (return (query-relation-empty) false))))
+                (delete-typed-produced-values produced-rows))
               (let [[produced produced-ok] (typed-produced-values-from-input-binding rel row function.out-binding value (slice output-vars 0))]
                 (when produced-ok
                   (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
@@ -11982,15 +12100,41 @@
                     (delete attr-sources)
                     (delete-query-relation-builder builder)
                     (return (query-relation-empty) false)))
-                (delete produced))))
-          (set! row (+ row 1)))
-        (return (Query-Relation {attrs: attrs
-                                 attr-sources: attr-sources
-                                 attr-index: (query-relation-attr-index (slice attrs 0))
-                                 tuples: builder.tuples
-                                 typed-columns: builder.typed-columns
-                                 typed-rows: builder.typed-rows
-                                 has-typed-columns: builder.typed-ok}) true))))
+                (delete produced)))))
+        (set! row (+ row 1)))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: builder.tuples
+                               typed-columns: builder.typed-columns
+                               typed-rows: builder.typed-rows
+                               has-typed-columns: builder.typed-ok}) true))))
+
+(defn query-relation-extend-function-binding-typed [rel: Query-Relation, op: string, terms: []Term, binding: Input-Binding, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+  (when (not rel.has-typed-columns)
+    (return (query-relation-empty) false))
+  (let [function (Function-Clause {op: op
+                                   terms: terms
+                                   out-binding: binding})
+        [_ op-ok] (typed-function-op-name function registry)]
+    (when (not op-ok)
+      (return (query-relation-empty) false))
+    (query-relation-extend-function-out-binding-typed rel function registry)))
+
+(defn query-relation-extend-function-value-binding-typed [rel: Query-Relation, op: string, values: []Value, binding: Input-Binding, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+  (let [terms (make [dynamic]Term) :defer]
+    (for [value values]
+      (arr.push! terms (term-value value)))
+    (query-relation-extend-function-binding-typed rel op (slice terms 0) binding registry)))
+
+(defn query-relation-extend-function-typed [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+  (when (not rel.has-typed-columns)
+    (return (query-relation-empty) false))
+  (let [[_ op-ok] (typed-function-op-name function registry)]
+    (when (not op-ok)
+      (return (query-relation-empty) false)))
+  (when (not (= function.out-binding.kind .None))
+    (return (query-relation-extend-function-out-binding-typed rel function registry)))
   (when function.is-tuple
     (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
           attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
@@ -13537,25 +13681,33 @@
       (delete bindings)
       out)))
 
-(defn query-relation-apply-ground-typed [rel: Query-Relation, ground: Ground] -> [out: Query-Relation, ok: bool]
-  (when (not rel.has-typed-columns)
+(defn query-relation-apply-ground-binding-typed [rel: Query-Relation, source-term: Term, binding: Input-Binding] -> [out: Query-Relation, ok: bool]
+  (when (= binding.kind .None)
     (return (query-relation-empty) false))
-  (when (not (= ground.binding.kind .None))
-    (when (input-binding-contains-collection? ground.binding)
-      (return (query-relation-empty) false))
-    (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
-          attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
-          output-vars (make [dynamic]string) :defer
-          seen-output-vars (set.empty string) :defer]
-      (append-input-binding-vars-indexed! (addr output-vars) (addr seen-output-vars) ground.binding)
-      (for [name output-vars]
-        (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
-      (let [builder (query-relation-builder (slice attrs 0))
-            row 0]
-        (while (< row rel.typed-rows)
-          (let [[source source-ok] (query-relation-resolve-typed-term rel row ground.source)]
-            (when source-ok
-              (let [[produced produced-ok] (typed-produced-values-from-input-binding rel row ground.binding source (slice output-vars 0))]
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+        output-vars (make [dynamic]string) :defer
+        seen-output-vars (set.empty string) :defer]
+    (append-input-binding-vars-indexed! (addr output-vars) (addr seen-output-vars) binding)
+    (for [name output-vars]
+      (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
+    (let [builder (query-relation-builder (slice attrs 0))
+          row 0]
+      (while (< row rel.typed-rows)
+        (let [[source source-ok] (query-relation-resolve-typed-term rel row source-term)]
+          (when source-ok
+            (if (input-binding-contains-collection? binding)
+              (let [[produced-rows produced-ok] (typed-produced-value-rows-from-input-binding rel row binding source (slice output-vars 0))]
+                (when produced-ok
+                  (for [produced produced-rows]
+                    (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced.values 0)))
+                      (delete-typed-produced-values produced-rows)
+                      (delete attrs)
+                      (delete attr-sources)
+                      (delete-query-relation-builder builder)
+                      (return (query-relation-empty) false))))
+                (delete-typed-produced-values produced-rows))
+              (let [[produced produced-ok] (typed-produced-values-from-input-binding rel row binding source (slice output-vars 0))]
                 (when produced-ok
                   (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
                     (delete produced)
@@ -13563,15 +13715,24 @@
                     (delete attr-sources)
                     (delete-query-relation-builder builder)
                     (return (query-relation-empty) false)))
-                (delete produced))))
-          (set! row (+ row 1)))
-        (return (Query-Relation {attrs: attrs
-                                 attr-sources: attr-sources
-                                 attr-index: (query-relation-attr-index (slice attrs 0))
-                                 tuples: builder.tuples
-                                 typed-columns: builder.typed-columns
-                                 typed-rows: builder.typed-rows
-                                 has-typed-columns: builder.typed-ok}) true))))
+                (delete produced)))))
+        (set! row (+ row 1)))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: builder.tuples
+                               typed-columns: builder.typed-columns
+                               typed-rows: builder.typed-rows
+                               has-typed-columns: builder.typed-ok}) true))))
+
+(defn query-relation-apply-ground-value-binding-typed [rel: Query-Relation, source: Value, binding: Input-Binding] -> [out: Query-Relation, ok: bool]
+  (query-relation-apply-ground-binding-typed rel (term-value source) binding))
+
+(defn query-relation-apply-ground-typed [rel: Query-Relation, ground: Ground] -> [out: Query-Relation, ok: bool]
+  (when (not rel.has-typed-columns)
+    (return (query-relation-empty) false))
+  (when (not (= ground.binding.kind .None))
+    (return (query-relation-apply-ground-binding-typed rel ground.source ground.binding)))
   (when (and (= ground.binding.kind .None)
              ground.is-collection
              (not (= ground.out "")))
