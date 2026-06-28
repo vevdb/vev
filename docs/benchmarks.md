@@ -140,11 +140,14 @@ MATH_BENCH_WARMUPS=0 MATH_BENCH_SAMPLES=1 bench/math_bench/run_vev.sh q1
 The first checked full-data Vev results use 1,837,904 transaction items and
 1,837,918 current datoms after schema. Import currently takes about 69-72s from
 EDN chunks, so query timings should be read separately from import timings.
+The Vev math benchmark harness treats the documented Q1/Q2/Q3/Q4 row counts as
+correctness guards: if an optimizer changes those counts, the workload prints
+`ok=false` even if the query got faster.
 
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
 | `q1` | 0.42ms | 2 | Good selective/bound rule path |
-| `q2` | 3.95s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, numeric join keys, single-rule typed projection rebuilds, and entity-leading compound joins are reduced |
+| `q2` | 3.86s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, numeric join keys, single-rule typed projection rebuilds, and entity-leading compound joins are reduced |
 | `q3` | 3.47s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering; binary typed var equality avoids value-wrapper comparison |
 | `q4` | 1.01s | 135 | Completes through derived transitive closure over a derived two-hop edge |
 

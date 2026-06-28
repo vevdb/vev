@@ -180,10 +180,12 @@ remaining shared columns in candidate buckets, which is useful for Datomic-style
 joins such as `?entity/?attribute-value` pairs without relying on formatted
 compound string keys. Binary `=` / `!=` predicates over two typed variables can
 compare relation columns directly, avoiding per-row `Value` wrapper resolution
-for common filters. The broad path still pays for generic `Binding` construction
-in joins/results and final dedupe. The next performance step is
-columnar/streamed materialized rule relations and typed joins that avoid those
-remaining row-shaped costs.
+for common filters. Predicate and `not` filters now move surviving compatibility
+`Binding` rows into the filtered relation instead of cloning each row, matching
+the existing dedupe/memo ownership pattern. The broad path still pays for
+generic `Binding` construction in joins/results and final dedupe. The next
+performance step is columnar/streamed materialized rule relations and typed
+joins that avoid those remaining row-shaped costs.
 
 ## Query Engine Strategy
 
@@ -221,6 +223,11 @@ representable as primitive join keys. Typed relation joins use the same
 entity/int normalization, including single-column joins, so the fast typed path
 can handle common Datomic-style joins where entity ids appear as either entity
 values or integer ids.
+The compatibility binding evaluator uses the same predicate equality when it
+merges existing variable bindings, including rule-call outputs. This matters
+for DataScript/Datomic-style ref values: a rule can bind `?x` from an integer
+attribute in one clause and from a ref/entity-valued attribute in another, and
+unification must treat those as equal when they identify the same entity.
 
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the
@@ -379,6 +386,54 @@ borrow `Query-Relation` typed columns directly when both inputs already have a
 typed column cache. The older `Typed-Relation` conversion path remains as
 fallback for untyped relation inputs, but the common typed path no longer clones
 whole columns just to build join keys and output rows.
+
+Next columnar milestone: make the relation representation explicitly support
+typed-only rows. A partial experiment where typed joins stopped emitting
+compatibility `Binding` rows improved the filtered math-bench Q3 path, but it
+also exposed unsafe assumptions in other operators that still treat
+`rel.tuples` as the authoritative row store. The next attempt should not patch
+individual joins in place. It should add a clear invariant and API boundary:
+
+- `query-relation-row-count` reports the logical row count, independent of
+  physical storage
+- operators declare whether they consume typed rows, binding rows, or either
+- binding-only operators materialize through one audited helper
+- typed joins, typed predicates, typed bound clauses, and typed result
+  rendering can pass typed-only relations end-to-end
+- aggregate, function, `or`, `not`, pull, and fallback rule paths must either
+  gain typed handlers or call the materialization helper explicitly
+
+The broad-rule math workloads are the right proving ground for this work:
+Q2 stresses a large unfiltered typed relation followed by a bound lookup, while
+Q3 proves the value of keeping the relation typed through a selective predicate
+before that final lookup.
+
+Initial typed-only groundwork is now in place. `query-relation-row-count`
+reports logical relation size from cached typed rows when available, and the
+main relation-to-bindings bridge goes through `query-relation-materialized-bindings`.
+This removes hidden row-count assumptions before introducing typed-only
+producers.
+
+The first audited typed-only producer is distinct-variable rule-call projection.
+When a rule call already returns typed columns and the call output variables are
+distinct, projection now forwards cloned typed columns without also emitting one
+compatibility `Binding` per row. Downstream binding consumers must use
+`query-relation-materialized-bindings`, while typed consumers can stay columnar.
+This is intentionally narrower than the reverted typed-join experiment: it keeps
+the typed-only boundary at a well-defined projection operator and is guarded by
+the math benchmark row-count checks.
+
+Predicate filtering now honors that boundary. Supported predicates can evaluate
+directly against typed rows and return typed-only output; unsupported predicates
+materialize through `query-relation-materialized-bindings` before using the
+binding predicate path. This keeps correctness explicit while allowing rule
+projection followed by selective predicates to avoid compatibility row
+allocation.
+
+The profiled query result boundary also treats compatibility bindings as an
+optional representation. Typed result rendering runs directly from typed
+columns; aggregate and fallback rendering materialize through the audited helper
+instead of reading `post-rel.tuples` directly.
 
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
