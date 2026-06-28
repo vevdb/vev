@@ -140,8 +140,13 @@ physical operators and run before the generic memo/delta path.
 Inside the generic memo/delta evaluator, plain DB data-clause steps now execute
 through the relation engine: the current rule body relation is joined with the
 clause relation and deduped at the existing per-step boundary. Rule-call steps
-still bridge through the memo/delta binding tables, so this is an intermediate
-state rather than a fully columnar recursive-rule engine.
+still store memo/delta state as binding rows, but broad rule-call application
+can now project memo rows into a relation and join that relation against the
+current body relation. Small current relations keep the row-wise matcher because
+that avoids projecting an entire memo table for a handful of rows. Distinct-var
+rule calls use a typed projection path, so the broad path can stay in typed
+columns through the join. This remains an intermediate state rather than a fully
+columnar recursive-rule engine.
 The linear transitive recognizer also handles a common derived-edge shape where
 the recursive edge is a non-recursive two-hop rule, such as `adv` in
 Datalevin's math-bench:
@@ -513,10 +518,11 @@ positive recursive rule groups can use component-local memoized execution with
 delta-driven iteration over each recursive rule-call position. Specialized
 transitive paths remain the fast path for common reachability shapes. The
 generic memo/delta evaluator is now partially relation-native: DB clause steps
-run as relation joins, while rule-call memo/delta tables remain row-shaped. The
-next rule-engine step is to push those memo tables toward typed relation storage
-and add measured handling for richer rule bodies using the dependency components
-as the stratification input.
+run as relation joins, and broad rule-call steps can project memo rows into typed
+relations before joining. The memo/delta tables themselves remain row-shaped.
+The next rule-engine step is to store or cache memo tables in typed relation
+form directly and add measured handling for richer rule bodies using the
+dependency components as the stratification input.
 
 Near-term query work should expand the relation engine in this order:
 

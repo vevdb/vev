@@ -24,6 +24,14 @@
       (return true)))
   false)
 
+(defn has-text? [result: vev.Result-Set, text: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text))
+      (return true)))
+  false)
+
 (t.deftest recursive-rules-use-relation-native-clause-steps
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -77,3 +85,42 @@
     (t.is (has-entity-pair? result 0 3))
     (t.is (has-entity-pair? result 0 5))
     (t.is (has-entity-pair? result 4 5))))
+
+(t.deftest memo-rule-call-projection-preserves-argument-semantics
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :link (vev.value-entity 1)]
+             [:db/add 1 :link (vev.value-entity 2)]
+             [:db/add 2 :link (vev.value-entity 2)]
+             [:db/add 3 :link (vev.value-entity 3)]
+             [:db/add 1 :name (vev.value-string "Ada")]
+             [:db/add 2 :name (vev.value-string "Grace")]])
+        self-links (vev.q-text-with-rules
+                     conn.db
+                     "[:find ?e :in $ % :where (edge ?e ?e)]"
+                     "[[(edge ?a ?b) [?a :link ?b]]]"
+                     ([]vev.Query-Input []))
+        wildcard-links (vev.q-text-with-rules
+                         conn.db
+                         "[:find ?e :in $ % :where (edge ?e _)]"
+                         "[[(edge ?a ?b) [?a :link ?b]]]"
+                         ([]vev.Query-Input []))
+        constant-name (vev.q-text-with-rules
+                        conn.db
+                        "[:find ?name :in $ % :where (named ?e \"Ada\") [?e :name ?name]]"
+                        "[[(named ?e ?name) [?e :name ?name]]]"
+                        ([]vev.Query-Input []))]
+    (t.is self-links.ok)
+    (t.is (= (count self-links.rows) 2))
+    (t.is (has-entity? self-links 2))
+    (t.is (has-entity? self-links 3))
+    (t.is wildcard-links.ok)
+    (t.is (= (count wildcard-links.rows) 3))
+    (t.is (has-entity? wildcard-links 1))
+    (t.is (has-entity? wildcard-links 2))
+    (t.is (has-entity? wildcard-links 3))
+    (t.is constant-name.ok)
+    (t.is (= (count constant-name.rows) 1))
+    (t.is (has-text? constant-name "Ada"))))
