@@ -556,6 +556,17 @@ attribute clause remains the fastest path, and other bound shapes such as
 value-bound joins now convert one typed row to a binding, run the existing
 clause matcher, and write matching rows back into typed columns.
 
+Unbound ordinary DB clauses now have a typed-first producer too. The operator
+streams `Clause-Index-Scan` candidates, checks wildcard/value/lookup-ref,
+reverse-attribute, tx/op, and repeated-variable semantics directly against the
+datom, and appends projected clause variables into typed columns without first
+building `Binding` rows. If a projected value cannot fit the columnar relation
+layout, the operator falls back to the older binding-backed constructor.
+Binding-only fallback joins now explicitly materialize typed-only inputs
+through `query-relation-materialized-bindings`, so typed-only producers can feed
+conservative product/hash/nested-loop joins without depending on stale
+compatibility tuples.
+
 Primary collection DB queries now preserve the full ordered query model when
 rewritten onto their synthetic relation source. The rewrite carries over
 `where-steps`, appends the synthetic source as an explicit input spec, and
