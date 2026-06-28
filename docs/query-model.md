@@ -562,6 +562,11 @@ memo/delta parameter relations and for materialized helper rule outputs, so
 general rule-call projection no longer has to allocate a temporary `Binding`
 for every typed result row.
 
+Specialized materialized helper-rule producers are typed-only for two-parameter
+same-entity and derived-edge shapes. These producers now dedupe with primitive
+row keys and fill relation columns directly instead of storing both typed
+columns and compatibility `Binding` rows.
+
 Generic bound-clause fallback also streams. The specialized entity-bound
 attribute clause remains the fastest path, and other bound shapes such as
 value-bound joins now convert one typed row to a binding, run the existing

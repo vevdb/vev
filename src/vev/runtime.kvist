@@ -12899,7 +12899,10 @@
                     (set! value found-value)
                     (set! value-ok found-ok)))
                 (when value-ok
-                  (append-two-param-relation-row! (addr bindings) (addr columns) (addr typed-rows) (addr seen) rule.params[0] (value-entity datom.e) rule.params[1] value)))))))
+                  (when (not (append-two-param-relation-row! (addr columns) (addr typed-rows) (addr seen) (value-entity datom.e) value))
+                    (delete bindings)
+                    (delete-relation-columns columns)
+                    (return (query-relation-empty) false))))))))
       (set! i (+ i 1)))
     (let [attrs ([dynamic]string [rule.params[0] rule.params[1]])
           attr-sources ([dynamic]string ["" ""])]
@@ -12934,40 +12937,29 @@
       (return right-attr left-attr true))
     (return "" "" false)))
 
-(defn append-two-param-binding! [bindings: ^[dynamic]Binding, seen: ^set[string], first-name: string, first-value: Value, second-name: string, second-value: Value]
-  (let [out (Binding {})]
-    (binding-store! (addr out) first-name first-value)
-    (binding-store! (addr out) second-name second-value)
-    (let [[key key-ok] (binding-dedupe-key out)]
-      (if key-ok
-        (let [already-seen (set.contains? seen^ key)]
-          (if already-seen
-            (delete out.items)
-            (do
-              (set.add! seen key)
-              (arr.push! bindings^ out))))
-        (if (binding-exists? (slice bindings^ 0) out)
-          (delete out.items)
-          (arr.push! bindings^ out))))))
+(defn two-param-row-key [first-value: Value, second-value: Value] -> [key: string, ok: bool]
+  (let [[first-key first-ok] (primitive-value-dedupe-key first-value)]
+    (when (not first-ok)
+      (return "" false))
+    (let [[second-key second-ok] (primitive-value-dedupe-key second-value)]
+      (when (not second-ok)
+        (return "" false))
+      (return (fmt.tprintf "%d:%s;%d:%s" (count first-key) first-key (count second-key) second-key) true))))
 
-(defn append-two-param-relation-row! [bindings: ^[dynamic]Binding, columns: ^[dynamic]Relation-Column, rows: ^int, seen: ^set[string], first-name: string, first-value: Value, second-name: string, second-value: Value]
-  (let [out (Binding {})]
-    (binding-store! (addr out) first-name first-value)
-    (binding-store! (addr out) second-name second-value)
-    (let [[key key-ok] (binding-dedupe-key out)]
-      (when key-ok
-        (let [already-seen (set.contains? seen^ key)]
-          (when already-seen
-            (delete out.items)
-            (return))
-          (set.add! seen key)))
-      (when (and (not key-ok) (binding-exists? (slice bindings^ 0) out))
-        (delete out.items)
-        (return))
-      (when (and (relation-column-add! (addr columns^[0]) first-value)
-                 (relation-column-add! (addr columns^[1]) second-value))
-        (set! rows^ (+ rows^ 1))
-        (arr.push! bindings^ out)))))
+(defn append-two-param-relation-row! [columns: ^[dynamic]Relation-Column, rows: ^int, seen: ^set[string], first-value: Value, second-value: Value] -> bool
+  (let [[key key-ok] (two-param-row-key first-value second-value)]
+    (when (not key-ok)
+      (return false))
+    (when (set.contains? seen^ key)
+      (return true))
+    (when (not (and (relation-column-can-add? columns^[0] first-value)
+                    (relation-column-can-add? columns^[1] second-value)))
+      (return false))
+    (set.add! seen^ key)
+    (discard (relation-column-add! (addr columns^[0]) first-value))
+    (discard (relation-column-add! (addr columns^[1]) second-value))
+    (set! rows^ (+ rows^ 1))
+    true))
 
 (defn query-relation-from-two-attr-same-entity-rule [db: DB, rule: Rule, first-attr: string, second-attr: string, stats: ^Query-Stats] -> [rel: Query-Relation, ok: bool]
   (when (not (and (schema-cardinality-one? db first-attr)
@@ -12998,7 +12990,10 @@
                 (set! second-i (+ second-i 1))
               :else
                 (do
-                  (append-two-param-relation-row! (addr bindings) (addr columns) (addr typed-rows) (addr seen) rule.params[0] first-datom.v rule.params[1] second-datom.v)
+                  (when (not (append-two-param-relation-row! (addr columns) (addr typed-rows) (addr seen) first-datom.v second-datom.v))
+                    (delete bindings)
+                    (delete-relation-columns columns)
+                    (return (query-relation-empty) false))
                   (set! first-i (+ first-i 1))
                   (set! second-i (+ second-i 1)))))))
       (let [second-values (current-entity-attr-values db second-attr stats)
@@ -13010,7 +13005,10 @@
             (when (datom-current-at? db datom-index)
               (let [[second-value second-ok] (mmap.get second-values datom.e)]
                 (when second-ok
-                  (append-two-param-relation-row! (addr bindings) (addr columns) (addr typed-rows) (addr seen) rule.params[0] datom.v rule.params[1] second-value)))))
+                  (when (not (append-two-param-relation-row! (addr columns) (addr typed-rows) (addr seen) datom.v second-value))
+                    (delete bindings)
+                    (delete-relation-columns columns)
+                    (return (query-relation-empty) false))))))
           (set! i (+ i 1)))))
     (let [attrs ([dynamic]string [rule.params[0] rule.params[1]])
           attr-sources ([dynamic]string ["" ""])]
