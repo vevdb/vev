@@ -462,12 +462,15 @@ typed-row boundary. Unsupported or final API paths still materialize through
 `query-relation-materialized-bindings`, while common row-local operators stream
 one typed input row at a time and write their outputs back into typed columns.
 
-Function clauses now have the first streaming typed fallback replacement. When
-the input relation is typed and no native callback registry is involved, the
-operator evaluates the existing function semantics row-by-row, writes typed
+Function clauses now have a streaming typed fallback replacement for scalar
+built-in output. When the input relation is typed, the operator evaluates
+built-in function semantics directly from typed input columns, writes typed
 output columns, and falls back to materialization only if the produced values
-cannot be represented columnarly. This keeps common scalar function clauses
-such as `(count ?name) ?len` on the typed path after rule projection.
+cannot be represented columnarly or the function shape needs destructuring,
+tuple output, dynamic op vars, or native callbacks. This keeps common scalar
+function clauses such as `(count ?name) ?len`, string helpers, arithmetic
+helpers, and simple `keyword` / `name` / `str` transforms on the typed path
+after rule projection.
 
 `get-else` also has a streaming typed operator. It resolves the entity term
 directly from typed input columns, applies the existing default-value semantics

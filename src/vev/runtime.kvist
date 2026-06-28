@@ -2575,6 +2575,247 @@
         (set! index (+ index 1))))
     (return true true)))
 
+(defn typed-function-op-supported? [op: string] -> bool
+  (or (= op "count")
+      (= op "identity")
+      (= op "ground")
+      (= op "inc")
+      (= op "dec")
+      (= op "name")
+      (= op "subs")
+      (= op "re-pattern")
+      (= op "re-find")
+      (= op "str")
+      (= op "keyword")
+      (= op "first")
+      (= op "second")
+      (= op "get")
+      (= op "contains?")
+      (= op "clojure.string/includes?")
+      (= op "clojure.string/starts-with?")
+      (= op "clojure.string/ends-with?")
+      (= op "+")
+      (= op "-")
+      (= op "*")
+      (= op "/")
+      (= op "quot")
+      (= op "rem")
+      (= op "mod")
+      (= op "min")
+      (= op "max")
+      (= op "compare")))
+
+(defn typed-function-op-name [function: Function-Clause, registry: []Native-Query-Fn] -> [op: string, ok: bool]
+  (when (query-var-name? function.op)
+    (return "" false))
+  (when (typed-function-op-supported? function.op)
+    (return function.op true))
+  (let [[index found] (query-fn-index registry function.op)]
+    (when (not found)
+      (return "" false))
+    (let [entry registry[index]]
+      (when (or entry.has-function-callback
+                (= (count entry.target) 0)
+                (not (typed-function-op-supported? entry.target)))
+        (return "" false))
+      (return entry.target true))))
+
+(defn typed-function-op-value [rel: Query-Relation, row: int, function: Function-Clause, registry: []Native-Query-Fn] -> [value: Value, ok: bool]
+  (let [[op op-ok] (typed-function-op-name function registry)]
+    (when (not op-ok)
+      (return (Value {}) false))
+    (when (and (= op "count")
+               (= (count function.terms) 1))
+      (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[0])]
+        (when (and input-ok (= input.kind .String))
+          (return (value-int (i64 (count input.text))) true))
+        (return (Value {}) false)))
+    (when (and (or (= op "identity")
+                   (= op "ground"))
+               (= (count function.terms) 1))
+      (return (query-relation-resolve-typed-term rel row function.terms[0])))
+    (when (and (= op "inc")
+               (= (count function.terms) 1))
+      (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[0])]
+        (when (and input-ok (= input.kind .Int))
+          (return (value-int (+ input.int-value 1)) true))
+        (return (Value {}) false)))
+    (when (and (= op "dec")
+               (= (count function.terms) 1))
+      (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[0])]
+        (when (and input-ok (= input.kind .Int))
+          (return (value-int (- input.int-value 1)) true))
+        (return (Value {}) false)))
+    (when (and (= op "name")
+               (= (count function.terms) 1))
+      (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[0])]
+        (when (not input-ok)
+          (return (Value {}) false))
+        (when (= input.kind .String)
+          (return input true))
+        (when (= input.kind .Keyword)
+          (let [slash (slash-index input.text)]
+            (if (= slash -1)
+              (return (value-string (slice input.text 1)) true)
+              (return (value-string (slice input.text (+ slash 1))) true))))
+        (return (Value {}) false)))
+    (when (and (= op "subs")
+               (or (= (count function.terms) 2)
+                   (= (count function.terms) 3)))
+      (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[0])
+            [start start-ok] (query-relation-resolve-typed-term rel row function.terms[1])]
+        (when (not (and input-ok start-ok (= input.kind .String) (= start.kind .Int)))
+          (return (Value {}) false))
+        (if (= (count function.terms) 2)
+          (let [[part ok] (strings.substring_from input.text (int start.int-value))]
+            (when ok
+              (return (value-string part) true)))
+          (let [[end end-ok] (query-relation-resolve-typed-term rel row function.terms[2])]
+            (when (and end-ok (= end.kind .Int))
+              (let [[part ok] (strings.substring input.text (int start.int-value) (int end.int-value))]
+                (when ok
+                  (return (value-string part) true))))))
+        (return (Value {}) false)))
+    (when (and (= op "re-pattern")
+               (= (count function.terms) 1))
+      (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[0])]
+        (when (and input-ok (= input.kind .String))
+          (let [[compiled err] (regex.create input.text)]
+            (when (= err nil)
+              (regex.destroy compiled)
+              (return input true))))
+        (return (Value {}) false)))
+    (when (and (= op "re-find")
+               (= (count function.terms) 2))
+      (let [[pattern pattern-ok] (query-relation-resolve-typed-term rel row function.terms[0])
+            [text text-ok] (query-relation-resolve-typed-term rel row function.terms[1])]
+        (when (and pattern-ok text-ok)
+          (return (re-find-value pattern text)))
+        (return (Value {}) false)))
+    (when (= op "str")
+      (let [parts (make [dynamic]string 0 (count function.terms))]
+        (defer (delete parts))
+        (for [term function.terms]
+          (let [[value value-ok] (query-relation-resolve-typed-term rel row term)]
+            (when (not value-ok)
+              (return (Value {}) false))
+            (let [[part part-ok] (value-str value)]
+              (when (not part-ok)
+                (return (Value {}) false))
+              (arr.push! parts part))))
+        (return (value-string (strings.concatenate (slice parts 0))) true)))
+    (when (and (= op "keyword")
+               (or (= (count function.terms) 1)
+                   (= (count function.terms) 2)))
+      (if (= (count function.terms) 1)
+        (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[0])]
+          (when (not input-ok)
+            (return (Value {}) false))
+          (when (= input.kind .Keyword)
+            (return input true))
+          (when (= input.kind .String)
+            (if (strings.has_prefix input.text ":")
+              (return (value-keyword input.text) true)
+              (return (value-keyword (strings.concatenate ([]string [":" input.text]))) true)))
+          (return (Value {}) false))
+        (let [[namespace namespace-ok] (query-relation-resolve-typed-term rel row function.terms[0])
+              [name name-ok] (query-relation-resolve-typed-term rel row function.terms[1])]
+          (when (not (and namespace-ok name-ok (= namespace.kind .String) (= name.kind .String)))
+            (return (Value {}) false))
+          (return
+            (value-keyword (strings.concatenate ([]string [":" namespace.text "/" name.text])))
+            true))))
+    (when (and (or (= op "first")
+                   (= op "second"))
+               (= (count function.terms) 1))
+      (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[0])
+            index (if (= op "first") 0 1)]
+        (when (and input-ok
+                   (= input.kind .Vector)
+                   (< index (count input.items)))
+          (return input.items[index] true))
+        (return (Value {}) false)))
+    (when (and (= op "get")
+               (= (count function.terms) 2))
+      (let [[map-value map-ok] (query-relation-resolve-typed-term rel row function.terms[0])
+            [key key-ok] (query-relation-resolve-typed-term rel row function.terms[1])]
+        (when (and map-ok key-ok)
+          (return (map-get-value map-value key)))
+        (return (Value {}) false)))
+    (when (and (or (= op "contains?")
+                   (= op "clojure.string/includes?")
+                   (= op "clojure.string/starts-with?")
+                   (= op "clojure.string/ends-with?"))
+               (= (count function.terms) 2))
+      (let [[left left-ok] (query-relation-resolve-typed-term rel row function.terms[0])
+            [right right-ok] (query-relation-resolve-typed-term rel row function.terms[1])]
+        (when (not (and left-ok right-ok (= left.kind .String) (= right.kind .String)))
+          (return (Value {}) false))
+        (cond
+          (or (= op "contains?") (= op "clojure.string/includes?"))
+            (return (value-bool (strings.contains left.text right.text)) true)
+          (= op "clojure.string/starts-with?")
+            (return (value-bool (strings.has_prefix left.text right.text)) true)
+          (= op "clojure.string/ends-with?")
+            (return (value-bool (strings.has_suffix left.text right.text)) true))))
+    (when (or (= op "+")
+              (= op "-")
+              (= op "*")
+              (= op "/")
+              (= op "quot")
+              (= op "rem")
+              (= op "mod")
+              (= op "min")
+              (= op "max"))
+      (when (= (count function.terms) 0)
+        (return (Value {}) false))
+      (let [[first-value first-ok] (query-relation-resolve-typed-term rel row function.terms[0])
+            result first-value.int-value]
+        (when (not (and first-ok (= first-value.kind .Int)))
+          (return (Value {}) false))
+        (for [term (slice function.terms 1)]
+          (let [[next next-ok] (query-relation-resolve-typed-term rel row term)]
+            (when (not (and next-ok (= next.kind .Int)))
+              (return (Value {}) false))
+            (cond
+              (= op "+") (set! result (+ result next.int-value))
+              (= op "-") (set! result (- result next.int-value))
+              (= op "*") (set! result (* result next.int-value))
+              (= op "/") (do
+                (when (= next.int-value 0)
+                  (return (Value {}) false))
+                (set! result (/ result next.int-value)))
+              (= op "quot") (do
+                (when (= next.int-value 0)
+                  (return (Value {}) false))
+                (set! result (/ result next.int-value)))
+              (= op "rem") (do
+                (when (= next.int-value 0)
+                  (return (Value {}) false))
+                (set! result (% result next.int-value)))
+              (= op "mod") (do
+                (when (= next.int-value 0)
+                  (return (Value {}) false))
+                (let [m (% result next.int-value)]
+                  (if (and (not (= m 0))
+                           (or (and (< m 0) (> next.int-value 0))
+                               (and (> m 0) (< next.int-value 0))))
+                    (set! result (+ m next.int-value))
+                    (set! result m))))
+              (= op "min") (when (< next.int-value result)
+                (set! result next.int-value))
+              (= op "max") (when (> next.int-value result)
+                (set! result next.int-value)))))
+        (return (value-int result) true)))
+    (when (and (= op "compare")
+               (= (count function.terms) 2))
+      (let [[left left-ok] (query-relation-resolve-typed-term rel row function.terms[0])
+            [right right-ok] (query-relation-resolve-typed-term rel row function.terms[1])]
+        (when (and left-ok right-ok)
+          (return (value-int (i64 (value-compare left right))) true))
+        (return (Value {}) false)))
+    (return (Value {}) false)))
+
 (defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
   (when (not (= map-value.kind .Map))
     (return (Value {}) false))
@@ -11058,32 +11299,30 @@
 
 (defn query-relation-extend-function-typed [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (when (or (not rel.has-typed-columns)
-            (> (count registry) 0))
+            (not (= function.out-binding.kind .None))
+            function.is-tuple
+            (= function.out ""))
     (return (query-relation-empty) false))
+  (let [[_ op-ok] (typed-function-op-name function registry)]
+    (when (not op-ok)
+      (return (query-relation-empty) false)))
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
-        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
-        output-vars (make [dynamic]string) :defer]
-    (append-function-output-vars! (addr output-vars) function)
-    (for [name output-vars]
-      (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))]
+    (append-var-binding-attr! (addr attrs) (addr attr-sources) function.out "")
     (let [builder (query-relation-builder (slice attrs 0))
           row 0]
       (while (< row rel.typed-rows)
-        (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
-          (when (not binding-ok)
-            (delete attrs)
-            (delete attr-sources)
-            (delete-query-relation-builder builder)
-            (return (query-relation-empty) false))
-          (let [[next next-ok] (apply-function-clause binding function)]
-            (delete binding.items)
-            (when next-ok
-              (when (not (query-relation-builder-add-binding! (addr builder) (slice attrs 0) next false))
-                (delete next.items)
-                (delete attrs)
-                (delete attr-sources)
-                (delete-query-relation-builder builder)
-                (return (query-relation-empty) false)))))
+        (let [[value value-ok] (typed-function-op-value rel row function registry)]
+          (when value-ok
+            (when (query-relation-typed-row-var-agrees? rel row function.out value)
+              (let [produced (make [dynamic]Value) :defer]
+                (when (not (query-relation-has-attr? rel function.out))
+                  (arr.push! produced value))
+                (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
+                  (delete attrs)
+                  (delete attr-sources)
+                  (delete-query-relation-builder builder)
+                  (return (query-relation-empty) false))))))
         (set! row (+ row 1)))
       (return (Query-Relation {attrs: attrs
                                attr-sources: attr-sources
