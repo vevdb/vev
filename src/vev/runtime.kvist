@@ -7219,10 +7219,15 @@
         (set! out (+ out 1))))
     out))
 
-(defn rule-call-ready-for-binding? [rules: []Rule, call: Rule-Call, binding: Binding] -> bool
+(defn rule-call-ready-for-binding-indexed? [rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call, binding: Binding] -> bool
   (let [available (binding-available-vars binding) :defer
-        [ok _] (validate-rule-call-required-bindings (slice available 0) rules call)]
+        [ok _] (validate-rule-call-required-bindings-indexed (slice available 0) rules index call)]
     ok))
+
+(defn rule-call-ready-for-binding? [rules: []Rule, call: Rule-Call, binding: Binding] -> bool
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (rule-call-ready-for-binding-indexed? rules (slice index 0) call binding)))
 
 (defn rule-call-selectivity-score [call: Rule-Call, binding: Binding] -> int
   (let [bound-count (rule-call-bound-arg-count call binding)]
@@ -7231,7 +7236,7 @@
       (= bound-count 1) 2
       :else 6)))
 
-(defn best-ready-rule-body-step-index [db: DB, rules: []Rule, rule: Rule, steps: []Query-Step, binding: Binding, source: string, has-source: bool] -> [index: int, ok: bool]
+(defn best-ready-rule-body-step-index-indexed [db: DB, rules: []Rule, rule-index: []Rule-Name-Index-Entry, rule: Rule, steps: []Query-Step, binding: Binding, source: string, has-source: bool] -> [index: int, ok: bool]
   (let [best -1
         best-score 0
         best-count -1]
@@ -7248,7 +7253,7 @@
               (set! candidate-count (clause-candidate-count-estimate db ([]DB-Source []) clause binding)))))
         (when (= step.kind .RuleCall)
           (let [call rule.rule-calls[step.index]]
-            (when (rule-call-ready-for-binding? rules call binding)
+            (when (rule-call-ready-for-binding-indexed? rules rule-index call binding)
               (set! ready true)
               (set! score (rule-call-selectivity-score call binding)))))
         (when ready
@@ -7271,14 +7276,21 @@
                 (set! best-count count-estimate)))))))
     (return best (>= best 0))))
 
+(defn best-ready-rule-body-step-index [db: DB, rules: []Rule, rule: Rule, steps: []Query-Step, binding: Binding, source: string, has-source: bool] -> [index: int, ok: bool]
+  (let [rule-index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index rule-index))
+    (best-ready-rule-body-step-index-indexed db rules (slice rule-index 0) rule steps binding source has-source)))
+
 (defn bindings-after-rule-body-planned-clause-call-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (make [dynamic]Binding)
-        remaining (arr.into [dynamic]Query-Step (slice rule.body-steps 0))]
+        remaining (arr.into [dynamic]Query-Step (slice rule.body-steps 0))
+        rule-index (rule-name-index-build rules)]
     (defer (delete remaining))
+    (defer (delete-rule-name-index rule-index))
     (arr.push! bindings initial)
     (while (and (> (count bindings) 0)
                 (> (count remaining) 0))
-      (let [[step-index step-ok] (best-ready-rule-body-step-index db rules rule (slice remaining 0) bindings[0] source has-source)]
+      (let [[step-index step-ok] (best-ready-rule-body-step-index-indexed db rules (slice rule-index 0) rule (slice remaining 0) bindings[0] source has-source)]
         (when (not step-ok)
           (delete bindings)
           (return (make [dynamic]Binding)))
@@ -8272,6 +8284,15 @@
 (defn rule-name-index-has? [index: []Rule-Name-Index-Entry, name: string] -> bool
   (let [[_ ok] (rule-name-index-entry index name)]
     ok))
+
+(defn rule-name-index-first-matching-rule [rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call] -> [rule: Rule, ok: bool]
+  (let [[entry-index found] (rule-name-index-entry index call.name)]
+    (when found
+      (for [rule-index index[entry-index].indexes]
+        (let [rule rules[rule-index]]
+          (when (= (count call.args) (count rule.params))
+            (return rule true))))))
+  (return (Rule {}) false))
 
 (defn rule-name-dependency-exists? [deps: []Rule-Dependency, from: string, target: string] -> bool
   (for [dep deps]
@@ -9532,7 +9553,7 @@
   (or (function-op-supported? op)
       (query-fn-supported? registry op)))
 
-(defn validate-query-ordered-step-with-fns [available: ^[dynamic]string, query-value: Query, step: Query-Step, registry: []Native-Query-Fn] -> [ok: bool, error: string]
+(defn validate-query-ordered-step-indexed-with-fns [available: ^[dynamic]string, query-value: Query, rule-index: []Rule-Name-Index-Entry, step: Query-Step, registry: []Native-Query-Fn] -> [ok: bool, error: string]
   (case step.kind
     .Predicate (let [predicate query-value.predicates[step.index]]
                  (when (not (predicate-op-supported-with-fns? predicate.op registry))
@@ -9559,21 +9580,28 @@
           (when (not ok)
             (return false error)))
     .RuleCall (let [call query-value.rule-calls[step.index]
-                    [ok error] (validate-rule-call-required-bindings (slice available^ 0) (slice query-value.rules 0) call)]
+                    [ok error] (validate-rule-call-required-bindings-indexed (slice available^ 0) (slice query-value.rules 0) rule-index call)]
                 (when (not ok)
                   (return false error)))
     :else (do))
   (append-query-step-output-vars! available query-value step)
   (return true ""))
 
+(defn validate-query-ordered-step-with-fns [available: ^[dynamic]string, query-value: Query, step: Query-Step, registry: []Native-Query-Fn] -> [ok: bool, error: string]
+  (let [rule-index (rule-name-index-build (slice query-value.rules 0))]
+    (defer (delete-rule-name-index rule-index))
+    (validate-query-ordered-step-indexed-with-fns available query-value (slice rule-index 0) step registry)))
+
 (defn validate-query-ordered-step [available: ^[dynamic]string, query-value: Query, step: Query-Step] -> [ok: bool, error: string]
   (validate-query-ordered-step-with-fns available query-value step ([]Native-Query-Fn [])))
 
 (defn validate-query-ordered-bindings-with-fns [query-value: Query, registry: []Native-Query-Fn] -> [ok: bool, error: string]
-  (let [available (query-input-vars query-value)]
+  (let [available (query-input-vars query-value)
+        rule-index (rule-name-index-build (slice query-value.rules 0))]
     (defer (delete available))
+    (defer (delete-rule-name-index rule-index))
     (for [step query-value.where-steps]
-      (let [[ok error] (validate-query-ordered-step-with-fns (addr available) query-value step registry)]
+      (let [[ok error] (validate-query-ordered-step-indexed-with-fns (addr available) query-value (slice rule-index 0) step registry)]
         (when (not ok)
           (return false error)))))
   (return true ""))
@@ -9729,59 +9757,77 @@
       (set! other-index (+ other-index 1)))))
   false)
 
-(defn validate-rule-call-known [rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
-  (let [name-found false]
-    (for [rule rules]
-      (when (= call.name rule.name)
-        (set! name-found true)
-        (when (rule-call-matches-rule? call rule)
-          (return true ""))))
-    (if name-found
-      (return false (fmt.tprintf "wrong arity for rule: %s" call.name))
-      (return false (fmt.tprintf "unknown rule: %s" call.name)))))
+(defn validate-rule-call-known-indexed [rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call] -> [ok: bool, error: string]
+  (let [[entry-index name-found] (rule-name-index-entry index call.name)]
+    (when (not name-found)
+      (return false (fmt.tprintf "unknown rule: %s" call.name)))
+    (for [rule-index index[entry-index].indexes]
+      (when (= (count call.args) (count rules[rule-index].params))
+        (return true "")))
+    (return false (fmt.tprintf "wrong arity for rule: %s" call.name))))
 
-(defn validate-rule-definition [rules: []Rule, rule: Rule] -> [ok: bool, error: string]
+(defn validate-rule-call-known [rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (validate-rule-call-known-indexed rules (slice index 0) call)))
+
+(defn validate-rule-definition-indexed [rules: []Rule, index: []Rule-Name-Index-Entry, rule: Rule] -> [ok: bool, error: string]
   (when (= (count rule.body-steps) 0)
     (return false "Rule branch should have clauses"))
   (when (string-slice-has-duplicate? (slice rule.params 0))
     (return false "Rule variables should be distinct"))
-  (for [other rules]
-    (when (= other.name rule.name)
-      (when (or (not (= other.required-param-count rule.required-param-count))
-                (not (= (count other.params) (count rule.params))))
-        (return false (fmt.tprintf "Arity mismatch for rule: %s" rule.name)))))
+  (let [[entry-index found] (rule-name-index-entry index rule.name)]
+    (when found
+      (for [rule-index index[entry-index].indexes]
+        (let [other rules[rule-index]]
+          (when (or (not (= other.required-param-count rule.required-param-count))
+                    (not (= (count other.params) (count rule.params))))
+            (return false (fmt.tprintf "Arity mismatch for rule: %s" rule.name)))))))
   (for [param rule.params]
     (when (not (rule-param-valid? param))
       (return false (fmt.tprintf "rule params must be variables: %s" param))))
   (for [call rule.rule-calls]
-    (let [[ok error] (validate-rule-call-known rules call)]
+    (let [[ok error] (validate-rule-call-known-indexed rules index call)]
       (when (not ok)
         (return false error))))
+  (return true ""))
+
+(defn validate-rule-definition [rules: []Rule, rule: Rule] -> [ok: bool, error: string]
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (validate-rule-definition-indexed rules (slice index 0) rule)))
+
+(defn validate-rule-call-required-bindings-indexed [available: []string, rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call] -> [ok: bool, error: string]
+  (let [[rule rule-ok] (rule-name-index-first-matching-rule rules index call)]
+    (when rule-ok
+      (let [param-index 0]
+        (while (< param-index rule.required-param-count)
+          (let [arg call.args[param-index]]
+            (when (= arg.kind .Wildcard)
+              (return false (fmt.tprintf "insufficient bindings for rule: %s" call.name)))
+            (when (and (= arg.kind .Var)
+                       (not (string-slice-contains? available arg.name)))
+              (return false (fmt.tprintf "insufficient bindings for rule: %s" arg.name))))
+          (set! param-index (+ param-index 1))))))
   (return true ""))
 
 (defn validate-rule-call-required-bindings [available: []string, rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
-  (for [rule rules]
-    (when (rule-call-matches-rule? call rule)
-      (let [index 0]
-        (while (< index rule.required-param-count)
-        (let [arg call.args[index]]
-          (when (= arg.kind .Wildcard)
-            (return false (fmt.tprintf "insufficient bindings for rule: %s" call.name)))
-          (when (and (= arg.kind .Var)
-                     (not (string-slice-contains? available arg.name)))
-            (return false (fmt.tprintf "insufficient bindings for rule: %s" arg.name))))
-        (set! index (+ index 1))))))
-  (return true ""))
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (validate-rule-call-required-bindings-indexed available rules (slice index 0) call)))
 
 (defn validate-query-rules [query-value: Query] -> [ok: bool, error: string]
-  (for [rule query-value.rules]
-    (let [[ok error] (validate-rule-definition (slice query-value.rules 0) rule)]
-      (when (not ok)
-        (return false error))))
-  (for [call query-value.rule-calls]
-    (let [[ok error] (validate-rule-call-known (slice query-value.rules 0) call)]
-      (when (not ok)
-        (return false error))))
+  (let [rules (slice query-value.rules 0)
+        index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (for [rule query-value.rules]
+      (let [[ok error] (validate-rule-definition-indexed rules (slice index 0) rule)]
+        (when (not ok)
+          (return false error))))
+    (for [call query-value.rule-calls]
+      (let [[ok error] (validate-rule-call-known-indexed rules (slice index 0) call)]
+        (when (not ok)
+          (return false error)))))
   (return true ""))
 
 (defn validate-query-pull-patterns [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]

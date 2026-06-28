@@ -171,8 +171,8 @@ Status labels:
 - `done` Add a rule lookup/index structure for planning.
   Prepared rule-call planning now builds one rule-name index for the query's rules and reuses it while constructing dependency graphs for every cached call plan. Execution still preserves original rule ordering by filtering the source rule array after reachability is known.
 
-- `todo` Extend rule indexes to validation and arity checks.
-  Rule validation, arity checks, and required-binding checks still scan rule arrays by name/arity in some paths. A richer index keyed by name and arity would centralize those checks and prepare the ground for explicit SCC/component planning.
+- `done` Extend rule indexes to validation and arity checks.
+  Rule-call known checks, arity checks, rule definition validation, required-binding validation, ordered query validation, and planned rule-body readiness checks now reuse the rule-name index instead of scanning unrelated rule branches by name/arity in each path. Wrapper helpers remain for call sites that do not already own an index.
 
 - `done` Make index order a typed helper.
   Public datom index APIs now convert order strings once to a typed `Public-Index-Order` and use `db-index-slice` to select `eavt`, `aevt`, `avet`, or `vaet`. Datoms, seek, and reverse-seek share the same typed dispatch path while preserving the public `:eavt`/`:aevt`/`:avet`/`:vaet` API.
