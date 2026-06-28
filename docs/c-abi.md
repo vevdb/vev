@@ -889,6 +889,17 @@ and rendered pull results.
 
 For hot flat query shapes, the ABI also exposes column-oriented handles:
 
+- `vev_query_db_prepared_column_batch_with_inputs`
+- `vev_column_batch_kind`
+- `vev_column_batch_count`
+- `vev_column_batch_entities_data`
+- `vev_column_batch_ints_data`
+- `vev_column_batch_string_data_array`
+- `vev_column_batch_string_lengths_data`
+- `vev_column_batch_string_dictionary_count`
+- `vev_column_batch_string_dictionary_data_array`
+- `vev_column_batch_string_dictionary_lengths_data`
+- `vev_column_batch_string_indices_data`
 - `vev_query_db_prepared_entity_column_with_inputs`
 - `vev_u64_array_count`
 - `vev_u64_array_data`
@@ -916,8 +927,16 @@ For hot flat query shapes, the ABI also exposes column-oriented handles:
 These are lower-level than the generic result API, but are the right shape for
 language adapters that want to avoid per-cell value handles for common
 `[:find ?e]`, `[:find ?text]`, `[:find ?e ?n]`, and `[:find ?e ?s ?n]`
-queries. Column pointers are borrowed and remain valid until the corresponding
-column handle is freed. Single string-column results use
+queries. `vev_query_db_prepared_column_batch_with_inputs` is the preferred
+one-call entry point for host adapters that want the fastest currently available
+flat representation without probing every exact-shape function. Its kind is one
+of `VEV_COLUMN_BATCH_ENTITY`, `VEV_COLUMN_BATCH_STRING`,
+`VEV_COLUMN_BATCH_ENTITY_INT`, `VEV_COLUMN_BATCH_ENTITY_STRING_INT`, or
+`VEV_COLUMN_BATCH_NONE`. The exact-shape functions remain public for callers
+that already know the expected result shape.
+
+Column pointers are borrowed and remain valid until the corresponding column
+handle or column batch is freed. Single string-column results use
 `vev_string_array_data_array` plus `vev_string_array_lengths_data`. For
 entity/string/int columns, prefer
 `vev_entity_string_int_triples_string_data_array` plus

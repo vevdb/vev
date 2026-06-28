@@ -21,6 +21,7 @@ typedef void *vev_u64_array_t;
 typedef void *vev_string_array_t;
 typedef void *vev_entity_int_pairs_t;
 typedef void *vev_entity_string_int_triples_t;
+typedef void *vev_column_batch_t;
 typedef void *vev_stmt_t;
 typedef void *vev_tx_report_t;
 typedef void *vev_tx_builder_t;
@@ -53,6 +54,14 @@ enum {
     VEV_RESULT_VISIT_VALUE = 2,
     VEV_RESULT_VISIT_PULL = 3,
     VEV_RESULT_VISIT_ROW_END = 4,
+};
+
+enum {
+    VEV_COLUMN_BATCH_NONE = 0,
+    VEV_COLUMN_BATCH_ENTITY = 1,
+    VEV_COLUMN_BATCH_STRING = 2,
+    VEV_COLUMN_BATCH_ENTITY_INT = 3,
+    VEV_COLUMN_BATCH_ENTITY_STRING_INT = 4,
 };
 
 typedef bool (*vev_value_visit_fn)(void *user, int event, vev_value_t value);
@@ -264,6 +273,21 @@ vev_entity_string_int_triples_t vev_query_db_prepared_entity_string_int_triples_
     vev_db_t db,
     vev_prepared_query_t query,
     const char *inputs_text);
+vev_column_batch_t vev_query_db_prepared_column_batch_with_inputs(
+    vev_db_t db,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+void vev_column_batch_free(vev_column_batch_t batch);
+int vev_column_batch_kind(vev_column_batch_t batch);
+int vev_column_batch_count(vev_column_batch_t batch);
+const unsigned long long *vev_column_batch_entities_data(vev_column_batch_t batch);
+const long long *vev_column_batch_ints_data(vev_column_batch_t batch);
+const void *const *vev_column_batch_string_data_array(vev_column_batch_t batch);
+const int *vev_column_batch_string_lengths_data(vev_column_batch_t batch);
+int vev_column_batch_string_dictionary_count(vev_column_batch_t batch);
+const void *const *vev_column_batch_string_dictionary_data_array(vev_column_batch_t batch);
+const int *vev_column_batch_string_dictionary_lengths_data(vev_column_batch_t batch);
+const int *vev_column_batch_string_indices_data(vev_column_batch_t batch);
 void vev_entity_string_int_triples_free(vev_entity_string_int_triples_t triples);
 int vev_entity_string_int_triples_count(vev_entity_string_int_triples_t triples);
 const unsigned long long *vev_entity_string_int_triples_entities_data(vev_entity_string_int_triples_t triples);

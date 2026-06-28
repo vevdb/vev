@@ -3164,16 +3164,10 @@
         (return (Datoms-Result {ok: false error: end-error datoms: (make [dynamic]Datom)})))))
   (Datoms-Result {ok: true error: "" datoms: (index-range-with-args db attr start has-start end has-end)}))
 
-(defn u64-contains? [items: []u64, value: u64] -> bool
-  (for [item items]
-    (when (= item value)
-      (return true)))
-  false)
-
-(defn append-retract-entity-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, seen: ^[dynamic]u64]
-  (when (u64-contains? (slice seen^ 0) entity)
+(defn append-retract-entity-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, seen: ^set[u64]]
+  (when (set.contains? seen^ entity)
     (return))
-  (arr.push! seen^ entity)
+  (set.add! seen^ entity)
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt" entity "" (Value {}))
         high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
@@ -3194,11 +3188,11 @@
           (push-tx-op-once! ops (tx-retract datom.e datom.a datom.v)))))))
 
 (defn append-retract-entity-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64]
-  (let [seen (make [dynamic]u64)]
+  (let [seen (set.empty u64)]
     (defer (delete seen))
     (append-retract-entity-ops-seen! ops db entity (addr seen))))
 
-(defn append-retract-attr-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string, seen: ^[dynamic]u64]
+(defn append-retract-attr-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string, seen: ^set[u64]]
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
         high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
@@ -3211,9 +3205,9 @@
           (push-tx-op-once! ops (tx-retract entity attr datom.v)))))))
 
 (defn append-retract-attr-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string]
-  (let [seen (make [dynamic]u64)]
+  (let [seen (set.empty u64)]
     (defer (delete seen))
-    (arr.push! seen entity)
+    (set.add! seen entity)
     (append-retract-attr-ops-seen! ops db entity attr (addr seen))))
 
 (defn schema-entity-for-attr [db: DB, attr: string] -> [e: u64, ok: bool]
@@ -5749,14 +5743,25 @@
       (set! i (+ i 1)))
     best))
 
+(defn clause-candidate-count-estimate-for-db [db: DB, clause: Clause, binding: Binding] -> int
+  (let [scan (clause-index-scan db clause binding)
+        count 0]
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (clause-index-scan-candidate? scan datom)
+            (set! count (+ count 1))))
+        (set! scan-index (+ scan-index 1))))
+    count))
+
 (defn clause-candidate-count-estimate [db: DB, sources: []DB-Source, clause: Clause, binding: Binding] -> int
   (when clause.has-source
     (let [[source-db source-ok] (source-db-lookup db sources clause.source)]
       (when source-ok
-        (let [candidates (clause-candidate-indexes source-db (unsourced-clause clause) binding) :defer]
-          (return (count candidates))))))
-  (let [candidates (clause-candidate-indexes db clause binding) :defer]
-    (count candidates)))
+        (return (clause-candidate-count-estimate-for-db source-db (unsourced-clause clause) binding)))))
+  (clause-candidate-count-estimate-for-db db clause binding))
 
 (defn best-clause-index-estimated [db: DB, sources: []DB-Source, clauses: []Clause, binding: Binding] -> int
   (let [best 0
@@ -5827,6 +5832,37 @@
           (delete next.items))))
     out))
 
+(defn query-relation-from-source-value-clause [source: Value, clause-value: Clause] -> Query-Relation
+  (let [[attrs attr-sources] (clause-output-attrs clause-value "")
+        tuples (make [dynamic]Binding)
+        typed-columns (relation-columns-for-attrs (slice attrs 0))
+        typed-ok true
+        typed-rows 0]
+    (when (= source.kind .Vector)
+      (for [row source.items]
+        (let [next (Binding {})]
+          (if (relation-source-row-matches? clause-value row (addr next))
+            (do
+              (when typed-ok
+                (if (binding-can-add-to-relation-columns? (slice attrs 0) (slice typed-columns 0) next)
+                  (do
+                    (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) next)
+                    (set! typed-rows (+ typed-rows 1)))
+                  (set! typed-ok false)))
+              (arr.push! tuples next))
+            (delete next.items)))))
+    (when (not typed-ok)
+      (delete-relation-columns typed-columns)
+      (set! typed-columns (make [dynamic]Relation-Column))
+      (set! typed-rows 0))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: tuples
+                     typed-columns: typed-columns
+                     typed-rows: typed-rows
+                     has-typed-columns: typed-ok})))
+
 (defn source-db-lookup [db: DB, sources: []DB-Source, name: string] -> [source-db: DB, ok: bool]
   (when (= name "$")
     (return db true))
@@ -5852,14 +5888,19 @@
       (for [source-binding source-bindings]
         (arr.push! out^ source-binding)))
     (return))
-  (let [candidates (clause-candidate-indexes db clause-value binding)]
-    (defer (delete candidates))
-    (for [datom-index candidates]
-      (let [datom db.datoms[datom-index]]
-        (when (datom-current-at? db datom-index)
-          (let [next (clone-binding binding)]
-            (when (datom-clause-matches? db datom clause-value (addr next))
-              (arr.push! out^ next))))))))
+  (let [scan (clause-index-scan db clause-value binding)]
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (and (clause-index-scan-candidate? scan datom)
+                     (datom-current-at? db datom-index))
+            (let [next (clone-binding binding)]
+              (if (datom-clause-matches? db datom clause-value (addr next))
+                (arr.push! out^ next)
+                (delete next.items)))))
+        (set! scan-index (+ scan-index 1))))))
 
 (defn append-bindings-after-clause-profiled! [out: ^[dynamic]Binding, db: DB, clause-value: Clause, binding: Binding, stats: ^Query-Stats]
   (set! stats^.clauses (+ stats^.clauses 1))
@@ -5870,15 +5911,22 @@
       (for [source-binding source-bindings]
         (arr.push! out^ source-binding)))
     (return))
-  (let [candidates (clause-candidate-indexes db clause-value binding)]
-    (defer (delete candidates))
-    (set! stats^.clause-candidates (+ stats^.clause-candidates (count candidates)))
-    (for [datom-index candidates]
-      (let [datom db.datoms[datom-index]]
-        (when (datom-current-at? db datom-index)
-          (let [next (clone-binding binding)]
-            (when (datom-clause-matches? db datom clause-value (addr next))
-              (arr.push! out^ next))))))))
+  (let [scan (clause-index-scan db clause-value binding)
+        candidate-count 0]
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (clause-index-scan-candidate? scan datom)
+            (set! candidate-count (+ candidate-count 1))
+            (when (datom-current-at? db datom-index)
+              (let [next (clone-binding binding)]
+                (if (datom-clause-matches? db datom clause-value (addr next))
+                  (arr.push! out^ next)
+                  (delete next.items))))))
+        (set! scan-index (+ scan-index 1))))
+    (set! stats^.clause-candidates (+ stats^.clause-candidates candidate-count))))
 
 (defn append-bindings-after-clause-with-sources! [out: ^[dynamic]Binding, db: DB, sources: []DB-Source, clause-value: Clause, binding: Binding]
   (when clause-value.has-source
@@ -5912,12 +5960,44 @@
         (arr.remove-ordered-at! remaining clause-index)))
     current))
 
-(defn clause-candidate-indexes [db: DB, clause: Clause, binding: Binding] -> [dynamic]int
+(defstruct Clause-Index-Scan {
+  indexes: []int
+  index: int
+  high: int
+  e-value: Value
+  e-ok: bool
+  a-value: Value
+  a-ok: bool
+  v-value: Value
+  v-ok: bool
+  reverse-attr: bool
+  forward-attr: string
+})
+
+(defn delete-clause-index-scan [scan: Clause-Index-Scan]
+  (when scan.reverse-attr
+    (delete scan.forward-attr)))
+
+(defn empty-clause-index-scan [db: DB] -> Clause-Index-Scan
+  (Clause-Index-Scan {indexes: (slice db.eavt 0)
+                      index: 0
+                      high: 0
+                      e-value: (Value {})
+                      e-ok: false
+                      a-value: (Value {})
+                      a-ok: false
+                      v-value: (Value {})
+                      v-ok: false
+                      reverse-attr: false
+                      forward-attr: ""}))
+
+(defn clause-index-scan [db: DB, clause: Clause, binding: Binding] -> Clause-Index-Scan
   (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
         [a-value a-ok] (resolve-term clause.a binding)
         [v-value v-ok] (resolve-term clause.v binding)
-        source: []int (slice db.eavt 0)
-        out (make [dynamic]int)]
+        indexes: []int (slice db.eavt 0)
+        low 0
+        high (count db.eavt)]
     (when (= clause.v.kind .LookupRef)
       (let [[lookup-entity lookup-ok] (resolve-lookup-ref db clause.v.lookup-attr clause.v.lookup-value)]
         (when lookup-ok
@@ -5940,85 +6020,126 @@
             (set! v-value source-entity)
             (set! v-ok true)))
         (when (and e-ok (not (= e-value.kind .Entity)))
-          (return out))
+          (return (empty-clause-index-scan db)))
         (when (and v-ok (not (= v-value.kind .Entity)))
-          (return out))
+          (return (empty-clause-index-scan db)))
         (if e-ok
-          (let [indexes (slice db.vaet 0)
+          (let [candidate-indexes (slice db.vaet 0)
                 ref-value (value-entity e-value.entity)
-                low (lower-bound-index db indexes "vaet" 0 "" ref-value)
-                high (upper-bound-index db indexes "vaet" 0 "" ref-value)]
-            (set! source (slice indexes low high)))
+                candidate-low (lower-bound-index db candidate-indexes "vaet" 0 "" ref-value)
+                candidate-high (upper-bound-index db candidate-indexes "vaet" 0 "" ref-value)]
+            (set! indexes candidate-indexes)
+            (set! low candidate-low)
+            (set! high candidate-high))
           (if v-ok
-            (let [indexes (slice db.eavt 0)
-                  low (lower-bound-index db indexes "eavt-ea" v-value.entity forward-attr (Value {}))
-                  high (upper-bound-index db indexes "eavt-ea" v-value.entity forward-attr (Value {}))]
-              (set! source (slice indexes low high)))
-            (let [indexes (slice db.aevt 0)
-                  low (lower-bound-index db indexes "aevt" 0 forward-attr (Value {}))
-                  high (upper-bound-index db indexes "aevt" 0 forward-attr (Value {}))]
-              (set! source (slice indexes low high)))))
-        (for [datom-index source]
-          (let [datom db.datoms[datom-index]]
-            (when (and (= datom.a forward-attr)
-                       (= datom.v.kind .Entity))
-              (arr.push! out datom-index))))
-        (return out)))
+            (let [candidate-indexes (slice db.eavt 0)
+                  candidate-low (lower-bound-index db candidate-indexes "eavt-ea" v-value.entity forward-attr (Value {}))
+                  candidate-high (upper-bound-index db candidate-indexes "eavt-ea" v-value.entity forward-attr (Value {}))]
+              (set! indexes candidate-indexes)
+              (set! low candidate-low)
+              (set! high candidate-high))
+            (let [candidate-indexes (slice db.aevt 0)
+                  candidate-low (lower-bound-index db candidate-indexes "aevt" 0 forward-attr (Value {}))
+                  candidate-high (upper-bound-index db candidate-indexes "aevt" 0 forward-attr (Value {}))]
+              (set! indexes candidate-indexes)
+              (set! low candidate-low)
+              (set! high candidate-high))))
+        (return (Clause-Index-Scan {indexes: indexes
+                                    index: low
+                                    high: high
+                                    e-value: e-value
+                                    e-ok: e-ok
+                                    a-value: a-value
+                                    a-ok: a-ok
+                                    v-value: v-value
+                                    v-ok: v-ok
+                                    reverse-attr: true
+                                    forward-attr: (forward-attr-for-reverse a-value.text)}))))
     (if (and e-ok a-ok)
       (do
         (when (not (and (= e-value.kind .Entity)
                         (= a-value.kind .Keyword)))
-          (return out))
-        (let [indexes (slice db.eavt 0)
-              low (lower-bound-index db indexes "eavt-ea" e-value.entity a-value.text (Value {}))
-              high (upper-bound-index db indexes "eavt-ea" e-value.entity a-value.text (Value {}))]
-          (set! source (slice indexes low high)))))
+          (return (empty-clause-index-scan db)))
+        (let [candidate-indexes (slice db.eavt 0)
+              candidate-low (lower-bound-index db candidate-indexes "eavt-ea" e-value.entity a-value.text (Value {}))
+              candidate-high (upper-bound-index db candidate-indexes "eavt-ea" e-value.entity a-value.text (Value {}))]
+          (set! indexes candidate-indexes)
+          (set! low candidate-low)
+          (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (and a-ok v-ok))
       (do
         (when (not (= a-value.kind .Keyword))
-          (return out))
-        (let [indexes (slice db.avet 0)
-              low (lower-bound-index db indexes "avet" 0 a-value.text v-value)
-              high (upper-bound-index db indexes "avet" 0 a-value.text v-value)]
-          (set! source (slice indexes low high)))))
+          (return (empty-clause-index-scan db)))
+        (let [candidate-indexes (slice db.avet 0)
+              candidate-low (lower-bound-index db candidate-indexes "avet" 0 a-value.text v-value)
+              candidate-high (upper-bound-index db candidate-indexes "avet" 0 a-value.text v-value)]
+          (set! indexes candidate-indexes)
+          (set! low candidate-low)
+          (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) e-ok)
       (do
         (when (not (= e-value.kind .Entity))
-          (return out))
-        (let [indexes (slice db.eavt 0)
-              low (lower-bound-index db indexes "eavt" e-value.entity "" (Value {}))
-              high (upper-bound-index db indexes "eavt" e-value.entity "" (Value {}))]
-          (set! source (slice indexes low high)))))
+          (return (empty-clause-index-scan db)))
+        (let [candidate-indexes (slice db.eavt 0)
+              candidate-low (lower-bound-index db candidate-indexes "eavt" e-value.entity "" (Value {}))
+              candidate-high (upper-bound-index db candidate-indexes "eavt" e-value.entity "" (Value {}))]
+          (set! indexes candidate-indexes)
+          (set! low candidate-low)
+          (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) a-ok)
       (do
         (when (not (= a-value.kind .Keyword))
-          (return out))
-        (let [indexes (slice db.aevt 0)
-              low (lower-bound-index db indexes "aevt" 0 a-value.text (Value {}))
-              high (upper-bound-index db indexes "aevt" 0 a-value.text (Value {}))]
-          (set! source (slice indexes low high)))))
+          (return (empty-clause-index-scan db)))
+        (let [candidate-indexes (slice db.aevt 0)
+              candidate-low (lower-bound-index db candidate-indexes "aevt" 0 a-value.text (Value {}))
+              candidate-high (upper-bound-index db candidate-indexes "aevt" 0 a-value.text (Value {}))]
+          (set! indexes candidate-indexes)
+          (set! low candidate-low)
+          (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) (not a-ok) v-ok)
-      (let [indexes (slice db.vaet 0)
-            low (lower-bound-index db indexes "vaet" 0 "" v-value)
-            high (upper-bound-index db indexes "vaet" 0 "" v-value)]
-        (set! source (slice indexes low high))))
-    (for [datom-index source]
-      (let [datom db.datoms[datom-index]]
-        (when (candidate-index-matches? datom e-value e-ok a-value a-ok v-value v-ok)
-          (arr.push! out datom-index))))
-    out))
+      (let [candidate-indexes (slice db.vaet 0)
+            candidate-low (lower-bound-index db candidate-indexes "vaet" 0 "" v-value)
+            candidate-high (upper-bound-index db candidate-indexes "vaet" 0 "" v-value)]
+        (set! indexes candidate-indexes)
+        (set! low candidate-low)
+        (set! high candidate-high)))
+    (Clause-Index-Scan {indexes: indexes
+                        index: low
+                        high: high
+                        e-value: e-value
+                        e-ok: e-ok
+                        a-value: a-value
+                        a-ok: a-ok
+                        v-value: v-value
+                        v-ok: v-ok
+                        reverse-attr: false
+                        forward-attr: ""})))
+
+(defn clause-index-scan-candidate? [scan: Clause-Index-Scan, datom: Datom] -> bool
+  (if scan.reverse-attr
+    (and (= datom.a scan.forward-attr)
+         (= datom.v.kind .Entity))
+    (candidate-index-matches? datom scan.e-value scan.e-ok scan.a-value scan.a-ok scan.v-value scan.v-ok)))
 
 (defn binding-matches-clause? [db: DB, clause: Clause, binding: Binding] -> bool
   (when clause.has-source
     (let [source-bindings (bindings-after-relation-source-clause clause binding) :defer]
       (return (> (count source-bindings) 0))))
-  (let [candidates (clause-candidate-indexes db clause binding) :defer]
-    (for [datom-index candidates]
-      (let [datom db.datoms[datom-index]]
-        (when (datom-current-at? db datom-index)
-          (let [candidate (clone-binding binding)]
-            (when (datom-clause-matches? db datom clause (addr candidate))
-              (return true)))))))
+  (let [scan (clause-index-scan db clause binding)]
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (and (clause-index-scan-candidate? scan datom)
+                     (datom-current-at? db datom-index))
+            (let [candidate (clone-binding binding)]
+              (if (datom-clause-matches? db datom clause (addr candidate))
+                (do
+                  (delete candidate.items)
+                  (return true))
+                (delete candidate.items)))))
+        (set! scan-index (+ scan-index 1)))))
   false)
 
 (defn bindings-after-clause-group-with-sources-and-fns [db: DB, sources: []DB-Source, group: Not-Group, binding: Binding, registry: []Native-Query-Fn] -> [dynamic]Binding
@@ -6610,36 +6731,45 @@
     (while (< frontier-index (count frontier))
       (let [current frontier[frontier-index]
             edge-clause (clause (term-value (value-entity current)) attr (term-wildcard))
-            candidates (clause-candidate-indexes db edge-clause (Binding {})) :defer]
+            scan (clause-index-scan db edge-clause (Binding {}))]
         (set! frontier-index (+ frontier-index 1))
         (let [already-expanded (set.contains? expanded current)]
           (when (not already-expanded)
             (set.add! expanded current)
-            (for [datom-index candidates]
-              (let [datom db.datoms[datom-index]]
-                (when (and (datom-current-at? db datom-index)
-                           (= datom.v.kind .Entity))
-                  (let [already-emitted (set.contains? emitted datom.v.entity)
-                        target-expanded (set.contains? expanded datom.v.entity)]
-                    (when (not already-emitted)
-                      (set.add! emitted datom.v.entity)
-                      (arr.push! out^ datom.v.entity))
-                    (when (not target-expanded)
-                      (arr.push! frontier datom.v.entity))))))))))))
+            (let [scan-index scan.index]
+              (while (< scan-index scan.high)
+                (let [datom-index scan.indexes[scan-index]
+                      datom db.datoms[datom-index]]
+                  (when (and (clause-index-scan-candidate? scan datom)
+                             (datom-current-at? db datom-index)
+                             (= datom.v.kind .Entity))
+                    (let [already-emitted (set.contains? emitted datom.v.entity)
+                          target-expanded (set.contains? expanded datom.v.entity)]
+                      (when (not already-emitted)
+                        (set.add! emitted datom.v.entity)
+                        (arr.push! out^ datom.v.entity))
+                      (when (not target-expanded)
+                        (arr.push! frontier datom.v.entity)))))
+                (set! scan-index (+ scan-index 1))))))
+        (delete-clause-index-scan scan)))))
 
 (defn append-transitive-starts! [out: ^[dynamic]u64, db: DB, attr: string]
   (let [seen (set.empty u64)
         attr-clause (clause (term-wildcard) attr (term-wildcard))
-        candidates (clause-candidate-indexes db attr-clause (Binding {}))]
+        scan (clause-index-scan db attr-clause (Binding {}))]
     (defer (delete seen))
-    (defer (delete candidates))
-    (for [datom-index candidates]
-      (let [datom db.datoms[datom-index]]
-        (when (datom-current-at? db datom-index)
-          (let [found (set.contains? seen datom.e)]
-            (when (not found)
-              (set.add! seen datom.e)
-              (arr.push! out^ datom.e))))))))
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (and (clause-index-scan-candidate? scan datom)
+                     (datom-current-at? db datom-index))
+            (let [found (set.contains? seen datom.e)]
+              (when (not found)
+                (set.add! seen datom.e)
+                (arr.push! out^ datom.e)))))
+        (set! scan-index (+ scan-index 1))))))
 
 (defn append-transitive-sources! [out: ^[dynamic]u64, db: DB, attr: string, target: u64]
   (let [expanded (set.empty u64)
@@ -6653,21 +6783,26 @@
     (while (< frontier-index (count frontier))
       (let [current frontier[frontier-index]
             edge-clause (clause (term-wildcard) attr (term-value (value-entity current)))
-            candidates (clause-candidate-indexes db edge-clause (Binding {})) :defer]
+            scan (clause-index-scan db edge-clause (Binding {}))]
         (set! frontier-index (+ frontier-index 1))
         (let [already-expanded (set.contains? expanded current)]
           (when (not already-expanded)
             (set.add! expanded current)
-            (for [datom-index candidates]
-              (let [datom db.datoms[datom-index]]
-                (when (datom-current-at? db datom-index)
-                  (let [already-emitted (set.contains? emitted datom.e)
-                        source-expanded (set.contains? expanded datom.e)]
-                    (when (not already-emitted)
-                      (set.add! emitted datom.e)
-                      (arr.push! out^ datom.e))
-                    (when (not source-expanded)
-                      (arr.push! frontier datom.e))))))))))))
+            (let [scan-index scan.index]
+              (while (< scan-index scan.high)
+                (let [datom-index scan.indexes[scan-index]
+                      datom db.datoms[datom-index]]
+                  (when (and (clause-index-scan-candidate? scan datom)
+                             (datom-current-at? db datom-index))
+                    (let [already-emitted (set.contains? emitted datom.e)
+                          source-expanded (set.contains? expanded datom.e)]
+                      (when (not already-emitted)
+                        (set.add! emitted datom.e)
+                        (arr.push! out^ datom.e))
+                      (when (not source-expanded)
+                        (arr.push! frontier datom.e)))))
+                (set! scan-index (+ scan-index 1))))))
+        (delete-clause-index-scan scan)))))
 
 (defn u64-slice-contains? [items: []u64, value: u64] -> bool
   (for [item items]
@@ -7225,10 +7360,15 @@
         (set! out (+ out 1))))
     out))
 
-(defn rule-call-ready-for-binding? [rules: []Rule, call: Rule-Call, binding: Binding] -> bool
+(defn rule-call-ready-for-binding-indexed? [rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call, binding: Binding] -> bool
   (let [available (binding-available-vars binding) :defer
-        [ok _] (validate-rule-call-required-bindings (slice available 0) rules call)]
+        [ok _] (validate-rule-call-required-bindings-indexed (slice available 0) rules index call)]
     ok))
+
+(defn rule-call-ready-for-binding? [rules: []Rule, call: Rule-Call, binding: Binding] -> bool
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (rule-call-ready-for-binding-indexed? rules (slice index 0) call binding)))
 
 (defn rule-call-selectivity-score [call: Rule-Call, binding: Binding] -> int
   (let [bound-count (rule-call-bound-arg-count call binding)]
@@ -7237,7 +7377,7 @@
       (= bound-count 1) 2
       :else 6)))
 
-(defn best-ready-rule-body-step-index [db: DB, rules: []Rule, rule: Rule, steps: []Query-Step, binding: Binding, source: string, has-source: bool] -> [index: int, ok: bool]
+(defn best-ready-rule-body-step-index-indexed [db: DB, rules: []Rule, rule-index: []Rule-Name-Index-Entry, rule: Rule, steps: []Query-Step, binding: Binding, source: string, has-source: bool] -> [index: int, ok: bool]
   (let [best -1
         best-score 0
         best-count -1]
@@ -7254,7 +7394,7 @@
               (set! candidate-count (clause-candidate-count-estimate db ([]DB-Source []) clause binding)))))
         (when (= step.kind .RuleCall)
           (let [call rule.rule-calls[step.index]]
-            (when (rule-call-ready-for-binding? rules call binding)
+            (when (rule-call-ready-for-binding-indexed? rules rule-index call binding)
               (set! ready true)
               (set! score (rule-call-selectivity-score call binding)))))
         (when ready
@@ -7277,14 +7417,21 @@
                 (set! best-count count-estimate)))))))
     (return best (>= best 0))))
 
+(defn best-ready-rule-body-step-index [db: DB, rules: []Rule, rule: Rule, steps: []Query-Step, binding: Binding, source: string, has-source: bool] -> [index: int, ok: bool]
+  (let [rule-index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index rule-index))
+    (best-ready-rule-body-step-index-indexed db rules (slice rule-index 0) rule steps binding source has-source)))
+
 (defn bindings-after-rule-body-planned-clause-call-depth-with-fns [db: DB, rules: []Rule, rule: Rule, initial: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [bindings (make [dynamic]Binding)
-        remaining (arr.into [dynamic]Query-Step (slice rule.body-steps 0))]
+        remaining (arr.into [dynamic]Query-Step (slice rule.body-steps 0))
+        rule-index (rule-name-index-build rules)]
     (defer (delete remaining))
+    (defer (delete-rule-name-index rule-index))
     (arr.push! bindings initial)
     (while (and (> (count bindings) 0)
                 (> (count remaining) 0))
-      (let [[step-index step-ok] (best-ready-rule-body-step-index db rules rule (slice remaining 0) bindings[0] source has-source)]
+      (let [[step-index step-ok] (best-ready-rule-body-step-index-indexed db rules (slice rule-index 0) rule (slice remaining 0) bindings[0] source has-source)]
         (when (not step-ok)
           (delete bindings)
           (return (make [dynamic]Binding)))
@@ -8112,17 +8259,39 @@
             (return current)))))
     current))
 
-(defn bindings-after-rule-body-memo [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rule: Rule] -> [dynamic]Binding
-  (let [rel (query-relation-after-rule-body-memo db memo rule false -1)
-        bindings (query-relation-materialized-bindings rel)]
-    (delete-query-relation rel)
-    bindings))
+(defn rule-memo-append-relation-results! [memo: ^[dynamic]Rule-Memo-Entry, rule: Rule, rel: Query-Relation] -> bool
+  (let [changed false]
+    (if (> (count rel.tuples) 0)
+      (for [result rel.tuples]
+        (when (rule-memo-append-result! memo rule result)
+          (set! changed true)))
+      (when rel.has-typed-columns
+        (let [row 0]
+          (while (< row rel.typed-rows)
+            (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
+              (when binding-ok
+                (when (rule-memo-append-result! memo rule binding)
+                  (set! changed true))
+                (delete binding.items)))
+            (set! row (+ row 1))))))
+    changed))
 
-(defn bindings-after-rule-body-memo-with-delta [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rule: Rule, delta-call-index: int] -> [dynamic]Binding
-  (let [rel (query-relation-after-rule-body-memo db memo rule true delta-call-index)
-        bindings (query-relation-materialized-bindings rel)]
-    (delete-query-relation rel)
-    bindings))
+(defn rule-memo-append-relation-results-to-delta! [memo: ^[dynamic]Rule-Memo-Entry, next-delta: ^[dynamic]Rule-Memo-Entry, rule: Rule, rel: Query-Relation] -> bool
+  (let [changed false]
+    (if (> (count rel.tuples) 0)
+      (for [result rel.tuples]
+        (when (rule-memo-append-result-to-delta! memo next-delta rule result)
+          (set! changed true)))
+      (when rel.has-typed-columns
+        (let [row 0]
+          (while (< row rel.typed-rows)
+            (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
+              (when binding-ok
+                (when (rule-memo-append-result-to-delta! memo next-delta rule binding)
+                  (set! changed true))
+                (delete binding.items)))
+            (set! row (+ row 1))))))
+    changed))
 
 (defn first-rule-call-index [rule: Rule] -> [index: int, ok: bool]
   (for [step rule.body-steps]
@@ -8162,19 +8331,17 @@
     (for [rule plan.rules]
       (let [[_ has-call] (first-rule-call-index rule)]
         (when (not has-call)
-          (let [results (bindings-after-rule-body-memo db (addr memo) rule)]
-            (for [result results]
-              (discard (rule-memo-append-result-to-delta! (addr memo) (addr memo) rule result)))
-            (delete results)))))
+          (let [rel (query-relation-after-rule-body-memo db (addr memo) rule false -1)]
+            (discard (rule-memo-append-relation-results-to-delta! (addr memo) (addr memo) rule rel))
+            (delete-query-relation rel)))))
     (while (rule-memo-has-delta? (slice memo 0))
       (let [next-delta (rule-memo-build (slice plan.rules 0))]
         (for [rule plan.rules]
           (let [delta-call-indexes (rule-call-indexes rule)]
             (for [delta-call-index delta-call-indexes]
-              (let [results (bindings-after-rule-body-memo-with-delta db (addr memo) rule delta-call-index)]
-                (for [result results]
-                  (discard (rule-memo-append-result-to-delta! (addr memo) (addr next-delta) rule result)))
-                (delete results)))
+              (let [rel (query-relation-after-rule-body-memo db (addr memo) rule true delta-call-index)]
+                (discard (rule-memo-append-relation-results-to-delta! (addr memo) (addr next-delta) rule rel))
+                (delete-query-relation rel)))
             (delete delta-call-indexes)))
         (rule-memo-replace-deltas! (addr memo) (slice next-delta 0))
         (delete-rule-memo next-delta)))
@@ -8193,11 +8360,10 @@
     (while changed
       (set! changed false)
       (for [rule plan.rules]
-        (let [results (bindings-after-rule-body-memo db (addr memo) rule)]
-          (for [result results]
-            (when (rule-memo-append-result! (addr memo) rule result)
-              (set! changed true)))
-          (delete results))))
+        (let [rel (query-relation-after-rule-body-memo db (addr memo) rule false -1)]
+          (when (rule-memo-append-relation-results! (addr memo) rule rel)
+            (set! changed true))
+          (delete-query-relation rel))))
     (return (bindings-after-rule-call-from-memo (slice memo 0) call binding) true)))
 
 (defn bindings-after-rule-call-depth-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
@@ -8259,6 +8425,15 @@
 (defn rule-name-index-has? [index: []Rule-Name-Index-Entry, name: string] -> bool
   (let [[_ ok] (rule-name-index-entry index name)]
     ok))
+
+(defn rule-name-index-first-matching-rule [rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call] -> [rule: Rule, ok: bool]
+  (let [[entry-index found] (rule-name-index-entry index call.name)]
+    (when found
+      (for [rule-index index[entry-index].indexes]
+        (let [rule rules[rule-index]]
+          (when (= (count call.args) (count rule.params))
+            (return rule true))))))
+  (return (Rule {}) false))
 
 (defn rule-name-dependency-exists? [deps: []Rule-Dependency, from: string, target: string] -> bool
   (for [dep deps]
@@ -9519,7 +9694,7 @@
   (or (function-op-supported? op)
       (query-fn-supported? registry op)))
 
-(defn validate-query-ordered-step-with-fns [available: ^[dynamic]string, query-value: Query, step: Query-Step, registry: []Native-Query-Fn] -> [ok: bool, error: string]
+(defn validate-query-ordered-step-indexed-with-fns [available: ^[dynamic]string, query-value: Query, rule-index: []Rule-Name-Index-Entry, step: Query-Step, registry: []Native-Query-Fn] -> [ok: bool, error: string]
   (case step.kind
     .Predicate (let [predicate query-value.predicates[step.index]]
                  (when (not (predicate-op-supported-with-fns? predicate.op registry))
@@ -9546,21 +9721,28 @@
           (when (not ok)
             (return false error)))
     .RuleCall (let [call query-value.rule-calls[step.index]
-                    [ok error] (validate-rule-call-required-bindings (slice available^ 0) (slice query-value.rules 0) call)]
+                    [ok error] (validate-rule-call-required-bindings-indexed (slice available^ 0) (slice query-value.rules 0) rule-index call)]
                 (when (not ok)
                   (return false error)))
     :else (do))
   (append-query-step-output-vars! available query-value step)
   (return true ""))
 
+(defn validate-query-ordered-step-with-fns [available: ^[dynamic]string, query-value: Query, step: Query-Step, registry: []Native-Query-Fn] -> [ok: bool, error: string]
+  (let [rule-index (rule-name-index-build (slice query-value.rules 0))]
+    (defer (delete-rule-name-index rule-index))
+    (validate-query-ordered-step-indexed-with-fns available query-value (slice rule-index 0) step registry)))
+
 (defn validate-query-ordered-step [available: ^[dynamic]string, query-value: Query, step: Query-Step] -> [ok: bool, error: string]
   (validate-query-ordered-step-with-fns available query-value step ([]Native-Query-Fn [])))
 
 (defn validate-query-ordered-bindings-with-fns [query-value: Query, registry: []Native-Query-Fn] -> [ok: bool, error: string]
-  (let [available (query-input-vars query-value)]
+  (let [available (query-input-vars query-value)
+        rule-index (rule-name-index-build (slice query-value.rules 0))]
     (defer (delete available))
+    (defer (delete-rule-name-index rule-index))
     (for [step query-value.where-steps]
-      (let [[ok error] (validate-query-ordered-step-with-fns (addr available) query-value step registry)]
+      (let [[ok error] (validate-query-ordered-step-indexed-with-fns (addr available) query-value (slice rule-index 0) step registry)]
         (when (not ok)
           (return false error)))))
   (return true ""))
@@ -9716,59 +9898,77 @@
       (set! other-index (+ other-index 1)))))
   false)
 
-(defn validate-rule-call-known [rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
-  (let [name-found false]
-    (for [rule rules]
-      (when (= call.name rule.name)
-        (set! name-found true)
-        (when (rule-call-matches-rule? call rule)
-          (return true ""))))
-    (if name-found
-      (return false (fmt.tprintf "wrong arity for rule: %s" call.name))
-      (return false (fmt.tprintf "unknown rule: %s" call.name)))))
+(defn validate-rule-call-known-indexed [rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call] -> [ok: bool, error: string]
+  (let [[entry-index name-found] (rule-name-index-entry index call.name)]
+    (when (not name-found)
+      (return false (fmt.tprintf "unknown rule: %s" call.name)))
+    (for [rule-index index[entry-index].indexes]
+      (when (= (count call.args) (count rules[rule-index].params))
+        (return true "")))
+    (return false (fmt.tprintf "wrong arity for rule: %s" call.name))))
 
-(defn validate-rule-definition [rules: []Rule, rule: Rule] -> [ok: bool, error: string]
+(defn validate-rule-call-known [rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (validate-rule-call-known-indexed rules (slice index 0) call)))
+
+(defn validate-rule-definition-indexed [rules: []Rule, index: []Rule-Name-Index-Entry, rule: Rule] -> [ok: bool, error: string]
   (when (= (count rule.body-steps) 0)
     (return false "Rule branch should have clauses"))
   (when (string-slice-has-duplicate? (slice rule.params 0))
     (return false "Rule variables should be distinct"))
-  (for [other rules]
-    (when (= other.name rule.name)
-      (when (or (not (= other.required-param-count rule.required-param-count))
-                (not (= (count other.params) (count rule.params))))
-        (return false (fmt.tprintf "Arity mismatch for rule: %s" rule.name)))))
+  (let [[entry-index found] (rule-name-index-entry index rule.name)]
+    (when found
+      (for [rule-index index[entry-index].indexes]
+        (let [other rules[rule-index]]
+          (when (or (not (= other.required-param-count rule.required-param-count))
+                    (not (= (count other.params) (count rule.params))))
+            (return false (fmt.tprintf "Arity mismatch for rule: %s" rule.name)))))))
   (for [param rule.params]
     (when (not (rule-param-valid? param))
       (return false (fmt.tprintf "rule params must be variables: %s" param))))
   (for [call rule.rule-calls]
-    (let [[ok error] (validate-rule-call-known rules call)]
+    (let [[ok error] (validate-rule-call-known-indexed rules index call)]
       (when (not ok)
         (return false error))))
+  (return true ""))
+
+(defn validate-rule-definition [rules: []Rule, rule: Rule] -> [ok: bool, error: string]
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (validate-rule-definition-indexed rules (slice index 0) rule)))
+
+(defn validate-rule-call-required-bindings-indexed [available: []string, rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call] -> [ok: bool, error: string]
+  (let [[rule rule-ok] (rule-name-index-first-matching-rule rules index call)]
+    (when rule-ok
+      (let [param-index 0]
+        (while (< param-index rule.required-param-count)
+          (let [arg call.args[param-index]]
+            (when (= arg.kind .Wildcard)
+              (return false (fmt.tprintf "insufficient bindings for rule: %s" call.name)))
+            (when (and (= arg.kind .Var)
+                       (not (string-slice-contains? available arg.name)))
+              (return false (fmt.tprintf "insufficient bindings for rule: %s" arg.name))))
+          (set! param-index (+ param-index 1))))))
   (return true ""))
 
 (defn validate-rule-call-required-bindings [available: []string, rules: []Rule, call: Rule-Call] -> [ok: bool, error: string]
-  (for [rule rules]
-    (when (rule-call-matches-rule? call rule)
-      (let [index 0]
-        (while (< index rule.required-param-count)
-        (let [arg call.args[index]]
-          (when (= arg.kind .Wildcard)
-            (return false (fmt.tprintf "insufficient bindings for rule: %s" call.name)))
-          (when (and (= arg.kind .Var)
-                     (not (string-slice-contains? available arg.name)))
-            (return false (fmt.tprintf "insufficient bindings for rule: %s" arg.name))))
-        (set! index (+ index 1))))))
-  (return true ""))
+  (let [index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (validate-rule-call-required-bindings-indexed available rules (slice index 0) call)))
 
 (defn validate-query-rules [query-value: Query] -> [ok: bool, error: string]
-  (for [rule query-value.rules]
-    (let [[ok error] (validate-rule-definition (slice query-value.rules 0) rule)]
-      (when (not ok)
-        (return false error))))
-  (for [call query-value.rule-calls]
-    (let [[ok error] (validate-rule-call-known (slice query-value.rules 0) call)]
-      (when (not ok)
-        (return false error))))
+  (let [rules (slice query-value.rules 0)
+        index (rule-name-index-build rules)]
+    (defer (delete-rule-name-index index))
+    (for [rule query-value.rules]
+      (let [[ok error] (validate-rule-definition-indexed rules (slice index 0) rule)]
+        (when (not ok)
+          (return false error))))
+    (for [call query-value.rule-calls]
+      (let [[ok error] (validate-rule-call-known-indexed rules (slice index 0) call)]
+        (when (not ok)
+          (return false error)))))
   (return true ""))
 
 (defn validate-query-pull-patterns [db: DB, query-value: Query, inputs: []Query-Input, sources: []DB-Source] -> [ok: bool, error: string]
@@ -11040,6 +11240,69 @@
                                typed-rows: typed-rows
                                has-typed-columns: true}) true))))
 
+(defn append-typed-bound-db-clause-scan-row! [columns: ^[dynamic]Relation-Column, typed-rows: ^int, attrs: []string, db: DB, binding: Binding, clause-value: Clause, all-current: bool, stats: ^Query-Stats] -> bool
+  (let [scan (clause-index-scan db clause-value binding)]
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (clause-index-scan-candidate? scan datom)
+            (set! stats^.clause-candidates (+ stats^.clause-candidates 1))
+            (when (or all-current (datom-current-at? db datom-index))
+              (let [next (clone-binding binding)]
+                (if (datom-clause-matches? db datom clause-value (addr next))
+                  (if (binding-can-add-to-relation-columns? attrs (slice columns^ 0) next)
+                    (do
+                      (add-binding-to-relation-columns! attrs columns next)
+                      (set! typed-rows^ (+ typed-rows^ 1))
+                      (delete next.items))
+                    (do
+                      (delete next.items)
+                      (return false)))
+                  (delete next.items))))))
+        (set! scan-index (+ scan-index 1)))))
+  true)
+
+(defn query-relation-apply-bound-db-clause-typed-scan [db: DB, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
+  (when (or (not rel.has-typed-columns)
+            clause-value.has-source)
+    (return (query-relation-empty) false))
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))]
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.e "")
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.a "")
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.v "")
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.tx-term "")
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.op-term "")
+    (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+          typed-rows 0
+          all-current (all-datoms-current? db)
+          row 0]
+      (while (< row rel.typed-rows)
+        (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
+          (when (not binding-ok)
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns typed-columns)
+            (return (query-relation-empty) false))
+          (set! stats^.clauses (+ stats^.clauses 1))
+          (when (not (append-typed-bound-db-clause-scan-row! (addr typed-columns) (addr typed-rows) (slice attrs 0) db binding clause-value all-current stats))
+            (delete binding.items)
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns typed-columns)
+            (return (query-relation-empty) false))
+          (delete binding.items))
+        (set! row (+ row 1)))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: (make [dynamic]Binding)
+                               typed-columns: typed-columns
+                               typed-rows: typed-rows
+                               has-typed-columns: true}) true))))
+
 (defn query-relation-apply-bound-clause-typed-fallback [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
@@ -11086,6 +11349,10 @@
 
 (defn query-relation-apply-bound-clause [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> Query-Relation
   (let [[typed typed-ok] (query-relation-apply-bound-ea-clause-typed db rel clause-value stats)]
+    (when typed-ok
+      (return typed))
+    (delete-query-relation typed))
+  (let [[typed typed-ok] (query-relation-apply-bound-db-clause-typed-scan db rel clause-value stats)]
     (when typed-ok
       (return typed))
     (delete-query-relation typed))
@@ -11927,10 +12194,7 @@
     (let [[source source-ok] (query-input-source-value inputs[index])]
       (when (not source-ok)
         (return (query-relation-empty)))
-      (let [out (bindings-from-relation-source-value-clause source clause-value)
-            rel (query-relation-from-bindings (slice out 0))]
-        (delete out)
-        rel))))
+      (query-relation-from-source-value-clause source clause-value))))
 
 (defn query-relation-from-db-clause [db: DB, clause-value: Clause, source: string] -> Query-Relation
   (let [[attrs attr-sources] (clause-output-attrs clause-value source)
@@ -11938,10 +12202,14 @@
         typed-columns (relation-columns-for-attrs (slice attrs 0))
         typed-ok true
         typed-rows 0]
-    (let [candidates (clause-candidate-indexes db clause-value (Binding {})) :defer]
-      (for [datom-index candidates]
-        (let [datom db.datoms[datom-index]]
-          (when (datom-current-at? db datom-index)
+    (let [scan (clause-index-scan db clause-value (Binding {}))]
+      (defer (delete-clause-index-scan scan))
+      (let [scan-index scan.index]
+        (while (< scan-index scan.high)
+          (let [datom-index scan.indexes[scan-index]
+                datom db.datoms[datom-index]]
+          (when (and (clause-index-scan-candidate? scan datom)
+                     (datom-current-at? db datom-index))
             (let [next (Binding {items: (make [dynamic]Var-Binding 0 (count attrs))})]
               (if (datom-clause-matches? db datom clause-value (addr next))
                 (do
@@ -11952,7 +12220,8 @@
                         (set! typed-rows (+ typed-rows 1)))
                       (set! typed-ok false)))
                   (arr.push! tuples next))
-                (delete next.items)))))))
+                (delete next.items)))))
+          (set! scan-index (+ scan-index 1)))))
     (when (not typed-ok)
       (for [column typed-columns]
         (delete-relation-column column))
@@ -14424,7 +14693,7 @@
     (defer (delete seen-counts))
     (pull-reverse-attr-with-fns! out db entity spec root (addr seen) (addr seen-counts) ([]Native-Query-Fn []))))
 
-(defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen: ^[dynamic]u64]
+(defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen-counts: (ptr (map u64 int))]
   (when (not (pull-output-has-attr? out^ ":db/id"))
     (arr.push! out^ (Pull-Attr {a: ":db/id"
                                 v: (value-entity entity)
@@ -14439,33 +14708,33 @@
             (let [children (make [dynamic]Pull-Attr)]
               (when (and (= datom.v.kind .Entity)
                          (schema-component? db datom.a))
-                (set! children (pull-component-attrs db datom.v.entity seen)))
+                (set! children (pull-component-attrs db datom.v.entity seen-counts)))
               (arr.push! out^ (Pull-Attr {a: datom.a
                                           v: datom.v
                                           attrs: children})))))))))
 
-(defn pull-component-attrs [db: DB, entity: u64, seen: ^[dynamic]u64] -> [dynamic]Pull-Attr
+(defn pull-component-attrs [db: DB, entity: u64, seen-counts: (ptr (map u64 int))] -> [dynamic]Pull-Attr
   (let [out (make [dynamic]Pull-Attr)]
-    (if (u64-contains? (slice seen^ 0) entity)
+    (if (pull-seen-contains? seen-counts entity)
       (arr.push! out (Pull-Attr {a: ":db/id"
                                  v: (value-entity entity)
                                  attrs: (make [dynamic]Pull-Attr)}))
       (do
-        (arr.push! seen^ entity)
-        (pull-wildcard-seen! (addr out) db entity seen)))
+        (pull-seen-push! seen-counts entity)
+        (pull-wildcard-seen! (addr out) db entity seen-counts)))
     out))
 
 (defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
-  (let [seen (make [dynamic]u64)]
-    (defer (delete seen))
-    (arr.push! seen entity)
-    (pull-wildcard-seen! out db entity (addr seen))))
+  (let [seen-counts (make (map u64 int))]
+    (defer (delete seen-counts))
+    (pull-seen-push! (addr seen-counts) entity)
+    (pull-wildcard-seen! out db entity (addr seen-counts))))
 
 (defn pull-component-children [db: DB, parent: u64, child: u64] -> [dynamic]Pull-Attr
-  (let [seen (make [dynamic]u64)]
-    (defer (delete seen))
-    (arr.push! seen parent)
-    (pull-component-attrs db child (addr seen))))
+  (let [seen-counts (make (map u64 int))]
+    (defer (delete seen-counts))
+    (pull-seen-push! (addr seen-counts) parent)
+    (pull-component-attrs db child (addr seen-counts))))
 
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has-alias spec.alias spec.a))
@@ -14782,7 +15051,7 @@
           (arr.push! seen-attrs datom.a)
           (arr.push! visits^ (pull-visit-attr entity datom.a)))))))
 
-(defn trace-pull-reverse-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+(defn trace-pull-reverse-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-counts: (ptr (map u64 int))]
   (arr.push! visits^ (pull-visit-reverse (forward-attr-for-reverse spec.a) entity))
   (when (and (= (count spec.pattern) 0)
              (not spec.has-recursion))
@@ -14802,14 +15071,14 @@
                    (datom-current-at? db datom-index)
                    (< seen limit))
           (if (> (count spec.pattern) 0)
-            (trace-pull-pattern! visits db datom.e spec.pattern spec.pattern seen-entities)
+            (trace-pull-pattern! visits db datom.e spec.pattern spec.pattern seen-counts)
             (when spec.has-recursion
               (let [pattern (pull-recursion-pattern root spec.a)]
                 (defer (delete pattern))
-                (trace-pull-pattern! visits db datom.e (slice pattern 0) (slice pattern 0) seen-entities))))
+                (trace-pull-pattern! visits db datom.e (slice pattern 0) (slice pattern 0) seen-counts))))
           (set! seen (+ seen 1)))))))
 
-(defn trace-pull-forward-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+(defn trace-pull-forward-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-counts: (ptr (map u64 int))]
   (arr.push! visits^ (pull-visit-attr entity spec.a))
   (when (and (= (count spec.pattern) 0)
              (not spec.has-recursion))
@@ -14827,14 +15096,14 @@
                    (= datom.v.kind .Entity)
                    (< seen limit))
           (if (> (count spec.pattern) 0)
-            (trace-pull-pattern! visits db datom.v.entity spec.pattern spec.pattern seen-entities)
+            (trace-pull-pattern! visits db datom.v.entity spec.pattern spec.pattern seen-counts)
             (when spec.has-recursion
               (let [pattern (pull-recursion-pattern root spec.a)]
                 (defer (delete pattern))
-                (trace-pull-pattern! visits db datom.v.entity (slice pattern 0) (slice pattern 0) seen-entities))))
+                (trace-pull-pattern! visits db datom.v.entity (slice pattern 0) (slice pattern 0) seen-counts))))
           (set! seen (+ seen 1)))))))
 
-(defn trace-pull-spec! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+(defn trace-pull-spec! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-counts: (ptr (map u64 int))]
   (when (and spec.has-recursion (<= spec.recursion-depth 0))
     (return))
   (when (= spec.a "*")
@@ -14843,23 +15112,23 @@
   (when (= spec.a ":db/id")
     (return))
   (if (reverse-attr? spec.a)
-    (trace-pull-reverse-refs! visits db entity spec root seen-entities)
-    (trace-pull-forward-refs! visits db entity spec root seen-entities)))
+    (trace-pull-reverse-refs! visits db entity spec root seen-counts)
+    (trace-pull-forward-refs! visits db entity spec root seen-counts)))
 
-(defn trace-pull-pattern! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
-  (when (u64-contains? seen-entities entity)
+(defn trace-pull-pattern! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-counts: (ptr (map u64 int))]
+  (when (pull-seen-contains? seen-counts entity)
     (return))
-  (let [child-seen (arr.into [dynamic]u64 seen-entities) :defer]
-    (arr.push! child-seen entity)
-    (let [normalized (normalize-pull-pattern pattern) :defer]
-      (for [spec normalized]
-        (trace-pull-spec! visits db entity spec root (slice child-seen 0))))))
+  (pull-seen-push! seen-counts entity)
+  (let [normalized (normalize-pull-pattern pattern) :defer]
+    (for [spec normalized]
+      (trace-pull-spec! visits db entity spec root seen-counts)))
+  (pull-seen-pop! seen-counts entity))
 
 (defn pull-visits-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> [dynamic]Pull-Visit
   (let [visits (make [dynamic]Pull-Visit)
-        seen (make [dynamic]u64) :defer
+        seen-counts (make (map u64 int)) :defer
         normalized (normalize-pull-pattern pattern) :defer]
-    (trace-pull-pattern! (addr visits) db entity (slice normalized 0) (slice normalized 0) (slice seen 0))
+    (trace-pull-pattern! (addr visits) db entity (slice normalized 0) (slice normalized 0) (addr seen-counts))
     visits))
 
 (defn pull-pattern-spec-traced [db: DB, entity: u64, pattern: []Pull-Spec] -> [result: Pull-Result, visits: [dynamic]Pull-Visit]

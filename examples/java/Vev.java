@@ -108,6 +108,18 @@ public final class Vev {
     private final MethodHandle entityIntPairsEntitiesData;
     private final MethodHandle entityIntPairsValuesData;
     private final MethodHandle queryDbPreparedEntityStringIntTriplesWithInputs;
+    private final MethodHandle queryDbPreparedColumnBatchWithInputs;
+    private final MethodHandle columnBatchFree;
+    private final MethodHandle columnBatchKind;
+    private final MethodHandle columnBatchCount;
+    private final MethodHandle columnBatchEntitiesData;
+    private final MethodHandle columnBatchIntsData;
+    private final MethodHandle columnBatchStringDataArray;
+    private final MethodHandle columnBatchStringLengthsData;
+    private final MethodHandle columnBatchStringDictionaryCount;
+    private final MethodHandle columnBatchStringDictionaryDataArray;
+    private final MethodHandle columnBatchStringDictionaryLengthsData;
+    private final MethodHandle columnBatchStringIndicesData;
     private final MethodHandle entityStringIntTriplesFree;
     private final MethodHandle entityStringIntTriplesCount;
     private final MethodHandle entityStringIntTriplesEntitiesData;
@@ -256,6 +268,18 @@ public final class Vev {
         this.entityIntPairsEntitiesData = downcall("vev_entity_int_pairs_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityIntPairsValuesData = downcall("vev_entity_int_pairs_values_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityStringIntTriplesWithInputs = downcall("vev_query_db_prepared_entity_string_int_triples_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedColumnBatchWithInputs = downcall("vev_query_db_prepared_column_batch_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchFree = downcall("vev_column_batch_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.columnBatchKind = downcall("vev_column_batch_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.columnBatchCount = downcall("vev_column_batch_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.columnBatchEntitiesData = downcall("vev_column_batch_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchIntsData = downcall("vev_column_batch_ints_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchStringDataArray = downcall("vev_column_batch_string_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchStringLengthsData = downcall("vev_column_batch_string_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchStringDictionaryCount = downcall("vev_column_batch_string_dictionary_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.columnBatchStringDictionaryDataArray = downcall("vev_column_batch_string_dictionary_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchStringDictionaryLengthsData = downcall("vev_column_batch_string_dictionary_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchStringIndicesData = downcall("vev_column_batch_string_indices_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityStringIntTriplesFree = downcall("vev_entity_string_int_triples_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.entityStringIntTriplesCount = downcall("vev_entity_string_int_triples_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.entityStringIntTriplesEntitiesData = downcall("vev_entity_string_int_triples_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -1122,37 +1146,90 @@ public final class Vev {
             }
         }
 
+        private long[] longColumn(MemorySegment data, int count) {
+            if (count == 0 || isNull(data)) return new long[0];
+            return data.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+        }
+
+        private String[] columnBatchStrings(MemorySegment raw, int count) throws Throwable {
+            if (count == 0) return new String[0];
+            int dictionaryCount = (int) columnBatchStringDictionaryCount.invoke(raw);
+            MemorySegment dictionaryDataArray = (MemorySegment) columnBatchStringDictionaryDataArray.invoke(raw);
+            MemorySegment dictionaryLengthsData = (MemorySegment) columnBatchStringDictionaryLengthsData.invoke(raw);
+            MemorySegment stringIndicesData = (MemorySegment) columnBatchStringIndicesData.invoke(raw);
+            if (dictionaryCount > 0
+                    && !isNull(dictionaryDataArray)
+                    && !isNull(dictionaryLengthsData)
+                    && !isNull(stringIndicesData)) {
+                MemorySegment dataArray = dictionaryDataArray.reinterpret((long) dictionaryCount * ValueLayout.ADDRESS.byteSize());
+                int[] lengths = dictionaryLengthsData.reinterpret((long) dictionaryCount * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+                int[] indices = stringIndicesData.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+                String[] dictionary = new String[dictionaryCount];
+                for (int index = 0; index < dictionaryCount; index++) {
+                    MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
+                    dictionary[index] = borrowedUtf8String(data, lengths[index]);
+                }
+                String[] out = new String[count];
+                for (int index = 0; index < count; index++) {
+                    out[index] = dictionary[indices[index]];
+                }
+                return out;
+            }
+
+            MemorySegment stringDataArray = (MemorySegment) columnBatchStringDataArray.invoke(raw);
+            MemorySegment stringLengthsData = (MemorySegment) columnBatchStringLengthsData.invoke(raw);
+            if (isNull(stringDataArray) || isNull(stringLengthsData)) return new String[0];
+            MemorySegment dataArray = stringDataArray.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+            int[] lengths = stringLengthsData.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+            String[] out = new String[count];
+            for (int index = 0; index < count; index++) {
+                MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
+                out[index] = borrowedUtf8String(data, lengths[index]);
+            }
+            return out;
+        }
+
         public ColumnResult queryColumns(PreparedQuery query, String inputs) throws Throwable {
-            long[] entities = queryEntityColumn(query, inputs);
-            if (entities != null) {
-                return new ColumnResult(
-                    entities.length,
-                    new int[] { COLUMN_ENTITY },
-                    new Object[] { entities });
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedColumnBatchWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int kind = (int) columnBatchKind.invoke(raw);
+                    int count = (int) columnBatchCount.invoke(raw);
+                    return switch (kind) {
+                        case 1 -> new ColumnResult(
+                            count,
+                            new int[] { COLUMN_ENTITY },
+                            new Object[] { longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count) });
+                        case 2 -> new ColumnResult(
+                            count,
+                            new int[] { COLUMN_STRING },
+                            new Object[] { columnBatchStrings(raw, count) });
+                        case 3 -> new ColumnResult(
+                            count,
+                            new int[] { COLUMN_ENTITY, COLUMN_INT },
+                            new Object[] {
+                                longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count),
+                                longColumn((MemorySegment) columnBatchIntsData.invoke(raw), count),
+                            });
+                        case 4 -> new ColumnResult(
+                            count,
+                            new int[] { COLUMN_ENTITY, COLUMN_STRING, COLUMN_INT },
+                            new Object[] {
+                                longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count),
+                                columnBatchStrings(raw, count),
+                                longColumn((MemorySegment) columnBatchIntsData.invoke(raw), count),
+                            });
+                        default -> null;
+                    };
+                } finally {
+                    columnBatchFree.invoke(raw);
+                }
             }
-            String[] strings = queryStringColumn(query, inputs);
-            if (strings != null) {
-                return new ColumnResult(
-                    strings.length,
-                    new int[] { COLUMN_STRING },
-                    new Object[] { strings });
-            }
-            long[][] pairs = queryEntityIntPairColumns(query, inputs);
-            if (pairs != null) {
-                return new ColumnResult(
-                    pairs[0].length,
-                    new int[] { COLUMN_ENTITY, COLUMN_INT },
-                    new Object[] { pairs[0], pairs[1] });
-            }
-            Object[] triples = queryEntityStringIntTripleColumns(query, inputs);
-            if (triples != null) {
-                long[] tripleEntities = (long[]) triples[0];
-                return new ColumnResult(
-                    tripleEntities.length,
-                    new int[] { COLUMN_ENTITY, COLUMN_STRING, COLUMN_INT },
-                    triples);
-            }
-            return null;
         }
 
         public ResultSet query(Statement stmt) throws Throwable {

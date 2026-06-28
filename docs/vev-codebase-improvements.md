@@ -109,6 +109,9 @@ Status labels:
 - `done` Use `arr.repeat` for dense boolean index initialization.
   Dense transitive-rule helper arrays now use the package repeated-array helper instead of a manual fill loop.
 
+- `done` Add a generic typed column-batch C ABI handle.
+  Host adapters can now call `vev_query_db_prepared_column_batch_with_inputs` once and inspect `vev_column_batch_kind` instead of probing every exact-shape column API. The handle wraps the existing entity, string, entity/int, and entity/string/int flat layouts and exposes uniform borrowed pointer accessors.
+
 ## Vev TODO
 
 - `done` Finish parser-owned AST/value cleanup.
@@ -117,8 +120,8 @@ Status labels:
 - `done` Make host result decoding less duplicated.
   The Clojure wrapper now funnels `rows` and `q` through shared optimized-result dispatch helpers instead of repeating the entity-column, entity/int-pair, entity/string/int-triple, and generic result fallback cascade in each call shape. Java and C ABI compatibility accessors remain intentionally available.
 
-- `todo` Use set-backed visited state where linear arrays are still used for cycle tracking.
-  Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
+- `done` Use set-backed visited state where linear arrays were still used for cycle tracking.
+  Recursive retract now carries a `set[u64]`, wildcard/component pull recursion uses the same count-map state as explicit pull recursion, and traced pull traversal no longer copies a `u64` path array at each recursive step. Specialized transitive-rule helpers keep their own dense/set visited paths.
 
 - `todo` Consider a map-backed `Binding` index.
   Binding lookup is order-preserving but scan-heavy. A binding could keep ordered items plus `map[string]int`, or relation join code could build a temporary lookup map for join keys.
@@ -150,17 +153,23 @@ Status labels:
 - `done` Keep compatible materialized helper-rule branch output typed and deduped.
   Materialized non-recursive helper rules now project branch outputs into typed relations when possible and append them through a typed unique accumulator keyed by projected columns. Unsupported projections flush through the audited materialization helper and keep the existing `unique-bindings` fallback.
 
+- `done` Stream recursive rule body results into memo insertion.
+  Positive recursive rule fixpoint loops now append directly from the `Query-Relation` produced by rule-body evaluation. Typed-only relations create one temporary binding row at a time for memo insertion instead of allocating a full materialized result array before appending.
+
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
 
 - `todo` Consolidate ABI exported query/bind variants.
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
 
+- `partial` Adopt column batches in host adapters.
+  Java `DB.queryColumns` and the Clojure optimized query path now prefer the generic column-batch handle for flat prepared query results, then fall back to the generic result API. Python and Rust still use the generic result API in their example wrappers. Exact-shape C functions remain available for low-level callers.
+
 - `todo` Add generic query/parser AST visitors.
   Source validation, source-input validation, relation-DB query rewriting, and EDN query section parsing all hand-walk the same query or EDN shapes. A reusable visitor/mapper plus single-pass section indexing would reduce duplicate traversal logic.
 
-- `todo` Build reusable physical query operators.
-  Entity-column scans, profiled row rendering, same-entity star plans, relation-source row matching, and specialized typed result paths duplicate scan/filter/project logic. Indexed scan, row matcher, star/merge-scan, and column materialization operators should feed both rows and typed columns.
+- `partial` Build reusable physical query operators.
+  The first reusable physical operator is `Clause-Index-Scan`, which resolves a clause once, selects the DB index/range once, and streams matching datom indexes without allocating a candidate array. Relation clause production, row-binding clause execution, selectivity candidate counting, negative-clause matching, transitive traversal helpers, and the generic unsourced typed bound-clause path now consume that scan directly. Source-input relation clauses also build `Query-Relation` rows and typed columns directly instead of first materializing a binding array and cloning it into a relation. Remaining work: row matcher, star/merge-scan, and broader column materialization operators that feed both rows and typed columns.
 
 - `done` Cache prepared rule planning data.
   `Query` now owns cached `Rule-Call-Plan` values. Prepared queries build those plans when rules are attached, and execution reuses them by rule-call step index instead of rebuilding dependency graphs and transitive-shape recognition on every prepared run. Deeper SCC/component metadata remains tracked separately under rule component planning.
@@ -168,8 +177,8 @@ Status labels:
 - `done` Add a rule lookup/index structure for planning.
   Prepared rule-call planning now builds one rule-name index for the query's rules and reuses it while constructing dependency graphs for every cached call plan. Execution still preserves original rule ordering by filtering the source rule array after reachability is known.
 
-- `todo` Extend rule indexes to validation and arity checks.
-  Rule validation, arity checks, and required-binding checks still scan rule arrays by name/arity in some paths. A richer index keyed by name and arity would centralize those checks and prepare the ground for explicit SCC/component planning.
+- `done` Extend rule indexes to validation and arity checks.
+  Rule-call known checks, arity checks, rule definition validation, required-binding validation, ordered query validation, and planned rule-body readiness checks now reuse the rule-name index instead of scanning unrelated rule branches by name/arity in each path. Wrapper helpers remain for call sites that do not already own an index.
 
 - `done` Make index order a typed helper.
   Public datom index APIs now convert order strings once to a typed `Public-Index-Order` and use `db-index-slice` to select `eavt`, `aevt`, `avet`, or `vaet`. Datoms, seek, and reverse-seek share the same typed dispatch path while preserving the public `:eavt`/`:aevt`/`:avet`/`:vaet` API.
