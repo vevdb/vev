@@ -3164,16 +3164,10 @@
         (return (Datoms-Result {ok: false error: end-error datoms: (make [dynamic]Datom)})))))
   (Datoms-Result {ok: true error: "" datoms: (index-range-with-args db attr start has-start end has-end)}))
 
-(defn u64-contains? [items: []u64, value: u64] -> bool
-  (for [item items]
-    (when (= item value)
-      (return true)))
-  false)
-
-(defn append-retract-entity-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, seen: ^[dynamic]u64]
-  (when (u64-contains? (slice seen^ 0) entity)
+(defn append-retract-entity-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, seen: ^set[u64]]
+  (when (set.contains? seen^ entity)
     (return))
-  (arr.push! seen^ entity)
+  (set.add! seen^ entity)
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt" entity "" (Value {}))
         high (upper-bound-index db indexes "eavt" entity "" (Value {}))]
@@ -3194,11 +3188,11 @@
           (push-tx-op-once! ops (tx-retract datom.e datom.a datom.v)))))))
 
 (defn append-retract-entity-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64]
-  (let [seen (make [dynamic]u64)]
+  (let [seen (set.empty u64)]
     (defer (delete seen))
     (append-retract-entity-ops-seen! ops db entity (addr seen))))
 
-(defn append-retract-attr-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string, seen: ^[dynamic]u64]
+(defn append-retract-attr-ops-seen! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string, seen: ^set[u64]]
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
         high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
@@ -3211,9 +3205,9 @@
           (push-tx-op-once! ops (tx-retract entity attr datom.v)))))))
 
 (defn append-retract-attr-ops! [ops: ^[dynamic]Tx-Op, db: DB, entity: u64, attr: string]
-  (let [seen (make [dynamic]u64)]
+  (let [seen (set.empty u64)]
     (defer (delete seen))
-    (arr.push! seen entity)
+    (set.add! seen entity)
     (append-retract-attr-ops-seen! ops db entity attr (addr seen))))
 
 (defn schema-entity-for-attr [db: DB, attr: string] -> [e: u64, ok: bool]
@@ -14443,7 +14437,7 @@
     (defer (delete seen-counts))
     (pull-reverse-attr-with-fns! out db entity spec root (addr seen) (addr seen-counts) ([]Native-Query-Fn []))))
 
-(defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen: ^[dynamic]u64]
+(defn pull-wildcard-seen! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, seen-counts: (ptr (map u64 int))]
   (when (not (pull-output-has-attr? out^ ":db/id"))
     (arr.push! out^ (Pull-Attr {a: ":db/id"
                                 v: (value-entity entity)
@@ -14458,33 +14452,33 @@
             (let [children (make [dynamic]Pull-Attr)]
               (when (and (= datom.v.kind .Entity)
                          (schema-component? db datom.a))
-                (set! children (pull-component-attrs db datom.v.entity seen)))
+                (set! children (pull-component-attrs db datom.v.entity seen-counts)))
               (arr.push! out^ (Pull-Attr {a: datom.a
                                           v: datom.v
                                           attrs: children})))))))))
 
-(defn pull-component-attrs [db: DB, entity: u64, seen: ^[dynamic]u64] -> [dynamic]Pull-Attr
+(defn pull-component-attrs [db: DB, entity: u64, seen-counts: (ptr (map u64 int))] -> [dynamic]Pull-Attr
   (let [out (make [dynamic]Pull-Attr)]
-    (if (u64-contains? (slice seen^ 0) entity)
+    (if (pull-seen-contains? seen-counts entity)
       (arr.push! out (Pull-Attr {a: ":db/id"
                                  v: (value-entity entity)
                                  attrs: (make [dynamic]Pull-Attr)}))
       (do
-        (arr.push! seen^ entity)
-        (pull-wildcard-seen! (addr out) db entity seen)))
+        (pull-seen-push! seen-counts entity)
+        (pull-wildcard-seen! (addr out) db entity seen-counts)))
     out))
 
 (defn pull-wildcard! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64]
-  (let [seen (make [dynamic]u64)]
-    (defer (delete seen))
-    (arr.push! seen entity)
-    (pull-wildcard-seen! out db entity (addr seen))))
+  (let [seen-counts (make (map u64 int))]
+    (defer (delete seen-counts))
+    (pull-seen-push! (addr seen-counts) entity)
+    (pull-wildcard-seen! out db entity (addr seen-counts))))
 
 (defn pull-component-children [db: DB, parent: u64, child: u64] -> [dynamic]Pull-Attr
-  (let [seen (make [dynamic]u64)]
-    (defer (delete seen))
-    (arr.push! seen parent)
-    (pull-component-attrs db child (addr seen))))
+  (let [seen-counts (make (map u64 int))]
+    (defer (delete seen-counts))
+    (pull-seen-push! (addr seen-counts) parent)
+    (pull-component-attrs db child (addr seen-counts))))
 
 (defn pull-output-attr [spec: Pull-Spec] -> string
   (if spec.has-alias spec.alias spec.a))
@@ -14801,7 +14795,7 @@
           (arr.push! seen-attrs datom.a)
           (arr.push! visits^ (pull-visit-attr entity datom.a)))))))
 
-(defn trace-pull-reverse-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+(defn trace-pull-reverse-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-counts: (ptr (map u64 int))]
   (arr.push! visits^ (pull-visit-reverse (forward-attr-for-reverse spec.a) entity))
   (when (and (= (count spec.pattern) 0)
              (not spec.has-recursion))
@@ -14821,14 +14815,14 @@
                    (datom-current-at? db datom-index)
                    (< seen limit))
           (if (> (count spec.pattern) 0)
-            (trace-pull-pattern! visits db datom.e spec.pattern spec.pattern seen-entities)
+            (trace-pull-pattern! visits db datom.e spec.pattern spec.pattern seen-counts)
             (when spec.has-recursion
               (let [pattern (pull-recursion-pattern root spec.a)]
                 (defer (delete pattern))
-                (trace-pull-pattern! visits db datom.e (slice pattern 0) (slice pattern 0) seen-entities))))
+                (trace-pull-pattern! visits db datom.e (slice pattern 0) (slice pattern 0) seen-counts))))
           (set! seen (+ seen 1)))))))
 
-(defn trace-pull-forward-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+(defn trace-pull-forward-refs! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-counts: (ptr (map u64 int))]
   (arr.push! visits^ (pull-visit-attr entity spec.a))
   (when (and (= (count spec.pattern) 0)
              (not spec.has-recursion))
@@ -14846,14 +14840,14 @@
                    (= datom.v.kind .Entity)
                    (< seen limit))
           (if (> (count spec.pattern) 0)
-            (trace-pull-pattern! visits db datom.v.entity spec.pattern spec.pattern seen-entities)
+            (trace-pull-pattern! visits db datom.v.entity spec.pattern spec.pattern seen-counts)
             (when spec.has-recursion
               (let [pattern (pull-recursion-pattern root spec.a)]
                 (defer (delete pattern))
-                (trace-pull-pattern! visits db datom.v.entity (slice pattern 0) (slice pattern 0) seen-entities))))
+                (trace-pull-pattern! visits db datom.v.entity (slice pattern 0) (slice pattern 0) seen-counts))))
           (set! seen (+ seen 1)))))))
 
-(defn trace-pull-spec! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
+(defn trace-pull-spec! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-counts: (ptr (map u64 int))]
   (when (and spec.has-recursion (<= spec.recursion-depth 0))
     (return))
   (when (= spec.a "*")
@@ -14862,23 +14856,23 @@
   (when (= spec.a ":db/id")
     (return))
   (if (reverse-attr? spec.a)
-    (trace-pull-reverse-refs! visits db entity spec root seen-entities)
-    (trace-pull-forward-refs! visits db entity spec root seen-entities)))
+    (trace-pull-reverse-refs! visits db entity spec root seen-counts)
+    (trace-pull-forward-refs! visits db entity spec root seen-counts)))
 
-(defn trace-pull-pattern! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-entities: []u64]
-  (when (u64-contains? seen-entities entity)
+(defn trace-pull-pattern! [visits: ^[dynamic]Pull-Visit, db: DB, entity: u64, pattern: []Pull-Spec, root: []Pull-Spec, seen-counts: (ptr (map u64 int))]
+  (when (pull-seen-contains? seen-counts entity)
     (return))
-  (let [child-seen (arr.into [dynamic]u64 seen-entities) :defer]
-    (arr.push! child-seen entity)
-    (let [normalized (normalize-pull-pattern pattern) :defer]
-      (for [spec normalized]
-        (trace-pull-spec! visits db entity spec root (slice child-seen 0))))))
+  (pull-seen-push! seen-counts entity)
+  (let [normalized (normalize-pull-pattern pattern) :defer]
+    (for [spec normalized]
+      (trace-pull-spec! visits db entity spec root seen-counts)))
+  (pull-seen-pop! seen-counts entity))
 
 (defn pull-visits-pattern-spec [db: DB, entity: u64, pattern: []Pull-Spec] -> [dynamic]Pull-Visit
   (let [visits (make [dynamic]Pull-Visit)
-        seen (make [dynamic]u64) :defer
+        seen-counts (make (map u64 int)) :defer
         normalized (normalize-pull-pattern pattern) :defer]
-    (trace-pull-pattern! (addr visits) db entity (slice normalized 0) (slice normalized 0) (slice seen 0))
+    (trace-pull-pattern! (addr visits) db entity (slice normalized 0) (slice normalized 0) (addr seen-counts))
     visits))
 
 (defn pull-pattern-spec-traced [db: DB, entity: u64, pattern: []Pull-Spec] -> [result: Pull-Result, visits: [dynamic]Pull-Visit]

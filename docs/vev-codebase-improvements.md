@@ -117,8 +117,8 @@ Status labels:
 - `done` Make host result decoding less duplicated.
   The Clojure wrapper now funnels `rows` and `q` through shared optimized-result dispatch helpers instead of repeating the entity-column, entity/int-pair, entity/string/int-triple, and generic result fallback cascade in each call shape. Java and C ABI compatibility accessors remain intentionally available.
 
-- `todo` Use set-backed visited state where linear arrays are still used for cycle tracking.
-  Recursive retract and pull recursion still have linear `u64` visited scans in some paths.
+- `done` Use set-backed visited state where linear arrays were still used for cycle tracking.
+  Recursive retract now carries a `set[u64]`, wildcard/component pull recursion uses the same count-map state as explicit pull recursion, and traced pull traversal no longer copies a `u64` path array at each recursive step. Specialized transitive-rule helpers keep their own dense/set visited paths.
 
 - `todo` Consider a map-backed `Binding` index.
   Binding lookup is order-preserving but scan-heavy. A binding could keep ordered items plus `map[string]int`, or relation join code could build a temporary lookup map for join keys.
