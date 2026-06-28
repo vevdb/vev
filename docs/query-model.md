@@ -218,6 +218,9 @@ Typed joins now also detect provably empty cases before falling back to generic
 binding joins: if either side is already an empty typed relation, or if common
 typed columns have incompatible primitive kinds, the engine returns an empty
 typed joined relation directly.
+Nested tuple destructuring for `ground` and typed function outputs also has a
+typed path for non-fanout binding patterns; collection destructuring still uses
+the compatibility path because it expands one input row into multiple rows.
 
 ## Query Engine Strategy
 

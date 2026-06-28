@@ -7001,6 +7001,71 @@
             (set! index (+ index 1))))))
     (return out true)))
 
+(defn typed-binding-temp-index [names: []string, name: string] -> [index: int, ok: bool]
+  (for [candidate index names]
+    (when (= candidate name)
+      (return index true)))
+  (return -1 false))
+
+(defn input-binding-contains-collection? [binding: Input-Binding] -> bool
+  (case binding.kind
+    .Collection (return true)
+    .Tuple
+      (do
+        (for [item binding.items]
+          (when (input-binding-contains-collection? item)
+            (return true)))
+        (return false))
+    :else (return false))
+  false)
+
+(defn typed-bind-input-pattern-value! [rel: Query-Relation, row: int, binding: Input-Binding, value: Value, names: ^[dynamic]string, values: ^[dynamic]Value] -> bool
+  (case binding.kind
+    .Ignore (return true)
+    .None (return true)
+    .Var
+      (do
+        (when (or (= binding.name "")
+                  (= binding.name "_"))
+          (return true))
+        (when (not (query-relation-typed-row-var-agrees? rel row binding.name value))
+          (return false))
+        (let [[existing-index existing-ok] (typed-binding-temp-index (slice names^ 0) binding.name)]
+          (if existing-ok
+            (predicate-value-equal? values^[existing-index] value)
+            (do
+              (arr.push! names^ binding.name)
+              (arr.push! values^ value)
+              (return true)))))
+    .Tuple
+      (do
+        (when (not (= value.kind .Vector))
+          (return false))
+        (when (not (= (count binding.items) (count value.items)))
+          (return false))
+        (for [item index binding.items]
+          (when (not (typed-bind-input-pattern-value! rel row item value.items[index] names values))
+            (return false)))
+        (return true))
+    .Collection (return false))
+  false)
+
+(defn typed-produced-values-from-input-binding [rel: Query-Relation, row: int, binding: Input-Binding, value: Value, output-vars: []string] -> [produced: [dynamic]Value, ok: bool]
+  (let [names (make [dynamic]string) :defer
+        values (make [dynamic]Value) :defer
+        out (make [dynamic]Value)]
+    (when (not (typed-bind-input-pattern-value! rel row binding value (addr names) (addr values)))
+      (return out false))
+    (for [name output-vars]
+      (when (and (not (= name ""))
+                 (not (= name "_"))
+                 (not (query-relation-has-attr? rel name)))
+        (let [[index found] (typed-binding-temp-index (slice names 0) name)]
+          (if found
+            (arr.push! out values[index])
+            (return out false)))))
+    (return out true)))
+
 (defn bindings-after-function-with-fns [bindings: []Binding, function: Function-Clause, registry: []Native-Query-Fn] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)]
     (for [binding bindings]
@@ -11889,12 +11954,43 @@
                      has-typed-columns: true})))
 
 (defn query-relation-extend-function-typed [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
-  (when (or (not rel.has-typed-columns)
-            (not (= function.out-binding.kind .None)))
+  (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
   (let [[_ op-ok] (typed-function-op-name function registry)]
     (when (not op-ok)
       (return (query-relation-empty) false)))
+  (when (not (= function.out-binding.kind .None))
+    (when (input-binding-contains-collection? function.out-binding)
+      (return (query-relation-empty) false))
+    (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+          attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+          output-vars (make [dynamic]string) :defer
+          seen-output-vars (set.empty string) :defer]
+      (append-input-binding-vars-indexed! (addr output-vars) (addr seen-output-vars) function.out-binding)
+      (for [name output-vars]
+        (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
+      (let [builder (query-relation-builder (slice attrs 0))
+            row 0]
+        (while (< row rel.typed-rows)
+          (let [[value value-ok] (typed-function-op-value rel row function registry)]
+            (when value-ok
+              (let [[produced produced-ok] (typed-produced-values-from-input-binding rel row function.out-binding value (slice output-vars 0))]
+                (when produced-ok
+                  (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
+                    (delete produced)
+                    (delete attrs)
+                    (delete attr-sources)
+                    (delete-query-relation-builder builder)
+                    (return (query-relation-empty) false)))
+                (delete produced))))
+          (set! row (+ row 1)))
+        (return (Query-Relation {attrs: attrs
+                                 attr-sources: attr-sources
+                                 attr-index: (query-relation-attr-index (slice attrs 0))
+                                 tuples: builder.tuples
+                                 typed-columns: builder.typed-columns
+                                 typed-rows: builder.typed-rows
+                                 has-typed-columns: builder.typed-ok}) true))))
   (when function.is-tuple
     (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
           attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
@@ -13444,6 +13540,38 @@
 (defn query-relation-apply-ground-typed [rel: Query-Relation, ground: Ground] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
+  (when (not (= ground.binding.kind .None))
+    (when (input-binding-contains-collection? ground.binding)
+      (return (query-relation-empty) false))
+    (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+          attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+          output-vars (make [dynamic]string) :defer
+          seen-output-vars (set.empty string) :defer]
+      (append-input-binding-vars-indexed! (addr output-vars) (addr seen-output-vars) ground.binding)
+      (for [name output-vars]
+        (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
+      (let [builder (query-relation-builder (slice attrs 0))
+            row 0]
+        (while (< row rel.typed-rows)
+          (let [[source source-ok] (query-relation-resolve-typed-term rel row ground.source)]
+            (when source-ok
+              (let [[produced produced-ok] (typed-produced-values-from-input-binding rel row ground.binding source (slice output-vars 0))]
+                (when produced-ok
+                  (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
+                    (delete produced)
+                    (delete attrs)
+                    (delete attr-sources)
+                    (delete-query-relation-builder builder)
+                    (return (query-relation-empty) false)))
+                (delete produced))))
+          (set! row (+ row 1)))
+        (return (Query-Relation {attrs: attrs
+                                 attr-sources: attr-sources
+                                 attr-index: (query-relation-attr-index (slice attrs 0))
+                                 tuples: builder.tuples
+                                 typed-columns: builder.typed-columns
+                                 typed-rows: builder.typed-rows
+                                 has-typed-columns: builder.typed-ok}) true))))
   (when (and (= ground.binding.kind .None)
              ground.is-collection
              (not (= ground.out "")))
