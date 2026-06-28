@@ -137,11 +137,13 @@ project distinct-variable calls back as typed relations directly, avoiding one
 project/dedupe/rebuild cycle. Compound typed joins can also hash a leading
 entity-id common variable and verify the remaining common columns in the
 candidate bucket, avoiding formatted compound string keys for common
-Datomic-style entity joins. The remaining cost is joining and deduping broad
-materialized rule relations while still carrying generic `Binding` rows as a
-compatibility veneer. The next substantial planner work should remove that
-remaining row-shaped construction from the materialized broad path and prefer
-streamed/merge joins where attrs and variable columns make that possible.
+Datomic-style entity joins. Binary equality/inequality predicates over two
+typed variables can compare columns directly. The remaining cost is joining and
+deduping broad materialized rule relations while still carrying generic
+`Binding` rows as a compatibility veneer. The next substantial planner work
+should remove that remaining row-shaped construction from the materialized
+broad path and prefer streamed/merge joins where attrs and variable columns
+make that possible.
 
 The immediate implementation batch is:
 

@@ -178,8 +178,10 @@ and rebuilding typed columns immediately. Compound typed joins whose first
 shared variable is an entity id can hash that leading entity and verify the
 remaining shared columns in candidate buckets, which is useful for Datomic-style
 joins such as `?entity/?attribute-value` pairs without relying on formatted
-compound string keys. The broad path still pays for generic `Binding`
-construction in joins/results and final dedupe. The next performance step is
+compound string keys. Binary `=` / `!=` predicates over two typed variables can
+compare relation columns directly, avoiding per-row `Value` wrapper resolution
+for common filters. The broad path still pays for generic `Binding` construction
+in joins/results and final dedupe. The next performance step is
 columnar/streamed materialized rule relations and typed joins that avoid those
 remaining row-shaped costs.
 

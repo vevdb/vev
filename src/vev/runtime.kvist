@@ -2249,10 +2249,52 @@
         (return "" false))
       (return entry.target true))))
 
+(defn relation-column-row-predicate-equal? [left: Relation-Column, left-row: int, right: Relation-Column, right-row: int] -> [equal: bool, ok: bool]
+  (when (not (and left.has-kind right.has-kind))
+    (return false false))
+  (when (and (or (= left.kind .Entity) (= left.kind .Int))
+             (or (= right.kind .Entity) (= right.kind .Int)))
+    (let [[left-key left-ok] (relation-column-row-number-join-key left left-row)
+          [right-key right-ok] (relation-column-row-number-join-key right right-row)]
+      (return (and left-ok right-ok (= left-key right-key)) (and left-ok right-ok))))
+  (when (not (= left.kind right.kind))
+    (return false true))
+  (case left.kind
+    .Nil (return true true)
+    .Entity (return (= left.entities[left-row] right.entities[right-row]) true)
+    .String (return (= left.texts[left-row] right.texts[right-row]) true)
+    .Int (return (= left.ints[left-row] right.ints[right-row]) true)
+    .Float (return (= left.floats[left-row] right.floats[right-row]) true)
+    .Bool (return (= left.bools[left-row] right.bools[right-row]) true)
+    .Keyword (return (= left.texts[left-row] right.texts[right-row]) true)
+    .Symbol (return (= left.texts[left-row] right.texts[right-row]) true)
+    .Uuid (return (= left.texts[left-row] right.texts[right-row]) true))
+  (return false false))
+
+(defn typed-var-pair-equality-predicate-matches? [rel: Query-Relation, row: int, op: string, left-name: string, right-name: string] -> [matched: bool, ok: bool]
+  (when (not (or (= op "=") (= op "!=") (= op "not=")))
+    (return false false))
+  (let [[left-index left-ok] (query-relation-attr-index-lookup rel left-name)
+        [right-index right-ok] (query-relation-attr-index-lookup rel right-name)]
+    (when (not (and left-ok right-ok))
+      (return false false))
+    (let [[equal equal-ok] (relation-column-row-predicate-equal? rel.typed-columns[left-index] row rel.typed-columns[right-index] row)]
+      (when (not equal-ok)
+        (return false false))
+      (if (= op "=")
+        (return equal true)
+        (return (not equal) true)))))
+
 (defn typed-predicate-matches? [rel: Query-Relation, row: int, predicate: Predicate, registry: []Native-Query-Fn] -> [matched: bool, ok: bool]
   (let [[op op-ok] (typed-predicate-op-name predicate registry)]
     (when (not op-ok)
       (return false false))
+    (when (and (= (count predicate.terms) 2)
+               (= predicate.terms[0].kind .Var)
+               (= predicate.terms[1].kind .Var))
+      (let [[matched matched-ok] (typed-var-pair-equality-predicate-matches? rel row op predicate.terms[0].name predicate.terms[1].name)]
+        (when matched-ok
+          (return matched true))))
     (when (and (or (= op "true?")
                    (= op "false?")
                    (= op "nil?")

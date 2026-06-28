@@ -145,7 +145,7 @@ EDN chunks, so query timings should be read separately from import timings.
 |---|---:|---:|---|
 | `q1` | 0.42ms | 2 | Good selective/bound rule path |
 | `q2` | 3.95s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, numeric join keys, single-rule typed projection rebuilds, and entity-leading compound joins are reduced |
-| `q3` | 3.74s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering |
+| `q3` | 3.47s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering; binary typed var equality avoids value-wrapper comparison |
 | `q4` | 1.01s | 135 | Completes through derived transitive closure over a derived two-hop edge |
 
 Important result: Q4 originally did not finish within several minutes because
@@ -198,6 +198,9 @@ the remaining shared columns in the candidate bucket, avoiding formatted
 compound string keys for Datomic-style entity joins. The next engine work should
 make these rule relations more fully columnar/streamed and remove the remaining
 generic `Binding` row construction and final dedupe costs from the broad path.
+Binary `=` / `!=` predicates over two typed variables can also compare relation
+columns directly, avoiding per-row `Value` wrapper resolution for common
+filters such as q3's `(!= ?a1 ?a2)`.
 
 ## MusicBrainz Import Smoke
 
