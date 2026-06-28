@@ -1,0 +1,144 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev-tests)
+
+(import t "kvist:test")
+(import vev "../vev")
+
+(def typed-relation-rules
+  "[[(person ?e ?name) [?e :name ?name]] [(has-age ?e) [?e :age ?age]]]")
+
+(defn has-text-int-row? [result: vev.Result-Set, text: string, value: i64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text)
+               (= row.values[1].kind .Int)
+               (= row.values[1].int-value value))
+      (return true)))
+  false)
+
+(defn has-text-row? [result: vev.Result-Set, text: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text))
+      (return true)))
+  false)
+
+(defn has-text-entity-row? [result: vev.Result-Set, text: string, entity: u64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text)
+               (= row.values[1].kind .Entity)
+               (= row.values[1].entity entity))
+      (return true)))
+  false)
+
+(defn has-text-keyword-int-row? [result: vev.Result-Set, text: string, attr: string, value: i64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 3)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text)
+               (= row.values[1].kind .Keyword)
+               (= row.values[1].text attr)
+               (= row.values[2].kind .Int)
+               (= row.values[2].int-value value))
+      (return true)))
+  false)
+
+(defn has-text-keyword-bool-row? [result: vev.Result-Set, text: string, attr: string, value: bool] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 3)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text)
+               (= row.values[1].kind .Keyword)
+               (= row.values[1].text attr)
+               (= row.values[2].kind .Bool)
+               (= row.values[2].bool-value value))
+      (return true)))
+  false)
+
+(t.deftest typed-rule-projection-materializes-for-binding-fallback-operators
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Bob\"] [:db/add 2 :blocked true]]")
+        get-else-result (vev.q-text-with-rules
+                          conn.db
+                          "[:find ?name ?age :in $ % :where (person ?e ?name) [(get-else $ ?e :age 0) ?age]]"
+                          typed-relation-rules
+                          ([]vev.Query-Input []))
+        function-result (vev.q-text-with-rules
+                          conn.db
+                          "[:find ?name ?len :in $ % :where (person ?e ?name) [(count ?name) ?len]]"
+                          typed-relation-rules
+                          ([]vev.Query-Input []))
+        not-result (vev.q-text-with-rules
+                     conn.db
+                     "[:find ?name :in $ % :where (person ?e ?name) (not [?e :blocked true])]"
+                     typed-relation-rules
+                     ([]vev.Query-Input []))
+        get-some-result (vev.q-text-with-rules
+                          conn.db
+                          "[:find ?name ?attr ?value :in $ % :where (person ?e ?name) [(get-some $ ?e :age :blocked) [?attr ?value]]]"
+                          typed-relation-rules
+                          ([]vev.Query-Input []))
+        ground-scalar-result (vev.q-text-with-rules
+                               conn.db
+                               "[:find ?name ?tag :in $ % :where (person ?e ?name) [(ground :seen) ?tag]]"
+                               typed-relation-rules
+                               ([]vev.Query-Input []))
+        ground-collection-result (vev.q-text-with-rules
+                                   conn.db
+                                   "[:find ?name ?tag :in $ % :where (person ?e ?name) [(ground [:x :y]) [?tag ...]]]"
+                                   typed-relation-rules
+                                   ([]vev.Query-Input []))
+        or-result (vev.q-text-with-rules
+                    conn.db
+                    "[:find ?name :in $ % :where (person ?e ?name) (or [?e :age 37] [?e :blocked true])]"
+                    typed-relation-rules
+                    ([]vev.Query-Input []))
+        value-bound-clause-result (vev.q-text-with-rules
+                                    conn.db
+                                    "[:find ?name ?other :in $ % :where (person ?e ?name) [?other :name ?name]]"
+                                    typed-relation-rules
+                                    ([]vev.Query-Input []))
+        rule-fallback-result (vev.q-text-with-rules
+                               conn.db
+                               "[:find ?name :in $ % :where (person ?e ?name) (has-age ?e)]"
+                               typed-relation-rules
+                               ([]vev.Query-Input []))]
+    (t.is get-else-result.ok)
+    (t.is (= (count get-else-result.rows) 2))
+    (t.is (has-text-int-row? get-else-result "Ada" 37))
+    (t.is (has-text-int-row? get-else-result "Bob" 0))
+    (t.is function-result.ok)
+    (t.is (= (count function-result.rows) 2))
+    (t.is (has-text-int-row? function-result "Ada" 3))
+    (t.is (has-text-int-row? function-result "Bob" 3))
+    (t.is not-result.ok)
+    (t.is (= (count not-result.rows) 1))
+    (t.is (has-text-row? not-result "Ada"))
+    (t.is get-some-result.ok)
+    (t.is (= (count get-some-result.rows) 2))
+    (t.is (has-text-keyword-int-row? get-some-result "Ada" ":age" 37))
+    (t.is (has-text-keyword-bool-row? get-some-result "Bob" ":blocked" true))
+    (t.is ground-scalar-result.ok)
+    (t.is (= (count ground-scalar-result.rows) 2))
+    (t.is ground-collection-result.ok)
+    (t.is (= (count ground-collection-result.rows) 4))
+    (t.is or-result.ok)
+    (t.is (= (count or-result.rows) 2))
+    (t.is (has-text-row? or-result "Ada"))
+    (t.is (has-text-row? or-result "Bob"))
+    (t.is value-bound-clause-result.ok)
+    (t.is (= (count value-bound-clause-result.rows) 2))
+    (t.is (has-text-entity-row? value-bound-clause-result "Ada" 1))
+    (t.is (has-text-entity-row? value-bound-clause-result "Bob" 2))
+    (t.is rule-fallback-result.ok)
+    (t.is (= (count rule-fallback-result.rows) 1))
+    (t.is (has-text-row? rule-fallback-result "Ada"))))

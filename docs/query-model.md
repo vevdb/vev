@@ -435,6 +435,50 @@ optional representation. Typed result rendering runs directly from typed
 columns; aggregate and fallback rendering materialize through the audited helper
 instead of reading `post-rel.tuples` directly.
 
+Binding-oriented relation-engine fallback operators now have an explicit
+typed-row boundary. Unsupported or final API paths still materialize through
+`query-relation-materialized-bindings`, while common row-local operators stream
+one typed input row at a time and write their outputs back into typed columns.
+
+Function clauses now have the first streaming typed fallback replacement. When
+the input relation is typed and no native callback registry is involved, the
+operator evaluates the existing function semantics row-by-row, writes typed
+output columns, and falls back to materialization only if the produced values
+cannot be represented columnarly. This keeps common scalar function clauses
+such as `(count ?name) ?len` on the typed path after rule projection.
+
+`get-else` also has a streaming typed operator. It reuses the existing
+entity-resolution and default-value semantics per row, then appends the output
+as a typed column. That keeps Datomic-style fallback attribute lookups on the
+typed path after rule projection.
+
+`get-some` follows the same pattern, appending the selected attribute identity
+and value as typed output columns while preserving the existing left-to-right
+attribute selection semantics.
+
+`not` now streams over typed rows as a filter. It materializes one binding at a
+time to reuse existing `not` semantics, but the surviving output stays typed
+instead of allocating a full intermediate binding relation.
+
+`ground` now streams over typed rows too. Scalar, tuple, collection, relation,
+and input-binding ground shapes reuse the existing binding semantics one input
+row at a time, then append any produced rows back into typed columns.
+
+`or` now streams over typed rows with fanout. Each branch reuses the existing
+single-binding branch semantics, and branch outputs are appended back into typed
+columns so `or` no longer forces a full relation materialization.
+
+Fallback rule calls now use the same streaming typed boundary. The preferred
+path is still the materialized rule relation plus typed join when eligible, but
+the remaining per-row fallback no longer materializes the whole input relation
+first: it converts one typed input row to a binding, reuses existing rule-call
+semantics, and appends outputs back into typed columns.
+
+Generic bound-clause fallback also streams. The specialized entity-bound
+attribute clause remains the fastest path, and other bound shapes such as
+value-bound joins now convert one typed row to a binding, run the existing
+clause matcher, and write matching rows back into typed columns.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
