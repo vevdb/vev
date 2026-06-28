@@ -466,6 +466,10 @@ instead of allocating a full intermediate binding relation.
 and input-binding ground shapes reuse the existing binding semantics one input
 row at a time, then append any produced rows back into typed columns.
 
+`or` now streams over typed rows with fanout. Each branch reuses the existing
+single-binding branch semantics, and branch outputs are appended back into typed
+columns so `or` no longer forces a full relation materialization.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
