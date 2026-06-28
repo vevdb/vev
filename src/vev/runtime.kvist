@@ -2123,25 +2123,51 @@
             (set! bindings next-bindings)))))
     bindings))
 
-(defn query-relation-add-initial-input! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, columns: ^[dynamic]Relation-Column, name: string, value: Value] -> bool
+(defn query-relation-append-initial-input-values! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, columns: ^[dynamic]Relation-Column, row-count: ^int, name: string, values: []Value] -> bool
   (when (or (query-source-input-name? name)
             (string-slice-contains? (slice attrs^ 0) name))
     (return false))
-  (let [column (relation-column-empty)]
-    (when (not (relation-column-add! (addr column) value))
-      (delete-relation-column column)
+  (let [existing-rows row-count^
+        value-count (count values)]
+    (when (= value-count 0)
+      (when (or (> existing-rows 1)
+                (> (count columns^) 0))
+        (return false)))
+    (when (and (> value-count 1)
+               (> existing-rows 1))
       (return false))
+    (when (and (> value-count 1)
+               (= existing-rows 1))
+      (for [column index columns^]
+        (let [[existing-value existing-ok] (typed-relation-column-value column 0)]
+          (when (not existing-ok)
+            (return false))
+          (let [repeat-index 1]
+            (while (< repeat-index value-count)
+              (when (not (relation-column-add! (addr columns^[index]) existing-value))
+                (return false))
+              (set! repeat-index (+ repeat-index 1)))))))
+    (let [input-column (relation-column-empty)]
+      (let [row 0]
+      (while (< row existing-rows)
+        (for [value values]
+          (when (not (relation-column-add! (addr input-column) value))
+            (delete-relation-column input-column)
+            (return false)))
+        (set! row (+ row 1))))
+      (arr.push! columns^ input-column))
     (arr.push! attrs^ name)
     (arr.push! attr-sources^ "")
-    (arr.push! columns^ column)
+    (set! row-count^ (* existing-rows (count values)))
     true))
 
-(defn query-relation-from-ordered-scalar-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int, ok: bool]
+(defn query-relation-from-ordered-simple-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int, ok: bool]
   (when (= (count query.input-specs) 0)
     (return (query-relation-empty) 0 false))
   (let [attrs (make [dynamic]string)
         attr-sources (make [dynamic]string)
-        columns (make [dynamic]Relation-Column)]
+        columns (make [dynamic]Relation-Column)
+        row-count 1]
     (for [spec index query.input-specs]
       (when (>= index (count inputs))
         (delete attrs)
@@ -2154,7 +2180,19 @@
         (= spec.kind .Scalar)
           (let [[value value-ok] (query-input-bound-value db spec.name inputs[index])]
             (when (or (not value-ok)
-                      (not (query-relation-add-initial-input! (addr attrs) (addr attr-sources) (addr columns) spec.name value)))
+                      (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) spec.name ([]Value [value]))))
+              (delete attrs)
+              (delete attr-sources)
+              (delete-relation-columns columns)
+              (return (query-relation-empty) 0 false)))
+        (= spec.kind .Collection)
+          (do
+            (when (not (= inputs[index].kind .Collection))
+              (delete attrs)
+              (delete attr-sources)
+              (delete-relation-columns columns)
+              (return (query-relation-empty) 0 false))
+            (when (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) spec.name inputs[index].values))
               (delete attrs)
               (delete attr-sources)
               (delete-relation-columns columns)
@@ -2170,44 +2208,58 @@
                              attr-index: (query-relation-attr-index (slice attrs 0))
                              tuples: (make [dynamic]Binding)
                              typed-columns: columns
-                             typed-rows: 1
-                             has-typed-columns: true}) 1 true)))
+                             typed-rows: row-count
+                             has-typed-columns: true}) row-count true)))
 
-(defn query-relation-from-legacy-scalar-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int, ok: bool]
+(defn query-relation-from-legacy-simple-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int, ok: bool]
   (when (or (> (count query.input-specs) 0)
-            (> (count query.collection-inputs) 0)
             (> (count query.tuple-inputs) 0)
             (> (count query.relation-inputs) 0))
     (return (query-relation-empty) 0 false))
-  (when (= (count query.inputs) 0)
+  (when (and (= (count query.inputs) 0)
+             (= (count query.collection-inputs) 0))
     (return (query-relation-singleton) 1 true))
-  (when (< (count inputs) (count query.inputs))
+  (when (< (count inputs) (+ (count query.inputs) (count query.collection-inputs)))
     (return (query-relation-empty) 0 false))
   (let [attrs (make [dynamic]string)
         attr-sources (make [dynamic]string)
-        columns (make [dynamic]Relation-Column)]
+        columns (make [dynamic]Relation-Column)
+        row-count 1]
     (for [name index query.inputs]
       (let [[value value-ok] (query-input-bound-value db name inputs[index])]
         (when (or (not value-ok)
-                  (not (query-relation-add-initial-input! (addr attrs) (addr attr-sources) (addr columns) name value)))
+                  (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) name ([]Value [value]))))
           (delete attrs)
           (delete attr-sources)
           (delete-relation-columns columns)
           (return (query-relation-empty) 0 false))))
+    (let [collection-offset (count query.inputs)]
+      (for [name index query.collection-inputs]
+        (let [input-index (+ collection-offset index)]
+          (when (not (= inputs[input-index].kind .Collection))
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns columns)
+            (return (query-relation-empty) 0 false))
+          (when (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) name inputs[input-index].values))
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns columns)
+            (return (query-relation-empty) 0 false)))))
     (return (Query-Relation {attrs: attrs
                              attr-sources: attr-sources
                              attr-index: (query-relation-attr-index (slice attrs 0))
                              tuples: (make [dynamic]Binding)
                              typed-columns: columns
-                             typed-rows: 1
-                             has-typed-columns: true}) 1 true)))
+                             typed-rows: row-count
+                             has-typed-columns: true}) row-count true)))
 
 (defn query-relation-initial-from-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int]
-  (let [[ordered ordered-count ordered-ok] (query-relation-from-ordered-scalar-inputs db query inputs)]
+  (let [[ordered ordered-count ordered-ok] (query-relation-from-ordered-simple-inputs db query inputs)]
     (when ordered-ok
       (return ordered ordered-count))
     (delete-query-relation ordered))
-  (let [[legacy legacy-count legacy-ok] (query-relation-from-legacy-scalar-inputs db query inputs)]
+  (let [[legacy legacy-count legacy-ok] (query-relation-from-legacy-simple-inputs db query inputs)]
     (when legacy-ok
       (return legacy legacy-count))
     (delete-query-relation legacy))
