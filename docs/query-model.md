@@ -392,8 +392,11 @@ Fifteenth slice implemented: the indexed star-query prototypes now include a
 borrowed entity-stream merge helper for all-current cardinality-one workloads.
 It aligns fixed-value `AVET` filter ranges and projected `AEVT` attr ranges by
 entity id, then emits q3/q4-style projected rows from the aligned streams. This
-is still in the indexed prototype layer, but it is the intended shape for the
-future relation-native star/merge-scan operator.
+started in the indexed prototype layer and now also has a relation-producing
+operator for the same-entity one-output and two-output shapes. The relation
+engine can return a normal typed `Query-Relation` from the aligned streams, so
+ordinary result rendering and host paths no longer need a separate
+result-specialized shortcut to benefit from this scan shape.
 
 Sixteenth slice implemented: the shared-value entity join prototype now
 materializes the projected cardinality-one output attr once as an entity-keyed
@@ -409,12 +412,13 @@ typed column cache. The older `Typed-Relation` conversion path remains as
 fallback for untyped relation inputs, but the common typed path no longer clones
 whole columns just to build join keys and output rows.
 
-Next columnar milestone: make the relation representation explicitly support
-typed-only rows. A partial experiment where typed joins stopped emitting
-compatibility `Binding` rows improved the filtered math-bench Q3 path, but it
-also exposed unsafe assumptions in other operators that still treat
-`rel.tuples` as the authoritative row store. The next attempt should not patch
-individual joins in place. It should add a clear invariant and API boundary:
+Eighteenth slice implemented: typed product and typed hash joins now produce
+typed-only rows. Both the borrowed `Query-Relation` path and the converted
+`Typed-Relation` fallback path fill output columns directly and leave
+compatibility `Binding` rows empty until a binding-only consumer explicitly
+materializes through `query-relation-materialized-bindings`. This is no longer
+an ad hoc join patch: the relation representation now has the basic invariant
+and API boundary needed for typed-only rows:
 
 - `query-relation-row-count` reports the logical row count, independent of
   physical storage
@@ -454,8 +458,13 @@ allocation.
 
 The profiled query result boundary also treats compatibility bindings as an
 optional representation. Typed result rendering runs directly from typed
-columns; aggregate and fallback rendering materialize through the audited helper
-instead of reading `post-rel.tuples` directly.
+columns. Simple aggregate rendering can also read group keys, `:with` keys,
+dedupe keys, and aggregate input values directly from typed relation columns
+for no-pull queries; custom aggregate callbacks, function-var aggregates,
+limit-var aggregates, pull find expressions, and unsupported term shapes still
+fall back through the audited binding materialization helper. When the planner
+can trust relation uniqueness, typed result rendering now also skips the
+per-row dedupe value array and pushes projected result values directly.
 
 Binding-oriented relation-engine fallback operators now have an explicit
 typed-row boundary. Unsupported or final API paths still materialize through
@@ -486,9 +495,12 @@ attribute identity and value as typed output columns.
 `not` now streams over typed rows as a filter. Single ordinary DB-clause
 negative groups are tested as a typed anti-join: the clause scan resolves
 directly from typed row values and checks candidate datoms without building a
-`Binding`. Multi-clause, nested, join, and relation-source negative groups still
-materialize one binding at a time to reuse existing semantics, but the surviving
-output stays typed instead of allocating a full intermediate binding relation.
+`Binding`. Plain multi-clause unsourced DB negative groups now run each outer
+typed row through a branch-local typed relation, so inner clause matching can
+continue to use typed clause scans. Nested, `not-join`, and relation-source
+negative groups still materialize one binding at a time to reuse existing
+semantics, but the surviving output stays typed instead of allocating a full
+intermediate binding relation.
 
 `ground` now streams over typed rows too. Scalar ground clauses resolve their
 source term directly from typed input columns and append only newly produced
@@ -498,10 +510,13 @@ time, then append any produced rows back into typed columns.
 
 `or` now streams over typed rows with fanout. Simple branch groups made of one
 ordinary DB clause per branch run as typed clause scans and append branch output
-columns directly. Branches with `or-join`, nested negatives, relation-source
-matching, or more complex local pipelines reuse the existing single-binding
-branch semantics, and branch outputs are appended back into typed columns so
-`or` no longer forces a full relation materialization.
+columns directly. Plain multi-clause unsourced DB branches now run as
+branch-local typed relation pipelines and append output by attribute name, so
+branches can use different clause orders without leaving typed columns.
+Branches with `or-join`, nested negatives, relation-source matching,
+predicates, functions, or more complex local pipelines reuse the existing
+single-binding branch semantics, and branch outputs are appended back into
+typed columns so `or` no longer forces a full relation materialization.
 
 Fallback rule calls now use the same streaming typed boundary. The preferred
 path is still the materialized rule relation plus typed join when eligible, but
@@ -525,19 +540,46 @@ candidate datom is checked directly against typed columns and repeated clause
 variables before appending typed output. This removes the previous row
 `Binding` conversion from both scan-bound selection and candidate matching on
 the generic typed DB-clause path while preserving reverse attribute and
-same-variable semantics.
+same-variable semantics. Bound-clause extension now appends the existing typed
+input row plus newly produced clause values directly into the output columns,
+so matching candidate datoms no longer require a temporary `Binding` merely to
+cross the builder boundary. Filter-only clauses with no newly introduced vars
+append the typed input row directly and avoid even an empty produced-value
+array.
 
 Rule-call projection itself is also typed for the common non-distinct cases.
 Distinct variable projections keep the fast column-clone path, while constants,
 wildcards, and repeated variables project row-by-row from typed rule-result
 columns with normal unification and dedupe. Projection falls back only when the
 shape cannot be represented as typed columns, such as lookup-ref arguments or
-non-columnar produced values.
+non-columnar produced values. The same direct typed projection is used for
+memo/delta parameter relations and for materialized helper rule outputs, so
+general rule-call projection no longer has to allocate a temporary `Binding`
+for every typed result row.
 
 Generic bound-clause fallback also streams. The specialized entity-bound
 attribute clause remains the fastest path, and other bound shapes such as
 value-bound joins now convert one typed row to a binding, run the existing
 clause matcher, and write matching rows back into typed columns.
+
+Unbound ordinary DB clauses now have a typed-first producer too. The operator
+streams `Clause-Index-Scan` candidates, checks wildcard/value/lookup-ref,
+reverse-attribute, tx/op, and repeated-variable semantics directly against the
+datom, and appends projected clause variables into typed columns without first
+building `Binding` rows. If a projected value cannot fit the columnar relation
+layout, the operator falls back to the older binding-backed constructor.
+Binding-only fallback joins now explicitly materialize typed-only inputs
+through `query-relation-materialized-bindings`, so typed-only producers can feed
+conservative product/hash/nested-loop joins without depending on stale
+compatibility tuples.
+
+Same-entity star scans now have an initial relation-native operator as well.
+For all-current cardinality-one shapes with fixed-value filters and one or two
+projected attrs, the relation engine aligns `AVET` filter streams with `AEVT`
+output streams by entity id and fills typed relation columns directly. This is
+still a conservative shape recognizer, but it returns the normal relation
+representation rather than bypassing the relation engine with a specialized
+result API.
 
 Primary collection DB queries now preserve the full ordered query model when
 rewritten onto their synthetic relation source. The rewrite carries over
