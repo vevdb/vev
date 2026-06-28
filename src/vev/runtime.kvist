@@ -1225,30 +1225,31 @@
           trust-unique-bindings (query-can-trust-unique-bindings? query)]
       (for [row (arr.range 0 rel.typed-rows)]
         (let [values (make [dynamic]Value 0 (count query.find))
-              dedupe-values (make [dynamic]Value)
               pushed false]
           (for [column-index find-indexes]
             (let [[value _] (typed-relation-column-value rel.typed-columns[column-index] row)]
-              (arr.push! values value)
-              (arr.push! dedupe-values value)))
-          (for [column-index with-indexes]
-            (let [[value _] (typed-relation-column-value rel.typed-columns[column-index] row)]
-              (arr.push! dedupe-values value)))
+              (arr.push! values value)))
           (if trust-unique-bindings
             (do
               (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
               (set! pushed true))
-            (let [[key key-ok] (row-values-dedupe-key (slice dedupe-values 0))]
-              (if key-ok
-                (let [already-seen (set.contains? seen key)]
-                  (when (not already-seen)
-                    (set.add! seen key)
+            (let [dedupe-values (make [dynamic]Value)]
+              (for [value values]
+                (arr.push! dedupe-values value))
+              (for [column-index with-indexes]
+                (let [[value _] (typed-relation-column-value rel.typed-columns[column-index] row)]
+                  (arr.push! dedupe-values value)))
+              (let [[key key-ok] (row-values-dedupe-key (slice dedupe-values 0))]
+                (if key-ok
+                  (let [already-seen (set.contains? seen key)]
+                    (when (not already-seen)
+                      (set.add! seen key)
+                      (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
+                      (set! pushed true)))
+                  (when (not (row-values-exist? (slice out 0) (slice dedupe-values 0)))
                     (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
-                    (set! pushed true)))
-                (when (not (row-values-exist? (slice out 0) (slice dedupe-values 0)))
-                  (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
-                  (set! pushed true)))))
-          (delete dedupe-values)
+                    (set! pushed true))))
+              (delete dedupe-values)))
           (when (not pushed)
             (delete values))))
       (return out true)))))
@@ -8306,23 +8307,43 @@
     (for [arg arg-index call.args]
       (when (= arg.kind .Var)
         (append-var-binding-attr! (addr attrs) (addr attr-sources) arg.name rel.attr-sources[param-indexes[arg-index]])))
+    (let [attr-index (query-relation-attr-index (slice attrs 0))
+          output-indexes (make [dynamic]int 0 (count call.args))]
+      (for [arg call.args]
+        (if (= arg.kind .Var)
+          (let [[output-index output-ok] (mmap.get attr-index arg.name)]
+            (when (not output-ok)
+              (delete attrs)
+              (delete attr-sources)
+              (delete attr-index)
+              (delete output-indexes)
+              (return (query-relation-empty) false))
+            (arr.push! output-indexes output-index))
+          (arr.push! output-indexes -1)))
     (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
           seen (set.empty string)
           typed-rows 0
           row 0]
       (defer (delete seen))
       (while (< row rel.typed-rows)
-        (let [out (Binding {})
+        (let [values (make [dynamic]Value 0 (count attrs))
+              filled (make [dynamic]bool 0 (count attrs))
               ok true]
+          (for [_ attrs]
+            (arr.push! values (value-nil))
+            (arr.push! filled false))
           (for [arg arg-index call.args]
             (when ok
               (let [[value value-ok] (typed-relation-column-value rel.typed-columns[param-indexes[arg-index]] row)]
                 (if value-ok
                   (case arg.kind
                     .Var
-                      (let [[next bind-ok] (binding-with-value out arg.name value)]
-                        (set! out next)
-                        (set! ok bind-ok))
+                      (let [output-index output-indexes[arg-index]]
+                        (if filled[output-index]
+                          (set! ok (predicate-value-equal? values[output-index] value))
+                          (do
+                            (set! values[output-index] value)
+                            (set! filled[output-index] true))))
                     .Value
                       (set! ok (predicate-value-equal? value arg.value))
                     .Wildcard
@@ -8333,38 +8354,46 @@
                       (set! ok false))
                   (set! ok false)))))
           (when ok
-            (let [[key key-ok] (binding-dedupe-key out)]
+            (for [filled-value filled]
+              (when (not filled-value)
+                (set! ok false))))
+          (when ok
+            (let [[key key-ok] (row-values-dedupe-key (slice values 0))]
               (when (not key-ok)
-                (delete out.items)
+                (delete values)
+                (delete filled)
                 (delete attrs)
                 (delete attr-sources)
+                (delete attr-index)
+                (delete output-indexes)
                 (delete-relation-columns typed-columns)
                 (return (query-relation-empty) false))
-              (if (set.contains? seen key)
-                (delete out.items)
-                (do
-                  (set.add! seen key)
-                  (if (binding-can-add-to-relation-columns? (slice attrs 0) (slice typed-columns 0) out)
-                    (do
-                      (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) out)
-                      (set! typed-rows (+ typed-rows 1))
-                      (delete out.items))
-                    (do
-                      (delete out.items)
-                      (delete attrs)
-                      (delete attr-sources)
-                      (delete-relation-columns typed-columns)
-                      (return (query-relation-empty) false)))))))
-          (when (not ok)
-            (delete out.items)))
+              (when (not (set.contains? seen key))
+                (set.add! seen key)
+                (for [value index values]
+                  (when (not (relation-column-can-add? typed-columns[index] value))
+                    (delete values)
+                    (delete filled)
+                    (delete attrs)
+                    (delete attr-sources)
+                    (delete attr-index)
+                    (delete output-indexes)
+                    (delete-relation-columns typed-columns)
+                    (return (query-relation-empty) false)))
+                (for [value index values]
+                  (discard (relation-column-add! (addr typed-columns[index]) value)))
+                (set! typed-rows (+ typed-rows 1)))))
+          (delete values)
+          (delete filled))
         (set! row (+ row 1)))
+      (delete output-indexes)
       (return (Query-Relation {attrs: attrs
                                attr-sources: attr-sources
-                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               attr-index: attr-index
                                tuples: (make [dynamic]Binding)
                                typed-columns: typed-columns
                                typed-rows: typed-rows
-                               has-typed-columns: true}) true))))
+                               has-typed-columns: true}) true)))))
 
 (defn query-relation-project-rule-call-params-typed [rel: Query-Relation, params: []string, call: Rule-Call] -> [projected: Query-Relation, ok: bool]
   (when (not (and rel.has-typed-columns
@@ -12296,23 +12325,43 @@
     (for [arg arg-index call.args]
       (when (= arg.kind .Var)
         (append-var-binding-attr! (addr attrs) (addr attr-sources) arg.name rel.attr-sources[param-indexes[arg-index]])))
+    (let [attr-index (query-relation-attr-index (slice attrs 0))
+          output-indexes (make [dynamic]int 0 (count call.args))]
+      (for [arg call.args]
+        (if (= arg.kind .Var)
+          (let [[output-index output-ok] (mmap.get attr-index arg.name)]
+            (when (not output-ok)
+              (delete attrs)
+              (delete attr-sources)
+              (delete attr-index)
+              (delete output-indexes)
+              (return (query-relation-empty) false))
+            (arr.push! output-indexes output-index))
+          (arr.push! output-indexes -1)))
     (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
           seen (set.empty string)
           typed-rows 0
           row 0]
       (defer (delete seen))
       (while (< row rel.typed-rows)
-        (let [out (Binding {})
+        (let [values (make [dynamic]Value 0 (count attrs))
+              filled (make [dynamic]bool 0 (count attrs))
               ok true]
+          (for [_ attrs]
+            (arr.push! values (value-nil))
+            (arr.push! filled false))
           (for [arg arg-index call.args]
             (when ok
               (let [[value value-ok] (typed-relation-column-value rel.typed-columns[param-indexes[arg-index]] row)]
                 (if value-ok
                   (case arg.kind
                     .Var
-                      (let [[next bind-ok] (binding-with-value out arg.name value)]
-                        (set! out next)
-                        (set! ok bind-ok))
+                      (let [output-index output-indexes[arg-index]]
+                        (if filled[output-index]
+                          (set! ok (predicate-value-equal? values[output-index] value))
+                          (do
+                            (set! values[output-index] value)
+                            (set! filled[output-index] true))))
                     .Value
                       (set! ok (predicate-value-equal? value arg.value))
                     .Wildcard
@@ -12323,38 +12372,46 @@
                       (set! ok false))
                   (set! ok false)))))
           (when ok
-            (let [[key key-ok] (binding-dedupe-key out)]
+            (for [filled-value filled]
+              (when (not filled-value)
+                (set! ok false))))
+          (when ok
+            (let [[key key-ok] (row-values-dedupe-key (slice values 0))]
               (when (not key-ok)
-                (delete out.items)
+                (delete values)
+                (delete filled)
                 (delete attrs)
                 (delete attr-sources)
+                (delete attr-index)
+                (delete output-indexes)
                 (delete-relation-columns typed-columns)
                 (return (query-relation-empty) false))
-              (if (set.contains? seen key)
-                (delete out.items)
-                (do
-                  (set.add! seen key)
-                  (if (binding-can-add-to-relation-columns? (slice attrs 0) (slice typed-columns 0) out)
-                    (do
-                      (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) out)
-                      (set! typed-rows (+ typed-rows 1))
-                      (delete out.items))
-                    (do
-                      (delete out.items)
-                      (delete attrs)
-                      (delete attr-sources)
-                      (delete-relation-columns typed-columns)
-                      (return (query-relation-empty) false)))))))
-          (when (not ok)
-            (delete out.items)))
+              (when (not (set.contains? seen key))
+                (set.add! seen key)
+                (for [value index values]
+                  (when (not (relation-column-can-add? typed-columns[index] value))
+                    (delete values)
+                    (delete filled)
+                    (delete attrs)
+                    (delete attr-sources)
+                    (delete attr-index)
+                    (delete output-indexes)
+                    (delete-relation-columns typed-columns)
+                    (return (query-relation-empty) false)))
+                (for [value index values]
+                  (discard (relation-column-add! (addr typed-columns[index]) value)))
+                (set! typed-rows (+ typed-rows 1)))))
+          (delete values)
+          (delete filled))
         (set! row (+ row 1)))
+      (delete output-indexes)
       (return (Query-Relation {attrs: attrs
                                attr-sources: attr-sources
-                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               attr-index: attr-index
                                tuples: (make [dynamic]Binding)
                                typed-columns: typed-columns
                                typed-rows: typed-rows
-                               has-typed-columns: true}) true))))
+                               has-typed-columns: true}) true)))))
 
 (defn query-relation-project-rule-call-typed [rel: Query-Relation, rule: Rule, call: Rule-Call] -> [projected: Query-Relation, ok: bool]
   (when (not (and rel.has-typed-columns

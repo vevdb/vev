@@ -456,7 +456,9 @@ allocation.
 The profiled query result boundary also treats compatibility bindings as an
 optional representation. Typed result rendering runs directly from typed
 columns; aggregate and fallback rendering materialize through the audited helper
-instead of reading `post-rel.tuples` directly.
+instead of reading `post-rel.tuples` directly. When the planner can trust
+relation uniqueness, typed result rendering now also skips the per-row dedupe
+value array and pushes projected result values directly.
 
 Binding-oriented relation-engine fallback operators now have an explicit
 typed-row boundary. Unsupported or final API paths still materialize through
@@ -539,7 +541,10 @@ Distinct variable projections keep the fast column-clone path, while constants,
 wildcards, and repeated variables project row-by-row from typed rule-result
 columns with normal unification and dedupe. Projection falls back only when the
 shape cannot be represented as typed columns, such as lookup-ref arguments or
-non-columnar produced values.
+non-columnar produced values. The same direct typed projection is used for
+memo/delta parameter relations and for materialized helper rule outputs, so
+general rule-call projection no longer has to allocate a temporary `Binding`
+for every typed result row.
 
 Generic bound-clause fallback also streams. The specialized entity-bound
 attribute clause remains the fastest path, and other bound shapes such as
