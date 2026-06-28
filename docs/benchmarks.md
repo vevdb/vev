@@ -140,6 +140,9 @@ MATH_BENCH_WARMUPS=0 MATH_BENCH_SAMPLES=1 bench/math_bench/run_vev.sh q1
 The first checked full-data Vev results use 1,837,904 transaction items and
 1,837,918 current datoms after schema. Import currently takes about 69-72s from
 EDN chunks, so query timings should be read separately from import timings.
+The Vev math benchmark harness treats the documented Q2/Q3/Q4 row counts as
+correctness guards: if an optimizer changes those counts, the workload prints
+`ok=false` even if the query got faster.
 
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
