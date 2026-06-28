@@ -7431,6 +7431,26 @@
     (set! entry^.delta-rel-valid false)
     (set! entry^.delta-rel-count 0)))
 
+(defn rule-memo-entry-append-bindings-relation! [entry: ^Rule-Memo-Entry, output: Binding]
+  (when entry^.bindings-rel-valid
+    (if (and entry^.bindings-rel.has-typed-columns
+             (binding-can-add-to-relation-columns? (slice entry^.params 0) (slice entry^.bindings-rel.typed-columns 0) output))
+      (do
+        (add-binding-to-relation-columns! (slice entry^.params 0) (addr entry^.bindings-rel.typed-columns) output)
+        (set! entry^.bindings-rel.typed-rows (+ entry^.bindings-rel.typed-rows 1))
+        (set! entry^.bindings-rel-count (+ entry^.bindings-rel-count 1)))
+      (rule-memo-entry-invalidate-bindings-relation! entry))))
+
+(defn rule-memo-entry-append-delta-relation! [entry: ^Rule-Memo-Entry, output: Binding]
+  (when entry^.delta-rel-valid
+    (if (and entry^.delta-rel.has-typed-columns
+             (binding-can-add-to-relation-columns? (slice entry^.params 0) (slice entry^.delta-rel.typed-columns 0) output))
+      (do
+        (add-binding-to-relation-columns! (slice entry^.params 0) (addr entry^.delta-rel.typed-columns) output)
+        (set! entry^.delta-rel.typed-rows (+ entry^.delta-rel.typed-rows 1))
+        (set! entry^.delta-rel-count (+ entry^.delta-rel-count 1)))
+      (rule-memo-entry-invalidate-delta-relation! entry))))
+
 (defn rule-output-binding [rule: Rule, result: Binding] -> [binding: Binding, ok: bool]
   (let [out (Binding {})]
     (for [param rule.params]
@@ -7455,8 +7475,8 @@
             (set.add! memo^[entry-index].seen key))
           (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
             (return false))))
+      (rule-memo-entry-append-bindings-relation! (addr memo^[entry-index]) output)
       (arr.push! memo^[entry-index].bindings output)
-      (rule-memo-entry-invalidate-bindings-relation! (addr memo^[entry-index]))
       true)))
 
 (defn rule-memo-append-result-to-delta! [memo: ^[dynamic]Rule-Memo-Entry, next-delta: ^[dynamic]Rule-Memo-Entry, rule: Rule, result: Binding] -> bool
@@ -7474,12 +7494,12 @@
             (set.add! memo^[entry-index].seen key))
           (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
             (return false))))
+      (rule-memo-entry-append-bindings-relation! (addr memo^[entry-index]) output)
       (arr.push! memo^[entry-index].bindings output)
-      (rule-memo-entry-invalidate-bindings-relation! (addr memo^[entry-index]))
       (let [[delta-index delta-ok] (rule-memo-entry-index (slice next-delta^ 0) rule.name (slice rule.params 0))]
         (when delta-ok
-          (arr.push! next-delta^[delta-index].delta output)
-          (rule-memo-entry-invalidate-delta-relation! (addr next-delta^[delta-index]))))
+          (rule-memo-entry-append-delta-relation! (addr next-delta^[delta-index]) output)
+          (arr.push! next-delta^[delta-index].delta output)))
       true)))
 
 (defn bindings-after-rule-call-from-memo-bindings [params: []string, memo-bindings: []Binding, call: Rule-Call, binding: Binding] -> [dynamic]Binding
