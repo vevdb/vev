@@ -143,10 +143,10 @@ EDN chunks, so query timings should be read separately from import timings.
 
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
-| `q1` | 0.53ms | 2 | Good selective/bound rule path |
-| `q2` | 7.38s | 34,073 | Broad materialized-rule joins remain slow, but projection and repeated materialization are reduced |
-| `q3` | 5.36s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering |
-| `q4` | 1.00s | 135 | Completes through derived transitive closure over a derived two-hop edge |
+| `q1` | 0.36ms | 2 | Good selective/bound rule path |
+| `q2` | 7.29s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, and final bound lookup are reduced |
+| `q3` | 5.29s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering |
+| `q4` | 0.99s | 135 | Completes through derived transitive closure over a derived two-hop edge |
 
 Important result: Q4 originally did not finish within several minutes because
 `anc` recurses over derived rule `adv`, not over a direct DB ref attr. Vev now
@@ -184,9 +184,13 @@ Recent broad-rule work removed two more generic costs. Rule-call projection now
 has a typed fast path for distinct variable calls such as `(univ ?x ?u)`, and a
 query-local materialized-rule cache reuses single-branch helper rule relations
 such as `univ`/`area` when the same unprojected rule is called with different
-variable names. The next engine work should make these rule relations more
-fully columnar/streamed and remove the remaining generic `Binding` row
-construction, final dedupe, and string-key hash costs from the broad path.
+variable names. Bound data clauses of the common `[?e :attr ?v]` shape can now
+also use typed relation columns to do direct `eavt` lookups instead of entering
+the generic per-binding clause matcher; this is a modest win on math-bench
+because final lookup is no longer dominant. The next engine work should make
+these rule relations more fully columnar/streamed and remove the remaining
+generic `Binding` row construction, final dedupe, and string-key hash costs from
+the broad path.
 
 ## MusicBrainz Import Smoke
 
