@@ -142,6 +142,18 @@
              [?medium :medium/tracks ?track]
              [?track :track/duration ?millis]]
     :args []}
+   {:name "musicbrainz-real-beatles-duration-stddev"
+    :float-places 6
+    :query '[:find ?year (stddev ?millis)
+             :with ?track
+             :where
+             [?artist :artist/name "The Beatles"]
+             [?release :release/artists ?artist]
+             [?release :release/year ?year]
+             [?release :release/media ?medium]
+             [?medium :medium/tracks ?track]
+             [?track :track/duration ?millis]]
+    :args []}
    {:name "musicbrainz-real-beatles-duration-sum"
     :query '[:find ?year (sum ?millis)
              :with ?track
@@ -379,17 +391,17 @@
    seed
    (seq (.toArray (.codePoints text)))))
 
-(defn canonical-text-with-options [value {:keys [strip-db-id]}]
+(defn canonical-text-with-options [value {:keys [strip-db-id float-places] :as options}]
   (cond
     (map? value)
     (str "{"
          (str/join " "
                    (map (fn [[k v]]
-                          (str (canonical-text-with-options k {:strip-db-id strip-db-id})
+                          (str (canonical-text-with-options k options)
                                " "
-                               (canonical-text-with-options v {:strip-db-id strip-db-id})))
+                               (canonical-text-with-options v options)))
                         (sort-by
-                         (comp #(canonical-text-with-options % {:strip-db-id strip-db-id}) key)
+                         (comp #(canonical-text-with-options % options) key)
                          (if strip-db-id
                            (dissoc value :db/id)
                            value))))
@@ -406,7 +418,12 @@
 
     (or (instance? Double value)
         (instance? Float value))
-    (str "[:vev/float \"" value "\"]")
+    (if float-places
+      (let [scale (Math/pow 10.0 (double float-places))]
+        (str "[:vev/float" float-places " "
+             (long (Math/round (* (double value) scale)))
+             "]"))
+      (str "[:vev/float \"" value "\"]"))
 
     :else
     (pr-str value)))
@@ -466,7 +483,11 @@
 (defn print-result-rows [workload rows]
   (print-result-rows-with-options workload rows {:strip-db-id false}))
 
-(defn run-query [db warmups samples print-rows? {:keys [name query args result-kind]}]
+(defn workload-fingerprint-options [workload]
+  {:strip-db-id (boolean (:strip-db-id workload))
+   :float-places (:float-places workload)})
+
+(defn run-query [db warmups samples print-rows? {:keys [name query args result-kind] :as workload}]
   (dotimes [_ warmups]
     (apply d/q query db args))
   (let [sample-us (doall
@@ -474,19 +495,20 @@
                      (second (elapsed-us #(apply d/q query db args)))))
         result (apply d/q query db args)
         rows (result-rows result result-kind)
+        options (workload-fingerprint-options workload)
         t (timing sample-us)]
     (println
      (format
       "engine=datomic workload=%s ok=true rows=%d fingerprint=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f"
       name
       (result-row-count rows)
-      (result-fingerprint rows)
+      (result-fingerprint-with-options rows options)
       (:min t)
       (:median t)
       (:p90 t)
       (:max t)))
     (when print-rows?
-      (print-result-rows name rows))))
+      (print-result-rows-with-options name rows options))))
 
 (defn workload-result [db {:keys [kind query args pattern entity entities]}]
   (case kind
@@ -497,7 +519,7 @@
 (defn run-workload [db warmups samples print-rows? workload]
   (if (:kind workload)
     (let [name (:name workload)
-          options {:strip-db-id (boolean (:strip-db-id workload))}]
+          options (workload-fingerprint-options workload)]
       (dotimes [_ warmups]
         (workload-result db workload))
       (let [sample-us (doall

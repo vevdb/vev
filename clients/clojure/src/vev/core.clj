@@ -4,7 +4,7 @@
 (ns vev.core
   (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
-           [vev Vev Vev$Entity Vev$MapValue]))
+           [vev Vev Vev$Entity Vev$MapValue Vev$PreparedPullPattern]))
 
 (defn- path [value]
   (cond
@@ -13,8 +13,11 @@
     :else (throw (ex-info "expected native library path" {:value value}))))
 
 (defn- edn-text [value]
-  (if (string? value)
-    value
+  (cond
+    (string? value) value
+    (keyword? value) (str value)
+    (symbol? value) (str value)
+    :else
     (binding [*print-namespace-maps* false]
       (pr-str value))))
 
@@ -42,11 +45,13 @@
     (.id ^Vev$Entity value)
 
     (instance? Vev$MapValue value)
-    (into {}
-          (map (fn [entry]
-                 [(key-value (clj-value (.key entry)))
-                  (clj-value (.value entry))]))
-          (.entries ^Vev$MapValue value))
+    (persistent!
+     (reduce (fn [out entry]
+               (assoc! out
+                       (key-value (clj-value (.key entry)))
+                       (clj-value (.value entry))))
+             (transient {})
+             (.entries ^Vev$MapValue value)))
 
     (instance? java.util.List value)
     (mapv clj-value value)
@@ -80,6 +85,11 @@
   (->DB (:engine db) (.retain (:native db))))
 
 (defrecord PreparedQuery [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
+(defrecord PreparedPullPattern [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
@@ -280,6 +290,12 @@
   (let [engine (:engine source)]
     (->PreparedQuery engine (.prepare engine (edn-text query)))))
 
+(defn prepare-pull-pattern
+  "Prepare a pull pattern from Clojure data or EDN text."
+  [source pattern]
+  (let [engine (:engine source)]
+    (->PreparedPullPattern engine (.preparePullPattern engine (edn-text pattern)))))
+
 (defn- source? [value]
   (or (instance? Conn value)
       (instance? SQLiteConn value)
@@ -454,6 +470,23 @@
       :else
       nil)))
 
+(defn- string-column [source ^PreparedQuery prepared inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? DB source)
+      (.queryStringColumn (:native source) (:native prepared) input-edn)
+
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryStringColumn (:native snapshot) (:native prepared) input-edn))
+
+      (instance? SQLiteConn source)
+      (with-open [snapshot (db source)]
+        (.queryStringColumn (:native snapshot) (:native prepared) input-edn))
+
+      :else
+      nil)))
+
 (defn- entity-int-pair-columns [source ^PreparedQuery prepared inputs]
   (let [input-edn (inputs-text inputs)]
     (cond
@@ -506,6 +539,26 @@
       (if (< index n)
         (recur (inc index)
                (conj! out [(long (aget ids index))]))
+        (persistent! out)))))
+
+(defn- string-column-rows [values]
+  (let [^objects values values
+        n (alength values)]
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget values index)]))
+        (persistent! out)))))
+
+(defn- string-column-set [values]
+  (let [^objects values values
+        n (alength values)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget values index)]))
         (persistent! out)))))
 
 (defn- entity-int-pair-rows [columns]
@@ -562,16 +615,18 @@
                            (long (aget values index))]))
         (persistent! out)))))
 
-(defn- optimized-query-output [source prepared inputs entity-fn pair-fn triple-fn]
+(defn- optimized-query-output [source prepared inputs entity-fn string-fn pair-fn triple-fn]
   (if-let [ids (entity-column source prepared inputs)]
     (entity-fn ids)
-    (if-let [columns (entity-int-pair-columns source prepared inputs)]
-      (pair-fn columns)
-      (when-let [columns (entity-string-int-triples source prepared inputs)]
-        (triple-fn columns)))))
+    (if-let [values (string-column source prepared inputs)]
+      (string-fn values)
+      (if-let [columns (entity-int-pair-columns source prepared inputs)]
+        (pair-fn columns)
+        (when-let [columns (entity-string-int-triples source prepared inputs)]
+          (triple-fn columns))))))
 
-(defn- prepared-query-output [source prepared inputs result-fn entity-fn pair-fn triple-fn]
-  (or (optimized-query-output source prepared inputs entity-fn pair-fn triple-fn)
+(defn- prepared-query-output [source prepared inputs result-fn entity-fn string-fn pair-fn triple-fn]
+  (or (optimized-query-output source prepared inputs entity-fn string-fn pair-fn triple-fn)
       (with-open [result (apply query-result source prepared inputs)]
         (result-fn result))))
 
@@ -580,11 +635,11 @@
   [^PreparedQuery prepared ^DB db & inputs]
   (edn/read-string (.profileEdn (:native db) (:native prepared) (inputs-text inputs))))
 
-(defn- query-output [source prepared rules inputs result-fn entity-fn pair-fn triple-fn]
+(defn- query-output [source prepared rules inputs result-fn entity-fn string-fn pair-fn triple-fn]
   (if rules
     (with-open [result (apply query-result-with-rules source prepared rules inputs)]
       (result-fn result))
-    (prepared-query-output source prepared inputs result-fn entity-fn pair-fn triple-fn)))
+    (prepared-query-output source prepared inputs result-fn entity-fn string-fn pair-fn triple-fn)))
 
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
@@ -596,6 +651,7 @@
       (prepared-query-output source query inputs
                              rows-from-result
                              entity-column-rows
+                             string-column-rows
                              entity-int-pair-rows
                              entity-string-int-triple-rows)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
@@ -603,6 +659,7 @@
           (let [result (query-output source prepared rules inputs
                                      rows-from-result
                                      entity-column-rows
+                                     string-column-rows
                                      entity-int-pair-rows
                                      entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
@@ -617,6 +674,7 @@
       (prepared-query-output source query inputs
                              q-from-result
                              entity-column-set
+                             string-column-set
                              entity-int-pair-set
                              entity-string-int-triple-set)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
@@ -624,6 +682,7 @@
           (let [result (query-output source prepared rules inputs
                                      rows-from-result
                                      entity-column-rows
+                                     string-column-rows
                                      entity-int-pair-rows
                                      entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
@@ -684,27 +743,53 @@
        (if (and (vector? eid)
                 (= 2 (count eid))
                 (keyword? (first eid)))
-         (let [pattern-text (edn-text pattern)
-               attr-text (edn-text (first eid))
+         (let [attr-text (edn-text (first eid))
                value (second eid)]
            (cond
              (string? value)
-             (.pullLookupRefString (:native db) pattern-text attr-text value)
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefString (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text value)
+               (.pullLookupRefString (:native db) (edn-text pattern) attr-text value))
 
              (keyword? value)
-             (.pullLookupRefKeyword (:native db) pattern-text attr-text (str value))
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefKeyword (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text (str value))
+               (.pullLookupRefKeyword (:native db) (edn-text pattern) attr-text (str value)))
+
+             (instance? java.util.UUID value)
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefUuid (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text value)
+               (.pullLookupRefUuid (:native db) (edn-text pattern) attr-text value))
 
              (integer? value)
-             (.pullLookupRefInt (:native db) pattern-text attr-text (long value))
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefInt (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text (long value))
+               (.pullLookupRefInt (:native db) (edn-text pattern) attr-text (long value)))
 
              (instance? Vev$Entity value)
-             (.pullLookupRefEntity (:native db) pattern-text attr-text (.id ^Vev$Entity value))
+             (if (instance? PreparedPullPattern pattern)
+               (.pullLookupRefEntity (:native db) ^Vev$PreparedPullPattern (:native pattern) attr-text (.id ^Vev$Entity value))
+               (.pullLookupRefEntity (:native db) (edn-text pattern) attr-text (.id ^Vev$Entity value)))
 
              :else
              (throw (ex-info "unsupported lookup-ref pull value"
                              {:value value
-                              :supported #{:string :keyword :integer :entity}}))))
-         (.pull (:native db) (edn-text pattern) (long eid)))))))
+                              :supported #{:string :keyword :uuid :integer :entity}}))))
+         (if (instance? PreparedPullPattern pattern)
+           (.pull (:native db) ^Vev$PreparedPullPattern (:native pattern) (long eid))
+           (.pull (:native db) (edn-text pattern) (long eid))))))))
+
+(defn- same-uuid-lookup-refs [eids]
+  (when (seq eids)
+    (let [attr (ffirst eids)]
+      (when (and (keyword? attr)
+                 (every? #(and (vector? %)
+                               (= 2 (count %))
+                               (= attr (first %))
+                               (instance? java.util.UUID (second %)))
+                         eids))
+        {:attr attr
+         :values (mapv second eids)}))))
 
 (defn pull-many
   "Pull several entities, preserving input order."
@@ -713,10 +798,25 @@
     (with-db-source
       source
       (fn [db]
-        (clj-value (.pullMany (:native db)
-                              (edn-text pattern)
-                              (long-array eids)))))
-    (mapv #(pull source pattern %) eids)))
+        (clj-value
+         (if (instance? PreparedPullPattern pattern)
+           (.pullMany (:native db)
+                      ^Vev$PreparedPullPattern (:native pattern)
+                      (long-array eids))
+           (.pullMany (:native db)
+                      (edn-text pattern)
+                      (long-array eids))))))
+    (if-let [{:keys [attr values]} (and (instance? PreparedPullPattern pattern)
+                                        (same-uuid-lookup-refs eids))]
+      (with-db-source
+        source
+        (fn [db]
+          (clj-value
+           (.pullManyLookupRefUuid (:native db)
+                                   ^Vev$PreparedPullPattern (:native pattern)
+                                   (edn-text attr)
+                                   (into-array java.util.UUID values)))))
+      (mapv #(pull source pattern %) eids))))
 
 (defn rows-legacy
   "Deprecated connection-first row helper kept for early examples."

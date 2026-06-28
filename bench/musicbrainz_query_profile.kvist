@@ -51,6 +51,9 @@
 (def beatles-duration-stats-query
   "[:find ?year (median ?millis) (avg ?millis) :with ?track :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/year ?year] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/duration ?millis]]")
 
+(def beatles-duration-stddev-query
+  "[:find ?year (stddev ?millis) :with ?track :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/year ?year] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/duration ?millis]]")
+
 (def beatles-duration-sum-query
   "[:find ?year (sum ?millis) :with ?track :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/year ?year] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/duration ?millis]]")
 
@@ -414,10 +417,57 @@
         (delete part))
       out)))
 
+(defn normalized-float-value-text [value: vev.Value] -> string
+  (when (= value.kind .Float)
+    (let [scaled (i64 (math.round (* value.float-value 1000000.0)))
+          scaled-text (vev.value-serializable-text (vev.value-int scaled))
+          parts ([]string ["[:vev/float6 " scaled-text "]"])
+          out (strings.concatenate parts)]
+      (delete scaled-text)
+      (return out)))
+  (vev.value-serializable-text value))
+
+(defn result-row-key-normalized-floats [db: vev.DB, row: vev.Result-Row] -> string
+  (let [parts (make [dynamic]string) :defer
+        owned-parts (make [dynamic]string) :defer]
+    (for [value index row.values]
+      (when (> index 0)
+        (let [[separator _] (strings.clone "|")]
+          (arr.push! parts separator)
+          (arr.push! owned-parts separator)))
+      (let [text (normalized-float-value-text value)]
+        (arr.push! parts text)
+        (arr.push! owned-parts text)))
+    (for [pull row.pulls]
+      (when (> (count parts) 0)
+        (let [[separator _] (strings.clone "|")]
+          (arr.push! parts separator)
+          (arr.push! owned-parts separator)))
+      (let [text (vev.value-serializable-text (vev.pull-result-value db pull))]
+        (arr.push! parts text)
+        (arr.push! owned-parts text)))
+    (let [out (strings.concatenate (slice parts 0))]
+      (for [part owned-parts]
+        (delete part))
+      out)))
+
 (defn result-fingerprint [db: vev.DB, result: vev.Result-Set] -> u64
   (let [keys (make [dynamic]string) :defer]
     (for [row result.rows]
       (arr.push! keys (result-row-key db row)))
+    (arr.sort! keys)
+    (let [hash (u64 0)]
+      (for [key keys]
+        (set! hash (fingerprint-text hash key))
+        (set! hash (fingerprint-text hash "\n")))
+      (for [key keys]
+        (delete key))
+      hash)))
+
+(defn result-fingerprint-normalized-floats [db: vev.DB, result: vev.Result-Set] -> u64
+  (let [keys (make [dynamic]string) :defer]
+    (for [row result.rows]
+      (arr.push! keys (result-row-key-normalized-floats db row)))
     (arr.sort! keys)
     (let [hash (u64 0)]
       (for [key keys]
@@ -478,6 +528,23 @@
     result.profiled.stats.max-intermediate-bindings
     result.profiled.stats.output-rows))
 
+(defn print-profile-normalized-floats [db: vev.DB, workload: string, result: Profile-Timing]
+  (fmt.printf
+    "engine=vev workload=%s ok=%v rows=%d fingerprint=%016x min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
+    workload
+    result.profiled.result.ok
+    (count result.profiled.result.rows)
+    (result-fingerprint-normalized-floats db result.profiled.result)
+    result.timing.min-us
+    result.timing.median-us
+    result.timing.p90-us
+    result.timing.max-us
+    result.profiled.stats.steps
+    result.profiled.stats.clauses
+    result.profiled.stats.clause-candidates
+    result.profiled.stats.max-intermediate-bindings
+    result.profiled.stats.output-rows))
+
 (defn print-result-rows [db: vev.DB, workload: string, result: vev.Result-Set]
   (let [keys (make [dynamic]string) :defer]
     (for [row result.rows]
@@ -502,6 +569,12 @@
 
 (defn print-workload! [db: vev.DB, workload: string, query: string, inputs: []vev.Query-Input, warmups: int, samples: int, print-rows: bool]
   (print-workload-with-rules! db workload query inputs "" false warmups samples print-rows))
+
+(defn print-workload-normalized-floats! [db: vev.DB, workload: string, query: string, inputs: []vev.Query-Input, warmups: int, samples: int, print-rows: bool]
+  (let [result (time-profiled-query db query inputs "" false warmups samples)]
+    (print-profile-normalized-floats db workload result)
+    (when print-rows
+      (print-result-rows db workload result.profiled.result))))
 
 (defn run-find-value [db: vev.DB, query: string, kind: Find-Value-Kind] -> [value: vev.Value, ok: bool]
   (case kind
@@ -831,6 +904,7 @@
           track-count-workload (fmt.tprintf "musicbrainz-%s-beatles-track-count" dataset)
           min-max-duration-workload (fmt.tprintf "musicbrainz-%s-beatles-min-max-duration" dataset)
           beatles-duration-stats-workload (fmt.tprintf "musicbrainz-%s-beatles-duration-stats" dataset)
+          beatles-duration-stddev-workload (fmt.tprintf "musicbrainz-%s-beatles-duration-stddev" dataset)
           beatles-duration-sum-workload (fmt.tprintf "musicbrainz-%s-beatles-duration-sum" dataset)
           lookup-country-workload (fmt.tprintf "musicbrainz-%s-lookup-country" dataset)
           selected-artists-releases-workload (fmt.tprintf "musicbrainz-%s-selected-artists-releases" dataset)
@@ -886,6 +960,8 @@
         (print-workload! conn.db min-max-duration-workload min-max-duration-query no-inputs warmups samples print-rows))
       (when (should-run? selected beatles-duration-stats-workload)
         (print-workload! conn.db beatles-duration-stats-workload beatles-duration-stats-query no-inputs warmups samples print-rows))
+      (when (should-run? selected beatles-duration-stddev-workload)
+        (print-workload-normalized-floats! conn.db beatles-duration-stddev-workload beatles-duration-stddev-query no-inputs warmups samples print-rows))
       (when (should-run? selected beatles-duration-sum-workload)
         (print-workload! conn.db beatles-duration-sum-workload beatles-duration-sum-query no-inputs warmups samples print-rows))
       (when (should-run? selected lookup-country-workload)

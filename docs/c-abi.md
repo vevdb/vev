@@ -15,6 +15,7 @@ The current shape is intentionally narrow:
 - opaque result handles for typed row/value access
 - borrowed value handles for nested vector/map/pull traversal
 - owned value handles for direct pull entry points
+- prepared pull-pattern handles for direct pull and pull-many
 - explicit prepared-query and statement error accessors
 - callback traversal for nested value trees
 - callback traversal for typed result rows
@@ -252,10 +253,37 @@ vev_value_handle_t keyword_lookup_pull =
         ":active");
 vev_value_handle_free(keyword_lookup_pull);
 
+vev_prepared_pull_pattern_t pull_pattern =
+    vev_prepare_pull_pattern_edn("[:user/name]");
+vev_value_handle_t prepared_lookup_pull =
+    vev_pull_lookup_ref_string_prepared(
+        retained_snapshot,
+        pull_pattern,
+        ":user/email",
+        "ada@example.com");
+vev_value_handle_free(prepared_lookup_pull);
+vev_prepared_pull_pattern_free(pull_pattern);
+
 unsigned long long entity_ids[] = {1, 2};
 vev_value_handle_t many_pull =
     vev_pull_many_edn(retained_snapshot, "[:user/name]", entity_ids, 2);
 vev_value_handle_free(many_pull);
+
+vev_prepared_pull_pattern_t many_pattern =
+    vev_prepare_pull_pattern_edn("[:artist/name]");
+const char *artist_gids[] = {
+    "9974da98-8338-3cff-8a28-11b70c224c5b",
+    "65f4f0c5-ef9e-490c-aee3-909e7ae6b2ab",
+};
+vev_value_handle_t many_lookup_pull =
+    vev_pull_many_lookup_ref_uuid_prepared(
+        retained_snapshot,
+        many_pattern,
+        ":artist/gid",
+        artist_gids,
+        2);
+vev_value_handle_free(many_lookup_pull);
+vev_prepared_pull_pattern_free(many_pattern);
 
 vev_tx_report_t with_report =
     vev_with_edn_report(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
@@ -845,6 +873,8 @@ Current result-handle accessors:
 - `vev_result_value_int`
 - `vev_result_value_bool`
 - `vev_result_value_text`
+- `vev_result_value_text_data`
+- `vev_result_value_text_len`
 - `vev_result_value_edn`
 - `vev_result_pull_count`
 - `vev_result_pull`
@@ -862,6 +892,10 @@ For hot flat query shapes, the ABI also exposes column-oriented handles:
 - `vev_query_db_prepared_entity_column_with_inputs`
 - `vev_u64_array_count`
 - `vev_u64_array_data`
+- `vev_query_db_prepared_string_column_with_inputs`
+- `vev_string_array_count`
+- `vev_string_array_data_array`
+- `vev_string_array_lengths_data`
 - `vev_query_db_prepared_entity_int_pairs_with_inputs`
 - `vev_entity_int_pairs_count`
 - `vev_entity_int_pairs_entities_data`
@@ -881,9 +915,11 @@ For hot flat query shapes, the ABI also exposes column-oriented handles:
 
 These are lower-level than the generic result API, but are the right shape for
 language adapters that want to avoid per-cell value handles for common
-`[:find ?e]`, `[:find ?e ?n]`, and `[:find ?e ?s ?n]` queries. Column pointers
-are borrowed and remain valid until the corresponding column handle is freed.
-For string columns, prefer
+`[:find ?e]`, `[:find ?text]`, `[:find ?e ?n]`, and `[:find ?e ?s ?n]`
+queries. Column pointers are borrowed and remain valid until the corresponding
+column handle is freed. Single string-column results use
+`vev_string_array_data_array` plus `vev_string_array_lengths_data`. For
+entity/string/int columns, prefer
 `vev_entity_string_int_triples_string_data_array` plus
 `vev_entity_string_int_triples_string_lengths_data` so host adapters can read
 all borrowed UTF-8 byte pointers and lengths without one ABI call per cell.
@@ -920,20 +956,40 @@ connection or DB snapshot lifetime.
 Direct pull entry points use owned value handles:
 
 - `vev_pull_edn`
+- `vev_prepare_pull_pattern_edn`
+- `vev_prepared_pull_pattern_ok`
+- `vev_prepared_pull_pattern_error`
+- `vev_prepared_pull_pattern_free`
+- `vev_pull_prepared`
 - `vev_pull_lookup_ref_string_edn`
+- `vev_pull_lookup_ref_string_prepared`
 - `vev_pull_lookup_ref_keyword_edn`
+- `vev_pull_lookup_ref_keyword_prepared`
+- `vev_pull_lookup_ref_uuid_edn`
+- `vev_pull_lookup_ref_uuid_prepared`
 - `vev_pull_lookup_ref_entity_edn`
+- `vev_pull_lookup_ref_entity_prepared`
 - `vev_pull_lookup_ref_int_edn`
+- `vev_pull_lookup_ref_int_prepared`
 - `vev_pull_many_edn`
+- `vev_pull_many_prepared`
+- `vev_pull_many_lookup_ref_uuid_prepared`
 - `vev_value_handle_value`
 - `vev_value_handle_edn`
 - `vev_value_handle_free`
+- `vev_value_text_data`
+- `vev_value_text_len`
 
 `vev_value_visit` streams any nested `vev_value_t` tree through a C callback.
 It emits `VEV_VALUE_VISIT_VALUE` for every node and `VEV_VALUE_VISIT_END` after
 each vector/map container. The callback receives borrowed handles; callers must
 copy strings or EDN text they want to retain after the owning result/report is
 freed.
+
+`vev_value_text` returns an owned C string for string-like values. Hosts that
+are walking many nested pull values can avoid that allocation by using the
+borrowed `vev_value_text_data` plus `vev_value_text_len` pair. That byte view is
+valid only while the owning result, report, or value handle remains alive.
 
 `vev_result_visit` streams a typed result handle by row. It emits
 `VEV_RESULT_VISIT_ROW_BEGIN`, `VEV_RESULT_VISIT_VALUE`,

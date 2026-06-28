@@ -15,8 +15,10 @@ typedef void *vev_connection_t;
 typedef void *vev_sqlite_conn_t;
 typedef void *vev_db_t;
 typedef void *vev_prepared_query_t;
+typedef void *vev_prepared_pull_pattern_t;
 typedef void *vev_result_t;
 typedef void *vev_u64_array_t;
+typedef void *vev_string_array_t;
 typedef void *vev_entity_int_pairs_t;
 typedef void *vev_entity_string_int_triples_t;
 typedef void *vev_stmt_t;
@@ -236,10 +238,18 @@ vev_u64_array_t vev_query_db_prepared_entity_column_with_inputs(
     vev_db_t db,
     vev_prepared_query_t query,
     const char *inputs_text);
+vev_string_array_t vev_query_db_prepared_string_column_with_inputs(
+    vev_db_t db,
+    vev_prepared_query_t query,
+    const char *inputs_text);
 void vev_u64_array_free(vev_u64_array_t array);
 int vev_u64_array_count(vev_u64_array_t array);
 unsigned long long vev_u64_array_value(vev_u64_array_t array, int index);
 const unsigned long long *vev_u64_array_data(vev_u64_array_t array);
+void vev_string_array_free(vev_string_array_t array);
+int vev_string_array_count(vev_string_array_t array);
+const void *const *vev_string_array_data_array(vev_string_array_t array);
+const int *vev_string_array_lengths_data(vev_string_array_t array);
 vev_entity_int_pairs_t vev_query_db_prepared_entity_int_pairs_with_inputs(
     vev_db_t db,
     vev_prepared_query_t query,
@@ -269,9 +279,22 @@ const void *vev_entity_string_int_triples_string_data(vev_entity_string_int_trip
 int vev_entity_string_int_triples_string_len(vev_entity_string_int_triples_t triples, int index);
 
 vev_value_handle_t vev_pull_edn(vev_db_t db, const char *pattern_text, unsigned long long entity);
+vev_prepared_pull_pattern_t vev_prepare_pull_pattern_edn(const char *pattern_text);
+bool vev_prepared_pull_pattern_ok(vev_prepared_pull_pattern_t pattern);
+const char *vev_prepared_pull_pattern_error(vev_prepared_pull_pattern_t pattern);
+void vev_prepared_pull_pattern_free(vev_prepared_pull_pattern_t pattern);
+vev_value_handle_t vev_pull_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    unsigned long long entity);
 vev_value_handle_t vev_pull_lookup_ref_string_edn(
     vev_db_t db,
     const char *pattern_text,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_lookup_ref_string_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
     const char *attr,
     const char *value);
 vev_value_handle_t vev_pull_lookup_ref_keyword_edn(
@@ -279,9 +302,29 @@ vev_value_handle_t vev_pull_lookup_ref_keyword_edn(
     const char *pattern_text,
     const char *attr,
     const char *value);
+vev_value_handle_t vev_pull_lookup_ref_keyword_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_lookup_ref_uuid_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    const char *value);
+vev_value_handle_t vev_pull_lookup_ref_uuid_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    const char *value);
 vev_value_handle_t vev_pull_lookup_ref_entity_edn(
     vev_db_t db,
     const char *pattern_text,
+    const char *attr,
+    unsigned long long value);
+vev_value_handle_t vev_pull_lookup_ref_entity_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
     const char *attr,
     unsigned long long value);
 vev_value_handle_t vev_pull_lookup_ref_int_edn(
@@ -289,11 +332,27 @@ vev_value_handle_t vev_pull_lookup_ref_int_edn(
     const char *pattern_text,
     const char *attr,
     long long value);
+vev_value_handle_t vev_pull_lookup_ref_int_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    long long value);
 vev_value_handle_t vev_pull_many_edn(
     vev_db_t db,
     const char *pattern_text,
     const unsigned long long *entities,
     int entity_count);
+vev_value_handle_t vev_pull_many_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const unsigned long long *entities,
+    int entity_count);
+vev_value_handle_t vev_pull_many_lookup_ref_uuid_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    const char **values,
+    int value_count);
 void vev_value_handle_free(vev_value_handle_t handle);
 vev_value_t vev_value_handle_value(vev_value_handle_t handle);
 const char *vev_value_handle_edn(vev_value_handle_t handle);
@@ -312,6 +371,8 @@ unsigned long long vev_result_value_entity(vev_result_t result, int row, int col
 long long vev_result_value_int(vev_result_t result, int row, int column);
 bool vev_result_value_bool(vev_result_t result, int row, int column);
 const char *vev_result_value_text(vev_result_t result, int row, int column);
+const void *vev_result_value_text_data(vev_result_t result, int row, int column);
+int vev_result_value_text_len(vev_result_t result, int row, int column);
 const char *vev_result_value_edn(vev_result_t result, int row, int column);
 
 int vev_value_kind(vev_value_t value);
@@ -320,6 +381,8 @@ long long vev_value_int(vev_value_t value);
 double vev_value_float(vev_value_t value);
 bool vev_value_bool(vev_value_t value);
 const char *vev_value_text(vev_value_t value);
+const void *vev_value_text_data(vev_value_t value);
+int vev_value_text_len(vev_value_t value);
 const char *vev_value_edn(vev_value_t value);
 int vev_value_item_count(vev_value_t value);
 vev_value_t vev_value_item(vev_value_t value, int index);

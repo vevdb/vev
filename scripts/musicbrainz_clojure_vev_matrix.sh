@@ -7,6 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JAVA_OUT="$ROOT/build/examples/java"
 LIB="$ROOT/build/lib/libvev.dylib"
+URI=""
 WORKLOAD="country-names"
 SAMPLES="10"
 WARMUPS="5"
@@ -14,6 +15,7 @@ SCHEMA="$ROOT/build/musicbrainz/vev-mbrainz-subset-500-schema.edn"
 VALUES="$ROOT/build/musicbrainz/vev-mbrainz-subset-500-values.edn"
 VALUES_PREFIX="$ROOT/build/musicbrainz/vev-mbrainz-subset-full-chunked"
 VALUES_CHUNKS="8"
+PRINT_ROWS="false"
 
 usage() {
   cat <<EOF
@@ -27,10 +29,12 @@ options:
   --samples n           timing samples; default: 10
   --warmups n           warmups; default: 5
   --lib path            libvev dynamic library path
+  --uri uri             open an existing durable Vev DB and skip EDN loading
   --schema path         Vev exported schema EDN path
   --values path         Vev exported single values EDN path
   --values-prefix path  Vev exported chunk prefix
   --values-chunks n     number of Vev value chunks; default: 8
+  --print-rows true     print canonical row keys; default: false
   -h, --help            show this help
 EOF
 }
@@ -41,10 +45,12 @@ while [[ $# -gt 0 ]]; do
     --samples) SAMPLES="$2"; shift 2 ;;
     --warmups) WARMUPS="$2"; shift 2 ;;
     --lib) LIB="$2"; shift 2 ;;
+    --uri) URI="$2"; shift 2 ;;
     --schema) SCHEMA="$2"; shift 2 ;;
     --values) VALUES="$2"; shift 2 ;;
     --values-prefix) VALUES_PREFIX="$2"; shift 2 ;;
     --values-chunks) VALUES_CHUNKS="$2"; shift 2 ;;
+    --print-rows) PRINT_ROWS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
       usage >&2
@@ -69,10 +75,12 @@ clojure \
   -Sdeps "{:paths [\"$JAVA_OUT\" \"$ROOT/clients/clojure/src\"]}" \
   -M "$ROOT/scripts/musicbrainz_clojure_vev_matrix.clj" \
   --lib "$LIB" \
+  --uri "$URI" \
   --schema "$SCHEMA" \
   --values "$VALUES" \
   --values-prefix "$VALUES_PREFIX" \
   --values-chunks "$VALUES_CHUNKS" \
   --workload "$WORKLOAD" \
   --samples "$SAMPLES" \
-  --warmups "$WARMUPS"
+  --warmups "$WARMUPS" \
+  --print-rows "$PRINT_ROWS"

@@ -14,6 +14,13 @@
 (defn elapsed-us [start: time.Time] -> f64
   (/ (f64 (time.duration_nanoseconds (time.since start))) 1000.0))
 
+(def release-first-query
+  "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t] [?t :track/name ?title]]")
+
+(defn delete-conn-shallow [conn: vev.Conn]
+  (delete conn.listeners)
+  (vev.delete-owned-db conn.db))
+
 (defn int-option [name: string, default-value: int] -> int
   (let [text (cli.option os.args name "")]
     (when (= text "")
@@ -193,6 +200,7 @@
 (defn main []
   (defer (free_all context.allocator))
   (let [path (cli.option os.args "--input" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset.edn")
+        sqlite-output (cli.option os.args "--sqlite-output" "")
         schema-path (cli.option os.args "--schema" "")
         values-path (cli.option os.args "--values" "")
         values-prefix (cli.option os.args "--values-prefix" "")
@@ -281,4 +289,34 @@
           (count release-result.rows)
           release-us)
         (vev.delete-result-set-shallow artist-result)
-        (vev.delete-result-set-shallow release-result))))
+        (vev.delete-result-set-shallow release-result)
+        (when (not (= sqlite-output ""))
+          (let [persist-start (time.now)
+                [persist-ok persist-error] (vev.persist-conn-sqlite sqlite-output conn)
+                persist-us (elapsed-us persist-start)]
+            (fmt.printf
+              "engine=vev workload=musicbrainz-import-persist ok=%v path=%s persist_us=%.0f error=%s\n"
+              persist-ok
+              sqlite-output
+              persist-us
+              persist-error)
+            (when persist-ok
+              (let [[reopened reopen-ok reopen-error] (vev.open-conn-sqlite sqlite-output)]
+                (if reopen-ok
+                  (let [input ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))])
+                        query-start (time.now)
+                        profiled (vev.q-text-profiled-with-inputs reopened.db release-first-query input)
+                        query-us (elapsed-us query-start)]
+                    (fmt.printf
+                      "engine=vev workload=musicbrainz-import-reopened-release-first ok=%v rows=%d query_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
+                      profiled.result.ok
+                      (count profiled.result.rows)
+                      query-us
+                      profiled.stats.steps
+                      profiled.stats.clauses
+                      profiled.stats.clause-candidates
+                      profiled.stats.max-intermediate-bindings
+                      profiled.stats.output-rows)
+                    (vev.delete-profiled-result-set-shallow profiled)
+                    (delete-conn-shallow reopened))
+                  (fmt.printf "engine=vev workload=musicbrainz-import-reopen ok=false path=%s error=%s\n" sqlite-output reopen-error)))))))))

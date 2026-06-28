@@ -91,10 +91,15 @@ public final class Vev {
     private final MethodHandle queryDbPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedProfileEdnWithInputs;
     private final MethodHandle queryDbPreparedEntityColumnWithInputs;
+    private final MethodHandle queryDbPreparedStringColumnWithInputs;
     private final MethodHandle u64ArrayFree;
     private final MethodHandle u64ArrayCount;
     private final MethodHandle u64ArrayValue;
     private final MethodHandle u64ArrayData;
+    private final MethodHandle stringArrayFree;
+    private final MethodHandle stringArrayCount;
+    private final MethodHandle stringArrayDataArray;
+    private final MethodHandle stringArrayLengthsData;
     private final MethodHandle queryDbPreparedEntityIntPairsWithInputs;
     private final MethodHandle entityIntPairsFree;
     private final MethodHandle entityIntPairsCount;
@@ -117,11 +122,24 @@ public final class Vev {
     private final MethodHandle entityStringIntTriplesStringData;
     private final MethodHandle entityStringIntTriplesStringLen;
     private final MethodHandle pullEdn;
+    private final MethodHandle preparePullPatternEdn;
+    private final MethodHandle preparedPullPatternFree;
+    private final MethodHandle preparedPullPatternOk;
+    private final MethodHandle preparedPullPatternError;
+    private final MethodHandle pullPrepared;
     private final MethodHandle pullLookupRefStringEdn;
+    private final MethodHandle pullLookupRefStringPrepared;
     private final MethodHandle pullLookupRefKeywordEdn;
+    private final MethodHandle pullLookupRefKeywordPrepared;
+    private final MethodHandle pullLookupRefUuidEdn;
+    private final MethodHandle pullLookupRefUuidPrepared;
     private final MethodHandle pullLookupRefEntityEdn;
+    private final MethodHandle pullLookupRefEntityPrepared;
     private final MethodHandle pullLookupRefIntEdn;
+    private final MethodHandle pullLookupRefIntPrepared;
     private final MethodHandle pullManyEdn;
+    private final MethodHandle pullManyPrepared;
+    private final MethodHandle pullManyLookupRefUuidPrepared;
     private final MethodHandle valueHandleFree;
     private final MethodHandle valueHandleValue;
     private final MethodHandle valueHandleEdn;
@@ -137,9 +155,11 @@ public final class Vev {
     private final MethodHandle resultValueEntity;
     private final MethodHandle resultValueInt;
     private final MethodHandle resultValueBool;
-    private final MethodHandle resultValueText;
+    private final MethodHandle resultValueTextData;
+    private final MethodHandle resultValueTextLen;
     private final MethodHandle valueKind;
-    private final MethodHandle valueText;
+    private final MethodHandle valueTextData;
+    private final MethodHandle valueTextLen;
     private final MethodHandle valueEntity;
     private final MethodHandle valueInt;
     private final MethodHandle valueFloat;
@@ -219,10 +239,15 @@ public final class Vev {
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedProfileEdnWithInputs = downcall("vev_query_db_prepared_profile_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityColumnWithInputs = downcall("vev_query_db_prepared_entity_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedStringColumnWithInputs = downcall("vev_query_db_prepared_string_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.u64ArrayFree = downcall("vev_u64_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.u64ArrayCount = downcall("vev_u64_array_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.u64ArrayValue = downcall("vev_u64_array_value", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.u64ArrayData = downcall("vev_u64_array_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.stringArrayFree = downcall("vev_string_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.stringArrayCount = downcall("vev_string_array_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.stringArrayDataArray = downcall("vev_string_array_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.stringArrayLengthsData = downcall("vev_string_array_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityIntPairsWithInputs = downcall("vev_query_db_prepared_entity_int_pairs_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.entityIntPairsFree = downcall("vev_entity_int_pairs_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.entityIntPairsCount = downcall("vev_entity_int_pairs_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
@@ -245,11 +270,24 @@ public final class Vev {
         this.entityStringIntTriplesStringData = downcall("vev_entity_string_int_triples_string_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.entityStringIntTriplesStringLen = downcall("vev_entity_string_int_triples_string_len", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.pullEdn = downcall("vev_pull_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.preparePullPatternEdn = downcall("vev_prepare_pull_pattern_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.preparedPullPatternFree = downcall("vev_prepared_pull_pattern_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.preparedPullPatternOk = downcall("vev_prepared_pull_pattern_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
+        this.preparedPullPatternError = downcall("vev_prepared_pull_pattern_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullPrepared = downcall("vev_pull_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullLookupRefStringPrepared = downcall("vev_pull_lookup_ref_string_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullLookupRefKeywordEdn = downcall("vev_pull_lookup_ref_keyword_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullLookupRefKeywordPrepared = downcall("vev_pull_lookup_ref_keyword_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullLookupRefUuidEdn = downcall("vev_pull_lookup_ref_uuid_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.pullLookupRefUuidPrepared = downcall("vev_pull_lookup_ref_uuid_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullLookupRefEntityEdn = downcall("vev_pull_lookup_ref_entity_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.pullLookupRefEntityPrepared = downcall("vev_pull_lookup_ref_entity_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefIntEdn = downcall("vev_pull_lookup_ref_int_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.pullLookupRefIntPrepared = downcall("vev_pull_lookup_ref_int_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.pullManyPrepared = downcall("vev_pull_many_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.pullManyLookupRefUuidPrepared = downcall("vev_pull_many_lookup_ref_uuid_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.valueHandleFree = downcall("vev_value_handle_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.valueHandleValue = downcall("vev_value_handle_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.valueHandleEdn = downcall("vev_value_handle_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -265,9 +303,11 @@ public final class Vev {
         this.resultValueEntity = downcall("vev_result_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultValueInt = downcall("vev_result_value_int", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.resultValueBool = downcall("vev_result_value_bool", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
-        this.resultValueText = downcall("vev_result_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueTextData = downcall("vev_result_value_text_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        this.resultValueTextLen = downcall("vev_result_value_text_len", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
         this.valueKind = downcall("vev_value_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
-        this.valueText = downcall("vev_value_text", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.valueTextData = downcall("vev_value_text_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.valueTextLen = downcall("vev_value_text_len", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.valueEntity = downcall("vev_value_entity", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         this.valueInt = downcall("vev_value_int", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         this.valueFloat = downcall("vev_value_float", FunctionDescriptor.of(ValueLayout.JAVA_DOUBLE, ValueLayout.ADDRESS));
@@ -337,6 +377,19 @@ public final class Vev {
             MemorySegment raw = (MemorySegment) prepareQueryEdn.invoke(local.allocateUtf8String(query));
             if (isNull(raw)) throw new IllegalStateException("failed to prepare query");
             return new PreparedQuery(raw);
+        }
+    }
+
+    public PreparedPullPattern preparePullPattern(String pattern) throws Throwable {
+        try (Arena local = Arena.ofConfined()) {
+            MemorySegment raw = (MemorySegment) preparePullPatternEdn.invoke(local.allocateUtf8String(pattern));
+            if (isNull(raw)) throw new IllegalStateException("failed to prepare pull pattern");
+            if (!((boolean) preparedPullPatternOk.invoke(raw))) {
+                String error = ownedString((MemorySegment) preparedPullPatternError.invoke(raw));
+                closeHandle(preparedPullPatternFree, raw);
+                throw new IllegalStateException(error);
+            }
+            return new PreparedPullPattern(raw);
         }
     }
 
@@ -414,7 +467,13 @@ public final class Vev {
     }
 
     private String textOf(MemorySegment value) throws Throwable {
-        return ownedString((MemorySegment) valueText.invoke(value));
+        int length = (int) valueTextLen.invoke(value);
+        return borrowedUtf8String((MemorySegment) valueTextData.invoke(value), length);
+    }
+
+    private String resultTextOf(MemorySegment result, int row, int column) throws Throwable {
+        int length = (int) resultValueTextLen.invoke(result, row, column);
+        return borrowedUtf8String((MemorySegment) resultValueTextData.invoke(result, row, column), length);
     }
 
     private String borrowedUtf8String(MemorySegment data, int length) {
@@ -460,8 +519,8 @@ public final class Vev {
         return switch (kind) {
             case 0 -> null;
             case 1 -> new Entity((long) resultValueEntity.invoke(result, row, column));
-            case 2, 6, 7 -> ownedString((MemorySegment) resultValueText.invoke(result, row, column));
-            case 10 -> UUID.fromString(ownedString((MemorySegment) resultValueText.invoke(result, row, column)));
+            case 2, 6, 7 -> resultTextOf(result, row, column);
+            case 10 -> UUID.fromString(resultTextOf(result, row, column));
             case 3 -> (long) resultValueInt.invoke(result, row, column);
             case 5 -> (boolean) resultValueBool.invoke(result, row, column);
             default -> valueToJava((MemorySegment) resultValue.invoke(result, row, column));
@@ -923,6 +982,34 @@ public final class Vev {
             }
         }
 
+        public String[] queryStringColumn(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedStringColumnWithInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) stringArrayCount.invoke(raw);
+                    if (count == 0) return new String[0];
+                    MemorySegment dataArrayRaw = (MemorySegment) stringArrayDataArray.invoke(raw);
+                    MemorySegment lengthsRaw = (MemorySegment) stringArrayLengthsData.invoke(raw);
+                    if (isNull(dataArrayRaw) || isNull(lengthsRaw)) return new String[0];
+                    MemorySegment dataArray = dataArrayRaw.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+                    int[] lengths = lengthsRaw.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+                    String[] out = new String[count];
+                    for (int index = 0; index < count; index++) {
+                        MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
+                        out[index] = borrowedUtf8String(data, lengths[index]);
+                    }
+                    return out;
+                } finally {
+                    stringArrayFree.invoke(raw);
+                }
+            }
+        }
+
         public long[][] queryEntityIntPairs(PreparedQuery query, String inputs) throws Throwable {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
@@ -1043,6 +1130,13 @@ public final class Vev {
                     new int[] { COLUMN_ENTITY },
                     new Object[] { entities });
             }
+            String[] strings = queryStringColumn(query, inputs);
+            if (strings != null) {
+                return new ColumnResult(
+                    strings.length,
+                    new int[] { COLUMN_STRING },
+                    new Object[] { strings });
+            }
             long[][] pairs = queryEntityIntPairColumns(query, inputs);
             if (pairs != null) {
                 return new ColumnResult(
@@ -1108,12 +1202,36 @@ public final class Vev {
             }
         }
 
+        public Object pull(PreparedPullPattern pattern, long entity) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (ValueHandle value = new ValueHandle((MemorySegment) pullPrepared.invoke(
+                     handle.raw,
+                     pattern.raw,
+                     entity))) {
+                return value.value();
+            }
+        }
+
         public Object pullLookupRefString(String pattern, String attr, String value) throws Throwable {
             requireOpen();
             try (Arena local = Arena.ofConfined();
                  ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefStringEdn.invoke(
                      handle.raw,
                      local.allocateUtf8String(pattern),
+                     local.allocateUtf8String(attr),
+                     local.allocateUtf8String(value)))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullLookupRefString(PreparedPullPattern pattern, String attr, String value) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefStringPrepared.invoke(
+                     handle.raw,
+                     pattern.raw,
                      local.allocateUtf8String(attr),
                      local.allocateUtf8String(value)))) {
                 return pulled.value();
@@ -1132,12 +1250,63 @@ public final class Vev {
             }
         }
 
+        public Object pullLookupRefKeyword(PreparedPullPattern pattern, String attr, String value) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefKeywordPrepared.invoke(
+                     handle.raw,
+                     pattern.raw,
+                     local.allocateUtf8String(attr),
+                     local.allocateUtf8String(value)))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullLookupRefUuid(String pattern, String attr, UUID value) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefUuidEdn.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(pattern),
+                     local.allocateUtf8String(attr),
+                     local.allocateUtf8String(value.toString())))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullLookupRefUuid(PreparedPullPattern pattern, String attr, UUID value) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefUuidPrepared.invoke(
+                     handle.raw,
+                     pattern.raw,
+                     local.allocateUtf8String(attr),
+                     local.allocateUtf8String(value.toString())))) {
+                return pulled.value();
+            }
+        }
+
         public Object pullLookupRefEntity(String pattern, String attr, long value) throws Throwable {
             requireOpen();
             try (Arena local = Arena.ofConfined();
                  ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefEntityEdn.invoke(
                      handle.raw,
                      local.allocateUtf8String(pattern),
+                     local.allocateUtf8String(attr),
+                     value))) {
+                return pulled.value();
+            }
+        }
+
+        public Object pullLookupRefEntity(PreparedPullPattern pattern, String attr, long value) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefEntityPrepared.invoke(
+                     handle.raw,
+                     pattern.raw,
                      local.allocateUtf8String(attr),
                      value))) {
                 return pulled.value();
@@ -1156,6 +1325,19 @@ public final class Vev {
             }
         }
 
+        public Object pullLookupRefInt(PreparedPullPattern pattern, String attr, long value) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle pulled = new ValueHandle((MemorySegment) pullLookupRefIntPrepared.invoke(
+                     handle.raw,
+                     pattern.raw,
+                     local.allocateUtf8String(attr),
+                     value))) {
+                return pulled.value();
+            }
+        }
+
         public Object pullMany(String pattern, long... entities) throws Throwable {
             requireOpen();
             try (Arena local = Arena.ofConfined();
@@ -1165,6 +1347,38 @@ public final class Vev {
                      longArray(local, entities),
                      entities.length))) {
                 return value.value();
+            }
+        }
+
+        public Object pullMany(PreparedPullPattern pattern, long... entities) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle value = new ValueHandle((MemorySegment) pullManyPrepared.invoke(
+                     handle.raw,
+                     pattern.raw,
+                     longArray(local, entities),
+                     entities.length))) {
+                return value.value();
+            }
+        }
+
+        public Object pullManyLookupRefUuid(PreparedPullPattern pattern, String attr, UUID... values) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment array = local.allocateArray(ValueLayout.ADDRESS, values.length);
+                for (int i = 0; i < values.length; i++) {
+                    array.setAtIndex(ValueLayout.ADDRESS, i, local.allocateUtf8String(values[i].toString()));
+                }
+                try (ValueHandle value = new ValueHandle((MemorySegment) pullManyLookupRefUuidPrepared.invoke(
+                         handle.raw,
+                         pattern.raw,
+                         local.allocateUtf8String(attr),
+                         array,
+                         values.length))) {
+                    return value.value();
+                }
             }
         }
 
@@ -1226,6 +1440,26 @@ public final class Vev {
         public void close() {
             if (!isNull(raw)) {
                 closeHandle(preparedQueryFree, raw);
+                raw = MemorySegment.NULL;
+            }
+        }
+    }
+
+    public final class PreparedPullPattern implements AutoCloseable {
+        private MemorySegment raw;
+
+        private PreparedPullPattern(MemorySegment raw) {
+            this.raw = raw;
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("prepared pull pattern is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(preparedPullPatternFree, raw);
                 raw = MemorySegment.NULL;
             }
         }

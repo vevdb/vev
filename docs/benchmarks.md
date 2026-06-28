@@ -154,6 +154,19 @@ cd /Users/andreas/Projects/kvist
   --values-chunks 8
 ```
 
+Add `--sqlite-output <path>` to persist the imported DB into the current SQLite
+store format after the native import completes. This is the preferred setup for
+host-language MusicBrainz query benchmarks, because it keeps Clojure/Java setup
+out of query timing:
+
+```sh
+/Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
+  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn \
+  --values-prefix /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked \
+  --values-chunks 8 \
+  --sqlite-output /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-full.sqlite
+```
+
 Current local 5k staged result:
 
 ```text
@@ -199,15 +212,16 @@ Datomic MusicBrainz database. Latest single-sample local run:
 | `musicbrainz-real-beatles-track-count` | 3531 | 3150 | 1 | `0000000007068a26` |
 | `musicbrainz-real-beatles-min-max-duration` | 2967 | 10409 | 1 | `9c45e54f061af2f6` |
 | `musicbrainz-real-beatles-duration-stats` | 5975 | 83762 | 4 | `9880798d00baf3e0` |
+| `musicbrainz-real-beatles-duration-stddev` | 4267 | 81619 | 4 | `1de88b32d5193758` |
 | `musicbrainz-real-beatles-duration-sum` | 4405 | 86912 | 4 | `773afe226788bffa` |
 | `musicbrainz-real-lookup-country` | 51 | 3371 | 1 | `4167e0bf9abd1220` |
 | `musicbrainz-real-selected-artists-releases` | 520 | 5625 | 28 | `4887ecaa409643d2` |
 | `musicbrainz-real-release-date` | 496 | 59046 | 3 | `8853c19c0b82edfa` |
 | `musicbrainz-real-fallback-start-month` | 186 | 62173 | 2 | `ea197a760bcc6589` |
 | `musicbrainz-real-get-some-country` | 379 | 22529 | 1 | `7e762f127575592a` |
-| `musicbrainz-real-missing-start-year` | 15022 | 74139 | 1637 | `f5e245cdd9911040` |
+| `musicbrainz-real-missing-start-year` | 7710 | 12922 | 1637 | `f5e245cdd9911040` |
 | `musicbrainz-real-dynamic-attr` | 2750 | 56087 | 482 | `ffee4f7469006cd3` |
-| `musicbrainz-real-top-duration` | 10924079 | 145754 | 1 | `949eb8db5ef70199` |
+| `musicbrainz-real-top-duration` | 17 | 32496 | 1 | `949eb8db5ef70199` |
 | `musicbrainz-real-not-beatles-male` | 359 | 5810 | 1 | `ea45bdc7e8b8201b` |
 | `musicbrainz-real-or-two-artists` | 177 | 2231 | 2 | `de67eb0f77cf6b42` |
 | `musicbrainz-real-relation-artist-release` | 134 | 9320 | 2 | `cb2f30e6783d093d` |
@@ -242,10 +256,12 @@ materialization. The `rule-track-info` row uses the same idea inside pure rule
 bodies while preserving DataScript source-order behavior for predicates,
 functions, `not`, `or`, and other effectful/error-sensitive rule steps.
 Bounded `not`, `not-join`, `or`, and `or-join` rows now reuse the same
-dependency-aware data-clause group planner. The top-n duration aggregate is a
-correctness/parity row and currently exposes a performance outlier because it
-scans all track durations in memory. The next planner/index work should come
-from this kind of real row or larger Datalevin benchmark families, rather than
+dependency-aware data-clause group planner. Single-attr top-n min/max aggregate
+queries now use AVET range scans and stop after the requested distinct values.
+Broad cardinality-one `missing?` projections now scan the projected attr range
+directly and filter missing attrs through current indexes, avoiding full
+relation materialization. The next planner/index work should come from this
+kind of real row or larger Datalevin benchmark families, rather than
 workload-specific shortcuts.
 
 The next import-performance work is no longer basic feasibility. The remaining
@@ -296,10 +312,97 @@ scripts/musicbrainz_clojure_vev_matrix.sh \
   --values-chunks 8
 ```
 
-Do not compare those setup-inclusive Clojure timings directly to the native Vev
-versus Datomic table. The durable-storage phase should make this an
-apples-to-apples Clojure Vev versus Clojure Datomic query benchmark by removing
-wrapper load/setup from the measured path.
+For query-only host timing against a prebuilt durable Vev DB, pass `--uri`:
+
+```sh
+scripts/musicbrainz_clojure_vev_matrix.sh \
+  --uri build/musicbrainz/vev-mbrainz-full.sqlite \
+  --workload beatles-releases
+```
+
+Rebuild `build/lib/libvev.dylib` before host comparisons:
+
+```sh
+scripts/build_c_abi.sh
+```
+
+Latest 500-value durable-open smoke:
+
+```text
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=793 current=793 parse_us=4805 tx_us=496293 import_us=501098 artist_rows=0 artist_us=211 release_rows=0 release_us=95
+engine=vev workload=musicbrainz-import-persist ok=true path=build/musicbrainz/tmp-vev-host-smoke.sqlite persist_us=15306 error=
+engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/tmp-vev-host-smoke.sqlite info={:backend :sqlite, :path "build/musicbrainz/tmp-vev-host-smoke.sqlite", :basis-t 2, :tx-count 2, :tx-ids [1 2]}
+engine=clojure-vev workload=musicbrainz-smoke-country-names ok=true rows=257 fingerprint=fd7d4b4cd5dd243c min_us=2131 median_us=2714 p90_us=2714 max_us=3003
+```
+
+Latest full durable-open Clojure wrapper correctness pass after rebuilding
+`libvev`:
+
+```text
+engine=vev workload=musicbrainz-import ok=true mode=split datoms=763274 current=763274 parse_us=1427493 tx_us=15500566 import_us=16928059 artist_rows=1 artist_us=103 release_rows=16 release_us=365
+engine=vev workload=musicbrainz-import-persist ok=true path=build/musicbrainz/vev-mbrainz-full-host.sqlite persist_us=4606362 error=
+engine=vev workload=musicbrainz-import-reopened-release-first ok=true rows=96 query_us=3279 steps=8 clauses=425 candidates=708 max_bindings=265 output_rows=96
+engine=clojure-vev workload=musicbrainz-real-open ok=true uri=build/musicbrainz/vev-mbrainz-full-host.sqlite open_us=9375021 info={:backend :sqlite, :path "build/musicbrainz/vev-mbrainz-full-host.sqlite", :basis-t 9, :tx-count 9, :tx-ids [1 2 3 4 5 6 7 8 9]}
+engine=clojure-vev workload=musicbrainz-smoke-country-names ok=true rows=257 fingerprint=9b79e6c0b6bf748a
+engine=clojure-vev workload=musicbrainz-real-release-first ok=true rows=96 fingerprint=0ea8943f9ef3eb03
+engine=clojure-vev workload=musicbrainz-real-dynamic-pull-release ok=true rows=17 fingerprint=16930ebda61a7b2c
+engine=clojure-vev workload=musicbrainz-real-direct-pull-release ok=true rows=1 fingerprint=4e62d7d5775bd426
+```
+
+The full wrapper command was:
+
+```sh
+scripts/musicbrainz_clojure_vev_matrix.sh \
+  --uri build/musicbrainz/vev-mbrainz-full-host.sqlite \
+  --workload all \
+  --samples 1 \
+  --warmups 0
+```
+
+It completed all 43 MusicBrainz query/pull rows with the same portable
+fingerprints as the native Vev/Datomic matrix. The most important host-path
+fix from this pass was dynamic pull pattern input ownership: pull patterns
+supplied through EDN input text are now parsed into owned `Pull-Spec` values
+before the transient parser document is released.
+
+The same-process Clojure Datomic peer run with `--samples 3 --warmups 1`
+provides the current host-to-host timing comparison for these representative
+rows:
+
+| Workload | Clojure Vev median us | Datomic median us | Vev/Datomic signal |
+| --- | ---: | ---: | ---: |
+| `release-first` | 3,895 | 5,061 | 1.3x faster |
+| `track-first` | 4,056 | 47,961 | 11.8x faster |
+| `beatles-releases` | 538 | 561 | parity |
+| `beatles-duration-sum` | 4,338 | 2,913 | 0.7x |
+| `missing-start-year` | 7,742 | 12,922 | 1.7x faster in latest focused run |
+| `top-duration` | 491 | 32,496 | 66.2x faster |
+| `rule-track-info` | 49,161 | 181,332 | 3.7x faster |
+| `pull-release` | 519 | 326 | 0.6x |
+| `direct-pull-artist` | 225 | 43 | host wrapper overhead remains visible |
+| `direct-pull-artist-releases` | 2,203 | 289 | broad host pull materialization remains visible |
+| `direct-pull-many-artists` | 366 | 23 | host wrapper path now uses prepared same-attr UUID lookup-ref batch |
+
+This host-wrapper comparison is deliberately separate from the stronger native
+Vev versus Datomic table above. The `--sqlite-output` plus `--uri` path removes
+wrapper EDN loading from query timing, but Clojure/Java FFM materialization and
+plain Clojure value equality still matter. The wrapper harness now preserves
+query pull-expression rows with `vev/rows` so repeated pull maps do not collapse
+under Clojure set equality. Direct `:pull` and `:pull-many` workloads now
+prepare the pull pattern once per workload run through the public
+Clojure/Java/C ABI prepared pull-pattern handle. Same-attribute UUID lookup-ref
+`pull-many` calls also use a batch host entry point, so repeated direct pulls no
+longer include pull-pattern EDN parsing or one native call per lookup ref.
+Java value-tree conversion now reads strings through borrowed value text views
+instead of allocating/freeing a native C string for every pull key and scalar
+text, and the Clojure wrapper now builds pull maps directly instead of through
+a lazy pair sequence. Lookup-ref attrs and other simple keyword/symbol EDN
+fragments also bypass the generic EDN printer. Single string-column query
+results use a typed C ABI array path, and broad `missing?` string projections
+avoid native `ResultSet` row/value materialization before Java reads borrowed
+UTF-8 slices. Remaining host-performance work is mostly result materialization
+and tiny-call overhead around direct pull and pull-many, not query-engine
+correctness.
 
 ## Query And Rule Baseline
 
