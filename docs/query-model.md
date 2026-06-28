@@ -139,14 +139,17 @@ outputs. The specialized linear and alternating transitive paths remain faster
 physical operators and run before the generic memo/delta path.
 Inside the generic memo/delta evaluator, plain DB data-clause steps now execute
 through the relation engine: the current rule body relation is joined with the
-clause relation and deduped at the existing per-step boundary. Rule-call steps
-still store memo/delta state as binding rows, but broad rule-call application
-can now project memo rows into a relation and join that relation against the
-current body relation. Small current relations keep the row-wise matcher because
-that avoids projecting an entire memo table for a handful of rows. Distinct-var
-rule calls use a typed projection path, so the broad path can stay in typed
-columns through the join. This remains an intermediate state rather than a fully
-columnar recursive-rule engine.
+clause relation and deduped at the existing per-step boundary. Rule-call memo
+and delta tables still keep binding rows as their semantic source of truth, but
+each memo entry now owns cached typed relation views for the accumulated rows
+and current delta rows. Broad rule-call application can reuse those cached views,
+project them into the call's output variables, and join that relation against
+the current body relation. Small current relations keep the row-wise matcher
+because that avoids touching a large memo table for a handful of rows.
+Distinct-var rule calls use a typed projection path, so the broad path can stay
+in typed columns through the join. This remains an intermediate state rather
+than a fully columnar recursive-rule engine: appends still update row tables
+first and invalidate the cached relation view.
 The linear transitive recognizer also handles a common derived-edge shape where
 the recursive edge is a non-recursive two-hop rule, such as `adv` in
 Datalevin's math-bench:
@@ -518,11 +521,11 @@ positive recursive rule groups can use component-local memoized execution with
 delta-driven iteration over each recursive rule-call position. Specialized
 transitive paths remain the fast path for common reachability shapes. The
 generic memo/delta evaluator is now partially relation-native: DB clause steps
-run as relation joins, and broad rule-call steps can project memo rows into typed
-relations before joining. The memo/delta tables themselves remain row-shaped.
-The next rule-engine step is to store or cache memo tables in typed relation
-form directly and add measured handling for richer rule bodies using the
-dependency components as the stratification input.
+run as relation joins, and broad rule-call steps reuse cached typed memo/delta
+relation views before joining. The memo/delta row tables remain the source of
+truth, so the next rule-engine step is append-native typed memo storage: update
+compact relation columns as new rule outputs are discovered instead of
+invalidating and rebuilding relation views.
 
 Near-term query work should expand the relation engine in this order:
 
@@ -532,9 +535,9 @@ Near-term query work should expand the relation engine in this order:
    relation representation to deeper nested source-qualified groups and broader
    named source combinations.
 3. Rules: continue moving the positive-rule memo/delta evaluator from binding
-   rows toward relation-native semi-naive behavior. DB clause steps are now
-   relation-native; rule-call memo/delta tables remain the main row-shaped
-   boundary.
+   rows toward relation-native semi-naive behavior. DB clause steps and broad
+   rule-call joins are now relation-native; append-native typed memo/delta
+   storage remains the main row-shaped boundary.
 
 The transaction side has the same split:
 
