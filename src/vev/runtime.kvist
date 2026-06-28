@@ -761,6 +761,91 @@
           (set! row (+ row 1)))))
     out))
 
+(defn query-relation-typed-layout-compatible? [left: Query-Relation, right: Query-Relation] -> bool
+  (when (not (and left.has-typed-columns right.has-typed-columns))
+    (return false))
+  (when (or (not (= (count left.attrs) (count right.attrs)))
+            (not (= (count left.attr-sources) (count right.attr-sources)))
+            (not (= (count left.typed-columns) (count right.typed-columns))))
+    (return false))
+  (for [attr index left.attrs]
+    (when (or (not (= attr right.attrs[index]))
+              (not (= left.attr-sources[index] right.attr-sources[index])))
+      (return false))
+    (let [left-column left.typed-columns[index]
+          right-column right.typed-columns[index]]
+      (when (and left-column.has-kind
+                 right-column.has-kind
+                 (not (= left-column.kind right-column.kind)))
+        (return false))))
+  true)
+
+(defn query-relation-empty-typed-like [rel: Query-Relation] -> Query-Relation
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+        attr-index (query-relation-attr-index (slice rel.attrs 0))
+        tuples (make [dynamic]Binding)
+        typed-columns (relation-columns-for-attrs (slice rel.attrs 0))]
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: attr-index
+                     tuples: tuples
+                     typed-columns: typed-columns
+                     typed-rows: 0
+                     has-typed-columns: true})))
+
+(defn query-relation-append-typed-rows! [out: ^Query-Relation, rel: Query-Relation] -> bool
+  (when (not (query-relation-typed-layout-compatible? out^ rel))
+    (return false))
+  (let [row 0]
+    (while (< row rel.typed-rows)
+      (when (not (add-relation-column-row! (addr out^.typed-columns) (slice rel.typed-columns 0) row))
+        (return false))
+      (set! out^.typed-rows (+ out^.typed-rows 1))
+      (set! row (+ row 1))))
+  true)
+
+(defn query-relation-append-typed-rows-unique! [out: ^Query-Relation, rel: Query-Relation, seen: ^set[string]] -> bool
+  (when (not (query-relation-typed-layout-compatible? out^ rel))
+    (return false))
+  (let [row 0]
+    (while (< row rel.typed-rows)
+      (let [[key key-ok] (query-relation-row-join-key rel row (slice rel.attrs 0))]
+        (when (not key-ok)
+          (return false))
+        (when (not (set.contains? seen^ key))
+          (set.add! seen^ key)
+          (when (not (add-relation-column-row! (addr out^.typed-columns) (slice rel.typed-columns 0) row))
+            (return false))
+          (set! out^.typed-rows (+ out^.typed-rows 1))))
+      (set! row (+ row 1))))
+  true)
+
+(defn query-relation-flush-typed-accumulator! [out-bindings: ^[dynamic]Binding, out-rel: ^Query-Relation, has-out-rel: ^bool, out-rel-typed: ^bool]
+  (when has-out-rel^
+    (let [materialized (query-relation-materialized-bindings out-rel^) :defer]
+      (for [binding materialized]
+        (arr.push! out-bindings^ binding)))
+    (delete-query-relation out-rel^)
+    (set! out-rel^ (query-relation-empty))
+    (set! has-out-rel^ false)
+    (set! out-rel-typed^ false)))
+
+(defn query-relation-accumulate-typed-unique! [out-bindings: ^[dynamic]Binding, out-rel: ^Query-Relation, has-out-rel: ^bool, out-rel-typed: ^bool, seen: ^set[string], rel: Query-Relation] -> bool
+  (when (not (and out-rel-typed^ rel.has-typed-columns))
+    (return false))
+  (if has-out-rel^
+    (when (query-relation-append-typed-rows-unique! out-rel rel seen)
+      (return true))
+    (do
+      (delete-query-relation out-rel^)
+      (set! out-rel^ (query-relation-empty-typed-like rel))
+      (set! has-out-rel^ true)
+      (when (query-relation-append-typed-rows-unique! out-rel rel seen)
+        (return true))))
+  (query-relation-flush-typed-accumulator! out-bindings out-rel has-out-rel out-rel-typed)
+  false)
+
 (defn query-relations-compatible-common? [left: Query-Relation, right: Query-Relation, common: []string] -> bool
   (when (not (and left.has-typed-columns right.has-typed-columns))
     (return false))
@@ -5731,6 +5816,17 @@
           (arr.push! out next))))
     out))
 
+(defn bindings-from-relation-source-value-clause [source: Value, clause: Clause] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (not (= source.kind .Vector))
+      (return out))
+    (for [row source.items]
+      (let [next (Binding {})]
+        (if (relation-source-row-matches? clause row (addr next))
+          (arr.push! out next)
+          (delete next.items))))
+    out))
+
 (defn source-db-lookup [db: DB, sources: []DB-Source, name: string] -> [source-db: DB, ok: bool]
   (when (= name "$")
     (return db true))
@@ -6790,6 +6886,12 @@
   bindings: [dynamic]Binding
   delta: [dynamic]Binding
   seen: set[string]
+  bindings-rel: Query-Relation
+  bindings-rel-valid: bool
+  bindings-rel-count: int
+  delta-rel: Query-Relation
+  delta-rel-valid: bool
+  delta-rel-count: int
 })
 
 (defn alternating-state-expanded? [left-expanded: []u64, right-expanded: []u64, entity: u64, use-left: bool] -> bool
@@ -7370,7 +7472,9 @@
     (delete entry.params)
     (delete entry.bindings)
     (delete entry.delta)
-    (delete entry.seen))
+    (delete entry.seen)
+    (delete-query-relation entry.bindings-rel)
+    (delete-query-relation entry.delta-rel))
   (delete memo))
 
 (defn rule-memo-entry-index [memo: []Rule-Memo-Entry, name: string, params: []string] -> [index: int, ok: bool]
@@ -7393,8 +7497,44 @@
                                               params: params
                                               bindings: bindings
                                               delta: delta
-                                              seen: seen}))))))
+                                              seen: seen
+                                              bindings-rel: (query-relation-empty)
+                                              delta-rel: (query-relation-empty)}))))))
     memo))
+
+(defn rule-memo-entry-invalidate-bindings-relation! [entry: ^Rule-Memo-Entry]
+  (when entry^.bindings-rel-valid
+    (delete-query-relation entry^.bindings-rel)
+    (set! entry^.bindings-rel (query-relation-empty))
+    (set! entry^.bindings-rel-valid false)
+    (set! entry^.bindings-rel-count 0)))
+
+(defn rule-memo-entry-invalidate-delta-relation! [entry: ^Rule-Memo-Entry]
+  (when entry^.delta-rel-valid
+    (delete-query-relation entry^.delta-rel)
+    (set! entry^.delta-rel (query-relation-empty))
+    (set! entry^.delta-rel-valid false)
+    (set! entry^.delta-rel-count 0)))
+
+(defn rule-memo-entry-append-bindings-relation! [entry: ^Rule-Memo-Entry, output: Binding]
+  (when entry^.bindings-rel-valid
+    (if (and entry^.bindings-rel.has-typed-columns
+             (binding-can-add-to-relation-columns? (slice entry^.params 0) (slice entry^.bindings-rel.typed-columns 0) output))
+      (do
+        (add-binding-to-relation-columns! (slice entry^.params 0) (addr entry^.bindings-rel.typed-columns) output)
+        (set! entry^.bindings-rel.typed-rows (+ entry^.bindings-rel.typed-rows 1))
+        (set! entry^.bindings-rel-count (+ entry^.bindings-rel-count 1)))
+      (rule-memo-entry-invalidate-bindings-relation! entry))))
+
+(defn rule-memo-entry-append-delta-relation! [entry: ^Rule-Memo-Entry, output: Binding]
+  (when entry^.delta-rel-valid
+    (if (and entry^.delta-rel.has-typed-columns
+             (binding-can-add-to-relation-columns? (slice entry^.params 0) (slice entry^.delta-rel.typed-columns 0) output))
+      (do
+        (add-binding-to-relation-columns! (slice entry^.params 0) (addr entry^.delta-rel.typed-columns) output)
+        (set! entry^.delta-rel.typed-rows (+ entry^.delta-rel.typed-rows 1))
+        (set! entry^.delta-rel-count (+ entry^.delta-rel-count 1)))
+      (rule-memo-entry-invalidate-delta-relation! entry))))
 
 (defn rule-output-binding [rule: Rule, result: Binding] -> [binding: Binding, ok: bool]
   (let [out (Binding {})]
@@ -7420,6 +7560,7 @@
             (set.add! memo^[entry-index].seen key))
           (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
             (return false))))
+      (rule-memo-entry-append-bindings-relation! (addr memo^[entry-index]) output)
       (arr.push! memo^[entry-index].bindings output)
       true)))
 
@@ -7438,9 +7579,11 @@
             (set.add! memo^[entry-index].seen key))
           (when (binding-exists? (slice memo^[entry-index].bindings 0) output)
             (return false))))
+      (rule-memo-entry-append-bindings-relation! (addr memo^[entry-index]) output)
       (arr.push! memo^[entry-index].bindings output)
       (let [[delta-index delta-ok] (rule-memo-entry-index (slice next-delta^ 0) rule.name (slice rule.params 0))]
         (when delta-ok
+          (rule-memo-entry-append-delta-relation! (addr next-delta^[delta-index]) output)
           (arr.push! next-delta^[delta-index].delta output)))
       true)))
 
@@ -7498,6 +7641,398 @@
           (delete entry-bindings))))
     out))
 
+(defn query-relation-project-rule-call-bindings-typed-distinct [params: []string, memo-bindings: []Binding, call: Rule-Call] -> [rel: Query-Relation, ok: bool]
+  (when (not (= (count params) (count call.args)))
+    (return (query-relation-empty) false))
+  (let [seen (set.empty string)]
+    (defer (delete seen))
+    (for [arg call.args]
+      (when (not (= arg.kind .Var))
+        (return (query-relation-empty) false))
+      (when (set.contains? seen arg.name)
+        (return (query-relation-empty) false))
+      (set.add! seen arg.name)))
+  (let [attrs (make [dynamic]string 0 (count call.args))
+        attr-sources (make [dynamic]string 0 (count call.args))
+        typed-columns (make [dynamic]Relation-Column 0 (count call.args))
+        typed-rows 0]
+    (for [arg call.args]
+      (arr.push! attrs arg.name)
+      (arr.push! attr-sources "")
+      (arr.push! typed-columns (relation-column-empty)))
+    (for [tuple memo-bindings]
+      (for [param index params]
+        (let [[value value-ok] (binding-lookup tuple param)]
+          (when (not value-ok)
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns typed-columns)
+            (return (query-relation-empty) false))
+          (when (not (relation-column-add! (addr typed-columns[index]) value))
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns typed-columns)
+            (return (query-relation-empty) false))))
+      (set! typed-rows (+ typed-rows 1)))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: (make [dynamic]Binding)
+                             typed-columns: typed-columns
+                             typed-rows: typed-rows
+                             has-typed-columns: true}) true)))
+
+(defn query-relation-from-rule-memo-bindings [params: []string, memo-bindings: []Binding] -> [rel: Query-Relation, ok: bool]
+  (let [attrs (arr.into [dynamic]string params)
+        attr-sources (make [dynamic]string 0 (count params))
+        typed-columns (relation-columns-for-attrs params)
+        typed-rows 0]
+    (for [_ params]
+      (arr.push! attr-sources ""))
+    (for [tuple memo-bindings]
+      (for [param index params]
+        (let [[value value-ok] (binding-lookup tuple param)]
+          (when (or (not value-ok)
+                    (not (relation-column-add! (addr typed-columns[index]) value)))
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns typed-columns)
+            (return (query-relation-empty) false))))
+      (set! typed-rows (+ typed-rows 1)))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: (make [dynamic]Binding)
+                             typed-columns: typed-columns
+                             typed-rows: typed-rows
+                             has-typed-columns: true}) true)))
+
+(defn rule-call-distinct-var-projection-params? [params: []string, call: Rule-Call] -> bool
+  (when (not (= (count params) (count call.args)))
+    (return false))
+  (let [seen (set.empty string)]
+    (defer (delete seen))
+    (for [arg call.args]
+      (when (not (= arg.kind .Var))
+        (return false))
+      (when (set.contains? seen arg.name)
+        (return false))
+      (set.add! seen arg.name))
+    true))
+
+(defn query-relation-project-rule-call-params-typed-general [rel: Query-Relation, params: []string, call: Rule-Call, param-indexes: []int] -> [projected: Query-Relation, ok: bool]
+  (let [attrs (make [dynamic]string)
+        attr-sources (make [dynamic]string)]
+    (for [arg arg-index call.args]
+      (when (= arg.kind .Var)
+        (append-var-binding-attr! (addr attrs) (addr attr-sources) arg.name rel.attr-sources[param-indexes[arg-index]])))
+    (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+          seen (set.empty string)
+          typed-rows 0
+          row 0]
+      (defer (delete seen))
+      (while (< row rel.typed-rows)
+        (let [out (Binding {})
+              ok true]
+          (for [arg arg-index call.args]
+            (when ok
+              (let [[value value-ok] (typed-relation-column-value rel.typed-columns[param-indexes[arg-index]] row)]
+                (if value-ok
+                  (case arg.kind
+                    .Var
+                      (let [[next bind-ok] (binding-with-value out arg.name value)]
+                        (set! out next)
+                        (set! ok bind-ok))
+                    .Value
+                      (set! ok (predicate-value-equal? value arg.value))
+                    .Wildcard
+                      (discard value)
+                    .LookupRef
+                      (set! ok false)
+                    :else
+                      (set! ok false))
+                  (set! ok false)))))
+          (when ok
+            (let [[key key-ok] (binding-dedupe-key out)]
+              (when (not key-ok)
+                (delete out.items)
+                (delete attrs)
+                (delete attr-sources)
+                (delete-relation-columns typed-columns)
+                (return (query-relation-empty) false))
+              (if (set.contains? seen key)
+                (delete out.items)
+                (do
+                  (set.add! seen key)
+                  (if (binding-can-add-to-relation-columns? (slice attrs 0) (slice typed-columns 0) out)
+                    (do
+                      (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) out)
+                      (set! typed-rows (+ typed-rows 1))
+                      (delete out.items))
+                    (do
+                      (delete out.items)
+                      (delete attrs)
+                      (delete attr-sources)
+                      (delete-relation-columns typed-columns)
+                      (return (query-relation-empty) false)))))))
+          (when (not ok)
+            (delete out.items)))
+        (set! row (+ row 1)))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: (make [dynamic]Binding)
+                               typed-columns: typed-columns
+                               typed-rows: typed-rows
+                               has-typed-columns: true}) true))))
+
+(defn query-relation-project-rule-call-params-typed [rel: Query-Relation, params: []string, call: Rule-Call] -> [projected: Query-Relation, ok: bool]
+  (when (not (and rel.has-typed-columns
+                  (= (count params) (count call.args))))
+    (return (query-relation-empty) false))
+  (let [param-indexes (make [dynamic]int 0 (count params))]
+    (for [param params]
+      (let [[column-index column-ok] (query-relation-attr-index-lookup rel param)]
+        (when (not column-ok)
+          (delete param-indexes)
+          (return (query-relation-empty) false))
+        (arr.push! param-indexes column-index)))
+    (let [attrs (make [dynamic]string 0 (count call.args))
+          attr-sources (make [dynamic]string 0 (count call.args))
+          tuples (make [dynamic]Binding)
+          typed-columns (make [dynamic]Relation-Column 0 (count call.args))]
+      (when (not (rule-call-distinct-var-projection-params? params call))
+        (delete attrs)
+        (delete attr-sources)
+        (delete tuples)
+        (delete-relation-columns typed-columns)
+        (let [[general general-ok] (query-relation-project-rule-call-params-typed-general rel params call (slice param-indexes 0))]
+          (delete param-indexes)
+          (return general general-ok)))
+      (for [arg arg-index call.args]
+        (arr.push! attrs arg.name)
+        (arr.push! attr-sources rel.attr-sources[param-indexes[arg-index]])
+        (arr.push! typed-columns (clone-relation-column rel.typed-columns[param-indexes[arg-index]])))
+      (delete param-indexes)
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: tuples
+                               typed-columns: typed-columns
+                               typed-rows: rel.typed-rows
+                               has-typed-columns: true}) true))))
+
+(defn query-relation-project-rule-call-bindings [params: []string, memo-bindings: []Binding, call: Rule-Call] -> Query-Relation
+  (let [[typed typed-ok] (query-relation-project-rule-call-bindings-typed-distinct params memo-bindings call)]
+    (when typed-ok
+      (return typed))
+    (delete-query-relation typed))
+  (when (not (= (count params) (count call.args)))
+    (return (query-relation-empty)))
+  (let [bindings (make [dynamic]Binding)
+        seen (set.empty string)]
+    (defer (delete seen))
+    (for [tuple memo-bindings]
+      (let [out (Binding {})
+            ok true]
+        (for [param index params]
+          (when ok
+            (let [[value value-ok] (binding-lookup tuple param)]
+              (if value-ok
+                (let [arg call.args[index]]
+                  (case arg.kind
+                    .Var
+                      (let [[next bind-ok] (binding-with-value out arg.name value)]
+                        (set! out next)
+                        (set! ok bind-ok))
+                    .Value
+                      (set! ok (predicate-value-equal? value arg.value))
+                    .Wildcard
+                      (discard value)
+                    :else
+                      (set! ok false)))
+                (set! ok false)))))
+        (when ok
+          (let [[key key-ok] (binding-dedupe-key out)]
+            (if key-ok
+              (let [already-seen (set.contains? seen key)]
+                (if already-seen
+                  (delete out.items)
+                  (do
+                    (set.add! seen key)
+                    (arr.push! bindings out))))
+              (if (binding-exists? (slice bindings 0) out)
+                (delete out.items)
+                (arr.push! bindings out)))))
+        (when (not ok)
+          (delete out.items))))
+    (let [projected (query-relation-from-bindings (slice bindings 0))]
+      (delete bindings)
+      projected)))
+
+(defn rule-memo-entry-relation! [entry: ^Rule-Memo-Entry, use-delta: bool] -> [rel: Query-Relation, ok: bool]
+  (if use-delta
+    (do
+      (when (or (not entry^.delta-rel-valid)
+                (not (= entry^.delta-rel-count (count entry^.delta))))
+        (rule-memo-entry-invalidate-delta-relation! entry)
+        (let [[rel rel-ok] (query-relation-from-rule-memo-bindings (slice entry^.params 0) (slice entry^.delta 0))]
+          (when (not rel-ok)
+            (delete-query-relation rel)
+            (return (query-relation-empty) false))
+          (delete-query-relation entry^.delta-rel)
+          (set! entry^.delta-rel rel)
+          (set! entry^.delta-rel-valid true)
+          (set! entry^.delta-rel-count (count entry^.delta))))
+      (return entry^.delta-rel true))
+    (do
+      (when (or (not entry^.bindings-rel-valid)
+                (not (= entry^.bindings-rel-count (count entry^.bindings))))
+        (rule-memo-entry-invalidate-bindings-relation! entry)
+        (let [[rel rel-ok] (query-relation-from-rule-memo-bindings (slice entry^.params 0) (slice entry^.bindings 0))]
+          (when (not rel-ok)
+            (delete-query-relation rel)
+            (return (query-relation-empty) false))
+          (delete-query-relation entry^.bindings-rel)
+          (set! entry^.bindings-rel rel)
+          (set! entry^.bindings-rel-valid true)
+          (set! entry^.bindings-rel-count (count entry^.bindings))))
+      (return entry^.bindings-rel true))))
+
+(defn query-relation-after-rule-call-from-memo [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rel: Query-Relation, call: Rule-Call, use-delta: bool, delta-call-index: int, step-index: int] -> Query-Relation
+  (let [matching-count 0
+        matching-index -1]
+    (for [entry index memo^]
+      (when (= entry.name call.name)
+        (let [memo-bindings (if (and use-delta (= step-index delta-call-index))
+                              (slice entry.delta 0)
+                              (slice entry.bindings 0))]
+          (when (> (count memo-bindings) 0)
+            (set! matching-count (+ matching-count 1))
+            (set! matching-index index)))))
+    (when (= matching-count 1)
+      (let [use-entry-delta (and use-delta (= step-index delta-call-index))
+            [memo-rel memo-rel-ok] (rule-memo-entry-relation! (addr memo^[matching-index]) use-entry-delta)]
+        (when memo-rel-ok
+          (let [[projected projected-ok] (query-relation-project-rule-call-params-typed memo-rel (slice memo^[matching-index].params 0) call)]
+            (when projected-ok
+              (let [joined (query-relation-join db ([]DB-Source []) rel projected)]
+                (delete-query-relation projected)
+                (return joined)))
+            (delete-query-relation projected)))))
+  (let [out-bindings (make [dynamic]Binding)
+        out-rel (query-relation-empty)
+        has-out-rel false
+        out-rel-typed true]
+    (for [entry index memo^]
+      (when (= entry.name call.name)
+        (let [memo-bindings (if (and use-delta (= step-index delta-call-index))
+                              (slice entry.delta 0)
+                              (slice entry.bindings 0))]
+          (when (> (count memo-bindings) 0)
+            (let [use-entry-delta (and use-delta (= step-index delta-call-index))
+                  [memo-rel memo-rel-ok] (rule-memo-entry-relation! (addr memo^[index]) use-entry-delta)]
+              (if memo-rel-ok
+                (let [[projected projected-ok] (query-relation-project-rule-call-params-typed memo-rel (slice entry.params 0) call)]
+                  (if projected-ok
+                    (let [joined (query-relation-join db ([]DB-Source []) rel projected)]
+                      (delete-query-relation projected)
+                      (if (and out-rel-typed joined.has-typed-columns)
+                        (if has-out-rel
+                          (when (not (query-relation-append-typed-rows! (addr out-rel) joined))
+                            (let [materialized-existing (query-relation-materialized-bindings out-rel) :defer
+                                  materialized-joined (query-relation-materialized-bindings joined) :defer]
+                              (for [binding materialized-existing]
+                                (arr.push! out-bindings binding))
+                              (for [binding materialized-joined]
+                                (arr.push! out-bindings binding))
+                              (delete-query-relation out-rel)
+                              (set! out-rel (query-relation-empty))
+                              (set! has-out-rel false)
+                              (set! out-rel-typed false)))
+                          (do
+                            (delete-query-relation out-rel)
+                            (set! out-rel (query-relation-empty-typed-like joined))
+                            (set! has-out-rel true)
+                            (when (not (query-relation-append-typed-rows! (addr out-rel) joined))
+                              (let [materialized-joined (query-relation-materialized-bindings joined) :defer]
+                                (for [binding materialized-joined]
+                                  (arr.push! out-bindings binding))
+                                (delete-query-relation out-rel)
+                                (set! out-rel (query-relation-empty))
+                                (set! has-out-rel false)
+                                (set! out-rel-typed false)))))
+                        (let [materialized (query-relation-materialized-bindings joined) :defer]
+                          (when has-out-rel
+                            (let [materialized-existing (query-relation-materialized-bindings out-rel) :defer]
+                              (for [binding materialized-existing]
+                                (arr.push! out-bindings binding)))
+                            (delete-query-relation out-rel)
+                            (set! out-rel (query-relation-empty))
+                            (set! has-out-rel false)
+                            (set! out-rel-typed false))
+                          (for [binding materialized]
+                            (arr.push! out-bindings binding))))
+                      (delete-query-relation joined))
+                    (let [fallback (query-relation-project-rule-call-bindings (slice entry.params 0) memo-bindings call)
+                          joined (query-relation-join db ([]DB-Source []) rel fallback)
+                          materialized (query-relation-materialized-bindings joined) :defer]
+                      (when has-out-rel
+                        (let [materialized-existing (query-relation-materialized-bindings out-rel) :defer]
+                          (for [binding materialized-existing]
+                            (arr.push! out-bindings binding)))
+                        (delete-query-relation out-rel)
+                        (set! out-rel (query-relation-empty))
+                        (set! has-out-rel false)
+                        (set! out-rel-typed false))
+                      (delete-query-relation projected)
+                      (delete-query-relation fallback)
+                      (delete-query-relation joined)
+                      (for [binding materialized]
+                        (arr.push! out-bindings binding)))))
+                (let [projected (query-relation-project-rule-call-bindings (slice entry.params 0) memo-bindings call)
+                      joined (query-relation-join db ([]DB-Source []) rel projected)
+                      materialized (query-relation-materialized-bindings joined) :defer]
+                  (when has-out-rel
+                    (let [materialized-existing (query-relation-materialized-bindings out-rel) :defer]
+                      (for [binding materialized-existing]
+                        (arr.push! out-bindings binding)))
+                    (delete-query-relation out-rel)
+                    (set! out-rel (query-relation-empty))
+                    (set! has-out-rel false)
+                    (set! out-rel-typed false))
+                  (delete-query-relation projected)
+                  (delete-query-relation joined)
+                  (for [binding materialized]
+                    (arr.push! out-bindings binding)))))))))
+    (if (and out-rel-typed has-out-rel (= (count out-bindings) 0))
+      (do
+        (delete out-bindings)
+        out-rel)
+      (do
+        (when has-out-rel
+          (let [materialized (query-relation-materialized-bindings out-rel) :defer]
+            (for [binding materialized]
+              (arr.push! out-bindings binding))))
+        (delete-query-relation out-rel)
+        (let [out (query-relation-from-bindings (slice out-bindings 0))]
+          (delete out-bindings)
+          out))))))
+
+(defn query-relation-after-rule-call-from-memo-rowwise [memo: []Rule-Memo-Entry, rel: Query-Relation, call: Rule-Call, use-delta: bool, delta-call-index: int, step-index: int] -> Query-Relation
+  (let [bindings (make [dynamic]Binding)
+        materialized (query-relation-materialized-bindings rel) :defer]
+    (for [binding materialized]
+      (let [rule-bindings (if (and use-delta (= step-index delta-call-index))
+                            (bindings-after-rule-call-from-memo-delta memo call binding)
+                            (bindings-after-rule-call-from-memo memo call binding))]
+        (for [rule-binding rule-bindings]
+          (arr.push! bindings rule-binding))
+        (delete rule-bindings)))
+    (let [next (query-relation-from-bindings (slice bindings 0))]
+      (delete bindings)
+      next)))
+
 (defn bindings-after-rule-step-memo [db: DB, memo: []Rule-Memo-Entry, rule: Rule, bindings: []Binding, step: Query-Step] -> [dynamic]Binding
   (case step.kind
     .Clause
@@ -7540,30 +8075,53 @@
     :else
       (make [dynamic]Binding)))
 
-(defn bindings-after-rule-body-memo [db: DB, memo: []Rule-Memo-Entry, rule: Rule] -> [dynamic]Binding
-  (let [bindings (make [dynamic]Binding)]
-    (arr.push! bindings (Binding {}))
+(defn query-relation-after-rule-step-memo [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rule: Rule, rel: Query-Relation, step: Query-Step, use-delta: bool, delta-call-index: int] -> [out: Query-Relation, ok: bool]
+  (case step.kind
+    .Clause
+      (let [clause-rel (query-relation-from-db-clause db rule.clauses[step.index] "")
+            joined (query-relation-join db ([]DB-Source []) rel clause-rel)]
+        (delete-query-relation clause-rel)
+        (return joined true))
+    .RuleCall
+      (if (<= (query-relation-row-count rel) 65536)
+        (return (query-relation-after-rule-call-from-memo-rowwise (slice memo^ 0) rel rule.rule-calls[step.index] use-delta delta-call-index step.index) true)
+        (return (query-relation-after-rule-call-from-memo db memo rel rule.rule-calls[step.index] use-delta delta-call-index step.index) true))
+    :else
+      (return (query-relation-empty) false)))
+
+(defn query-relation-dedupe-step [rel: Query-Relation] -> Query-Relation
+  (let [materialized (query-relation-materialized-bindings rel)
+        unique (unique-bindings (slice materialized 0))
+        out (query-relation-from-bindings (slice unique 0))]
+    (delete materialized)
+    (delete unique)
+    out))
+
+(defn query-relation-after-rule-body-memo [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rule: Rule, use-delta: bool, delta-call-index: int] -> Query-Relation
+  (let [current (query-relation-singleton)]
     (for [step rule.body-steps]
-      (let [next-raw (bindings-after-rule-step-memo db memo rule (slice bindings 0) step)
-            next (unique-bindings (slice next-raw 0))]
-        (delete next-raw)
-        (delete bindings)
-        (set! bindings next)
-        (when (= (count bindings) 0)
-          (return bindings))))
+      (let [[next-raw next-ok] (query-relation-after-rule-step-memo db memo rule current step use-delta delta-call-index)]
+        (delete-query-relation current)
+        (when (not next-ok)
+          (delete-query-relation next-raw)
+          (return (query-relation-empty)))
+        (let [next (query-relation-dedupe-step next-raw)]
+          (delete-query-relation next-raw)
+          (set! current next)
+          (when (= (query-relation-row-count current) 0)
+            (return current)))))
+    current))
+
+(defn bindings-after-rule-body-memo [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rule: Rule] -> [dynamic]Binding
+  (let [rel (query-relation-after-rule-body-memo db memo rule false -1)
+        bindings (query-relation-materialized-bindings rel)]
+    (delete-query-relation rel)
     bindings))
 
-(defn bindings-after-rule-body-memo-with-delta [db: DB, memo: []Rule-Memo-Entry, rule: Rule, delta-call-index: int] -> [dynamic]Binding
-  (let [bindings (make [dynamic]Binding)]
-    (arr.push! bindings (Binding {}))
-    (for [step rule.body-steps]
-      (let [next-raw (bindings-after-rule-step-memo-with-delta db memo rule (slice bindings 0) step delta-call-index)
-            next (unique-bindings (slice next-raw 0))]
-        (delete next-raw)
-        (delete bindings)
-        (set! bindings next)
-        (when (= (count bindings) 0)
-          (return bindings))))
+(defn bindings-after-rule-body-memo-with-delta [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rule: Rule, delta-call-index: int] -> [dynamic]Binding
+  (let [rel (query-relation-after-rule-body-memo db memo rule true delta-call-index)
+        bindings (query-relation-materialized-bindings rel)]
+    (delete-query-relation rel)
     bindings))
 
 (defn first-rule-call-index [rule: Rule] -> [index: int, ok: bool]
@@ -7588,6 +8146,7 @@
 (defn rule-memo-replace-deltas! [memo: ^[dynamic]Rule-Memo-Entry, next-delta: []Rule-Memo-Entry]
   (for [entry index memo^]
     (delete memo^[index].delta)
+    (rule-memo-entry-invalidate-delta-relation! (addr memo^[index]))
     (let [[delta-index delta-ok] (rule-memo-entry-index next-delta entry.name (slice entry.params 0))
           delta-values (make [dynamic]Binding)]
       (when delta-ok
@@ -7603,7 +8162,7 @@
     (for [rule plan.rules]
       (let [[_ has-call] (first-rule-call-index rule)]
         (when (not has-call)
-          (let [results (bindings-after-rule-body-memo db (slice memo 0) rule)]
+          (let [results (bindings-after-rule-body-memo db (addr memo) rule)]
             (for [result results]
               (discard (rule-memo-append-result-to-delta! (addr memo) (addr memo) rule result)))
             (delete results)))))
@@ -7612,7 +8171,7 @@
         (for [rule plan.rules]
           (let [delta-call-indexes (rule-call-indexes rule)]
             (for [delta-call-index delta-call-indexes]
-              (let [results (bindings-after-rule-body-memo-with-delta db (slice memo 0) rule delta-call-index)]
+              (let [results (bindings-after-rule-body-memo-with-delta db (addr memo) rule delta-call-index)]
                 (for [result results]
                   (discard (rule-memo-append-result-to-delta! (addr memo) (addr next-delta) rule result)))
                 (delete results)))
@@ -7634,7 +8193,7 @@
     (while changed
       (set! changed false)
       (for [rule plan.rules]
-        (let [results (bindings-after-rule-body-memo db (slice memo 0) rule)]
+        (let [results (bindings-after-rule-body-memo db (addr memo) rule)]
           (for [result results]
             (when (rule-memo-append-result! (addr memo) rule result)
               (set! changed true)))
@@ -8723,8 +9282,10 @@
   (let [inner (make [dynamic]string) :defer]
     (for [name vars]
       (arr.push! inner name))
-    (let [[joined _] (core-strings.join (slice inner 0) " ")]
-      (return (core-strings.concatenate ([]string ["[" joined "]"]))))))
+    (let [[joined _] (core-strings.join (slice inner 0) " ")
+          out (core-strings.concatenate ([]string ["[" joined "]"]))]
+      (delete joined)
+      (return out))))
 
 (defn query-potential-vars [query-value: Query] -> [dynamic]string
   (let [vars (make [dynamic]string)
@@ -8829,7 +9390,8 @@
       (when (not (string-slice-contains? (slice available 0) name))
         (append-var-once! (addr unknown) name)))
     (when (> (count unknown) 0)
-      (let [vars-text (query-var-list-text (slice unknown 0)) :defer]
+      (let [vars-text (query-var-list-text (slice unknown 0))]
+        (defer (delete vars-text))
         (return false (fmt.tprintf "Query for unknown vars: %s" vars-text))))
     (for [name find-vars]
       (when (string-slice-contains? (slice query-value.with 0) name)
@@ -10605,7 +11167,7 @@
                         (set! out next)
                         (set! ok bind-ok))
                     .Value
-                      (set! ok (value-equal? value arg.value))
+                      (set! ok (predicate-value-equal? value arg.value))
                     .Wildcard
                       (discard value)
                     :else
@@ -10674,9 +11236,85 @@
         (arr.push! out^ (clone-binding binding))))
     (delete-query-relation projected)))
 
+(defn accumulate-projected-rule-call-relation! [out-bindings: ^[dynamic]Binding, out-rel: ^Query-Relation, has-out-rel: ^bool, out-rel-typed: ^bool, seen: ^set[string], rel: Query-Relation, rule: Rule, call: Rule-Call]
+  (let [[projected projected-ok] (query-relation-project-rule-call-typed rel rule call)]
+    (when projected-ok
+      (when (query-relation-accumulate-typed-unique! out-bindings out-rel has-out-rel out-rel-typed seen projected)
+        (delete-query-relation projected)
+        (return))
+      (delete-query-relation projected)))
+  (query-relation-flush-typed-accumulator! out-bindings out-rel has-out-rel out-rel-typed)
+  (append-projected-rule-call-bindings! out-bindings rel rule call))
+
+(defn query-relation-project-rule-call-typed-general [rel: Query-Relation, rule: Rule, call: Rule-Call, param-indexes: []int] -> [projected: Query-Relation, ok: bool]
+  (let [attrs (make [dynamic]string)
+        attr-sources (make [dynamic]string)]
+    (for [arg arg-index call.args]
+      (when (= arg.kind .Var)
+        (append-var-binding-attr! (addr attrs) (addr attr-sources) arg.name rel.attr-sources[param-indexes[arg-index]])))
+    (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+          seen (set.empty string)
+          typed-rows 0
+          row 0]
+      (defer (delete seen))
+      (while (< row rel.typed-rows)
+        (let [out (Binding {})
+              ok true]
+          (for [arg arg-index call.args]
+            (when ok
+              (let [[value value-ok] (typed-relation-column-value rel.typed-columns[param-indexes[arg-index]] row)]
+                (if value-ok
+                  (case arg.kind
+                    .Var
+                      (let [[next bind-ok] (binding-with-value out arg.name value)]
+                        (set! out next)
+                        (set! ok bind-ok))
+                    .Value
+                      (set! ok (predicate-value-equal? value arg.value))
+                    .Wildcard
+                      (discard value)
+                    .LookupRef
+                      (set! ok false)
+                    :else
+                      (set! ok false))
+                  (set! ok false)))))
+          (when ok
+            (let [[key key-ok] (binding-dedupe-key out)]
+              (when (not key-ok)
+                (delete out.items)
+                (delete attrs)
+                (delete attr-sources)
+                (delete-relation-columns typed-columns)
+                (return (query-relation-empty) false))
+              (if (set.contains? seen key)
+                (delete out.items)
+                (do
+                  (set.add! seen key)
+                  (if (binding-can-add-to-relation-columns? (slice attrs 0) (slice typed-columns 0) out)
+                    (do
+                      (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) out)
+                      (set! typed-rows (+ typed-rows 1))
+                      (delete out.items))
+                    (do
+                      (delete out.items)
+                      (delete attrs)
+                      (delete attr-sources)
+                      (delete-relation-columns typed-columns)
+                      (return (query-relation-empty) false)))))))
+          (when (not ok)
+            (delete out.items)))
+        (set! row (+ row 1)))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: (make [dynamic]Binding)
+                               typed-columns: typed-columns
+                               typed-rows: typed-rows
+                               has-typed-columns: true}) true))))
+
 (defn query-relation-project-rule-call-typed [rel: Query-Relation, rule: Rule, call: Rule-Call] -> [projected: Query-Relation, ok: bool]
   (when (not (and rel.has-typed-columns
-                  (rule-call-distinct-var-projection? rule call)))
+                  (= (count rule.params) (count call.args))))
     (return (query-relation-empty) false))
   (let [attrs (make [dynamic]string 0 (count call.args))
         attr-sources (make [dynamic]string 0 (count call.args))
@@ -10693,6 +11331,14 @@
           (delete param-indexes)
           (return (query-relation-empty) false))
         (arr.push! param-indexes column-index)))
+    (when (not (rule-call-distinct-var-projection? rule call))
+      (delete attrs)
+      (delete attr-sources)
+      (delete tuples)
+      (delete-relation-columns typed-columns)
+      (let [[general general-ok] (query-relation-project-rule-call-typed-general rel rule call (slice param-indexes 0))]
+        (delete param-indexes)
+        (return general general-ok)))
     (for [arg arg-index call.args]
       (arr.push! attrs arg.name)
       (arr.push! attr-sources rel.attr-sources[param-indexes[arg-index]])
@@ -10894,25 +11540,33 @@
   (when (or (> depth 8)
             (not (rule-call-can-materialize-relation? plan call)))
     (return (query-relation-empty) false))
-  (let [out-bindings (make [dynamic]Binding)]
+  (let [out-bindings (make [dynamic]Binding)
+        out-rel (query-relation-empty)
+        has-out-rel false
+        out-rel-typed true
+        seen (set.empty string)]
+    (defer (delete seen))
     (when (= (count plan.rules) 1)
       (let [[cached-index cached-ok] (materialized-rule-cache-index (slice cache^ 0) call.name)]
         (when cached-ok
           (let [[projected projected-ok] (query-relation-project-rule-call-typed cache^[cached-index].rel plan.rules[0] call)]
             (when projected-ok
               (delete out-bindings)
+              (delete-query-relation out-rel)
               (return projected true))
             (delete-query-relation projected))
-          (append-projected-rule-call-bindings! (addr out-bindings) cache^[cached-index].rel plan.rules[0] call)
+          (accumulate-projected-rule-call-relation! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed) (addr seen) cache^[cached-index].rel plan.rules[0] call)
           (let [unique (unique-bindings (slice out-bindings 0))
                 out (query-relation-from-bindings (slice unique 0))]
             (delete out-bindings)
+            (delete-query-relation out-rel)
             (delete unique)
             (return out true)))))
     (for [rule plan.rules]
       (when (= rule.name call.name)
         (when (not (rule-body-relation-materializable? rule))
           (delete out-bindings)
+          (delete-query-relation out-rel)
           (return (query-relation-empty) false))
         (let [[left-attr right-attr derived-ok] (rule-two-hop-derived-edge rules rule.name)]
           (when derived-ok
@@ -10924,10 +11578,11 @@
                   (let [[projected projected-ok] (query-relation-project-rule-call-typed derived rule call)]
                     (when projected-ok
                       (delete out-bindings)
+                      (delete-query-relation out-rel)
                       (delete-query-relation derived)
                       (return projected true))
                     (delete-query-relation projected)))
-                (append-projected-rule-call-bindings! (addr out-bindings) derived rule call)
+                (accumulate-projected-rule-call-relation! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed) (addr seen) derived rule call)
                 (delete-query-relation derived)
                 (continue))
               (delete-query-relation derived))))
@@ -10941,10 +11596,11 @@
                   (let [[projected projected-ok] (query-relation-project-rule-call-typed two-attr-rel rule call)]
                     (when projected-ok
                       (delete out-bindings)
+                      (delete-query-relation out-rel)
                       (delete-query-relation two-attr-rel)
                       (return projected true))
                     (delete-query-relation projected)))
-                (append-projected-rule-call-bindings! (addr out-bindings) two-attr-rel rule call)
+                (accumulate-projected-rule-call-relation! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed) (addr seen) two-attr-rel rule call)
                 (delete-query-relation two-attr-rel)
                 (continue))
               (delete-query-relation two-attr-rel))))
@@ -10969,6 +11625,7 @@
                     (delete-query-relation current)
                     (delete-query-relation inner-rel)
                     (delete out-bindings)
+                    (delete-query-relation out-rel)
                     (return (query-relation-empty) false))
                   (let [joined (query-relation-join db sources current inner-rel)]
                     (set! stats^.rule-calls (+ stats^.rule-calls 1))
@@ -10994,6 +11651,7 @@
                     (delete-query-relation current)
                     (delete-query-relation inner-rel)
                     (delete out-bindings)
+                    (delete-query-relation out-rel)
                     (return (query-relation-empty) false))
                   (let [joined (query-relation-join db sources current inner-rel)]
                     (set! stats^.rule-calls (+ stats^.rule-calls 1))
@@ -11003,13 +11661,19 @@
                     (set! current joined))))))
           (when (= (count plan.rules) 1)
             (materialized-rule-cache-store! cache call.name current))
-          (append-projected-rule-call-bindings! (addr out-bindings) current rule call)
+          (accumulate-projected-rule-call-relation! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed) (addr seen) current rule call)
           (delete-query-relation current))))
-    (let [unique (unique-bindings (slice out-bindings 0))
-          out (query-relation-from-bindings (slice unique 0))]
-      (delete out-bindings)
-      (delete unique)
-      (return out true))))
+    (if (and out-rel-typed has-out-rel (= (count out-bindings) 0))
+      (do
+        (delete out-bindings)
+        (return out-rel true))
+      (do
+        (query-relation-flush-typed-accumulator! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed))
+        (let [unique (unique-bindings (slice out-bindings 0))
+              out (query-relation-from-bindings (slice unique 0))]
+          (delete out-bindings)
+          (delete unique)
+          (return out true))))))
 
 (defn query-relation-apply-materialized-rule-call [db: DB, sources: []DB-Source, rel: Query-Relation, plan: Rule-Call-Plan, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, cache: ^[dynamic]Materialized-Rule-Cache-Entry] -> [out: Query-Relation, ok: bool]
   (when (not (rule-call-can-materialize-relation? plan call))
@@ -11255,13 +11919,18 @@
     out))
 
 (defn query-relation-from-source-input-clause [query: Query, inputs: []Query-Input, clause-value: Clause] -> Query-Relation
-  (let [[binding binding-ok] (query-source-input-binding query inputs clause-value.source)]
-    (when (not binding-ok)
+  (let [[index found] (query-input-index-for-source query clause-value.source)]
+    (when (not found)
       (return (query-relation-empty)))
-    (let [out (bindings-after-relation-source-clause clause-value binding)
-          rel (query-relation-from-bindings (slice out 0))]
-      (delete out)
-      rel)))
+    (when (>= index (count inputs))
+      (return (query-relation-empty)))
+    (let [[source source-ok] (query-input-source-value inputs[index])]
+      (when (not source-ok)
+        (return (query-relation-empty)))
+      (let [out (bindings-from-relation-source-value-clause source clause-value)
+            rel (query-relation-from-bindings (slice out 0))]
+        (delete out)
+        rel))))
 
 (defn query-relation-from-db-clause [db: DB, clause-value: Clause, source: string] -> Query-Relation
   (let [[attrs attr-sources] (clause-output-attrs clause-value source)
@@ -13245,8 +13914,29 @@
     (arr.push! out source)
     out))
 
+(defn relation-db-input-specs [query-value: Query, source: string] -> [dynamic]Query-Input-Spec
+  (let [out (make [dynamic]Query-Input-Spec)]
+    (if (> (count query-value.input-specs) 0)
+      (for [spec query-value.input-specs]
+        (when (not (and (= spec.kind .Scalar)
+                        (= spec.name "$")))
+          (arr.push! out spec)))
+      (do
+        (for [input query-value.inputs]
+          (when (not (= input "$"))
+            (arr.push! out (Query-Input-Spec {kind: .Scalar name: input}))))
+        (for [input query-value.collection-inputs]
+          (arr.push! out (Query-Input-Spec {kind: .Collection name: input})))
+        (for [input query-value.tuple-inputs]
+          (arr.push! out (Query-Input-Spec {kind: .Tuple tuple: input}))
+        (for [input query-value.relation-inputs]
+          (arr.push! out (Query-Input-Spec {kind: .Relation relation: input}))))))
+    (arr.push! out (Query-Input-Spec {kind: .Scalar name: source}))
+    out))
+
 (defn relation-db-query [query-value: Query, source: string] -> Query
   (let [inputs (relation-db-inputs query-value source) :defer
+        input-specs (relation-db-input-specs query-value source) :defer
         clauses (rule-clauses-with-source (slice query-value.clauses 0) source true) :defer
         rule-calls (relation-db-rule-calls (slice query-value.rule-calls 0) source) :defer
         rules (make [dynamic]Rule) :defer
@@ -13258,26 +13948,29 @@
       (arr.push! not-groups (relation-db-not-group group source)))
     (for [group query-value.or-groups]
       (arr.push! or-groups (relation-db-or-group group source)))
-    (query-with-rules-input
-      (query (slice query-value.find 0)
-             (slice query-value.with 0)
-             (slice inputs 0)
-             (slice query-value.collection-inputs 0)
-             (slice query-value.tuple-inputs 0)
-             (slice query-value.relation-inputs 0)
-             (slice clauses 0)
-             (slice query-value.predicates 0)
-             (slice query-value.function-clauses 0)
-             (slice rules 0)
-             (slice rule-calls 0)
-             (slice query-value.get-elses 0)
-             (slice query-value.get-somes 0)
-             (slice query-value.grounds 0)
-             (slice not-groups 0)
-             (slice or-groups 0)
-             (slice query-value.pulls 0)
-             (slice query-value.aggregates 0))
-      query-value.has-rules-input)))
+    (let [out (query (slice query-value.find 0)
+                     (slice query-value.with 0)
+                     (slice inputs 0)
+                     (slice query-value.collection-inputs 0)
+                     (slice query-value.tuple-inputs 0)
+                     (slice query-value.relation-inputs 0)
+                     (slice clauses 0)
+                     (slice query-value.predicates 0)
+                     (slice query-value.function-clauses 0)
+                     (slice rules 0)
+                     (slice rule-calls 0)
+                     (slice query-value.get-elses 0)
+                     (slice query-value.get-somes 0)
+                     (slice query-value.grounds 0)
+                     (slice not-groups 0)
+                     (slice or-groups 0)
+                     (slice query-value.pulls 0)
+                     (slice query-value.aggregates 0))]
+      (delete out.input-specs)
+      (set! out.input-specs (arr.into [dynamic]Query-Input-Spec (slice input-specs 0)))
+      (query-with-rules-input
+        (query-with-where-steps out (slice query-value.where-steps 0))
+        query-value.has-rules-input))))
 
 (defn q-query-relation-db-with-fns [rows: Value, query-value: Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
   (let [source (primary-relation-db-source-name)

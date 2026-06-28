@@ -137,6 +137,24 @@ inside the component. Memo tables keep set-backed primitive binding keys for
 duplicate detection, with structural scans only as a fallback for non-keyable
 outputs. The specialized linear and alternating transitive paths remain faster
 physical operators and run before the generic memo/delta path.
+Inside the generic memo/delta evaluator, plain DB data-clause steps now execute
+through the relation engine: the current rule body relation is joined with the
+clause relation and deduped at the existing per-step boundary. Rule-call memo
+and delta tables still keep binding rows as their semantic source of truth, but
+each memo entry now owns cached typed relation views for the accumulated rows
+and current delta rows. Broad rule-call application can reuse those cached views,
+project them into the call's output variables, and join that relation against
+the current body relation. Small current relations keep the row-wise matcher
+because that avoids touching a large memo table for a handful of rows.
+Distinct-var rule calls use a typed projection path, so the broad path can stay
+in typed columns through the join. This remains an intermediate state rather
+than a fully columnar recursive-rule engine: row tables remain authoritative,
+but valid typed memo/delta views are appended in place for primitive-compatible
+outputs and invalidated only when a new output cannot fit the typed column
+layout. Multi-branch broad rule-call application now also has a typed union
+accumulator: compatible typed branch joins append into one typed output relation,
+and the evaluator materializes to row bindings only when a branch falls off the
+typed path or has an incompatible layout.
 The linear transitive recognizer also handles a common derived-edge shape where
 the recursive edge is a non-recursive two-hop rule, such as `adv` in
 Datalevin's math-bench:
@@ -182,10 +200,14 @@ compound string keys. Binary `=` / `!=` predicates over two typed variables can
 compare relation columns directly, avoiding per-row `Value` wrapper resolution
 for common filters. Predicate and `not` filters now move surviving compatibility
 `Binding` rows into the filtered relation instead of cloning each row, matching
-the existing dedupe/memo ownership pattern. The broad path still pays for
-generic `Binding` construction in joins/results and final dedupe. The next
-performance step is columnar/streamed materialized rule relations and typed
-joins that avoid those remaining row-shaped costs.
+the existing dedupe/memo ownership pattern. Multi-branch materialized helper
+rules now also have a typed unique accumulator for compatible projected branch
+relations, so branch output can dedupe in typed columns instead of always
+materializing through generic `Binding` rows before rebuilding a relation. The
+broad path still pays for generic `Binding` construction in joins/results when
+an operator falls off the typed path. The next performance step is typed-first
+memo storage and more operators that can consume typed columns without
+materializing compatibility rows.
 
 ## Query Engine Strategy
 
@@ -474,10 +496,31 @@ the remaining per-row fallback no longer materializes the whole input relation
 first: it converts one typed input row to a binding, reuses existing rule-call
 semantics, and appends outputs back into typed columns.
 
+Rule-call projection itself is also typed for the common non-distinct cases.
+Distinct variable projections keep the fast column-clone path, while constants,
+wildcards, and repeated variables project row-by-row from typed rule-result
+columns with normal unification and dedupe. Projection falls back only when the
+shape cannot be represented as typed columns, such as lookup-ref arguments or
+non-columnar produced values.
+
 Generic bound-clause fallback also streams. The specialized entity-bound
 attribute clause remains the fastest path, and other bound shapes such as
 value-bound joins now convert one typed row to a binding, run the existing
 clause matcher, and write matching rows back into typed columns.
+
+Primary collection DB queries now preserve the full ordered query model when
+rewritten onto their synthetic relation source. The rewrite carries over
+`where-steps`, appends the synthetic source as an explicit input spec, and
+source-input clause relations project only query variables instead of carrying
+the whole source collection as a join column. This lets predicate, function,
+and rule queries over relation DB inputs use the same relation-engine path as
+ordinary DB-backed queries.
+
+Named relation-source inputs use the same direct source operator. Source clauses
+scan the source `Value` and emit only the variables introduced by the clause,
+instead of first binding the whole source collection and stripping it later.
+This covers ordinary named source clauses and source-qualified rule calls whose
+rule bodies read from the same relation source.
 
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
@@ -485,20 +528,31 @@ generic recursive fixpoint loop. The dependency graph also exposes strongly
 connected component metadata for recursive checks and rule grouping. Plain
 positive recursive rule groups can use component-local memoized execution with
 delta-driven iteration over each recursive rule-call position. Specialized
-transitive paths remain the fast path for common reachability shapes. The next
-rule-engine step is to move this binding-row memo/delta evaluator into
-relation-native operators and add measured handling for richer rule bodies using
-the dependency components as the stratification input.
+transitive paths remain the fast path for common reachability shapes. The
+generic memo/delta evaluator is now partially relation-native: DB clause steps
+run as relation joins, broad rule-call steps reuse cached typed memo/delta
+relation views before joining, and primitive-compatible memo outputs append to
+those valid relation views as they are discovered. Compatible typed branch joins
+for the same broad rule call are unioned in typed columns instead of always
+materializing through `Binding` rows. Materialized non-recursive helper rules use
+the same typed unique accumulation when projected branch layouts are compatible.
+The memo/delta row tables remain the source of truth, so the next rule-engine
+step is typed-first memo storage: make compact relation columns the primary
+structure for supported rule outputs instead of a cache beside binding rows.
 
 Near-term query work should expand the relation engine in this order:
 
 1. Physical storage: replace generic `Binding` tuples with compact typed
    relation columns while keeping the same logical relation API.
-2. Source-qualified synthetic primary collection DB operators: move the
-   remaining collection-backed rule/predicate/function cases into the same
-   source-aware relation representation.
-3. Rules: move the positive-rule memo/delta evaluator from binding rows toward
-   relation-native semi-naive behavior, then broaden it to richer rule bodies.
+2. Source-qualified collection operators: extend the direct source-aware
+   relation representation to deeper nested source-qualified groups and broader
+   named source combinations.
+3. Rules: continue moving the positive-rule memo/delta evaluator from binding
+   rows toward relation-native semi-naive behavior. DB clause steps and broad
+   rule-call joins are now relation-native, and valid memo/delta relation caches
+   append primitive-compatible outputs incrementally. Multi-branch broad rule
+   calls and materialized helper rules can union compatible branch joins in typed
+   columns. Typed-first memo/delta storage remains the main row-shaped boundary.
 
 The transaction side has the same split:
 
