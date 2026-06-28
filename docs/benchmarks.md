@@ -20,7 +20,8 @@ Current order:
 2. Datalevin `math-bench`: use next for realistic Datalog rule processing over
    the Math Genealogy dataset. This is the most relevant external benchmark for
    validating the generic recursive rule engine after the current synthetic
-   reachability stress harness.
+   reachability stress harness. Vev now has an adapter under
+   `bench/math_bench`.
 3. Datalevin `openrulebench`: use after the component/SCC-local semi-naive rule
    engine exists. This should stress a broader set of Datalog rule workloads
    and help keep rule work general instead of reachability-specific.
@@ -117,6 +118,89 @@ should validate the generic semi-naive engine once it exists.
 Vev now exposes the optional `datascript-bench` rule rows by name through the
 Clojure adapter using the same DataScript-style `:in $ %` rules input shape as
 the upstream benchmark.
+
+## Math Bench
+
+Vev has a first adapter for Datalevin's `math-bench` under
+`bench/math_bench`. The exporter mirrors Datalevin's JSON-to-datoms mapping for
+the Mathematics Genealogy dataset and writes Vev EDN transaction chunks.
+
+Run the exporter:
+
+```sh
+bench/math_bench/run_export.sh
+```
+
+Run one workload:
+
+```sh
+MATH_BENCH_WARMUPS=0 MATH_BENCH_SAMPLES=1 bench/math_bench/run_vev.sh q1
+```
+
+The first checked full-data Vev results use 1,837,904 transaction items and
+1,837,918 current datoms after schema. Import currently takes about 69-72s from
+EDN chunks, so query timings should be read separately from import timings.
+
+| Workload | Vev query time | Rows | Current status |
+|---|---:|---:|---|
+| `q1` | 0.42ms | 2 | Good selective/bound rule path |
+| `q2` | 3.95s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, numeric join keys, single-rule typed projection rebuilds, and entity-leading compound joins are reduced |
+| `q3` | 3.47s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering; binary typed var equality avoids value-wrapper comparison |
+| `q4` | 1.01s | 135 | Completes through derived transitive closure over a derived two-hop edge |
+
+Important result: Q4 originally did not finish within several minutes because
+`anc` recurses over derived rule `adv`, not over a direct DB ref attr. Vev now
+recognizes this general shape:
+
+```clojure
+[(edge ?x ?y) [?x :left/ref ?m] (leaf ?m ?y)]
+[(leaf ?m ?y) [?m :right/ref ?y]]
+[(tc ?x ?y) (edge ?x ?y)]
+[(tc ?x ?y) (edge ?x ?z) (tc ?z ?y)]
+```
+
+The planner lowers that to a derived two-hop adjacency and then reuses the
+existing linear transitive operator. This is not benchmark-name-specific, but
+it is still a narrow physical rule operator.
+
+Q2/Q3 are now past the first rule-dispatch problem. Supported normal `$`
+queries can run through the relation engine, clauses are applied in where-step
+order, small bound relations use direct bound-clause expansion, and
+non-recursive helper rules can materialize as relations. The materialized rule
+path recognizes two important general physical shapes:
+
+- derived two-hop edges such as `[(adv ?x ?y) [?x :person/advised ?d] (author ?d ?y)]`
+- same-entity cardinality-one projections such as `[(univ ?c ?u) [?d :cid ?c] [?d :univ ?u]]`
+
+The remaining Q2/Q3 cost is not repeated rule invocation anymore
+(`rule_calls=3`). It is broad materialized joins and final dedupe over hundreds
+of thousands of rows. The current join layer now uses typed hash joins for
+single-column joins too, with entity/int key normalization matching Vev query
+equality, and moderately sized bound clause steps use indexed bind joins instead
+of materializing a whole attr relation. Direct physical rule builders fill typed
+relation columns while producing compatibility binding rows.
+
+Recent broad-rule work removed two more generic costs. Rule-call projection now
+has a typed fast path for distinct variable calls such as `(univ ?x ?u)`, and a
+query-local materialized-rule cache reuses single-branch helper rule relations
+such as `univ`/`area` when the same unprojected rule is called with different
+variable names. Bound data clauses of the common `[?e :attr ?v]` shape can now
+also use typed relation columns to do direct `eavt` lookups instead of entering
+the generic per-binding clause matcher; this is a modest win on math-bench
+because final lookup is no longer dominant. Single-column typed entity/int joins
+now also hash on numeric keys instead of formatted strings, which removes a
+generic allocation-heavy part of the broad join path. Single-branch cached or
+direct physical rule relations can also project distinct-variable rule calls
+back as typed relations directly, avoiding an immediate projection-to-bindings,
+dedupe, and typed-column reconstruction pass. Compound typed joins whose first
+shared variable is an entity id can now hash that leading entity key and verify
+the remaining shared columns in the candidate bucket, avoiding formatted
+compound string keys for Datomic-style entity joins. The next engine work should
+make these rule relations more fully columnar/streamed and remove the remaining
+generic `Binding` row construction and final dedupe costs from the broad path.
+Binary `=` / `!=` predicates over two typed variables can also compare relation
+columns directly, avoiding per-row `Value` wrapper resolution for common
+filters such as q3's `(!= ?a1 ?a2)`.
 
 ## MusicBrainz Import Smoke
 

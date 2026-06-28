@@ -137,6 +137,53 @@ inside the component. Memo tables keep set-backed primitive binding keys for
 duplicate detection, with structural scans only as a fallback for non-keyable
 outputs. The specialized linear and alternating transitive paths remain faster
 physical operators and run before the generic memo/delta path.
+The linear transitive recognizer also handles a common derived-edge shape where
+the recursive edge is a non-recursive two-hop rule, such as `adv` in
+Datalevin's math-bench:
+
+```clojure
+[(adv ?x ?y) [?x :person/advised ?d] (author ?d ?y)]
+[(author ?d ?c) [?d :dissertation/cid ?c]]
+[(anc ?x ?y) (adv ?x ?y)]
+[(anc ?x ?y) (adv ?x ?z) (anc ?z ?y)]
+```
+
+This lowers to a derived adjacency list and then uses the same transitive
+operator as direct ref attrs. It is a physical rule operator, not a complete
+solution for rule planning.
+
+Non-recursive helper rules now also have an initial relation-native
+materialization path. The relation engine can materialize pure clause/rule-call
+rules once and join them into the current relation instead of invoking the rule
+per input row. Two important general shapes have direct builders:
+
+- derived two-hop edges, where one attr points to an intermediate entity and a
+  second attr supplies the output value
+- same-entity cardinality-one two-attr projections, using a merge scan over the
+  sorted attr/entity index when all datoms are current
+
+This is enough to turn math-bench Q2/Q3 from repeated rule expansion into three
+materialized rule calls. Direct physical builders now populate typed relation
+columns while keeping compatibility binding rows. Distinct-variable rule-call
+projection can read those typed columns directly, and single-branch
+materialized helper rules are cached per query execution so repeated calls such
+as `(univ ?x ?u)` / `(univ ?y ?u)` do not rebuild the same unprojected relation.
+Typed relations can also apply fixed-attribute bound data clauses such as
+`[?e :person/name ?n]` through direct `eavt` lookups from typed entity columns.
+Single-column typed entity/int joins hash on numeric keys, keeping common id
+joins out of the allocation-heavy string-key path. For single-branch cached or
+direct physical helper rules, distinct-variable rule-call projection can return
+a typed relation directly instead of projecting to generic bindings, deduping,
+and rebuilding typed columns immediately. Compound typed joins whose first
+shared variable is an entity id can hash that leading entity and verify the
+remaining shared columns in candidate buckets, which is useful for Datomic-style
+joins such as `?entity/?attribute-value` pairs without relying on formatted
+compound string keys. Binary `=` / `!=` predicates over two typed variables can
+compare relation columns directly, avoiding per-row `Value` wrapper resolution
+for common filters. The broad path still pays for generic `Binding` construction
+in joins/results and final dedupe. The next performance step is
+columnar/streamed materialized rule relations and typed joins that avoid those
+remaining row-shaped costs.
 
 ## Query Engine Strategy
 
@@ -153,23 +200,27 @@ The first relation-engine path is now implemented for the main DataScript query
 operators: data clauses, predicates, function clauses, `not`, `or`, rule calls,
 `ground`, `get-else`, `get-some`, and aggregates. This includes ordinary
 scalar, collection, tuple, relation `:in` inputs, and relation-source clauses
-over `:in` sources such as `$rows`, and named DB source clauses. It builds one
-`Query-Relation` per input binding and datom/source pattern, joins those
-relations with generic relation product/join operations, applies non-clause
-operators as relation transforms, applies rule calls through the existing
-recursive rule evaluator, groups aggregate bindings through the existing
-aggregate renderer, and then uses the existing result renderer. Relations carry
-per-attribute source metadata so lookup refs in joins resolve against the
-appropriate named DB source when needed. This is intentionally conservative:
-source-qualified synthetic primary collection DB rule/predicate/function
-queries still use the older binding-expansion evaluator until their
-DataScript-style source-aware relation handlers are ported.
+over `:in` sources such as `$rows`, and named DB source clauses. It now runs
+ordinary supported `$` queries through the same path, not only named-source
+queries. Execution is step-driven: each where step transforms the current
+relation, so selective bound clauses can run before broad clauses or rules when
+the query order says so. Current relations that share variables with a later
+datom clause can use indexed bind-clause expansion instead of materializing a
+full datom-pattern relation and joining it back.
+Relations carry per-attribute source metadata so lookup refs in joins resolve
+against the appropriate named DB source when needed. This is intentionally
+conservative: source-qualified synthetic primary collection DB
+rule/predicate/function queries still use the older binding-expansion evaluator
+until their DataScript-style source-aware relation handlers are ported.
 
 Relation joins now include a DataScript-shaped hash join for primitive common
 variables. The join path supports compound keys across one or more shared
 variables, normalizes entity IDs and integer IDs consistently with Vev query
 equality, and falls back to the semantic nested join when values are not safely
-representable as primitive join keys.
+representable as primitive join keys. Typed relation joins use the same
+entity/int normalization, including single-column joins, so the fast typed path
+can handle common Datomic-style joins where entity ids appear as either entity
+values or integer ids.
 
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the

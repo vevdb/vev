@@ -89,6 +89,9 @@ Deferred engine batch order:
    Clojure API, then move to `math-bench` and `openrulebench` for rule-engine
    validation. Use these to compare Vev against Datomic, DataScript, and
    Datalevin on shared workloads before moving to larger planner benchmarks.
+   `math-bench` is now started: Q1 is sub-millisecond, Q4 completes through a
+   derived transitive physical operator, and Q2/Q3 expose the next major gap in
+   broad materialized-rule relation joins.
 5. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
    tx-data shapes fail predictably through the portable text/prepared APIs.
 6. Host wrapper ergonomics: keep C as the stable raw ABI, expose durable
@@ -118,16 +121,44 @@ planner work should introduce reusable operators and make benchmark wins fall
 out of better generic planning: indexed scans, bind joins, hash/semi joins,
 anti joins, rule operators, projection, aggregate, and pull integration.
 
+The active rule-engine pressure point is Datalevin `math-bench` Q2/Q3. Vev can
+recognize recursive transitive closure over a derived two-hop edge, which makes
+Q4 finish, and it can materialize pure non-recursive helper rules as relations.
+Q2/Q3 no longer spend hundreds of thousands of calls expanding `adv`/`univ`/
+`area`; they now execute three materialized rule calls. Recent work moved more
+of the path onto typed relation columns, including single-column typed hash
+joins with entity/int normalization, indexed bind-clause expansion for
+moderately sized relations, typed projection for distinct-var rule calls, and a
+query-local cache for single-branch materialized helper rules. Typed relations
+also have a direct bound `[?e :attr ?v]` data-clause operator backed by `eavt`,
+and single-column typed entity/int joins can hash on numeric keys instead of
+formatted strings. Single-branch cached/direct physical helper rules can now
+project distinct-variable calls back as typed relations directly, avoiding one
+project/dedupe/rebuild cycle. Compound typed joins can also hash a leading
+entity-id common variable and verify the remaining common columns in the
+candidate bucket, avoiding formatted compound string keys for common
+Datomic-style entity joins. Binary equality/inequality predicates over two
+typed variables can compare columns directly. The remaining cost is joining and
+deduping broad materialized rule relations while still carrying generic
+`Binding` rows as a compatibility veneer. The next substantial planner work
+should remove that remaining row-shaped construction from the materialized
+broad path and prefer streamed/merge joins where attrs and variable columns
+make that possible.
+
 The immediate implementation batch is:
 
 1. Define a typed relation storage direction: keep logical relation attrs, but
    store hot rows as typed struct-of-arrays columns and keep the existing
    `Binding` API as a compatibility veneer during migration.
-2. Port one operator family end-to-end, starting with primitive
-   entity/int/string columns and the existing compound primitive hash join.
-3. Benchmark after each migration with `datascript-bench` q1-q5/qpred plus
-   focused relation-source compound join tests.
-4. Then build the generic semi-naive rules engine on top of the improved
+2. Port materialized rule relations fully onto that storage first, because
+   math-bench Q2/Q3 are now dominated by broad `adv`/`univ`/`area` joins and
+   final dedupe after projection/materialization reuse.
+3. Port one join family end-to-end, starting with primitive entity/int/string
+   columns and replacing the remaining generic `Binding` row construction and
+   compound string-key hash joins in the hot path.
+4. Benchmark after each migration with `datascript-bench` q1-q5/qpred,
+   `math-bench` q1-q4, and focused relation-source compound join tests.
+5. Then build the generic semi-naive rules engine on top of the improved
    relation/operator representation.
 
 ## Current Rules Engine State
