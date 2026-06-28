@@ -214,6 +214,10 @@ pays for generic `Binding` construction in joins/results when an operator falls
 off the typed path. The next performance step is typed-first memo storage and
 more operators that can consume typed columns without materializing
 compatibility rows.
+Typed joins now also detect provably empty cases before falling back to generic
+binding joins: if either side is already an empty typed relation, or if common
+typed columns have incompatible primitive kinds, the engine returns an empty
+typed joined relation directly.
 
 ## Query Engine Strategy
 

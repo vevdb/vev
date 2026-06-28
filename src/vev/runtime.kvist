@@ -1725,8 +1725,44 @@
                                typed-rows: typed-rows
                                has-typed-columns: typed-ok}) true))))
 
+(defn query-relation-empty-typed-join [left: Query-Relation, right: Query-Relation] -> Query-Relation
+  (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))]
+    (for [name index right.attrs]
+      (when (not (string-slice-contains? (slice attrs 0) name))
+        (arr.push! attrs name)
+        (arr.push! attr-sources right.attr-sources[index])))
+    (Query-Relation {attrs: attrs
+                     attr-sources: attr-sources
+                     attr-index: (query-relation-attr-index (slice attrs 0))
+                     tuples: (make [dynamic]Binding)
+                     typed-columns: (relation-columns-for-attrs (slice attrs 0))
+                     typed-rows: 0
+                     has-typed-columns: true})))
+
+(defn query-relation-join-provably-empty? [left: Query-Relation, right: Query-Relation, common: []string] -> bool
+  (when (not (and left.has-typed-columns right.has-typed-columns))
+    (return false))
+  (when (or (= left.typed-rows 0)
+            (= right.typed-rows 0))
+    (return true))
+  (for [name common]
+    (let [[left-index left-ok] (query-relation-attr-index-lookup left name)
+          [right-index right-ok] (query-relation-attr-index-lookup right name)]
+      (when (not (and left-ok right-ok))
+        (return false))
+      (let [left-column left.typed-columns[left-index]
+            right-column right.typed-columns[right-index]]
+        (when (and left-column.has-kind
+                   right-column.has-kind
+                   (not (relation-column-kinds-join-compatible? left-column.kind right-column.kind)))
+          (return true)))))
+  false)
+
 (defn query-relation-join [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation] -> Query-Relation
   (let [common (relation-common-attrs left right) :defer]
+    (when (query-relation-join-provably-empty? left right (slice common 0))
+      (return (query-relation-empty-typed-join left right)))
     (when (= (count common) 0)
       (let [[typed-product typed-product-ok] (query-relation-product-typed left right)]
         (when typed-product-ok
