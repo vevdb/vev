@@ -392,8 +392,11 @@ Fifteenth slice implemented: the indexed star-query prototypes now include a
 borrowed entity-stream merge helper for all-current cardinality-one workloads.
 It aligns fixed-value `AVET` filter ranges and projected `AEVT` attr ranges by
 entity id, then emits q3/q4-style projected rows from the aligned streams. This
-is still in the indexed prototype layer, but it is the intended shape for the
-future relation-native star/merge-scan operator.
+started in the indexed prototype layer and now also has a relation-producing
+operator for the same-entity one-output and two-output shapes. The relation
+engine can return a normal typed `Query-Relation` from the aligned streams, so
+ordinary result rendering and host paths no longer need a separate
+result-specialized shortcut to benefit from this scan shape.
 
 Sixteenth slice implemented: the shared-value entity join prototype now
 materializes the projected cardinality-one output attr once as an entity-keyed
@@ -566,6 +569,14 @@ Binding-only fallback joins now explicitly materialize typed-only inputs
 through `query-relation-materialized-bindings`, so typed-only producers can feed
 conservative product/hash/nested-loop joins without depending on stale
 compatibility tuples.
+
+Same-entity star scans now have an initial relation-native operator as well.
+For all-current cardinality-one shapes with fixed-value filters and one or two
+projected attrs, the relation engine aligns `AVET` filter streams with `AEVT`
+output streams by entity id and fills typed relation columns directly. This is
+still a conservative shape recognizer, but it returns the normal relation
+representation rather than bypassing the relation engine with a specialized
+result API.
 
 Primary collection DB queries now preserve the full ordered query model when
 rewritten onto their synthetic relation source. The rewrite carries over

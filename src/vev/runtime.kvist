@@ -13259,6 +13259,11 @@
     current))
 
 (defn relation-engine-relation-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+  (let [[star-rel star-ok] (query-relation-from-entity-star-plan db query inputs sources registry stats)]
+    (when star-ok
+      (query-stats-observe-bindings! stats (query-relation-row-count star-rel))
+      (return star-rel))
+    (delete-query-relation star-rel))
   (let [materialized-rule-cache (make [dynamic]Materialized-Rule-Cache-Entry)
         input-bindings (bindings-from-inputs db query inputs)]
     (defer (delete-materialized-rule-cache materialized-rule-cache))
@@ -14363,6 +14368,122 @@
                                             high: high
                                             output-index: output-index}))))
     out))
+
+(defn relation-add-entity-value-row! [columns: ^[dynamic]Relation-Column, rows: ^int, entity: u64, value: Value] -> bool
+  (let [entity-value (value-entity entity)]
+    (when (not (and (relation-column-can-add? columns^[0] entity-value)
+                    (relation-column-can-add? columns^[1] value)))
+      (return false))
+    (discard (relation-column-add! (addr columns^[0]) entity-value))
+    (discard (relation-column-add! (addr columns^[1]) value))
+    (set! rows^ (+ rows^ 1))
+    true))
+
+(defn relation-add-entity-two-value-row! [columns: ^[dynamic]Relation-Column, rows: ^int, entity: u64, first-value: Value, second-value: Value] -> bool
+  (let [entity-value (value-entity entity)]
+    (when (not (and (relation-column-can-add? columns^[0] entity-value)
+                    (relation-column-can-add? columns^[1] first-value)
+                    (relation-column-can-add? columns^[2] second-value)))
+      (return false))
+    (discard (relation-column-add! (addr columns^[0]) entity-value))
+    (discard (relation-column-add! (addr columns^[1]) first-value))
+    (discard (relation-column-add! (addr columns^[2]) second-value))
+    (set! rows^ (+ rows^ 1))
+    true))
+
+(defn query-relation-from-entity-int-pair-star-plan [db: DB, query: Query, plan: Entity-Int-Pair-Plan, stats: ^Query-Stats] -> [rel: Query-Relation, ok: bool]
+  (when (not (and (all-datoms-current? db)
+                  (> (count plan.filters) 0)))
+    (return (query-relation-empty) false))
+  (let [attrs ([dynamic]string [plan.entity-var plan.value-var])
+        attr-sources ([dynamic]string ["" ""])
+        typed-columns (relation-columns-for-attrs (slice attrs 0))
+        typed-rows 0
+        output-attrs ([]string [plan.value-attr])
+        streams (entity-star-streams-for-filters-and-outputs db (slice plan.filters 0) output-attrs)]
+    (defer (delete streams))
+    (set! stats^.steps (+ stats^.steps (count query.where-steps)))
+    (set! stats^.clauses (+ stats^.clauses (count query.clauses)))
+    (for [stream streams]
+      (set! stats^.clause-candidates (+ stats^.clause-candidates (- stream.high stream.index))))
+    (let [done false]
+      (while (not done)
+      (let [[entity entity-ok] (entity-star-streams-align! db (addr streams))]
+        (when (not entity-ok)
+          (set! done true))
+        (when entity-ok
+          (let [[value value-ok] (entity-star-output-value db (slice streams 0) 0)]
+            (when value-ok
+              (when (not (relation-add-entity-value-row! (addr typed-columns) (addr typed-rows) entity value))
+                (delete attrs)
+                (delete attr-sources)
+                (delete-relation-columns typed-columns)
+                (return (query-relation-empty) false))))
+          (entity-star-streams-advance-all! (addr streams))))))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: (make [dynamic]Binding)
+                             typed-columns: typed-columns
+                             typed-rows: typed-rows
+                             has-typed-columns: true}) true)))
+
+(defn query-relation-from-entity-two-value-star-plan [db: DB, query: Query, plan: Entity-Two-Value-Plan, stats: ^Query-Stats] -> [rel: Query-Relation, ok: bool]
+  (when (not (and (all-datoms-current? db)
+                  (> (count plan.filters) 0)))
+    (return (query-relation-empty) false))
+  (let [attrs ([dynamic]string [plan.entity-var plan.first-var plan.second-var])
+        attr-sources ([dynamic]string ["" "" ""])
+        typed-columns (relation-columns-for-attrs (slice attrs 0))
+        typed-rows 0
+        output-attrs ([]string [plan.first-attr plan.second-attr])
+        streams (entity-star-streams-for-filters-and-outputs db (slice plan.filters 0) output-attrs)]
+    (defer (delete streams))
+    (set! stats^.steps (+ stats^.steps (count query.where-steps)))
+    (set! stats^.clauses (+ stats^.clauses (count query.clauses)))
+    (for [stream streams]
+      (set! stats^.clause-candidates (+ stats^.clause-candidates (- stream.high stream.index))))
+    (let [done false]
+      (while (not done)
+      (let [[entity entity-ok] (entity-star-streams-align! db (addr streams))]
+        (when (not entity-ok)
+          (set! done true))
+        (when entity-ok
+          (let [[first-value first-ok] (entity-star-output-value db (slice streams 0) 0)
+                [second-value second-ok] (entity-star-output-value db (slice streams 0) 1)]
+            (when (and first-ok second-ok)
+              (when (not (relation-add-entity-two-value-row! (addr typed-columns) (addr typed-rows) entity first-value second-value))
+                (delete attrs)
+                (delete attr-sources)
+                (delete-relation-columns typed-columns)
+                (return (query-relation-empty) false))))
+          (entity-star-streams-advance-all! (addr streams))))))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: (make [dynamic]Binding)
+                             typed-columns: typed-columns
+                             typed-rows: typed-rows
+                             has-typed-columns: true}) true)))
+
+(defn query-relation-from-entity-star-plan [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [rel: Query-Relation, ok: bool]
+  (when (or (> (count inputs) 0)
+            (> (count sources) 0)
+            (> (count registry) 0))
+    (return (query-relation-empty) false))
+  (let [[two-plan two-ok] (query-entity-two-value-plan db query)]
+    (when two-ok
+      (let [[rel ok] (query-relation-from-entity-two-value-star-plan db query two-plan stats)]
+        (delete two-plan.filters)
+        (return rel ok)))
+    (delete two-plan.filters))
+  (let [[pair-plan pair-ok] (query-entity-int-pair-plan db query)]
+    (when pair-ok
+      (let [[rel ok] (query-relation-from-entity-int-pair-star-plan db query pair-plan stats)]
+        (delete pair-plan.filters)
+        (return rel ok)))
+    (delete pair-plan.filters))
+  (return (query-relation-empty) false))
 
 (defn q-query-entity-int-threshold-pair-columns [db: DB, plan: Entity-Int-Threshold-Plan] -> Entity-Int-Pair-Columns
   (let [indexes (slice db.avet 0)
