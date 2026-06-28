@@ -204,10 +204,14 @@ the existing dedupe/memo ownership pattern. Multi-branch materialized helper
 rules now also have a typed unique accumulator for compatible projected branch
 relations, so branch output can dedupe in typed columns instead of always
 materializing through generic `Binding` rows before rebuilding a relation. The
-broad path still pays for generic `Binding` construction in joins/results when
-an operator falls off the typed path. The next performance step is typed-first
-memo storage and more operators that can consume typed columns without
-materializing compatibility rows.
+initial query relation now also has a typed-first path for no-input and scalar
+`:in` queries. Ordered scalar input specs and legacy scalar inputs build a
+single typed row directly, while source, collection, tuple, relation, duplicate,
+and non-columnar inputs fall back to the compatibility binding expansion path.
+The broad path still pays for generic `Binding` construction in joins/results
+when an operator falls off the typed path. The next performance step is
+typed-first memo storage and more operators that can consume typed columns
+without materializing compatibility rows.
 
 ## Query Engine Strategy
 

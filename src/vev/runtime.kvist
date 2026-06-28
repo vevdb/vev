@@ -2123,6 +2123,100 @@
             (set! bindings next-bindings)))))
     bindings))
 
+(defn query-relation-add-initial-input! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, columns: ^[dynamic]Relation-Column, name: string, value: Value] -> bool
+  (when (or (query-source-input-name? name)
+            (string-slice-contains? (slice attrs^ 0) name))
+    (return false))
+  (let [column (relation-column-empty)]
+    (when (not (relation-column-add! (addr column) value))
+      (delete-relation-column column)
+      (return false))
+    (arr.push! attrs^ name)
+    (arr.push! attr-sources^ "")
+    (arr.push! columns^ column)
+    true))
+
+(defn query-relation-from-ordered-scalar-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int, ok: bool]
+  (when (= (count query.input-specs) 0)
+    (return (query-relation-empty) 0 false))
+  (let [attrs (make [dynamic]string)
+        attr-sources (make [dynamic]string)
+        columns (make [dynamic]Relation-Column)]
+    (for [spec index query.input-specs]
+      (when (>= index (count inputs))
+        (delete attrs)
+        (delete attr-sources)
+        (delete-relation-columns columns)
+        (return (query-relation-empty) 0 false))
+      (cond
+        (= spec.kind .Ignore)
+          (discard spec)
+        (= spec.kind .Scalar)
+          (let [[value value-ok] (query-input-bound-value db spec.name inputs[index])]
+            (when (or (not value-ok)
+                      (not (query-relation-add-initial-input! (addr attrs) (addr attr-sources) (addr columns) spec.name value)))
+              (delete attrs)
+              (delete attr-sources)
+              (delete-relation-columns columns)
+              (return (query-relation-empty) 0 false)))
+        :else
+          (do
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns columns)
+            (return (query-relation-empty) 0 false))))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: (make [dynamic]Binding)
+                             typed-columns: columns
+                             typed-rows: 1
+                             has-typed-columns: true}) 1 true)))
+
+(defn query-relation-from-legacy-scalar-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int, ok: bool]
+  (when (or (> (count query.input-specs) 0)
+            (> (count query.collection-inputs) 0)
+            (> (count query.tuple-inputs) 0)
+            (> (count query.relation-inputs) 0))
+    (return (query-relation-empty) 0 false))
+  (when (= (count query.inputs) 0)
+    (return (query-relation-singleton) 1 true))
+  (when (< (count inputs) (count query.inputs))
+    (return (query-relation-empty) 0 false))
+  (let [attrs (make [dynamic]string)
+        attr-sources (make [dynamic]string)
+        columns (make [dynamic]Relation-Column)]
+    (for [name index query.inputs]
+      (let [[value value-ok] (query-input-bound-value db name inputs[index])]
+        (when (or (not value-ok)
+                  (not (query-relation-add-initial-input! (addr attrs) (addr attr-sources) (addr columns) name value)))
+          (delete attrs)
+          (delete attr-sources)
+          (delete-relation-columns columns)
+          (return (query-relation-empty) 0 false))))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: (make [dynamic]Binding)
+                             typed-columns: columns
+                             typed-rows: 1
+                             has-typed-columns: true}) 1 true)))
+
+(defn query-relation-initial-from-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int]
+  (let [[ordered ordered-count ordered-ok] (query-relation-from-ordered-scalar-inputs db query inputs)]
+    (when ordered-ok
+      (return ordered ordered-count))
+    (delete-query-relation ordered))
+  (let [[legacy legacy-count legacy-ok] (query-relation-from-legacy-scalar-inputs db query inputs)]
+    (when legacy-ok
+      (return legacy legacy-count))
+    (delete-query-relation legacy))
+  (let [input-bindings (bindings-from-inputs db query inputs)
+        out-count (count input-bindings)
+        out (query-relation-from-bindings (slice input-bindings 0))]
+    (delete input-bindings)
+    (return out out-count)))
+
 (defn match-term? [term: Term, actual: Value, binding: ^Binding] -> bool
   (case term.kind
     .Value (value-equal? term.value actual)
@@ -13670,12 +13764,10 @@
       (return star-rel))
     (delete-query-relation star-rel))
   (let [materialized-rule-cache (make [dynamic]Materialized-Rule-Cache-Entry)
-        input-bindings (bindings-from-inputs db query inputs)]
+        [current input-binding-count] (query-relation-initial-from-inputs db query inputs)]
     (defer (delete-materialized-rule-cache materialized-rule-cache))
-    (set! stats^.input-bindings (count input-bindings))
-    (query-stats-observe-bindings! stats (count input-bindings))
-    (let [current (query-relation-from-bindings (slice input-bindings 0))]
-    (delete input-bindings)
+    (set! stats^.input-bindings input-binding-count)
+    (query-stats-observe-bindings! stats input-binding-count)
     (for [step query.where-steps]
       (when (= step.kind .Clause)
         (set! stats^.steps (+ stats^.steps 1))
@@ -13740,7 +13832,7 @@
           (delete-query-relation current)
           (set! current next)
           (query-stats-observe-bindings! stats (query-relation-row-count current)))))
-    current)))
+    current))
 
 (defn relation-engine-bindings-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
   (let [post-rel (relation-engine-relation-profiled db query inputs sources registry stats)
