@@ -6701,7 +6701,6 @@
       (let [current frontier[frontier-index]
             edge-clause (clause (term-value (value-entity current)) attr (term-wildcard))
             scan (clause-index-scan db edge-clause (Binding {}))]
-        (defer (delete-clause-index-scan scan))
         (set! frontier-index (+ frontier-index 1))
         (let [already-expanded (set.contains? expanded current)]
           (when (not already-expanded)
@@ -6720,7 +6719,8 @@
                         (arr.push! out^ datom.v.entity))
                       (when (not target-expanded)
                         (arr.push! frontier datom.v.entity)))))
-                (set! scan-index (+ scan-index 1))))))))))
+                (set! scan-index (+ scan-index 1))))))
+        (delete-clause-index-scan scan)))))
 
 (defn append-transitive-starts! [out: ^[dynamic]u64, db: DB, attr: string]
   (let [seen (set.empty u64)
@@ -6753,7 +6753,6 @@
       (let [current frontier[frontier-index]
             edge-clause (clause (term-wildcard) attr (term-value (value-entity current)))
             scan (clause-index-scan db edge-clause (Binding {}))]
-        (defer (delete-clause-index-scan scan))
         (set! frontier-index (+ frontier-index 1))
         (let [already-expanded (set.contains? expanded current)]
           (when (not already-expanded)
@@ -6771,7 +6770,8 @@
                         (arr.push! out^ datom.e))
                       (when (not source-expanded)
                         (arr.push! frontier datom.e)))))
-                (set! scan-index (+ scan-index 1))))))))))
+                (set! scan-index (+ scan-index 1))))))
+        (delete-clause-index-scan scan)))))
 
 (defn u64-slice-contains? [items: []u64, value: u64] -> bool
   (for [item items]
@@ -11209,6 +11209,69 @@
                                typed-rows: typed-rows
                                has-typed-columns: true}) true))))
 
+(defn append-typed-bound-db-clause-scan-row! [columns: ^[dynamic]Relation-Column, typed-rows: ^int, attrs: []string, db: DB, binding: Binding, clause-value: Clause, all-current: bool, stats: ^Query-Stats] -> bool
+  (let [scan (clause-index-scan db clause-value binding)]
+    (defer (delete-clause-index-scan scan))
+    (let [scan-index scan.index]
+      (while (< scan-index scan.high)
+        (let [datom-index scan.indexes[scan-index]
+              datom db.datoms[datom-index]]
+          (when (clause-index-scan-candidate? scan datom)
+            (set! stats^.clause-candidates (+ stats^.clause-candidates 1))
+            (when (or all-current (datom-current-at? db datom-index))
+              (let [next (clone-binding binding)]
+                (if (datom-clause-matches? db datom clause-value (addr next))
+                  (if (binding-can-add-to-relation-columns? attrs (slice columns^ 0) next)
+                    (do
+                      (add-binding-to-relation-columns! attrs columns next)
+                      (set! typed-rows^ (+ typed-rows^ 1))
+                      (delete next.items))
+                    (do
+                      (delete next.items)
+                      (return false)))
+                  (delete next.items))))))
+        (set! scan-index (+ scan-index 1)))))
+  true)
+
+(defn query-relation-apply-bound-db-clause-typed-scan [db: DB, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
+  (when (or (not rel.has-typed-columns)
+            clause-value.has-source)
+    (return (query-relation-empty) false))
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))]
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.e "")
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.a "")
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.v "")
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.tx-term "")
+    (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.op-term "")
+    (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+          typed-rows 0
+          all-current (all-datoms-current? db)
+          row 0]
+      (while (< row rel.typed-rows)
+        (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
+          (when (not binding-ok)
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns typed-columns)
+            (return (query-relation-empty) false))
+          (set! stats^.clauses (+ stats^.clauses 1))
+          (when (not (append-typed-bound-db-clause-scan-row! (addr typed-columns) (addr typed-rows) (slice attrs 0) db binding clause-value all-current stats))
+            (delete binding.items)
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns typed-columns)
+            (return (query-relation-empty) false))
+          (delete binding.items))
+        (set! row (+ row 1)))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: (make [dynamic]Binding)
+                               typed-columns: typed-columns
+                               typed-rows: typed-rows
+                               has-typed-columns: true}) true))))
+
 (defn query-relation-apply-bound-clause-typed-fallback [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
@@ -11255,6 +11318,10 @@
 
 (defn query-relation-apply-bound-clause [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> Query-Relation
   (let [[typed typed-ok] (query-relation-apply-bound-ea-clause-typed db rel clause-value stats)]
+    (when typed-ok
+      (return typed))
+    (delete-query-relation typed))
+  (let [[typed typed-ok] (query-relation-apply-bound-db-clause-typed-scan db rel clause-value stats)]
     (when typed-ok
       (return typed))
     (delete-query-relation typed))
