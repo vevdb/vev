@@ -10323,6 +10323,54 @@
       (arr.push! out^ (clone-binding binding)))
     (delete-query-relation projected)))
 
+(defn query-relation-project-rule-call-typed [rel: Query-Relation, rule: Rule, call: Rule-Call] -> [projected: Query-Relation, ok: bool]
+  (when (not (and rel.has-typed-columns
+                  (rule-call-distinct-var-projection? rule call)))
+    (return (query-relation-empty) false))
+  (let [attrs (make [dynamic]string 0 (count call.args))
+        attr-sources (make [dynamic]string 0 (count call.args))
+        tuples (make [dynamic]Binding 0 rel.typed-rows)
+        typed-columns (make [dynamic]Relation-Column 0 (count call.args))
+        param-indexes (make [dynamic]int 0 (count rule.params))]
+    (for [param rule.params]
+      (let [[column-index column-ok] (query-relation-attr-index-lookup rel param)]
+        (when (not column-ok)
+          (delete attrs)
+          (delete attr-sources)
+          (delete tuples)
+          (delete-relation-columns typed-columns)
+          (delete param-indexes)
+          (return (query-relation-empty) false))
+        (arr.push! param-indexes column-index)))
+    (for [arg arg-index call.args]
+      (arr.push! attrs arg.name)
+      (arr.push! attr-sources rel.attr-sources[param-indexes[arg-index]])
+      (arr.push! typed-columns (clone-relation-column rel.typed-columns[param-indexes[arg-index]])))
+    (let [row 0]
+      (while (< row rel.typed-rows)
+        (let [binding (Binding {})]
+          (for [arg arg-index call.args]
+            (let [[value value-ok] (typed-relation-column-value rel.typed-columns[param-indexes[arg-index]] row)]
+              (when (not value-ok)
+                (delete binding.items)
+                (delete attrs)
+                (delete attr-sources)
+                (delete tuples)
+                (delete-relation-columns typed-columns)
+                (delete param-indexes)
+                (return (query-relation-empty) false))
+              (binding-store! (addr binding) arg.name value)))
+          (arr.push! tuples binding))
+        (set! row (+ row 1))))
+    (delete param-indexes)
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: tuples
+                             typed-columns: typed-columns
+                             typed-rows: rel.typed-rows
+                             has-typed-columns: true}) true)))
+
 (defstruct Materialized-Rule-Cache-Entry {
   name: string
   rel: Query-Relation
@@ -10515,6 +10563,11 @@
     (when (= (count plan.rules) 1)
       (let [[cached-index cached-ok] (materialized-rule-cache-index (slice cache^ 0) call.name)]
         (when cached-ok
+          (let [[projected projected-ok] (query-relation-project-rule-call-typed cache^[cached-index].rel plan.rules[0] call)]
+            (when projected-ok
+              (delete out-bindings)
+              (return projected true))
+            (delete-query-relation projected))
           (append-projected-rule-call-bindings! (addr out-bindings) cache^[cached-index].rel plan.rules[0] call)
           (let [unique (unique-bindings (slice out-bindings 0))
                 out (query-relation-from-bindings (slice unique 0))]
@@ -10532,6 +10585,13 @@
               (when derived-built
                 (when (= (count plan.rules) 1)
                   (materialized-rule-cache-store! cache call.name derived))
+                (when (= (count plan.rules) 1)
+                  (let [[projected projected-ok] (query-relation-project-rule-call-typed derived rule call)]
+                    (when projected-ok
+                      (delete out-bindings)
+                      (delete-query-relation derived)
+                      (return projected true))
+                    (delete-query-relation projected)))
                 (append-projected-rule-call-bindings! (addr out-bindings) derived rule call)
                 (delete-query-relation derived)
                 (continue))
@@ -10542,6 +10602,13 @@
               (when two-attr-built
                 (when (= (count plan.rules) 1)
                   (materialized-rule-cache-store! cache call.name two-attr-rel))
+                (when (= (count plan.rules) 1)
+                  (let [[projected projected-ok] (query-relation-project-rule-call-typed two-attr-rel rule call)]
+                    (when projected-ok
+                      (delete out-bindings)
+                      (delete-query-relation two-attr-rel)
+                      (return projected true))
+                    (delete-query-relation projected)))
                 (append-projected-rule-call-bindings! (addr out-bindings) two-attr-rel rule call)
                 (delete-query-relation two-attr-rel)
                 (continue))

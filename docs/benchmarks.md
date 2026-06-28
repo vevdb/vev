@@ -143,10 +143,10 @@ EDN chunks, so query timings should be read separately from import timings.
 
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
-| `q1` | 0.36ms | 2 | Good selective/bound rule path |
-| `q2` | 6.98s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, and numeric join keys are reduced |
-| `q3` | 4.93s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering |
-| `q4` | 0.99s | 135 | Completes through derived transitive closure over a derived two-hop edge |
+| `q1` | 0.42ms | 2 | Good selective/bound rule path |
+| `q2` | 5.17s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, numeric join keys, and single-rule typed projection rebuilds are reduced |
+| `q3` | 3.72s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering |
+| `q4` | 1.01s | 135 | Completes through derived transitive closure over a derived two-hop edge |
 
 Important result: Q4 originally did not finish within several minutes because
 `anc` recurses over derived rule `adv`, not over a direct DB ref attr. Vev now
@@ -189,10 +189,13 @@ also use typed relation columns to do direct `eavt` lookups instead of entering
 the generic per-binding clause matcher; this is a modest win on math-bench
 because final lookup is no longer dominant. Single-column typed entity/int joins
 now also hash on numeric keys instead of formatted strings, which removes a
-generic allocation-heavy part of the broad join path. The next engine work
-should make these rule relations more fully columnar/streamed and remove the
-remaining generic `Binding` row construction, final dedupe, and compound
-string-key hash costs from the broad path.
+generic allocation-heavy part of the broad join path. Single-branch cached or
+direct physical rule relations can also project distinct-variable rule calls
+back as typed relations directly, avoiding an immediate projection-to-bindings,
+dedupe, and typed-column reconstruction pass. The next engine work should make
+these rule relations more fully columnar/streamed and remove the remaining
+generic `Binding` row construction, final dedupe, and compound string-key hash
+costs from the broad path.
 
 ## MusicBrainz Import Smoke
 
