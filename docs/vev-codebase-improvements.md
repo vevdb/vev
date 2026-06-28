@@ -189,8 +189,8 @@ Status labels:
 - `done` Add test support helpers for Vev values and results.
   Vev tests now have row-level `Value` matchers for entity, string, integer, and arbitrary expected values. Existing result search helpers delegate through those matchers, giving compatibility tests a less verbose pattern for result-row assertions without introducing a larger fixture DSL.
 
-- `todo` Materialize pull values more cleanly for ABI results.
-  ABI results currently keep pull structures in the result plus a side array of rendered pull `Value`s. A single owned materialized result representation would simplify pull result access and cleanup.
+- `partial` Materialize pull values more cleanly for ABI results.
+  ABI results currently keep pull structures in the result plus a side array of rendered pull `Value`s. The side array now stores per-row pull offsets, so `vev_result_pull` is O(1) instead of scanning previous rows to find the flattened pull value. A single owned materialized result representation would still simplify pull result access and cleanup further.
 
 ## Kvist / Compiler / Package Work
 
