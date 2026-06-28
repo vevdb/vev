@@ -138,6 +138,12 @@ Status labels:
 - `done` Add set-backed rule memo duplicate detection.
   Rule memo entries now keep a `seen` key set next to the accumulated binding table, so primitive rule outputs avoid linear `binding-exists?` scans on insert. Structural scan fallback remains for output bindings that cannot be represented by the primitive binding key.
 
+- `done` Cache typed relation views for recursive rule memo/delta tables.
+  Rule memo entries now own cached typed `Query-Relation` views for accumulated rows and current delta rows. Broad rule-call joins reuse those typed views and fall back to the row projection path for unsupported call shapes, while small current relations still use the cheaper row-wise matcher.
+
+- `done` Append primitive-compatible rule memo outputs into valid typed caches.
+  When a memo or delta relation view is already valid, new primitive-compatible rule outputs are appended directly to the cached typed columns. Unsupported values invalidate the view and rebuild through the conservative row source on the next broad join.
+
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
 
