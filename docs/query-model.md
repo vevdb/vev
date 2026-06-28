@@ -408,6 +408,13 @@ Q2 stresses a large unfiltered typed relation followed by a bound lookup, while
 Q3 proves the value of keeping the relation typed through a selective predicate
 before that final lookup.
 
+Initial typed-only groundwork is now in place. `query-relation-row-count`
+reports logical relation size from cached typed rows when available, and the
+main relation-to-bindings bridge goes through `query-relation-materialized-bindings`.
+Current operators still emit compatibility binding rows, so this is not a
+performance change by itself. Its purpose is to remove hidden row-count
+assumptions before introducing typed-only producers.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
