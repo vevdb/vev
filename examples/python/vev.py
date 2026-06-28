@@ -27,6 +27,16 @@ VEV_RESULT_VISIT_VALUE = 2
 VEV_RESULT_VISIT_PULL = 3
 VEV_RESULT_VISIT_ROW_END = 4
 
+VEV_COLUMN_BATCH_NONE = 0
+VEV_COLUMN_BATCH_ENTITY = 1
+VEV_COLUMN_BATCH_STRING = 2
+VEV_COLUMN_BATCH_ENTITY_INT = 3
+VEV_COLUMN_BATCH_ENTITY_STRING_INT = 4
+
+VEV_COLUMN_ENTITY = 1
+VEV_COLUMN_STRING = 2
+VEV_COLUMN_INT = 3
+
 RESULT_VISIT_FN = ctypes.CFUNCTYPE(
     ctypes.c_bool,
     ctypes.c_void_p,
@@ -411,6 +421,33 @@ class Library:
             ctypes.c_char_p,
         ]
         lib.vev_query_db_prepared_result_with_inputs.restype = ctypes.c_void_p
+        lib.vev_query_db_prepared_column_batch_with_inputs.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_query_db_prepared_column_batch_with_inputs.restype = ctypes.c_void_p
+        lib.vev_column_batch_free.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_kind.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_kind.restype = ctypes.c_int
+        lib.vev_column_batch_count.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_count.restype = ctypes.c_int
+        lib.vev_column_batch_entities_data.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_entities_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_ints_data.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_ints_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_string_data_array.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_string_data_array.restype = ctypes.c_void_p
+        lib.vev_column_batch_string_lengths_data.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_string_lengths_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_string_dictionary_count.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_string_dictionary_count.restype = ctypes.c_int
+        lib.vev_column_batch_string_dictionary_data_array.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_string_dictionary_data_array.restype = ctypes.c_void_p
+        lib.vev_column_batch_string_dictionary_lengths_data.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_string_dictionary_lengths_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_string_indices_data.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_string_indices_data.restype = ctypes.c_void_p
         lib.vev_pull_edn.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -521,6 +558,44 @@ class Library:
                 for index in range(self.lib.vev_value_map_count(value))
             }
         return self.owned_text(self.lib.vev_value_edn(value))
+
+    def _long_column(self, pointer: int, count: int) -> list[int]:
+        if not pointer:
+            return []
+        array = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_ulonglong))
+        return [int(array[index]) for index in range(count)]
+
+    def _int_column(self, pointer: int, count: int) -> list[int]:
+        if not pointer:
+            return []
+        array = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_longlong))
+        return [int(array[index]) for index in range(count)]
+
+    def _string_column(self, batch: int, count: int) -> list[str]:
+        dictionary_count = self.lib.vev_column_batch_string_dictionary_count(batch)
+        dictionary_data = self.lib.vev_column_batch_string_dictionary_data_array(batch)
+        dictionary_lengths = self.lib.vev_column_batch_string_dictionary_lengths_data(batch)
+        string_indices = self.lib.vev_column_batch_string_indices_data(batch)
+        if dictionary_count > 0 and dictionary_data and dictionary_lengths and string_indices:
+            data_array = ctypes.cast(dictionary_data, ctypes.POINTER(ctypes.c_void_p))
+            length_array = ctypes.cast(dictionary_lengths, ctypes.POINTER(ctypes.c_int))
+            index_array = ctypes.cast(string_indices, ctypes.POINTER(ctypes.c_int))
+            dictionary = [
+                ctypes.string_at(data_array[index], length_array[index]).decode("utf-8")
+                for index in range(dictionary_count)
+            ]
+            return [dictionary[index_array[index]] for index in range(count)]
+
+        string_data = self.lib.vev_column_batch_string_data_array(batch)
+        string_lengths = self.lib.vev_column_batch_string_lengths_data(batch)
+        if not string_data or not string_lengths:
+            return []
+        data_array = ctypes.cast(string_data, ctypes.POINTER(ctypes.c_void_p))
+        length_array = ctypes.cast(string_lengths, ctypes.POINTER(ctypes.c_int))
+        return [
+            ctypes.string_at(data_array[index], length_array[index]).decode("utf-8")
+            for index in range(count)
+        ]
 
 
 _default_library: Library | None = None
@@ -797,6 +872,56 @@ class DB:
             self._handle, prepared._handle, _bytes(inputs_edn)
         )
         return Result(self._library, handle)
+
+    def query_columns(
+        self, prepared: "PreparedQuery", inputs_edn: str = "[]"
+    ) -> "ColumnResult | None":
+        self._require_open()
+        prepared._require_open()
+        handle = self._library.lib.vev_query_db_prepared_column_batch_with_inputs(
+            self._handle, prepared._handle, _bytes(inputs_edn)
+        )
+        if not handle:
+            return None
+        try:
+            kind = self._library.lib.vev_column_batch_kind(handle)
+            count = self._library.lib.vev_column_batch_count(handle)
+            entities = self._library.lib.vev_column_batch_entities_data(handle)
+            ints = self._library.lib.vev_column_batch_ints_data(handle)
+            if kind == VEV_COLUMN_BATCH_ENTITY:
+                return ColumnResult(
+                    count,
+                    (VEV_COLUMN_ENTITY,),
+                    (self._library._long_column(entities, count),),
+                )
+            if kind == VEV_COLUMN_BATCH_STRING:
+                return ColumnResult(
+                    count,
+                    (VEV_COLUMN_STRING,),
+                    (self._library._string_column(handle, count),),
+                )
+            if kind == VEV_COLUMN_BATCH_ENTITY_INT:
+                return ColumnResult(
+                    count,
+                    (VEV_COLUMN_ENTITY, VEV_COLUMN_INT),
+                    (
+                        self._library._long_column(entities, count),
+                        self._library._int_column(ints, count),
+                    ),
+                )
+            if kind == VEV_COLUMN_BATCH_ENTITY_STRING_INT:
+                return ColumnResult(
+                    count,
+                    (VEV_COLUMN_ENTITY, VEV_COLUMN_STRING, VEV_COLUMN_INT),
+                    (
+                        self._library._long_column(entities, count),
+                        self._library._string_column(handle, count),
+                        self._library._int_column(ints, count),
+                    ),
+                )
+            return None
+        finally:
+            self._library.lib.vev_column_batch_free(handle)
 
     def query_stmt(self, stmt: "Statement") -> "Result":
         self._require_open()
@@ -1368,3 +1493,13 @@ class Result:
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("result is closed")
+
+
+@dataclass(frozen=True)
+class ColumnResult:
+    count: int
+    kinds: tuple[int, ...]
+    columns: tuple[list[object], ...]
+
+    def rows(self) -> list[list[object]]:
+        return [[column[row] for column in self.columns] for row in range(self.count)]
