@@ -537,11 +537,13 @@ clauses, now run as branch-local typed relation pipelines and append output by
 attribute name, so branches can use different clause orders without leaving
 typed columns. Plain branch-local predicate, function, and nested `not` steps
 use the same ordered typed pipeline when their operators are supported.
-Branches with `or-join`, branch-local relation-source matching, native or
-dynamic operators outside the typed evaluator, or more complex local pipelines
-reuse the existing single-binding branch semantics, and branch outputs are
-appended back into typed columns so `or` no longer forces a full relation
-materialization.
+Plain `or-join` branch pipelines use the same typed branch evaluator and append
+only declared join vars to the output relation, preserving branch-local
+variables such as predicate helper outputs. Branch-local relation-source
+matching, native or dynamic operators outside the typed evaluator, or more
+complex local pipelines reuse the existing single-binding branch semantics, and
+branch outputs are appended back into typed columns so `or` no longer forces a
+full relation materialization.
 
 Fallback rule calls now use the same streaming typed boundary. The preferred
 path is still the materialized rule relation plus typed join when eligible, but

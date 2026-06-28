@@ -10328,6 +10328,18 @@
   (for [name group.join-vars]
     (append-var-once-indexed! vars seen name)))
 
+(defn append-or-group-output-vars! [vars: ^[dynamic]string, group: Or-Group]
+  (if group.has-join
+    (for [name group.join-vars]
+      (append-var-once! vars name))
+    (append-or-group-vars! vars group)))
+
+(defn append-or-group-output-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], group: Or-Group]
+  (if group.has-join
+    (for [name group.join-vars]
+      (append-var-once-indexed! vars seen name))
+    (append-or-group-vars-indexed! vars seen group)))
+
 (defn append-rule-call-vars! [vars: ^[dynamic]string, call: Rule-Call]
   (for [arg call.args]
     (append-term-var! vars arg)))
@@ -10466,7 +10478,7 @@
     (for [group query-value.not-groups]
       (append-not-group-vars-indexed! (addr vars) (addr seen) group))
     (for [group query-value.or-groups]
-      (append-or-group-vars-indexed! (addr vars) (addr seen) group))
+      (append-or-group-output-vars-indexed! (addr vars) (addr seen) group))
     vars))
 
 (defn query-positive-vars [query-value: Query] -> [dynamic]string
@@ -12428,6 +12440,16 @@
       (set! branch-index (+ branch-index 1))))
   true)
 
+(defn plain-typed-or-join-group? [group: Or-Group] -> bool
+  (when (not group.has-join)
+    (return false))
+  (when (= (count group.branches) 0)
+    (return false))
+  (for [branch group.branches]
+    (when (not (plain-typed-branch-group? branch))
+      (return false)))
+  true)
+
 (defn query-relation-apply-plain-or-branch-typed [db: DB, sources: []DB-Source, rel: Query-Relation, row: int, branch: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (query-relation-apply-plain-branch-pipeline-typed db sources rel row branch registry))
 
@@ -12450,7 +12472,7 @@
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
         attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
         output-vars (make [dynamic]string) :defer]
-    (append-or-group-vars! (addr output-vars) group)
+    (append-or-group-output-vars! (addr output-vars) group)
     (for [name output-vars]
       (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
     (when (simple-db-clause-or-group? group)
@@ -12479,6 +12501,36 @@
                                  typed-rows: builder.typed-rows
                                  has-typed-columns: builder.typed-ok}) true)))
     (when (plain-db-clause-or-group? group)
+      (let [builder (query-relation-builder (slice attrs 0))
+            row 0]
+        (while (< row rel.typed-rows)
+          (for [branch group.branches]
+            (let [[branch-rel branch-ok] (query-relation-apply-plain-or-branch-typed db sources rel row branch registry)]
+              (when (not branch-ok)
+                (delete-query-relation branch-rel)
+                (delete attrs)
+                (delete attr-sources)
+                (delete-query-relation-builder builder)
+                (return (query-relation-empty) false))
+              (let [branch-row 0]
+                (while (< branch-row (query-relation-row-count branch-rel))
+                  (when (not (query-relation-builder-add-relation-row-by-attrs! (addr builder) (slice attrs 0) branch-rel branch-row))
+                    (delete-query-relation branch-rel)
+                    (delete attrs)
+                    (delete attr-sources)
+                    (delete-query-relation-builder builder)
+                    (return (query-relation-empty) false))
+                  (set! branch-row (+ branch-row 1))))
+              (delete-query-relation branch-rel)))
+          (set! row (+ row 1)))
+        (return (Query-Relation {attrs: attrs
+                                 attr-sources: attr-sources
+                                 attr-index: (query-relation-attr-index (slice attrs 0))
+                                 tuples: builder.tuples
+                                 typed-columns: builder.typed-columns
+                                 typed-rows: builder.typed-rows
+                                 has-typed-columns: builder.typed-ok}) true)))
+    (when (plain-typed-or-join-group? group)
       (let [builder (query-relation-builder (slice attrs 0))
             row 0]
         (while (< row rel.typed-rows)
