@@ -423,6 +423,13 @@ This is intentionally narrower than the reverted typed-join experiment: it keeps
 the typed-only boundary at a well-defined projection operator and is guarded by
 the math benchmark row-count checks.
 
+Predicate filtering now honors that boundary. Supported predicates can evaluate
+directly against typed rows and return typed-only output; unsupported predicates
+materialize through `query-relation-materialized-bindings` before using the
+binding predicate path. This keeps correctness explicit while allowing rule
+projection followed by selective predicates to avoid compatibility row
+allocation.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
