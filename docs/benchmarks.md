@@ -20,7 +20,8 @@ Current order:
 2. Datalevin `math-bench`: use next for realistic Datalog rule processing over
    the Math Genealogy dataset. This is the most relevant external benchmark for
    validating the generic recursive rule engine after the current synthetic
-   reachability stress harness.
+   reachability stress harness. Vev now has an adapter under
+   `bench/math_bench`.
 3. Datalevin `openrulebench`: use after the component/SCC-local semi-naive rule
    engine exists. This should stress a broader set of Datalog rule workloads
    and help keep rule work general instead of reachability-specific.
@@ -117,6 +118,57 @@ should validate the generic semi-naive engine once it exists.
 Vev now exposes the optional `datascript-bench` rule rows by name through the
 Clojure adapter using the same DataScript-style `:in $ %` rules input shape as
 the upstream benchmark.
+
+## Math Bench
+
+Vev has a first adapter for Datalevin's `math-bench` under
+`bench/math_bench`. The exporter mirrors Datalevin's JSON-to-datoms mapping for
+the Mathematics Genealogy dataset and writes Vev EDN transaction chunks.
+
+Run the exporter:
+
+```sh
+bench/math_bench/run_export.sh
+```
+
+Run one workload:
+
+```sh
+MATH_BENCH_WARMUPS=0 MATH_BENCH_SAMPLES=1 bench/math_bench/run_vev.sh q1
+```
+
+The first checked full-data Vev results use 1,837,904 transaction items and
+1,837,918 current datoms after schema. Import currently takes about 69-72s from
+EDN chunks, so query timings should be read separately from import timings.
+
+| Workload | Vev query time | Rows | Current status |
+|---|---:|---:|---|
+| `q1` | 0.49-0.51ms | 2 | Good first-pass result |
+| `q2` | 81.7s | 34,073 | Major derived-rule join gap |
+| `q3` | not yet measured after q2 result | --- | Expected to hit the same derived-rule join gap |
+| `q4` | 1.03s | 135 | Now completes through derived transitive closure, still far behind Datalevin |
+
+Important result: Q4 originally did not finish within several minutes because
+`anc` recurses over derived rule `adv`, not over a direct DB ref attr. Vev now
+recognizes this general shape:
+
+```clojure
+[(edge ?x ?y) [?x :left/ref ?m] (leaf ?m ?y)]
+[(leaf ?m ?y) [?m :right/ref ?y]]
+[(tc ?x ?y) (edge ?x ?y)]
+[(tc ?x ?y) (edge ?x ?z) (tc ?z ?y)]
+```
+
+The planner lowers that to a derived two-hop adjacency and then reuses the
+existing linear transitive operator. This is not benchmark-name-specific, but
+it is still a narrow physical rule operator.
+
+The next math-bench target is Q2/Q3, not Q4 micro-optimization. Q2 shows that
+non-recursive derived rules still expand through binding rows and repeated rule
+calls. The needed engine work is a relation-native/materialized derived-rule
+operator: compute `adv`, `univ`, and `area` as reusable relations or streams,
+then join them with ordinary indexed/hash/merge operators instead of invoking
+rules hundreds of thousands of times.
 
 ## MusicBrainz Import Smoke
 

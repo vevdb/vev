@@ -137,6 +137,21 @@ inside the component. Memo tables keep set-backed primitive binding keys for
 duplicate detection, with structural scans only as a fallback for non-keyable
 outputs. The specialized linear and alternating transitive paths remain faster
 physical operators and run before the generic memo/delta path.
+The linear transitive recognizer also handles a common derived-edge shape where
+the recursive edge is a non-recursive two-hop rule, such as `adv` in
+Datalevin's math-bench:
+
+```clojure
+[(adv ?x ?y) [?x :person/advised ?d] (author ?d ?y)]
+[(author ?d ?c) [?d :dissertation/cid ?c]]
+[(anc ?x ?y) (adv ?x ?y)]
+[(anc ?x ?y) (adv ?x ?z) (anc ?z ?y)]
+```
+
+This lowers to a derived adjacency list and then uses the same transitive
+operator as direct ref attrs. It is a physical rule operator, not a complete
+solution for rule planning. Math-bench Q2/Q3 still need relation-native
+non-recursive derived-rule joins.
 
 ## Query Engine Strategy
 

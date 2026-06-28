@@ -5887,6 +5887,9 @@
 
 (defstruct Linear-Transitive-Plan {
   attr: string
+  derived-edge: bool
+  derived-left-attr: string
+  derived-right-attr: string
   filters: [dynamic]Clause
 })
 
@@ -5942,13 +5945,80 @@
               (return "" (make [dynamic]Clause) false))))))
     (return attr out-filters found-edge)))
 
+(defn rule-two-hop-derived-edge [rules: []Rule, name: string] -> [left-attr: string, right-attr: string, ok: bool]
+  (for [rule rules]
+    (when (= rule.name name)
+      (when (and (= (count rule.params) 2)
+                 (= (count rule.rule-calls) 1)
+                 (= (count rule.clauses) 1)
+                 (rule-has-only-plain-clauses-and-calls? rule))
+        (let [rule-clause rule.clauses[0]
+              rule-call rule.rule-calls[0]
+              [clause-attr clause-attr-ok] (clause-attr-keyword rule-clause)]
+          (when (and clause-attr-ok
+                     (not rule-call.has-source)
+                     (= (count rule-call.args) 2)
+                     (term-var-name? rule-clause.e rule.params[0])
+                     (= rule-clause.v.kind .Var)
+                     (term-var-name? rule-call.args[0] rule-clause.v.name)
+                     (term-var-name? rule-call.args[1] rule.params[1]))
+            (for [leaf-rule rules]
+              (when (= leaf-rule.name rule-call.name)
+                (when (= (count leaf-rule.params) 2)
+                  (let [[leaf-attr leaf-filters leaf-ok] (linear-transitive-edge-and-filters leaf-rule leaf-rule.params[0] leaf-rule.params[1])]
+                    (delete leaf-filters)
+                    (when leaf-ok
+                      (return clause-attr leaf-attr true)))))))))
+      (when (not (and (= (count rule.params) 2)
+                      (= (count rule.rule-calls) 0)
+                      (= (count rule.clauses) 2)
+                      (rule-has-only-plain-clauses-and-calls? rule)))
+        (return "" "" false))
+      (let [first rule.clauses[0]
+            second rule.clauses[1]
+            [first-attr first-attr-ok] (clause-attr-keyword first)
+            [second-attr second-attr-ok] (clause-attr-keyword second)]
+        (when (and first-attr-ok
+                   second-attr-ok
+                   (term-var-name? first.e rule.params[0])
+                   (= first.v.kind .Var)
+                   (term-var-name? second.e first.v.name)
+                   (term-var-name? second.v rule.params[1]))
+          (return first-attr second-attr true))
+        (when (and first-attr-ok
+                   second-attr-ok
+                   (term-var-name? second.e rule.params[0])
+                   (= second.v.kind .Var)
+                   (term-var-name? first.e second.v.name)
+                   (term-var-name? first.v rule.params[1]))
+          (return second-attr first-attr true))
+        (return "" "" false))))
+  (return "" "" false))
+
+(defn derived-edge-call? [rules: []Rule, call: Rule-Call, from-var: string, to-var: string] -> [left-attr: string, right-attr: string, ok: bool]
+  (when (not (and (not call.has-source)
+                  (= (count call.args) 2)
+                  (term-var-name? call.args[0] from-var)
+                  (term-var-name? call.args[1] to-var)))
+    (return "" "" false))
+  (rule-two-hop-derived-edge rules call.name))
+
 (defn empty-linear-transitive-plan [] -> Linear-Transitive-Plan
   (Linear-Transitive-Plan {filters: (make [dynamic]Clause)}))
+
+(defn linear-derived-plan-compatible? [derived-edge: bool, left-attr: string, right-attr: string, next-derived: bool, next-left: string, next-right: string] -> bool
+  (or (= (count left-attr) 0)
+      (and (= derived-edge next-derived)
+           (= left-attr next-left)
+           (= right-attr next-right))))
 
 (defn linear-transitive-rule-plan [rules: []Rule, name: string] -> [plan: Linear-Transitive-Plan, ok: bool]
   (let [found-base false
         found-recursive false
         attr ""
+        derived-edge false
+        derived-left-attr ""
+        derived-right-attr ""
         filters (make [dynamic]Clause)]
     (for [rule rules]
       (when (= rule.name name)
@@ -5960,41 +6030,74 @@
           (let [[base-attr base-filters base-ok] (linear-transitive-edge-and-filters rule rule.params[0] rule.params[1])]
             (when (or (not base-ok)
                       found-base
-                      (and (> (count attr) 0) (not (= attr base-attr))))
+                      (not (linear-derived-plan-compatible? derived-edge derived-left-attr derived-right-attr false base-attr "")))
               (delete filters)
               (delete base-filters)
               (return (empty-linear-transitive-plan) false))
             (set! attr base-attr)
+            (set! derived-edge false)
+            (set! derived-left-attr base-attr)
+            (set! derived-right-attr "")
             (delete filters)
             (set! filters base-filters)
             (set! found-base true)))
-        (when (> (count rule.rule-calls) 0)
-          (when (not (= (count rule.rule-calls) 1))
-            (delete filters)
-            (return (empty-linear-transitive-plan) false))
-          (let [recursive-call rule.rule-calls[0]]
-            (when (not (and (= recursive-call.name name)
-                            (= (count recursive-call.args) 2)
-                            (= recursive-call.args[0].kind .Var)
-                            (term-var-name? recursive-call.args[1] rule.params[1])))
+        (when (and (= (count rule.clauses) 0)
+                   (= (count rule.rule-calls) 1)
+                   (not (= rule.rule-calls[0].name name)))
+          (let [[left-attr right-attr edge-ok] (derived-edge-call? rules rule.rule-calls[0] rule.params[0] rule.params[1])]
+            (when (or (not edge-ok)
+                      found-base
+                      (not (linear-derived-plan-compatible? derived-edge derived-left-attr derived-right-attr true left-attr right-attr)))
               (delete filters)
               (return (empty-linear-transitive-plan) false))
-            (let [mid-var recursive-call.args[0].name]
-              (let [[recursive-attr recursive-filters recursive-ok] (linear-transitive-edge-and-filters rule rule.params[0] mid-var)]
-                (when (or (not recursive-ok)
-                          (and (> (count attr) 0) (not (= attr recursive-attr)))
-                          (and found-base (not (linear-transitive-filters-same? (slice filters 0) (slice recursive-filters 0)))))
-                  (delete filters)
+            (set! attr "")
+            (set! derived-edge true)
+            (set! derived-left-attr left-attr)
+            (set! derived-right-attr right-attr)
+            (set! found-base true)))
+        (when (> (count rule.rule-calls) 0)
+          (let [recursive-index -1
+                recursive-mid ""]
+            (for [rule-call index rule.rule-calls]
+              (when (and (= rule-call.name name)
+                         (= (count rule-call.args) 2)
+                         (= rule-call.args[0].kind .Var)
+                         (term-var-name? rule-call.args[1] rule.params[1]))
+                (set! recursive-index index)
+                (set! recursive-mid rule-call.args[0].name)))
+            (when (>= recursive-index 0)
+              (if (= (count rule.rule-calls) 1)
+                (let [[recursive-attr recursive-filters recursive-ok] (linear-transitive-edge-and-filters rule rule.params[0] recursive-mid)]
+                  (when (or (not recursive-ok)
+                            (not (linear-derived-plan-compatible? derived-edge derived-left-attr derived-right-attr false recursive-attr ""))
+                            (and found-base (not (linear-transitive-filters-same? (slice filters 0) (slice recursive-filters 0)))))
+                    (delete filters)
+                    (delete recursive-filters)
+                    (return (empty-linear-transitive-plan) false))
+                  (when (not found-base)
+                    (delete filters)
+                    (let [owned-filters (arr.into [dynamic]Clause (slice recursive-filters 0))]
+                      (set! filters owned-filters)))
+                  (set! attr recursive-attr)
+                  (set! derived-edge false)
+                  (set! derived-left-attr recursive-attr)
+                  (set! derived-right-attr "")
                   (delete recursive-filters)
-                  (return (empty-linear-transitive-plan) false))
-                (when (not found-base)
-                  (delete filters)
-                  (let [owned-filters (arr.into [dynamic]Clause (slice recursive-filters 0))]
-                    (set! filters owned-filters)))
-                (set! attr recursive-attr)
-                (delete recursive-filters)
-                (set! found-recursive true)))))))
-    (return (Linear-Transitive-Plan {attr: attr filters: filters}) (and found-base found-recursive))))
+                  (set! found-recursive true))
+                (when (and (= (count rule.clauses) 0)
+                           (= (count rule.rule-calls) 2))
+                  (let [edge-index (if (= recursive-index 0) 1 0)
+                        [left-attr right-attr edge-ok] (derived-edge-call? rules rule.rule-calls[edge-index] rule.params[0] recursive-mid)]
+                    (when (or (not edge-ok)
+                              (not (linear-derived-plan-compatible? derived-edge derived-left-attr derived-right-attr true left-attr right-attr)))
+                      (delete filters)
+                      (return (empty-linear-transitive-plan) false))
+                    (set! attr "")
+                    (set! derived-edge true)
+                    (set! derived-left-attr left-attr)
+                    (set! derived-right-attr right-attr)
+                    (set! found-recursive true)))))))))
+    (return (Linear-Transitive-Plan {attr: attr derived-edge: derived-edge derived-left-attr: derived-left-attr derived-right-attr: derived-right-attr filters: filters}) (and found-base found-recursive))))
 
 (defn linear-transitive-rule-attr [rules: []Rule, name: string] -> [attr: string, ok: bool]
   (let [[plan plan-ok] (linear-transitive-rule-plan rules name)]
@@ -6261,6 +6364,26 @@
 (defn transitive-adjacency-from-db [db: DB, attr: string] -> Transitive-Adjacency-Index
   (transitive-adjacency-from-db-with-filters db attr ([]Clause [])))
 
+(defn transitive-derived-adjacency-from-db [db: DB, left-attr: string, right-attr: string] -> Transitive-Adjacency-Index
+  (let [indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 left-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 left-attr (Value {}))
+        out (make [dynamic]Transitive-Adjacency 0 (- high low))
+        index (make (map u64 int))
+        i low]
+    (while (< i high)
+      (let [datom-index indexes[i]
+            datom db.datoms[datom-index]]
+        (when (and (datom-current-at? db datom-index)
+                   (= datom.v.kind .Entity))
+          (let [[target target-ok] (latest-attr-value db datom.v.entity right-attr)]
+            (when target-ok
+              (let [[target-entity target-entity-ok] (value-as-entity db target)]
+                (when target-entity-ok
+                  (append-transitive-adjacency-edge! (addr out) (addr index) datom.e target-entity.entity)))))))
+      (set! i (+ i 1)))
+    (Transitive-Adjacency-Index {items: out index: index})))
+
 (defn transitive-reverse-adjacency-from-db-with-filters [db: DB, attr: string, filters: []Clause] -> Transitive-Adjacency-Index
   (let [indexes (slice db.aevt 0)
         low (lower-bound-index db indexes "aevt" 0 attr (Value {}))
@@ -6280,6 +6403,16 @@
 
 (defn transitive-reverse-adjacency-from-db [db: DB, attr: string] -> Transitive-Adjacency-Index
   (transitive-reverse-adjacency-from-db-with-filters db attr ([]Clause [])))
+
+(defn transitive-derived-reverse-adjacency-from-db [db: DB, left-attr: string, right-attr: string] -> Transitive-Adjacency-Index
+  (let [forward (transitive-derived-adjacency-from-db db left-attr right-attr)
+        out (make [dynamic]Transitive-Adjacency 0 (count forward.items))
+        index (make (map u64 int))]
+    (for [entry forward.items]
+      (for [target entry.targets]
+        (append-transitive-adjacency-edge! (addr out) (addr index) target entry.entity)))
+    (delete-transitive-adjacency forward)
+    (Transitive-Adjacency-Index {items: out index: index})))
 
 (defn delete-transitive-adjacency [adjacency: Transitive-Adjacency-Index]
   (for [item adjacency.items]
@@ -6506,7 +6639,9 @@
       (append-linear-transitive-target-result! out db call binding rule initial start-entity target target-ok target-entity))))
 
 (defn append-linear-transitive-from-all-starts! [out: ^[dynamic]Binding, db: DB, plan: Linear-Transitive-Plan, call: Rule-Call, binding: Binding, rule: Rule, initial: Binding]
-  (let [adjacency (transitive-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0))]
+  (let [adjacency (if plan.derived-edge
+                    (transitive-derived-adjacency-from-db db plan.derived-left-attr plan.derived-right-attr)
+                    (transitive-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0)))]
     (defer (delete-transitive-adjacency adjacency))
     (for [entry adjacency.items]
       (append-linear-transitive-unbound-from-start-adjacency! out (slice adjacency.items 0) adjacency.index call binding rule entry.entity))))
@@ -6536,14 +6671,18 @@
         (let [[start-entity start-entity-ok] (value-as-entity db start)]
           (when (not start-entity-ok)
             (return))
-          (let [adjacency (transitive-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0))]
+          (let [adjacency (if plan.derived-edge
+                            (transitive-derived-adjacency-from-db db plan.derived-left-attr plan.derived-right-attr)
+                            (transitive-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0)))]
             (defer (delete-transitive-adjacency adjacency))
             (append-linear-transitive-from-start-adjacency! out db adjacency call binding rule initial start-entity.entity)))
         (let [[target target-ok] (binding-lookup initial rule.params[1])]
           (if target-ok
             (let [[target-entity target-entity-ok] (value-as-entity db target)]
               (when target-entity-ok
-                (let [adjacency (transitive-reverse-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0))]
+                (let [adjacency (if plan.derived-edge
+                                  (transitive-derived-reverse-adjacency-from-db db plan.derived-left-attr plan.derived-right-attr)
+                                  (transitive-reverse-adjacency-from-db-with-filters db plan.attr (slice plan.filters 0)))]
                   (defer (delete-transitive-adjacency adjacency))
                   (append-linear-transitive-to-target-adjacency! out db adjacency call binding rule initial target-entity.entity))))
             (append-linear-transitive-from-all-starts! out db plan call binding rule initial)))))))
@@ -7513,6 +7652,9 @@
                        acyclic-depth: acyclic-depth
                        linear-transitive: linear-ok
                        linear-attr: linear-plan.attr
+                       linear-derived-edge: linear-plan.derived-edge
+                       linear-derived-left-attr: linear-plan.derived-left-attr
+                       linear-derived-right-attr: linear-plan.derived-right-attr
                        linear-filters: linear-filters
                        alternating-transitive: alternating-ok
                        alternating-left-name: alternating-plan.left-name
@@ -7532,6 +7674,9 @@
                      acyclic-depth: plan.acyclic-depth
                      linear-transitive: plan.linear-transitive
                      linear-attr: plan.linear-attr
+                     linear-derived-edge: plan.linear-derived-edge
+                     linear-derived-left-attr: plan.linear-derived-left-attr
+                     linear-derived-right-attr: plan.linear-derived-right-attr
                      linear-filters: linear-filters
                      alternating-transitive: plan.alternating-transitive
                      alternating-left-name: plan.alternating-left-name
@@ -7570,7 +7715,11 @@
       (return result-bindings false))
     (let [[rule rule-ok] (first-rule-by-name (slice plan.rules 0) call.name)]
       (when rule-ok
-        (let [linear-plan (Linear-Transitive-Plan {attr: plan.linear-attr filters: plan.linear-filters})]
+        (let [linear-plan (Linear-Transitive-Plan {attr: plan.linear-attr
+                                                   derived-edge: plan.linear-derived-edge
+                                                   derived-left-attr: plan.linear-derived-left-attr
+                                                   derived-right-attr: plan.linear-derived-right-attr
+                                                   filters: plan.linear-filters})]
           (append-linear-transitive-results! (addr result-bindings) db linear-plan call binding rule)))
       (return result-bindings true))))
 

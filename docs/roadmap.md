@@ -89,6 +89,9 @@ Deferred engine batch order:
    Clojure API, then move to `math-bench` and `openrulebench` for rule-engine
    validation. Use these to compare Vev against Datomic, DataScript, and
    Datalevin on shared workloads before moving to larger planner benchmarks.
+   `math-bench` is now started: Q1 is sub-millisecond, Q4 completes through a
+   derived transitive physical operator, and Q2 exposes the next major gap in
+   non-recursive derived-rule joins.
 5. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
    tx-data shapes fail predictably through the portable text/prepared APIs.
 6. Host wrapper ergonomics: keep C as the stable raw ABI, expose durable
@@ -117,6 +120,13 @@ The desired direction is not to add benchmark-specific recognizers. The next
 planner work should introduce reusable operators and make benchmark wins fall
 out of better generic planning: indexed scans, bind joins, hash/semi joins,
 anti joins, rule operators, projection, aggregate, and pull integration.
+
+The active rule-engine pressure point is Datalevin `math-bench` Q2/Q3. Vev can
+now recognize a recursive transitive closure over a derived two-hop edge, which
+makes Q4 finish, but Q2 still spends tens of seconds expanding `adv`, `univ`,
+and name lookups through ordinary binding rows. The next substantial planner
+work should materialize or stream non-recursive derived rules as relations and
+join them with the same physical operator layer as ordinary clauses.
 
 The immediate implementation batch is:
 

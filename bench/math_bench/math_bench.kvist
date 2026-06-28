@@ -1,0 +1,169 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package main)
+
+(import arr "kvist:arr")
+(import cli "kvist:cli")
+(import fmt "core:fmt")
+(import os "core:os")
+(import strconv "core:strconv")
+(import time "core:time")
+(import bench "../support")
+(import vev "../../src/vev")
+
+(def q1-query
+  "[:find [?n ...] :in $ % :where [?d :person/name \"David Scott Warren\"] (adv ?x ?d) (adv ?y ?x) [?y :person/name ?n]]")
+
+(def q2-query
+  "[:find [?n ...] :in $ % :where (adv ?x ?y) (univ ?x ?u) (univ ?y ?u) [?y :person/name ?n]]")
+
+(def q3-query
+  "[:find [?n ...] :in $ % :where (adv ?x ?y) (area ?x ?a1) (area ?y ?a2) [(!= ?a1 ?a2)] [?y :person/name ?n]]")
+
+(def q4-query
+  "[:find [?n ...] :in $ % :where [?x :person/name \"David Scott Warren\"] (anc ?y ?x) [?y :person/name ?n]]")
+
+(def q1-rules
+  "[[(author ?d ?c) [?d :dissertation/cid ?c]] [(adv ?x ?y) [?x :person/advised ?d] (author ?d ?y)]]")
+
+(def q2-rules
+  "[[(author ?d ?c) [?d :dissertation/cid ?c]] [(adv ?x ?y) [?x :person/advised ?d] (author ?d ?y)] [(univ ?c ?u) [?d :dissertation/cid ?c] [?d :dissertation/univ ?u]]]")
+
+(def q3-rules
+  "[[(author ?d ?c) [?d :dissertation/cid ?c]] [(adv ?x ?y) [?x :person/advised ?d] (author ?d ?y)] [(area ?c ?a) [?d :dissertation/cid ?c] [?d :dissertation/area ?a]]]")
+
+(def q4-rules
+  "[[(author ?d ?c) [?d :dissertation/cid ?c]] [(adv ?x ?y) [?x :person/advised ?d] (author ?d ?y)] [(anc ?x ?y) (adv ?x ?y)] [(anc ?x ?y) (adv ?x ?z) (anc ?z ?y)]]")
+
+(defstruct Import-Result {
+  ok: bool
+  error: string
+  parse-us: f64
+  tx-us: f64
+})
+
+(defstruct Query-Run {
+  profiled: vev.Profiled-Result-Set
+  timing: bench.Timing
+})
+
+(defn int-option [name: string, default-value: int] -> int
+  (let [text (cli.option os.args name "")]
+    (when (= text "")
+      (return default-value))
+    (let [[parsed ok] (strconv.parse_int text)]
+      (if ok
+        (int parsed)
+        default-value))))
+
+(defn transact-file! [conn: ^vev.Conn, path: string] -> Import-Result
+  (let [[data read-err] (os.read_entire_file path context.allocator)]
+    (when (!= read-err nil)
+      (return (Import-Result {ok: false error: (fmt.tprintf "read_failed:%s" path)})))
+    (defer (delete data))
+    (let [parse-start (time.now)
+          prepared (vev.prepare-tx-text (string data))
+          parse-us (bench.elapsed-us parse-start)]
+      (when (not prepared.ok)
+        (let [error prepared.error]
+          (vev.delete-prepared-tx-data-shallow prepared)
+          (return (Import-Result {ok: false error: error parse-us: parse-us}))))
+      (let [tx-start (time.now)
+            report (vev.transact-prepared conn prepared)
+            tx-us (bench.elapsed-us tx-start)]
+        (vev.delete-prepared-tx-data-shallow prepared)
+        (when (not report.ok)
+          (let [error report.error]
+            (vev.delete-tx-report-shallow report)
+            (return (Import-Result {ok: false error: error parse-us: parse-us tx-us: tx-us}))))
+        (vev.delete-live-tx-report-shallow report)
+        (return (Import-Result {ok: true error: "" parse-us: parse-us tx-us: tx-us}))))))
+
+(defn load-math-db! [conn: ^vev.Conn, schema-path: string, values-prefix: string, values-chunks: int] -> Import-Result
+  (let [schema (transact-file! conn schema-path)
+        total-parse-us schema.parse-us
+        total-tx-us schema.tx-us]
+    (when (not schema.ok)
+      (return schema))
+    (for [index (arr.range 0 values-chunks)]
+      (let [path (fmt.tprintf "%s-%04d.edn" values-prefix index)
+            chunk (transact-file! conn path)]
+        (set! total-parse-us (+ total-parse-us chunk.parse-us))
+        (set! total-tx-us (+ total-tx-us chunk.tx-us))
+        (when (not chunk.ok)
+          (return (Import-Result {ok: false error: chunk.error parse-us: total-parse-us tx-us: total-tx-us})))))
+    (return (Import-Result {ok: true error: "" parse-us: total-parse-us tx-us: total-tx-us}))))
+
+(defn run-query [db: vev.DB, query: string, rules: string, warmups: int, samples-count: int] -> Query-Run
+  (let [prepared (vev.prepare-query-text-with-rules query rules)]
+    (defer (vev.delete-prepared-query-shallow prepared))
+    (for [_ (arr.range 0 warmups)]
+      (let [warmup (vev.q-prepared-profiled-with-inputs db prepared ([]vev.Query-Input []))]
+        (vev.delete-profiled-result-set-shallow warmup)))
+    (let [samples (make [dynamic]f64 0 samples-count)]
+      (defer (delete samples))
+      (for [_ (arr.range 0 samples-count)]
+        (let [start (time.now)
+              profiled (vev.q-prepared-profiled-with-inputs db prepared ([]vev.Query-Input []))
+              elapsed (bench.elapsed-us start)]
+          (arr.push! samples elapsed)
+          (vev.delete-profiled-result-set-shallow profiled)))
+      (let [last (vev.q-prepared-profiled-with-inputs db prepared ([]vev.Query-Input []))
+            timing (bench.timing-from-samples (slice samples 0))]
+        (Query-Run {profiled: last timing: timing})))))
+
+(defn print-query! [db: vev.DB, name: string, query: string, rules: string, warmups: int, samples: int]
+  (let [run (run-query db query rules warmups samples)]
+    (fmt.printf
+      "engine=vev workload=math-%s ok=%v rows=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d rule_calls=%d rule_iterations=%d max_bindings=%d\n"
+      name
+      run.profiled.result.ok
+      (count run.profiled.result.rows)
+      run.timing.min-us
+      run.timing.median-us
+      run.timing.p90-us
+      run.timing.max-us
+      run.profiled.stats.steps
+      run.profiled.stats.clauses
+      run.profiled.stats.clause-candidates
+      run.profiled.stats.rule-calls
+      run.profiled.stats.rule-iterations
+      run.profiled.stats.max-intermediate-bindings)
+    (vev.delete-profiled-result-set-shallow run.profiled)))
+
+(defn run-named! [db: vev.DB, name: string, warmups: int, samples: int]
+  (cond
+    (= name "q1") (print-query! db "q1" q1-query q1-rules warmups samples)
+    (= name "q2") (print-query! db "q2" q2-query q2-rules warmups samples)
+    (= name "q3") (print-query! db "q3" q3-query q3-rules warmups samples)
+    (= name "q4") (print-query! db "q4" q4-query q4-rules warmups samples)
+    :else (fmt.printf "engine=vev workload=math-%s ok=false error=unknown_workload\n" name)))
+
+(defn should-run? [workload: string, name: string] -> bool
+  (or (= workload "all") (= workload name)))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [schema-path (cli.option os.args "--schema" "build/math_bench/schema.edn")
+        values-prefix (cli.option os.args "--values-prefix" "build/math_bench/values")
+        values-chunks (int-option "--values-chunks" 0)
+        warmups (int-option "--warmups" 1)
+        samples (max 1 (int-option "--samples" 3))
+        workload (cli.option os.args "--workloads" "all")
+        conn (vev.create-conn)
+        load-start (time.now)
+        imported (load-math-db! (addr conn) schema-path values-prefix values-chunks)
+        load-us (bench.elapsed-us load-start)]
+    (when (not imported.ok)
+      (fmt.printf "engine=vev workload=math-import ok=false error=%s parse_us=%.0f tx_us=%.0f load_us=%.0f\n" imported.error imported.parse-us imported.tx-us load-us)
+      (return))
+    (fmt.printf "engine=vev workload=math-import ok=true datoms=%d current=%d parse_us=%.0f tx_us=%.0f load_us=%.0f\n" (count conn.db.datoms) (count conn.db.current) imported.parse-us imported.tx-us load-us)
+    (when (should-run? workload "q1")
+      (run-named! conn.db "q1" warmups samples))
+    (when (should-run? workload "q2")
+      (run-named! conn.db "q2" warmups samples))
+    (when (should-run? workload "q3")
+      (run-named! conn.db "q3" warmups samples))
+    (when (should-run? workload "q4")
+      (run-named! conn.db "q4" warmups samples))))
