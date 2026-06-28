@@ -435,12 +435,10 @@ optional representation. Typed result rendering runs directly from typed
 columns; aggregate and fallback rendering materialize through the audited helper
 instead of reading `post-rel.tuples` directly.
 
-The remaining relation-engine fallback operators now follow the same rule.
-Function clauses, `not`, `or`, fallback bound clauses, fallback rule calls,
-`ground`, `get-else`, and `get-some` materialize from typed rows before calling
-the older binding-oriented implementations. These paths are not the final
-performance target, but they keep the logical relation API sound while typed
-producers are added one operator at a time.
+Binding-oriented relation-engine fallback operators now have an explicit
+typed-row boundary. Unsupported or final API paths still materialize through
+`query-relation-materialized-bindings`, while common row-local operators stream
+one typed input row at a time and write their outputs back into typed columns.
 
 Function clauses now have the first streaming typed fallback replacement. When
 the input relation is typed and no native callback registry is involved, the
@@ -475,6 +473,11 @@ path is still the materialized rule relation plus typed join when eligible, but
 the remaining per-row fallback no longer materializes the whole input relation
 first: it converts one typed input row to a binding, reuses existing rule-call
 semantics, and appends outputs back into typed columns.
+
+Generic bound-clause fallback also streams. The specialized entity-bound
+attribute clause remains the fastest path, and other bound shapes such as
+value-bound joins now convert one typed row to a binding, run the existing
+clause matcher, and write matching rows back into typed columns.
 
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
