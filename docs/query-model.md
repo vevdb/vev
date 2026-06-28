@@ -223,6 +223,11 @@ representable as primitive join keys. Typed relation joins use the same
 entity/int normalization, including single-column joins, so the fast typed path
 can handle common Datomic-style joins where entity ids appear as either entity
 values or integer ids.
+The compatibility binding evaluator uses the same predicate equality when it
+merges existing variable bindings, including rule-call outputs. This matters
+for DataScript/Datomic-style ref values: a rule can bind `?x` from an integer
+attribute in one clause and from a ref/entity-valued attribute in another, and
+unification must treat those as equal when they identify the same entity.
 
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the
