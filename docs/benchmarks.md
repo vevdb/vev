@@ -144,8 +144,8 @@ EDN chunks, so query timings should be read separately from import timings.
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
 | `q1` | 0.51ms | 2 | Good selective/bound rule path |
-| `q2` | 12.2s | 34,073 | Rule expansion fixed; broad materialized-rule joins remain slow |
-| `q3` | 10.0s | 29,317 | Same remaining broad materialized-rule join cost plus predicate filtering |
+| `q2` | 11.2s | 34,073 | Rule expansion fixed; broad materialized-rule joins remain slow |
+| `q3` | 8.47s | 29,317 | Same remaining broad materialized-rule join cost plus predicate filtering |
 | `q4` | 1.46s | 135 | Completes through derived transitive closure; bound final lookup threshold was raised after this measurement |
 
 Important result: Q4 originally did not finish within several minutes because
@@ -174,9 +174,14 @@ path recognizes two important general physical shapes:
 
 The remaining Q2/Q3 cost is not repeated rule invocation anymore
 (`rule_calls=3`). It is broad materialized relation construction and joins over
-hundreds of thousands of rows. The next engine work should make these rule
-relations columnar/streamed and join them with typed merge/hash operators
-instead of projecting through generic `Binding` rows and string-key hash joins.
+hundreds of thousands of rows. The current join layer now uses typed hash joins
+for single-column joins too, with entity/int key normalization matching Vev
+query equality, and moderately sized bound clause steps use indexed bind joins
+instead of materializing a whole attr relation. Direct physical rule builders
+also fill typed relation columns while producing compatibility binding rows.
+The next engine work should make these rule relations more fully columnar/
+streamed and remove the remaining generic `Binding` projection and string-key
+hash costs from the broad path.
 
 ## MusicBrainz Import Smoke
 

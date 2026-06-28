@@ -163,9 +163,11 @@ per input row. Two important general shapes have direct builders:
   sorted attr/entity index when all datoms are current
 
 This is enough to turn math-bench Q2/Q3 from repeated rule expansion into three
-materialized rule calls, but the implementation still projects those large
-relations through generic `Binding` rows. The next performance step is
-columnar/streamed materialized rule relations and typed joins.
+materialized rule calls. Direct physical builders now populate typed relation
+columns while keeping compatibility binding rows, but the broad path still pays
+for generic `Binding` projection in joins/results. The next performance step is
+columnar/streamed materialized rule relations and typed joins that avoid those
+remaining row-shaped costs.
 
 ## Query Engine Strategy
 
@@ -186,8 +188,9 @@ over `:in` sources such as `$rows`, and named DB source clauses. It now runs
 ordinary supported `$` queries through the same path, not only named-source
 queries. Execution is step-driven: each where step transforms the current
 relation, so selective bound clauses can run before broad clauses or rules when
-the query order says so. Small current relations use bound-clause expansion
-instead of materializing a full datom-pattern relation and joining it back.
+the query order says so. Current relations that share variables with a later
+datom clause can use indexed bind-clause expansion instead of materializing a
+full datom-pattern relation and joining it back.
 Relations carry per-attribute source metadata so lookup refs in joins resolve
 against the appropriate named DB source when needed. This is intentionally
 conservative: source-qualified synthetic primary collection DB
@@ -198,7 +201,10 @@ Relation joins now include a DataScript-shaped hash join for primitive common
 variables. The join path supports compound keys across one or more shared
 variables, normalizes entity IDs and integer IDs consistently with Vev query
 equality, and falls back to the semantic nested join when values are not safely
-representable as primitive join keys.
+representable as primitive join keys. Typed relation joins use the same
+entity/int normalization, including single-column joins, so the fast typed path
+can handle common Datomic-style joins where entity ids appear as either entity
+values or integer ids.
 
 The older query-shape recognizers are not the long-term query strategy. They
 are useful prototypes for physical operators that should be folded under the

@@ -126,22 +126,25 @@ recognize recursive transitive closure over a derived two-hop edge, which makes
 Q4 finish, and it can materialize pure non-recursive helper rules as relations.
 Q2/Q3 no longer spend hundreds of thousands of calls expanding `adv`/`univ`/
 `area`; they now execute three materialized rule calls. The remaining cost is
-constructing and joining those broad materialized rule relations through generic
-`Binding` rows and string-key joins. The next substantial planner work should
-move materialized rule relations onto the typed/columnar relation operators and
-prefer streamed/merge joins where the attrs and variable columns make that
-possible.
+constructing, projecting, and joining broad materialized rule relations while
+still carrying generic `Binding` rows. Recent work moved more of the path onto
+typed relation columns, including single-column typed hash joins with
+entity/int normalization and indexed bind-clause expansion for moderately sized
+relations. The next substantial planner work should remove the remaining
+generic row-shaped projection from materialized rule relations and prefer
+streamed/merge joins where the attrs and variable columns make that possible.
 
 The immediate implementation batch is:
 
 1. Define a typed relation storage direction: keep logical relation attrs, but
    store hot rows as typed struct-of-arrays columns and keep the existing
    `Binding` API as a compatibility veneer during migration.
-2. Port materialized rule relations onto that storage first, because
+2. Port materialized rule relations fully onto that storage first, because
    math-bench Q2/Q3 are now dominated by broad `adv`/`univ`/`area` relation
-   construction and joins.
+   projection and joins.
 3. Port one join family end-to-end, starting with primitive entity/int/string
-   columns and replacing compound string-key hash joins in the hot path.
+   columns and replacing the remaining compound string-key hash joins in the
+   hot path.
 4. Benchmark after each migration with `datascript-bench` q1-q5/qpred,
    `math-bench` q1-q4, and focused relation-source compound join tests.
 5. Then build the generic semi-naive rules engine on top of the improved
