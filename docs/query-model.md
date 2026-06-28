@@ -507,11 +507,12 @@ The specialized entity/attribute bound-clause scan and the generic DB clause
 scan also feed the same builder now, so typed data-clause output no longer
 needs to keep compatibility row storage solely for later fallback consumers.
 Generic DB clause scans now use a typed row matcher inside the candidate loop:
-the operator still resolves the scan range from one row binding, but each
+the operator resolves scan ranges directly from typed columns, and each
 candidate datom is checked directly against typed columns and repeated clause
-variables before appending typed output. This removes the previous clone-and-
-mutate `Binding` per candidate from the typed path while preserving reverse
-attribute and same-variable semantics.
+variables before appending typed output. This removes the previous row
+`Binding` conversion from both scan-bound selection and candidate matching on
+the generic typed DB-clause path while preserving reverse attribute and
+same-variable semantics.
 
 Rule-call projection itself is also typed for the common non-distinct cases.
 Distinct variable projections keep the fast column-clone path, while constants,

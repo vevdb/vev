@@ -950,6 +950,23 @@
     .Var (return (query-relation-typed-row-value rel row term.name))
     :else (return (Value {}) false)))
 
+(defn query-relation-resolve-typed-entity-term [db: DB, rel: Query-Relation, row: int, term: Term] -> [value: Value, ok: bool]
+  (when (= term.kind .LookupRef)
+    (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
+      (return (value-entity entity) lookup-ok)))
+  (let [[resolved resolved-ok] (query-relation-resolve-typed-term rel row term)]
+    (when (not resolved-ok)
+      (return resolved false))
+    (let [[entity entity-ok] (value-as-entity db resolved)]
+      (when entity-ok
+        (return entity true)))
+    (when (= resolved.kind .Keyword)
+      (let [[entity ident-ok] (schema-entity-for-attr db resolved.text)]
+        (return (value-entity entity) ident-ok)))
+    (when (= resolved.kind .Int)
+      (return (value-entity (u64 resolved.int-value)) true))
+    (return resolved true)))
+
 (defstruct Relation-Column-Source {
   side: int
   index: int
@@ -6026,10 +6043,9 @@
                       reverse-attr: false
                       forward-attr: ""}))
 
-(defn clause-index-scan [db: DB, clause: Clause, binding: Binding] -> Clause-Index-Scan
-  (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
-        [a-value a-ok] (resolve-term clause.a binding)
-        [v-value v-ok] (resolve-term clause.v binding)
+(defn clause-index-scan-resolved [db: DB, clause: Clause, e-value-in: Value, e-ok: bool, a-value: Value, a-ok: bool, v-value-in: Value, v-ok-in: bool, reverse-source-value: Value, reverse-source-ok: bool] -> Clause-Index-Scan
+  (let [v-value v-value-in
+        v-ok v-ok-in
         indexes: []int (slice db.eavt 0)
         low 0
         high (count db.eavt)]
@@ -6050,17 +6066,16 @@
                (= a-value.kind .Keyword)
                (reverse-attr? a-value.text))
       (let [forward-attr (forward-attr-for-reverse a-value.text) :defer]
-        (let [[source-entity source-ok] (resolve-entity-term db clause.v binding)]
-          (when source-ok
-            (set! v-value source-entity)
-            (set! v-ok true)))
-        (when (and e-ok (not (= e-value.kind .Entity)))
+        (when reverse-source-ok
+          (set! v-value reverse-source-value)
+          (set! v-ok true))
+        (when (and e-ok (not (= e-value-in.kind .Entity)))
           (return (empty-clause-index-scan db)))
         (when (and v-ok (not (= v-value.kind .Entity)))
           (return (empty-clause-index-scan db)))
         (if e-ok
           (let [candidate-indexes (slice db.vaet 0)
-                ref-value (value-entity e-value.entity)
+                ref-value (value-entity e-value-in.entity)
                 candidate-low (lower-bound-index db candidate-indexes "vaet" 0 "" ref-value)
                 candidate-high (upper-bound-index db candidate-indexes "vaet" 0 "" ref-value)]
             (set! indexes candidate-indexes)
@@ -6082,7 +6097,7 @@
         (return (Clause-Index-Scan {indexes: indexes
                                     index: low
                                     high: high
-                                    e-value: e-value
+                                    e-value: e-value-in
                                     e-ok: e-ok
                                     a-value: a-value
                                     a-ok: a-ok
@@ -6092,12 +6107,12 @@
                                     forward-attr: (forward-attr-for-reverse a-value.text)}))))
     (if (and e-ok a-ok)
       (do
-        (when (not (and (= e-value.kind .Entity)
+        (when (not (and (= e-value-in.kind .Entity)
                         (= a-value.kind .Keyword)))
           (return (empty-clause-index-scan db)))
         (let [candidate-indexes (slice db.eavt 0)
-              candidate-low (lower-bound-index db candidate-indexes "eavt-ea" e-value.entity a-value.text (Value {}))
-              candidate-high (upper-bound-index db candidate-indexes "eavt-ea" e-value.entity a-value.text (Value {}))]
+              candidate-low (lower-bound-index db candidate-indexes "eavt-ea" e-value-in.entity a-value.text (Value {}))
+              candidate-high (upper-bound-index db candidate-indexes "eavt-ea" e-value-in.entity a-value.text (Value {}))]
           (set! indexes candidate-indexes)
           (set! low candidate-low)
           (set! high candidate-high))))
@@ -6113,11 +6128,11 @@
           (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) e-ok)
       (do
-        (when (not (= e-value.kind .Entity))
+        (when (not (= e-value-in.kind .Entity))
           (return (empty-clause-index-scan db)))
         (let [candidate-indexes (slice db.eavt 0)
-              candidate-low (lower-bound-index db candidate-indexes "eavt" e-value.entity "" (Value {}))
-              candidate-high (upper-bound-index db candidate-indexes "eavt" e-value.entity "" (Value {}))]
+              candidate-low (lower-bound-index db candidate-indexes "eavt" e-value-in.entity "" (Value {}))
+              candidate-high (upper-bound-index db candidate-indexes "eavt" e-value-in.entity "" (Value {}))]
           (set! indexes candidate-indexes)
           (set! low candidate-low)
           (set! high candidate-high))))
@@ -6141,7 +6156,7 @@
     (Clause-Index-Scan {indexes: indexes
                         index: low
                         high: high
-                        e-value: e-value
+                        e-value: e-value-in
                         e-ok: e-ok
                         a-value: a-value
                         a-ok: a-ok
@@ -6149,6 +6164,20 @@
                         v-ok: v-ok
                         reverse-attr: false
                         forward-attr: ""})))
+
+(defn clause-index-scan [db: DB, clause: Clause, binding: Binding] -> Clause-Index-Scan
+  (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
+        [a-value a-ok] (resolve-term clause.a binding)
+        [v-value v-ok] (resolve-term clause.v binding)
+        [reverse-source-value reverse-source-ok] (resolve-entity-term db clause.v binding)]
+    (clause-index-scan-resolved db clause e-value e-ok a-value a-ok v-value v-ok reverse-source-value reverse-source-ok)))
+
+(defn clause-index-scan-typed-row [db: DB, rel: Query-Relation, row: int, clause: Clause] -> Clause-Index-Scan
+  (let [[e-value e-ok] (query-relation-resolve-typed-entity-term db rel row clause.e)
+        [a-value a-ok] (query-relation-resolve-typed-term rel row clause.a)
+        [v-value v-ok] (query-relation-resolve-typed-term rel row clause.v)
+        [reverse-source-value reverse-source-ok] (query-relation-resolve-typed-entity-term db rel row clause.v)]
+    (clause-index-scan-resolved db clause e-value e-ok a-value a-ok v-value v-ok reverse-source-value reverse-source-ok)))
 
 (defn clause-index-scan-candidate? [scan: Clause-Index-Scan, datom: Datom] -> bool
   (if scan.reverse-attr
@@ -11360,8 +11389,8 @@
                                typed-rows: builder.typed-rows
                                has-typed-columns: builder.typed-ok}) true))))
 
-(defn append-typed-bound-db-clause-scan-row! [builder: ^Query-Relation-Builder, attrs: []string, db: DB, rel: Query-Relation, row: int, binding: Binding, clause-value: Clause, all-current: bool, stats: ^Query-Stats] -> bool
-  (let [scan (clause-index-scan db clause-value binding)]
+(defn append-typed-bound-db-clause-scan-row! [builder: ^Query-Relation-Builder, attrs: []string, db: DB, rel: Query-Relation, row: int, clause-value: Clause, all-current: bool, stats: ^Query-Stats] -> bool
+  (let [scan (clause-index-scan-typed-row db rel row clause-value)]
     (defer (delete-clause-index-scan scan))
     (let [scan-index scan.index]
       (while (< scan-index scan.high)
@@ -11391,20 +11420,12 @@
           all-current (all-datoms-current? db)
           row 0]
       (while (< row rel.typed-rows)
-        (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
-          (when (not binding-ok)
-            (delete attrs)
-            (delete attr-sources)
-            (delete-query-relation-builder builder)
-            (return (query-relation-empty) false))
-          (set! stats^.clauses (+ stats^.clauses 1))
-          (when (not (append-typed-bound-db-clause-scan-row! (addr builder) (slice attrs 0) db rel row binding clause-value all-current stats))
-            (delete binding.items)
-            (delete attrs)
-            (delete attr-sources)
-            (delete-query-relation-builder builder)
-            (return (query-relation-empty) false))
-          (delete binding.items))
+        (set! stats^.clauses (+ stats^.clauses 1))
+        (when (not (append-typed-bound-db-clause-scan-row! (addr builder) (slice attrs 0) db rel row clause-value all-current stats))
+          (delete attrs)
+          (delete attr-sources)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false))
         (set! row (+ row 1)))
       (return (Query-Relation {attrs: attrs
                                attr-sources: attr-sources
