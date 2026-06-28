@@ -150,6 +150,9 @@ Status labels:
 - `done` Keep compatible materialized helper-rule branch output typed and deduped.
   Materialized non-recursive helper rules now project branch outputs into typed relations when possible and append them through a typed unique accumulator keyed by projected columns. Unsupported projections flush through the audited materialization helper and keep the existing `unique-bindings` fallback.
 
+- `done` Stream recursive rule body results into memo insertion.
+  Positive recursive rule fixpoint loops now append directly from the `Query-Relation` produced by rule-body evaluation. Typed-only relations create one temporary binding row at a time for memo insertion instead of allocating a full materialized result array before appending.
+
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
 

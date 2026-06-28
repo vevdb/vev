@@ -536,9 +536,11 @@ those valid relation views as they are discovered. Compatible typed branch joins
 for the same broad rule call are unioned in typed columns instead of always
 materializing through `Binding` rows. Materialized non-recursive helper rules use
 the same typed unique accumulation when projected branch layouts are compatible.
-The memo/delta row tables remain the source of truth, so the next rule-engine
-step is typed-first memo storage: make compact relation columns the primary
-structure for supported rule outputs instead of a cache beside binding rows.
+Recursive rule-body results now stream directly from the resulting
+`Query-Relation` into memo insertion, avoiding a full materialized
+`[dynamic]Binding` array between body evaluation and memo append. The memo/delta
+row tables remain the source of truth, so fully typed-first memo storage is now
+backlog/next-phase work rather than the active phase gate.
 
 Near-term query work should expand the relation engine in this order:
 
@@ -552,7 +554,9 @@ Near-term query work should expand the relation engine in this order:
    rule-call joins are now relation-native, and valid memo/delta relation caches
    append primitive-compatible outputs incrementally. Multi-branch broad rule
    calls and materialized helper rules can union compatible branch joins in typed
-   columns. Typed-first memo/delta storage remains the main row-shaped boundary.
+   columns. Rule body results stream into memo insertion instead of allocating a
+   full intermediate binding array. Typed-first memo/delta storage remains
+   backlog work.
 
 The transaction side has the same split:
 

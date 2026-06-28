@@ -8112,17 +8112,39 @@
             (return current)))))
     current))
 
-(defn bindings-after-rule-body-memo [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rule: Rule] -> [dynamic]Binding
-  (let [rel (query-relation-after-rule-body-memo db memo rule false -1)
-        bindings (query-relation-materialized-bindings rel)]
-    (delete-query-relation rel)
-    bindings))
+(defn rule-memo-append-relation-results! [memo: ^[dynamic]Rule-Memo-Entry, rule: Rule, rel: Query-Relation] -> bool
+  (let [changed false]
+    (if (> (count rel.tuples) 0)
+      (for [result rel.tuples]
+        (when (rule-memo-append-result! memo rule result)
+          (set! changed true)))
+      (when rel.has-typed-columns
+        (let [row 0]
+          (while (< row rel.typed-rows)
+            (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
+              (when binding-ok
+                (when (rule-memo-append-result! memo rule binding)
+                  (set! changed true))
+                (delete binding.items)))
+            (set! row (+ row 1))))))
+    changed))
 
-(defn bindings-after-rule-body-memo-with-delta [db: DB, memo: ^[dynamic]Rule-Memo-Entry, rule: Rule, delta-call-index: int] -> [dynamic]Binding
-  (let [rel (query-relation-after-rule-body-memo db memo rule true delta-call-index)
-        bindings (query-relation-materialized-bindings rel)]
-    (delete-query-relation rel)
-    bindings))
+(defn rule-memo-append-relation-results-to-delta! [memo: ^[dynamic]Rule-Memo-Entry, next-delta: ^[dynamic]Rule-Memo-Entry, rule: Rule, rel: Query-Relation] -> bool
+  (let [changed false]
+    (if (> (count rel.tuples) 0)
+      (for [result rel.tuples]
+        (when (rule-memo-append-result-to-delta! memo next-delta rule result)
+          (set! changed true)))
+      (when rel.has-typed-columns
+        (let [row 0]
+          (while (< row rel.typed-rows)
+            (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
+              (when binding-ok
+                (when (rule-memo-append-result-to-delta! memo next-delta rule binding)
+                  (set! changed true))
+                (delete binding.items)))
+            (set! row (+ row 1))))))
+    changed))
 
 (defn first-rule-call-index [rule: Rule] -> [index: int, ok: bool]
   (for [step rule.body-steps]
@@ -8162,19 +8184,17 @@
     (for [rule plan.rules]
       (let [[_ has-call] (first-rule-call-index rule)]
         (when (not has-call)
-          (let [results (bindings-after-rule-body-memo db (addr memo) rule)]
-            (for [result results]
-              (discard (rule-memo-append-result-to-delta! (addr memo) (addr memo) rule result)))
-            (delete results)))))
+          (let [rel (query-relation-after-rule-body-memo db (addr memo) rule false -1)]
+            (discard (rule-memo-append-relation-results-to-delta! (addr memo) (addr memo) rule rel))
+            (delete-query-relation rel)))))
     (while (rule-memo-has-delta? (slice memo 0))
       (let [next-delta (rule-memo-build (slice plan.rules 0))]
         (for [rule plan.rules]
           (let [delta-call-indexes (rule-call-indexes rule)]
             (for [delta-call-index delta-call-indexes]
-              (let [results (bindings-after-rule-body-memo-with-delta db (addr memo) rule delta-call-index)]
-                (for [result results]
-                  (discard (rule-memo-append-result-to-delta! (addr memo) (addr next-delta) rule result)))
-                (delete results)))
+              (let [rel (query-relation-after-rule-body-memo db (addr memo) rule true delta-call-index)]
+                (discard (rule-memo-append-relation-results-to-delta! (addr memo) (addr next-delta) rule rel))
+                (delete-query-relation rel)))
             (delete delta-call-indexes)))
         (rule-memo-replace-deltas! (addr memo) (slice next-delta 0))
         (delete-rule-memo next-delta)))
@@ -8193,11 +8213,10 @@
     (while changed
       (set! changed false)
       (for [rule plan.rules]
-        (let [results (bindings-after-rule-body-memo db (addr memo) rule)]
-          (for [result results]
-            (when (rule-memo-append-result! (addr memo) rule result)
-              (set! changed true)))
-          (delete results))))
+        (let [rel (query-relation-after-rule-body-memo db (addr memo) rule false -1)]
+          (when (rule-memo-append-relation-results! (addr memo) rule rel)
+            (set! changed true))
+          (delete-query-relation rel))))
     (return (bindings-after-rule-call-from-memo (slice memo 0) call binding) true)))
 
 (defn bindings-after-rule-call-depth-with-fns [db: DB, rules: []Rule, call: Rule-Call, binding: Binding, depth: int, source: string, has-source: bool, registry: []Native-Query-Fn] -> [dynamic]Binding
