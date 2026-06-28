@@ -174,10 +174,14 @@ Single-column typed entity/int joins hash on numeric keys, keeping common id
 joins out of the allocation-heavy string-key path. For single-branch cached or
 direct physical helper rules, distinct-variable rule-call projection can return
 a typed relation directly instead of projecting to generic bindings, deduping,
-and rebuilding typed columns immediately. The broad path still pays for generic
-`Binding` construction in joins/results and final dedupe. The next performance
-step is columnar/streamed materialized rule relations and typed joins that avoid
-those remaining row-shaped costs.
+and rebuilding typed columns immediately. Compound typed joins whose first
+shared variable is an entity id can hash that leading entity and verify the
+remaining shared columns in candidate buckets, which is useful for Datomic-style
+joins such as `?entity/?attribute-value` pairs without relying on formatted
+compound string keys. The broad path still pays for generic `Binding`
+construction in joins/results and final dedupe. The next performance step is
+columnar/streamed materialized rule relations and typed joins that avoid those
+remaining row-shaped costs.
 
 ## Query Engine Strategy
 

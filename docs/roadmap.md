@@ -134,7 +134,10 @@ also have a direct bound `[?e :attr ?v]` data-clause operator backed by `eavt`,
 and single-column typed entity/int joins can hash on numeric keys instead of
 formatted strings. Single-branch cached/direct physical helper rules can now
 project distinct-variable calls back as typed relations directly, avoiding one
-project/dedupe/rebuild cycle. The remaining cost is joining and deduping broad
+project/dedupe/rebuild cycle. Compound typed joins can also hash a leading
+entity-id common variable and verify the remaining common columns in the
+candidate bucket, avoiding formatted compound string keys for common
+Datomic-style entity joins. The remaining cost is joining and deduping broad
 materialized rule relations while still carrying generic `Binding` rows as a
 compatibility veneer. The next substantial planner work should remove that
 remaining row-shaped construction from the materialized broad path and prefer
