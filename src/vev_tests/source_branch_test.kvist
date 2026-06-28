@@ -22,6 +22,14 @@
       (return true)))
   false)
 
+(defn source-branch-has-int? [result: vev.Result-Set, value: i64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .Int)
+               (= row.values[0].int-value value))
+      (return true)))
+  false)
+
 (t.deftest source-db-multi-clause-not-or-branches-stay-typed
   (defer (free_all context.allocator))
   (let [left (vev.create-conn)
@@ -126,3 +134,35 @@
     (t.is (source-branch-has-entity? result 2))
     (t.is (source-branch-has-entity? result 3))
     (t.is (not leaked-local.ok))))
+
+(t.deftest source-input-branch-pipelines-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":id") (vev.value-int 1))
+                  (vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan"))
+                  (vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 30))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":id") (vev.value-int 2))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Petr"))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":age") (vev.value-int 41))
+                  (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":id") (vev.value-int 3))
+                  (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":name") (vev.value-string "Oleg"))
+                  (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":age") (vev.value-int 50))]))
+        inputs ([]vev.Query-Input [(vev.query-input-scalar rows)])
+        not-result (vev.q-text-with-inputs
+                     conn.db
+                     "[:find ?e :in $rows :where [$rows ?e :id ?id] (not [$rows ?e :name \"Petr\"])]"
+                     inputs)
+        or-join-result (vev.q-text-with-inputs
+                         conn.db
+                         "[:find ?e :in $rows :where [$rows ?e :id ?id] (or-join [?e] (and [$rows ?e :name ?name] [(= ?name \"Ivan\")]) (and [$rows ?e :age ?age] [(> ?age 45)]))]"
+                         inputs)]
+    (t.is not-result.ok not-result.error)
+    (t.is (= (count not-result.rows) 2))
+    (t.is (source-branch-has-int? not-result 1))
+    (t.is (source-branch-has-int? not-result 3))
+    (t.is or-join-result.ok or-join-result.error)
+    (t.is (= (count or-join-result.rows) 2))
+    (t.is (source-branch-has-int? or-join-result 1))
+    (t.is (source-branch-has-int? or-join-result 3))))

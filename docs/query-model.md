@@ -516,7 +516,8 @@ directly from typed row values and checks candidate datoms without building a
 `Binding`. Plain multi-clause DB negative groups, including source-qualified
 clauses and nested plain `not` groups, now run each outer typed row through a
 branch-local typed relation, so inner clause matching can continue to use typed
-clause scans recursively. `not-join`, branch-local relation-source matching,
+clause scans recursively. Source-input clauses such as `$rows` also run through
+the typed relation-source extender inside plain branch pipelines. `not-join`
 and operators outside the typed evaluator still materialize one binding at a
 time to reuse existing semantics, but the surviving output stays typed instead
 of allocating a full intermediate binding relation. Plain branch-local predicate
@@ -539,8 +540,9 @@ typed columns. Plain branch-local predicate, function, and nested `not` steps
 use the same ordered typed pipeline when their operators are supported.
 Plain `or-join` branch pipelines use the same typed branch evaluator and append
 only declared join vars to the output relation, preserving branch-local
-variables such as predicate helper outputs. Branch-local relation-source
-matching, native or dynamic operators outside the typed evaluator, or more
+variables such as predicate helper outputs. Plain branch-local source-input
+clauses such as `$rows` stay on the typed relation-source path for both `or` and
+`or-join`. Native or dynamic operators outside the typed evaluator, or more
 complex local pipelines reuse the existing single-binding branch semantics, and
 branch outputs are appended back into typed columns so `or` no longer forces a
 full relation materialization.

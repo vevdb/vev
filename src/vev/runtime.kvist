@@ -12266,10 +12266,32 @@
       (return false)))
   true)
 
-(defn query-relation-apply-branch-local-step-typed [db: DB, sources: []DB-Source, rel: Query-Relation, step: Query-Step, group: Not-Group, stats: ^Query-Stats, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+(defn branch-has-source-input? [query: Query, branch: Not-Group] -> bool
+  (let [index 0]
+    (while (< index (count branch.clauses))
+      (let [item branch.clauses[index]]
+        (when (and item.has-source
+                   (query-source-input? query item.source))
+          (return true)))
+      (set! index (+ index 1))))
+  (for [child branch.not-groups]
+    (when (branch-has-source-input? query child)
+      (return true)))
+  false)
+
+(defn or-group-has-source-input? [query: Query, group: Or-Group] -> bool
+  (for [branch group.branches]
+    (when (branch-has-source-input? query branch)
+      (return true)))
+  false)
+
+(defn query-relation-apply-branch-local-step-typed [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, step: Query-Step, group: Not-Group, stats: ^Query-Stats, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (case step.kind
     .Clause
-      (query-relation-apply-bound-db-clause-typed-scan-with-sources db sources rel group.clauses[step.index] stats)
+      (if (and group.clauses[step.index].has-source
+               (query-source-input? query group.clauses[step.index].source))
+        (query-relation-apply-source-input-clause-typed query inputs rel group.clauses[step.index])
+        (query-relation-apply-bound-db-clause-typed-scan-with-sources db sources rel group.clauses[step.index] stats))
     .Predicate
       (do
         (when (not (query-relation-predicate-can-run-typed? rel group.predicates[step.index] registry))
@@ -12281,18 +12303,18 @@
     .Function
       (query-relation-extend-function-typed rel group.function-clauses[step.index] registry)
     .Not
-      (query-relation-apply-not-typed db sources rel group.not-groups[step.index] registry)
+      (query-relation-apply-not-typed db query inputs sources rel group.not-groups[step.index] registry)
     :else
       (return (query-relation-empty) false)))
 
-(defn query-relation-apply-plain-branch-pipeline-typed [db: DB, sources: []DB-Source, rel: Query-Relation, row: int, group: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+(defn query-relation-apply-plain-branch-pipeline-typed [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, row: int, group: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (let [[current current-ok] (query-relation-single-typed-row rel row)]
     (when (not current-ok)
       (delete-query-relation current)
       (return (query-relation-empty) false))
     (let [stats (query-stats-empty)]
       (for [step group.steps]
-        (let [[next next-ok] (query-relation-apply-branch-local-step-typed db sources current step group (addr stats) registry)]
+        (let [[next next-ok] (query-relation-apply-branch-local-step-typed db query inputs sources current step group (addr stats) registry)]
           (delete-query-relation current)
           (when (not next-ok)
             (delete-query-relation next)
@@ -12302,8 +12324,8 @@
             (return current true))))
       (return current true))))
 
-(defn typed-row-matches-plain-branch-group? [db: DB, sources: []DB-Source, rel: Query-Relation, row: int, group: Not-Group, registry: []Native-Query-Fn] -> [matched: bool, ok: bool]
-  (let [[branch-rel branch-ok] (query-relation-apply-plain-branch-pipeline-typed db sources rel row group registry)]
+(defn typed-row-matches-plain-branch-group? [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, row: int, group: Not-Group, registry: []Native-Query-Fn] -> [matched: bool, ok: bool]
+  (let [[branch-rel branch-ok] (query-relation-apply-plain-branch-pipeline-typed db query inputs sources rel row group registry)]
     (when (not branch-ok)
       (delete-query-relation branch-rel)
       (return false false))
@@ -12311,14 +12333,15 @@
       (delete-query-relation branch-rel)
       (return has-match true))))
 
-(defn query-relation-apply-not-typed [db: DB, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+(defn query-relation-apply-not-typed [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
   (when (and (not group.has-join)
              (= (count group.clauses) 1)
              (= (count group.predicates) 0)
              (= (count group.function-clauses) 0)
-             (= (count group.not-groups) 0))
+             (= (count group.not-groups) 0)
+             (not (branch-has-source-input? query group)))
     (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
           attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
           builder (query-relation-builder (slice rel.attrs 0))
@@ -12351,7 +12374,7 @@
           builder (query-relation-builder (slice rel.attrs 0))
           row 0]
       (while (< row rel.typed-rows)
-        (let [[matched match-ok] (typed-row-matches-plain-branch-group? db sources rel row group registry)]
+        (let [[matched match-ok] (typed-row-matches-plain-branch-group? db query inputs sources rel row group registry)]
           (when (not match-ok)
             (delete attrs)
             (delete attr-sources)
@@ -12399,8 +12422,8 @@
                              typed-rows: builder.typed-rows
                              has-typed-columns: true}) true)))
 
-(defn query-relation-apply-not [db: DB, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> Query-Relation
-  (let [[typed typed-ok] (query-relation-apply-not-typed db sources rel group registry)]
+(defn query-relation-apply-not [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> Query-Relation
+  (let [[typed typed-ok] (query-relation-apply-not-typed db query inputs sources rel group registry)]
     (when typed-ok
       (return typed))
     (delete-query-relation typed))
@@ -12450,8 +12473,8 @@
       (return false)))
   true)
 
-(defn query-relation-apply-plain-or-branch-typed [db: DB, sources: []DB-Source, rel: Query-Relation, row: int, branch: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
-  (query-relation-apply-plain-branch-pipeline-typed db sources rel row branch registry))
+(defn query-relation-apply-plain-or-branch-typed [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, row: int, branch: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+  (query-relation-apply-plain-branch-pipeline-typed db query inputs sources rel row branch registry))
 
 (defn append-typed-or-branch-row! [builder: ^Query-Relation-Builder, attrs: []string, db: DB, sources: []DB-Source, rel: Query-Relation, row: int, clause-value: Clause, stats: ^Query-Stats] -> [ok: bool, supported: bool]
   (let [clause-db db
@@ -12466,7 +12489,7 @@
       (return false true))
     (return true true)))
 
-(defn query-relation-apply-or-typed [db: DB, sources: []DB-Source, rel: Query-Relation, group: Or-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+(defn query-relation-apply-or-typed [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, group: Or-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
@@ -12475,7 +12498,8 @@
     (append-or-group-output-vars! (addr output-vars) group)
     (for [name output-vars]
       (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
-    (when (simple-db-clause-or-group? group)
+    (when (and (simple-db-clause-or-group? group)
+               (not (or-group-has-source-input? query group)))
       (let [builder (query-relation-builder (slice attrs 0))
             stats (query-stats-empty)
             row 0]
@@ -12505,7 +12529,7 @@
             row 0]
         (while (< row rel.typed-rows)
           (for [branch group.branches]
-            (let [[branch-rel branch-ok] (query-relation-apply-plain-or-branch-typed db sources rel row branch registry)]
+            (let [[branch-rel branch-ok] (query-relation-apply-plain-or-branch-typed db query inputs sources rel row branch registry)]
               (when (not branch-ok)
                 (delete-query-relation branch-rel)
                 (delete attrs)
@@ -12535,7 +12559,7 @@
             row 0]
         (while (< row rel.typed-rows)
           (for [branch group.branches]
-            (let [[branch-rel branch-ok] (query-relation-apply-plain-or-branch-typed db sources rel row branch registry)]
+            (let [[branch-rel branch-ok] (query-relation-apply-plain-or-branch-typed db query inputs sources rel row branch registry)]
               (when (not branch-ok)
                 (delete-query-relation branch-rel)
                 (delete attrs)
@@ -12595,8 +12619,8 @@
                                typed-rows: typed-rows
                                has-typed-columns: true}) true))))
 
-(defn query-relation-apply-or [db: DB, sources: []DB-Source, rel: Query-Relation, group: Or-Group, registry: []Native-Query-Fn] -> Query-Relation
-  (let [[typed typed-ok] (query-relation-apply-or-typed db sources rel group registry)]
+(defn query-relation-apply-or [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, group: Or-Group, registry: []Native-Query-Fn] -> Query-Relation
+  (let [[typed typed-ok] (query-relation-apply-or-typed db query inputs sources rel group registry)]
     (when typed-ok
       (return typed))
     (delete-query-relation typed))
@@ -14272,13 +14296,13 @@
           (set! current next)
           (query-stats-observe-bindings! stats (query-relation-row-count current))))
       (when (= step.kind .Not)
-        (let [next (query-relation-apply-not db sources current query.not-groups[step.index] registry)]
+        (let [next (query-relation-apply-not db query inputs sources current query.not-groups[step.index] registry)]
           (set! stats^.steps (+ stats^.steps 1))
           (delete-query-relation current)
           (set! current next)
           (query-stats-observe-bindings! stats (query-relation-row-count current))))
       (when (= step.kind .Or)
-        (let [next (query-relation-apply-or db sources current query.or-groups[step.index] registry)]
+        (let [next (query-relation-apply-or db query inputs sources current query.or-groups[step.index] registry)]
           (set! stats^.steps (+ stats^.steps 1))
           (delete-query-relation current)
           (set! current next)
