@@ -514,14 +514,15 @@ attribute identity and value as typed output columns.
 negative groups are tested as a typed anti-join: the clause scan resolves
 directly from typed row values and checks candidate datoms without building a
 `Binding`. Plain multi-clause DB negative groups, including source-qualified
-clauses, now run each outer typed row through a branch-local typed relation, so
-inner clause matching can continue to use typed clause scans. Nested,
-`not-join`, and branch-local relation-source matching still materialize one
-binding at a time to reuse existing semantics, but the surviving output stays
-typed instead of allocating a full intermediate binding relation. Plain
-branch-local predicate and function steps now preserve their source order in the
-group model and run on typed columns when the predicate/function operator is
-supported by the typed evaluator.
+clauses and nested plain `not` groups, now run each outer typed row through a
+branch-local typed relation, so inner clause matching can continue to use typed
+clause scans recursively. `not-join`, branch-local relation-source matching,
+and operators outside the typed evaluator still materialize one binding at a
+time to reuse existing semantics, but the surviving output stays typed instead
+of allocating a full intermediate binding relation. Plain branch-local predicate
+and function steps preserve their source order in the group model and run on
+typed columns when the predicate/function operator is supported by the typed
+evaluator.
 
 `ground` now streams over typed rows too. Scalar ground clauses resolve their
 source term directly from typed input columns and append only newly produced
@@ -534,9 +535,9 @@ ordinary DB clause per branch run as typed clause scans and append branch output
 columns directly. Plain multi-clause DB branches, including source-qualified
 clauses, now run as branch-local typed relation pipelines and append output by
 attribute name, so branches can use different clause orders without leaving
-typed columns. Plain branch-local predicate and function steps use the same
-ordered typed pipeline when their operators are supported. Branches with
-`or-join`, nested negatives, branch-local relation-source matching, native or
+typed columns. Plain branch-local predicate, function, and nested `not` steps
+use the same ordered typed pipeline when their operators are supported.
+Branches with `or-join`, branch-local relation-source matching, native or
 dynamic operators outside the typed evaluator, or more complex local pipelines
 reuse the existing single-binding branch semantics, and branch outputs are
 appended back into typed columns so `or` no longer forces a full relation

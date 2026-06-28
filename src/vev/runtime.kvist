@@ -10304,15 +10304,27 @@
   (for [name group.join-vars]
     (append-var-once-indexed! vars seen name)))
 
+(defn append-branch-output-vars! [vars: ^[dynamic]string, branch: Not-Group]
+  (for [clause branch.clauses]
+    (append-clause-vars! vars clause))
+  (for [function branch.function-clauses]
+    (append-function-output-vars! vars function)))
+
+(defn append-branch-output-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], branch: Not-Group]
+  (for [clause branch.clauses]
+    (append-clause-vars-indexed! vars seen clause))
+  (for [function branch.function-clauses]
+    (append-function-output-vars-indexed! vars seen function)))
+
 (defn append-or-group-vars! [vars: ^[dynamic]string, group: Or-Group]
   (for [branch group.branches]
-    (append-not-group-vars! vars branch))
+    (append-branch-output-vars! vars branch))
   (for [name group.join-vars]
     (append-var-once! vars name)))
 
 (defn append-or-group-vars-indexed! [vars: ^[dynamic]string, seen: ^set[string], group: Or-Group]
   (for [branch group.branches]
-    (append-not-group-vars-indexed! vars seen branch))
+    (append-branch-output-vars-indexed! vars seen branch))
   (for [name group.join-vars]
     (append-var-once-indexed! vars seen name)))
 
@@ -10594,7 +10606,7 @@
         out (make [dynamic]string)]
     (for [name join-vars]
       (append-var-once! (addr blocked) name))
-    (append-not-group-vars! (addr branch-vars) branch)
+    (append-branch-output-vars! (addr branch-vars) branch)
     (append-unbound-vars! (addr out) (slice branch-vars 0) (slice blocked 0))
     out))
 
@@ -10624,7 +10636,7 @@
       (for [name group.join-vars]
         (for [branch group.branches]
           (let [branch-vars (make [dynamic]string) :defer]
-            (append-not-group-vars! (addr branch-vars) branch)
+            (append-branch-output-vars! (addr branch-vars) branch)
             (when (and (not (string-slice-contains? available name))
                        (not (string-slice-contains? (slice branch-vars 0) name)))
               (return false (fmt.tprintf "or-join branch missing join var: %s" name))))))))
@@ -12229,14 +12241,16 @@
 (defn plain-typed-branch-group? [group: Not-Group] -> bool
   (when group.has-join
     (return false))
-  (when (> (count group.not-groups) 0)
-    (return false))
   (when (= (count group.steps) 0)
     (return false))
   (for [step group.steps]
     (when (not (or (= step.kind .Clause)
                    (= step.kind .Predicate)
-                   (= step.kind .Function)))
+                   (= step.kind .Function)
+                   (= step.kind .Not)))
+      (return false))
+    (when (and (= step.kind .Not)
+               (not (plain-typed-branch-group? group.not-groups[step.index])))
       (return false)))
   true)
 
@@ -12254,6 +12268,8 @@
             (return out false))))
     .Function
       (query-relation-extend-function-typed rel group.function-clauses[step.index] registry)
+    .Not
+      (query-relation-apply-not-typed db sources rel group.not-groups[step.index] registry)
     :else
       (return (query-relation-empty) false)))
 
