@@ -144,8 +144,8 @@ EDN chunks, so query timings should be read separately from import timings.
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
 | `q1` | 0.36ms | 2 | Good selective/bound rule path |
-| `q2` | 7.29s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, and final bound lookup are reduced |
-| `q3` | 5.29s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering |
+| `q2` | 6.98s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, and numeric join keys are reduced |
+| `q3` | 4.93s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering |
 | `q4` | 0.99s | 135 | Completes through derived transitive closure over a derived two-hop edge |
 
 Important result: Q4 originally did not finish within several minutes because
@@ -187,10 +187,12 @@ such as `univ`/`area` when the same unprojected rule is called with different
 variable names. Bound data clauses of the common `[?e :attr ?v]` shape can now
 also use typed relation columns to do direct `eavt` lookups instead of entering
 the generic per-binding clause matcher; this is a modest win on math-bench
-because final lookup is no longer dominant. The next engine work should make
-these rule relations more fully columnar/streamed and remove the remaining
-generic `Binding` row construction, final dedupe, and string-key hash costs from
-the broad path.
+because final lookup is no longer dominant. Single-column typed entity/int joins
+now also hash on numeric keys instead of formatted strings, which removes a
+generic allocation-heavy part of the broad join path. The next engine work
+should make these rule relations more fully columnar/streamed and remove the
+remaining generic `Binding` row construction, final dedupe, and compound
+string-key hash costs from the broad path.
 
 ## MusicBrainz Import Smoke
 

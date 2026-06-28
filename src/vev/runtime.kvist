@@ -764,6 +764,16 @@
           (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part)))))
     (return (core-strings.concatenate (slice parts 0)) true)))
 
+(defn relation-column-row-number-join-key [column: Relation-Column, row: int] -> [key: u64, ok: bool]
+  (when (not column.has-kind)
+    (return 0 false))
+  (case column.kind
+    .Entity (return column.entities[row] true)
+    .Int (if (< column.ints[row] 0)
+           (return 0 false)
+           (return (u64 column.ints[row]) true))
+    :else (return 0 false)))
+
 (defn add-relation-column-row! [out: ^[dynamic]Relation-Column, columns: []Relation-Column, row: int] -> bool
   (for [column index columns]
     (let [[value value-ok] (typed-relation-column-value column row)]
@@ -1015,6 +1025,98 @@
             (delete values))))
       (return out true)))))
 
+(defn query-relation-hash-join-typed-number [left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
+  (when (not (and (= (count common) 1)
+                  (query-relations-compatible-common? left right common)))
+    (return (query-relation-empty) false))
+  (let [[left-common-index left-common-ok] (query-relation-attr-index-lookup left common[0])
+        [right-common-index right-common-ok] (query-relation-attr-index-lookup right common[0])]
+    (when (not (and left-common-ok right-common-ok))
+      (return (query-relation-empty) false))
+    (when (not (and (or (= left.typed-columns[left-common-index].kind .Entity)
+                        (= left.typed-columns[left-common-index].kind .Int))
+                    (or (= right.typed-columns[right-common-index].kind .Entity)
+                        (= right.typed-columns[right-common-index].kind .Int))))
+      (return (query-relation-empty) false))
+    (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
+          attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
+          tuples (make [dynamic]Binding)
+          bucket-heads (make (map u64 int))
+          next-indexes (make [dynamic]int 0 right.typed-rows)]
+      (for [name index right.attrs]
+        (when (not (query-relation-has-attr? left name))
+          (arr.push! attrs name)
+          (arr.push! attr-sources right.attr-sources[index])))
+      (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+            [column-sources column-sources-ok] (query-relation-column-sources-for-join left right (slice attrs 0))
+            typed-rows 0]
+        (when (not column-sources-ok)
+          (delete attrs)
+          (delete attr-sources)
+          (delete tuples)
+          (delete bucket-heads)
+          (delete next-indexes)
+          (delete-relation-columns typed-columns)
+          (return (query-relation-empty) false))
+        (let [right-row 0]
+          (while (< right-row right.typed-rows)
+            (let [[key key-ok] (relation-column-row-number-join-key right.typed-columns[right-common-index] right-row)]
+              (when (not key-ok)
+                (delete attrs)
+                (delete attr-sources)
+                (delete tuples)
+                (delete bucket-heads)
+                (delete next-indexes)
+                (delete-relation-columns typed-columns)
+                (delete column-sources)
+                (return (query-relation-empty) false))
+              (let [[head found] (mmap.get bucket-heads key)]
+                (if found
+                  (arr.push! next-indexes head)
+                  (arr.push! next-indexes -1))
+                (mmap.assoc! bucket-heads key right-row)))
+            (set! right-row (+ right-row 1))))
+        (let [left-row 0]
+          (while (< left-row left.typed-rows)
+            (let [[key key-ok] (relation-column-row-number-join-key left.typed-columns[left-common-index] left-row)]
+              (when (not key-ok)
+                (delete attrs)
+                (delete attr-sources)
+                (delete tuples)
+                (delete bucket-heads)
+                (delete next-indexes)
+                (delete-relation-columns typed-columns)
+                (delete column-sources)
+                (return (query-relation-empty) false))
+              (let [[head found] (mmap.get bucket-heads key)]
+                (when found
+                  (let [right-index head]
+                    (while (>= right-index 0)
+                      (let [[merged merged-ok] (joined-binding-and-query-column-row! (slice attrs 0) (addr typed-columns) (slice column-sources 0) left left-row right right-index)]
+                        (when (not merged-ok)
+                          (delete attrs)
+                          (delete attr-sources)
+                          (delete tuples)
+                          (delete bucket-heads)
+                          (delete next-indexes)
+                          (delete-relation-columns typed-columns)
+                          (delete column-sources)
+                          (return (query-relation-empty) false))
+                        (set! typed-rows (+ typed-rows 1))
+                        (arr.push! tuples merged))
+                      (set! right-index next-indexes[right-index]))))))
+            (set! left-row (+ left-row 1))))
+        (delete bucket-heads)
+        (delete next-indexes)
+        (delete column-sources)
+        (return (Query-Relation {attrs: attrs
+                                 attr-sources: attr-sources
+                                 attr-index: (query-relation-attr-index (slice attrs 0))
+                                 tuples: tuples
+                                 typed-columns: typed-columns
+                                 typed-rows: typed-rows
+                                 has-typed-columns: true}) true)))))
+
 (defn query-relation-hash-join-typed-borrowed [left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
   (when (not (query-relations-compatible-common? left right common))
     (return (query-relation-empty) false))
@@ -1098,6 +1200,10 @@
                                has-typed-columns: true}) true))))
 
 (defn query-relation-hash-join-typed-primitive [db: DB, sources: []DB-Source, left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
+  (let [[number number-ok] (query-relation-hash-join-typed-number left right common)]
+    (when number-ok
+      (return number true))
+    (delete-query-relation number))
   (let [[borrowed borrowed-ok] (query-relation-hash-join-typed-borrowed left right common)]
     (when borrowed-ok
       (return borrowed true))

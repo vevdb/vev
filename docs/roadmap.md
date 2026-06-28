@@ -130,12 +130,13 @@ of the path onto typed relation columns, including single-column typed hash
 joins with entity/int normalization, indexed bind-clause expansion for
 moderately sized relations, typed projection for distinct-var rule calls, and a
 query-local cache for single-branch materialized helper rules. Typed relations
-also have a direct bound `[?e :attr ?v]` data-clause operator backed by `eavt`.
-The remaining cost is joining and deduping broad materialized rule relations
-while still carrying generic `Binding` rows as a compatibility veneer. The next
-substantial planner work should remove that remaining row-shaped construction
-from the materialized broad path and prefer streamed/merge joins where attrs and
-variable columns make that possible.
+also have a direct bound `[?e :attr ?v]` data-clause operator backed by `eavt`,
+and single-column typed entity/int joins can hash on numeric keys instead of
+formatted strings. The remaining cost is joining and deduping broad materialized
+rule relations while still carrying generic `Binding` rows as a compatibility
+veneer. The next substantial planner work should remove that remaining
+row-shaped construction from the materialized broad path and prefer
+streamed/merge joins where attrs and variable columns make that possible.
 
 The immediate implementation batch is:
 

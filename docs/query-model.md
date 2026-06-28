@@ -170,9 +170,11 @@ materialized helper rules are cached per query execution so repeated calls such
 as `(univ ?x ?u)` / `(univ ?y ?u)` do not rebuild the same unprojected relation.
 Typed relations can also apply fixed-attribute bound data clauses such as
 `[?e :person/name ?n]` through direct `eavt` lookups from typed entity columns.
-The broad path still pays for generic `Binding` construction in joins/results
-and final dedupe. The next performance step is columnar/streamed materialized
-rule relations and typed joins that avoid those remaining row-shaped costs.
+Single-column typed entity/int joins hash on numeric keys, keeping common id
+joins out of the allocation-heavy string-key path. The broad path still pays for
+generic `Binding` construction in joins/results and final dedupe. The next
+performance step is columnar/streamed materialized rule relations and typed
+joins that avoid those remaining row-shaped costs.
 
 ## Query Engine Strategy
 
