@@ -1078,27 +1078,28 @@
       (arr.push! items (Var-Binding {name: attrs[out-index] value: value}))))
   (return (Binding {items: items}) true)))
 
-(defn joined-binding-and-query-column-row! [attrs: []string, out: ^[dynamic]Relation-Column, sources: []Relation-Column-Source, left: Query-Relation, left-row: int, right: Query-Relation, right-row: int] -> [binding: Binding, ok: bool]
-  (let [items (make [dynamic]Var-Binding 0 (count attrs))]
-  (for [source out-index sources]
-    (let [column (if (= source.side 0)
-                   left.typed-columns[source.index]
-                   right.typed-columns[source.index])
-          row (if (= source.side 0) left-row right-row)
-          [value value-ok] (typed-relation-column-value column row)]
-      (when (or (not value-ok)
-                (not (relation-column-add! (addr out^[out-index]) value)))
-        (delete items)
-        (return (Binding {}) false))
-      (arr.push! items (Var-Binding {name: attrs[out-index] value: value}))))
-  (return (Binding {items: items}) true)))
+(defn add-query-joined-column-row! [out: ^[dynamic]Relation-Column, sources: []Relation-Column-Source, left: Query-Relation, left-row: int, right: Query-Relation, right-row: int] -> bool
+  (let [values (make [dynamic]Value 0 (count sources)) :defer]
+    (for [source out-index sources]
+      (let [column (if (= source.side 0)
+                     left.typed-columns[source.index]
+                     right.typed-columns[source.index])
+            row (if (= source.side 0) left-row right-row)
+            [value value-ok] (typed-relation-column-value column row)]
+        (when (or (not value-ok)
+                  (not (relation-column-can-add? out^[out-index] value)))
+          (return false))
+        (arr.push! values value)))
+    (for [value index values]
+      (discard (relation-column-add! (addr out^[index]) value)))
+    true))
 
 (defn query-relation-product-typed-borrowed [left: Query-Relation, right: Query-Relation] -> [rel: Query-Relation, ok: bool]
   (when (not (and left.has-typed-columns right.has-typed-columns))
     (return (query-relation-empty) false))
   (let [attrs (arr.into [dynamic]string (slice left.attrs 0))
         attr-sources (arr.into [dynamic]string (slice left.attr-sources 0))
-        tuples (make [dynamic]Binding 0 (* left.typed-rows right.typed-rows))]
+        tuples (make [dynamic]Binding)]
     (for [name index right.attrs]
       (arr.push! attrs name)
       (arr.push! attr-sources right.attr-sources[index]))
@@ -1115,16 +1116,14 @@
         (while (< left-row left.typed-rows)
           (let [right-row 0]
             (while (< right-row right.typed-rows)
-              (let [[merged merged-ok] (joined-binding-and-query-column-row! (slice attrs 0) (addr typed-columns) (slice column-sources 0) left left-row right right-row)]
-                (when (not merged-ok)
-                  (delete attrs)
-                  (delete attr-sources)
-                  (delete tuples)
-                  (delete-relation-columns typed-columns)
-                  (delete column-sources)
-                  (return (query-relation-empty) false))
-                (set! typed-rows (+ typed-rows 1))
-                (arr.push! tuples merged))
+              (when (not (add-query-joined-column-row! (addr typed-columns) (slice column-sources 0) left left-row right right-row))
+                (delete attrs)
+                (delete attr-sources)
+                (delete tuples)
+                (delete-relation-columns typed-columns)
+                (delete column-sources)
+                (return (query-relation-empty) false))
+              (set! typed-rows (+ typed-rows 1))
               (set! right-row (+ right-row 1))))
           (set! left-row (+ left-row 1))))
       (delete column-sources)
@@ -1320,18 +1319,16 @@
                 (when found
                   (let [right-index head]
                     (while (>= right-index 0)
-                      (let [[merged merged-ok] (joined-binding-and-query-column-row! (slice attrs 0) (addr typed-columns) (slice column-sources 0) left left-row right right-index)]
-                        (when (not merged-ok)
-                          (delete attrs)
-                          (delete attr-sources)
-                          (delete tuples)
-                          (delete bucket-heads)
-                          (delete next-indexes)
-                          (delete-relation-columns typed-columns)
-                          (delete column-sources)
-                          (return (query-relation-empty) false))
-                        (set! typed-rows (+ typed-rows 1))
-                        (arr.push! tuples merged))
+                      (when (not (add-query-joined-column-row! (addr typed-columns) (slice column-sources 0) left left-row right right-index))
+                        (delete attrs)
+                        (delete attr-sources)
+                        (delete tuples)
+                        (delete bucket-heads)
+                        (delete next-indexes)
+                        (delete-relation-columns typed-columns)
+                        (delete column-sources)
+                        (return (query-relation-empty) false))
+                      (set! typed-rows (+ typed-rows 1))
                       (set! right-index next-indexes[right-index]))))))
             (set! left-row (+ left-row 1))))
         (delete bucket-heads)
@@ -1430,18 +1427,16 @@
                   (let [right-index head]
                     (while (>= right-index 0)
                       (when (query-relation-typed-rows-agree-after-leading-common? db sources left right left-row right-index common)
-                        (let [[merged merged-ok] (joined-binding-and-query-column-row! (slice attrs 0) (addr typed-columns) (slice column-sources 0) left left-row right right-index)]
-                          (when (not merged-ok)
-                            (delete attrs)
-                            (delete attr-sources)
-                            (delete tuples)
-                            (delete bucket-heads)
-                            (delete next-indexes)
-                            (delete-relation-columns typed-columns)
-                            (delete column-sources)
-                            (return (query-relation-empty) false))
-                          (set! typed-rows (+ typed-rows 1))
-                          (arr.push! tuples merged)))
+                        (when (not (add-query-joined-column-row! (addr typed-columns) (slice column-sources 0) left left-row right right-index))
+                          (delete attrs)
+                          (delete attr-sources)
+                          (delete tuples)
+                          (delete bucket-heads)
+                          (delete next-indexes)
+                          (delete-relation-columns typed-columns)
+                          (delete column-sources)
+                          (return (query-relation-empty) false))
+                        (set! typed-rows (+ typed-rows 1)))
                       (set! right-index next-indexes[right-index]))))))
             (set! left-row (+ left-row 1))))
         (delete bucket-heads)
@@ -1512,18 +1507,16 @@
               (when found
                 (let [right-index head]
                   (while (>= right-index 0)
-                    (let [[merged merged-ok] (joined-binding-and-query-column-row! (slice attrs 0) (addr typed-columns) (slice column-sources 0) left left-row right right-index)]
-                      (when (not merged-ok)
-                        (delete attrs)
-                        (delete attr-sources)
-                        (delete tuples)
-                        (delete bucket-heads)
-                        (delete next-indexes)
-                        (delete-relation-columns typed-columns)
-                        (delete column-sources)
-                        (return (query-relation-empty) false))
-                      (set! typed-rows (+ typed-rows 1))
-                      (arr.push! tuples merged))
+                    (when (not (add-query-joined-column-row! (addr typed-columns) (slice column-sources 0) left left-row right right-index))
+                      (delete attrs)
+                      (delete attr-sources)
+                      (delete tuples)
+                      (delete bucket-heads)
+                      (delete next-indexes)
+                      (delete-relation-columns typed-columns)
+                      (delete column-sources)
+                      (return (query-relation-empty) false))
+                    (set! typed-rows (+ typed-rows 1))
                     (set! right-index next-indexes[right-index]))))))
           (set! left-row (+ left-row 1))))
       (delete bucket-heads)

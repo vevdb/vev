@@ -409,12 +409,12 @@ typed column cache. The older `Typed-Relation` conversion path remains as
 fallback for untyped relation inputs, but the common typed path no longer clones
 whole columns just to build join keys and output rows.
 
-Next columnar milestone: make the relation representation explicitly support
-typed-only rows. A partial experiment where typed joins stopped emitting
-compatibility `Binding` rows improved the filtered math-bench Q3 path, but it
-also exposed unsafe assumptions in other operators that still treat
-`rel.tuples` as the authoritative row store. The next attempt should not patch
-individual joins in place. It should add a clear invariant and API boundary:
+Eighteenth slice implemented: borrowed typed product and borrowed typed hash
+joins now produce typed-only rows. They fill output columns directly and leave
+compatibility `Binding` rows empty until a binding-only consumer explicitly
+materializes through `query-relation-materialized-bindings`. This is no longer
+an ad hoc join patch: the relation representation now has the basic invariant
+and API boundary needed for typed-only rows:
 
 - `query-relation-row-count` reports the logical row count, independent of
   physical storage
