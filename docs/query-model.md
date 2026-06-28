@@ -494,6 +494,12 @@ the whole source collection as a join column. This lets predicate, function,
 and rule queries over relation DB inputs use the same relation-engine path as
 ordinary DB-backed queries.
 
+Named relation-source inputs use the same direct source operator. Source clauses
+scan the source `Value` and emit only the variables introduced by the clause,
+instead of first binding the whole source collection and stripping it later.
+This covers ordinary named source clauses and source-qualified rule calls whose
+rule bodies read from the same relation source.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
@@ -509,9 +515,9 @@ Near-term query work should expand the relation engine in this order:
 
 1. Physical storage: replace generic `Binding` tuples with compact typed
    relation columns while keeping the same logical relation API.
-2. Source-qualified collection operators: extend the source-aware relation
-   representation beyond primary relation DB inputs to named relation sources
-   and source-qualified nested rule bodies.
+2. Source-qualified collection operators: extend the direct source-aware
+   relation representation to deeper nested source-qualified groups and broader
+   named source combinations.
 3. Rules: move the positive-rule memo/delta evaluator from binding rows toward
    relation-native semi-naive behavior, then broaden it to richer rule bodies.
 

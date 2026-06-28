@@ -289,13 +289,6 @@
 (defn binding-store! [binding: ^Binding, name: string, value: Value]
   (arr.push! binding^.items (Var-Binding {name: name value: value})))
 
-(defn binding-without-name [binding: Binding, name: string] -> Binding
-  (let [items (make [dynamic]Var-Binding 0 (count binding.items))]
-    (for [item binding.items]
-      (when (not (= item.name name))
-        (arr.push! items item)))
-    (Binding {items: items})))
-
 (defn append-var-binding-attr! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, name: string, source: string]
   (when (= name "")
     (return))
@@ -5736,6 +5729,17 @@
       (let [next (clone-binding binding)]
         (when (relation-source-row-matches? clause row (addr next))
           (arr.push! out next))))
+    out))
+
+(defn bindings-from-relation-source-value-clause [source: Value, clause: Clause] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (not (= source.kind .Vector))
+      (return out))
+    (for [row source.items]
+      (let [next (Binding {})]
+        (if (relation-source-row-matches? clause row (addr next))
+          (arr.push! out next)
+          (delete next.items))))
     out))
 
 (defn source-db-lookup [db: DB, sources: []DB-Source, name: string] -> [source-db: DB, ok: bool]
@@ -11336,17 +11340,18 @@
     out))
 
 (defn query-relation-from-source-input-clause [query: Query, inputs: []Query-Input, clause-value: Clause] -> Query-Relation
-  (let [[binding binding-ok] (query-source-input-binding query inputs clause-value.source)]
-    (when (not binding-ok)
+  (let [[index found] (query-input-index-for-source query clause-value.source)]
+    (when (not found)
       (return (query-relation-empty)))
-    (let [out (bindings-after-relation-source-clause clause-value binding)
-          projected (make [dynamic]Binding 0 (count out))]
-      (for [item out]
-        (arr.push! projected (binding-without-name item clause-value.source)))
-      (let [rel (query-relation-from-bindings (slice projected 0))]
-        (delete projected)
-      (delete out)
-      rel))))
+    (when (>= index (count inputs))
+      (return (query-relation-empty)))
+    (let [[source source-ok] (query-input-source-value inputs[index])]
+      (when (not source-ok)
+        (return (query-relation-empty)))
+      (let [out (bindings-from-relation-source-value-clause source clause-value)
+            rel (query-relation-from-bindings (slice out 0))]
+        (delete out)
+        rel))))
 
 (defn query-relation-from-db-clause [db: DB, clause-value: Clause, source: string] -> Query-Relation
   (let [[attrs attr-sources] (clause-output-attrs clause-value source)
