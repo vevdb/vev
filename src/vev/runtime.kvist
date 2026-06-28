@@ -11180,10 +11180,113 @@
     .Value (value-equal? term.value actual)
     :else false))
 
+(defn typed-bound-entity-term-matches? [db: DB, rel: Query-Relation, row: int, term: Term, actual: Value] -> bool
+  (case term.kind
+    .Wildcard true
+    .LookupRef (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
+                 (and lookup-ok (value-equal? (value-entity entity) actual)))
+    .Var (let [[existing existing-ok] (query-relation-typed-row-value rel row term.name)]
+           (if existing-ok
+             (entity-value-equal? db existing actual)
+             true))
+    .Value (let [[entity entity-ok] (value-as-entity db term.value)]
+             (when entity-ok
+               (return (value-equal? entity actual)))
+             (when (= term.value.kind .Keyword)
+               (let [[ident-entity ident-ok] (schema-entity-for-attr db term.value.text)]
+                 (return (and ident-ok (value-equal? (value-entity ident-entity) actual)))))
+             (when (= term.value.kind .Int)
+               (return (value-equal? (value-entity (u64 term.value.int-value)) actual)))
+             (value-equal? term.value actual))
+    :else false))
+
+(defn typed-bound-attr-term-matches? [rel: Query-Relation, row: int, term: Term, actual: Value] -> bool
+  (case term.kind
+    .Wildcard true
+    .Var (let [[existing existing-ok] (query-relation-typed-row-value rel row term.name)]
+           (if existing-ok
+             (predicate-value-equal? existing actual)
+             true))
+    .Value (value-equal? term.value actual)
+    :else false))
+
+(defn typed-same-var-term-agrees? [db: DB, name: string, term: Term, actual: Value, base: Value] -> bool
+  (if (term-var-name? term name)
+    (entity-value-equal? db actual base)
+    true))
+
+(defn typed-clause-var-agrees? [db: DB, clause-value: Clause, name: string, base: Value, e-value: Value, a-value: Value, v-value: Value, tx-value: Value, op-value: Value] -> bool
+  (and (typed-same-var-term-agrees? db name clause-value.e e-value base)
+       (typed-same-var-term-agrees? db name clause-value.a a-value base)
+       (typed-same-var-term-agrees? db name clause-value.v v-value base)
+       (typed-same-var-term-agrees? db name clause-value.tx-term tx-value base)
+       (typed-same-var-term-agrees? db name clause-value.op-term op-value base)))
+
+(defn typed-clause-repeated-vars-match? [db: DB, clause-value: Clause, e-value: Value, a-value: Value, v-value: Value, tx-value: Value, op-value: Value] -> bool
+  (when (= clause-value.e.kind .Var)
+    (when (not (typed-clause-var-agrees? db clause-value clause-value.e.name e-value e-value a-value v-value tx-value op-value))
+      (return false)))
+  (when (= clause-value.a.kind .Var)
+    (when (not (typed-clause-var-agrees? db clause-value clause-value.a.name a-value e-value a-value v-value tx-value op-value))
+      (return false)))
+  (when (= clause-value.v.kind .Var)
+    (when (not (typed-clause-var-agrees? db clause-value clause-value.v.name v-value e-value a-value v-value tx-value op-value))
+      (return false)))
+  (when (= clause-value.tx-term.kind .Var)
+    (when (not (typed-clause-var-agrees? db clause-value clause-value.tx-term.name tx-value e-value a-value v-value tx-value op-value))
+      (return false)))
+  (when (= clause-value.op-term.kind .Var)
+    (when (not (typed-clause-var-agrees? db clause-value clause-value.op-term.name op-value e-value a-value v-value tx-value op-value))
+      (return false)))
+  true)
+
+(defn typed-datom-clause-matches? [db: DB, rel: Query-Relation, row: int, datom: Datom, clause-value: Clause] -> bool
+  (let [tx-value (datom-tx-value datom)
+        op-value (datom-op-value datom)]
+    (when (and (= clause-value.a.kind .Value)
+               (= clause-value.a.value.kind .Keyword)
+               (reverse-attr? clause-value.a.value.text))
+      (when (not (= datom.v.kind .Entity))
+        (return false))
+      (let [forward-attr (forward-attr-for-reverse clause-value.a.value.text) :defer
+            e-value (value-entity datom.v.entity)
+            a-value clause-value.a.value
+            v-value (value-entity datom.e)]
+        (return
+          (and (= datom.a forward-attr)
+               (typed-bound-entity-term-matches? db rel row clause-value.e e-value)
+               (typed-bound-clause-term-matches? db rel row datom.a clause-value.v v-value)
+               (typed-bound-optional-term-matches? rel row clause-value.tx-term tx-value)
+               (typed-bound-optional-term-matches? rel row clause-value.op-term op-value)
+               (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value)))))
+    (let [e-value (value-entity datom.e)
+          a-value (value-keyword datom.a)
+          v-value datom.v]
+      (and (typed-bound-entity-term-matches? db rel row clause-value.e e-value)
+           (typed-bound-attr-term-matches? rel row clause-value.a a-value)
+           (typed-bound-clause-term-matches? db rel row datom.a clause-value.v v-value)
+           (typed-bound-optional-term-matches? rel row clause-value.tx-term tx-value)
+           (typed-bound-optional-term-matches? rel row clause-value.op-term op-value)
+           (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value)))))
+
 (defn typed-bound-clause-var-value [rel: Query-Relation, row: int, clause-value: Clause, datom: Datom, name: string] -> [value: Value, ok: bool]
   (let [[existing existing-ok] (query-relation-typed-row-value rel row name)]
     (when existing-ok
       (return existing true)))
+  (when (and (= clause-value.a.kind .Value)
+             (= clause-value.a.value.kind .Keyword)
+             (reverse-attr? clause-value.a.value.text))
+    (when (term-var-name? clause-value.e name)
+      (return (value-entity datom.v.entity) true))
+    (when (term-var-name? clause-value.a name)
+      (return clause-value.a.value true))
+    (when (term-var-name? clause-value.v name)
+      (return (value-entity datom.e) true))
+    (when (term-var-name? clause-value.tx-term name)
+      (return (datom-tx-value datom) true))
+    (when (term-var-name? clause-value.op-term name)
+      (return (datom-op-value datom) true))
+    (return (Value {}) false))
   (when (term-var-name? clause-value.e name)
     (return (value-entity datom.e) true))
   (when (term-var-name? clause-value.a name)
@@ -11257,7 +11360,7 @@
                                typed-rows: builder.typed-rows
                                has-typed-columns: builder.typed-ok}) true))))
 
-(defn append-typed-bound-db-clause-scan-row! [builder: ^Query-Relation-Builder, attrs: []string, db: DB, binding: Binding, clause-value: Clause, all-current: bool, stats: ^Query-Stats] -> bool
+(defn append-typed-bound-db-clause-scan-row! [builder: ^Query-Relation-Builder, attrs: []string, db: DB, rel: Query-Relation, row: int, binding: Binding, clause-value: Clause, all-current: bool, stats: ^Query-Stats] -> bool
   (let [scan (clause-index-scan db clause-value binding)]
     (defer (delete-clause-index-scan scan))
     (let [scan-index scan.index]
@@ -11267,12 +11370,9 @@
           (when (clause-index-scan-candidate? scan datom)
             (set! stats^.clause-candidates (+ stats^.clause-candidates 1))
             (when (or all-current (datom-current-at? db datom-index))
-              (let [next (clone-binding binding)]
-                (if (datom-clause-matches? db datom clause-value (addr next))
-                  (when (not (query-relation-builder-add-binding! builder attrs next false))
-                    (delete next.items)
-                    (return false))
-                  (delete next.items))))))
+              (when (typed-datom-clause-matches? db rel row datom clause-value)
+                (when (not (append-typed-bound-clause-row! builder attrs rel row clause-value datom))
+                  (return false))))))
         (set! scan-index (+ scan-index 1)))))
   true)
 
@@ -11298,7 +11398,7 @@
             (delete-query-relation-builder builder)
             (return (query-relation-empty) false))
           (set! stats^.clauses (+ stats^.clauses 1))
-          (when (not (append-typed-bound-db-clause-scan-row! (addr builder) (slice attrs 0) db binding clause-value all-current stats))
+          (when (not (append-typed-bound-db-clause-scan-row! (addr builder) (slice attrs 0) db rel row binding clause-value all-current stats))
             (delete binding.items)
             (delete attrs)
             (delete attr-sources)

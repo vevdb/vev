@@ -27,6 +27,16 @@
       (return true)))
   false)
 
+(defn has-text-pair-row? [result: vev.Result-Set, left: string, right: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .String)
+               (= row.values[0].text left)
+               (= row.values[1].kind .String)
+               (= row.values[1].text right))
+      (return true)))
+  false)
+
 (defn has-keyword-row? [result: vev.Result-Set, text: string] -> bool
   (for [row result.rows]
     (when (and (= (count row.values) 1)
@@ -74,7 +84,7 @@
   (let [conn (vev.create-conn)
         _ (vev.transact-text
             (addr conn)
-            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Bob\"] [:db/add 2 :blocked true]]")
+            "[{:db/id 10 :db/ident :self :db/valueType :db.type/ref} [:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 1 :self 1] [:db/add 2 :name \"Bob\"] [:db/add 2 :blocked true] [:db/add 2 :self 1]]")
         get-else-result (vev.q-text-with-rules
                           conn.db
                           "[:find ?name ?age :in $ % :where (person ?e ?name) [(get-else $ ?e :age 0) ?age]]"
@@ -115,6 +125,16 @@
                                     "[:find ?name ?other :in $ % :where (person ?e ?name) [?other :name ?name]]"
                                     typed-relation-rules
                                     ([]vev.Query-Input []))
+        repeated-var-clause-result (vev.q-text-with-rules
+                                     conn.db
+                                     "[:find ?name :in $ % :where (person ?e ?name) [?e :self ?e]]"
+                                     typed-relation-rules
+                                     ([]vev.Query-Input []))
+        reverse-clause-result (vev.q-text-with-rules
+                                conn.db
+                                "[:find ?name ?owner-name :in $ % :where (person ?e ?name) [?e :_self ?owner] [?owner :name ?owner-name]]"
+                                typed-relation-rules
+                                ([]vev.Query-Input []))
         constant-rule-projection-result (vev.q-text-with-rules
                                           conn.db
                                           "[:find ?name :in $ % :where (person 1 ?name)]"
@@ -157,6 +177,13 @@
     (t.is (= (count value-bound-clause-result.rows) 2))
     (t.is (has-text-entity-row? value-bound-clause-result "Ada" 1))
     (t.is (has-text-entity-row? value-bound-clause-result "Bob" 2))
+    (t.is repeated-var-clause-result.ok)
+    (t.is (= (count repeated-var-clause-result.rows) 1))
+    (t.is (has-text-row? repeated-var-clause-result "Ada"))
+    (t.is reverse-clause-result.ok)
+    (t.is (= (count reverse-clause-result.rows) 2))
+    (t.is (has-text-pair-row? reverse-clause-result "Ada" "Ada"))
+    (t.is (has-text-pair-row? reverse-clause-result "Ada" "Bob"))
     (t.is constant-rule-projection-result.ok)
     (t.is (= (count constant-rule-projection-result.rows) 1))
     (t.is (has-text-row? constant-rule-projection-result "Ada"))
