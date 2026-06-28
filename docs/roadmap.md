@@ -65,7 +65,7 @@ Non-goal:
 Status: mostly satisfied as the current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 365 tests. Remaining work is concentrated in exact
+suite currently passes 364 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
 and durable storage integration.
@@ -193,8 +193,12 @@ not create a second query engine.
 
 Status: substantially done and now part of the compatibility gate. EDN text and
 prepared query/tx/pull paths lower into the same typed structures as Kvist
-literals. C, Python, Rust, Java, and Clojure smokes exercise the EDN path
-through the native library. The remaining work is exact malformed-input
+literals. C, Python, Rust, Java, Go, Node, and Clojure smokes exercise the EDN
+path through the native library. The raw ABI exposes row handles, value-tree
+visitors, direct pull/pull-many handles, immutable DB snapshot handles, and a
+typed column-batch query result path for host callers that do not want per-row
+value materialization. Java, Python, Go, and Clojure expose the column-batch
+path, and C exercises it directly. The remaining work is exact malformed-input
 behavior, parser value rendering where host APIs expose it, and wrapper
 ergonomics demanded by real host usage.
 

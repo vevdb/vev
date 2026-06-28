@@ -136,6 +136,16 @@
               (when-not (= #{"Ada" "Grace"} (set (map :user/name many-pull)))
                 (throw (ex-info "unexpected pull-many" {:pull many-pull}))))))
 
+        (with-open [all-names (vev/prepare conn
+                                           '[:find ?name
+                                             :where [?e :user/name ?name]])
+                    db (vev/db conn)]
+          (let [columns (vev/columns all-names db)]
+            (println "column batch:" columns)
+            (when-not (and (= [:string] (:kinds columns))
+                           (= #{"Ada" "Grace"} (set (first (:columns columns)))))
+              (throw (ex-info "unexpected column batch" {:columns columns})))))
+
         (let [db (vev/db conn)
               immutable-report (vev/with db [{:db/id 4 :user/name "Barbara"}])
               immutable-next (vev/db-with db [{:db/id 4 :user/name "Barbara"}])]

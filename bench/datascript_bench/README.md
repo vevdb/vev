@@ -89,6 +89,9 @@ Current status:
   comparison runs scoped during optimization work.
 - Bulk setup uses the native transaction builder exposed through the C ABI,
   Java wrapper, and Clojure wrapper.
+- Column-oriented diagnostic rows use the public Clojure `vev.core/column-batch`
+  API, which delegates to the native typed column-batch ABI when the query
+  shape supports it.
 - Direct non-schema, non-unique, non-tuple add/retract batches use a one-pass
   transaction resolver.
 - Non-tuple databases skip tuple maintenance during transaction expansion.
