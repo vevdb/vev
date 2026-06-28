@@ -90,8 +90,8 @@ Deferred engine batch order:
    validation. Use these to compare Vev against Datomic, DataScript, and
    Datalevin on shared workloads before moving to larger planner benchmarks.
    `math-bench` is now started: Q1 is sub-millisecond, Q4 completes through a
-   derived transitive physical operator, and Q2 exposes the next major gap in
-   non-recursive derived-rule joins.
+   derived transitive physical operator, and Q2/Q3 expose the next major gap in
+   broad materialized-rule relation joins.
 5. Parser/API exactness: make malformed EDN query, rule, pull, return-map, and
    tx-data shapes fail predictably through the portable text/prepared APIs.
 6. Host wrapper ergonomics: keep C as the stable raw ABI, expose durable
@@ -122,22 +122,29 @@ out of better generic planning: indexed scans, bind joins, hash/semi joins,
 anti joins, rule operators, projection, aggregate, and pull integration.
 
 The active rule-engine pressure point is Datalevin `math-bench` Q2/Q3. Vev can
-now recognize a recursive transitive closure over a derived two-hop edge, which
-makes Q4 finish, but Q2 still spends tens of seconds expanding `adv`, `univ`,
-and name lookups through ordinary binding rows. The next substantial planner
-work should materialize or stream non-recursive derived rules as relations and
-join them with the same physical operator layer as ordinary clauses.
+recognize recursive transitive closure over a derived two-hop edge, which makes
+Q4 finish, and it can materialize pure non-recursive helper rules as relations.
+Q2/Q3 no longer spend hundreds of thousands of calls expanding `adv`/`univ`/
+`area`; they now execute three materialized rule calls. The remaining cost is
+constructing and joining those broad materialized rule relations through generic
+`Binding` rows and string-key joins. The next substantial planner work should
+move materialized rule relations onto the typed/columnar relation operators and
+prefer streamed/merge joins where the attrs and variable columns make that
+possible.
 
 The immediate implementation batch is:
 
 1. Define a typed relation storage direction: keep logical relation attrs, but
    store hot rows as typed struct-of-arrays columns and keep the existing
    `Binding` API as a compatibility veneer during migration.
-2. Port one operator family end-to-end, starting with primitive
-   entity/int/string columns and the existing compound primitive hash join.
-3. Benchmark after each migration with `datascript-bench` q1-q5/qpred plus
-   focused relation-source compound join tests.
-4. Then build the generic semi-naive rules engine on top of the improved
+2. Port materialized rule relations onto that storage first, because
+   math-bench Q2/Q3 are now dominated by broad `adv`/`univ`/`area` relation
+   construction and joins.
+3. Port one join family end-to-end, starting with primitive entity/int/string
+   columns and replacing compound string-key hash joins in the hot path.
+4. Benchmark after each migration with `datascript-bench` q1-q5/qpred,
+   `math-bench` q1-q4, and focused relation-source compound join tests.
+5. Then build the generic semi-naive rules engine on top of the improved
    relation/operator representation.
 
 ## Current Rules Engine State

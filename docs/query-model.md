@@ -150,8 +150,22 @@ Datalevin's math-bench:
 
 This lowers to a derived adjacency list and then uses the same transitive
 operator as direct ref attrs. It is a physical rule operator, not a complete
-solution for rule planning. Math-bench Q2/Q3 still need relation-native
-non-recursive derived-rule joins.
+solution for rule planning.
+
+Non-recursive helper rules now also have an initial relation-native
+materialization path. The relation engine can materialize pure clause/rule-call
+rules once and join them into the current relation instead of invoking the rule
+per input row. Two important general shapes have direct builders:
+
+- derived two-hop edges, where one attr points to an intermediate entity and a
+  second attr supplies the output value
+- same-entity cardinality-one two-attr projections, using a merge scan over the
+  sorted attr/entity index when all datoms are current
+
+This is enough to turn math-bench Q2/Q3 from repeated rule expansion into three
+materialized rule calls, but the implementation still projects those large
+relations through generic `Binding` rows. The next performance step is
+columnar/streamed materialized rule relations and typed joins.
 
 ## Query Engine Strategy
 
@@ -168,17 +182,17 @@ The first relation-engine path is now implemented for the main DataScript query
 operators: data clauses, predicates, function clauses, `not`, `or`, rule calls,
 `ground`, `get-else`, `get-some`, and aggregates. This includes ordinary
 scalar, collection, tuple, relation `:in` inputs, and relation-source clauses
-over `:in` sources such as `$rows`, and named DB source clauses. It builds one
-`Query-Relation` per input binding and datom/source pattern, joins those
-relations with generic relation product/join operations, applies non-clause
-operators as relation transforms, applies rule calls through the existing
-recursive rule evaluator, groups aggregate bindings through the existing
-aggregate renderer, and then uses the existing result renderer. Relations carry
-per-attribute source metadata so lookup refs in joins resolve against the
-appropriate named DB source when needed. This is intentionally conservative:
-source-qualified synthetic primary collection DB rule/predicate/function
-queries still use the older binding-expansion evaluator until their
-DataScript-style source-aware relation handlers are ported.
+over `:in` sources such as `$rows`, and named DB source clauses. It now runs
+ordinary supported `$` queries through the same path, not only named-source
+queries. Execution is step-driven: each where step transforms the current
+relation, so selective bound clauses can run before broad clauses or rules when
+the query order says so. Small current relations use bound-clause expansion
+instead of materializing a full datom-pattern relation and joining it back.
+Relations carry per-attribute source metadata so lookup refs in joins resolve
+against the appropriate named DB source when needed. This is intentionally
+conservative: source-qualified synthetic primary collection DB
+rule/predicate/function queries still use the older binding-expansion evaluator
+until their DataScript-style source-aware relation handlers are ported.
 
 Relation joins now include a DataScript-shaped hash join for primitive common
 variables. The join path supports compound keys across one or more shared

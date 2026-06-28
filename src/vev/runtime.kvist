@@ -9837,10 +9837,6 @@
 (defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
   (when (not (query-steps-are-relation-engine-supported? query))
     (return false))
-  (when (and (= (count sources) 0)
-             (not (query-uses-primary-relation-db-source? query))
-             (not (query-uses-source-input-clause? query)))
-    (return false))
   (when (and (query-uses-primary-relation-db-source? query)
              (or (> (count query.predicates) 0)
                  (> (count query.function-clauses) 0)
@@ -9945,10 +9941,347 @@
     (delete bindings)
     out))
 
-(defn query-relation-apply-rule-call [db: DB, rules: []Rule, plans: []Rule-Call-Plan, rel: Query-Relation, call: Rule-Call, call-index: int, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
+(defn query-relation-apply-bound-clause [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> Query-Relation
+  (let [bindings (make [dynamic]Binding)]
+    (for [tuple rel.tuples]
+      (append-bindings-after-clause-with-sources-profiled! (addr bindings) db sources clause-value tuple stats))
+    (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
+      (delete bindings)
+      out)))
+
+(defn rule-body-relation-materializable? [rule: Rule] -> bool
+  (when (or (> (count rule.predicates) 0)
+            (> (count rule.function-clauses) 0)
+            (> (count rule.get-elses) 0)
+            (> (count rule.get-somes) 0)
+            (> (count rule.grounds) 0)
+            (> (count rule.not-groups) 0)
+            (> (count rule.or-groups) 0))
+    (return false))
+  (for [clause-value rule.clauses]
+    (when clause-value.has-source
+      (return false)))
+  (for [call rule.rule-calls]
+    (when call.has-source
+      (return false)))
+  (for [step rule.body-steps]
+    (when (not (or (= step.kind .Clause)
+                   (= step.kind .RuleCall)))
+      (return false)))
+  true)
+
+(defn rule-call-can-materialize-relation? [plan: Rule-Call-Plan, call: Rule-Call] -> bool
+  (and (not call.has-source)
+       (not plan.recursive)
+       (not plan.linear-transitive)
+       (not plan.alternating-transitive)
+       (> (count plan.rules) 0)))
+
+(defn query-relation-project-rule-call [rel: Query-Relation, rule: Rule, call: Rule-Call] -> Query-Relation
+  (when (not (= (count rule.params) (count call.args)))
+    (return (query-relation-empty)))
+  (let [bindings (make [dynamic]Binding)
+        seen (set.empty string)]
+    (defer (delete seen))
+    (for [tuple rel.tuples]
+      (let [out (Binding {})
+            ok true]
+        (for [param index rule.params]
+          (when ok
+            (let [[value value-ok] (binding-lookup tuple param)]
+              (if value-ok
+                (let [arg call.args[index]]
+                  (case arg.kind
+                    .Var
+                      (let [[next bind-ok] (binding-with-value out arg.name value)]
+                        (set! out next)
+                        (set! ok bind-ok))
+                    .Value
+                      (set! ok (value-equal? value arg.value))
+                    .Wildcard
+                      (discard value)
+                    :else
+                      (set! ok false)))
+                (set! ok false)))))
+        (when ok
+          (let [[key key-ok] (binding-dedupe-key out)]
+            (if key-ok
+              (let [already-seen (set.contains? seen key)]
+                (if already-seen
+                  (delete out.items)
+                  (do
+                    (set.add! seen key)
+                    (arr.push! bindings out))))
+              (if (binding-exists? (slice bindings 0) out)
+                (delete out.items)
+                (arr.push! bindings out)))))
+        (when (not ok)
+          (delete out.items))))
+    (let [projected (query-relation-from-bindings (slice bindings 0))]
+      (delete bindings)
+      projected)))
+
+(defn value-as-db-entity [value: Value] -> [entity: u64, ok: bool]
+  (case value.kind
+    .Entity (return value.entity true)
+    .Int (return (u64 value.int-value) true)
+    :else (return 0 false)))
+
+(defn query-relation-from-derived-edge-rule [db: DB, rule: Rule, left-attr: string, right-attr: string, stats: ^Query-Stats] -> [rel: Query-Relation, ok: bool]
+  (when (not (= (count rule.params) 2))
+    (return (query-relation-empty) false))
+  (let [bindings (make [dynamic]Binding)
+        seen (set.empty string)
+        indexes (slice db.aevt 0)
+        low (lower-bound-index db indexes "aevt" 0 left-attr (Value {}))
+        high (upper-bound-index db indexes "aevt" 0 left-attr (Value {}))
+        all-current (all-datoms-current? db)
+        i low]
+    (defer (delete seen))
+    (set! stats^.clause-candidates (+ stats^.clause-candidates (- high low)))
+    (while (< i high)
+      (let [datom-index indexes[i]
+            datom db.datoms[datom-index]]
+        (when (or all-current (datom-current-at? db datom-index))
+          (let [[target-entity target-ok] (value-as-db-entity datom.v)]
+            (when target-ok
+              (let [value (Value {})
+                    value-ok false]
+                (if all-current
+                  (let [[found-value found-ok] (cardinality-one-value-fast-all-current db target-entity right-attr)]
+                    (set! value found-value)
+                    (set! value-ok found-ok))
+                  (let [[found-value found-ok] (pull-attr-value db target-entity right-attr)]
+                    (set! value found-value)
+                    (set! value-ok found-ok)))
+                (when value-ok
+                  (let [out (Binding {})]
+                    (binding-store! (addr out) rule.params[0] (value-entity datom.e))
+                    (binding-store! (addr out) rule.params[1] value)
+                    (let [[key key-ok] (binding-dedupe-key out)]
+                      (if key-ok
+                        (let [already-seen (set.contains? seen key)]
+                          (if already-seen
+                            (delete out.items)
+                            (do
+                              (set.add! seen key)
+                              (arr.push! bindings out))))
+                        (if (binding-exists? (slice bindings 0) out)
+                          (delete out.items)
+                          (arr.push! bindings out)))))))))))
+      (set! i (+ i 1)))
+    (let [out (query-relation-from-bindings (slice bindings 0))]
+      (delete bindings)
+      (return out true))))
+
+(defn rule-two-attr-same-entity [rule: Rule] -> [first-attr: string, second-attr: string, ok: bool]
+  (when (not (and (= (count rule.params) 2)
+                  (= (count rule.clauses) 2)
+                  (= (count rule.rule-calls) 0)
+                  (rule-has-only-plain-clauses-and-calls? rule)))
+    (return "" "" false))
+  (let [left rule.clauses[0]
+        right rule.clauses[1]
+        [left-attr left-attr-ok] (clause-attr-keyword left)
+        [right-attr right-attr-ok] (clause-attr-keyword right)]
+    (when (not (and left-attr-ok right-attr-ok
+                    (= left.e.kind .Var)
+                    (= right.e.kind .Var)
+                    (= left.e.name right.e.name)))
+      (return "" "" false))
+    (when (and (term-var-name? left.v rule.params[0])
+               (term-var-name? right.v rule.params[1]))
+      (return left-attr right-attr true))
+    (when (and (term-var-name? right.v rule.params[0])
+               (term-var-name? left.v rule.params[1]))
+      (return right-attr left-attr true))
+    (return "" "" false)))
+
+(defn append-two-param-binding! [bindings: ^[dynamic]Binding, seen: ^set[string], first-name: string, first-value: Value, second-name: string, second-value: Value]
+  (let [out (Binding {})]
+    (binding-store! (addr out) first-name first-value)
+    (binding-store! (addr out) second-name second-value)
+    (let [[key key-ok] (binding-dedupe-key out)]
+      (if key-ok
+        (let [already-seen (set.contains? seen^ key)]
+          (if already-seen
+            (delete out.items)
+            (do
+              (set.add! seen key)
+              (arr.push! bindings^ out))))
+        (if (binding-exists? (slice bindings^ 0) out)
+          (delete out.items)
+          (arr.push! bindings^ out))))))
+
+(defn query-relation-from-two-attr-same-entity-rule [db: DB, rule: Rule, first-attr: string, second-attr: string, stats: ^Query-Stats] -> [rel: Query-Relation, ok: bool]
+  (when (not (and (schema-cardinality-one? db first-attr)
+                  (schema-cardinality-one? db second-attr)))
+    (return (query-relation-empty) false))
+  (let [bindings (make [dynamic]Binding)
+        seen (set.empty string)
+        indexes (slice db.aevt 0)
+        first-low (lower-bound-index db indexes "aevt" 0 first-attr (Value {}))
+        first-high (upper-bound-index db indexes "aevt" 0 first-attr (Value {}))
+        second-low (lower-bound-index db indexes "aevt" 0 second-attr (Value {}))
+        second-high (upper-bound-index db indexes "aevt" 0 second-attr (Value {}))
+        all-current (all-datoms-current? db)]
+    (defer (delete seen))
+    (set! stats^.clause-candidates (+ stats^.clause-candidates (- first-high first-low) (- second-high second-low)))
+    (if all-current
+      (let [first-i first-low
+            second-i second-low]
+        (while (and (< first-i first-high) (< second-i second-high))
+          (let [first-datom db.datoms[indexes[first-i]]
+                second-datom db.datoms[indexes[second-i]]]
+            (cond
+              (< first-datom.e second-datom.e)
+                (set! first-i (+ first-i 1))
+              (> first-datom.e second-datom.e)
+                (set! second-i (+ second-i 1))
+              :else
+                (do
+                  (append-two-param-binding! (addr bindings) (addr seen) rule.params[0] first-datom.v rule.params[1] second-datom.v)
+                  (set! first-i (+ first-i 1))
+                  (set! second-i (+ second-i 1)))))))
+      (let [second-values (current-entity-attr-values db second-attr stats)
+            i first-low]
+        (defer (delete second-values))
+        (while (< i first-high)
+          (let [datom-index indexes[i]
+                datom db.datoms[datom-index]]
+            (when (datom-current-at? db datom-index)
+              (let [[second-value second-ok] (mmap.get second-values datom.e)]
+                (when second-ok
+                  (append-two-param-binding! (addr bindings) (addr seen) rule.params[0] datom.v rule.params[1] second-value)))))
+          (set! i (+ i 1)))))
+    (let [out (query-relation-from-bindings (slice bindings 0))]
+      (delete bindings)
+      (return out true))))
+
+(defn query-relation-from-materialized-rule-call [db: DB, sources: []DB-Source, rules: []Rule, plan: Rule-Call-Plan, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, depth: int] -> [rel: Query-Relation, ok: bool]
+  (when (or (> depth 8)
+            (not (rule-call-can-materialize-relation? plan call)))
+    (return (query-relation-empty) false))
+  (let [out-bindings (make [dynamic]Binding)]
+    (for [rule plan.rules]
+      (when (= rule.name call.name)
+        (when (not (rule-body-relation-materializable? rule))
+          (delete out-bindings)
+          (return (query-relation-empty) false))
+        (let [[left-attr right-attr derived-ok] (rule-two-hop-derived-edge rules rule.name)]
+          (when derived-ok
+            (let [[derived derived-built] (query-relation-from-derived-edge-rule db rule left-attr right-attr stats)]
+              (when derived-built
+                (let [projected (query-relation-project-rule-call derived rule call)]
+                  (for [binding projected.tuples]
+                    (arr.push! out-bindings (clone-binding binding)))
+                  (delete-query-relation projected)
+                  (delete-query-relation derived)
+                  (continue)))
+              (delete-query-relation derived))))
+        (let [[first-attr second-attr two-attr-ok] (rule-two-attr-same-entity rule)]
+          (when two-attr-ok
+            (let [[two-attr-rel two-attr-built] (query-relation-from-two-attr-same-entity-rule db rule first-attr second-attr stats)]
+              (when two-attr-built
+                (let [projected (query-relation-project-rule-call two-attr-rel rule call)]
+                  (for [binding projected.tuples]
+                    (arr.push! out-bindings (clone-binding binding)))
+                  (delete-query-relation projected)
+                  (delete-query-relation two-attr-rel)
+                  (continue)))
+              (delete-query-relation two-attr-rel))))
+        (let [current (query-relation-singleton)]
+          (if (> (count rule.body-steps) 0)
+            (for [step rule.body-steps]
+              (when (= step.kind .Clause)
+                (let [clause-rel (query-relation-from-db-clause db rule.clauses[step.index] "")
+                      joined (query-relation-join db sources current clause-rel)]
+                  (set! stats^.steps (+ stats^.steps 1))
+                  (set! stats^.clauses (+ stats^.clauses 1))
+                  (set! stats^.clause-candidates (+ stats^.clause-candidates (count clause-rel.tuples)))
+                  (delete-query-relation current)
+                  (delete-query-relation clause-rel)
+                  (set! current joined)))
+              (when (= step.kind .RuleCall)
+                (let [inner-call rule.rule-calls[step.index]
+                      inner-plan (rule-call-plan rules inner-call.name)
+                      [inner-rel inner-ok] (query-relation-from-materialized-rule-call db sources rules inner-plan inner-call registry stats (+ depth 1))]
+                  (delete-rule-call-plan inner-plan)
+                  (when (not inner-ok)
+                    (delete-query-relation current)
+                    (delete-query-relation inner-rel)
+                    (delete out-bindings)
+                    (return (query-relation-empty) false))
+                  (let [joined (query-relation-join db sources current inner-rel)]
+                    (set! stats^.rule-calls (+ stats^.rule-calls 1))
+                    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+                    (delete-query-relation current)
+                    (delete-query-relation inner-rel)
+                    (set! current joined)))))
+            (do
+              (for [clause-value rule.clauses]
+                (let [clause-rel (query-relation-from-db-clause db clause-value "")
+                      joined (query-relation-join db sources current clause-rel)]
+                  (set! stats^.steps (+ stats^.steps 1))
+                  (set! stats^.clauses (+ stats^.clauses 1))
+                  (set! stats^.clause-candidates (+ stats^.clause-candidates (count clause-rel.tuples)))
+                  (delete-query-relation current)
+                  (delete-query-relation clause-rel)
+                  (set! current joined)))
+              (for [inner-call rule.rule-calls]
+                (let [inner-plan (rule-call-plan rules inner-call.name)
+                      [inner-rel inner-ok] (query-relation-from-materialized-rule-call db sources rules inner-plan inner-call registry stats (+ depth 1))]
+                  (delete-rule-call-plan inner-plan)
+                  (when (not inner-ok)
+                    (delete-query-relation current)
+                    (delete-query-relation inner-rel)
+                    (delete out-bindings)
+                    (return (query-relation-empty) false))
+                  (let [joined (query-relation-join db sources current inner-rel)]
+                    (set! stats^.rule-calls (+ stats^.rule-calls 1))
+                    (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+                    (delete-query-relation current)
+                    (delete-query-relation inner-rel)
+                    (set! current joined))))))
+          (let [projected (query-relation-project-rule-call current rule call)]
+            (for [binding projected.tuples]
+              (arr.push! out-bindings (clone-binding binding)))
+            (delete-query-relation projected)
+            (delete-query-relation current)))))
+    (let [unique (unique-bindings (slice out-bindings 0))
+          out (query-relation-from-bindings (slice unique 0))]
+      (delete out-bindings)
+      (delete unique)
+      (return out true))))
+
+(defn query-relation-apply-materialized-rule-call [db: DB, sources: []DB-Source, rel: Query-Relation, plan: Rule-Call-Plan, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
+  (when (not (rule-call-can-materialize-relation? plan call))
+    (return (query-relation-empty) false))
+  (let [[rule-rel rule-ok] (query-relation-from-materialized-rule-call db sources (slice plan.rules 0) plan call registry stats 0)]
+    (when (not rule-ok)
+      (delete-query-relation rule-rel)
+      (return (query-relation-empty) false))
+    (let [joined (query-relation-join db sources rel rule-rel)]
+      (set! stats^.rule-calls (+ stats^.rule-calls 1))
+      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+      (query-stats-observe-bindings! stats (count rule-rel.tuples))
+      (delete-query-relation rule-rel)
+      (return joined true))))
+
+(defn query-relation-apply-rule-call [db: DB, sources: []DB-Source, rules: []Rule, plans: []Rule-Call-Plan, rel: Query-Relation, call: Rule-Call, call-index: int, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
   (let [bindings (make [dynamic]Binding)
         use-cached-plan (< call-index (count plans))
         plan (if use-cached-plan plans[call-index] (rule-call-plan rules call.name))]
+    (when (or (> (count rel.tuples) 128)
+              (and (= (count rel.tuples) 1)
+                   (= (count rel.attrs) 0)))
+      (let [[materialized materialized-ok] (query-relation-apply-materialized-rule-call db sources rel plan call registry stats)]
+        (when materialized-ok
+          (when (not use-cached-plan)
+            (delete-rule-call-plan plan))
+          (delete bindings)
+          (return materialized))
+        (delete-query-relation materialized)))
     (for [tuple rel.tuples]
       (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call tuple registry stats)]
         (for [rule-binding rule-bindings]
@@ -9977,59 +10310,6 @@
         out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
-
-(defn query-relation-apply-where-ops [db: DB, sources: []DB-Source, query: Query, rel: Query-Relation, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
-  (let [current (query-relation-copy rel)]
-    (for [step query.where-steps]
-      (when (= step.kind .Predicate)
-        (let [next (query-relation-filter-predicate db current query.predicates[step.index] registry)]
-          (set! stats^.steps (+ stats^.steps 1))
-          (delete-query-relation current)
-          (set! current next)
-          (query-stats-observe-bindings! stats (count current.tuples))))
-      (when (= step.kind .Function)
-        (let [next (query-relation-extend-function current query.function-clauses[step.index] registry)]
-          (set! stats^.steps (+ stats^.steps 1))
-          (delete-query-relation current)
-          (set! current next)
-          (query-stats-observe-bindings! stats (count current.tuples))))
-      (when (= step.kind .Not)
-        (let [next (query-relation-apply-not db sources current query.not-groups[step.index] registry)]
-          (set! stats^.steps (+ stats^.steps 1))
-          (delete-query-relation current)
-          (set! current next)
-          (query-stats-observe-bindings! stats (count current.tuples))))
-      (when (= step.kind .Or)
-        (let [next (query-relation-apply-or db sources current query.or-groups[step.index] registry)]
-          (set! stats^.steps (+ stats^.steps 1))
-          (delete-query-relation current)
-          (set! current next)
-          (query-stats-observe-bindings! stats (count current.tuples))))
-      (when (= step.kind .RuleCall)
-        (let [next (query-relation-apply-rule-call db (slice query.rules 0) (slice query.rule-call-plans 0) current query.rule-calls[step.index] step.index registry stats)]
-          (set! stats^.steps (+ stats^.steps 1))
-          (delete-query-relation current)
-          (set! current next)
-          (query-stats-observe-bindings! stats (count current.tuples))))
-      (when (= step.kind .Ground)
-        (let [next (query-relation-apply-ground current query.grounds[step.index])]
-          (set! stats^.steps (+ stats^.steps 1))
-          (delete-query-relation current)
-          (set! current next)
-          (query-stats-observe-bindings! stats (count current.tuples))))
-      (when (= step.kind .GetElse)
-        (let [next (query-relation-apply-get-else db current query.get-elses[step.index])]
-          (set! stats^.steps (+ stats^.steps 1))
-          (delete-query-relation current)
-          (set! current next)
-          (query-stats-observe-bindings! stats (count current.tuples))))
-      (when (= step.kind .GetSome)
-        (let [next (query-relation-apply-get-some db current query.get-somes[step.index])]
-          (set! stats^.steps (+ stats^.steps 1))
-          (delete-query-relation current)
-          (set! current next)
-          (query-stats-observe-bindings! stats (count current.tuples)))))
-    current))
 
 (defn query-relation-from-source-input-clause [query: Query, inputs: []Query-Input, clause-value: Clause] -> Query-Relation
   (let [[binding binding-ok] (query-source-input-binding query inputs clause-value.source)]
@@ -10099,26 +10379,77 @@
     current))
 
 (defn relation-engine-relation-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> Query-Relation
-  (let [relations (make [dynamic]Query-Relation)
-        input-bindings (bindings-from-inputs db query inputs)]
+  (let [input-bindings (bindings-from-inputs db query inputs)]
     (set! stats^.input-bindings (count input-bindings))
     (query-stats-observe-bindings! stats (count input-bindings))
-    (arr.push! relations (query-relation-from-bindings (slice input-bindings 0)))
+    (let [current (query-relation-from-bindings (slice input-bindings 0))]
     (delete input-bindings)
-    (for [clause-value query.clauses]
-      (set! stats^.steps (+ stats^.steps 1))
-      (set! stats^.clauses (+ stats^.clauses 1))
-      (let [rel (query-relation-from-clause db query inputs sources clause-value)]
-        (set! stats^.clause-candidates (+ stats^.clause-candidates (count rel.tuples)))
-        (arr.push! relations rel)))
-    (let [joined (query-relation-reduce db sources (slice relations 0))
-          post-rel (query-relation-apply-where-ops db sources query joined registry stats)]
-      (for [rel relations]
-        (delete-query-relation rel))
-      (delete relations)
-      (query-stats-observe-bindings! stats (count post-rel.tuples))
-      (delete-query-relation joined)
-      post-rel)))
+    (for [step query.where-steps]
+      (when (= step.kind .Clause)
+        (set! stats^.steps (+ stats^.steps 1))
+        (set! stats^.clauses (+ stats^.clauses 1))
+        (if (and (> (count current.attrs) 0)
+                 (<= (count current.tuples) 1024))
+          (let [next (query-relation-apply-bound-clause db sources current query.clauses[step.index] stats)]
+            (delete-query-relation current)
+            (set! current next)
+            (query-stats-observe-bindings! stats (count current.tuples)))
+          (let [clause-rel (query-relation-from-clause db query inputs sources query.clauses[step.index])
+                next (query-relation-join db sources current clause-rel)]
+            (set! stats^.clause-candidates (+ stats^.clause-candidates (count clause-rel.tuples)))
+            (delete-query-relation current)
+            (delete-query-relation clause-rel)
+            (set! current next)
+            (query-stats-observe-bindings! stats (count current.tuples)))))
+      (when (= step.kind .Predicate)
+        (let [next (query-relation-filter-predicate db current query.predicates[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Function)
+        (let [next (query-relation-extend-function current query.function-clauses[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Not)
+        (let [next (query-relation-apply-not db sources current query.not-groups[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Or)
+        (let [next (query-relation-apply-or db sources current query.or-groups[step.index] registry)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .RuleCall)
+        (let [next (query-relation-apply-rule-call db sources (slice query.rules 0) (slice query.rule-call-plans 0) current query.rule-calls[step.index] step.index registry stats)]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .Ground)
+        (let [next (query-relation-apply-ground current query.grounds[step.index])]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .GetElse)
+        (let [next (query-relation-apply-get-else db current query.get-elses[step.index])]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples))))
+      (when (= step.kind .GetSome)
+        (let [next (query-relation-apply-get-some db current query.get-somes[step.index])]
+          (set! stats^.steps (+ stats^.steps 1))
+          (delete-query-relation current)
+          (set! current next)
+          (query-stats-observe-bindings! stats (count current.tuples)))))
+    current)))
 
 (defn relation-engine-bindings-profiled [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn, stats: ^Query-Stats] -> [dynamic]Binding
   (let [post-rel (relation-engine-relation-profiled db query inputs sources registry stats)

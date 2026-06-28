@@ -143,10 +143,10 @@ EDN chunks, so query timings should be read separately from import timings.
 
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
-| `q1` | 0.49-0.51ms | 2 | Good first-pass result |
-| `q2` | 81.7s | 34,073 | Major derived-rule join gap |
-| `q3` | not yet measured after q2 result | --- | Expected to hit the same derived-rule join gap |
-| `q4` | 1.03s | 135 | Now completes through derived transitive closure, still far behind Datalevin |
+| `q1` | 0.51ms | 2 | Good selective/bound rule path |
+| `q2` | 12.2s | 34,073 | Rule expansion fixed; broad materialized-rule joins remain slow |
+| `q3` | 10.0s | 29,317 | Same remaining broad materialized-rule join cost plus predicate filtering |
+| `q4` | 1.46s | 135 | Completes through derived transitive closure; bound final lookup threshold was raised after this measurement |
 
 Important result: Q4 originally did not finish within several minutes because
 `anc` recurses over derived rule `adv`, not over a direct DB ref attr. Vev now
@@ -163,12 +163,20 @@ The planner lowers that to a derived two-hop adjacency and then reuses the
 existing linear transitive operator. This is not benchmark-name-specific, but
 it is still a narrow physical rule operator.
 
-The next math-bench target is Q2/Q3, not Q4 micro-optimization. Q2 shows that
-non-recursive derived rules still expand through binding rows and repeated rule
-calls. The needed engine work is a relation-native/materialized derived-rule
-operator: compute `adv`, `univ`, and `area` as reusable relations or streams,
-then join them with ordinary indexed/hash/merge operators instead of invoking
-rules hundreds of thousands of times.
+Q2/Q3 are now past the first rule-dispatch problem. Supported normal `$`
+queries can run through the relation engine, clauses are applied in where-step
+order, small bound relations use direct bound-clause expansion, and
+non-recursive helper rules can materialize as relations. The materialized rule
+path recognizes two important general physical shapes:
+
+- derived two-hop edges such as `[(adv ?x ?y) [?x :person/advised ?d] (author ?d ?y)]`
+- same-entity cardinality-one projections such as `[(univ ?c ?u) [?d :cid ?c] [?d :univ ?u]]`
+
+The remaining Q2/Q3 cost is not repeated rule invocation anymore
+(`rule_calls=3`). It is broad materialized relation construction and joins over
+hundreds of thousands of rows. The next engine work should make these rule
+relations columnar/streamed and join them with typed merge/hash operators
+instead of projecting through generic `Binding` rows and string-key hash joins.
 
 ## MusicBrainz Import Smoke
 
