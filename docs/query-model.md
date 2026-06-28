@@ -430,6 +430,11 @@ binding predicate path. This keeps correctness explicit while allowing rule
 projection followed by selective predicates to avoid compatibility row
 allocation.
 
+The profiled query result boundary also treats compatibility bindings as an
+optional representation. Typed result rendering runs directly from typed
+columns; aggregate and fallback rendering materialize through the audited helper
+instead of reading `post-rel.tuples` directly.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly

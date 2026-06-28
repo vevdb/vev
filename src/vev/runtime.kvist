@@ -12645,13 +12645,14 @@
     (let [post-rel (relation-engine-relation-profiled db query inputs sources registry (addr stats))
           rows (make [dynamic]Result-Row)]
       (if (> (count query.aggregates) 0)
-        (if (= (count query.find) 0)
-          (let [values (make [dynamic]Value 0 (count query.aggregates))
-                pulls (make [dynamic]Pull-Result)]
-            (for [aggregate query.aggregates]
-              (arr.push! values (aggregate-value-for-group-with-fns (slice post-rel.tuples 0) query aggregate ([]Value []) registry)))
-            (arr.push! rows (Result-Row {values: values pulls: pulls})))
-          (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice post-rel.tuples 0) registry))
+        (let [materialized (query-relation-materialized-bindings post-rel) :defer]
+          (if (= (count query.find) 0)
+            (let [values (make [dynamic]Value 0 (count query.aggregates))
+                  pulls (make [dynamic]Pull-Result)]
+              (for [aggregate query.aggregates]
+                (arr.push! values (aggregate-value-for-group-with-fns (slice materialized 0) query aggregate ([]Value []) registry)))
+              (arr.push! rows (Result-Row {values: values pulls: pulls})))
+            (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice materialized 0) registry)))
         (do
           (delete rows)
           (let [[typed-rows typed-ok] (result-rows-for-typed-relation query post-rel)]
@@ -12659,7 +12660,8 @@
               (set! rows typed-rows)
               (do
                 (delete typed-rows)
-                (set! rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice post-rel.tuples 0) registry)))))))
+                (let [materialized (query-relation-materialized-bindings post-rel) :defer]
+                  (set! rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice materialized 0) registry))))))))
       (delete-query-relation post-rel)
       (set! stats.output-rows (count rows))
       (return (profiled-result-set (result-set-ok rows) stats))))
