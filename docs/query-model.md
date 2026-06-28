@@ -534,7 +534,10 @@ candidate datom is checked directly against typed columns and repeated clause
 variables before appending typed output. This removes the previous row
 `Binding` conversion from both scan-bound selection and candidate matching on
 the generic typed DB-clause path while preserving reverse attribute and
-same-variable semantics.
+same-variable semantics. Bound-clause extension now appends the existing typed
+input row plus newly produced clause values directly into the output columns,
+so matching candidate datoms no longer require a temporary `Binding` merely to
+cross the builder boundary.
 
 Rule-call projection itself is also typed for the common non-distinct cases.
 Distinct variable projections keep the fast column-clone path, while constants,
