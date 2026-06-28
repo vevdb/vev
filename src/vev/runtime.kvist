@@ -6132,6 +6132,79 @@
     (return true))
   (match-term? clause.op-term row.items[4] binding))
 
+(defn typed-relation-source-term-matches? [rel: Query-Relation, row: int, term: Term, actual: Value] -> bool
+  (case term.kind
+    .Value (value-equal? term.value actual)
+    .Wildcard true
+    .Var (query-relation-typed-row-var-agrees? rel row term.name actual)
+    :else false))
+
+(defn typed-relation-source-term-value [rel: Query-Relation, row: int, term: Term, actual: Value, name: string] -> [value: Value, ok: bool]
+  (let [[existing existing-ok] (query-relation-typed-row-value rel row name)]
+    (when existing-ok
+      (return existing true)))
+  (if (term-var-name? term name)
+    (return actual true)
+    (return (Value {}) false)))
+
+(defn typed-relation-source-var-value [rel: Query-Relation, rel-row: int, clause: Clause, source-row: Value, name: string] -> [value: Value, ok: bool]
+  (let [[existing existing-ok] (query-relation-typed-row-value rel rel-row name)]
+    (when existing-ok
+      (return existing true)))
+  (when (and (= clause.source-width 1)
+             (not (= source-row.kind .Vector)))
+    (return (typed-relation-source-term-value rel rel-row clause.e source-row name)))
+  (when (not (= source-row.kind .Vector))
+    (return (Value {}) false))
+  (when (not (= (count source-row.items) clause.source-width))
+    (return (Value {}) false))
+  (let [[e-value e-ok] (typed-relation-source-term-value rel rel-row clause.e source-row.items[0] name)]
+    (when e-ok
+      (return e-value true)))
+  (when (> clause.source-width 1)
+    (let [[a-value a-ok] (typed-relation-source-term-value rel rel-row clause.a source-row.items[1] name)]
+      (when a-ok
+        (return a-value true))))
+  (when (> clause.source-width 2)
+    (let [[v-value v-ok] (typed-relation-source-term-value rel rel-row clause.v source-row.items[2] name)]
+      (when v-ok
+        (return v-value true))))
+  (when (> clause.source-width 3)
+    (let [[tx-value tx-ok] (typed-relation-source-term-value rel rel-row clause.tx-term source-row.items[3] name)]
+      (when tx-ok
+        (return tx-value true))))
+  (when (> clause.source-width 4)
+    (let [[op-value op-ok] (typed-relation-source-term-value rel rel-row clause.op-term source-row.items[4] name)]
+      (when op-ok
+        (return op-value true))))
+  (return (Value {}) false))
+
+(defn typed-relation-source-row-matches? [clause: Clause, source-row: Value, rel: Query-Relation, rel-row: int] -> bool
+  (when (and (= clause.source-width 1)
+             (not (= source-row.kind .Vector)))
+    (return (typed-relation-source-term-matches? rel rel-row clause.e source-row)))
+  (when (not (= source-row.kind .Vector))
+    (return false))
+  (when (not (= (count source-row.items) clause.source-width))
+    (return false))
+  (when (= clause.source-width 1)
+    (return (typed-relation-source-term-matches? rel rel-row clause.e source-row.items[0])))
+  (when (= clause.source-width 2)
+    (return
+      (and (typed-relation-source-term-matches? rel rel-row clause.e source-row.items[0])
+           (typed-relation-source-term-matches? rel rel-row clause.a source-row.items[1]))))
+  (when (not (and (typed-relation-source-term-matches? rel rel-row clause.e source-row.items[0])
+                  (typed-relation-source-term-matches? rel rel-row clause.a source-row.items[1])
+                  (typed-relation-source-term-matches? rel rel-row clause.v source-row.items[2])))
+    (return false))
+  (when (= clause.source-width 3)
+    (return true))
+  (when (not (typed-relation-source-term-matches? rel rel-row clause.tx-term source-row.items[3]))
+    (return false))
+  (when (= clause.source-width 4)
+    (return true))
+  (typed-relation-source-term-matches? rel rel-row clause.op-term source-row.items[4]))
+
 (defn bindings-after-relation-source-clause [clause: Clause, binding: Binding] -> [dynamic]Binding
   (let [out (make [dynamic]Binding)
         [source source-ok] (binding-lookup binding clause.source)]
@@ -11845,7 +11918,59 @@
                                typed-rows: builder.typed-rows
                                has-typed-columns: true}) true))))
 
-(defn query-relation-apply-bound-clause [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> Query-Relation
+(defn append-typed-relation-source-row! [builder: ^Query-Relation-Builder, attrs: []string, rel: Query-Relation, rel-row: int, clause-value: Clause, source-row: Value] -> bool
+  (let [produced (make [dynamic]Value) :defer]
+    (for [attr attrs]
+      (when (not (query-relation-has-attr? rel attr))
+        (let [[value value-ok] (typed-relation-source-var-value rel rel-row clause-value source-row attr)]
+          (when (not value-ok)
+            (return true))
+          (arr.push! produced value))))
+    (query-relation-builder-add-column-row-with-values! builder (slice rel.typed-columns 0) rel-row (slice produced 0))))
+
+(defn query-relation-apply-source-input-clause-typed [query: Query, inputs: []Query-Input, rel: Query-Relation, clause-value: Clause] -> [out: Query-Relation, ok: bool]
+  (when (or (not rel.has-typed-columns)
+            (not clause-value.has-source))
+    (return (query-relation-empty) false))
+  (let [[index found] (query-input-index-for-source query clause-value.source)]
+    (when (not found)
+      (return (query-relation-empty) false))
+    (when (>= index (count inputs))
+      (return (query-relation-empty) false))
+    (let [[source source-ok] (query-input-source-value inputs[index])]
+      (when (not (and source-ok (= source.kind .Vector)))
+        (return (query-relation-empty) false))
+      (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+            attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))]
+        (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.e "")
+        (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.a "")
+        (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.v "")
+        (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.tx-term "")
+        (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.op-term "")
+        (let [builder (query-relation-builder (slice attrs 0))
+              rel-row 0]
+          (while (< rel-row rel.typed-rows)
+            (for [source-row source.items]
+              (when (typed-relation-source-row-matches? clause-value source-row rel rel-row)
+                (when (not (append-typed-relation-source-row! (addr builder) (slice attrs 0) rel rel-row clause-value source-row))
+                  (delete attrs)
+                  (delete attr-sources)
+                  (delete-query-relation-builder builder)
+                  (return (query-relation-empty) false))))
+            (set! rel-row (+ rel-row 1)))
+          (return (Query-Relation {attrs: attrs
+                                   attr-sources: attr-sources
+                                   attr-index: (query-relation-attr-index (slice attrs 0))
+                                   tuples: builder.tuples
+                                   typed-columns: builder.typed-columns
+                                   typed-rows: builder.typed-rows
+                                   has-typed-columns: builder.typed-ok}) true))))))
+
+(defn query-relation-apply-bound-clause [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> Query-Relation
+  (let [[typed typed-ok] (query-relation-apply-source-input-clause-typed query inputs rel clause-value)]
+    (when typed-ok
+      (return typed))
+    (delete-query-relation typed))
   (let [[typed typed-ok] (query-relation-apply-bound-ea-clause-typed db rel clause-value stats)]
     (when typed-ok
       (return typed))
@@ -12788,7 +12913,7 @@
         (set! stats^.steps (+ stats^.steps 1))
         (set! stats^.clauses (+ stats^.clauses 1))
         (if (query-relation-should-bind-clause? current query.clauses[step.index])
-          (let [next (query-relation-apply-bound-clause db sources current query.clauses[step.index] stats)]
+          (let [next (query-relation-apply-bound-clause db query inputs sources current query.clauses[step.index] stats)]
             (delete-query-relation current)
             (set! current next)
             (query-stats-observe-bindings! stats (query-relation-row-count current)))

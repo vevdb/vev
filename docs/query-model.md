@@ -553,6 +553,13 @@ instead of first binding the whole source collection and stripping it later.
 This covers ordinary named source clauses and source-qualified rule calls whose
 rule bodies read from the same relation source.
 
+Bound relation-source input clauses now extend typed rows directly too. When a
+typed relation is already in flight and the next clause reads from a source
+input such as `$rows`, Vev matches source rows against the typed row values and
+appends only newly produced source variables as typed columns. This keeps
+multi-clause relation-source joins on the columnar path instead of converting
+each input row to a compatibility `Binding`.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
