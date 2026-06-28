@@ -395,6 +395,29 @@
   (set! builder^.typed-rows (+ builder^.typed-rows 1))
   true)
 
+(defn query-relation-builder-can-add-column-row-with-values? [builder: Query-Relation-Builder, columns: []Relation-Column, row: int, values: []Value] -> bool
+  (for [column index columns]
+    (let [[value value-ok] (typed-relation-column-value column row)]
+      (when (or (not value-ok)
+                (not (relation-column-can-add? builder.typed-columns[index] value)))
+        (return false))))
+  (for [value index values]
+    (let [column-index (+ (count columns) index)]
+      (when (not (relation-column-can-add? builder.typed-columns[column-index] value))
+        (return false))))
+  true)
+
+(defn query-relation-builder-add-column-row-with-values! [builder: ^Query-Relation-Builder, columns: []Relation-Column, row: int, values: []Value] -> bool
+  (when (not (query-relation-builder-can-add-column-row-with-values? builder^ columns row values))
+    (return false))
+  (for [column index columns]
+    (let [[value _] (typed-relation-column-value column row)]
+      (discard (relation-column-add! (addr builder^.typed-columns[index]) value))))
+  (for [value index values]
+    (discard (relation-column-add! (addr builder^.typed-columns[(+ (count columns) index)]) value)))
+  (set! builder^.typed-rows (+ builder^.typed-rows 1))
+  true)
+
 (defn query-relation-from-bindings-with-source [bindings: []Binding, source: string] -> Query-Relation
   (let [attrs (make [dynamic]string)
         attr-sources (make [dynamic]string)
@@ -966,6 +989,12 @@
     (when (= resolved.kind .Int)
       (return (value-entity (u64 resolved.int-value)) true))
     (return resolved true)))
+
+(defn query-relation-typed-row-var-agrees? [rel: Query-Relation, row: int, name: string, value: Value] -> bool
+  (let [[existing existing-ok] (query-relation-typed-row-value rel row name)]
+    (if existing-ok
+      (predicate-value-equal? existing value)
+      true)))
 
 (defstruct Relation-Column-Source {
   side: int
@@ -12213,21 +12242,19 @@
     (let [builder (query-relation-builder (slice attrs 0))
           row 0]
       (while (< row rel.typed-rows)
-        (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
-          (when (not binding-ok)
-            (delete attrs)
-            (delete attr-sources)
-            (delete-query-relation-builder builder)
-            (return (query-relation-empty) false))
-          (let [[next next-ok] (apply-get-else db binding get-else)]
-            (delete binding.items)
-            (when next-ok
-              (when (not (query-relation-builder-add-binding! (addr builder) (slice attrs 0) next false))
-                (delete next.items)
-                (delete attrs)
-                (delete attr-sources)
-                (delete-query-relation-builder builder)
-                (return (query-relation-empty) false)))))
+        (let [[entity entity-ok] (query-relation-resolve-typed-entity-term db rel row get-else.e)]
+          (when (and entity-ok (= entity.kind .Entity))
+            (let [[attr-value attr-ok] (pull-attr-value db entity.entity get-else.a)
+                  out-value (if attr-ok attr-value get-else.default-value)]
+              (when (query-relation-typed-row-var-agrees? rel row get-else.out out-value)
+                (let [produced (make [dynamic]Value) :defer]
+                  (when (not (query-relation-has-attr? rel get-else.out))
+                    (arr.push! produced out-value))
+                  (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
+                    (delete attrs)
+                    (delete attr-sources)
+                    (delete-query-relation-builder builder)
+                    (return (query-relation-empty) false)))))))
         (set! row (+ row 1)))
       (return (Query-Relation {attrs: attrs
                                attr-sources: attr-sources
@@ -12248,6 +12275,19 @@
     (delete bindings)
     out))
 
+(defn typed-get-some-row-values [db: DB, rel: Query-Relation, row: int, get-some: Get-Some] -> [attr-result: Value, attr-value: Value, ok: bool]
+  (let [[entity entity-ok] (query-relation-resolve-typed-entity-term db rel row get-some.e)]
+    (when (not (and entity-ok (= entity.kind .Entity)))
+      (return (Value {}) (Value {}) false))
+    (for [attr get-some.attrs]
+      (let [[value value-ok] (pull-attr-value db entity.entity attr)]
+        (when value-ok
+          (let [attr-value-result (get-some-attr-result-value db attr)]
+            (when (and (query-relation-typed-row-var-agrees? rel row get-some.out-attr attr-value-result)
+                       (query-relation-typed-row-var-agrees? rel row get-some.out-value value))
+              (return attr-value-result value true))))))
+    (return (Value {}) (Value {}) false)))
+
 (defn query-relation-apply-get-some-typed [db: DB, rel: Query-Relation, get-some: Get-Some] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
@@ -12258,17 +12298,14 @@
     (let [builder (query-relation-builder (slice attrs 0))
           row 0]
       (while (< row rel.typed-rows)
-        (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
-          (when (not binding-ok)
-            (delete attrs)
-            (delete attr-sources)
-            (delete-query-relation-builder builder)
-            (return (query-relation-empty) false))
-          (let [[next next-ok] (apply-get-some db binding get-some)]
-            (delete binding.items)
-            (when next-ok
-              (when (not (query-relation-builder-add-binding! (addr builder) (slice attrs 0) next false))
-                (delete next.items)
+        (let [[attr-result attr-value value-ok] (typed-get-some-row-values db rel row get-some)]
+          (when value-ok
+            (let [produced (make [dynamic]Value) :defer]
+              (when (not (query-relation-has-attr? rel get-some.out-attr))
+                (arr.push! produced attr-result))
+              (when (not (query-relation-has-attr? rel get-some.out-value))
+                (arr.push! produced attr-value))
+              (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
                 (delete attrs)
                 (delete attr-sources)
                 (delete-query-relation-builder builder)

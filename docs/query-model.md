@@ -469,14 +469,16 @@ output columns, and falls back to materialization only if the produced values
 cannot be represented columnarly. This keeps common scalar function clauses
 such as `(count ?name) ?len` on the typed path after rule projection.
 
-`get-else` also has a streaming typed operator. It reuses the existing
-entity-resolution and default-value semantics per row, then appends the output
-as a typed column. That keeps Datomic-style fallback attribute lookups on the
-typed path after rule projection.
+`get-else` also has a streaming typed operator. It resolves the entity term
+directly from typed input columns, applies the existing default-value semantics
+per row, and appends only newly produced output values as typed columns. That
+keeps Datomic-style fallback attribute lookups on the typed path after rule
+projection without converting each input row to a `Binding`.
 
-`get-some` follows the same pattern, appending the selected attribute identity
-and value as typed output columns while preserving the existing left-to-right
-attribute selection semantics.
+`get-some` follows the same pattern: it resolves the input entity directly from
+typed columns, finds the first present attribute in the declared order, checks
+already-bound output vars against typed row values, and appends the selected
+attribute identity and value as typed output columns.
 
 `not` now streams over typed rows as a filter. It materializes one binding at a
 time to reuse existing `not` semantics, but the surviving output stays typed
