@@ -387,6 +387,27 @@ typed column cache. The older `Typed-Relation` conversion path remains as
 fallback for untyped relation inputs, but the common typed path no longer clones
 whole columns just to build join keys and output rows.
 
+Next columnar milestone: make the relation representation explicitly support
+typed-only rows. A partial experiment where typed joins stopped emitting
+compatibility `Binding` rows improved the filtered math-bench Q3 path, but it
+also exposed unsafe assumptions in other operators that still treat
+`rel.tuples` as the authoritative row store. The next attempt should not patch
+individual joins in place. It should add a clear invariant and API boundary:
+
+- `query-relation-row-count` reports the logical row count, independent of
+  physical storage
+- operators declare whether they consume typed rows, binding rows, or either
+- binding-only operators materialize through one audited helper
+- typed joins, typed predicates, typed bound clauses, and typed result
+  rendering can pass typed-only relations end-to-end
+- aggregate, function, `or`, `not`, pull, and fallback rule paths must either
+  gain typed handlers or call the materialization helper explicitly
+
+The broad-rule math workloads are the right proving ground for this work:
+Q2 stresses a large unfiltered typed relation followed by a bound lookup, while
+Q3 proves the value of keeping the relation typed through a selective predicate
+before that final lookup.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
