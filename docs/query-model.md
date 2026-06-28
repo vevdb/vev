@@ -603,6 +603,12 @@ typed column representation, the initial source-input `Query-Relation` now
 stores zero compatibility `Binding` rows; unsupported value kinds fall back to
 the binding-backed representation.
 
+The singleton relation is typed-only too: it is represented as one logical row
+with zero columns and no compatibility `Binding` tuple. Binding-oriented
+fallbacks still see the same empty binding through
+`query-relation-materialized-bindings`, keeping the row/binding boundary
+explicit.
+
 Bound relation-source input clauses now extend typed rows directly too. When a
 typed relation is already in flight and the next clause reads from a source
 input such as `$rows`, Vev matches source rows against the typed row values and
