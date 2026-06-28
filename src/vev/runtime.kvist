@@ -892,6 +892,41 @@
                              typed-rows: builder.typed-rows
                              has-typed-columns: builder.typed-ok}) true)))
 
+(defn query-relation-single-typed-row-projected [rel: Query-Relation, row: int, names: []string] -> [out: Query-Relation, ok: bool]
+  (when (or (not rel.has-typed-columns)
+            (< row 0)
+            (>= row rel.typed-rows))
+    (return (query-relation-empty) false))
+  (let [attrs (make [dynamic]string 0 (count names))
+        attr-sources (make [dynamic]string 0 (count names))]
+    (for [name names]
+      (let [[index found] (mmap.get rel.attr-index name)]
+        (when found
+          (arr.push! attrs name)
+          (arr.push! attr-sources rel.attr-sources[index]))))
+    (let [builder (query-relation-builder (slice attrs 0))
+          values (make [dynamic]Value 0 (count attrs)) :defer]
+      (for [name attrs]
+        (let [[value value-ok] (query-relation-typed-row-value rel row name)]
+          (when (not value-ok)
+            (delete attrs)
+            (delete attr-sources)
+            (delete-query-relation-builder builder)
+            (return (query-relation-empty) false))
+          (arr.push! values value)))
+      (when (not (query-relation-builder-add-column-row-with-values! (addr builder) ([]Relation-Column []) 0 (slice values 0)))
+        (delete attrs)
+        (delete attr-sources)
+        (delete-query-relation-builder builder)
+        (return (query-relation-empty) false))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: builder.tuples
+                               typed-columns: builder.typed-columns
+                               typed-rows: builder.typed-rows
+                               has-typed-columns: builder.typed-ok}) true))))
+
 (defn query-relation-append-typed-rows! [out: ^Query-Relation, rel: Query-Relation] -> bool
   (when (not (query-relation-typed-layout-compatible? out^ rel))
     (return false))
@@ -12251,8 +12286,6 @@
     out))
 
 (defn plain-typed-branch-group? [group: Not-Group] -> bool
-  (when group.has-join
-    (return false))
   (when (= (count group.steps) 0)
     (return false))
   (for [step group.steps]
@@ -12308,7 +12341,15 @@
       (return (query-relation-empty) false)))
 
 (defn query-relation-apply-plain-branch-pipeline-typed [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, row: int, group: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
-  (let [[current current-ok] (query-relation-single-typed-row rel row)]
+  (let [current (query-relation-empty)
+        current-ok false]
+    (if group.has-join
+      (let [[projected projected-ok] (query-relation-single-typed-row-projected rel row (slice group.join-vars 0))]
+        (set! current projected)
+        (set! current-ok projected-ok))
+      (let [[single single-ok] (query-relation-single-typed-row rel row)]
+        (set! current single)
+        (set! current-ok single-ok)))
     (when (not current-ok)
       (delete-query-relation current)
       (return (query-relation-empty) false))

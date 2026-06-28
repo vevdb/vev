@@ -516,14 +516,16 @@ directly from typed row values and checks candidate datoms without building a
 `Binding`. Plain multi-clause DB negative groups, including source-qualified
 clauses and nested plain `not` groups, now run each outer typed row through a
 branch-local typed relation, so inner clause matching can continue to use typed
-clause scans recursively. Source-input clauses such as `$rows` also run through
-the typed relation-source extender inside plain branch pipelines. `not-join`
-and operators outside the typed evaluator still materialize one binding at a
-time to reuse existing semantics, but the surviving output stays typed instead
-of allocating a full intermediate binding relation. Plain branch-local predicate
-and function steps preserve their source order in the group model and run on
-typed columns when the predicate/function operator is supported by the typed
-evaluator.
+clause scans recursively. Plain `not-join` uses the same branch pipeline after
+projecting the input row to the declared join vars, so branch-local variables do
+not accidentally capture outer bindings. Source-input clauses such as `$rows`
+also run through the typed relation-source extender inside plain branch
+pipelines. Operators outside the typed evaluator still materialize one binding
+at a time to reuse existing semantics, but the surviving output stays typed
+instead of allocating a full intermediate binding relation. Plain branch-local
+predicate and function steps preserve their source order in the group model and
+run on typed columns when the predicate/function operator is supported by the
+typed evaluator.
 
 `ground` now streams over typed rows too. Scalar ground clauses resolve their
 source term directly from typed input columns and append only newly produced
