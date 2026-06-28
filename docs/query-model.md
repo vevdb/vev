@@ -462,6 +462,10 @@ attribute selection semantics.
 time to reuse existing `not` semantics, but the surviving output stays typed
 instead of allocating a full intermediate binding relation.
 
+`ground` now streams over typed rows too. Scalar, tuple, collection, relation,
+and input-binding ground shapes reuse the existing binding semantics one input
+row at a time, then append any produced rows back into typed columns.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
