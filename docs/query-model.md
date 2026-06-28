@@ -411,9 +411,17 @@ before that final lookup.
 Initial typed-only groundwork is now in place. `query-relation-row-count`
 reports logical relation size from cached typed rows when available, and the
 main relation-to-bindings bridge goes through `query-relation-materialized-bindings`.
-Current operators still emit compatibility binding rows, so this is not a
-performance change by itself. Its purpose is to remove hidden row-count
-assumptions before introducing typed-only producers.
+This removes hidden row-count assumptions before introducing typed-only
+producers.
+
+The first audited typed-only producer is distinct-variable rule-call projection.
+When a rule call already returns typed columns and the call output variables are
+distinct, projection now forwards cloned typed columns without also emitting one
+compatibility `Binding` per row. Downstream binding consumers must use
+`query-relation-materialized-bindings`, while typed consumers can stay columnar.
+This is intentionally narrower than the reverted typed-join experiment: it keeps
+the typed-only boundary at a well-defined projection operator and is guarded by
+the math benchmark row-count checks.
 
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
