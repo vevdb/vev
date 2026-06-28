@@ -10203,41 +10203,25 @@
                      has-typed-columns: true})))
 
 (defn query-relation-extend-function [rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> Query-Relation
-  (let [bindings (bindings-after-function-with-fns (slice rel.tuples 0) function registry)
+  (let [materialized (query-relation-materialized-bindings rel) :defer
+        bindings (bindings-after-function-with-fns (slice materialized 0) function registry)
         out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
 (defn query-relation-apply-not [db: DB, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> Query-Relation
-  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
-        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
-        tuples (make [dynamic]Binding)
-        typed-columns (if rel.has-typed-columns
-                        (relation-columns-for-attrs (slice rel.attrs 0))
-                        (make [dynamic]Relation-Column))
-        typed-rows 0
-        typed-ok rel.has-typed-columns]
-    (for [tuple row rel.tuples]
+  (let [materialized (query-relation-materialized-bindings rel) :defer
+        bindings (make [dynamic]Binding)]
+    (for [tuple materialized]
       (when (not (binding-matches-not-group-with-sources-and-fns? db sources group tuple registry))
-        (when typed-ok
-          (if (add-relation-column-row! (addr typed-columns) (slice rel.typed-columns 0) row)
-            (set! typed-rows (+ typed-rows 1))
-            (set! typed-ok false)))
-        (arr.push! tuples tuple)))
-    (when (not typed-ok)
-      (delete-relation-columns typed-columns)
-      (set! typed-columns (make [dynamic]Relation-Column))
-      (set! typed-rows 0))
-    (Query-Relation {attrs: attrs
-                     attr-sources: attr-sources
-                     attr-index: (query-relation-attr-index (slice attrs 0))
-                     tuples: tuples
-                     typed-columns: typed-columns
-                     typed-rows: typed-rows
-                     has-typed-columns: typed-ok})))
+        (arr.push! bindings tuple)))
+    (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
+      (delete bindings)
+      out)))
 
 (defn query-relation-apply-or [db: DB, sources: []DB-Source, rel: Query-Relation, group: Or-Group, registry: []Native-Query-Fn] -> Query-Relation
-  (let [bindings (bindings-after-or-group-step-with-fns db sources (slice rel.tuples 0) group registry)
+  (let [materialized (query-relation-materialized-bindings rel) :defer
+        bindings (bindings-after-or-group-step-with-fns db sources (slice materialized 0) group registry)
         out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
@@ -10367,11 +10351,12 @@
       (return typed))
     (delete-query-relation typed))
   (let [bindings (make [dynamic]Binding)]
-    (for [tuple rel.tuples]
-      (append-bindings-after-clause-with-sources-profiled! (addr bindings) db sources clause-value tuple stats))
+    (let [materialized (query-relation-materialized-bindings rel) :defer]
+      (for [tuple materialized]
+        (append-bindings-after-clause-with-sources-profiled! (addr bindings) db sources clause-value tuple stats))
     (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
       (delete bindings)
-      out)))
+      out))))
 
 (defn query-relation-clause-has-bound-var? [rel: Query-Relation, clause-value: Clause] -> bool
   (or (and (= clause-value.e.kind .Var)
@@ -10422,9 +10407,10 @@
   (when (not (= (count rule.params) (count call.args)))
     (return (query-relation-empty)))
   (let [bindings (make [dynamic]Binding)
-        seen (set.empty string)]
+        seen (set.empty string)
+        materialized (query-relation-materialized-bindings rel) :defer]
     (defer (delete seen))
-    (for [tuple rel.tuples]
+    (for [tuple materialized]
       (let [out (Binding {})
             ok true]
         (for [param index rule.params]
@@ -10502,8 +10488,9 @@
   (when (append-projected-rule-call-bindings-fast! out rel rule call)
     (return))
   (let [projected (query-relation-project-rule-call rel rule call)]
-    (for [binding projected.tuples]
-      (arr.push! out^ (clone-binding binding)))
+    (let [materialized (query-relation-materialized-bindings projected) :defer]
+      (for [binding materialized]
+        (arr.push! out^ (clone-binding binding))))
     (delete-query-relation projected)))
 
 (defn query-relation-project-rule-call-typed [rel: Query-Relation, rule: Rule, call: Rule-Call] -> [projected: Query-Relation, ok: bool]
@@ -10871,11 +10858,12 @@
           (delete bindings)
           (return materialized))
         (delete-query-relation materialized)))
-    (for [tuple rel.tuples]
-      (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call tuple registry stats)]
-        (for [rule-binding rule-bindings]
-          (arr.push! bindings rule-binding))
-        (delete rule-bindings)))
+    (let [materialized (query-relation-materialized-bindings rel) :defer]
+      (for [tuple materialized]
+        (let [rule-bindings (bindings-after-rule-call-profiled-with-plan db plan call tuple registry stats)]
+          (for [rule-binding rule-bindings]
+            (arr.push! bindings rule-binding))
+          (delete rule-bindings))))
     (when (not use-cached-plan)
       (delete-rule-call-plan plan))
     (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
@@ -10883,19 +10871,22 @@
       out)))
 
 (defn query-relation-apply-ground [rel: Query-Relation, ground: Ground] -> Query-Relation
-  (let [bindings (apply-ground (slice rel.tuples 0) ground)
+  (let [materialized (query-relation-materialized-bindings rel) :defer
+        bindings (apply-ground (slice materialized 0) ground)
         out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
 (defn query-relation-apply-get-else [db: DB, rel: Query-Relation, get-else: Get-Else] -> Query-Relation
-  (let [bindings (bindings-after-get-else-step db (slice rel.tuples 0) get-else)
+  (let [materialized (query-relation-materialized-bindings rel) :defer
+        bindings (bindings-after-get-else-step db (slice materialized 0) get-else)
         out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))
 
 (defn query-relation-apply-get-some [db: DB, rel: Query-Relation, get-some: Get-Some] -> Query-Relation
-  (let [bindings (bindings-after-get-some-step db (slice rel.tuples 0) get-some)
+  (let [materialized (query-relation-materialized-bindings rel) :defer
+        bindings (bindings-after-get-some-step db (slice materialized 0) get-some)
         out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
     (delete bindings)
     out))

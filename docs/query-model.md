@@ -435,6 +435,13 @@ optional representation. Typed result rendering runs directly from typed
 columns; aggregate and fallback rendering materialize through the audited helper
 instead of reading `post-rel.tuples` directly.
 
+The remaining relation-engine fallback operators now follow the same rule.
+Function clauses, `not`, `or`, fallback bound clauses, fallback rule calls,
+`ground`, `get-else`, and `get-some` materialize from typed rows before calling
+the older binding-oriented implementations. These paths are not the final
+performance target, but they keep the logical relation API sound while typed
+producers are added one operator at a time.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
