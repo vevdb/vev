@@ -454,6 +454,10 @@ entity-resolution and default-value semantics per row, then appends the output
 as a typed column. That keeps Datomic-style fallback attribute lookups on the
 typed path after rule projection.
 
+`get-some` follows the same pattern, appending the selected attribute identity
+and value as typed output columns while preserving the existing left-to-right
+attribute selection semantics.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
