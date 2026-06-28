@@ -144,7 +144,7 @@ EDN chunks, so query timings should be read separately from import timings.
 | Workload | Vev query time | Rows | Current status |
 |---|---:|---:|---|
 | `q1` | 0.42ms | 2 | Good selective/bound rule path |
-| `q2` | 3.95s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, numeric join keys, single-rule typed projection rebuilds, and entity-leading compound joins are reduced |
+| `q2` | 3.86s | 34,073 | Broad materialized-rule joins remain slow, but projection, repeated materialization, final bound lookup, numeric join keys, single-rule typed projection rebuilds, and entity-leading compound joins are reduced |
 | `q3` | 3.47s | 29,317 | Same remaining broad join/dedupe cost plus predicate filtering; binary typed var equality avoids value-wrapper comparison |
 | `q4` | 1.01s | 135 | Completes through derived transitive closure over a derived two-hop edge |
 
