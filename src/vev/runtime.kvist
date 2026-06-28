@@ -12209,28 +12209,23 @@
     (delete bindings)
     out))
 
-(defn simple-unsourced-db-clause-not-group? [group: Not-Group] -> bool
+(defn simple-db-clause-not-group? [group: Not-Group] -> bool
   (when group.has-join
     (return false))
   (when (= (count group.clauses) 0)
     (return false))
   (when (> (count group.not-groups) 0)
     (return false))
-  (let [index 0]
-    (while (< index (count group.clauses))
-      (when group.clauses[index].has-source
-        (return false))
-      (set! index (+ index 1))))
   true)
 
-(defn typed-row-matches-db-clause-group? [db: DB, rel: Query-Relation, row: int, clauses: []Clause] -> [matched: bool, ok: bool]
+(defn typed-row-matches-db-clause-group? [db: DB, sources: []DB-Source, rel: Query-Relation, row: int, clauses: []Clause] -> [matched: bool, ok: bool]
   (let [[current current-ok] (query-relation-single-typed-row rel row)]
     (when (not current-ok)
       (delete-query-relation current)
       (return false false))
     (let [stats (query-stats-empty)]
       (for [clause clauses]
-        (let [[next next-ok] (query-relation-apply-bound-db-clause-typed-scan db current clause (addr stats))]
+        (let [[next next-ok] (query-relation-apply-bound-db-clause-typed-scan-with-sources db sources current clause (addr stats))]
           (delete-query-relation current)
           (when (not next-ok)
             (delete-query-relation next)
@@ -12276,13 +12271,13 @@
                                typed-rows: builder.typed-rows
                                has-typed-columns: builder.typed-ok}) true)))
   (when (and (> (count group.clauses) 1)
-             (simple-unsourced-db-clause-not-group? group))
+             (simple-db-clause-not-group? group))
     (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
           attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
           builder (query-relation-builder (slice rel.attrs 0))
           row 0]
       (while (< row rel.typed-rows)
-        (let [[matched match-ok] (typed-row-matches-db-clause-group? db rel row (slice group.clauses 0))]
+        (let [[matched match-ok] (typed-row-matches-db-clause-group? db sources rel row (slice group.clauses 0))]
           (when (not match-ok)
             (delete attrs)
             (delete attr-sources)
@@ -12356,7 +12351,7 @@
       (return false)))
   true)
 
-(defn plain-unsourced-db-clause-or-group? [group: Or-Group] -> bool
+(defn plain-db-clause-or-group? [group: Or-Group] -> bool
   (when group.has-join
     (return false))
   (when (= (count group.branches) 0)
@@ -12367,23 +12362,18 @@
         (when (or branch.has-join
                   (= (count branch.clauses) 0)
                   (> (count branch.not-groups) 0))
-          (return false))
-        (let [clause-index 0]
-          (while (< clause-index (count branch.clauses))
-            (when branch.clauses[clause-index].has-source
-              (return false))
-            (set! clause-index (+ clause-index 1)))))
+          (return false)))
       (set! branch-index (+ branch-index 1))))
   true)
 
-(defn query-relation-apply-plain-or-branch-typed [db: DB, rel: Query-Relation, row: int, branch: Not-Group] -> [out: Query-Relation, ok: bool]
+(defn query-relation-apply-plain-or-branch-typed [db: DB, sources: []DB-Source, rel: Query-Relation, row: int, branch: Not-Group] -> [out: Query-Relation, ok: bool]
   (let [[current current-ok] (query-relation-single-typed-row rel row)]
     (when (not current-ok)
       (delete-query-relation current)
       (return (query-relation-empty) false))
     (let [stats (query-stats-empty)]
       (for [clause branch.clauses]
-        (let [[next next-ok] (query-relation-apply-bound-db-clause-typed-scan db current clause (addr stats))]
+        (let [[next next-ok] (query-relation-apply-bound-db-clause-typed-scan-with-sources db sources current clause (addr stats))]
           (delete-query-relation current)
           (when (not next-ok)
             (delete-query-relation next)
@@ -12440,12 +12430,12 @@
                                  typed-columns: builder.typed-columns
                                  typed-rows: builder.typed-rows
                                  has-typed-columns: builder.typed-ok}) true)))
-    (when (plain-unsourced-db-clause-or-group? group)
+    (when (plain-db-clause-or-group? group)
       (let [builder (query-relation-builder (slice attrs 0))
             row 0]
         (while (< row rel.typed-rows)
           (for [branch group.branches]
-            (let [[branch-rel branch-ok] (query-relation-apply-plain-or-branch-typed db rel row branch)]
+            (let [[branch-rel branch-ok] (query-relation-apply-plain-or-branch-typed db sources rel row branch)]
               (when (not branch-ok)
                 (delete-query-relation branch-rel)
                 (delete attrs)
@@ -12883,6 +12873,14 @@
                                typed-rows: builder.typed-rows
                                has-typed-columns: builder.typed-ok}) true))))
 
+(defn query-relation-apply-bound-db-clause-typed-scan-with-sources [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
+  (if clause-value.has-source
+    (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+      (when (not source-ok)
+        (return (query-relation-empty) false))
+      (query-relation-apply-bound-db-clause-typed-scan source-db rel (unsourced-clause clause-value) stats))
+    (query-relation-apply-bound-db-clause-typed-scan db rel clause-value stats)))
+
 (defn query-relation-apply-bound-clause-typed-fallback [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
@@ -12980,7 +12978,7 @@
     (when typed-ok
       (return typed))
     (delete-query-relation typed))
-  (let [[typed typed-ok] (query-relation-apply-bound-db-clause-typed-scan db rel clause-value stats)]
+  (let [[typed typed-ok] (query-relation-apply-bound-db-clause-typed-scan-with-sources db sources rel clause-value stats)]
     (when typed-ok
       (return typed))
     (delete-query-relation typed))
