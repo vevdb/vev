@@ -162,8 +162,8 @@ Status labels:
 - `todo` Consolidate ABI exported query/bind variants.
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
 
-- `todo` Adopt column batches in host adapters.
-  Java, Clojure, Python, and Rust wrappers should prefer the generic column-batch handle for flat prepared query results, then fall back to the generic result API. This keeps host dispatch centralized and leaves exact-shape C functions available for low-level callers.
+- `partial` Adopt column batches in host adapters.
+  Java `DB.queryColumns` and the Clojure optimized query path now prefer the generic column-batch handle for flat prepared query results, then fall back to the generic result API. Python and Rust still use the generic result API in their example wrappers. Exact-shape C functions remain available for low-level callers.
 
 - `todo` Add generic query/parser AST visitors.
   Source validation, source-input validation, relation-DB query rewriting, and EDN query section parsing all hand-walk the same query or EDN shapes. A reusable visitor/mapper plus single-pass section indexing would reduce duplicate traversal logic.

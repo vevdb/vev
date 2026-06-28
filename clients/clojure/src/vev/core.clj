@@ -4,7 +4,7 @@
 (ns vev.core
   (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
-           [vev Vev Vev$Entity Vev$MapValue Vev$PreparedPullPattern]))
+           [vev Vev Vev$ColumnResult Vev$Entity Vev$MapValue Vev$PreparedPullPattern]))
 
 (defn- path [value]
   (cond
@@ -521,6 +521,23 @@
       :else
       nil)))
 
+(defn- column-result [source ^PreparedQuery prepared inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? DB source)
+      (.queryColumns (:native source) (:native prepared) input-edn)
+
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryColumns (:native snapshot) (:native prepared) input-edn))
+
+      (instance? SQLiteConn source)
+      (with-open [snapshot (db source)]
+        (.queryColumns (:native snapshot) (:native prepared) input-edn))
+
+      :else
+      nil)))
+
 (defn- entity-column-rows [ids]
   (let [^longs ids ids
         n (alength ids)]
@@ -616,14 +633,40 @@
         (persistent! out)))))
 
 (defn- optimized-query-output [source prepared inputs entity-fn string-fn pair-fn triple-fn]
-  (if-let [ids (entity-column source prepared inputs)]
-    (entity-fn ids)
-    (if-let [values (string-column source prepared inputs)]
-      (string-fn values)
-      (if-let [columns (entity-int-pair-columns source prepared inputs)]
-        (pair-fn columns)
-        (when-let [columns (entity-string-int-triples source prepared inputs)]
-          (triple-fn columns))))))
+  (if-let [columns (column-result source prepared inputs)]
+    (let [^Vev$ColumnResult columns columns
+          ^ints kinds (.kinds columns)
+          ^objects values (.columns columns)]
+      (cond
+        (and (= (alength kinds) 1)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY))
+        (entity-fn (aget values 0))
+
+        (and (= (alength kinds) 1)
+             (= (aget kinds 0) Vev/COLUMN_STRING))
+        (string-fn (aget values 0))
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY)
+             (= (aget kinds 1) Vev/COLUMN_INT))
+        (pair-fn values)
+
+        (and (= (alength kinds) 3)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY)
+             (= (aget kinds 1) Vev/COLUMN_STRING)
+             (= (aget kinds 2) Vev/COLUMN_INT))
+        (triple-fn values)
+
+        :else
+        nil))
+    (if-let [ids (entity-column source prepared inputs)]
+      (entity-fn ids)
+      (if-let [values (string-column source prepared inputs)]
+        (string-fn values)
+        (if-let [columns (entity-int-pair-columns source prepared inputs)]
+          (pair-fn columns)
+          (when-let [columns (entity-string-int-triples source prepared inputs)]
+            (triple-fn columns)))))))
 
 (defn- prepared-query-output [source prepared inputs result-fn entity-fn string-fn pair-fn triple-fn]
   (or (optimized-query-output source prepared inputs entity-fn string-fn pair-fn triple-fn)
