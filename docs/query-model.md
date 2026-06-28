@@ -462,39 +462,70 @@ typed-row boundary. Unsupported or final API paths still materialize through
 `query-relation-materialized-bindings`, while common row-local operators stream
 one typed input row at a time and write their outputs back into typed columns.
 
-Function clauses now have the first streaming typed fallback replacement. When
-the input relation is typed and no native callback registry is involved, the
-operator evaluates the existing function semantics row-by-row, writes typed
+Function clauses now have a streaming typed fallback replacement for scalar
+built-in output. When the input relation is typed, the operator evaluates
+built-in function semantics directly from typed input columns, writes typed
 output columns, and falls back to materialization only if the produced values
-cannot be represented columnarly. This keeps common scalar function clauses
-such as `(count ?name) ?len` on the typed path after rule projection.
+cannot be represented columnarly or the function shape needs destructuring,
+tuple output, dynamic op vars, or native callbacks. This keeps common scalar
+function clauses such as `(count ?name) ?len`, string helpers, arithmetic
+helpers, and simple `keyword` / `name` / `str` transforms on the typed path
+after rule projection.
 
-`get-else` also has a streaming typed operator. It reuses the existing
-entity-resolution and default-value semantics per row, then appends the output
-as a typed column. That keeps Datomic-style fallback attribute lookups on the
-typed path after rule projection.
+`get-else` also has a streaming typed operator. It resolves the entity term
+directly from typed input columns, applies the existing default-value semantics
+per row, and appends only newly produced output values as typed columns. That
+keeps Datomic-style fallback attribute lookups on the typed path after rule
+projection without converting each input row to a `Binding`.
 
-`get-some` follows the same pattern, appending the selected attribute identity
-and value as typed output columns while preserving the existing left-to-right
-attribute selection semantics.
+`get-some` follows the same pattern: it resolves the input entity directly from
+typed columns, finds the first present attribute in the declared order, checks
+already-bound output vars against typed row values, and appends the selected
+attribute identity and value as typed output columns.
 
-`not` now streams over typed rows as a filter. It materializes one binding at a
-time to reuse existing `not` semantics, but the surviving output stays typed
-instead of allocating a full intermediate binding relation.
+`not` now streams over typed rows as a filter. Single ordinary DB-clause
+negative groups are tested as a typed anti-join: the clause scan resolves
+directly from typed row values and checks candidate datoms without building a
+`Binding`. Multi-clause, nested, join, and relation-source negative groups still
+materialize one binding at a time to reuse existing semantics, but the surviving
+output stays typed instead of allocating a full intermediate binding relation.
 
-`ground` now streams over typed rows too. Scalar, tuple, collection, relation,
-and input-binding ground shapes reuse the existing binding semantics one input
-row at a time, then append any produced rows back into typed columns.
+`ground` now streams over typed rows too. Scalar ground clauses resolve their
+source term directly from typed input columns and append only newly produced
+output values as typed columns. Tuple, collection, relation, and input-binding
+ground shapes still reuse the existing binding semantics one input row at a
+time, then append any produced rows back into typed columns.
 
-`or` now streams over typed rows with fanout. Each branch reuses the existing
-single-binding branch semantics, and branch outputs are appended back into typed
-columns so `or` no longer forces a full relation materialization.
+`or` now streams over typed rows with fanout. Simple branch groups made of one
+ordinary DB clause per branch run as typed clause scans and append branch output
+columns directly. Branches with `or-join`, nested negatives, relation-source
+matching, or more complex local pipelines reuse the existing single-binding
+branch semantics, and branch outputs are appended back into typed columns so
+`or` no longer forces a full relation materialization.
 
 Fallback rule calls now use the same streaming typed boundary. The preferred
 path is still the materialized rule relation plus typed join when eligible, but
 the remaining per-row fallback no longer materializes the whole input relation
 first: it converts one typed input row to a binding, reuses existing rule-call
 semantics, and appends outputs back into typed columns.
+
+Typed row-producing operators now share a small `Query-Relation-Builder`
+runtime helper for column materialization and cleanup. Predicate filters,
+`not`, `ground`, function clauses, `get-else`, `get-some`, generic bound-clause
+fallbacks, and rule-call fallbacks all use this builder when they can stay on
+the typed path. This keeps the logical `Query-Relation` API intact while moving
+more operator code away from ad hoc `typed-columns` / `typed-rows` loops and
+away from storing compatibility `Binding` rows when typed columns are enough.
+The specialized entity/attribute bound-clause scan and the generic DB clause
+scan also feed the same builder now, so typed data-clause output no longer
+needs to keep compatibility row storage solely for later fallback consumers.
+Generic DB clause scans now use a typed row matcher inside the candidate loop:
+the operator resolves scan ranges directly from typed columns, and each
+candidate datom is checked directly against typed columns and repeated clause
+variables before appending typed output. This removes the previous row
+`Binding` conversion from both scan-bound selection and candidate matching on
+the generic typed DB-clause path while preserving reverse attribute and
+same-variable semantics.
 
 Rule-call projection itself is also typed for the common non-distinct cases.
 Distinct variable projections keep the fast column-clone path, while constants,
@@ -521,6 +552,13 @@ scan the source `Value` and emit only the variables introduced by the clause,
 instead of first binding the whole source collection and stripping it later.
 This covers ordinary named source clauses and source-qualified rule calls whose
 rule bodies read from the same relation source.
+
+Bound relation-source input clauses now extend typed rows directly too. When a
+typed relation is already in flight and the next clause reads from a source
+input such as `$rows`, Vev matches source rows against the typed row values and
+appends only newly produced source variables as typed columns. This keeps
+multi-clause relation-source joins on the columnar path instead of converting
+each input row to a compatibility `Binding`.
 
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
