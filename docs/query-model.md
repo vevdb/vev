@@ -409,8 +409,9 @@ typed column cache. The older `Typed-Relation` conversion path remains as
 fallback for untyped relation inputs, but the common typed path no longer clones
 whole columns just to build join keys and output rows.
 
-Eighteenth slice implemented: borrowed typed product and borrowed typed hash
-joins now produce typed-only rows. They fill output columns directly and leave
+Eighteenth slice implemented: typed product and typed hash joins now produce
+typed-only rows. Both the borrowed `Query-Relation` path and the converted
+`Typed-Relation` fallback path fill output columns directly and leave
 compatibility `Binding` rows empty until a binding-only consumer explicitly
 materializes through `query-relation-materialized-bindings`. This is no longer
 an ad hoc join patch: the relation representation now has the basic invariant
