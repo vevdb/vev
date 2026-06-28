@@ -162,8 +162,8 @@ Status labels:
 - `todo` Add generic query/parser AST visitors.
   Source validation, source-input validation, relation-DB query rewriting, and EDN query section parsing all hand-walk the same query or EDN shapes. A reusable visitor/mapper plus single-pass section indexing would reduce duplicate traversal logic.
 
-- `todo` Build reusable physical query operators.
-  Entity-column scans, profiled row rendering, same-entity star plans, relation-source row matching, and specialized typed result paths duplicate scan/filter/project logic. Indexed scan, row matcher, star/merge-scan, and column materialization operators should feed both rows and typed columns.
+- `partial` Build reusable physical query operators.
+  The first reusable physical operator is `Clause-Index-Scan`, which resolves a clause once, selects the DB index/range once, and streams matching datom indexes without allocating a candidate array. `query-relation-from-db-clause` now consumes that scan directly while the legacy candidate-array helper materializes from the same operator. Remaining work: row matcher, star/merge-scan, relation-source matching, and column materialization operators that feed both rows and typed columns.
 
 - `done` Cache prepared rule planning data.
   `Query` now owns cached `Rule-Call-Plan` values. Prepared queries build those plans when rules are attached, and execution reuses them by rule-call step index instead of rebuilding dependency graphs and transitive-shape recognition on every prepared run. Deeper SCC/component metadata remains tracked separately under rule component planning.
