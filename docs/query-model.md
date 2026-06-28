@@ -598,7 +598,10 @@ Named relation-source inputs use the same direct source operator. Source clauses
 scan the source `Value` and emit only the variables introduced by the clause,
 instead of first binding the whole source collection and stripping it later.
 This covers ordinary named source clauses and source-qualified rule calls whose
-rule bodies read from the same relation source.
+rule bodies read from the same relation source. When the source values fit the
+typed column representation, the initial source-input `Query-Relation` now
+stores zero compatibility `Binding` rows; unsupported value kinds fall back to
+the binding-backed representation.
 
 Bound relation-source input clauses now extend typed rows directly too. When a
 typed relation is already in flight and the next clause reads from a source
