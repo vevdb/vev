@@ -14,6 +14,14 @@
       (return true)))
   false)
 
+(defn source-branch-has-text? [result: vev.Result-Set, text: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text))
+      (return true)))
+  false)
+
 (t.deftest source-db-multi-clause-not-or-branches-stay-typed
   (defer (free_all context.allocator))
   (let [left (vev.create-conn)
@@ -45,3 +53,36 @@
     (t.is (= (count or-result.rows) 2))
     (t.is (source-branch-has-entity? or-result 2))
     (t.is (source-branch-has-entity? or-result 3))))
+
+(t.deftest branch-local-predicates-and-functions-from-edn-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ivan\"] [:db/add 1 :id 1] [:db/add 1 :age 30] [:db/add 2 :name \"Petr\"] [:db/add 2 :id 2] [:db/add 2 :age 41] [:db/add 3 :name \"Oleg\"] [:db/add 3 :id 3] [:db/add 3 :age 50]]")
+        not-result (vev.q-text
+                     conn.db
+                     "[:find ?e :where [?e :id] (not [?e :age ?age] [(> ?age 40)])]")
+        or-result (vev.q-text
+                    conn.db
+                    "[:find ?label :where [?e :name ?name] (or (and [?e :id 1] [(str ?name \"!\") ?label]) (and [?e :id 2] [(str ?name \"?\") ?label]))]")
+        literal-result (vev.q conn.db
+                         [:find ?label
+                          :where
+                          [?e :name ?name]
+                          (or
+                            (and [?e :id 1]
+                                 [(str ?name "!") ?label])
+                            (and [?e :id 2]
+                                 [(str ?name "?") ?label]))])]
+    (t.is not-result.ok)
+    (t.is (= (count not-result.rows) 1))
+    (t.is (source-branch-has-entity? not-result 1))
+    (t.is or-result.ok)
+    (t.is (= (count or-result.rows) 2))
+    (t.is (source-branch-has-text? or-result "Ivan!"))
+    (t.is (source-branch-has-text? or-result "Petr?"))
+    (t.is literal-result.ok)
+    (t.is (= (count literal-result.rows) 2))
+    (t.is (source-branch-has-text? literal-result "Ivan!"))
+    (t.is (source-branch-has-text? literal-result "Petr?"))))

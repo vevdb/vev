@@ -1116,6 +1116,10 @@
 (defn append-not-group-var-names! [vars: ^[dynamic]string, group: Not-Group]
   (for [clause group.clauses]
     (append-clause-var-names! vars clause))
+  (for [predicate group.predicates]
+    (append-predicate-vars! vars predicate))
+  (for [function group.function-clauses]
+    (append-function-vars! vars function))
   (for [child group.not-groups]
     (append-not-group-var-names! vars child)))
 
@@ -1183,32 +1187,75 @@
       (return doc.nodes[head].text true)
       (return "" false))))
 
+(defn append-edn-local-step-kind! [step-kinds: ^[dynamic]Query-Step-Kind, kind: Query-Step-Kind]
+  (arr.push! step-kinds^ kind))
+
+(defn append-edn-local-not-step-with-source! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, step-kinds: ^[dynamic]Query-Step-Kind, doc: EDN-Doc, item: int, source: string, has-source: bool] -> [ok: bool, error: string]
+  (if (= doc.nodes[item].kind .List)
+    (let [head (edn-list-op-text doc item)
+          [child-source child-has-source] (edn-list-default-source doc item)]
+      (cond
+        (= head "not")
+          (let [next-source (if child-has-source child-source source)
+                next-has-source (or child-has-source has-source)
+                [ok error] (append-edn-not-group-with-source! not-groups doc item next-source next-has-source)]
+            (when (not ok)
+              (return false error))
+            (append-edn-local-step-kind! step-kinds .Not)
+            (return true ""))
+        :else (return false "query text branch lists currently support nested not")))
+    (if (= doc.nodes[item].kind .Vector)
+      (let [first-item (edn-child-at doc item 0)]
+        (if (and (not (= first-item -1)) (= doc.nodes[first-item].kind .List))
+          (let [expr first-item
+                output doc.nodes[expr].next-sibling
+                op (edn-list-head-text doc expr)]
+            (cond
+              (= op "missing?")
+                (let [[ok error] (append-edn-missing-group! not-groups doc expr)]
+                  (when (not ok)
+                    (return false error))
+                  (append-edn-local-step-kind! step-kinds .Not)
+                  (return true ""))
+              (not (= output -1))
+                (let [[ok error] (append-edn-function-clause! function-clauses doc expr output)]
+                  (when (not ok)
+                    (return false error))
+                  (append-edn-local-step-kind! step-kinds .Function)
+                  (return true ""))
+              :else
+                (let [[ok error] (append-edn-predicate! predicates doc expr)]
+                  (when (not ok)
+                    (return false error))
+                  (append-edn-local-step-kind! step-kinds .Predicate)
+                  (return true ""))))
+          (let [[ok error] (append-edn-data-clause-with-default-source! clauses doc item source has-source)]
+            (when (and (not ok)
+                       (= error "query text clause is incomplete")
+                       (not (edn-node-has-var? doc item)))
+              (return false "Join variables should not be empty"))
+            (when (not ok)
+              (return false error))
+            (append-edn-local-step-kind! step-kinds .Clause)
+            (return true ""))))
+      (return false "query text branch clauses must be vectors or lists"))))
+
 (defn append-edn-not-group-with-source! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int, source: string, has-source: bool] -> [ok: bool, error: string]
   (let [clauses (make [dynamic]Clause) :defer
+        predicates (make [dynamic]Predicate) :defer
+        function-clauses (make [dynamic]Function-Clause) :defer
         not-groups (make [dynamic]Not-Group) :defer
+        step-kinds (make [dynamic]Query-Step-Kind) :defer
         op-node (edn-list-op-node doc form)
         cursor (if (= op-node -1) -1 doc.nodes[op-node].next-sibling)]
     (when (= cursor -1)
       (return false "Cannot parse 'not' clause"))
     (while (not (= cursor -1))
-      (let [[child-source child-has-source] (edn-list-default-source doc cursor)
-            child-op (if (= doc.nodes[cursor].kind .List) (edn-list-op-text doc cursor) "")]
-        (if (and (= doc.nodes[cursor].kind .List)
-                 (= child-op "not"))
-          (let [next-source (if child-has-source child-source source)
-                next-has-source (or child-has-source has-source)
-                [ok error] (append-edn-not-group-with-source! (addr not-groups) doc cursor next-source next-has-source)]
-            (when (not ok)
-              (return false error)))
-          (let [[ok error] (append-edn-data-clause-with-default-source! (addr clauses) doc cursor source has-source)]
-            (when (and (not ok)
-                       (= error "query text clause is incomplete")
-                       (not (edn-node-has-var? doc cursor)))
-              (return false "Join variables should not be empty"))
-            (when (not ok)
-              (return false error)))))
+      (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
+        (when (not ok)
+          (return false error)))
       (set! cursor doc.nodes[cursor].next-sibling))
-    (let [group (not-group (slice clauses 0) (slice not-groups 0))]
+    (let [group (not-group-program (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice not-groups 0) (slice step-kinds 0))]
       (when (not (not-group-has-vars? group))
         (return false "Join variables should not be empty"))
       (arr.push! out^ group))
@@ -1225,18 +1272,21 @@
       (return false "not-join expects a vector of join vars"))
     (let [join-vars (edn-vars-from-vector doc join-node) :defer
           clauses (make [dynamic]Clause) :defer
+          predicates (make [dynamic]Predicate) :defer
+          function-clauses (make [dynamic]Function-Clause) :defer
           not-groups (make [dynamic]Not-Group) :defer
+          step-kinds (make [dynamic]Query-Step-Kind) :defer
           cursor doc.nodes[join-node].next-sibling]
       (when (= (count join-vars) 0)
         (return false "Join variables should not be empty"))
       (when (= cursor -1)
         (return false "Cannot parse 'not-join' clause"))
       (while (not (= cursor -1))
-        (let [[ok error] (append-edn-data-clause-with-default-source! (addr clauses) doc cursor source has-source)]
+        (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
           (when (not ok)
             (return false error)))
         (set! cursor doc.nodes[cursor].next-sibling))
-      (arr.push! out^ (not-join-group (slice join-vars 0) (slice clauses 0) (slice not-groups 0)))
+      (arr.push! out^ (not-join-group-program (slice join-vars 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice not-groups 0) (slice step-kinds 0)))
       (return true ""))))
 
 (defn append-edn-not-join-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
@@ -1244,7 +1294,11 @@
     (append-edn-not-join-group-with-source! out doc form source has-source)))
 
 (defn append-edn-or-branch-with-source! [out: ^[dynamic]Not-Group, doc: EDN-Doc, branch: int, source: string, has-source: bool] -> [ok: bool, error: string]
-  (let [clauses (make [dynamic]Clause) :defer]
+  (let [clauses (make [dynamic]Clause) :defer
+        predicates (make [dynamic]Predicate) :defer
+        function-clauses (make [dynamic]Function-Clause) :defer
+        not-groups (make [dynamic]Not-Group) :defer
+        step-kinds (make [dynamic]Query-Step-Kind) :defer]
     (if (= doc.nodes[branch].kind .List)
       (let [head (edn-list-op-text doc branch)]
         (when (not (= head "and"))
@@ -1252,18 +1306,14 @@
         (let [op-node (edn-list-op-node doc branch)
               cursor doc.nodes[op-node].next-sibling]
           (while (not (= cursor -1))
-            (let [[ok error] (append-edn-data-clause-with-default-source! (addr clauses) doc cursor source has-source)]
+            (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
               (when (not ok)
                 (return false error)))
             (set! cursor doc.nodes[cursor].next-sibling))))
-      (let [[ok error] (append-edn-data-clause-with-default-source! (addr clauses) doc branch source has-source)]
-        (when (and (not ok)
-                   (= error "query text clause is incomplete")
-                   (not (edn-node-has-var? doc branch)))
-          (return false "Join variables should not be empty"))
+      (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr step-kinds) doc branch source has-source)]
         (when (not ok)
           (return false error))))
-    (arr.push! out^ (not-group-simple (slice clauses 0)))
+    (arr.push! out^ (not-group-program (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice not-groups 0) (slice step-kinds 0)))
     (return true "")))
 
 (defn append-edn-or-branch! [out: ^[dynamic]Not-Group, doc: EDN-Doc, branch: int] -> [ok: bool, error: string]
