@@ -474,6 +474,13 @@ the remaining per-row fallback no longer materializes the whole input relation
 first: it converts one typed input row to a binding, reuses existing rule-call
 semantics, and appends outputs back into typed columns.
 
+Rule-call projection itself is also typed for the common non-distinct cases.
+Distinct variable projections keep the fast column-clone path, while constants,
+wildcards, and repeated variables project row-by-row from typed rule-result
+columns with normal unification and dedupe. Projection falls back only when the
+shape cannot be represented as typed columns, such as lookup-ref arguments or
+non-columnar produced values.
+
 Generic bound-clause fallback also streams. The specialized entity-bound
 attribute clause remains the fastest path, and other bound shapes such as
 value-bound joins now convert one typed row to a binding, run the existing

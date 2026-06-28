@@ -10605,7 +10605,7 @@
                         (set! out next)
                         (set! ok bind-ok))
                     .Value
-                      (set! ok (value-equal? value arg.value))
+                      (set! ok (predicate-value-equal? value arg.value))
                     .Wildcard
                       (discard value)
                     :else
@@ -10674,9 +10674,75 @@
         (arr.push! out^ (clone-binding binding))))
     (delete-query-relation projected)))
 
+(defn query-relation-project-rule-call-typed-general [rel: Query-Relation, rule: Rule, call: Rule-Call, param-indexes: []int] -> [projected: Query-Relation, ok: bool]
+  (let [attrs (make [dynamic]string)
+        attr-sources (make [dynamic]string)]
+    (for [arg arg-index call.args]
+      (when (= arg.kind .Var)
+        (append-var-binding-attr! (addr attrs) (addr attr-sources) arg.name rel.attr-sources[param-indexes[arg-index]])))
+    (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
+          seen (set.empty string)
+          typed-rows 0
+          row 0]
+      (defer (delete seen))
+      (while (< row rel.typed-rows)
+        (let [out (Binding {})
+              ok true]
+          (for [arg arg-index call.args]
+            (when ok
+              (let [[value value-ok] (typed-relation-column-value rel.typed-columns[param-indexes[arg-index]] row)]
+                (if value-ok
+                  (case arg.kind
+                    .Var
+                      (let [[next bind-ok] (binding-with-value out arg.name value)]
+                        (set! out next)
+                        (set! ok bind-ok))
+                    .Value
+                      (set! ok (predicate-value-equal? value arg.value))
+                    .Wildcard
+                      (discard value)
+                    .LookupRef
+                      (set! ok false)
+                    :else
+                      (set! ok false))
+                  (set! ok false)))))
+          (when ok
+            (let [[key key-ok] (binding-dedupe-key out)]
+              (when (not key-ok)
+                (delete out.items)
+                (delete attrs)
+                (delete attr-sources)
+                (delete-relation-columns typed-columns)
+                (return (query-relation-empty) false))
+              (if (set.contains? seen key)
+                (delete out.items)
+                (do
+                  (set.add! seen key)
+                  (if (binding-can-add-to-relation-columns? (slice attrs 0) (slice typed-columns 0) out)
+                    (do
+                      (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) out)
+                      (set! typed-rows (+ typed-rows 1))
+                      (delete out.items))
+                    (do
+                      (delete out.items)
+                      (delete attrs)
+                      (delete attr-sources)
+                      (delete-relation-columns typed-columns)
+                      (return (query-relation-empty) false)))))))
+          (when (not ok)
+            (delete out.items)))
+        (set! row (+ row 1)))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: (make [dynamic]Binding)
+                               typed-columns: typed-columns
+                               typed-rows: typed-rows
+                               has-typed-columns: true}) true))))
+
 (defn query-relation-project-rule-call-typed [rel: Query-Relation, rule: Rule, call: Rule-Call] -> [projected: Query-Relation, ok: bool]
   (when (not (and rel.has-typed-columns
-                  (rule-call-distinct-var-projection? rule call)))
+                  (= (count rule.params) (count call.args))))
     (return (query-relation-empty) false))
   (let [attrs (make [dynamic]string 0 (count call.args))
         attr-sources (make [dynamic]string 0 (count call.args))
@@ -10693,6 +10759,14 @@
           (delete param-indexes)
           (return (query-relation-empty) false))
         (arr.push! param-indexes column-index)))
+    (when (not (rule-call-distinct-var-projection? rule call))
+      (delete attrs)
+      (delete attr-sources)
+      (delete tuples)
+      (delete-relation-columns typed-columns)
+      (let [[general general-ok] (query-relation-project-rule-call-typed-general rel rule call (slice param-indexes 0))]
+        (delete param-indexes)
+        (return general general-ok)))
     (for [arg arg-index call.args]
       (arr.push! attrs arg.name)
       (arr.push! attr-sources rel.attr-sources[param-indexes[arg-index]])
