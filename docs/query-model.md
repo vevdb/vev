@@ -458,6 +458,10 @@ typed path after rule projection.
 and value as typed output columns while preserving the existing left-to-right
 attribute selection semantics.
 
+`not` now streams over typed rows as a filter. It materializes one binding at a
+time to reuse existing `not` semantics, but the surviving output stays typed
+instead of allocating a full intermediate binding relation.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
