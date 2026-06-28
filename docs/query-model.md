@@ -567,6 +567,11 @@ same-entity and derived-edge shapes. These producers now dedupe with primitive
 row keys and fill relation columns directly instead of storing both typed
 columns and compatibility `Binding` rows.
 
+Rule memo/body dedupe also has a typed path. When a `Query-Relation` already
+has typed columns, `query-relation-dedupe-step` dedupes directly by typed row
+keys and keeps the result typed-only, falling back to binding materialization
+only for unsupported row-key shapes.
+
 Generic bound-clause fallback also streams. The specialized entity-bound
 attribute clause remains the fastest path, and other bound shapes such as
 value-bound joins now convert one typed row to a binding, run the existing
