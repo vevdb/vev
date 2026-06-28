@@ -503,6 +503,9 @@ fallbacks, and rule-call fallbacks all use this builder when they can stay on
 the typed path. This keeps the logical `Query-Relation` API intact while moving
 more operator code away from ad hoc `typed-columns` / `typed-rows` loops and
 away from storing compatibility `Binding` rows when typed columns are enough.
+The specialized entity/attribute bound-clause scan and the generic DB clause
+scan also feed the same builder now, so typed data-clause output no longer
+needs to keep compatibility row storage solely for later fallback consumers.
 
 Rule-call projection itself is also typed for the common non-distinct cases.
 Distinct variable projections keep the fast column-clone path, while constants,
