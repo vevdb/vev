@@ -151,7 +151,10 @@ in typed columns through the join. This remains an intermediate state rather
 than a fully columnar recursive-rule engine: row tables remain authoritative,
 but valid typed memo/delta views are appended in place for primitive-compatible
 outputs and invalidated only when a new output cannot fit the typed column
-layout.
+layout. Multi-branch broad rule-call application now also has a typed union
+accumulator: compatible typed branch joins append into one typed output relation,
+and the evaluator materializes to row bindings only when a branch falls off the
+typed path or has an incompatible layout.
 The linear transitive recognizer also handles a common derived-edge shape where
 the recursive edge is a non-recursive two-hop rule, such as `adv` in
 Datalevin's math-bench:
@@ -525,10 +528,12 @@ transitive paths remain the fast path for common reachability shapes. The
 generic memo/delta evaluator is now partially relation-native: DB clause steps
 run as relation joins, broad rule-call steps reuse cached typed memo/delta
 relation views before joining, and primitive-compatible memo outputs append to
-those valid relation views as they are discovered. The memo/delta row tables
-remain the source of truth, so the next rule-engine step is typed-first memo
-storage: make compact relation columns the primary structure for supported rule
-outputs instead of a cache beside binding rows.
+those valid relation views as they are discovered. Compatible typed branch joins
+for the same broad rule call are unioned in typed columns instead of always
+materializing through `Binding` rows. The memo/delta row tables remain the source
+of truth, so the next rule-engine step is typed-first memo storage: make compact
+relation columns the primary structure for supported rule outputs instead of a
+cache beside binding rows.
 
 Near-term query work should expand the relation engine in this order:
 
@@ -540,8 +545,9 @@ Near-term query work should expand the relation engine in this order:
 3. Rules: continue moving the positive-rule memo/delta evaluator from binding
    rows toward relation-native semi-naive behavior. DB clause steps and broad
    rule-call joins are now relation-native, and valid memo/delta relation caches
-   append primitive-compatible outputs incrementally; typed-first memo/delta
-   storage remains the main row-shaped boundary.
+   append primitive-compatible outputs incrementally. Multi-branch broad rule
+   calls can union compatible branch joins in typed columns. Typed-first
+   memo/delta storage remains the main row-shaped boundary.
 
 The transaction side has the same split:
 

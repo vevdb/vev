@@ -144,6 +144,9 @@ Status labels:
 - `done` Append primitive-compatible rule memo outputs into valid typed caches.
   When a memo or delta relation view is already valid, new primitive-compatible rule outputs are appended directly to the cached typed columns. Unsupported values invalidate the view and rebuild through the conservative row source on the next broad join.
 
+- `done` Keep compatible multi-branch rule-call unions typed.
+  Broad rule-call application now accumulates compatible typed branch joins into a typed `Query-Relation` instead of always materializing each branch through `Binding` rows. If a branch falls off the typed path or has an incompatible layout, the accumulator flushes through the audited materialization helper and continues on the conservative row path.
+
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
 
