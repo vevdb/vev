@@ -147,6 +147,9 @@ Status labels:
 - `done` Keep compatible multi-branch rule-call unions typed.
   Broad rule-call application now accumulates compatible typed branch joins into a typed `Query-Relation` instead of always materializing each branch through `Binding` rows. If a branch falls off the typed path or has an incompatible layout, the accumulator flushes through the audited materialization helper and continues on the conservative row path.
 
+- `done` Keep compatible materialized helper-rule branch output typed and deduped.
+  Materialized non-recursive helper rules now project branch outputs into typed relations when possible and append them through a typed unique accumulator keyed by projected columns. Unsupported projections flush through the audited materialization helper and keep the existing `unique-bindings` fallback.
+
 - `done` Normalize transaction macro entity dispatch.
   Literal transaction macro paths for add/retract, value-less attr retract, and entity retract now share one entity dispatch helper for lookup refs, current-tx/tempid strings, idents, and numeric entity ids instead of repeating the same matrix in each macro branch.
 

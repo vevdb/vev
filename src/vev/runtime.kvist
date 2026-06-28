@@ -805,6 +805,47 @@
       (set! row (+ row 1))))
   true)
 
+(defn query-relation-append-typed-rows-unique! [out: ^Query-Relation, rel: Query-Relation, seen: ^set[string]] -> bool
+  (when (not (query-relation-typed-layout-compatible? out^ rel))
+    (return false))
+  (let [row 0]
+    (while (< row rel.typed-rows)
+      (let [[key key-ok] (query-relation-row-join-key rel row (slice rel.attrs 0))]
+        (when (not key-ok)
+          (return false))
+        (when (not (set.contains? seen^ key))
+          (set.add! seen^ key)
+          (when (not (add-relation-column-row! (addr out^.typed-columns) (slice rel.typed-columns 0) row))
+            (return false))
+          (set! out^.typed-rows (+ out^.typed-rows 1))))
+      (set! row (+ row 1))))
+  true)
+
+(defn query-relation-flush-typed-accumulator! [out-bindings: ^[dynamic]Binding, out-rel: ^Query-Relation, has-out-rel: ^bool, out-rel-typed: ^bool]
+  (when has-out-rel^
+    (let [materialized (query-relation-materialized-bindings out-rel^) :defer]
+      (for [binding materialized]
+        (arr.push! out-bindings^ binding)))
+    (delete-query-relation out-rel^)
+    (set! out-rel^ (query-relation-empty))
+    (set! has-out-rel^ false)
+    (set! out-rel-typed^ false)))
+
+(defn query-relation-accumulate-typed-unique! [out-bindings: ^[dynamic]Binding, out-rel: ^Query-Relation, has-out-rel: ^bool, out-rel-typed: ^bool, seen: ^set[string], rel: Query-Relation] -> bool
+  (when (not (and out-rel-typed^ rel.has-typed-columns))
+    (return false))
+  (if has-out-rel^
+    (when (query-relation-append-typed-rows-unique! out-rel rel seen)
+      (return true))
+    (do
+      (delete-query-relation out-rel^)
+      (set! out-rel^ (query-relation-empty-typed-like rel))
+      (set! has-out-rel^ true)
+      (when (query-relation-append-typed-rows-unique! out-rel rel seen)
+        (return true))))
+  (query-relation-flush-typed-accumulator! out-bindings out-rel has-out-rel out-rel-typed)
+  false)
+
 (defn query-relations-compatible-common? [left: Query-Relation, right: Query-Relation, common: []string] -> bool
   (when (not (and left.has-typed-columns right.has-typed-columns))
     (return false))
@@ -11195,6 +11236,16 @@
         (arr.push! out^ (clone-binding binding))))
     (delete-query-relation projected)))
 
+(defn accumulate-projected-rule-call-relation! [out-bindings: ^[dynamic]Binding, out-rel: ^Query-Relation, has-out-rel: ^bool, out-rel-typed: ^bool, seen: ^set[string], rel: Query-Relation, rule: Rule, call: Rule-Call]
+  (let [[projected projected-ok] (query-relation-project-rule-call-typed rel rule call)]
+    (when projected-ok
+      (when (query-relation-accumulate-typed-unique! out-bindings out-rel has-out-rel out-rel-typed seen projected)
+        (delete-query-relation projected)
+        (return))
+      (delete-query-relation projected)))
+  (query-relation-flush-typed-accumulator! out-bindings out-rel has-out-rel out-rel-typed)
+  (append-projected-rule-call-bindings! out-bindings rel rule call))
+
 (defn query-relation-project-rule-call-typed-general [rel: Query-Relation, rule: Rule, call: Rule-Call, param-indexes: []int] -> [projected: Query-Relation, ok: bool]
   (let [attrs (make [dynamic]string)
         attr-sources (make [dynamic]string)]
@@ -11489,25 +11540,33 @@
   (when (or (> depth 8)
             (not (rule-call-can-materialize-relation? plan call)))
     (return (query-relation-empty) false))
-  (let [out-bindings (make [dynamic]Binding)]
+  (let [out-bindings (make [dynamic]Binding)
+        out-rel (query-relation-empty)
+        has-out-rel false
+        out-rel-typed true
+        seen (set.empty string)]
+    (defer (delete seen))
     (when (= (count plan.rules) 1)
       (let [[cached-index cached-ok] (materialized-rule-cache-index (slice cache^ 0) call.name)]
         (when cached-ok
           (let [[projected projected-ok] (query-relation-project-rule-call-typed cache^[cached-index].rel plan.rules[0] call)]
             (when projected-ok
               (delete out-bindings)
+              (delete-query-relation out-rel)
               (return projected true))
             (delete-query-relation projected))
-          (append-projected-rule-call-bindings! (addr out-bindings) cache^[cached-index].rel plan.rules[0] call)
+          (accumulate-projected-rule-call-relation! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed) (addr seen) cache^[cached-index].rel plan.rules[0] call)
           (let [unique (unique-bindings (slice out-bindings 0))
                 out (query-relation-from-bindings (slice unique 0))]
             (delete out-bindings)
+            (delete-query-relation out-rel)
             (delete unique)
             (return out true)))))
     (for [rule plan.rules]
       (when (= rule.name call.name)
         (when (not (rule-body-relation-materializable? rule))
           (delete out-bindings)
+          (delete-query-relation out-rel)
           (return (query-relation-empty) false))
         (let [[left-attr right-attr derived-ok] (rule-two-hop-derived-edge rules rule.name)]
           (when derived-ok
@@ -11519,10 +11578,11 @@
                   (let [[projected projected-ok] (query-relation-project-rule-call-typed derived rule call)]
                     (when projected-ok
                       (delete out-bindings)
+                      (delete-query-relation out-rel)
                       (delete-query-relation derived)
                       (return projected true))
                     (delete-query-relation projected)))
-                (append-projected-rule-call-bindings! (addr out-bindings) derived rule call)
+                (accumulate-projected-rule-call-relation! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed) (addr seen) derived rule call)
                 (delete-query-relation derived)
                 (continue))
               (delete-query-relation derived))))
@@ -11536,10 +11596,11 @@
                   (let [[projected projected-ok] (query-relation-project-rule-call-typed two-attr-rel rule call)]
                     (when projected-ok
                       (delete out-bindings)
+                      (delete-query-relation out-rel)
                       (delete-query-relation two-attr-rel)
                       (return projected true))
                     (delete-query-relation projected)))
-                (append-projected-rule-call-bindings! (addr out-bindings) two-attr-rel rule call)
+                (accumulate-projected-rule-call-relation! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed) (addr seen) two-attr-rel rule call)
                 (delete-query-relation two-attr-rel)
                 (continue))
               (delete-query-relation two-attr-rel))))
@@ -11564,6 +11625,7 @@
                     (delete-query-relation current)
                     (delete-query-relation inner-rel)
                     (delete out-bindings)
+                    (delete-query-relation out-rel)
                     (return (query-relation-empty) false))
                   (let [joined (query-relation-join db sources current inner-rel)]
                     (set! stats^.rule-calls (+ stats^.rule-calls 1))
@@ -11589,6 +11651,7 @@
                     (delete-query-relation current)
                     (delete-query-relation inner-rel)
                     (delete out-bindings)
+                    (delete-query-relation out-rel)
                     (return (query-relation-empty) false))
                   (let [joined (query-relation-join db sources current inner-rel)]
                     (set! stats^.rule-calls (+ stats^.rule-calls 1))
@@ -11598,13 +11661,19 @@
                     (set! current joined))))))
           (when (= (count plan.rules) 1)
             (materialized-rule-cache-store! cache call.name current))
-          (append-projected-rule-call-bindings! (addr out-bindings) current rule call)
+          (accumulate-projected-rule-call-relation! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed) (addr seen) current rule call)
           (delete-query-relation current))))
-    (let [unique (unique-bindings (slice out-bindings 0))
-          out (query-relation-from-bindings (slice unique 0))]
-      (delete out-bindings)
-      (delete unique)
-      (return out true))))
+    (if (and out-rel-typed has-out-rel (= (count out-bindings) 0))
+      (do
+        (delete out-bindings)
+        (return out-rel true))
+      (do
+        (query-relation-flush-typed-accumulator! (addr out-bindings) (addr out-rel) (addr has-out-rel) (addr out-rel-typed))
+        (let [unique (unique-bindings (slice out-bindings 0))
+              out (query-relation-from-bindings (slice unique 0))]
+          (delete out-bindings)
+          (delete unique)
+          (return out true))))))
 
 (defn query-relation-apply-materialized-rule-call [db: DB, sources: []DB-Source, rel: Query-Relation, plan: Rule-Call-Plan, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, cache: ^[dynamic]Materialized-Rule-Cache-Entry] -> [out: Query-Relation, ok: bool]
   (when (not (rule-call-can-materialize-relation? plan call))

@@ -200,10 +200,14 @@ compound string keys. Binary `=` / `!=` predicates over two typed variables can
 compare relation columns directly, avoiding per-row `Value` wrapper resolution
 for common filters. Predicate and `not` filters now move surviving compatibility
 `Binding` rows into the filtered relation instead of cloning each row, matching
-the existing dedupe/memo ownership pattern. The broad path still pays for
-generic `Binding` construction in joins/results and final dedupe. The next
-performance step is columnar/streamed materialized rule relations and typed
-joins that avoid those remaining row-shaped costs.
+the existing dedupe/memo ownership pattern. Multi-branch materialized helper
+rules now also have a typed unique accumulator for compatible projected branch
+relations, so branch output can dedupe in typed columns instead of always
+materializing through generic `Binding` rows before rebuilding a relation. The
+broad path still pays for generic `Binding` construction in joins/results when
+an operator falls off the typed path. The next performance step is typed-first
+memo storage and more operators that can consume typed columns without
+materializing compatibility rows.
 
 ## Query Engine Strategy
 
@@ -530,10 +534,11 @@ run as relation joins, broad rule-call steps reuse cached typed memo/delta
 relation views before joining, and primitive-compatible memo outputs append to
 those valid relation views as they are discovered. Compatible typed branch joins
 for the same broad rule call are unioned in typed columns instead of always
-materializing through `Binding` rows. The memo/delta row tables remain the source
-of truth, so the next rule-engine step is typed-first memo storage: make compact
-relation columns the primary structure for supported rule outputs instead of a
-cache beside binding rows.
+materializing through `Binding` rows. Materialized non-recursive helper rules use
+the same typed unique accumulation when projected branch layouts are compatible.
+The memo/delta row tables remain the source of truth, so the next rule-engine
+step is typed-first memo storage: make compact relation columns the primary
+structure for supported rule outputs instead of a cache beside binding rows.
 
 Near-term query work should expand the relation engine in this order:
 
@@ -546,8 +551,8 @@ Near-term query work should expand the relation engine in this order:
    rows toward relation-native semi-naive behavior. DB clause steps and broad
    rule-call joins are now relation-native, and valid memo/delta relation caches
    append primitive-compatible outputs incrementally. Multi-branch broad rule
-   calls can union compatible branch joins in typed columns. Typed-first
-   memo/delta storage remains the main row-shaped boundary.
+   calls and materialized helper rules can union compatible branch joins in typed
+   columns. Typed-first memo/delta storage remains the main row-shaped boundary.
 
 The transaction side has the same split:
 
