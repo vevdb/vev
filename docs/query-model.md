@@ -465,6 +465,11 @@ limit-var aggregates, pull find expressions, and unsupported term shapes still
 fall back through the audited binding materialization helper. When the planner
 can trust relation uniqueness, typed result rendering now also skips the
 per-row dedupe value array and pushes projected result values directly.
+Pull find rendering uses the same result boundary: the renderer can resolve
+pull entity vars from typed relation rows and render pull results directly from
+the chosen DB/source without first materializing the whole relation as
+`Binding` rows. If a pull pattern, source, or entity cannot be resolved from the
+typed row, the query falls back to the binding renderer.
 
 Binding-oriented relation-engine fallback operators now have an explicit
 typed-row boundary. Unsupported or final API paths still materialize through

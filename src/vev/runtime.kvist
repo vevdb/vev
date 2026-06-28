@@ -1211,9 +1211,26 @@
         (arr.push! out index)))
     (return out true)))
 
-(defn result-rows-for-typed-relation [query: Query, rel: Query-Relation] -> [rows: [dynamic]Result-Row, ok: bool]
-  (when (> (count query.pulls) 0)
-    (return (make [dynamic]Result-Row) false))
+(defn pulls-for-typed-row-with-sources-and-fns [db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, rel: Query-Relation, row: int, registry: []Native-Query-Fn] -> [pulls: [dynamic]Pull-Result, ok: bool]
+  (let [out (make [dynamic]Pull-Result 0 (count query.pulls))]
+    (for [pull-find query.pulls]
+      (let [[entity-value entity-value-ok] (query-relation-typed-row-value rel row pull-find.var)]
+        (when (not entity-value-ok)
+          (return out false))
+        (let [[pattern pattern-ok] (pull-find-pattern query inputs pull-find)
+              [pull-db pull-db-ok] (pull-db-for-find db sources pull-find)
+              entity: u64 0
+              entity-ok false]
+          (when pull-db-ok
+            (let [[resolved resolved-ok] (pull-entity-from-value pull-db entity-value)]
+              (set! entity resolved)
+              (set! entity-ok resolved-ok)))
+          (if (and pattern-ok pull-db-ok entity-ok)
+            (arr.push! out (pull-pattern-spec-with-fns pull-db entity pattern registry))
+            (return out false)))))
+    (return out true)))
+
+(defn result-rows-for-typed-relation-with-sources-and-fns [db: DB, sources: []DB-Source, query: Query, inputs: []Query-Input, rel: Query-Relation, registry: []Native-Query-Fn] -> [rows: [dynamic]Result-Row, ok: bool]
   (when (not rel.has-typed-columns)
     (return (make [dynamic]Result-Row) false))
     (let [[find-indexes find-ok] (query-relation-indexes-for-vars rel (slice query.find 0))]
@@ -1229,13 +1246,20 @@
           trust-unique-bindings (query-can-trust-unique-bindings? query)]
       (for [row (arr.range 0 rel.typed-rows)]
         (let [values (make [dynamic]Value 0 (count query.find))
+              [pulls pulls-ok] (pulls-for-typed-row-with-sources-and-fns db sources query inputs rel row registry)
               pushed false]
+          (when (not pulls-ok)
+            (delete values)
+            (for [pull pulls]
+              (delete-pull-result-shallow pull))
+            (delete pulls)
+            (return out false))
           (for [column-index find-indexes]
             (let [[value _] (typed-relation-column-value rel.typed-columns[column-index] row)]
               (arr.push! values value)))
-          (if trust-unique-bindings
+          (if (or (> (count pulls) 0) trust-unique-bindings)
             (do
-              (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
+              (arr.push! out (Result-Row {values: values pulls: pulls}))
               (set! pushed true))
             (let [dedupe-values (make [dynamic]Value)]
               (for [value values]
@@ -1248,15 +1272,21 @@
                   (let [already-seen (set.contains? seen key)]
                     (when (not already-seen)
                       (set.add! seen key)
-                      (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
+                      (arr.push! out (Result-Row {values: values pulls: pulls}))
                       (set! pushed true)))
                   (when (not (row-values-exist? (slice out 0) (slice dedupe-values 0)))
-                    (arr.push! out (Result-Row {values: values pulls: (make [dynamic]Pull-Result)}))
+                    (arr.push! out (Result-Row {values: values pulls: pulls}))
                     (set! pushed true))))
               (delete dedupe-values)))
           (when (not pushed)
-            (delete values))))
+            (delete values)
+            (for [pull pulls]
+              (delete-pull-result-shallow pull))
+            (delete pulls))))
       (return out true)))))
+
+(defn result-rows-for-typed-relation [query: Query, rel: Query-Relation] -> [rows: [dynamic]Result-Row, ok: bool]
+  (result-rows-for-typed-relation-with-sources-and-fns (DB {}) ([]DB-Source []) query ([]Query-Input []) rel ([]Native-Query-Fn [])))
 
 (defn query-relation-hash-join-typed-number [left: Query-Relation, right: Query-Relation, common: []string] -> [rel: Query-Relation, ok: bool]
   (when (not (and (= (count common) 1)
@@ -15228,11 +15258,11 @@
                   (append-aggregate-rows-with-sources-and-fns! (addr rows) db sources query inputs (slice materialized 0) registry))))))
         (do
           (delete rows)
-          (let [[typed-rows typed-ok] (result-rows-for-typed-relation query post-rel)]
+          (let [[typed-rows typed-ok] (result-rows-for-typed-relation-with-sources-and-fns db sources query inputs post-rel registry)]
             (if typed-ok
               (set! rows typed-rows)
               (do
-                (delete typed-rows)
+                (delete-result-rows-shallow typed-rows)
                 (let [materialized (query-relation-materialized-bindings post-rel) :defer]
                   (set! rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice materialized 0) registry))))))))
       (delete-query-relation post-rel)
