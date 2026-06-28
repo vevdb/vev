@@ -63,6 +63,11 @@ static int value_text_equals(vev_value_t value, const char *expected) {
     return vev_value_text_equals(value, expected);
 }
 
+static int bytes_equal(const void *data, int len, const char *expected) {
+    int expected_len = (int)strlen(expected);
+    return len == expected_len && memcmp(data, expected, (size_t)len) == 0;
+}
+
 static int expect_u64_array(const char *label, vev_u64_array_t array, const unsigned long long *expected, int expected_count) {
     if (array == NULL) {
         fprintf(stderr, "%s: null array\n", label);
@@ -627,6 +632,65 @@ int main(void) {
         return 1;
     }
     vev_result_free(result);
+
+    vev_db_t batch_db = vev_conn_db(conn);
+    if (batch_db == NULL) {
+        fprintf(stderr, "failed to retain DB for column batch API\n");
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_prepared_query_t batch_query =
+        vev_prepare_query_edn("[:find ?name :where [?e :user/name ?name]]");
+    if (batch_query == NULL || !vev_prepared_query_ok(batch_query)) {
+        fprintf(stderr, "failed to prepare column batch query\n");
+        if (batch_query != NULL) {
+            vev_prepared_query_free(batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, batch_query, "[]");
+    if (batch == NULL ||
+        vev_column_batch_kind(batch) != VEV_COLUMN_BATCH_STRING ||
+        vev_column_batch_count(batch) != 2) {
+        fprintf(stderr, "unexpected column batch shape\n");
+        if (batch != NULL) {
+            vev_column_batch_free(batch);
+        }
+        vev_prepared_query_free(batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const void *const *batch_strings = vev_column_batch_string_data_array(batch);
+    const int *batch_lengths = vev_column_batch_string_lengths_data(batch);
+    int saw_ada = 0;
+    int saw_grace = 0;
+    for (int i = 0; i < vev_column_batch_count(batch); i++) {
+        if (bytes_equal(batch_strings[i], batch_lengths[i], "Ada")) {
+            saw_ada = 1;
+        } else if (bytes_equal(batch_strings[i], batch_lengths[i], "Grace")) {
+            saw_grace = 1;
+        }
+    }
+    if (!saw_ada || !saw_grace) {
+        fprintf(stderr, "unexpected column batch string contents\n");
+        vev_column_batch_free(batch);
+        vev_prepared_query_free(batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("column-batch kind=%d rows=%d\n", vev_column_batch_kind(batch), vev_column_batch_count(batch));
+    vev_column_batch_free(batch);
+    vev_prepared_query_free(batch_query);
+    vev_db_release(batch_db);
 
     vev_stmt_t stmt = vev_stmt_create(query);
     if (stmt == NULL) {
