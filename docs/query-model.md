@@ -483,9 +483,12 @@ typed columns, finds the first present attribute in the declared order, checks
 already-bound output vars against typed row values, and appends the selected
 attribute identity and value as typed output columns.
 
-`not` now streams over typed rows as a filter. It materializes one binding at a
-time to reuse existing `not` semantics, but the surviving output stays typed
-instead of allocating a full intermediate binding relation.
+`not` now streams over typed rows as a filter. Single ordinary DB-clause
+negative groups are tested as a typed anti-join: the clause scan resolves
+directly from typed row values and checks candidate datoms without building a
+`Binding`. Multi-clause, nested, join, and relation-source negative groups still
+materialize one binding at a time to reuse existing semantics, but the surviving
+output stays typed instead of allocating a full intermediate binding relation.
 
 `ground` now streams over typed rows too. Scalar ground clauses resolve their
 source term directly from typed input columns and append only newly produced
