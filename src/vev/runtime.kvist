@@ -6532,7 +6532,7 @@
     (defer (delete-clause-index-scan scan))
     (let [scan-index scan.index]
       (while (< scan-index scan.high)
-        (let [datom-index scan.indexes[scan-index]
+        (let [datom-index (clause-index-scan-datom-index scan scan-index)
               datom db.datoms[datom-index]]
           (when (clause-index-scan-candidate? scan datom)
             (set! count (+ count 1))))
@@ -6860,7 +6860,7 @@
     (defer (delete-clause-index-scan scan))
     (let [scan-index scan.index]
       (while (< scan-index scan.high)
-        (let [datom-index scan.indexes[scan-index]
+        (let [datom-index (clause-index-scan-datom-index scan scan-index)
               datom db.datoms[datom-index]]
           (when (and (clause-index-scan-candidate? scan datom)
                      (datom-current-at? db datom-index))
@@ -6884,7 +6884,7 @@
     (defer (delete-clause-index-scan scan))
     (let [scan-index scan.index]
       (while (< scan-index scan.high)
-        (let [datom-index scan.indexes[scan-index]
+        (let [datom-index (clause-index-scan-datom-index scan scan-index)
               datom db.datoms[datom-index]]
           (when (clause-index-scan-candidate? scan datom)
             (set! candidate-count (+ candidate-count 1))
@@ -6929,7 +6929,7 @@
     current))
 
 (defstruct Clause-Index-Scan {
-  indexes: []int
+  view: DB-Index-View
   index: int
   high: int
   e-value: Value
@@ -6947,7 +6947,7 @@
     (delete scan.forward-attr)))
 
 (defn empty-clause-index-scan [db: DB] -> Clause-Index-Scan
-  (Clause-Index-Scan {indexes: (slice db.eavt 0)
+  (Clause-Index-Scan {view: (db-index-view db .EAVT)
                       index: 0
                       high: 0
                       e-value: (Value {})
@@ -6962,9 +6962,9 @@
 (defn clause-index-scan-resolved [db: DB, clause: Clause, e-value-in: Value, e-ok: bool, a-value: Value, a-ok: bool, v-value-in: Value, v-ok-in: bool, reverse-source-value: Value, reverse-source-ok: bool] -> Clause-Index-Scan
   (let [v-value v-value-in
         v-ok v-ok-in
-        indexes: []int (slice db.eavt 0)
+        view (db-index-view db .EAVT)
         low 0
-        high (count db.eavt)]
+        high (db-index-view-count view)]
     (when (= clause.v.kind .LookupRef)
       (let [[lookup-entity lookup-ok] (resolve-lookup-ref db clause.v.lookup-attr clause.v.lookup-value)]
         (when lookup-ok
@@ -6990,27 +6990,27 @@
         (when (and v-ok (not (= v-value.kind .Entity)))
           (return (empty-clause-index-scan db)))
         (if e-ok
-          (let [candidate-indexes (slice db.vaet 0)
+          (let [candidate-view (db-index-view db .VAET)
                 ref-value (value-entity e-value-in.entity)
-                candidate-low (lower-bound-index db candidate-indexes "vaet" 0 "" ref-value)
-                candidate-high (upper-bound-index db candidate-indexes "vaet" 0 "" ref-value)]
-            (set! indexes candidate-indexes)
+                candidate-low (lower-bound-index-view db candidate-view "vaet" 0 "" ref-value)
+                candidate-high (upper-bound-index-view db candidate-view "vaet" 0 "" ref-value)]
+            (set! view candidate-view)
             (set! low candidate-low)
             (set! high candidate-high))
           (if v-ok
-            (let [candidate-indexes (slice db.eavt 0)
-                  candidate-low (lower-bound-index db candidate-indexes "eavt-ea" v-value.entity forward-attr (Value {}))
-                  candidate-high (upper-bound-index db candidate-indexes "eavt-ea" v-value.entity forward-attr (Value {}))]
-              (set! indexes candidate-indexes)
+            (let [candidate-view (db-index-view db .EAVT)
+                  candidate-low (lower-bound-index-view db candidate-view "eavt-ea" v-value.entity forward-attr (Value {}))
+                  candidate-high (upper-bound-index-view db candidate-view "eavt-ea" v-value.entity forward-attr (Value {}))]
+              (set! view candidate-view)
               (set! low candidate-low)
               (set! high candidate-high))
-            (let [candidate-indexes (slice db.aevt 0)
-                  candidate-low (lower-bound-index db candidate-indexes "aevt" 0 forward-attr (Value {}))
-                  candidate-high (upper-bound-index db candidate-indexes "aevt" 0 forward-attr (Value {}))]
-              (set! indexes candidate-indexes)
+            (let [candidate-view (db-index-view db .AEVT)
+                  candidate-low (lower-bound-index-view db candidate-view "aevt" 0 forward-attr (Value {}))
+                  candidate-high (upper-bound-index-view db candidate-view "aevt" 0 forward-attr (Value {}))]
+              (set! view candidate-view)
               (set! low candidate-low)
               (set! high candidate-high))))
-        (return (Clause-Index-Scan {indexes: indexes
+        (return (Clause-Index-Scan {view: view
                                     index: low
                                     high: high
                                     e-value: e-value-in
@@ -7026,50 +7026,50 @@
         (when (not (and (= e-value-in.kind .Entity)
                         (= a-value.kind .Keyword)))
           (return (empty-clause-index-scan db)))
-        (let [candidate-indexes (slice db.eavt 0)
-              candidate-low (lower-bound-index db candidate-indexes "eavt-ea" e-value-in.entity a-value.text (Value {}))
-              candidate-high (upper-bound-index db candidate-indexes "eavt-ea" e-value-in.entity a-value.text (Value {}))]
-          (set! indexes candidate-indexes)
+        (let [candidate-view (db-index-view db .EAVT)
+              candidate-low (lower-bound-index-view db candidate-view "eavt-ea" e-value-in.entity a-value.text (Value {}))
+              candidate-high (upper-bound-index-view db candidate-view "eavt-ea" e-value-in.entity a-value.text (Value {}))]
+          (set! view candidate-view)
           (set! low candidate-low)
           (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (and a-ok v-ok))
       (do
         (when (not (= a-value.kind .Keyword))
           (return (empty-clause-index-scan db)))
-        (let [candidate-indexes (slice db.avet 0)
-              candidate-low (lower-bound-index db candidate-indexes "avet" 0 a-value.text v-value)
-              candidate-high (upper-bound-index db candidate-indexes "avet" 0 a-value.text v-value)]
-          (set! indexes candidate-indexes)
+        (let [candidate-view (db-index-view db .AVET)
+              candidate-low (lower-bound-index-view db candidate-view "avet" 0 a-value.text v-value)
+              candidate-high (upper-bound-index-view db candidate-view "avet" 0 a-value.text v-value)]
+          (set! view candidate-view)
           (set! low candidate-low)
           (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) e-ok)
       (do
         (when (not (= e-value-in.kind .Entity))
           (return (empty-clause-index-scan db)))
-        (let [candidate-indexes (slice db.eavt 0)
-              candidate-low (lower-bound-index db candidate-indexes "eavt" e-value-in.entity "" (Value {}))
-              candidate-high (upper-bound-index db candidate-indexes "eavt" e-value-in.entity "" (Value {}))]
-          (set! indexes candidate-indexes)
+        (let [candidate-view (db-index-view db .EAVT)
+              candidate-low (lower-bound-index-view db candidate-view "eavt" e-value-in.entity "" (Value {}))
+              candidate-high (upper-bound-index-view db candidate-view "eavt" e-value-in.entity "" (Value {}))]
+          (set! view candidate-view)
           (set! low candidate-low)
           (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) a-ok)
       (do
         (when (not (= a-value.kind .Keyword))
           (return (empty-clause-index-scan db)))
-        (let [candidate-indexes (slice db.aevt 0)
-              candidate-low (lower-bound-index db candidate-indexes "aevt" 0 a-value.text (Value {}))
-              candidate-high (upper-bound-index db candidate-indexes "aevt" 0 a-value.text (Value {}))]
-          (set! indexes candidate-indexes)
+        (let [candidate-view (db-index-view db .AEVT)
+              candidate-low (lower-bound-index-view db candidate-view "aevt" 0 a-value.text (Value {}))
+              candidate-high (upper-bound-index-view db candidate-view "aevt" 0 a-value.text (Value {}))]
+          (set! view candidate-view)
           (set! low candidate-low)
           (set! high candidate-high))))
     (if (and (not (and e-ok a-ok)) (not (and a-ok v-ok)) (not e-ok) (not a-ok) v-ok)
-      (let [candidate-indexes (slice db.vaet 0)
-            candidate-low (lower-bound-index db candidate-indexes "vaet" 0 "" v-value)
-            candidate-high (upper-bound-index db candidate-indexes "vaet" 0 "" v-value)]
-        (set! indexes candidate-indexes)
+      (let [candidate-view (db-index-view db .VAET)
+            candidate-low (lower-bound-index-view db candidate-view "vaet" 0 "" v-value)
+            candidate-high (upper-bound-index-view db candidate-view "vaet" 0 "" v-value)]
+        (set! view candidate-view)
         (set! low candidate-low)
         (set! high candidate-high)))
-    (Clause-Index-Scan {indexes: indexes
+    (Clause-Index-Scan {view: view
                         index: low
                         high: high
                         e-value: e-value-in
@@ -7080,6 +7080,9 @@
                         v-ok: v-ok
                         reverse-attr: false
                         forward-attr: ""})))
+
+(defn clause-index-scan-datom-index [scan: Clause-Index-Scan, index: int] -> int
+  (db-index-view-at scan.view index))
 
 (defn clause-index-scan [db: DB, clause: Clause, binding: Binding] -> Clause-Index-Scan
   (let [[e-value e-ok] (resolve-entity-term db clause.e binding)
@@ -7109,7 +7112,7 @@
     (defer (delete-clause-index-scan scan))
     (let [scan-index scan.index]
       (while (< scan-index scan.high)
-        (let [datom-index scan.indexes[scan-index]
+        (let [datom-index (clause-index-scan-datom-index scan scan-index)
               datom db.datoms[datom-index]]
           (when (and (clause-index-scan-candidate? scan datom)
                      (datom-current-at? db datom-index))
@@ -7953,7 +7956,7 @@
             (set.add! expanded current)
             (let [scan-index scan.index]
               (while (< scan-index scan.high)
-                (let [datom-index scan.indexes[scan-index]
+                (let [datom-index (clause-index-scan-datom-index scan scan-index)
                       datom db.datoms[datom-index]]
                   (when (and (clause-index-scan-candidate? scan datom)
                              (datom-current-at? db datom-index)
@@ -7976,7 +7979,7 @@
     (defer (delete-clause-index-scan scan))
     (let [scan-index scan.index]
       (while (< scan-index scan.high)
-        (let [datom-index scan.indexes[scan-index]
+        (let [datom-index (clause-index-scan-datom-index scan scan-index)
               datom db.datoms[datom-index]]
           (when (and (clause-index-scan-candidate? scan datom)
                      (datom-current-at? db datom-index))
@@ -8005,7 +8008,7 @@
             (set.add! expanded current)
             (let [scan-index scan.index]
               (while (< scan-index scan.high)
-                (let [datom-index scan.indexes[scan-index]
+                (let [datom-index (clause-index-scan-datom-index scan scan-index)
                       datom db.datoms[datom-index]]
                   (when (and (clause-index-scan-candidate? scan datom)
                              (datom-current-at? db datom-index))
@@ -13308,7 +13311,7 @@
     (defer (delete-clause-index-scan scan))
     (let [scan-index scan.index]
       (while (< scan-index scan.high)
-        (let [datom-index scan.indexes[scan-index]
+        (let [datom-index (clause-index-scan-datom-index scan scan-index)
               datom db.datoms[datom-index]]
           (when (clause-index-scan-candidate? scan datom)
             (set! stats^.clause-candidates (+ stats^.clause-candidates 1))
@@ -13333,7 +13336,7 @@
       (let [scan-index scan.index
             all-current (all-datoms-current? clause-db)]
         (while (< scan-index scan.high)
-          (let [datom-index scan.indexes[scan-index]
+          (let [datom-index (clause-index-scan-datom-index scan scan-index)
                 datom clause-db.datoms[datom-index]]
             (when (and (clause-index-scan-candidate? scan datom)
                        (or all-current (datom-current-at? clause-db datom-index))
@@ -14598,7 +14601,7 @@
       (defer (delete-clause-index-scan scan))
       (let [scan-index scan.index]
         (while (< scan-index scan.high)
-          (let [datom-index scan.indexes[scan-index]
+          (let [datom-index (clause-index-scan-datom-index scan scan-index)
                 datom db.datoms[datom-index]]
           (when (and (clause-index-scan-candidate? scan datom)
                      (datom-current-at? db datom-index))
@@ -14636,7 +14639,7 @@
       (defer (delete-clause-index-scan scan))
       (let [scan-index scan.index]
         (while (< scan-index scan.high)
-          (let [datom-index scan.indexes[scan-index]
+          (let [datom-index (clause-index-scan-datom-index scan scan-index)
                 datom db.datoms[datom-index]]
             (when (and (clause-index-scan-candidate? scan datom)
                        (datom-current-at? db datom-index)
