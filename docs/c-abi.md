@@ -570,23 +570,25 @@ layer on top of that Java wrapper. It accepts ordinary quoted Clojure forms and
 serializes them through the same EDN/query path:
 
 ```clojure
-(require '[vev.core :as vev])
+(require '[vev.core :as d])
 
-(with-open [conn (vev/create-conn "build/lib/libvev.dylib")]
-  (vev/transact! conn
-    [{:db/id 1 :user/name "Ada"}])
+(def conn (d/create-conn))
 
-  (let [db (vev/db conn)]
-    (vev/q
-      db
-      '[:find ?name
-        :where [?e :user/name ?name]])))
+(d/transact! conn
+  [{:db/id 1 :user/name "Ada"}])
+
+(def db (d/db conn))
+
+(d/q
+  '[:find ?name
+    :where [?e :user/name ?name]]
+  db)
 ```
 
 Inputs are ordinary Clojure arguments after the query:
 
 ```clojure
-(vev/q
+(d/q
   db
   '[:find ?name
     :in [?email ...]
@@ -596,17 +598,19 @@ Inputs are ordinary Clojure arguments after the query:
 ```
 
 Plain Clojure `q`/`rows` calls prepare and close a temporary native query
-handle. Use `vev/prepare` with `with-open` when a query should be reused.
-Prepared queries can be inspected with `vev/prepared-edn`, which returns the
+handle. Use `d/prepare` when a query should be reused. Long-running services
+can close prepared handles explicitly when they are retired.
+Prepared queries can be inspected with `d/prepared-edn`, which returns the
 portable parser description as Clojure data.
 
 Durable connections use `connect`:
 
 ```clojure
-(with-open [conn (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite")]
-  (vev/connection-info conn)
-  (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
-  (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
+(def conn (d/connect "app.vev.sqlite"))
+
+(d/connection-info conn)
+(d/transact! conn [{:db/id 1 :user/name "Ada"}])
+(d/q (d/db conn) '[:find ?name :where [?e :user/name ?name]])
 ```
 
 The underlying Java wrapper still exposes EDN strings directly:

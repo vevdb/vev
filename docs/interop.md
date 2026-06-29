@@ -51,9 +51,20 @@ clients:
 - C SDK: `include/vev.h`, `libvev`, and pkg-config package `vev`
 - Odin package: later `clients/odin` wrapper over the C ABI, not generated Odin
 
-The first packaging pass should still support explicit local library paths and
-environment overrides. Bundled native artifacts can come after the wrapper APIs
-are stable enough to justify publishing.
+The first packaging pass still supports explicit local library paths and
+environment overrides, but the JVM path now has a concrete bundled-native
+loading shape. The Java loader checks explicit path configuration, local
+`build/lib`, then classpath resources under
+`dev/vevdb/vev/native/<platform>/<library>`. `scripts/stage_jvm_native.sh`
+creates that resource tree for the current platform, and
+`scripts/package_jvm.sh` builds local proof jars for the intended split:
+
+- `vev-java-<version>.jar`
+- `vev-native-<platform>-<version>.jar`
+- `vev-clj-<version>.jar`
+
+These jars are not published releases yet, but they make the future
+`{:deps {dev.vevdb/vev-clj {:mvn/version ...}}}` story mechanically real.
 
 Odin consumption should use the C ABI through a small wrapper for now. Vev is
 implemented in Kvist and lowers through Odin, but generated Odin is build

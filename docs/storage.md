@@ -172,6 +172,27 @@ Special reportless fast paths are not the desired fix. They would make the
 benchmark look better while dodging the core requirement that Vev DB values are
 immutable values applications can pass around.
 
+The first resumed storage-copy cleanup removed an unnecessary full `DB` clone
+from registered/native transaction-function paths. Those paths now follow the
+ordinary live transaction ownership shape: the pre-transaction DB becomes the
+successful report's `db-before`, and the connection moves to the newly
+published `db-after`. This is not the shared-index representation yet, but it
+keeps all transaction entrypoints on the same publish boundary before the DB
+layout changes.
+
+The direct datom append paths now also share the transaction engine's guarded
+append-only index builder when the appended datoms are simple additions that do
+not touch validation schema and do not repeat current or in-batch facts.
+Retractions, schema datoms, repeated facts, and unkeyable values still fall back
+to full DB/index rebuilds. This keeps `db-with-datoms`, `with-datoms`, and
+`transact-datoms` on the same incremental-index path used by ordinary
+append-only transactions without changing their correctness model.
+
+SQLite rollback cleanup now also follows the live-report ownership rule. When
+an in-memory transaction succeeds but SQLite append fails, the wrapper restores
+the previous DB and cleans the successful report as a live connection report so
+`db-after` is not freed twice.
+
 ## SQLite Backend Shape
 
 SQLite is the first production durable backend.
