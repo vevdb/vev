@@ -45,7 +45,7 @@ clients:
 - Java/Maven coordinate: `dev.vevdb:vev-java`
 - native JVM artifacts by platform: `dev.vevdb:vev-native-<platform>`
 - Rust crate name, if published: `vev`
-- Go module path, if published: `github.com/vevdb/vev/clients/go`
+- Go module path: `github.com/vevdb/vev/clients/go`
 - Node package name, if published: `@vevdb/vev`
 - Python package name, if published: `vev`
 - C SDK: `include/vev.h`, `libvev`, and pkg-config package `vev`
@@ -253,11 +253,13 @@ The first Go surface should stay close to the C ABI:
 - prepared queries for repeated execution
 - explicit close/release behavior
 
-The current `clients/go/smoke.go` proves that path through `cgo`, including
-typed result rows, pull, lookup refs, immutable DB snapshots, `conn-from-db`,
-and durable SQLite reopen checks. A fuller Go client can grow from the same
-shape once real callers prove which typed statement bindings and
-transaction-builder helpers are worth maintaining.
+The current `clients/go` module proves that path through `cgo`, including typed
+result rows, pull, lookup refs, immutable DB snapshots, `conn-from-db`, and
+durable SQLite reopen checks. `cmd/vev-go-smoke` runs the full smoke workload,
+and `scripts/smoke_go_package.sh` verifies the package from a separate Go
+module using a local `replace`. A fuller Go client can grow from the same shape
+once real callers prove which typed statement bindings and transaction-builder
+helpers are worth maintaining.
 
 ## Node/TypeScript
 
