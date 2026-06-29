@@ -181,6 +181,9 @@ The Go wrapper is importable at the planned module path:
 
 ```go
 import vev "github.com/vevdb/vev/clients/go"
+
+conn, err := vev.CreateConn()
+durable, err := vev.Connect("app.vev")
 ```
 
 `scripts/smoke_go_package.sh` verifies that shape from a temporary Go module

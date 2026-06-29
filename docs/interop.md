@@ -112,6 +112,12 @@ current `@vevdb/vev` package metadata while remaining private, and
 `scripts/smoke_node_package.sh` verifies that metadata plus the temporary
 bundled-native package layout.
 
+The Go path is a cgo package at `github.com/vevdb/vev/clients/go`. Its public
+constructor shape is `vev.CreateConn()` for in-memory work and
+`vev.Connect("app.vev")` for durable stores; `OpenMemory()` remains a
+compatibility alias. `scripts/smoke_go_package.sh` verifies import from a
+separate temporary Go module using a local `replace`.
+
 Odin consumption should use the C ABI through a small wrapper for now.
 `clients/odin/smoke.odin` proves the dynamic-loading path against the platform
 native library. Vev is implemented in Kvist and lowers through Odin, but
