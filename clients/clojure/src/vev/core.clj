@@ -4,7 +4,7 @@
 (ns vev.core
   (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
-           [dev.vevdb.vev Vev Vev$ColumnResult Vev$Entity Vev$MapValue Vev$PreparedPullPattern]))
+           [dev.vevdb.vev Vev Vev$ColumnResult Vev$Entity Vev$MapValue Vev$PreparedPullPattern Vev$TxFunction Vev$TxReportListener]))
 
 (defn- path [value]
   (cond
@@ -100,6 +100,16 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
+(defrecord TxFnRegistry [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
+(defrecord TxListenerRegistration [native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
 (defn create-conn
   "Create an in-memory Vev connection.
 
@@ -125,8 +135,9 @@
 (defn connect
   "Open a durable Vev connection.
 
-  The current backend is SQLite. A plain filesystem path and `sqlite://...` URI
-  both select the SQLite backend."
+  A plain filesystem path opens a local Vev store. The current local backend is
+  SQLite internally, but application code should treat the returned handle as a
+  Vev connection."
   ([uri]
    (let [engine (load-engine)]
      (try
@@ -145,8 +156,8 @@
 (defn open-sqlite
   "Open a durable SQLite-backed Vev connection.
 
-  Prefer `connect` for application code; this backend-specific alias remains
-  for compatibility and storage tests."
+  Prefer `connect` for application code; this backend-specific alias is for
+  storage tests and migration/debugging."
   ([sqlite-path]
    (connect sqlite-path))
   ([lib-path sqlite-path]
@@ -192,22 +203,84 @@
   [id]
   (Vev$Entity. (long id)))
 
-(defn transact-text!
-  "Transact Clojure data or EDN text and return the raw EDN report text."
-  [^Conn conn tx]
-  (.transact (:native conn) (edn-text tx)))
+(defn- source-engine [source]
+  (or (:engine source)
+      (throw (ex-info "expected Vev source" {:source source}))))
 
-(defn transact!
+(defn transact-text
+  "Transact Clojure data or EDN text and return the raw EDN report text."
+  [conn tx]
+  (with-open [report (.transactReport (:native conn) (edn-text tx))]
+    (.edn report)))
+
+(def transact-text! transact-text)
+
+(defn transact
   "Transact Clojure data or EDN text against a connection.
 
   Returns a Clojure transaction report map."
-  [conn tx]
-  (with-open [report (if (instance? TxBuilder tx)
-                       (.transactReport (:native conn) (:native tx))
-                       (.transactReport (:native conn) (edn-text tx)))]
-    (clj-value (.value report))))
+  ([conn tx]
+   (with-open [report (if (instance? TxBuilder tx)
+                        (.transactReport (:native conn) (:native tx))
+                        (.transactReport (:native conn) (edn-text tx)))]
+     (clj-value (.value report))))
+  ([conn tx tx-fns]
+   (when (instance? TxBuilder tx)
+     (throw (ex-info "transaction function registries apply to EDN tx data, not TxBuilder values"
+                     {:tx tx})))
+   (when-not (instance? Conn conn)
+     (throw (ex-info "transaction function registries currently require an in-memory connection"
+                     {:conn conn})))
+   (with-open [report (.transactReport (:native conn)
+                                       (edn-text tx)
+                                       (:native tx-fns))]
+     (clj-value (.value report)))))
 
-(def transact transact!)
+(def transact! transact)
+
+(defn- listener-name [key]
+  (cond
+    (keyword? key) (str key)
+    (symbol? key) (str key)
+    (string? key) key
+    :else (throw (ex-info "listener key must be a keyword, symbol, or string"
+                          {:key key}))))
+
+(defn listen
+  "Register a transaction listener on an in-memory connection.
+
+  The callback receives a Clojure transaction report map after successful
+  commits. The returned registration is AutoCloseable; `unlisten` can also
+  remove by key."
+  [conn key f]
+  (when-not (instance? Conn conn)
+    (throw (ex-info "transaction listeners currently require an in-memory connection"
+                    {:conn conn})))
+  (let [callback (reify Vev$TxReportListener
+                   (accept [_ report]
+                     (f (clj-value report))))]
+    (->TxListenerRegistration
+     (.listen (:native conn) (listener-name key) callback))))
+
+(def listen! listen)
+
+(defn unlisten
+  "Remove a transaction listener registration or listener key."
+  [conn key-or-registration]
+  (cond
+    (instance? TxListenerRegistration key-or-registration)
+    (do
+      (.close ^java.lang.AutoCloseable key-or-registration)
+      true)
+
+    (instance? Conn conn)
+    (.unlisten (:native conn) (listener-name key-or-registration))
+
+    :else
+    (throw (ex-info "transaction listeners currently require an in-memory connection"
+                    {:conn conn}))))
+
+(def unlisten! unlisten)
 
 (defn empty-db
   "Return an owned immutable empty DB value."
@@ -225,9 +298,12 @@
 
 (defn with
   "Apply tx data to an immutable DB and return a transaction report map."
-  [^DB db tx]
-  (with-open [report (.withReport (:native db) (edn-text tx))]
-    (clj-value (.value report))))
+  ([^DB db tx]
+   (with-open [report (.withReport (:native db) (edn-text tx))]
+     (clj-value (.value report))))
+  ([^DB db tx tx-fns]
+   (with-open [report (.withReport (:native db) (edn-text tx) (:native tx-fns))]
+     (clj-value (.value report)))))
 
 (defn db-with
   "Apply tx data to an immutable DB and return the resulting immutable DB value."
@@ -243,6 +319,37 @@
   ([source capacity]
    (let [engine (:engine source)]
      (->TxBuilder engine (.txBuilder engine (int capacity))))))
+
+(defn register-tx-fn
+  "Register a Datomic-shaped transaction function in a registry.
+
+  The callback receives `(db & args)` and returns ordinary tx-data."
+  [^TxFnRegistry registry ident f]
+  (let [engine (:engine registry)
+        native-fn (reify Vev$TxFunction
+                    (apply [_ native-db args]
+                      (edn-text
+                       (apply f
+                              (->DB engine native-db)
+                              (mapv clj-value args)))))]
+    (.register (:native registry) (edn-text ident) native-fn)
+    registry))
+
+(defn tx-fns
+  "Create a transaction function registry from `{ident fn}`.
+
+  Registered functions can be called from tx-data with Datomic-style ident
+  shorthand or `:db.fn/call` and passed to `transact` / `with`."
+  [source registry]
+  (let [engine (source-engine source)
+        out (->TxFnRegistry engine (.txFunctionRegistry engine))]
+    (try
+      (doseq [[ident f] registry]
+        (register-tx-fn out ident f))
+      out
+      (catch Throwable error
+        (.close out)
+        (throw error)))))
 
 (defn- attr-text [attr]
   (cond
@@ -326,6 +433,7 @@
 
 (defn- source? [value]
   (or (instance? Conn value)
+      (instance? DurableConn value)
       (instance? SQLiteConn value)
       (instance? DB value)))
 
@@ -425,6 +533,10 @@
       (instance? Conn source)
       (.query (:native source) (:native prepared) input-edn)
 
+      (instance? DurableConn source)
+      (with-open [snapshot (db source)]
+        (.query (:native snapshot) (:native prepared) input-edn))
+
       (instance? SQLiteConn source)
       (with-open [snapshot (db source)]
         (.query (:native snapshot) (:native prepared) input-edn))
@@ -443,6 +555,10 @@
     (cond
       (instance? Conn source)
       (.query (:native source) (:native prepared) rules-edn input-edn)
+
+      (instance? DurableConn source)
+      (with-open [snapshot (db source)]
+        (.query (:native snapshot) (:native prepared) rules-edn input-edn))
 
       (instance? SQLiteConn source)
       (with-open [snapshot (db source)]
@@ -491,6 +607,10 @@
       (with-open [snapshot (db source)]
         (.queryEntityColumn (:native snapshot) (:native prepared) input-edn))
 
+      (instance? DurableConn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityColumn (:native snapshot) (:native prepared) input-edn))
+
       (instance? SQLiteConn source)
       (with-open [snapshot (db source)]
         (.queryEntityColumn (:native snapshot) (:native prepared) input-edn))
@@ -505,6 +625,10 @@
       (.queryStringColumn (:native source) (:native prepared) input-edn)
 
       (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryStringColumn (:native snapshot) (:native prepared) input-edn))
+
+      (instance? DurableConn source)
       (with-open [snapshot (db source)]
         (.queryStringColumn (:native snapshot) (:native prepared) input-edn))
 
@@ -525,6 +649,10 @@
       (with-open [snapshot (db source)]
         (.queryEntityIntPairColumns (:native snapshot) (:native prepared) input-edn))
 
+      (instance? DurableConn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityIntPairColumns (:native snapshot) (:native prepared) input-edn))
+
       (instance? SQLiteConn source)
       (with-open [snapshot (db source)]
         (.queryEntityIntPairColumns (:native snapshot) (:native prepared) input-edn))
@@ -542,6 +670,10 @@
       (with-open [snapshot (db source)]
         (.queryEntityStringIntTripleColumns (:native snapshot) (:native prepared) input-edn))
 
+      (instance? DurableConn source)
+      (with-open [snapshot (db source)]
+        (.queryEntityStringIntTripleColumns (:native snapshot) (:native prepared) input-edn))
+
       (instance? SQLiteConn source)
       (with-open [snapshot (db source)]
         (.queryEntityStringIntTripleColumns (:native snapshot) (:native prepared) input-edn))
@@ -556,6 +688,10 @@
       (.queryColumns (:native source) (:native prepared) input-edn)
 
       (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.queryColumns (:native snapshot) (:native prepared) input-edn))
+
+      (instance? DurableConn source)
       (with-open [snapshot (db source)]
         (.queryColumns (:native snapshot) (:native prepared) input-edn))
 
@@ -840,6 +976,14 @@
     (f source)
 
     (instance? Conn source)
+    (with-open [snapshot (db source)]
+      (f snapshot))
+
+    (instance? DurableConn source)
+    (with-open [snapshot (db source)]
+      (f snapshot))
+
+    (instance? SQLiteConn source)
     (with-open [snapshot (db source)]
       (f snapshot))
 

@@ -25,6 +25,16 @@ Planned package name:
 @vevdb/vev
 ```
 
+Example:
+
+```js
+const vev = require("@vevdb/vev");
+
+const conn = vev.createConn();
+conn.transact('[{:db/id 1 :user/name "Ada"}]');
+console.log(conn.queryText('[:find ?name :where [?e :user/name ?name]]'));
+```
+
 The package should continue to expose explicit native-addon loading for local
 development while supporting bundled platform binaries. `scripts/build_c_abi.sh`
 links the addon with both repo-local and addon-relative library rpaths, so a
@@ -33,3 +43,7 @@ future package can place `vev_native.node` and the platform `libvev` in the same
 
 `scripts/smoke_node_package.sh` verifies that package-like layout from a
 temporary directory without `VEV_NODE_NATIVE`.
+
+Durable stores are opened through Vev APIs with paths such as `app.vev`. The
+Node addon loads the Vev native library; the current native library depends on
+the platform SQLite runtime, but Node application code does not set up SQLite.

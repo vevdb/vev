@@ -30,11 +30,16 @@ not strings, with three main transaction forms:
 - map forms
 - transaction functions
 
-The first-phase Vev direction should be:
+Current Vev supports the main Datomic/DataScript transaction shapes:
 
-- support Datomic list forms first
-- support Datomic map forms next
-- defer transaction functions until the core transaction model is stable
+- list forms
+- map forms
+- built-in transaction functions such as `:db/cas`
+- registered transaction functions called through `:db.fn/call` or ident shorthand
+
+The remaining work is not a different transaction syntax; it is exact API
+polish around diagnostics, host registration ergonomics, and any unported edge
+cases from the upstream compatibility suites.
 
 ### Transaction list forms
 
@@ -92,8 +97,8 @@ tx data resolve to entity refs:
 
 ### Map forms
 
-Map forms are part of the Datomic transaction surface and should be supported
-once the first list-form proof is stable.
+Map forms are part of the Datomic transaction surface and are supported by the
+literal, text, prepared, and host-facing transaction APIs.
 
 Examples:
 

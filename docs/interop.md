@@ -45,7 +45,7 @@ clients:
 - Java/Maven coordinate: `dev.vevdb:vev-java`
 - native JVM artifacts by platform: `dev.vevdb:vev-native-<platform>`
 - Rust crate name, if published: `vev`
-- Go module path, if published: `github.com/vevdb/vev/clients/go`
+- Go module path: `github.com/vevdb/vev/clients/go`
 - Node package name, if published: `@vevdb/vev`
 - Python package name, if published: `vev`
 - C SDK: `include/vev.h`, `libvev`, and pkg-config package `vev`
@@ -55,6 +55,22 @@ clients:
 The first packaging pass still supports explicit local library paths and
 environment overrides, but several host package shapes now have concrete local
 proofs.
+
+The C SDK path is `include/vev.h`, `libvev`, and `build/lib/pkgconfig/vev.pc`.
+`scripts/smoke_c_package.sh` verifies that shape from a temporary C program.
+
+The CLI path builds `build/vev` from `src/vev_cli/main.kvist`. It currently
+exposes durable `info`, `transact`, `query`, and `pull` commands over the native
+Kvist implementation. `scripts/smoke_cli.sh` verifies that path. The current
+local durable backend uses SQLite internally, but the CLI and host wrappers
+should present this as a Vev connection/store, not as application code
+programming SQLite directly.
+
+Runtime dependency details are tracked in
+[`runtime-dependencies.md`](runtime-dependencies.md). The current baseline is a
+documented system SQLite runtime dependency for `libvev`; future packages may
+bundle or statically link SQLite per platform without changing the public Vev
+API.
 
 The JVM path has a bundled-native loading shape. The Java loader checks
 explicit path configuration, local `build/lib`, then classpath resources under
@@ -67,16 +83,17 @@ creates that resource tree for the current platform, and
 - `vev-clj-<version>.jar`
 
 It also writes a local Maven repository under `build/m2`, so the future
-published Clojure dependency shape can already be tested from outside the repo:
+published dependency shapes can already be tested from outside the repo:
 
 ```clojure
 {:mvn/local-repo "/path/to/vev/build/m2"
  :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
 ```
 
-These are not published releases yet, but they make the future
-`{:deps {dev.vevdb/vev-clj {:mvn/version ...}}}` story mechanically real.
-`scripts/smoke_jvm_package.sh` verifies the shape from a temporary project.
+For Java, the matching local Maven dependency is `dev.vevdb:vev-java`. These
+are not published releases yet, but they make the future one-dependency
+Clojure and Java stories mechanically real. `scripts/smoke_jvm_package.sh`
+verifies both shapes from temporary projects.
 
 The Python path has the same explicit-to-bundled fallback shape: explicit
 `vev.Library(path)`, `VEV_LIB`, repo `build/lib`, then
@@ -210,8 +227,11 @@ The implementation lives in `src/vev_abi` with the public header in
 - register transaction functions that return EDN tx-data
 - free returned strings and handles
 
-See `docs/c-abi.md`, `clients/c/smoke.c`, and the Python/Rust/Java/Clojure
-smoke examples, plus the Go and Node/TypeScript smoke examples.
+Java exposes the raw transaction-function callback path as
+`TxFunctionRegistry`; Clojure wraps it as `tx-fns`, where callbacks return
+ordinary Clojure tx-data. See `docs/c-abi.md`, `clients/c/smoke.c`, and the
+Python/Rust/Java/Clojure smoke examples, plus the Go and Node/TypeScript smoke
+examples.
 
 ## Clojure/JVM
 
@@ -253,11 +273,13 @@ The first Go surface should stay close to the C ABI:
 - prepared queries for repeated execution
 - explicit close/release behavior
 
-The current `clients/go/smoke.go` proves that path through `cgo`, including
-typed result rows, pull, lookup refs, immutable DB snapshots, `conn-from-db`,
-and durable SQLite reopen checks. A fuller Go client can grow from the same
-shape once real callers prove which typed statement bindings and
-transaction-builder helpers are worth maintaining.
+The current `clients/go` module proves that path through `cgo`, including typed
+result rows, pull, lookup refs, immutable DB snapshots, `conn-from-db`, and
+durable SQLite reopen checks. `cmd/vev-go-smoke` runs the full smoke workload,
+and `scripts/smoke_go_package.sh` verifies the package from a separate Go
+module using a local `replace`. A fuller Go client can grow from the same shape
+once real callers prove which typed statement bindings and transaction-builder
+helpers are worth maintaining.
 
 ## Node/TypeScript
 

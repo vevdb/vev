@@ -106,7 +106,14 @@ Deferred engine batch order:
    `scripts/stage_jvm_native.sh` now stages the current platform library into
    the resource layout consumed by the Java loader, and `scripts/package_jvm.sh`
    builds local Java/native/Clojure proof jars under `build/jvm` plus a local
-   Maven repository under `build/m2`.
+   Maven repository under `build/m2`. The local proof now verifies both
+   one-dependency JVM paths: `dev.vevdb:vev-java` pulls the platform native
+   artifact, and `dev.vevdb/vev-clj` pulls Java.
+   Java now exposes C ABI transaction-function registries through
+   `TxFunctionRegistry`; Clojure exposes the Datomic-shaped `tx-fns` wrapper
+   where callbacks receive `(db & args)` and return ordinary tx-data. Java and
+   Clojure also expose in-memory transaction report listeners through
+   `Connection.listen` and `d/listen`/`d/unlisten`.
    Python and Node now also have tested temporary package layouts with bundled
    platform-native artifacts, and Odin has a dynamic C ABI smoke wrapper.
 MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current
@@ -405,7 +412,9 @@ open/transact/close/reopen/query through the raw C ABI and the Python, Rust,
 Java, and Clojure example wrappers. The ABI-vs-native benchmark covers small
 lookups, DB snapshots, transaction reports, many-row results, direct row
 visitors, nested pull-many values, and host-provided transaction function
-callbacks. Further interop work should be driven by specific adapter needs,
+callbacks. The Java and Clojure wrappers now expose that transaction-function
+registry path, while still requiring the function ident to be installed in the
+DB like Datomic. Further interop work should be driven by specific adapter needs,
 especially packaging and richer host-specific APIs over the stable raw C
 surface.
 
@@ -416,7 +425,8 @@ into publishable clients: `dev.vevdb:vev-java` for the Java FFM wrapper,
 artifacts such as `dev.vevdb:vev-native-darwin-aarch64`. Local explicit
 library paths and `VEV_LIB`-style overrides remain supported, but the current
 JVM proof path already works through a local Maven repo with bundled native
-resources on the classpath.
+resources on the classpath. Java and Clojure each have a one-dependency local
+proof path; publication work should preserve that shape.
 
 ## Phase 9: Optional packaging expansion
 

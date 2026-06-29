@@ -6,8 +6,16 @@ Build the native library and run the available client smoke tests:
 
 ```sh
 scripts/smoke_clients.sh
+scripts/smoke_cli.sh
+scripts/smoke_packages.sh
 scripts/stage_jvm_native.sh
 scripts/package_jvm.sh
+```
+
+For focused package checks, the aggregate package smoke runs:
+
+```sh
+scripts/smoke_c_package.sh
 scripts/smoke_jvm_package.sh
 scripts/smoke_python_package.sh
 scripts/smoke_node_package.sh
@@ -21,13 +29,36 @@ Together, these build:
 - local JVM proof jars under `build/jvm`
 - a local JVM Maven-style repository under `build/m2`
 - `build/lib/pkgconfig/vev.pc`
+- `build/vev`
 - Java classes under `build/examples/java`
 - native smoke artifacts under `build/examples/*`
 
 `scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
-Node/TypeScript, Java, Clojure, and Odin smoke clients. The package smoke
-scripts then verify the current local JVM, Python, Node, and Go package shapes
+Node/TypeScript, Java, Clojure, and Odin smoke clients. `scripts/smoke_cli.sh`
+verifies the CLI against a temporary durable Vev store. `scripts/smoke_packages.sh`
+then verifies the current local C SDK, JVM, Python, Node, and Go package shapes
 from temporary projects/directories.
+
+The current durable backend uses SQLite internally and the native library links
+to the platform SQLite runtime. Application code still uses Vev APIs and Vev
+store paths such as `app.vev`; no SQLite schema setup is required. See
+[runtime-dependencies.md](runtime-dependencies.md) for the per-client setup
+story.
+
+## CLI
+
+The first CLI is a thin tool over the same native engine and durable connection
+API:
+
+```sh
+build/vev transact app.vev '[{:db/id 1 :user/name "Ada"}]'
+build/vev query app.vev '[:find ?name :where [?e :user/name ?name]]'
+build/vev pull app.vev '[:user/name]' 1
+build/vev info app.vev
+```
+
+Query, transaction, and pull arguments can also be loaded from files with
+`@path`.
 
 ## Clojure
 
@@ -38,7 +69,7 @@ The Clojure API is the most Datomic-shaped public wrapper today:
 
 (def conn (d/create-conn))
 
-(d/transact! conn
+(d/transact conn
   [{:db/id 1
     :artist/name "John Lennon"}
    {:db/id 2
@@ -54,10 +85,33 @@ The Clojure API is the most Datomic-shaped public wrapper today:
 (d/pull db [:artist/name] 1)
 ```
 
+Registered transaction functions use the same Datomic-shaped tx-data calls.
+Install the ident in the DB, then provide executable behavior from the host
+process:
+
+```clojure
+(with-open [fns (d/tx-fns conn
+                  {:artist/rename
+                   (fn [db e name]
+                     [[:db/add e :artist/name name]])})]
+  (d/transact conn [[:db/add 100 :db/ident :artist/rename]])
+  (d/transact conn [[:artist/rename 1 "John Winston Lennon"]] fns))
+```
+
+Successful transaction reports can be observed with listeners:
+
+```clojure
+(def listener
+  (d/listen conn :audit #(println (:tx-data %))))
+
+(d/transact conn [{:db/id 3 :artist/name "George Harrison"}])
+(d/unlisten conn listener)
+```
+
 Durability is a separate step:
 
 ```clojure
-(def durable (d/connect "app.vev.sqlite"))
+(def durable (d/connect "app.vev"))
 ```
 
 For local development from this repo:
@@ -83,8 +137,9 @@ The same shape can be tested locally after `scripts/package_jvm.sh`:
  :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
 ```
 
-`scripts/smoke_jvm_package.sh` automates that local dependency check from a
-temporary project.
+`scripts/smoke_jvm_package.sh` automates that local dependency check from
+temporary projects. It verifies that `dev.vevdb/vev-clj` is enough for Clojure,
+and that `dev.vevdb:vev-java` is enough for Java.
 
 ## Python
 
@@ -107,7 +162,7 @@ The Node wrapper loads a native N-API addon and exposes a small CommonJS API:
 
 ```js
 const vev = require("@vevdb/vev");
-const conn = vev.openMemory();
+const conn = vev.createConn();
 conn.transact('[{:db/id 1 :user/name "Ada"}]');
 console.log(conn.queryText('[:find ?name :where [?e :user/name ?name]]'));
 ```
@@ -155,6 +210,9 @@ Local Java runs need Java 21 preview FFM flags:
 ```
 
 Planned Maven coordinate: `dev.vevdb:vev-java`.
+That artifact is intended to pull in the platform native artifact
+transitively, so ordinary Java projects should also have a one-dependency Vev
+setup.
 
 ## C
 
@@ -168,6 +226,8 @@ PKG_CONFIG_PATH="$PWD/build/lib/pkgconfig" \
 ```
 
 Use `include/vev.h` for the current handle and ownership rules.
+`scripts/smoke_c_package.sh` verifies the pkg-config package from a temporary C
+program.
 
 ## Other Clients
 

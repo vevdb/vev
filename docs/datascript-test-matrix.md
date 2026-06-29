@@ -81,7 +81,7 @@ These are useful, but not the next engine-parity gate.
 | Namespace | Upstream tests | Status | Notes |
 | --- | ---: | --- | --- |
 | `conn.cljc` | 2 | passing | create/conn-from-db/conn-from-datoms and reset reports with tx-data, before/after snapshots, metadata, and listener delivery are covered; Clojure schema-map storage shape is host |
-| `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; raw C ABI transaction report callbacks cover host post-commit listeners, while higher-level wrapper helpers can be added as adapter ergonomics |
+| `listen.cljc` | 1 | passing | named listener registration, tx-data delivery, metadata delivery, and unlisten behavior are covered through native report sinks; raw C ABI transaction report callbacks plus Java `Connection.listen` and Clojure `listen`/`unlisten` wrappers cover host post-commit listeners for in-memory connections |
 | `serialize.cljc` | 5 | passing | `init-db` from datoms plus typed serializable and EDN-ish datom snapshot text roundtrips covered, including schema, retractions, refs, symbol/map/vector values, special floats, and next-tx recovery; DataScript's JVM/CLJS codec matrix is host/format work |
 | `storage.clj` | 5 | partial | snapshot-file, SQLite datom-row durable reopen/query paths, native wrapper-level append-on-transaction SQLite connection mode, SQLite tx metadata rows, storage-neutral C ABI durable connection handles backed by SQLite, and basic Python/Rust/Java/Clojure durable wrapper smokes use the neutral connect API; exact DataScript storage API and richer packaged host ergonomics remain |
 | `datafy.cljc` | 1 | host | Clojure-specific shape |

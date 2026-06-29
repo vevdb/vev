@@ -35,6 +35,56 @@ Planned Maven coordinate:
 dev.vevdb:vev-java
 ```
 
+The Java artifact is intended to be a one-dependency entry point for Java
+applications. It depends on the matching platform native artifact, so Java
+users should not also list a separate `vev-native-*` dependency in normal
+project setup.
+
+Basic usage:
+
+```java
+try (Vev vev = Vev.load();
+     Vev.Connection conn = vev.createConn()) {
+    conn.transact("[{:db/id 1 :user/name \"Ada\"}]");
+    try (Vev.DB db = conn.db()) {
+        System.out.println(vev.queryRows(Map.of(
+            "query", "[:find ?name :where [?e :user/name ?name]]",
+            "args", List.of(db))));
+    }
+}
+```
+
+Transaction functions use a host registry plus a Datomic-style installed ident
+in the DB:
+
+```java
+try (Vev.TxFunctionRegistry fns = vev.txFunctionRegistry()) {
+    fns.register(":user/set-age", (db, args) ->
+        "[[:db/add " + args.get(0) + " :user/age " + args.get(1) + "]]");
+    conn.transact("[[:db/add 100 :db/ident :user/set-age]]");
+    try (Vev.TxReport report =
+             conn.transactReport("[[:user/set-age 1 42]]", fns)) {
+        System.out.println(report.value());
+    }
+}
+```
+
+The Java callback returns EDN tx-data text. Higher-level clients such as
+Clojure can wrap this and let callbacks return ordinary host data.
+
+Successful transaction reports can be observed with a listener registration:
+
+```java
+try (Vev.TxReportListenerRegistration listener =
+         conn.listen("audit", report -> System.out.println(report))) {
+    conn.transact("[{:db/id 2 :user/name \"Grace\"}]");
+}
+```
+
+The callback receives the decoded report value while the native report handle is
+still valid. Keep data you need by copying it into ordinary Java structures
+inside the callback.
+
 The first published package should still support explicit native library paths.
 Bundled platform native artifacts should be published as separate
 `dev.vevdb:vev-native-<platform>` packages or merged into the runtime classpath
@@ -63,5 +113,11 @@ It also writes a local Maven-style repository under `build/m2`. Those artifacts
 are not published yet, but they verify the intended Maven split and
 bundled-native loading path.
 
-Run `scripts/smoke_jvm_package.sh` to test the local Maven repo from a
-temporary deps.edn project with only `dev.vevdb/vev-clj` as the Vev dependency.
+Run `scripts/smoke_jvm_package.sh` to test the local Maven repo from temporary
+projects with only `dev.vevdb:vev-java` for the Java path and only
+`dev.vevdb/vev-clj` for the Clojure path.
+
+Durable stores are opened through Vev APIs with paths such as `app.vev`. The
+current native library depends on the platform SQLite runtime. Java and Clojure
+applications do not configure SQLite directly; they load Vev and call
+`connect`.

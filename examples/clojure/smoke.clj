@@ -14,7 +14,7 @@
     (throw (ex-info "usage: smoke <path-to-native-library>" {})))
   (let [lib-path (first args)]
     (with-open [closed-conn (vev/create-conn lib-path)]
-      (vev/transact! closed-conn [{:db/id 10 :user/name "Closed"}])
+      (vev/transact closed-conn [{:db/id 10 :user/name "Closed"}])
       (let [closed-db (vev/db closed-conn)]
         (.close closed-conn)
         (when-not (= #{["Closed"]}
@@ -23,12 +23,24 @@
           (throw (ex-info "DB value did not survive connection close" {})))))
 
     (with-open [conn (vev/create-conn lib-path)]
-      (let [tx (vev/transact! conn
+      (let [tx (vev/transact conn
                               [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
                                {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}])]
         (println "tx:" tx)
         (when-not (and (:ok tx) (integer? (:tx tx)) (map? (:tempids tx)))
           (throw (ex-info "unexpected transaction report" {:report tx}))))
+
+      (let [seen (atom [])]
+        (with-open [_listener (vev/listen conn :smoke-listener
+                                          #(swap! seen conj (:tx-data %)))]
+          (vev/transact conn [[:db/add 1 :user/listener "heard"]])
+          (when-not (= 1 (count @seen))
+            (throw (ex-info "listener did not observe successful transaction"
+                            {:seen @seen}))))
+        (vev/transact conn [[:db/add 1 :user/listener "after-unlisten"]])
+        (when-not (= 1 (count @seen))
+          (throw (ex-info "listener observed transaction after close"
+                          {:seen @seen}))))
 
       (let [db (vev/db conn)
             names (vev/q
@@ -65,11 +77,11 @@
         (when-not (= #{{:name "Ada" :email "ada@example.com"}} keyed)
           (throw (ex-info "unexpected query map keyed output" {:rows keyed}))))
 
-      (vev/transact! conn
+      (vev/transact conn
                      [[:db/add 90 :db/ident :user/email]
                       [:db/add 90 :db/unique :db.unique/identity]])
 
-      (vev/transact! conn
+      (vev/transact conn
                      [[:db/add 91 :db/ident :user/status]
                       [:db/add 91 :db/unique :db.unique/identity]
                       [:db/add 92 :db/ident :user/code]
@@ -79,10 +91,22 @@
                       [:db/add 1 :user/code 1001]
                       [:db/add 2 :user/code 1002]])
 
-      (vev/transact! conn
+      (vev/transact conn
                      [[:db/add 100 :db/ident :user/friend]
                       [:db/add 100 :db/valueType :db.type/ref]
                       [:db/add 1 :user/friend 2]])
+
+      (with-open [fns (vev/tx-fns conn {:user/set-name
+                                        (fn [db e name]
+                                          [[:db/add e :user/nickname name]])})]
+        (vev/transact conn [[:db/add 101 :db/ident :user/set-name]])
+        (let [tx-fn-report (vev/transact conn [[:user/set-name 6 "Edsger"]] fns)]
+          (when-not (:ok tx-fn-report)
+            (throw (ex-info "transaction function failed" {:report tx-fn-report})))
+          (when-not (= #{["Edsger"]}
+                       (vev/q '[:find ?name :where [6 :user/nickname ?name]]
+                              (vev/db conn)))
+            (throw (ex-info "transaction function did not apply tx-data" {})))))
 
       (with-open [email-query (vev/prepare conn
                                            '[:find ?e ?email
@@ -174,7 +198,7 @@
                                 :where [?e :user/name "Barbara"]]))
             (throw (ex-info "db-with did not produce expected DB" {})))
           (with-open [derived-conn (vev/conn-from-db immutable-next)]
-            (vev/transact! derived-conn [{:db/id 5 :user/name "Dorothy"}])
+            (vev/transact derived-conn [{:db/id 5 :user/name "Dorothy"}])
             (when-not (and (= #{[4]}
                               (vev/q (vev/db derived-conn)
                                      '[:find ?e
@@ -189,7 +213,7 @@
                                             '[:find ?e ?email
                                               :where [?e :user/email ?email]])
                     snapshot (vev/db conn)]
-          (vev/transact! conn
+          (vev/transact conn
                          [{:db/id 3 :user/name "Alan" :user/email "alan@example.com"}])
           (let [current (vev/db conn)
                 current-rows (count (vev/q current all-emails))
@@ -206,7 +230,7 @@
         (with-open [durable (vev/connect lib-path sqlite-path)]
           (when (not= {:backend :sqlite :path sqlite-path :basis-t 0 :tx-count 0 :tx-ids []} (vev/connection-info durable))
             (throw (ex-info "unexpected durable connection metadata" {})))
-          (let [tx (vev/transact! durable
+          (let [tx (vev/transact durable
                                   [{:db/id 1
                                     :user/name "Durable Ada"
                                     :user/email "durable-ada@example.com"}])]

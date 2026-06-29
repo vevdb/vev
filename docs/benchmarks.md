@@ -382,7 +382,7 @@ engine=clojure-vev workload=musicbrainz-smoke-country-names ok=true rows=257 fin
 The important current signal is the boundary: query execution through the public
 Clojure API works and produces stable fingerprints, but setup through wrapper
 EDN transaction text is not a realistic full-size MusicBrainz benchmark path. A
-5k staged export loaded through `vev/transact-text!` took about 140s locally,
+5k staged export loaded through `vev/transact-text` took about 140s locally,
 while native Vev imports the full 763k-datom chunked subset in about 16.5s. The
 full host benchmark should therefore open a prebuilt durable Vev database, or
 use a native bulk-load step, before timing Clojure query calls.

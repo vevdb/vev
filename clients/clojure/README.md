@@ -9,9 +9,9 @@ text frontend used by C, Python, Rust, and Java callers.
 
 ## Intended Published Usage
 
-Normal application setup should be one dependency. The package should pull in
-the Java wrapper and the right platform native artifact, then load the native
-library itself:
+Normal application setup should be one dependency. The Clojure package should
+pull in the Java wrapper, and the Java wrapper should pull in the right
+platform native artifact, then load the native library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
@@ -24,7 +24,7 @@ Application code should not pass Java paths or native library paths around:
 
 (def conn (d/create-conn))
 
-(d/transact! conn
+(d/transact conn
   [{:db/id 1
     :user/name "Ada"
     :user/email "ada@example.com"}])
@@ -37,12 +37,24 @@ Application code should not pass Java paths or native library paths around:
   db)
 ```
 
+Transaction listeners are report callbacks on successful commits:
+
+```clojure
+(def listener
+  (d/listen conn :audit
+    (fn [report]
+      (println (:tx-data report)))))
+
+(d/transact conn [{:db/id 2 :user/name "Grace"}])
+(d/unlisten conn listener)
+```
+
 Durable usage should be similarly direct:
 
 ```clojure
-(def conn (d/connect "app.vev.sqlite"))
+(def conn (d/connect "app.vev"))
 
-(d/transact! conn [{:db/id 1 :user/name "Ada"}])
+(d/transact conn [{:db/id 1 :user/name "Ada"}])
 (d/q '[:find ?name :where [?e :user/name ?name]] (d/db conn))
 ```
 
@@ -51,13 +63,21 @@ local development still has extra setup. The Java loader already supports the
 future packaged shape by checking for bundled native resources after explicit
 local paths.
 
+The current durable backend uses SQLite internally, and the native Vev library
+depends on the platform SQLite runtime. Clojure code does not configure SQLite;
+it opens a Vev store with `d/connect`.
+
 ## Local Development
 
-Current local development usage is path-based:
+Current local source development is path-based:
 
 ```clojure
 {:deps {vev/vev-clj {:local/root "clients/clojure"}}}
 ```
+
+That path only adds the Clojure source. It is useful when editing this repo, but
+it is not the intended application setup unless the root `:clj-dev` alias or
+equivalent Java/native classpath is also present.
 
 Build the native library and Java classes first:
 
@@ -80,8 +100,8 @@ That local repository can be consumed from a separate test project:
                             "--enable-native-access=ALL-UNNAMED"]}}}
 ```
 
-`scripts/smoke_jvm_package.sh` builds the local artifacts and verifies this
-shape from a temporary deps.edn project.
+`scripts/smoke_jvm_package.sh` builds the local artifacts and verifies the
+one-dependency Java and Clojure shapes from temporary deps.edn projects.
 
 When developing from the repo root, the root `:clj-dev` alias adds the locally
 built Java classes and the required JVM flags:
@@ -175,6 +195,23 @@ Pull follows the same DB-value shape:
 (d/pull-many db [:user/name] [1 2])
 ```
 
+Transaction functions follow Datomic's installed-ident model: the DB contains
+the function ident, while the host registry supplies the executable callback for
+this process.
+
+```clojure
+(with-open [fns (d/tx-fns conn
+                  {:user/set-name
+                   (fn [db e name]
+                     [[:db/add e :user/name name]])})]
+  (d/transact conn [[:db/add 100 :db/ident :user/set-name]])
+  (d/transact conn [[:user/set-name 1 "Ada"]] fns))
+```
+
+The callback receives `(db & args)` and returns ordinary tx-data. The DB value
+is valid for the callback call; keep durable application state outside the
+callback if it needs to outlive the transaction.
+
 Immutable DB values support Datomic/DataScript-style `with` operations:
 
 ```clojure
@@ -190,20 +227,19 @@ A mutable connection can also be initialized from an immutable DB snapshot:
 ```clojure
 (def next-conn (d/conn-from-db next-db))
 
-(d/transact! next-conn [{:db/id 4 :user/name "Dorothy"}])
+(d/transact next-conn [{:db/id 4 :user/name "Dorothy"}])
 (d/q (d/db next-conn) '[:find ?name :where [?e :user/name ?name]])
 ```
 
-Durable connections use the same transaction and DB-value query shape. The
-current backend is SQLite:
+Durable connections use the same transaction and DB-value query shape:
 
 ```clojure
-(def durable (d/connect "app.vev.sqlite"))
+(def durable (d/connect "app.vev"))
 
 (d/connection-info durable)
-;; => {:backend :sqlite, :path "app.vev.sqlite", :basis-t 0, :tx-count 0, :tx-ids []}
+;; => {:backend :sqlite, :path "app.vev", :basis-t 0, :tx-count 0, :tx-ids []}
 
-(d/transact! durable [{:db/id 1 :user/name "Ada"}])
+(d/transact durable [{:db/id 1 :user/name "Ada"}])
 (d/q (d/db durable) '[:find ?name :where [?e :user/name ?name]])
 ```
 
@@ -214,8 +250,8 @@ explicitly when a handle is no longer needed.
 
 The current package is deliberately thin:
 
-- `transact!` and `with` return transaction report maps from typed native report handles
-- `transact-text!` and `with-text` return raw EDN report strings
+- `transact` and `with` return transaction report maps from typed native report handles
+- `transact-text` and `with-text` return raw EDN report strings
 - `q` returns a set of row vectors
 - `rows` returns an ordered vector of row vectors
 - entity ids are converted to integers

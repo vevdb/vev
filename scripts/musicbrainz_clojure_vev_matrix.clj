@@ -537,7 +537,7 @@
       (= selected (str/replace name #"^musicbrainz-smoke-" ""))))
 
 (defn load-tx! [conn path label]
-  (let [[report elapsed] (elapsed-us #(vev/transact-text! conn (slurp path)))]
+  (let [[report elapsed] (elapsed-us #(vev/transact-text conn (slurp path)))]
     (when (str/includes? report ":ok false")
       (throw (ex-info "Vev tx failed" {:path path :report report})))
     (println

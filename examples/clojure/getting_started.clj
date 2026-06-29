@@ -7,7 +7,7 @@
 (comment
   (def conn (d/create-conn))
 
-  (d/transact! conn
+  (d/transact conn
                [[:db/add 100 :db/ident :user/friend]
                 [:db/add 100 :db/valueType :db.type/ref]
                 {:db/id 1
@@ -35,16 +35,23 @@
        db
        "ada@example.com")
 
+  (def listener
+    (d/listen conn :audit #(println (:tx-data %))))
+
+  (d/transact conn [{:db/id 3 :user/name "Barbara"}])
+
+  (d/unlisten conn listener)
+
   (def next-db
-    (d/db-with db [{:db/id 3 :user/name "Barbara"}]))
+    (d/db-with db [{:db/id 4 :user/name "Katherine"}]))
 
   (d/q '[:find ?name
          :where [?e :user/name ?name]]
        next-db)
 
-  (def durable (d/connect "app.vev.sqlite"))
+  (def durable (d/connect "app.vev"))
 
-  (d/transact! durable [{:db/id 1 :user/name "Durable Ada"}])
+  (d/transact durable [{:db/id 1 :user/name "Durable Ada"}])
 
   (d/q '[:find ?name
          :where [?e :user/name ?name]]

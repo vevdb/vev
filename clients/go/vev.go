@@ -4,8 +4,10 @@
 package vev
 
 /*
-#cgo CFLAGS: -I../../include
-#cgo LDFLAGS: -L../../build/lib -lvev
+#cgo CFLAGS: -I${SRCDIR}/../../include
+#cgo darwin LDFLAGS: -L${SRCDIR}/../../build/lib -lvev -Wl,-rpath,${SRCDIR}/../../build/lib
+#cgo linux LDFLAGS: -L${SRCDIR}/../../build/lib -lvev -Wl,-rpath,${SRCDIR}/../../build/lib
+#cgo windows LDFLAGS: -L${SRCDIR}/../../build/lib -lvev
 #include "vev.h"
 #include <stdlib.h>
 */
@@ -162,6 +164,15 @@ func (db *DB) QueryPrepared(query *PreparedQuery, inputs string) string {
 	return ownedString(C.vev_query_db_prepared_with_inputs(db.raw, query.raw, inputsText))
 }
 
+func (db *DB) QueryText(queryText string, inputs string) (string, error) {
+	query, err := Prepare(queryText)
+	if err != nil {
+		return "", err
+	}
+	defer query.Close()
+	return db.QueryPrepared(query, inputs), nil
+}
+
 func (db *DB) QueryRows(query *PreparedQuery, inputs string) (*ResultSet, error) {
 	inputsText := cstring(inputs)
 	defer C.free(unsafe.Pointer(inputsText))
@@ -240,6 +251,18 @@ func (db *DB) Pull(pattern string, entity uint64) (Value, error) {
 	}
 	defer handle.Close()
 	return handle.Value(), nil
+}
+
+func (db *DB) PullEDN(pattern string, entity uint64) (string, error) {
+	patternText := cstring(pattern)
+	defer C.free(unsafe.Pointer(patternText))
+	raw := C.vev_pull_edn(db.raw, patternText, C.ulonglong(entity))
+	handle, err := newValueHandle(raw)
+	if err != nil {
+		return "", err
+	}
+	defer handle.Close()
+	return handle.EDN(), nil
 }
 
 func (db *DB) PullLookupRefString(pattern string, attr string, value string) (Value, error) {
@@ -577,6 +600,10 @@ func (h *ValueHandle) Close() {
 
 func (h *ValueHandle) Value() Value {
 	return valueFromC(C.vev_value_handle_value(h.raw))
+}
+
+func (h *ValueHandle) EDN() string {
+	return ownedString(C.vev_value_handle_edn(h.raw))
 }
 
 type ResultSet struct {

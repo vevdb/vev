@@ -32,3 +32,7 @@ A fuller Odin package can wrap the dynamic ABI table with Odin-native `Conn`,
 `DB`, prepared-query, and result types. Directly depending on generated Odin
 should remain a development/debug escape hatch rather than the documented
 integration path.
+
+Durable stores are opened through Vev APIs with paths such as `app.vev`. The
+current native library depends on the platform SQLite runtime; Odin application
+code should not configure SQLite directly.

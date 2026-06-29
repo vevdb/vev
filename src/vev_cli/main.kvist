@@ -1,0 +1,151 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package main)
+
+(import cli "kvist:cli")
+(import fmt "core:fmt")
+(import os "core:os")
+(import strconv "core:strconv")
+(import strings "core:strings")
+(import vev "../vev")
+
+(def usage
+  "usage:
+  vev info <uri>
+  vev transact <uri> <tx-edn | @file>
+  vev query <uri> <query-edn | @file> [inputs-edn]
+  vev pull <uri> <pattern-edn | @file> <entity-id>
+
+examples:
+  vev transact app.vev '[{:db/id 1 :user/name \"Ada\"}]'
+  vev query app.vev '[:find ?name :where [?e :user/name ?name]]'
+  vev pull app.vev '[:user/name]' 1
+")
+
+(defn delete-store! [store: vev.Store-Conn]
+  (vev.close-store store))
+
+(defn read-text-arg [arg: string] -> [text: string, ok: bool, error: string]
+  (if (strings.has_prefix arg "@")
+    (let [path (slice arg 1)
+          [data read-err] (os.read_entire_file path context.allocator)]
+      (when (!= read-err nil)
+        (return "" false (fmt.tprintf "failed to read %s" path)))
+      (return (string data) true ""))
+    (return arg true "")))
+
+(defn print-value [value: vev.Value]
+  (let [text (vev.value-serializable-text value)]
+    (defer (delete text))
+    (fmt.println text)))
+
+(defn command-info [uri: string] -> int
+  (let [[store ok error] (vev.open-store uri)]
+    (when (not ok)
+      (cli.eprintln error)
+      (delete-store! store)
+      (return 1))
+    (defer (delete-store! store))
+    (let [[tx-count tx-ok tx-error] (vev.store-tx-count (addr store))]
+      (when (not tx-ok)
+        (cli.eprintln tx-error)
+        (return 1))
+      (fmt.print "{:basis-t ")
+      (fmt.print (- store.conn.next-tx 1))
+      (fmt.print " :tx-count ")
+      (fmt.print tx-count)
+      (fmt.println "}")
+      0)))
+
+(defn command-transact [uri: string, tx-arg: string] -> int
+  (let [[tx-text text-ok text-error] (read-text-arg tx-arg)]
+    (when (not text-ok)
+      (cli.eprintln text-error)
+      (return 1))
+    (defer (when (strings.has_prefix tx-arg "@") (delete tx-text)))
+    (let [[store ok error] (vev.open-store uri)]
+      (when (not ok)
+        (cli.eprintln error)
+        (delete-store! store)
+        (return 1))
+      (defer (delete-store! store))
+      (let [report (vev.transact-store-text (addr store) tx-text)
+            value (vev.tx-report-value report)]
+        (if report.ok
+          (do
+            (print-value value)
+            (vev.delete-live-tx-report-shallow report)
+            0)
+          (do
+            (print-value value)
+            (vev.delete-tx-report-shallow report)
+            1))))))
+
+(defn command-query [uri: string, query-arg: string, inputs-text: string] -> int
+  (let [[query-text text-ok text-error] (read-text-arg query-arg)]
+    (when (not text-ok)
+      (cli.eprintln text-error)
+      (return 1))
+    (defer (when (strings.has_prefix query-arg "@") (delete query-text)))
+    (let [[inputs inputs-ok inputs-error] (read-text-arg inputs-text)]
+      (when (not inputs-ok)
+        (cli.eprintln inputs-error)
+        (return 1))
+      (defer (when (strings.has_prefix inputs-text "@") (delete inputs)))
+      (let [[store ok error] (vev.open-store uri)]
+        (when (not ok)
+          (cli.eprintln error)
+          (delete-store! store)
+          (return 1))
+        (defer (delete-store! store))
+        (let [value (vev.q-text-value-with-input-text store.conn.db query-text inputs)]
+          (print-value value)
+          0)))))
+
+(defn command-pull [uri: string, pattern-arg: string, entity-text: string] -> int
+  (let [[entity parsed] (strconv.parse_int entity-text)]
+    (when (not parsed)
+      (cli.eprintf "invalid entity id: %s\n" entity-text)
+      (return 1))
+    (let [[pattern-text text-ok text-error] (read-text-arg pattern-arg)]
+      (when (not text-ok)
+        (cli.eprintln text-error)
+        (return 1))
+      (defer (when (strings.has_prefix pattern-arg "@") (delete pattern-text)))
+      (let [[store ok error] (vev.open-store uri)]
+        (when (not ok)
+          (cli.eprintln error)
+          (delete-store! store)
+          (return 1))
+        (defer (delete-store! store))
+        (let [value (vev.pull-text-value store.conn.db pattern-text (u64 entity))]
+          (print-value value)
+          0)))))
+
+(defn usage-error [] -> int
+  (cli.eprintln usage)
+  1)
+
+(defn main []
+  (when (or (< (len os.args) 2)
+            (= os.args[1] "-h")
+            (= os.args[1] "--help"))
+    (fmt.print usage)
+    (return))
+  (let [command os.args[1]
+        code (cond
+               (and (= command "info") (= (len os.args) 3))
+                 (command-info os.args[2])
+               (and (= command "transact") (= (len os.args) 4))
+                 (command-transact os.args[2] os.args[3])
+               (and (= command "query") (= (len os.args) 4))
+                 (command-query os.args[2] os.args[3] "[]")
+               (and (= command "query") (= (len os.args) 5))
+                 (command-query os.args[2] os.args[3] os.args[4])
+               (and (= command "pull") (= (len os.args) 5))
+                 (command-pull os.args[2] os.args[3] os.args[4])
+               :else
+                 (usage-error))]
+    (when (!= code 0)
+      (cli.exit! code))))

@@ -150,6 +150,10 @@ function openMemory() {
   return new Conn();
 }
 
+function createConn() {
+  return new Conn();
+}
+
 function connect(uri) {
   return new DurableConn(String(uri));
 }
@@ -160,5 +164,6 @@ module.exports = {
   DB,
   PreparedQuery,
   connect,
+  createConn,
   openMemory,
 };

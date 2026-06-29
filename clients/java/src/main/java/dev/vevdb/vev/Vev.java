@@ -10,6 +10,8 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -32,6 +34,16 @@ public final class Vev {
     public static final int COLUMN_INT = 3;
     public static final int COLUMN_BOOL = 5;
 
+    @FunctionalInterface
+    public interface TxFunction {
+        String apply(DB db, List<Object> args) throws Throwable;
+    }
+
+    @FunctionalInterface
+    public interface TxReportListener {
+        void accept(Object report) throws Throwable;
+    }
+
     private final Arena arena;
     private final Cleaner.Cleanable cleanable;
     private final SymbolLookup symbols;
@@ -40,6 +52,8 @@ public final class Vev {
     private final MethodHandle connClose;
     private final MethodHandle connDb;
     private final MethodHandle connFromDb;
+    private final MethodHandle connListenTxReport;
+    private final MethodHandle connUnlistenTxReport;
     private final MethodHandle connectionOpen;
     private final MethodHandle connectionOk;
     private final MethodHandle connectionError;
@@ -79,6 +93,12 @@ public final class Vev {
     private final MethodHandle txAddBool;
     private final MethodHandle txCommitReport;
     private final MethodHandle txDbWith;
+    private final MethodHandle txFnRegistryCreate;
+    private final MethodHandle txFnRegistryFree;
+    private final MethodHandle txFnRegistryRegisterEdn;
+    private final MethodHandle transactEdnReportWithTxFns;
+    private final MethodHandle withEdnReportWithTxFns;
+    private final MethodHandle txFnArg;
     private final MethodHandle queryEdnWithInputs;
     private final MethodHandle prepareQueryEdn;
     private final MethodHandle preparedQueryEdn;
@@ -274,6 +294,8 @@ public final class Vev {
         this.connClose = downcall("vev_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connDb = downcall("vev_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connFromDb = downcall("vev_conn_from_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connListenTxReport = downcall("vev_conn_listen_tx_report", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connUnlistenTxReport = downcall("vev_conn_unlisten_tx_report", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionOpen = downcall("vev_connect", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionOk = downcall("vev_connection_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
         this.connectionError = downcall("vev_connection_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -313,6 +335,12 @@ public final class Vev {
         this.txAddBool = downcall("vev_tx_add_bool", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_BOOLEAN));
         this.txCommitReport = downcall("vev_tx_commit_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.txDbWith = downcall("vev_tx_db_with", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txFnRegistryCreate = downcall("vev_tx_fn_registry_create", FunctionDescriptor.of(ValueLayout.ADDRESS));
+        this.txFnRegistryFree = downcall("vev_tx_fn_registry_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.txFnRegistryRegisterEdn = downcall("vev_tx_fn_registry_register_edn", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.transactEdnReportWithTxFns = downcall("vev_transact_edn_report_with_tx_fns", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.withEdnReportWithTxFns = downcall("vev_with_edn_report_with_tx_fns", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txFnArg = downcall("vev_tx_fn_arg", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.prepareQueryEdn = downcall("vev_prepare_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryEdn = downcall("vev_prepared_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -556,6 +584,12 @@ public final class Vev {
         return new TxBuilder(raw);
     }
 
+    public TxFunctionRegistry txFunctionRegistry() throws Throwable {
+        MemorySegment raw = (MemorySegment) txFnRegistryCreate.invoke();
+        if (isNull(raw)) throw new IllegalStateException("failed to create transaction function registry");
+        return new TxFunctionRegistry(raw);
+    }
+
     public void close() {
         cleanable.clean();
     }
@@ -639,6 +673,32 @@ public final class Vev {
         } catch (Throwable error) {
             throw new RuntimeException(error);
         }
+    }
+
+    private DB retainedDb(MemorySegment raw) throws Throwable {
+        MemorySegment retained = (MemorySegment) dbRetain.invoke(raw);
+        if (isNull(retained)) throw new IllegalStateException("failed to retain DB snapshot");
+        return new DB(retained);
+    }
+
+    private List<Object> txFnArgs(int argc, MemorySegment args) throws Throwable {
+        List<Object> out = new ArrayList<>(Math.max(0, argc));
+        for (int index = 0; index < argc; index++) {
+            out.add(valueToJava((MemorySegment) txFnArg.invoke(args, index)));
+        }
+        return out;
+    }
+
+    private MemorySegment txFnCallback(TxFunctionRegistry registry, TxFunction function, MemorySegment user, MemorySegment db, int argc, MemorySegment args) throws Throwable {
+        try (DB callbackDb = retainedDb(db)) {
+            String result = function.apply(callbackDb, txFnArgs(argc, args));
+            if (result == null) return MemorySegment.NULL;
+            return registry.arena.allocateUtf8String(result);
+        }
+    }
+
+    private void txReportListenerCallback(TxReportListener listener, MemorySegment user, MemorySegment report) throws Throwable {
+        listener.accept(valueToJava((MemorySegment) txReportValue.invoke(report)));
     }
 
     private static boolean isNull(MemorySegment segment) {
@@ -851,6 +911,96 @@ public final class Vev {
         }
     }
 
+    public final class TxFunctionRegistry implements AutoCloseable {
+        private final Arena arena;
+        private final List<TxFunction> functions;
+        private MemorySegment raw;
+
+        private TxFunctionRegistry(MemorySegment raw) {
+            this.raw = raw;
+            this.arena = Arena.ofShared();
+            this.functions = new ArrayList<>();
+        }
+
+        public TxFunctionRegistry register(String ident, TxFunction function) throws Throwable {
+            requireOpen();
+            if (ident == null || ident.isBlank()) throw new IllegalArgumentException("transaction function ident is required");
+            if (function == null) throw new IllegalArgumentException("transaction function callback is required");
+            MethodHandle callback = MethodHandles.lookup()
+                .findVirtual(
+                    Vev.class,
+                    "txFnCallback",
+                    MethodType.methodType(
+                        MemorySegment.class,
+                        TxFunctionRegistry.class,
+                        TxFunction.class,
+                        MemorySegment.class,
+                        MemorySegment.class,
+                        int.class,
+                        MemorySegment.class))
+                .bindTo(Vev.this)
+                .bindTo(this)
+                .bindTo(function);
+            MemorySegment stub = LINKER.upcallStub(
+                callback,
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS),
+                arena);
+            boolean ok = (boolean) txFnRegistryRegisterEdn.invoke(
+                raw,
+                arena.allocateUtf8String(ident),
+                stub,
+                MemorySegment.NULL);
+            if (!ok) throw new IllegalStateException("failed to register transaction function: " + ident);
+            functions.add(function);
+            return this;
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("transaction function registry is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(txFnRegistryFree, raw);
+                raw = MemorySegment.NULL;
+            }
+            arena.close();
+        }
+    }
+
+    public final class TxReportListenerRegistration implements AutoCloseable {
+        private final Arena arena;
+        private final Connection conn;
+        private final String name;
+        private final TxReportListener listener;
+        private boolean open;
+
+        private TxReportListenerRegistration(Arena arena, Connection conn, String name, TxReportListener listener) {
+            this.arena = arena;
+            this.conn = conn;
+            this.name = name;
+            this.listener = listener;
+            this.open = true;
+        }
+
+        @Override
+        public void close() {
+            if (open) {
+                try (Arena local = Arena.ofConfined()) {
+                    if (!isNull(conn.raw)) {
+                        connUnlistenTxReport.invoke(conn.raw, local.allocateUtf8String(name));
+                    }
+                } catch (Throwable error) {
+                    throw new RuntimeException(error);
+                } finally {
+                    open = false;
+                    arena.close();
+                }
+            }
+        }
+    }
+
     public final class Connection implements AutoCloseable {
         private MemorySegment raw;
 
@@ -870,9 +1020,53 @@ public final class Vev {
             }
         }
 
+        public TxReport transactReport(String tx, TxFunctionRegistry registry) throws Throwable {
+            registry.requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return new TxReport((MemorySegment) transactEdnReportWithTxFns.invoke(
+                    raw,
+                    local.allocateUtf8String(tx),
+                    registry.raw));
+            }
+        }
+
         public TxReport transactReport(TxBuilder tx) throws Throwable {
             tx.requireOpen();
             return new TxReport((MemorySegment) txCommitReport.invoke(raw, tx.raw));
+        }
+
+        public TxReportListenerRegistration listen(String name, TxReportListener listener) throws Throwable {
+            requireOpen();
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("listener name is required");
+            if (listener == null) throw new IllegalArgumentException("transaction listener callback is required");
+            Arena listenerArena = Arena.ofShared();
+            MethodHandle callback = MethodHandles.lookup()
+                .findVirtual(
+                    Vev.class,
+                    "txReportListenerCallback",
+                    MethodType.methodType(void.class, TxReportListener.class, MemorySegment.class, MemorySegment.class))
+                .bindTo(Vev.this)
+                .bindTo(listener);
+            MemorySegment stub = LINKER.upcallStub(
+                callback,
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+                listenerArena);
+            boolean ok;
+            try (Arena local = Arena.ofConfined()) {
+                ok = (boolean) connListenTxReport.invoke(raw, local.allocateUtf8String(name), stub, MemorySegment.NULL);
+            }
+            if (!ok) {
+                listenerArena.close();
+                throw new IllegalStateException("failed to register transaction listener: " + name);
+            }
+            return new TxReportListenerRegistration(listenerArena, this, name, listener);
+        }
+
+        public boolean unlisten(String name) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return (boolean) connUnlistenTxReport.invoke(raw, local.allocateUtf8String(name));
+            }
         }
 
         public String queryText(String query, String inputs) throws Throwable {
@@ -902,9 +1096,14 @@ public final class Vev {
         }
 
         public DB db() throws Throwable {
+            requireOpen();
             MemorySegment db = (MemorySegment) connDb.invoke(raw);
             if (isNull(db)) throw new IllegalStateException("failed to retain DB snapshot");
             return new DB(db);
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("connection is closed");
         }
 
         @Override
@@ -1340,6 +1539,17 @@ public final class Vev {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 return new TxReport((MemorySegment) withEdnReport.invoke(handle.raw, local.allocateUtf8String(tx)));
+            }
+        }
+
+        public TxReport withReport(String tx, TxFunctionRegistry registry) throws Throwable {
+            requireOpen();
+            registry.requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return new TxReport((MemorySegment) withEdnReportWithTxFns.invoke(
+                    handle.raw,
+                    local.allocateUtf8String(tx),
+                    registry.raw));
             }
         }
 
