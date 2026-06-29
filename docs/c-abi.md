@@ -471,8 +471,9 @@ Rust:
   bindings
 - typed results convert entity ids, scalar values, and pull maps into Java
   values
-- `DB.queryColumns` exposes a first generic Java column facade over the current
-  optimized entity, entity/int, and entity/string/int result shapes
+- `DB.queryColumns` exposes a first generic Java column facade for prepared
+  queries and bound statements on immutable DB snapshots, over the current
+  optimized entity, string, entity/int, and entity/string/int result shapes
 - immutable DB snapshots can be queried after the connection has advanced
 - `Vev.query(Map.of("query", ..., "args", List.of(db, ...)))` provides a
   Datomic-shaped request-map convenience for host examples
