@@ -366,8 +366,10 @@ storage primitive needed for lazy chunk-backed cursors. A read-only SQLite
 index cursor now wraps that page loader with cached-page `count`/`at` access;
 `DB-Index-View` now has resident-array and SQLite-cursor modes, and storage
 tests exercise the same view `count`/`at`/bound helpers over a persisted
-cursor. Normal query/reopen paths still construct resident views today, but the
-query-facing boundary can represent chunk-backed persisted cursors. Public
+cursor. SQLite datom rows now carry stable `log_index` values, append/full-save
+paths preserve those indexes, and storage tests fetch individual datoms by
+log index. Normal query/reopen paths still construct resident views today, but
+the query-facing boundary can represent chunk-backed persisted cursors. Public
 datom index APIs plus transaction, schema, pull, entity helper, and general
 `Clause-Index-Scan` paths now go through `DB-Index-View`. Optimized
 entity-star, threshold, self-join, two-attribute, entity-attribute, entity-int,

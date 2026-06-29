@@ -43,10 +43,11 @@ root/chunk tables, writes one row per datom through a SQLite transaction,
 reopens from disk, rebuilds the in-memory indexes from those rows, and then
 runs normal Vev queries. The older snapshot table remains as a compatibility
 fallback for databases created by the first SQLite snapshot slice. Vev now
-writes bounded logical-index chunks after successful SQLite transactions and
-explicit SQLite persists: small indexes use a single payload chunk, larger
-indexes use bounded leaf chunks plus a parent root chunk, and a root row records
-the visible chunk root for each logical index at the committed basis tx. Reopen
+writes stable `vev_datoms.log_index` values and bounded logical-index chunks
+after successful SQLite transactions and explicit SQLite persists: small
+indexes use a single payload chunk, larger indexes use bounded leaf chunks plus
+a parent root chunk, and a root row records the visible chunk root for each
+logical index at the committed basis tx. Reopen
 now loads the latest root metadata before datom rows, rebuilds from datom rows
 as the compatibility path, and validates persisted index entries back through
 root/chunk edges against those rebuilt indexes. Vev can now also load bounded
@@ -55,8 +56,10 @@ covering that page. A read-only SQLite index cursor wraps that page loader with
 cached-page `count`/`at` access over persisted logical index entries. The
 runtime `DB-Index-View` abstraction can now wrap either resident arrays or a
 SQLite cursor, and tests exercise view `count`/`at`/bound helpers over a
-persisted cursor. Chunk-backed DB snapshots and normal reopen/query access
-through those cursors are the next storage step.
+persisted cursor. SQLite can also fetch an individual datom by durable log
+index, which is needed for resolving persisted index entries without full
+datom-log materialization. Chunk-backed DB snapshots and normal reopen/query
+access through those cursors are the next storage step.
 
 There are now two write modes:
 

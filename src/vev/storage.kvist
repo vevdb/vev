@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS vev_tx_meta (
 );
 CREATE TABLE IF NOT EXISTS vev_datoms (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  log_index INTEGER NOT NULL DEFAULT -1,
   e INTEGER NOT NULL,
   a TEXT NOT NULL,
   value_text TEXT NOT NULL,
@@ -179,7 +180,24 @@ sqlite_open_initialized :: proc(path: string) -> (^SQLite3, bool, string) {
         _ = sqlite3_close(db)
         return nil, false, err
     }
+    log_index_ok, log_index_error := sqlite_ensure_datom_log_index_column(db)
+    if !log_index_ok {
+        _ = sqlite3_close(db)
+        return nil, false, log_index_error
+    }
     return db, true, \"\"
+}
+
+sqlite_ensure_datom_log_index_column :: proc(db: ^SQLite3) -> (bool, string) {
+    ok, err := sqlite_exec_ok(db, \"ALTER TABLE vev_datoms ADD COLUMN log_index INTEGER NOT NULL DEFAULT -1\")
+    if !ok && !strings.contains(err, \"duplicate column name\") {
+        return false, err
+    }
+    index_ok, index_error := sqlite_exec_ok(db, \"CREATE INDEX IF NOT EXISTS vev_datoms_log_index ON vev_datoms(log_index)\")
+    if !index_ok {
+        return false, index_error
+    }
+    return true, \"\"
 }
 
 sqlite_save_snapshot_text_raw :: proc(path: string, text: string) -> (bool, string) {
@@ -395,6 +413,28 @@ sqlite_tx_count_raw :: proc(handle: rawptr) -> (u64, bool, string) {
         return 0, false, sqlite_error_text(db, \"sqlite tx count failed\")
     }
     return u64(sqlite3_column_int64(stmt, 0)), true, \"\"
+}
+
+sqlite_datom_count_raw :: proc(handle: rawptr) -> (u64, bool, string) {
+    if handle == nil {
+        return 0, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"SELECT COUNT(*) FROM vev_datoms\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return 0, false, sqlite_error_text(db, \"sqlite prepare datom count failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if sqlite3_step(stmt) == SQLITE_ROW {
+        return u64(sqlite3_column_int64(stmt, 0)), true, \"\"
+    }
+    return 0, false, sqlite_error_text(db, \"sqlite datom count failed\")
 }
 
 sqlite_tx_ids_raw :: proc(handle: rawptr) -> ([dynamic]u64, bool, string) {
@@ -848,7 +888,7 @@ sqlite_insert_index_chunk_edge_raw :: proc(handle: rawptr, parent_chunk_id: u64,
     return true, \"\"
 }
 
-sqlite_insert_datom_raw :: proc(handle: rawptr, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
+sqlite_insert_datom_raw :: proc(handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
     if handle == nil {
         return false, \"sqlite handle was nil\"
     }
@@ -858,7 +898,7 @@ sqlite_insert_datom_raw :: proc(handle: rawptr, e: u64, a: string, value_text: s
         return false, tx_error
     }
     stmt: ^SQLite3_Stmt
-    sql := \"INSERT INTO vev_datoms (e, a, value_text, tx, added) VALUES (?, ?, ?, ?, ?)\"
+    sql := \"INSERT INTO vev_datoms (log_index, e, a, value_text, tx, added) VALUES (?, ?, ?, ?, ?, ?)\"
     sql_c, sql_c_ok := sqlite_cstring(sql)
     if !sql_c_ok {
         return false, \"failed to allocate sqlite SQL text\"
@@ -868,11 +908,12 @@ sqlite_insert_datom_raw :: proc(handle: rawptr, e: u64, a: string, value_text: s
         return false, sqlite_error_text(db, \"sqlite prepare datom failed\")
     }
     defer _ = sqlite3_finalize(stmt)
-    if sqlite3_bind_int64(stmt, 1, i64(e)) != SQLITE_OK ||
-       sqlite_bind_text_borrowed(stmt, 2, a) != SQLITE_OK ||
-       sqlite_bind_text_borrowed(stmt, 3, value_text) != SQLITE_OK ||
-       sqlite3_bind_int64(stmt, 4, i64(tx)) != SQLITE_OK ||
-       sqlite3_bind_int(stmt, 5, c.int(added ? 1 : 0)) != SQLITE_OK {
+    if sqlite3_bind_int64(stmt, 1, log_index) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 2, i64(e)) != SQLITE_OK ||
+       sqlite_bind_text_borrowed(stmt, 3, a) != SQLITE_OK ||
+       sqlite_bind_text_borrowed(stmt, 4, value_text) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 5, i64(tx)) != SQLITE_OK ||
+       sqlite3_bind_int(stmt, 6, c.int(added ? 1 : 0)) != SQLITE_OK {
         return false, sqlite_error_text(db, \"sqlite bind datom failed\")
     }
     if sqlite3_step(stmt) != SQLITE_DONE {
@@ -905,7 +946,7 @@ sqlite_prepare_insert_datom_raw :: proc(handle: rawptr) -> (rawptr, bool, string
     }
     db := (^SQLite3)(handle)
     stmt: ^SQLite3_Stmt
-    sql := \"INSERT INTO vev_datoms (e, a, value_text, tx, added) VALUES (?, ?, ?, ?, ?)\"
+    sql := \"INSERT INTO vev_datoms (log_index, e, a, value_text, tx, added) VALUES (?, ?, ?, ?, ?, ?)\"
     sql_c, sql_c_ok := sqlite_cstring(sql)
     if !sql_c_ok {
         return nil, false, \"failed to allocate sqlite SQL text\"
@@ -940,7 +981,7 @@ sqlite_step_tx_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, tx: u64) ->
     return true, \"\"
 }
 
-sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
+sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
     if handle == nil || stmt_handle == nil {
         return false, \"sqlite handle was nil\"
     }
@@ -948,11 +989,12 @@ sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, e: u64, 
     stmt := (^SQLite3_Stmt)(stmt_handle)
     _ = sqlite3_reset(stmt)
     _ = sqlite3_clear_bindings(stmt)
-    if sqlite3_bind_int64(stmt, 1, i64(e)) != SQLITE_OK ||
-       sqlite_bind_text_borrowed(stmt, 2, a) != SQLITE_OK ||
-       sqlite_bind_text_borrowed(stmt, 3, value_text) != SQLITE_OK ||
-       sqlite3_bind_int64(stmt, 4, i64(tx)) != SQLITE_OK ||
-       sqlite3_bind_int(stmt, 5, c.int(added ? 1 : 0)) != SQLITE_OK {
+    if sqlite3_bind_int64(stmt, 1, log_index) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 2, i64(e)) != SQLITE_OK ||
+       sqlite_bind_text_borrowed(stmt, 3, a) != SQLITE_OK ||
+       sqlite_bind_text_borrowed(stmt, 4, value_text) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 5, i64(tx)) != SQLITE_OK ||
+       sqlite3_bind_int(stmt, 6, c.int(added ? 1 : 0)) != SQLITE_OK {
         return false, sqlite_error_text(db, \"sqlite bind datom failed\")
     }
     if sqlite3_step(stmt) != SQLITE_DONE {
@@ -1029,7 +1071,7 @@ sqlite_load_datom_rows_text_raw :: proc(path: string) -> (string, bool, string) 
         return \"\", false, \"sqlite DB has no Vev datom rows\"
     }
     stmt: ^SQLite3_Stmt
-    sql := \"SELECT e, a, value_text, tx, added FROM vev_datoms ORDER BY id\"
+    sql := \"SELECT e, a, value_text, tx, added FROM vev_datoms ORDER BY log_index, id\"
     sql_c, sql_c_ok := sqlite_cstring(sql)
     if !sql_c_ok {
         return \"\", false, \"failed to allocate sqlite SQL text\"
@@ -1085,6 +1127,56 @@ sqlite_load_datom_rows_text_raw :: proc(path: string) -> (string, bool, string) 
     out := strings.concatenate(parts[:])
     delete(parts)
     return out, true, \"\"
+}
+
+sqlite_load_datom_by_log_index_text_raw :: proc(handle: rawptr, log_index: i64) -> (string, bool, string) {
+    if handle == nil {
+        return \"\", false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"SELECT e, a, value_text, tx, added FROM vev_datoms WHERE log_index = ? ORDER BY id LIMIT 1\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return \"\", false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return \"\", false, sqlite_error_text(db, \"sqlite prepare datom log-index read failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if sqlite3_bind_int64(stmt, 1, log_index) != SQLITE_OK {
+        return \"\", false, sqlite_error_text(db, \"sqlite bind datom log-index read failed\")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        a_raw := sqlite3_column_text(stmt, 1)
+        value_raw := sqlite3_column_text(stmt, 2)
+        if a_raw == nil || value_raw == nil {
+            return \"\", false, \"sqlite datom row had null text\"
+        }
+        a_text, a_err := strings.clone_from_cstring(a_raw)
+        if a_err != nil {
+            return \"\", false, \"failed to clone sqlite datom attr\"
+        }
+        defer delete(a_text)
+        value_text, value_err := strings.clone_from_cstring(value_raw)
+        if value_err != nil {
+            return \"\", false, \"failed to clone sqlite datom value\"
+        }
+        defer delete(value_text)
+        out := fmt.tprintf(\"[%d %s %s %d %v]\",
+            sqlite3_column_int64(stmt, 0),
+            vev__attr_serializable_text(a_text),
+            value_text,
+            sqlite3_column_int64(stmt, 3),
+            sqlite3_column_int(stmt, 4) != 0)
+        return out, true, \"\"
+    }
+    if rc == SQLITE_DONE {
+        return \"\", false, \"sqlite datom log-index not found\"
+    }
+    return \"\", false, sqlite_error_text(db, \"sqlite datom log-index read failed\")
 }
 
 sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string) {
@@ -1343,9 +1435,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (let [[handle open-ok open-error] (sqlite-open-replace-datoms-raw path)]
     (when (not open-ok)
       (return false open-error))
-    (for [datom db.datoms]
+    (for [datom index db.datoms]
       (let [value-text (value-serializable-text datom.v)
-            [insert-ok insert-error] (sqlite-insert-datom-raw handle datom.e datom.a value-text datom.tx datom.added)]
+            [insert-ok insert-error] (sqlite-insert-datom-raw handle (i64 index) datom.e datom.a value-text datom.tx datom.added)]
         (delete value-text)
         (when (not insert-ok)
           (sqlite-rollback-close-raw handle)
@@ -1439,13 +1531,17 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (let [[handle open-ok open-error] (sqlite-open-append-datoms-raw path)]
     (when (not open-ok)
       (return false open-error))
-    (for [datom datoms]
-      (let [value-text (value-serializable-text datom.v)
-            [insert-ok insert-error] (sqlite-insert-datom-raw handle datom.e datom.a value-text datom.tx datom.added)]
-        (delete value-text)
-        (when (not insert-ok)
-          (sqlite-rollback-close-raw handle)
-          (return false insert-error))))
+    (let [[base-count count-ok count-error] (sqlite-datom-count-raw handle)]
+      (when (not count-ok)
+        (sqlite-rollback-close-raw handle)
+        (return false count-error))
+      (for [datom index datoms]
+        (let [value-text (value-serializable-text datom.v)
+              [insert-ok insert-error] (sqlite-insert-datom-raw handle (i64 (+ (int base-count) index)) datom.e datom.a value-text datom.tx datom.added)]
+          (delete value-text)
+          (when (not insert-ok)
+            (sqlite-rollback-close-raw handle)
+            (return false insert-error)))))
     (sqlite-commit-close-raw handle)))
 
 (defn append-tx-report-sqlite-handle [handle: rawptr, report: Tx-Report] -> [ok: bool, error: string]
@@ -1465,14 +1561,15 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (when (not datom-stmt-ok)
         (sqlite-rollback-raw handle)
         (return false datom-stmt-error))
-      (for [datom report.tx-data]
-        (let [value-text (value-serializable-text datom.v)
-              [insert-ok insert-error] (sqlite-step-datom-stmt-raw handle datom-stmt datom.e datom.a value-text datom.tx datom.added)]
-          (delete value-text)
-          (when (not insert-ok)
-            (sqlite-finalize-stmt-raw datom-stmt)
-            (sqlite-rollback-raw handle)
-            (return false insert-error))))
+      (let [base-index (count report.db-before.datoms)]
+        (for [datom index report.tx-data]
+          (let [value-text (value-serializable-text datom.v)
+                [insert-ok insert-error] (sqlite-step-datom-stmt-raw handle datom-stmt (i64 (+ base-index index)) datom.e datom.a value-text datom.tx datom.added)]
+            (delete value-text)
+            (when (not insert-ok)
+              (sqlite-finalize-stmt-raw datom-stmt)
+              (sqlite-rollback-raw handle)
+              (return false insert-error)))))
       (sqlite-finalize-stmt-raw datom-stmt))
     (let [[meta-ok meta-error] (insert-sqlite-tx-meta! handle report.tx (slice report.tx-meta 0))]
       (when (not meta-ok)
@@ -1565,6 +1662,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn sqlite-conn-tx-count [store: ^SQLite-Conn] -> [tx-count: u64, ok: bool, error: string]
   (sqlite-tx-count-raw store^.handle))
 
+(defn sqlite-conn-datom-count [store: ^SQLite-Conn] -> [datom-count: u64, ok: bool, error: string]
+  (sqlite-datom-count-raw store^.handle))
+
 (defn sqlite-conn-tx-ids [store: ^SQLite-Conn] -> [tx-ids: [dynamic]u64, ok: bool, error: string]
   (sqlite-tx-ids-raw store^.handle))
 
@@ -1605,6 +1705,20 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (defer (delete parsed))
       (let [window (copy-index-entry-window (slice parsed 0) (- offset (int base-offset)) limit)]
         (return window true "")))))
+
+(defn sqlite-conn-datom-at-log-index [store: ^SQLite-Conn, log-index: int] -> [datom: Datom, ok: bool, error: string]
+  (let [[text loaded-ok loaded-error] (sqlite-load-datom-by-log-index-text-raw store^.handle (i64 log-index))]
+    (when (not loaded-ok)
+      (return (Datom {}) false loaded-error))
+    (defer (delete text))
+    (let [doc (empty-edn-doc)
+          [read-ok read-error] (read-edn-text! (addr doc) text)]
+      (when (not read-ok)
+        (delete doc.nodes)
+        (return (Datom {}) false read-error))
+      (let [[parsed-datom parsed-ok parsed-error] (datom-from-edn-node doc doc.root)]
+        (delete doc.nodes)
+        (return parsed-datom parsed-ok parsed-error)))))
 
 (defn sqlite-latest-index-entry-pages-count-handle [handle: rawptr, index-name: string, page-size: int] -> [loaded-count: int, ok: bool, error: string]
   (when (<= page-size 0)
