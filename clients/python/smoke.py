@@ -73,6 +73,10 @@ def main() -> int:
             """
         )
         try:
+            prepared_ast = email_query.edn()
+            if ":clauses" not in prepared_ast or ":input-specs" not in prepared_ast:
+                raise RuntimeError("prepared query AST did not expose parser keys")
+
             with email_query.statement() as stmt:
                 rows = stmt.bind("grace@example.com").rows(conn)
                 print(f"statement rows: {rows}")

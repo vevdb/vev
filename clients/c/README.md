@@ -1,0 +1,28 @@
+# Vev C
+
+The C ABI is Vev's stable raw interop surface. Other clients should build on
+top of this ABI rather than depending on Kvist or generated Odin internals.
+
+Current local development:
+
+```sh
+scripts/build_c_abi.sh
+```
+
+That builds:
+
+- `include/vev.h`
+- `build/lib/libvev.dylib`
+- `build/lib/pkgconfig/vev.pc`
+
+Manual compile example:
+
+```sh
+PKG_CONFIG_PATH="$PWD/build/lib/pkgconfig" \
+  clang clients/c/smoke.c $(pkg-config --cflags --libs vev) \
+  -Wl,-rpath,"$PWD/build/lib" \
+  -o build/examples/c/vev_c_smoke
+```
+
+The C API owns opaque handles explicitly. Returned strings and arrays must be
+freed with the matching `vev_*_free` function documented in `include/vev.h`.

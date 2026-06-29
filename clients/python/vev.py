@@ -225,6 +225,8 @@ class Library:
         lib.vev_prepared_query_ok.restype = ctypes.c_bool
         lib.vev_prepared_query_error.argtypes = [ctypes.c_void_p]
         lib.vev_prepared_query_error.restype = ctypes.c_void_p
+        lib.vev_prepared_query_edn.argtypes = [ctypes.c_void_p]
+        lib.vev_prepared_query_edn.restype = ctypes.c_void_p
         lib.vev_prepared_query_free.argtypes = [ctypes.c_void_p]
 
         lib.vev_stmt_create.argtypes = [ctypes.c_void_p]
@@ -1131,6 +1133,12 @@ class PreparedQuery:
     def statement(self) -> "Statement":
         self._require_open()
         return Statement(self._library, self)
+
+    def edn(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_prepared_query_edn(self._handle)
+        )
 
     def query(self, conn: Connection | DB, inputs_edn: str = "[]") -> "Result":
         self._require_open()

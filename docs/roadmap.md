@@ -65,10 +65,10 @@ Non-goal:
 Status: mostly satisfied as the current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 369 tests. Remaining work is concentrated in exact
+suite currently passes 370 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
-MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
-and durable storage integration.
+targeted MusicBrainz/Datomic regressions, higher-level host wrapper
+ergonomics, and durable storage architecture.
 
 Deferred engine batch order:
 
@@ -98,8 +98,9 @@ Deferred engine batch order:
    storage through storage-neutral `connect`/connection handles, and make
    Clojure and Java feel close to Datomic/DataScript for common tutorials,
    including listener/report callbacks where useful.
-MusicBrainz/Datomic comparison is no longer part of this deferred list; it is
-the next active phase.
+MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current
+real-data matrix passes; future MusicBrainz work should be targeted regression
+or performance coverage.
 
 ## Current Query Engine State
 
@@ -198,9 +199,11 @@ path through the native library. The raw ABI exposes row handles, value-tree
 visitors, direct pull/pull-many handles, immutable DB snapshot handles, and a
 typed column-batch query result path for host callers that do not want per-row
 value materialization. Java, Python, Go, and Clojure expose the column-batch
-path, and C exercises it directly. The remaining work is exact malformed-input
-behavior, parser value rendering where host APIs expose it, and wrapper
-ergonomics demanded by real host usage.
+path, and C exercises it directly. Prepared parser values now expose stable
+`:error-code` categories for malformed inputs across the public parser entry
+points. The remaining work is exact malformed-input behavior, exact parser
+record rendering where worth exposing, and wrapper ergonomics demanded by real
+host usage.
 
 ## Phase 5: MusicBrainz/Datomic Workload
 
@@ -395,6 +398,14 @@ callbacks. Further interop work should be driven by specific adapter needs,
 especially packaging and richer host-specific APIs over the stable raw C
 surface.
 
+Next packaging work should use the canonical repository identity
+`https://github.com/vevdb/vev`. The JVM path should split the current examples
+into publishable clients: `dev.vevdb:vev-java` for the Java FFM wrapper,
+`dev.vevdb/vev-clj` for the Clojure API, and later platform native
+artifacts such as `dev.vevdb:vev-native-macos-aarch64`. Local explicit
+library paths and `VEV_LIB`-style overrides should remain the first supported
+loading mode before bundled native artifacts.
+
 ## Phase 9: Optional packaging expansion
 
 Goal:
@@ -439,11 +450,11 @@ Do not continue durable storage by solving:
 - every host language
 - every deployment story
 
-The in-memory semantic core, EDN/C ABI surface, performance baseline, and first
-SQLite durable loop are now strong enough to start MusicBrainz/Day-of-Datomic
-validation. The next durable-storage gate is no longer proving that SQLite can
-open/write/close/reopen/query; that exists. The next durable-storage gate, when
-we return to storage, is:
+The in-memory semantic core, EDN/C ABI surface, performance baseline, first
+SQLite durable loop, and MusicBrainz/Day-of-Datomic validation are now strong
+enough for the current phase. The next durable-storage gate is no longer
+proving that SQLite can open/write/close/reopen/query; that exists. The next
+durable-storage gate, when we return to storage, is:
 
 - shared immutable/chunked DB index storage avoids per-commit whole-array
   copies while preserving immutable snapshot semantics

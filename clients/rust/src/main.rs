@@ -83,6 +83,7 @@ unsafe extern "C" {
     ) -> *const c_char;
 
     fn vev_prepare_query_edn(query_text: *const c_char) -> VevPreparedQuery;
+    fn vev_prepared_query_edn(query: VevPreparedQuery) -> *const c_char;
     fn vev_prepared_query_free(query: VevPreparedQuery);
 
     fn vev_stmt_create(query: VevPreparedQuery) -> VevStmt;
@@ -734,6 +735,10 @@ impl PreparedQuery {
         }
     }
 
+    fn edn(&self) -> String {
+        unsafe { Library::owned_string(vev_prepared_query_edn(self.raw)) }
+    }
+
     fn query_conn(&self, conn: &Conn, inputs: &str) -> Result<ResultSet, String> {
         let inputs = cstring(inputs);
         let raw =
@@ -956,6 +961,10 @@ fn main() -> Result<(), String> {
            :where [?e :user/email ?email]
                   [(= ?email ?needle)]]"#,
     )?;
+    let prepared_ast = email_query.edn();
+    if !prepared_ast.contains(":clauses") || !prepared_ast.contains(":input-specs") {
+        return Err("prepared query AST did not expose parser keys".to_string());
+    }
     let mut stmt = email_query.statement()?;
     let rows = stmt
         .bind_string("grace@example.com")?

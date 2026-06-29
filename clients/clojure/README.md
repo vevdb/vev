@@ -1,11 +1,40 @@
 # Vev Clojure
 
 This is the first Clojure package layer for Vev. It depends on the JVM wrapper
-in `examples/java`, which uses Java 21 Foreign Function & Memory to call the
+in `clients/java`, which uses Java 21 Foreign Function & Memory to call the
 native Vev shared library.
 
 The public API accepts ordinary Clojure data and serializes it to the same EDN
 text frontend used by C, Python, Rust, and Java callers.
+
+Current local development usage is path-based:
+
+```clojure
+{:deps {vev/vev-clj {:local/root "clients/clojure"}}}
+```
+
+Build the native library and Java classes first:
+
+```sh
+scripts/build_c_abi.sh
+```
+
+When developing from the repo root, the root `:clj-dev` alias adds the locally
+built Java classes and the required JVM flags:
+
+```sh
+clojure -M:clj-dev examples/clojure/getting_started.clj build/lib/libvev.dylib
+```
+
+The planned published coordinate is:
+
+```clojure
+{:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
+```
+
+The package still expects a locally built native library path today, usually
+`build/lib/libvev.dylib`. A later packaged JVM distribution should use
+`dev.vevdb/vev-java` plus platform native artifacts.
 
 ```clojure
 (require '[vev.core :as vev])
@@ -74,7 +103,17 @@ the call. Use `prepare` when the same query should be reused:
                       :in ?needle
                       :where [?e :user/email ?email]
                              [(= ?email ?needle)]])]
+  (vev/prepared-edn query)
   (vev/q db query "ada@example.com"))
+```
+
+`prepared-edn` also works for reusable pull patterns:
+
+```clojure
+(with-open [pattern (vev/prepare-pull-pattern db
+                     [:user/name {:user/friend [:user/name]}])]
+  (vev/prepared-edn pattern)
+  (vev/pull db pattern 1))
 ```
 
 Pull follows the same DB-value shape:

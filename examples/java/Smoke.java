@@ -1,7 +1,7 @@
 // Copyright (c) Andreas Flakstad and Vev contributors
 // SPDX-License-Identifier: EPL-2.0
 
-package vev;
+package dev.vevdb.vev.examples;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,6 +10,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Arrays;
 import java.util.Map;
+import dev.vevdb.vev.Vev;
 
 public final class Smoke {
     private static void deleteSqliteFiles(Path path) throws Exception {
@@ -102,6 +103,11 @@ public final class Smoke {
                             [(= ?email ?needle)]]
                     """);
                  Vev.Statement stmt = emailQuery.statement()) {
+                String preparedAst = emailQuery.edn();
+                if (!preparedAst.contains(":clauses") || !preparedAst.contains(":input-specs")) {
+                    throw new IllegalStateException("prepared query AST did not expose parser keys");
+                }
+
                 try (Vev.ResultSet result = conn.query(stmt.bindString("grace@example.com"))) {
                     List<List<Object>> rows = result.rows();
                     System.out.println("statement rows: " + rows);
@@ -217,11 +223,19 @@ public final class Smoke {
                          :in ?pattern ?name
                          :where [?e :user/name ?name]]
                         """);
+                     Vev.PreparedPullPattern preparedPattern =
+                         vev.preparePullPattern("[:user/name {:user/friend [:user/name]}]");
                      Vev.Statement pullPatternStmt = pullPatternQuery.statement();
                      Vev.ResultSet result = conn.query(
                          pullPatternStmt.bindPullPatternAndString(
                              "[:user/name {:user/friend [:user/name]}]",
                              "Ada"))) {
+                    String preparedPatternEdn = preparedPattern.edn();
+                    if (!preparedPatternEdn.contains(":pattern")
+                        || !preparedPatternEdn.contains(":attr")
+                        || !preparedPatternEdn.contains(":nested-count")) {
+                        throw new IllegalStateException("unexpected prepared pull pattern EDN: " + preparedPatternEdn);
+                    }
                     Vev.MapValue pulled = (Vev.MapValue) result.scalar();
                     System.out.println("statement pull pattern: " + pulled);
                     Object friend = pulled.get(":user/friend");

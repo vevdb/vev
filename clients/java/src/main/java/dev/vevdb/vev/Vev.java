@@ -1,7 +1,7 @@
 // Copyright (c) Andreas Flakstad and Vev contributors
 // SPDX-License-Identifier: EPL-2.0
 
-package vev;
+package dev.vevdb.vev;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -76,6 +76,7 @@ public final class Vev {
     private final MethodHandle txDbWith;
     private final MethodHandle queryEdnWithInputs;
     private final MethodHandle prepareQueryEdn;
+    private final MethodHandle preparedQueryEdn;
     private final MethodHandle preparedQueryFree;
     private final MethodHandle queryPreparedResultWithRulesTextAndInputs;
     private final MethodHandle queryDbPreparedResultWithRulesTextAndInputs;
@@ -139,6 +140,7 @@ public final class Vev {
     private final MethodHandle preparedPullPatternFree;
     private final MethodHandle preparedPullPatternOk;
     private final MethodHandle preparedPullPatternError;
+    private final MethodHandle preparedPullPatternEdn;
     private final MethodHandle pullPrepared;
     private final MethodHandle pullLookupRefStringEdn;
     private final MethodHandle pullLookupRefStringPrepared;
@@ -182,6 +184,22 @@ public final class Vev {
     private final MethodHandle valueMapCount;
     private final MethodHandle valueMapKey;
     private final MethodHandle valueMapValue;
+
+    public static Path defaultLibraryPath() {
+        String property = System.getProperty("vev.library");
+        if (property != null && !property.isBlank()) {
+            return Path.of(property);
+        }
+        String env = System.getenv("VEV_LIB");
+        if (env != null && !env.isBlank()) {
+            return Path.of(env);
+        }
+        return Path.of("build", "lib", "libvev.dylib");
+    }
+
+    public static Vev load() {
+        return load(defaultLibraryPath());
+    }
 
     public static Vev load(Path libraryPath) {
         return new Vev(libraryPath);
@@ -237,6 +255,7 @@ public final class Vev {
         this.txDbWith = downcall("vev_tx_db_with", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.prepareQueryEdn = downcall("vev_prepare_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.preparedQueryEdn = downcall("vev_prepared_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryFree = downcall("vev_prepared_query_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.queryPreparedResultWithRulesTextAndInputs = downcall("vev_query_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithRulesTextAndInputs = downcall("vev_query_db_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -300,6 +319,7 @@ public final class Vev {
         this.preparedPullPatternFree = downcall("vev_prepared_pull_pattern_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.preparedPullPatternOk = downcall("vev_prepared_pull_pattern_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
         this.preparedPullPatternError = downcall("vev_prepared_pull_pattern_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.preparedPullPatternEdn = downcall("vev_prepared_pull_pattern_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullPrepared = downcall("vev_pull_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullLookupRefStringPrepared = downcall("vev_pull_lookup_ref_string_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -1520,9 +1540,19 @@ public final class Vev {
         }
 
         public Statement statement() throws Throwable {
+            requireOpen();
             MemorySegment stmt = (MemorySegment) stmtCreate.invoke(raw);
             if (isNull(stmt)) throw new IllegalStateException("failed to create statement");
             return new Statement(stmt);
+        }
+
+        public String edn() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) preparedQueryEdn.invoke(raw));
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("prepared query is closed");
         }
 
         @Override
@@ -1543,6 +1573,11 @@ public final class Vev {
 
         private void requireOpen() {
             if (isNull(raw)) throw new IllegalStateException("prepared pull pattern is closed");
+        }
+
+        public String edn() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) preparedPullPatternEdn.invoke(raw));
         }
 
         @Override

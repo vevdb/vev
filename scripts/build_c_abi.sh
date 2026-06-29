@@ -9,13 +9,14 @@ KVIST_BIN="${KVIST_BIN:-kvist}"
 
 GENERATED_DIR="$ROOT/build/generated/vev_abi"
 LIB_DIR="$ROOT/build/lib"
+PKGCONFIG_DIR="$LIB_DIR/pkgconfig"
 EXAMPLE_DIR="$ROOT/build/examples/c"
 RUST_EXAMPLE_DIR="$ROOT/build/examples/rust"
 JAVA_EXAMPLE_DIR="$ROOT/build/examples/java"
 GO_EXAMPLE_DIR="$ROOT/build/examples/go"
 NODE_EXAMPLE_DIR="$ROOT/build/examples/node"
 
-mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR"
+mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR"
 
 if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
   (
@@ -27,9 +28,22 @@ else
 fi
 odin build "$GENERATED_DIR" -build-mode:dll -out:"$LIB_DIR/libvev.dylib"
 
+cat > "$PKGCONFIG_DIR/vev.pc" <<EOF
+prefix=$ROOT/build
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=$ROOT/include
+
+Name: Vev
+Description: Embedded native Datalog database
+Version: 0.1.0
+Libs: -L\${libdir} -lvev
+Cflags: -I\${includedir}
+EOF
+
 clang \
   -I"$ROOT/include" \
-  "$ROOT/examples/c/smoke.c" \
+  "$ROOT/clients/c/smoke.c" \
   -L"$LIB_DIR" \
   -lvev \
   -Wl,-rpath,"$LIB_DIR" \
@@ -37,17 +51,17 @@ clang \
 
 "$EXAMPLE_DIR/vev_c_smoke"
 
-python3 "$ROOT/examples/python/smoke.py"
+python3 "$ROOT/clients/python/smoke.py"
 
 if command -v cargo >/dev/null 2>&1; then
   CARGO_TARGET_DIR="$RUST_EXAMPLE_DIR/target" \
   RUSTFLAGS="-L native=$LIB_DIR -l dylib=vev -C link-arg=-Wl,-rpath,$LIB_DIR" \
     cargo run \
       --quiet \
-      --manifest-path "$ROOT/examples/rust/Cargo.toml"
+      --manifest-path "$ROOT/clients/rust/Cargo.toml"
 elif command -v rustc >/dev/null 2>&1; then
   rustc \
-    "$ROOT/examples/rust/smoke.rs" \
+    "$ROOT/clients/rust/src/main.rs" \
     -L "$LIB_DIR" \
     -l dylib=vev \
     -C "link-arg=-Wl,-rpath,$LIB_DIR" \
@@ -60,7 +74,7 @@ fi
 
 if command -v go >/dev/null 2>&1; then
   (
-    cd "$ROOT/examples/go"
+    cd "$ROOT/clients/go"
     go build -o "$GO_EXAMPLE_DIR/vev_go_smoke" smoke.go
   )
   DYLD_LIBRARY_PATH="$LIB_DIR:${DYLD_LIBRARY_PATH:-}" \
@@ -87,7 +101,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
         -undefined dynamic_lookup \
         -I"$ROOT/include" \
         -I"$NODE_INCLUDE_DIR" \
-        "$ROOT/examples/node/vev_native.cc" \
+        "$ROOT/clients/node/vev_native.cc" \
         -L"$LIB_DIR" \
         -lvev \
         -Wl,-rpath,"$LIB_DIR" \
@@ -99,7 +113,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
         -fPIC \
         -I"$ROOT/include" \
         -I"$NODE_INCLUDE_DIR" \
-        "$ROOT/examples/node/vev_native.cc" \
+        "$ROOT/clients/node/vev_native.cc" \
         -L"$LIB_DIR" \
         -lvev \
         -Wl,-rpath,"$LIB_DIR" \
@@ -107,7 +121,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
     fi
 
     VEV_NODE_NATIVE="$NODE_EXAMPLE_DIR/vev_native.node" \
-      node "$ROOT/examples/node/smoke.js"
+      node "$ROOT/clients/node/smoke.js"
   else
     echo "node_api.h not found; skipping Node smoke"
   fi
@@ -123,14 +137,14 @@ if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
     --enable-preview \
     --release 21 \
     -d "$JAVA_EXAMPLE_DIR" \
-    "$ROOT/examples/java/Vev.java" \
+    "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java" \
     "$ROOT/examples/java/Smoke.java"
 
   java \
     --enable-preview \
     --enable-native-access=ALL-UNNAMED \
     -cp "$JAVA_EXAMPLE_DIR" \
-    vev.Smoke "$LIB_DIR/libvev.dylib"
+    dev.vevdb.vev.examples.Smoke "$LIB_DIR/libvev.dylib"
 
   if command -v clojure >/dev/null 2>&1; then
     clojure \

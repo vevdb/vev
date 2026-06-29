@@ -51,11 +51,26 @@ scripts/build_c_abi.sh
 ```
 
 The script compiles `src/vev_abi/vev_abi.kvist` to Odin, builds
-`build/lib/libvev.dylib`, compiles `examples/c/smoke.c`, runs the C smoke
+`build/lib/libvev.dylib`, compiles `clients/c/smoke.c`, runs the C smoke
 program, and runs the Python smoke program through the thin
-`examples/python/vev.py` adapter. When the relevant toolchains are available,
+`clients/python/vev.py` adapter. When the relevant toolchains are available,
 it also compiles and runs the Rust, Go, Node/TypeScript, Java, and Clojure
 smoke programs against the same shared library.
+
+The build also writes a development pkg-config file:
+
+```sh
+PKG_CONFIG_PATH="$PWD/build/lib/pkgconfig" \
+  clang clients/c/smoke.c $(pkg-config --cflags --libs vev) \
+  -Wl,-rpath,"$PWD/build/lib" \
+  -o build/examples/c/vev_c_smoke
+```
+
+For now the C SDK is the public header plus the native library:
+
+- `include/vev.h`
+- `build/lib/libvev.dylib`
+- `build/lib/pkgconfig/vev.pc`
 
 ## ABI Benchmark
 
@@ -364,7 +379,7 @@ for simple C tooling and logging.
 ## Python Adapter
 
 The raw `ctypes` surface is intentionally hidden behind a small Python adapter
-in [vev.py](../examples/python/vev.py). It is still an example, not a packaged
+in [vev.py](../clients/python/vev.py). It is still a smoke client, not a packaged
 library, but it shows the intended host-language shape:
 
 ```python
@@ -437,12 +452,12 @@ The smoke also exercises DB-value `with`, `db-with`, and `conn-from-db` so the
 Python path follows the same immutable snapshot contract as C, Java, Clojure,
 and Rust. Transactions can use `transact_report` / `with_report` for typed
 report maps, while `transact` / `with_text` remain string helpers. Prepared
-queries and bound statements can return generic typed column batches without
-materializing result rows.
+queries expose `edn()` for a portable parser description, and bound statements
+can return generic typed column batches without materializing result rows.
 
 ## Rust Example
 
-[examples/rust](../examples/rust) is a small Cargo package. It mirrors the
+[clients/rust](../clients/rust) is a small Cargo package. It mirrors the
 intended safe wrapper shape:
 
 - raw FFI declarations stay private to the module
@@ -450,6 +465,8 @@ intended safe wrapper shape:
   with `Drop`
 - statement methods expose typed scalar and collection bindings
 - prepared queries and bound statements can return generic typed column batches
+- `PreparedQuery::edn()` returns the portable parser description exposed by the
+  C ABI
 - result values are converted into a small Rust `Value` enum
 - transaction reports use an owned `TxReport` wrapper with typed `Value`
   traversal
@@ -460,18 +477,25 @@ pull result traversal, direct pull APIs, DB snapshots, querying a snapshot with
 a statement, immutable `db-with`, deriving a connection from a DB value, and
 SQLite-backed open/write/close/reopen/query.
 
+The Go and Node smoke wrappers follow the same adapter contract: prepared
+query handles are ordinary host objects, can be inspected through
+`PreparedQuery.EDN()` / `PreparedQuery.edn()`, and can run against either a live
+connection or retained immutable DB snapshot.
+
 ## Java And Clojure Examples
 
-[Vev.java](../examples/java/Vev.java) is a small Java 21 Foreign Function &
-Memory wrapper over `libvev.dylib`. It is still an example wrapper, not a
-published artifact. The wrapper exposes the same core host shape as Python and
-Rust:
+[Vev.java](../clients/java/src/main/java/dev/vevdb/vev/Vev.java) is the Java 21 Foreign
+Function & Memory wrapper over `libvev.dylib`. It is not published yet, but it
+now lives under the planned client package layout. The wrapper exposes the same
+core host shape as Python and Rust:
 
 - `Vev`, `Connection`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet`
   close their native handles explicitly
 - transactions and ad hoc queries accept EDN strings
 - prepared queries can be reused with EDN input text or typed statement
   bindings
+- `PreparedQuery.edn()` returns the portable parser description exposed by the
+  C ABI
 - typed results convert entity ids, scalar values, and pull maps into Java
   values
 - `DB.queryColumns` exposes a first generic Java column facade for prepared
@@ -573,6 +597,8 @@ Inputs are ordinary Clojure arguments after the query:
 
 Plain Clojure `q`/`rows` calls prepare and close a temporary native query
 handle. Use `vev/prepare` with `with-open` when a query should be reused.
+Prepared queries can be inspected with `vev/prepared-edn`, which returns the
+portable parser description as Clojure data.
 
 Durable connections use `connect`:
 
@@ -859,7 +885,13 @@ handles with `vev_stmt_bind_db_source`.
 Prepared query status is available through `vev_prepared_query_ok` and
 `vev_prepared_query_error`. `vev_prepared_query_edn` returns an owned EDN-ish
 description of the prepared parser value, including input specs, clauses,
-predicates, function clauses, rule calls, pull finds, and aggregate finds.
+predicates, function clauses, rule calls, structured `not`/`or` groups, `ground`, `get-else`, `get-some`, pull finds, and aggregate finds.
+Prepared pull patterns have the same status shape, and
+`vev_prepared_pull_pattern_edn` returns an owned EDN-ish description with
+parsed attrs, nested patterns, limits, defaults, aliases, transforms, and
+recursion markers.
+Prepared parser descriptions include both human-readable `:error` text and a
+stable `:error-code` keyword for host-facing malformed-input handling.
 Statement execution failures from direct visitor calls are available through
 `vev_stmt_error`.
 
@@ -1002,6 +1034,7 @@ Direct pull entry points use owned value handles:
 - `vev_prepare_pull_pattern_edn`
 - `vev_prepared_pull_pattern_ok`
 - `vev_prepared_pull_pattern_error`
+- `vev_prepared_pull_pattern_edn`
 - `vev_prepared_pull_pattern_free`
 - `vev_pull_prepared`
 - `vev_pull_lookup_ref_string_edn`

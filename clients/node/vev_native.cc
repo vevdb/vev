@@ -451,6 +451,15 @@ napi_value query_prepared(napi_env env, napi_callback_info info) {
   return owned_string(env, result);
 }
 
+napi_value prepared_query_edn(napi_env env, napi_callback_info info) {
+  PreparedQuery *query = external_arg<PreparedQuery>(env, info, 0);
+  if (!query || !query->raw) {
+    throw_error(env, "invalid prepared query");
+    return nullptr;
+  }
+  return owned_string(env, vev_prepared_query_edn(query->raw));
+}
+
 napi_value result_rows(napi_env env, vev_result_t result) {
   if (!result) {
     throw_error(env, "query returned null result");
@@ -656,6 +665,7 @@ napi_value init(napi_env env, napi_value exports) {
       {"durableTxCount", nullptr, durable_tx_count, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"queryText", nullptr, query_text, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"prepare", nullptr, prepare, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"preparedQueryEdn", nullptr, prepared_query_edn, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"queryPrepared", nullptr, query_prepared, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"queryPreparedRows", nullptr, query_prepared_rows, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"dbQueryPrepared", nullptr, db_query_prepared, nullptr, nullptr, nullptr, napi_default, nullptr},
