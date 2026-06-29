@@ -365,9 +365,10 @@ can also be loaded by offset/limit from the chunk tree, which is the first
 storage primitive needed for lazy chunk-backed cursors. A read-only SQLite
 index cursor now wraps that page loader with cached-page `count`/`at` access;
 it is not yet used by normal query/reopen paths, but it is the first concrete
-chunk-backed index view object. Public datom index APIs now go through a
-resident `DB-Index-View` boundary, which is the first query-facing boundary for
-swapping resident arrays for persisted cursors. The explicit persist API
+chunk-backed index view object. Public datom index APIs plus transaction,
+schema, pull, and entity helper paths now go through a resident
+`DB-Index-View` boundary, which is the first query-facing boundary for swapping
+resident arrays for persisted cursors. The explicit persist API
 full-replaces durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the
