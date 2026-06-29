@@ -581,6 +581,18 @@ int main(void) {
         vev_conn_close(conn);
         return 1;
     }
+    const char *prepared_ast = vev_prepared_query_edn(query);
+    if (prepared_ast == NULL ||
+        strstr(prepared_ast, ":clauses") == NULL ||
+        strstr(prepared_ast, ":input-specs") == NULL) {
+        fprintf(stderr, "prepared query AST did not expose expected parser keys: %s\n",
+                prepared_ast == NULL ? "<null>" : prepared_ast);
+        vev_string_free(prepared_ast);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_string_free(prepared_ast);
     vev_prepared_query_t invalid_query = vev_prepare_query_edn("[:find ?e :where [?e");
     if (invalid_query == NULL || vev_prepared_query_ok(invalid_query)) {
         fprintf(stderr, "invalid prepared query unexpectedly succeeded\n");

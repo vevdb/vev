@@ -857,8 +857,11 @@ source inputs. Source-aware prepared queries are created with
 handles with `vev_stmt_bind_db_source`.
 
 Prepared query status is available through `vev_prepared_query_ok` and
-`vev_prepared_query_error`. Statement execution failures from direct visitor
-calls are available through `vev_stmt_error`.
+`vev_prepared_query_error`. `vev_prepared_query_edn` returns an owned EDN-ish
+description of the prepared parser value, including input specs, clauses,
+predicates, function clauses, rule calls, pull finds, and aggregate finds.
+Statement execution failures from direct visitor calls are available through
+`vev_stmt_error`.
 
 ## Result Handles
 
