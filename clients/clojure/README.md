@@ -17,7 +17,7 @@ library itself:
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
 ```
 
-Application code should not pass Java paths or `libvev.dylib` around:
+Application code should not pass Java paths or native library paths around:
 
 ```clojure
 (require '[vev.core :as d])
@@ -75,7 +75,7 @@ When developing from the repo root, the root `:clj-dev` alias adds the locally
 built Java classes and the required JVM flags:
 
 ```sh
-VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev
+clojure -M:clj-dev
 ```
 
 Then open `examples/clojure/getting_started.clj` and evaluate the forms inside

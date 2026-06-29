@@ -6,7 +6,7 @@
             [clojure.string :as str]
             [vev.core :as vev]))
 
-(def default-lib "build/lib/libvev.dylib")
+(def default-lib "")
 (def default-schema "build/musicbrainz/vev-mbrainz-subset-500-schema.edn")
 (def default-values "build/musicbrainz/vev-mbrainz-subset-500-values.edn")
 (def default-values-prefix "build/musicbrainz/vev-mbrainz-subset-full-chunked")
@@ -610,7 +610,9 @@
         samples (parse-int-arg args "--samples" 10)
         print-rows? (= (parse-arg args "--print-rows" "false") "true")]
     (if (seq uri)
-      (let [[conn open-us] (elapsed-us #(vev/connect lib uri))]
+      (let [[conn open-us] (elapsed-us #(if (seq lib)
+                                          (vev/connect lib uri)
+                                          (vev/connect uri)))]
         (try
           (println
            (format "engine=clojure-vev workload=musicbrainz-real-open ok=true uri=%s open_us=%.0f info=%s"
@@ -623,7 +625,9 @@
               (run-workload db warmups samples print-rows? workload)))
           (finally
             (.close conn))))
-      (with-open [conn (vev/create-conn lib)]
+      (with-open [conn (if (seq lib)
+                         (vev/create-conn lib)
+                         (vev/create-conn))]
         (load-real! conn schema values values-prefix values-chunks)
         (with-open [db (vev/db conn)]
           (doseq [workload workloads

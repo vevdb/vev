@@ -9,8 +9,8 @@ Current local development:
 scripts/build_c_abi.sh
 ```
 
-The script builds and runs `clients/go/smoke.go` against
-`build/lib/libvev.dylib`.
+The script builds and runs `clients/go/smoke.go` against the platform library
+under `build/lib`.
 
 Planned module path:
 

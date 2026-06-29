@@ -51,7 +51,7 @@ scripts/build_c_abi.sh
 ```
 
 The script compiles `src/vev_abi/vev_abi.kvist` to Odin, builds
-`build/lib/libvev.dylib`, compiles `clients/c/smoke.c`, runs the C smoke
+the platform library under `build/lib`, compiles `clients/c/smoke.c`, runs the C smoke
 program, and runs the Python smoke program through the thin
 `clients/python/vev.py` adapter. When the relevant toolchains are available,
 it also compiles and runs the Rust, Go, Node/TypeScript, Java, and Clojure
@@ -69,7 +69,7 @@ PKG_CONFIG_PATH="$PWD/build/lib/pkgconfig" \
 For now the C SDK is the public header plus the native library:
 
 - `include/vev.h`
-- `build/lib/libvev.dylib`
+- the platform library under `build/lib`
 - `build/lib/pkgconfig/vev.pc`
 
 ## ABI Benchmark
@@ -485,7 +485,7 @@ connection or retained immutable DB snapshot.
 ## Java And Clojure Examples
 
 [Vev.java](../clients/java/src/main/java/dev/vevdb/vev/Vev.java) is the Java 21 Foreign
-Function & Memory wrapper over `libvev.dylib`. It is not published yet, but it
+Function & Memory wrapper over the platform native Vev library. It is not published yet, but it
 now lives under the planned client package layout. The wrapper exposes the same
 core host shape as Python and Rust:
 

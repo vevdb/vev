@@ -37,7 +37,7 @@ today is the native library plus host-client smoke packages:
 scripts/smoke_clients.sh
 ```
 
-That builds `build/lib/libvev.dylib`, writes `build/lib/pkgconfig/vev.pc`, and
+That builds the platform library under `build/lib`, writes `build/lib/pkgconfig/vev.pc`, and
 runs the available clients under `clients/*`.
 
 See [docs/getting-started.md](docs/getting-started.md) for the current local

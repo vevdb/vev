@@ -16,6 +16,15 @@ JAVA_EXAMPLE_DIR="$ROOT/build/examples/java"
 GO_EXAMPLE_DIR="$ROOT/build/examples/go"
 NODE_EXAMPLE_DIR="$ROOT/build/examples/node"
 
+case "$(uname -s)" in
+  Darwin) LIB_NAME="libvev.dylib" ;;
+  Linux) LIB_NAME="libvev.so" ;;
+  MINGW*|MSYS*|CYGWIN*) LIB_NAME="vev.dll" ;;
+  *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+
+LIB_PATH="$LIB_DIR/$LIB_NAME"
+
 mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR"
 
 if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
@@ -26,7 +35,7 @@ if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
 else
   "$KVIST_BIN" compile "$ROOT/src/vev_abi/vev_abi.kvist" -o "$GENERATED_DIR/vev_abi.odin"
 fi
-odin build "$GENERATED_DIR" -build-mode:dll -out:"$LIB_DIR/libvev.dylib"
+odin build "$GENERATED_DIR" -build-mode:dll -out:"$LIB_PATH"
 
 cat > "$PKGCONFIG_DIR/vev.pc" <<EOF
 prefix=$ROOT/build
@@ -144,7 +153,7 @@ if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
     --enable-preview \
     --enable-native-access=ALL-UNNAMED \
     -cp "$JAVA_EXAMPLE_DIR" \
-    dev.vevdb.vev.examples.Smoke "$LIB_DIR/libvev.dylib"
+    dev.vevdb.vev.examples.Smoke "$LIB_PATH"
 
   if command -v clojure >/dev/null 2>&1; then
     clojure \
@@ -153,7 +162,7 @@ if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
       -Sdeps "{:paths [\"$JAVA_EXAMPLE_DIR\" \"$ROOT/clients/clojure/src\"]}" \
       -M \
       "$ROOT/examples/clojure/smoke.clj" \
-      "$LIB_DIR/libvev.dylib"
+      "$LIB_PATH"
   else
     echo "clojure not found; skipping Clojure smoke"
   fi

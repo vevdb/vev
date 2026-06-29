@@ -6,7 +6,7 @@ output, not the public Odin package surface.
 For Odin applications, the supported direction is a small wrapper over the C
 ABI:
 
-- link against `build/lib/libvev.dylib`
+- link against the platform library under `build/lib`
 - import functions matching `include/vev.h`
 - manage Vev handles explicitly, mirroring the C ABI ownership rules
 

@@ -12,7 +12,7 @@ scripts/build_c_abi.sh
 That builds:
 
 - `include/vev.h`
-- `build/lib/libvev.dylib`
+- the platform library under `build/lib`
 - `build/lib/pkgconfig/vev.pc`
 
 Manual compile example:

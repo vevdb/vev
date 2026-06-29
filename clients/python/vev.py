@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ctypes
 import pathlib
+import sys
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -104,7 +105,15 @@ class VevError(RuntimeError):
 
 def _default_library_path() -> pathlib.Path:
     root = pathlib.Path(__file__).resolve().parents[2]
-    return root / "build" / "lib" / "libvev.dylib"
+    if sys.platform == "darwin":
+        library = "libvev.dylib"
+    elif sys.platform.startswith("linux"):
+        library = "libvev.so"
+    elif sys.platform in ("win32", "cygwin"):
+        library = "vev.dll"
+    else:
+        library = "libvev"
+    return root / "build" / "lib" / library
 
 
 def _bytes(text: str) -> bytes:

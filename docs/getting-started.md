@@ -56,13 +56,14 @@ Durability is a separate step:
 For local development from this repo:
 
 ```sh
-VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev
+clojure -M:clj-dev
 ```
 
 Then open `examples/clojure/getting_started.clj` in an editor and evaluate the
-forms inside its `(comment ...)` block one at a time. That `VEV_LIB` setting is
-local repo setup only. The intended published Clojure experience is a normal
-deps.edn dependency that pulls in and loads the platform native library itself:
+forms inside its `(comment ...)` block one at a time. This local alias uses the
+Java loader, which looks for the platform library under `build/lib`. The
+intended published Clojure experience is a normal deps.edn dependency that
+pulls in and loads the platform native library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}

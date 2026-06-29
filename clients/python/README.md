@@ -12,7 +12,7 @@ python3 clients/python/smoke.py
 The adapter loads the native library from:
 
 ```text
-build/lib/libvev.dylib
+build/lib/<platform-library-name>
 ```
 
 or from an explicit path when constructing `vev.Library`.

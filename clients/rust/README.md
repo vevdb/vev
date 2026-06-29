@@ -10,8 +10,8 @@ Current local development:
 scripts/build_c_abi.sh
 ```
 
-The build script links the smoke binary against `build/lib/libvev.dylib` and
-runs it.
+The build script links the smoke binary against the platform library under
+`build/lib` and runs it.
 
 Likely package split before publishing:
 

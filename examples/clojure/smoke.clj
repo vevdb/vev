@@ -11,7 +11,7 @@
 
 (defn -main [& args]
   (when-not (= 1 (count args))
-    (throw (ex-info "usage: smoke <path-to-libvev.dylib>" {})))
+    (throw (ex-info "usage: smoke <path-to-native-library>" {})))
   (let [lib-path (first args)]
     (with-open [closed-conn (vev/create-conn lib-path)]
       (vev/transact! closed-conn [{:db/id 10 :user/name "Closed"}])
