@@ -188,6 +188,11 @@ to full DB/index rebuilds. This keeps `db-with-datoms`, `with-datoms`, and
 `transact-datoms` on the same incremental-index path used by ordinary
 append-only transactions without changing their correctness model.
 
+SQLite rollback cleanup now also follows the live-report ownership rule. When
+an in-memory transaction succeeds but SQLite append fails, the wrapper restores
+the previous DB and cleans the successful report as a live connection report so
+`db-after` is not freed twice.
+
 ## SQLite Backend Shape
 
 SQLite is the first production durable backend.
