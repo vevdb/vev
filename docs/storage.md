@@ -121,9 +121,8 @@ wrapper when it has the successful transaction report in hand.
 - `append-index-build`: direct incremental index build cost for the copied log
 - `persisted-index-load`: load persisted logical indexes through SQLite
   root/chunk rows without building a full `DB`
-- persisted index page loading is now available as a storage primitive for the
-  next chunk-backed cursor work, though the benchmark still primarily reports
-  whole-index loading
+- `persisted-index-page-load`: walk persisted logical indexes through bounded
+  SQLite root/chunk pages without building a full `DB`
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 
