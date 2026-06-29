@@ -281,6 +281,8 @@ class Library:
         lib.vev_prepared_query_error.restype = ctypes.c_void_p
         lib.vev_prepared_query_edn.argtypes = [ctypes.c_void_p]
         lib.vev_prepared_query_edn.restype = ctypes.c_void_p
+        lib.vev_parse_clause_edn.argtypes = [ctypes.c_char_p]
+        lib.vev_parse_clause_edn.restype = ctypes.c_void_p
         lib.vev_prepared_query_free.argtypes = [ctypes.c_void_p]
 
         lib.vev_stmt_create.argtypes = [ctypes.c_void_p]
@@ -514,6 +516,21 @@ class Library:
             ctypes.c_ulonglong,
         ]
         lib.vev_pull_edn.restype = ctypes.c_void_p
+        lib.vev_prepare_pull_pattern_edn.argtypes = [ctypes.c_char_p]
+        lib.vev_prepare_pull_pattern_edn.restype = ctypes.c_void_p
+        lib.vev_prepared_pull_pattern_ok.argtypes = [ctypes.c_void_p]
+        lib.vev_prepared_pull_pattern_ok.restype = ctypes.c_bool
+        lib.vev_prepared_pull_pattern_error.argtypes = [ctypes.c_void_p]
+        lib.vev_prepared_pull_pattern_error.restype = ctypes.c_void_p
+        lib.vev_prepared_pull_pattern_edn.argtypes = [ctypes.c_void_p]
+        lib.vev_prepared_pull_pattern_edn.restype = ctypes.c_void_p
+        lib.vev_prepared_pull_pattern_free.argtypes = [ctypes.c_void_p]
+        lib.vev_pull_prepared.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_ulonglong,
+        ]
+        lib.vev_pull_prepared.restype = ctypes.c_void_p
         lib.vev_pull_lookup_ref_string_edn.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -528,6 +545,13 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_pull_many_edn.restype = ctypes.c_void_p
+        lib.vev_pull_many_prepared.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.c_int,
+        ]
+        lib.vev_pull_many_prepared.restype = ctypes.c_void_p
         lib.vev_value_handle_free.argtypes = [ctypes.c_void_p]
         lib.vev_value_handle_value.argtypes = [ctypes.c_void_p]
         lib.vev_value_handle_value.restype = ctypes.c_void_p
@@ -582,6 +606,12 @@ class Library:
             return ctypes.cast(ptr, ctypes.c_char_p).value.decode("utf-8")
         finally:
             self.lib.vev_string_free(ptr)
+
+    def parse_clause_edn(self, clause_edn: str) -> str:
+        return self.owned_text(self.lib.vev_parse_clause_edn(_bytes(clause_edn)))
+
+    def prepare_pull_pattern(self, pattern_edn: str) -> "PreparedPullPattern":
+        return PreparedPullPattern(self, pattern_edn)
 
     def value_to_python(self, value: int) -> Any:
         kind = self.lib.vev_value_kind(value)
@@ -725,6 +755,14 @@ def connect(uri: str | pathlib.Path) -> "DurableConnection":
 
 def open_sqlite(path: str | pathlib.Path) -> "SQLiteConnection":
     return SQLiteConnection(default_library(), path)
+
+
+def parse_clause_edn(clause_edn: str) -> str:
+    return default_library().parse_clause_edn(clause_edn)
+
+
+def prepare_pull_pattern(pattern_edn: str) -> "PreparedPullPattern":
+    return default_library().prepare_pull_pattern(pattern_edn)
 
 
 class Connection:
@@ -1033,12 +1071,18 @@ class DB:
             raise VevError("failed to create DB snapshot")
         return DB(self._library, handle)
 
-    def pull(self, pattern_edn: str, entity: int | Entity) -> Any:
+    def pull(self, pattern_edn: str | "PreparedPullPattern", entity: int | Entity) -> Any:
         self._require_open()
         entity_id = entity.id if isinstance(entity, Entity) else int(entity)
-        handle = self._library.lib.vev_pull_edn(
-            self._handle, _bytes(pattern_edn), entity_id
-        )
+        if isinstance(pattern_edn, PreparedPullPattern):
+            pattern_edn._require_open()
+            handle = self._library.lib.vev_pull_prepared(
+                self._handle, pattern_edn._handle, entity_id
+            )
+        else:
+            handle = self._library.lib.vev_pull_edn(
+                self._handle, _bytes(pattern_edn), entity_id
+            )
         with ValueHandle(self._library, handle) as value:
             return value.value()
 
@@ -1052,14 +1096,22 @@ class DB:
         with ValueHandle(self._library, handle) as value:
             return value.value()
 
-    def pull_many(self, pattern_edn: str, entities: list[int | Entity]) -> list[Any]:
+    def pull_many(
+        self, pattern_edn: str | "PreparedPullPattern", entities: list[int | Entity]
+    ) -> list[Any]:
         self._require_open()
         ids = [entity.id if isinstance(entity, Entity) else int(entity) for entity in entities]
         array_type = ctypes.c_ulonglong * len(ids)
         array = array_type(*ids)
-        handle = self._library.lib.vev_pull_many_edn(
-            self._handle, _bytes(pattern_edn), array, len(ids)
-        )
+        if isinstance(pattern_edn, PreparedPullPattern):
+            pattern_edn._require_open()
+            handle = self._library.lib.vev_pull_many_prepared(
+                self._handle, pattern_edn._handle, array, len(ids)
+            )
+        else:
+            handle = self._library.lib.vev_pull_many_edn(
+                self._handle, _bytes(pattern_edn), array, len(ids)
+            )
         with ValueHandle(self._library, handle) as value:
             result = value.value()
         if not isinstance(result, list):
@@ -1215,6 +1267,47 @@ class PreparedQuery:
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("prepared query is closed")
+
+
+class PreparedPullPattern:
+    def __init__(self, library: Library, pattern_edn: str):
+        self._library = library
+        self._handle = library.lib.vev_prepare_pull_pattern_edn(_bytes(pattern_edn))
+        if not self._handle:
+            raise VevError("failed to prepare pull pattern")
+        if not library.lib.vev_prepared_pull_pattern_ok(self._handle):
+            try:
+                error = library.owned_text(
+                    library.lib.vev_prepared_pull_pattern_error(self._handle)
+                )
+            finally:
+                library.lib.vev_prepared_pull_pattern_free(self._handle)
+                self._handle = None
+            raise VevError(error)
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_prepared_pull_pattern_free(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "PreparedPullPattern":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def edn(self) -> str:
+        self._require_open()
+        return self._library.owned_text(
+            self._library.lib.vev_prepared_pull_pattern_edn(self._handle)
+        )
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("prepared pull pattern is closed")
 
 
 class Statement:

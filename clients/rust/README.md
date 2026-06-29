@@ -23,6 +23,9 @@ Likely package split before publishing:
 The current smoke already follows that wrapper direction: native handles are
 owned by Rust structs and released through `Drop`.
 
+Parser tooling can inspect a single where clause through the wrapper's
+`parse_clause_edn` helper.
+
 The current binary target is still `vev-rust-smoke`; the package identity is
 the future public crate identity.
 

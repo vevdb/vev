@@ -119,6 +119,11 @@
                          (seq (:input-specs prepared-ast)))
             (throw (ex-info "prepared query AST did not expose parser keys"
                             {:prepared prepared-ast}))))
+        (let [clause-ast (vev/parse-clause conn '[?e :user/email ?email])]
+          (when-not (and (:ok clause-ast)
+                         (seq (:clauses clause-ast)))
+            (throw (ex-info "parse-clause AST did not expose parser keys"
+                            {:clause clause-ast}))))
 
         (let [db (vev/db conn)
               rows (vev/q db email-query "grace@example.com")]

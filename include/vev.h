@@ -165,6 +165,7 @@ vev_prepared_query_t vev_prepare_query_edn_with_sources(
 bool vev_prepared_query_ok(vev_prepared_query_t query);
 const char *vev_prepared_query_error(vev_prepared_query_t query);
 const char *vev_prepared_query_edn(vev_prepared_query_t query);
+const char *vev_parse_clause_edn(const char *clause_text);
 void vev_prepared_query_free(vev_prepared_query_t query);
 vev_stmt_t vev_stmt_create(vev_prepared_query_t query);
 void vev_stmt_clear(vev_stmt_t stmt);

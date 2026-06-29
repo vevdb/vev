@@ -614,6 +614,13 @@ through `query-relation-materialized-bindings`, so typed-only producers can feed
 conservative product/hash/nested-loop joins without depending on stale
 compatibility tuples.
 
+Source-input relation clauses follow the same typed-first direction for initial
+source rows. `query-relation-from-source-value-clause` now matches source rows
+with a small row-local var/value table and appends projected vars directly into
+typed columns. It preserves constant, wildcard, and repeated-variable semantics
+without allocating one temporary `Binding` per source row, then falls back only
+when a projected value cannot fit the columnar relation layout.
+
 Same-entity star scans now have an initial relation-native operator as well.
 For all-current cardinality-one shapes with fixed-value filters and one or two
 projected attrs, the relation engine aligns `AVET` filter streams with `AEVT`

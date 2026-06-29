@@ -107,6 +107,10 @@ public final class Smoke {
                 if (!preparedAst.contains(":clauses") || !preparedAst.contains(":input-specs")) {
                     throw new IllegalStateException("prepared query AST did not expose parser keys");
                 }
+                String clauseAst = vev.parseClauseEdn("[?e :user/email ?email]");
+                if (!clauseAst.contains(":clauses") || !clauseAst.contains(":user/email")) {
+                    throw new IllegalStateException("parse-clause AST did not expose parser keys");
+                }
 
                 try (Vev.ResultSet result = conn.query(stmt.bindString("grace@example.com"))) {
                     List<List<Object>> rows = result.rows();

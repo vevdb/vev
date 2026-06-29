@@ -65,7 +65,7 @@ Non-goal:
 Status: mostly satisfied as the current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 371 tests. Remaining work is concentrated in exact
+suite currently passes 372 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 targeted MusicBrainz/Datomic regressions, higher-level host wrapper
 ergonomics, and durable storage architecture.
@@ -217,13 +217,15 @@ path through the native library. The raw ABI exposes row handles, value-tree
 visitors, direct pull/pull-many handles, immutable DB snapshot handles, and a
 typed column-batch query result path for host callers that do not want per-row
 value materialization. Java, Python, Go, and Clojure expose the column-batch
-path, and C exercises it directly. Prepared parser values now expose stable
-`:error-code` categories for malformed inputs across the public parser entry
-points, including `:edn-read` for reader-level malformed EDN. Prepared query
-values also expose return-map marker plus typed key metadata for `:keys`,
-`:strs`, and `:syms`. The remaining work is exact malformed-input behavior, exact parser
-record rendering where worth exposing, and wrapper ergonomics demanded by real
-host usage.
+path, and C exercises it directly. Java, Clojure, Python, Rust, and Go expose
+prepared pull-pattern handles for direct pull/pull-many reuse. Prepared parser
+values now expose stable `:error-code` categories for malformed inputs across
+the public parser entry points, including `:edn-read` for reader-level malformed
+EDN. Prepared query values also expose return-map marker plus typed key metadata
+for `:keys`, `:strs`, and `:syms`, and direct `parse-clause-text` exposes single
+where-clause parser values. The remaining work is exact malformed-input
+behavior, exact parser record rendering where worth exposing, and wrapper
+ergonomics demanded by real host usage.
 
 ## Phase 5: MusicBrainz/Datomic Workload
 
@@ -345,13 +347,24 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: first proof complete; deeper architecture deferred. Vev now has snapshot-file persistence, SQLite-backed datom row
+Status: first proof complete; shared-index architecture active. Vev now has snapshot-file persistence, SQLite-backed datom row
 persistence, explicit SQLite tx metadata rows, a native SQLite-backed
 connection wrapper, and raw C ABI durable connection handles. The SQLite slice
-creates metadata, transaction, tx metadata, and datom tables, writes one row
-per datom through a SQLite transaction, reopens from disk, rebuilds in-memory
-indexes, and then queries normally. The explicit persist API full-replaces
-durable datom rows from the connection's current datom log; the SQLite
+creates metadata, transaction, tx metadata, datom, and forward-compatible
+index root/chunk tables. It writes one row per datom through a SQLite
+transaction, reopens from disk, rebuilds in-memory indexes, and then queries
+normally. The root/chunk tables and `storage-architecture` marker are present
+as the foundation for persisted Vev-owned logical indexes. Successful SQLite
+transactions and explicit persists now publish bounded logical-index chunks for
+`eavt`, `aevt`, `avet`, and `vaet`: small indexes use one payload chunk, larger
+indexes use bounded leaf chunks plus a parent root chunk, and root rows record
+the visible chunk roots at the committed basis tx. Reopen now loads latest root
+metadata before datom rows, then validates persisted latest index entries
+through root/chunk edges against rebuilt indexes. Bounded persisted index pages
+can also be loaded by offset/limit from the chunk tree, which is the first
+storage primitive needed for lazy chunk-backed cursors. The explicit persist
+API full-replaces durable datom rows from the connection's current datom log;
+the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the
 durable append fails. A first SQLite storage benchmark now measures
@@ -371,10 +384,10 @@ rebuilding it. A first Datalevin-style local write harness now measures pure
 write throughput across batch sizes and mixed read/write behavior through the
 SQLite-backed connection. A 10k-row durable run shows batch-100 writes are
 acceptable for this phase, while batch-1 and mixed read/write are dominated by
-per-commit immutable DB/index copying. The next durable milestone, when storage
-work resumes, is replacing whole-array DB/index ownership copies with shared
-immutable/chunked DB index storage, then scaling the write harness to direct
-Datalevin `write-bench` comparisons.
+per-commit immutable DB/index copying. The active durable milestone is now to
+add chunk-backed read cursors and metadata/root-pointer reopen, then replace
+whole-array DB/index ownership copies with shared immutable/chunked storage,
+and then scale the write harness to direct Datalevin `write-bench` comparisons.
 
 ## Phase 7: Dogfood
 
@@ -476,12 +489,15 @@ Do not continue durable storage by solving:
 
 The in-memory semantic core, EDN/C ABI surface, performance baseline, first
 SQLite durable loop, and MusicBrainz/Day-of-Datomic validation are now strong
-enough for the current phase. The next durable-storage gate is no longer
-proving that SQLite can open/write/close/reopen/query; that exists. The next
-durable-storage gate, when we return to storage, is:
+enough to make durable storage architecture the active phase. The next
+durable-storage gate is no longer proving that SQLite can
+open/write/close/reopen/query; that exists. The active gate is:
 
 - shared immutable/chunked DB index storage avoids per-commit whole-array
   copies while preserving immutable snapshot semantics
+- reopen loads metadata/root pointers before any bounded chunk loading or
+  datom-log recovery replay; bounded index page loading now exists, but is not
+  yet the normal `DB` representation
 - transaction boundaries and SQLite-backed report metadata rows remain durable
 - immutable DB snapshot semantics remain visible through the native ABI
 - MusicBrainz/Datomic workshop queries continue to validate correctness and

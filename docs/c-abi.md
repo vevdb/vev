@@ -890,6 +890,8 @@ Prepared query status is available through `vev_prepared_query_ok` and
 `vev_prepared_query_error`. `vev_prepared_query_edn` returns an owned EDN-ish
 description of the prepared parser value, including input specs, clauses,
 predicates, function clauses, rule calls, structured `not`/`or` groups, `ground`, `get-else`, `get-some`, pull finds, and aggregate finds.
+`vev_parse_clause_edn` returns the same owned EDN-ish parser description for a
+single where clause, useful for DataScript-style `parse-clause` tooling.
 Prepared pull patterns have the same status shape, and
 `vev_prepared_pull_pattern_edn` returns an owned EDN-ish description with
 parsed attrs, nested patterns, limits, defaults, aliases, transforms, and

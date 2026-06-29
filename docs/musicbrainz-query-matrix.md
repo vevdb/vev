@@ -146,9 +146,10 @@ The wrapper harness uses row-preserving `vev/rows` for query pull expressions
 so repeated pull maps do not collapse under Clojure set equality. Direct pull
 and pull-many workloads in the host wrapper matrix prepare pull patterns once
 per workload run through the public prepared pull-pattern handle exposed by the
-C ABI, Java wrapper, and Clojure wrapper. The same-attribute UUID lookup-ref
-pull-many case also uses a batch C ABI entry point so Clojure callers do not
-fall back to one native direct-pull call per entity.
+C ABI, Java wrapper, Clojure wrapper, Python wrapper, Rust wrapper, and Go
+wrapper. The same-attribute UUID lookup-ref pull-many case also uses a batch C
+ABI entry point so Clojure callers do not fall back to one native direct-pull
+call per entity.
 
 ## Covered
 

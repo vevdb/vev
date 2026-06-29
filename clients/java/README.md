@@ -54,6 +54,9 @@ try (Vev vev = Vev.load();
 }
 ```
 
+Parser tooling can inspect a single where clause with
+`vev.parseClauseEdn("[?e :user/name ?name]")`.
+
 Transaction functions use a host registry plus a Datomic-style installed ident
 in the DB:
 

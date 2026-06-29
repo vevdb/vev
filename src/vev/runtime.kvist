@@ -6577,6 +6577,46 @@
     (return (Value {}) false))
   (return source-row.items[position] true))
 
+(defn direct-source-var-index [names: []string, name: string] -> [index: int, ok: bool]
+  (for [existing index names]
+    (when (= existing name)
+      (return index true)))
+  (return 0 false))
+
+(defn direct-source-term-matches! [names: ^[dynamic]string, values: ^[dynamic]Value, term: Term, actual: Value] -> bool
+  (case term.kind
+    .Value (value-equal? term.value actual)
+    .Wildcard true
+    .Var
+      (let [[index index-ok] (direct-source-var-index (slice names^ 0) term.name)]
+        (if index-ok
+          (value-equal? values^[index] actual)
+          (do
+            (arr.push! names^ term.name)
+            (arr.push! values^ actual)
+            true)))
+    :else false))
+
+(defn direct-source-row-matches! [clause: Clause, source-row: Value, names: ^[dynamic]string, values: ^[dynamic]Value] -> bool
+  (let [position 0]
+    (while (< position clause.source-width)
+      (let [[actual actual-ok] (source-row-position-value source-row clause.source-width position)]
+        (when (not actual-ok)
+          (return false))
+        (let [[term term-ok] (clause-term-at-source-position clause position)]
+          (when (not term-ok)
+            (return false))
+          (when (not (direct-source-term-matches! names values term actual))
+            (return false))))
+      (set! position (+ position 1))))
+  true)
+
+(defn direct-source-var-value [names: []string, values: []Value, name: string] -> [value: Value, ok: bool]
+  (let [[index index-ok] (direct-source-var-index names name)]
+    (if index-ok
+      (return values[index] true)
+      (return (Value {}) false))))
+
 (defn clause-term-at-source-position [clause: Clause, position: int] -> [term: Term, ok: bool]
   (case position
     0 (return clause.e true)
@@ -6656,33 +6696,36 @@
 
 (defn query-relation-from-source-value-clause-typed [source: Value, clause-value: Clause] -> [rel: Query-Relation, ok: bool]
   (let [[attrs attr-sources] (clause-output-attrs clause-value "")
-        typed-columns (relation-columns-for-attrs (slice attrs 0))
-        typed-rows 0]
+        builder (query-relation-builder (slice attrs 0))]
     (when (not (= source.kind .Vector))
       (delete attrs)
       (delete attr-sources)
-      (delete-relation-columns typed-columns)
+      (delete-query-relation-builder builder)
       (return (query-relation-empty) false))
     (for [row source.items]
-      (let [next (Binding {})]
-        (if (relation-source-row-matches? clause-value row (addr next))
-          (do
-            (when (not (binding-can-add-to-relation-columns? (slice attrs 0) (slice typed-columns 0) next))
-              (delete next.items)
+      (let [names (make [dynamic]string) :defer
+            values (make [dynamic]Value) :defer]
+        (when (direct-source-row-matches! clause-value row (addr names) (addr values))
+          (let [out-values (make [dynamic]Value 0 (count attrs)) :defer]
+            (for [attr attrs]
+              (let [[value value-ok] (direct-source-var-value (slice names 0) (slice values 0) attr)]
+                (when (not value-ok)
+                  (delete attrs)
+                  (delete attr-sources)
+                  (delete-query-relation-builder builder)
+                  (return (query-relation-empty) false))
+                (arr.push! out-values value)))
+            (when (not (query-relation-builder-add-column-row-with-values! (addr builder) ([]Relation-Column []) 0 (slice out-values 0)))
               (delete attrs)
               (delete attr-sources)
-              (delete-relation-columns typed-columns)
-              (return (query-relation-empty) false))
-            (add-binding-to-relation-columns! (slice attrs 0) (addr typed-columns) next)
-            (set! typed-rows (+ typed-rows 1))
-            (delete next.items))
-          (delete next.items))))
+              (delete-query-relation-builder builder)
+              (return (query-relation-empty) false))))))
     (return (Query-Relation {attrs: attrs
                              attr-sources: attr-sources
                              attr-index: (query-relation-attr-index (slice attrs 0))
-                             tuples: (make [dynamic]Binding)
-                             typed-columns: typed-columns
-                             typed-rows: typed-rows
+                             tuples: builder.tuples
+                             typed-columns: builder.typed-columns
+                             typed-rows: builder.typed-rows
                              has-typed-columns: true}) true)))
 
 (defn query-relation-from-source-value-clause-binding-backed [source: Value, clause-value: Clause] -> Query-Relation

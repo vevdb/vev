@@ -339,6 +339,12 @@
         (strings.contains error "entity id")) (value-keyword ":tx-shape")
     :else (value-keyword ":validation")))
 
+(defn parser-clause-error-code [error: string] -> Value
+  (if (or (strings.contains error "Pattern")
+          (strings.contains error "where clauses"))
+    (value-keyword ":query-shape")
+    (parser-error-code error)))
+
 (defn prepared-binding-value [prepared: Prepared-Binding] -> Value
   (value-map
     ([]Value [(value-keyword ":ok") (value-bool prepared.ok)
@@ -363,6 +369,26 @@
               (value-keyword ":error") (value-string prepared.error)
               (value-keyword ":error-code") (parser-error-code prepared.error)
               (value-keyword ":vars") (parser-string-vector-value (slice prepared.vars 0) true)])))
+
+(defn prepared-clause-value [prepared: Prepared-Clause] -> Value
+  (let [rule-calls (make [dynamic]Value 0 (count prepared.rule-calls))]
+    (defer (delete rule-calls))
+    (for [call prepared.rule-calls]
+      (arr.push! rule-calls (parser-rule-call-value call)))
+    (value-map
+      ([]Value [(value-keyword ":ok") (value-bool prepared.ok)
+                (value-keyword ":error") (value-string prepared.error)
+                (value-keyword ":error-code") (parser-clause-error-code prepared.error)
+                (value-keyword ":where") (parser-query-steps-value (slice prepared.where-steps 0))
+                (value-keyword ":clauses") (parser-clauses-value (slice prepared.clauses 0))
+                (value-keyword ":predicates") (parser-predicates-value prepared.predicates)
+                (value-keyword ":functions") (parser-function-clauses-value prepared.function-clauses)
+                (value-keyword ":rule-calls") (value-vector (slice rule-calls 0))
+                (value-keyword ":grounds") (parser-grounds-value (slice prepared.grounds 0))
+                (value-keyword ":get-elses") (parser-get-elses-value (slice prepared.get-elses 0))
+                (value-keyword ":get-somes") (parser-get-somes-value (slice prepared.get-somes 0))
+                (value-keyword ":not-groups") (parser-not-groups-value (slice prepared.not-groups 0))
+                (value-keyword ":or-groups") (parser-or-groups-value (slice prepared.or-groups 0))]))))
 
 (defn prepared-rules-value [prepared: Prepared-Rules] -> Value
   (let [rules (make [dynamic]Value 0 (count prepared.rules))]
@@ -520,6 +546,20 @@
 (defn prepared-with-error [error: string] -> Prepared-With
   (Prepared-With {ok: false error: error vars: (make [dynamic]string)}))
 
+(defn prepared-clause-error [error: string] -> Prepared-Clause
+  (Prepared-Clause {ok: false
+                    error: error
+                    clauses: (make [dynamic]Clause)
+                    predicates: (make [dynamic]Predicate)
+                    function-clauses: (make [dynamic]Function-Clause)
+                    rule-calls: (make [dynamic]Rule-Call)
+                    get-elses: (make [dynamic]Get-Else)
+                    get-somes: (make [dynamic]Get-Some)
+                    grounds: (make [dynamic]Ground)
+                    not-groups: (make [dynamic]Not-Group)
+                    or-groups: (make [dynamic]Or-Group)
+                    where-steps: (make [dynamic]Query-Step)}))
+
 (defn edn-in-binding-from-node [doc: EDN-Doc, node-index: int] -> [binding: Input-Binding, ok: bool, error: string]
   (when (= node-index -1)
     (return (input-binding-none) false "missing :in binding"))
@@ -588,6 +628,65 @@
         (set! cursor doc.nodes[cursor].next-sibling))
       (delete doc.nodes)
       (Prepared-With {ok: true error: "" vars: vars}))))
+
+(defn parse-clause-text [text: string] -> Prepared-Clause
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return (prepared-clause-error read-error)))
+    (when (= doc.root -1)
+      (delete doc.nodes)
+      (return (prepared-clause-error "Cannot parse empty clause")))
+    (let [clauses (make [dynamic]Clause)
+          predicates (make [dynamic]Predicate)
+          function-clauses (make [dynamic]Function-Clause)
+          rule-calls (make [dynamic]Rule-Call)
+          get-elses (make [dynamic]Get-Else)
+          get-somes (make [dynamic]Get-Some)
+          grounds (make [dynamic]Ground)
+          not-groups (make [dynamic]Not-Group)
+          or-groups (make [dynamic]Or-Group)
+          where-steps (make [dynamic]Query-Step)
+          [ok error] (append-edn-where-or-rule-step!
+                       (addr clauses)
+                       (addr predicates)
+                       (addr function-clauses)
+                       (addr get-elses)
+                       (addr get-somes)
+                       (addr grounds)
+                       (addr not-groups)
+                       (addr or-groups)
+                       (addr rule-calls)
+                       (addr where-steps)
+                       doc
+                       doc.root)]
+      (delete doc.nodes)
+      (if ok
+        (Prepared-Clause {ok: true
+                          error: ""
+                          clauses: clauses
+                          predicates: predicates
+                          function-clauses: function-clauses
+                          rule-calls: rule-calls
+                          get-elses: get-elses
+                          get-somes: get-somes
+                          grounds: grounds
+                          not-groups: not-groups
+                          or-groups: or-groups
+                          where-steps: where-steps})
+        (do
+          (delete clauses)
+          (delete predicates)
+          (delete function-clauses)
+          (delete rule-calls)
+          (delete get-elses)
+          (delete get-somes)
+          (delete grounds)
+          (delete not-groups)
+          (delete or-groups)
+          (delete where-steps)
+          (prepared-clause-error error))))))
 
 (defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
   (let [node doc.nodes[node-index]]

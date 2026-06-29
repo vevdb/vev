@@ -614,6 +614,7 @@ engine=vev-sqlite workload=batch-resolve-tx n=100 min_us=171 median_us=1180 p90_
 engine=vev-sqlite workload=batch-apply-resolved n=100 min_us=743 median_us=2622 p90_us=3221 max_us=3260 samples=20
 engine=vev-sqlite workload=append-log-copy n=100 min_us=181 median_us=193 p90_us=225 max_us=263 samples=30
 engine=vev-sqlite workload=append-index-build n=100 min_us=1376 median_us=1396 p90_us=1417 max_us=1476 samples=30
+engine=vev-sqlite workload=persisted-index-load n=2000 ...
 engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=43157 median_us=43740 p90_us=44350 max_us=45349 samples=30
 engine=vev-sqlite workload=reopened-query n=2000 min_us=17 median_us=18 p90_us=22 max_us=212 samples=30
 ```
@@ -634,8 +635,11 @@ ids sort after existing ids. The pipeline split shows snapshot creation is now
 tens of microseconds, resolution is around 1.2ms, and applying already-resolved
 append ops is around 2.6ms. The append-only core rows show that copying the
 current datom log is sub-millisecond and incremental index construction is
-around 1.4ms, so the remaining write work is now mostly index ownership/copy
-structure plus the SQLite commit.
+around 1.4ms. The persisted-index-load row is the first storage-architecture
+measurement for chunk-backed reopen: it follows latest root pointers and
+materializes persisted index entries, without parsing datom rows or building a
+full `DB`. The remaining write/open work is now mostly index ownership/copy
+structure, chunk-backed `DB` snapshots, and the SQLite commit.
 
 ## SQLite Write Bench
 
