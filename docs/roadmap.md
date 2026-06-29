@@ -370,8 +370,9 @@ schema, pull, entity helper, and general `Clause-Index-Scan` paths now go
 through a resident `DB-Index-View` boundary, which is the first query-facing
 boundary for swapping resident arrays for persisted cursors. Optimized
 entity-star, threshold, self-join, two-attribute, entity-attribute, entity-int,
-and entity string/int projection operators also consume the same boundary for
-their `avet`/`aevt`/`eavt` scans. The explicit persist API
+entity string/int, top-N aggregate, and missing-attribute projection operators
+also consume the same boundary for their `avet`/`aevt`/`eavt` scans. The
+explicit persist API
 full-replaces durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the

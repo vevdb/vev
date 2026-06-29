@@ -69,9 +69,9 @@ write-facing code a place to accept chunk-backed index views later. The general
 `Clause-Index-Scan` query operator now also carries a `DB-Index-View` instead
 of a raw index slice, so ordinary clause planning/matching is starting to use
 the same storage-facing abstraction. The optimized entity-star, threshold,
-self-join, two-attribute, entity-attribute, entity-int, and entity string/int
-projection operators use the same boundary for their `avet`/`aevt`/`eavt`
-scans.
+self-join, two-attribute, entity-attribute, entity-int, entity string/int,
+top-N aggregate, and missing-attribute projection operators use the same
+boundary for their `avet`/`aevt`/`eavt` scans.
 This is still a guarded compatibility path: Vev materializes datom rows and
 rebuilds indexes before validation. Wiring query/reopen to use chunk-backed DB
 snapshots and paged index cursors is the next implementation step.
@@ -90,10 +90,10 @@ snapshots and paged index cursors is the next implementation step.
    exists with cached-page `count`/`at` access. Public datom index APIs and
    key transaction/schema/validation, pull, entity helper, general
    `Clause-Index-Scan`, entity-star, threshold, self-join, two-attribute,
-   entity-attribute, entity-int, and entity string/int projection paths now use
-   a resident index-view boundary. The remaining work is to migrate the
-   remaining specialized query operators and then add a persisted cursor-backed
-   implementation.
+   entity-attribute, entity-int, entity string/int, top-N aggregate, and
+   missing-attribute projection paths now use a resident index-view boundary.
+   The remaining work is to migrate the remaining specialized query operators
+   and then add a persisted cursor-backed implementation.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are
