@@ -572,7 +572,7 @@ serializes them through the same EDN/query path:
 ```clojure
 (require '[vev.core :as vev])
 
-(def conn (vev/create-conn "build/lib/libvev.dylib"))
+(def conn (vev/create-conn))
 
 (vev/transact! conn
   [{:db/id 1 :user/name "Ada"}])
@@ -606,7 +606,7 @@ portable parser description as Clojure data.
 Durable connections use `connect`:
 
 ```clojure
-(def conn (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite"))
+(def conn (vev/connect "app.vev.sqlite"))
 
 (vev/connection-info conn)
 (vev/transact! conn [{:db/id 1 :user/name "Ada"}])

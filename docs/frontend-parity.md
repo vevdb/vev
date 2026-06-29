@@ -52,7 +52,7 @@ The Clojure package is a host adapter, not a separate parser. Its public API is
 intended to feel close to Datomic/DataScript:
 
 ```clojure
-(def conn (vev/create-conn "build/lib/libvev.dylib"))
+(def conn (vev/create-conn))
 
 (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
 

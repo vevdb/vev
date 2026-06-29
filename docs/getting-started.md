@@ -25,7 +25,7 @@ The Clojure API is the most Datomic-shaped public wrapper today:
 ```clojure
 (require '[vev.core :as vev])
 
-(def conn (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite"))
+(def conn (vev/create-conn))
 
 (vev/transact! conn
   [{:db/id 1
@@ -43,10 +43,24 @@ The Clojure API is the most Datomic-shaped public wrapper today:
 (vev/pull db [:artist/name] 1)
 ```
 
+Durability is a separate step:
+
+```clojure
+(def durable (vev/connect "app.vev.sqlite"))
+```
+
 For local development from this repo:
 
 ```sh
-clojure -M:clj-dev examples/clojure/getting_started.clj build/lib/libvev.dylib
+VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev examples/clojure/getting_started.clj
+```
+
+That `VEV_LIB` setting is local repo setup only. The intended published
+Clojure experience is a normal deps.edn dependency that loads the platform
+native library itself:
+
+```clojure
+{:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
 ```
 
 DB snapshots are passable immutable values. The wrapper has JVM cleanup

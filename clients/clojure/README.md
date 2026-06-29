@@ -1,11 +1,54 @@
 # Vev Clojure
 
-This is the first Clojure package layer for Vev. It depends on the JVM wrapper
-in `clients/java`, which uses Java 21 Foreign Function & Memory to call the
-native Vev shared library.
+This is the Clojure package layer for Vev. It depends on the JVM wrapper in
+`clients/java`, which uses Java 21 Foreign Function & Memory to call the native
+Vev shared library.
 
 The public API accepts ordinary Clojure data and serializes it to the same EDN
 text frontend used by C, Python, Rust, and Java callers.
+
+## Intended Published Usage
+
+Normal application setup should be one dependency. The package should load the
+right platform native library itself:
+
+```clojure
+{:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
+```
+
+Application code should not pass Java paths or `libvev.dylib` around:
+
+```clojure
+(require '[vev.core :as vev])
+
+(def conn (vev/create-conn))
+
+(vev/transact! conn
+  [{:db/id 1
+    :user/name "Ada"
+    :user/email "ada@example.com"}])
+
+(def db (vev/db conn))
+
+(vev/q
+  '[:find ?name
+    :where [?e :user/name ?name]]
+  db)
+```
+
+Durable usage should be similarly direct:
+
+```clojure
+(def conn (vev/connect "app.vev.sqlite"))
+
+(vev/transact! conn [{:db/id 1 :user/name "Ada"}])
+(vev/q '[:find ?name :where [?e :user/name ?name]] (vev/db conn))
+```
+
+The current repo has not published the Java/Clojure/native artifacts yet, so
+local development still has extra setup.
+
+## Local Development
 
 Current local development usage is path-based:
 
@@ -23,36 +66,13 @@ When developing from the repo root, the root `:clj-dev` alias adds the locally
 built Java classes and the required JVM flags:
 
 ```sh
-clojure -M:clj-dev examples/clojure/getting_started.clj build/lib/libvev.dylib
+VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev examples/clojure/getting_started.clj
 ```
 
-The planned published coordinate is:
-
-```clojure
-{:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
-```
-
-The package still expects a locally built native library path today, usually
-`build/lib/libvev.dylib`. A later packaged JVM distribution should use
-`dev.vevdb/vev-java` plus platform native artifacts.
-
-```clojure
-(require '[vev.core :as vev])
-
-(def conn (vev/create-conn "build/lib/libvev.dylib"))
-
-(vev/transact! conn
-  [{:db/id 1
-    :user/name "Ada"
-    :user/email "ada@example.com"}])
-
-(def db (vev/db conn))
-
-(vev/q
-  '[:find ?name
-    :where [?e :user/name ?name]]
-  db)
-```
+That command is a repo smoke/development concern, not the desired public API.
+Until native artifacts are packaged, no-arg `create-conn` and one-arg
+`connect` resolve the native library from the `vev.library` JVM property, then
+`VEV_LIB`, then `build/lib/libvev.dylib`.
 
 `q` accepts both DB-first Vev style and query-first Datomic/DataScript style:
 
@@ -155,7 +175,7 @@ Durable connections use the same transaction and DB-value query shape. The
 current backend is SQLite:
 
 ```clojure
-(def durable (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite"))
+(def durable (vev/connect "app.vev.sqlite"))
 
 (vev/connection-info durable)
 ;; => {:backend :sqlite, :path "app.vev.sqlite", :basis-t 0, :tx-count 0, :tx-ids []}
