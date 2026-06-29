@@ -135,6 +135,30 @@ def main() -> int:
                         raise RuntimeError("unexpected column batch kind")
                     if emails != ["ada@example.com", "grace@example.com"]:
                         raise RuntimeError("unexpected column batch rows")
+
+                with all_emails_query.statement() as stmt:
+                    columns = stmt.columns(conn)
+                    if columns is None:
+                        raise RuntimeError("expected live statement column batch")
+                    emails = sorted(row[0] for row in columns.rows())
+                    if columns.kinds != (vev.VEV_COLUMN_STRING,):
+                        raise RuntimeError("unexpected live statement column batch kind")
+                    if emails != ["ada@example.com", "grace@example.com"]:
+                        raise RuntimeError("unexpected live statement column batch rows")
+
+                    with conn.db() as db:
+                        columns = stmt.columns(db)
+                        if columns is None:
+                            raise RuntimeError("expected snapshot statement column batch")
+                        emails = sorted(row[0] for row in columns.rows())
+                        if columns.kinds != (vev.VEV_COLUMN_STRING,):
+                            raise RuntimeError(
+                                "unexpected snapshot statement column batch kind"
+                            )
+                        if emails != ["ada@example.com", "grace@example.com"]:
+                            raise RuntimeError(
+                                "unexpected snapshot statement column batch rows"
+                            )
             finally:
                 all_emails_query.close()
 

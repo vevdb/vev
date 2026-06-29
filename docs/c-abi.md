@@ -436,7 +436,9 @@ with vev.connect("app.vev.sqlite") as durable:
 The smoke also exercises DB-value `with`, `db-with`, and `conn-from-db` so the
 Python path follows the same immutable snapshot contract as C, Java, Clojure,
 and Rust. Transactions can use `transact_report` / `with_report` for typed
-report maps, while `transact` / `with_text` remain string helpers.
+report maps, while `transact` / `with_text` remain string helpers. Prepared
+queries and bound statements can return generic typed column batches without
+materializing result rows.
 
 ## Rust Example
 
