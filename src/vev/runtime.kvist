@@ -3963,16 +3963,19 @@
 
 (defn schema-tuple-attrs-for-entity [db: DB, entity: u64] -> [dynamic]string
   (let [out (make [dynamic]string)
-        indexes (slice db.eavt 0)
-        low (lower-bound-index db indexes "eavt-ea" entity ":db/tupleAttrs" (Value {}))
-        high (upper-bound-index db indexes "eavt-ea" entity ":db/tupleAttrs" (Value {}))]
-    (for [datom-index (slice indexes low high)]
-      (let [datom db.datoms[datom-index]]
+        view (db-index-view db .EAVT)
+        low (lower-bound-index-view db view "eavt-ea" entity ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index-view db view "eavt-ea" entity ":db/tupleAttrs" (Value {}))
+        i low]
+    (while (< i high)
+      (let [datom-index (db-index-view-at view i)
+            datom db.datoms[datom-index]]
         (when (and (datom-current-at? db datom-index)
                    (= datom.v.kind .Vector))
           (for [item datom.v.items]
             (when (= item.kind .Keyword)
-              (arr.push! out item.text))))))
+              (arr.push! out item.text)))))
+      (set! i (+ i 1)))
     out))
 
 (defn schema-attr-for-entity [db: DB, entity: u64, attr: string] -> Schema-Attr
@@ -4010,15 +4013,18 @@
 
 (defn db-schema [db: DB] -> [dynamic]Schema-Attr
   (let [out (make [dynamic]Schema-Attr)
-        indexes (slice db.aevt 0)
-        low (lower-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 ":db/ident" (Value {}))]
-    (for [datom-index (slice indexes low high)]
-      (let [datom db.datoms[datom-index]]
+        view (db-index-view db .AEVT)
+        low (lower-bound-index-view db view "aevt" 0 ":db/ident" (Value {}))
+        high (upper-bound-index-view db view "aevt" 0 ":db/ident" (Value {}))
+        i low]
+    (while (< i high)
+      (let [datom-index (db-index-view-at view i)
+            datom db.datoms[datom-index]]
         (when (and (datom-current-at? db datom-index)
                    (= datom.v.kind .Keyword)
                    (not (schema-has-attr? (slice out 0) datom.v.text)))
-          (arr.push! out (schema-attr-for-entity db datom.e datom.v.text)))))
+          (arr.push! out (schema-attr-for-entity db datom.e datom.v.text))))
+      (set! i (+ i 1)))
     out))
 
 (defn delete-schema [schema: [dynamic]Schema-Attr]
@@ -4031,16 +4037,19 @@
         [schema-e schema-ok] (schema-entity-for-attr db attr)]
     (when (not schema-ok)
       (return out))
-    (let [indexes (slice db.eavt 0)
-          low (lower-bound-index db indexes "eavt-ea" schema-e ":db/tupleAttrs" (Value {}))
-          high (upper-bound-index db indexes "eavt-ea" schema-e ":db/tupleAttrs" (Value {}))]
-      (for [datom-index (slice indexes low high)]
-        (let [datom db.datoms[datom-index]]
+    (let [view (db-index-view db .EAVT)
+          low (lower-bound-index-view db view "eavt-ea" schema-e ":db/tupleAttrs" (Value {}))
+          high (upper-bound-index-view db view "eavt-ea" schema-e ":db/tupleAttrs" (Value {}))
+          i low]
+      (while (< i high)
+        (let [datom-index (db-index-view-at view i)
+              datom db.datoms[datom-index]]
           (when (and (datom-current-at? db datom-index)
                      (= datom.v.kind .Vector))
             (for [item datom.v.items]
               (when (= item.kind .Keyword)
-                (arr.push! out item.text)))))))
+                (arr.push! out item.text)))))
+        (set! i (+ i 1))))
     out))
 
 (defn tuple-schema-contains? [schema: Tuple-Schema, attr: string] -> bool
@@ -4051,11 +4060,13 @@
 
 (defn tuple-schemas-containing [db: DB, attr: string] -> [dynamic]Tuple-Schema
   (let [out (make [dynamic]Tuple-Schema)
-        indexes (slice db.aevt 0)
-        low (lower-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 ":db/tupleAttrs" (Value {}))]
-    (for [datom-index (slice indexes low high)]
-      (let [datom db.datoms[datom-index]]
+        view (db-index-view db .AEVT)
+        low (lower-bound-index-view db view "aevt" 0 ":db/tupleAttrs" (Value {}))
+        high (upper-bound-index-view db view "aevt" 0 ":db/tupleAttrs" (Value {}))
+        i low]
+    (while (< i high)
+      (let [datom-index (db-index-view-at view i)
+            datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
           (let [[tuple-attr ident-ok] (schema-ident-for-entity db datom.e)]
             (when ident-ok
@@ -4063,7 +4074,8 @@
                     schema (Tuple-Schema {attr: tuple-attr attrs: attrs})]
                 (if (tuple-schema-contains? schema attr)
                   (arr.push! out schema)
-                  (delete attrs))))))))
+                  (delete attrs)))))))
+      (set! i (+ i 1)))
     out))
 
 (defn schema-indexed? [db: DB, attr: string] -> bool
@@ -4117,14 +4129,17 @@
     (schema-cardinality-one? db attr)))
 
 (defn unique-conflict? [db: DB, op: Tx-Op] -> bool
-  (let [indexes (slice db.avet 0)
-        low (lower-bound-index db indexes "avet" 0 op.a op.v)
-        high (upper-bound-index db indexes "avet" 0 op.a op.v)]
-    (for [datom-index (slice indexes low high)]
-      (let [datom db.datoms[datom-index]]
+  (let [view (db-index-view db .AVET)
+        low (lower-bound-index-view db view "avet" 0 op.a op.v)
+        high (upper-bound-index-view db view "avet" 0 op.a op.v)
+        i low]
+    (while (< i high)
+      (let [datom-index (db-index-view-at view i)
+            datom db.datoms[datom-index]]
         (when (and (datom-current-at? db datom-index)
                    (not (= datom.e op.e)))
-          (return true)))))
+          (return true)))
+      (set! i (+ i 1))))
   false)
 
 (defn schema-unique? [db: DB, attr: string] -> bool
@@ -4195,12 +4210,15 @@
     (when (not resolved-ok)
       (return 0 false))
     (set! lookup-value resolved)
-    (let [indexes (slice db.avet 0)
-          low (lower-bound-index db indexes "avet" 0 attr lookup-value)
-          high (upper-bound-index db indexes "avet" 0 attr lookup-value)]
-      (for [datom-index (slice indexes low high)]
-        (when (datom-current-at? db datom-index)
-          (return db.datoms[datom-index].e true)))))
+    (let [view (db-index-view db .AVET)
+          low (lower-bound-index-view db view "avet" 0 attr lookup-value)
+          high (upper-bound-index-view db view "avet" 0 attr lookup-value)
+          i low]
+      (while (< i high)
+        (let [datom-index (db-index-view-at view i)]
+          (when (datom-current-at? db datom-index)
+            (return db.datoms[datom-index].e true)))
+        (set! i (+ i 1)))))
   (return 0 false))
 
 (defn resolve-lookup-ref-checked [db: DB, attr: string, value: Value] -> [e: u64, ok: bool, error: string]
@@ -4212,14 +4230,17 @@
       (return 0 false "lookup ref not found"))))
 
 (defn current-value-exists? [db: DB, entity: u64, attr: string, value: Value] -> bool
-  (let [indexes (slice db.eavt 0)
-        low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
-        high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
-    (for [datom-index (slice indexes low high)]
-      (let [datom db.datoms[datom-index]]
+  (let [view (db-index-view db .EAVT)
+        low (lower-bound-index-view db view "eavt-ea" entity attr (Value {}))
+        high (upper-bound-index-view db view "eavt-ea" entity attr (Value {}))
+        i low]
+    (while (< i high)
+      (let [datom-index (db-index-view-at view i)
+            datom db.datoms[datom-index]]
         (when (and (datom-current-at? db datom-index)
                    (value-equal? datom.v value))
-          (return true)))))
+          (return true)))
+      (set! i (+ i 1))))
   false)
 
 (defn current-attr-exists? [db: DB, entity: u64, attr: string] -> bool
