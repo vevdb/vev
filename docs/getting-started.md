@@ -39,6 +39,12 @@ verifies the CLI against a temporary durable Vev store. `scripts/smoke_packages.
 then verifies the current local C SDK, JVM, Python, Node, and Go package shapes
 from temporary projects/directories.
 
+The current durable backend uses SQLite internally and the native library links
+to the platform SQLite runtime. Application code still uses Vev APIs and Vev
+store paths such as `app.vev`; no SQLite schema setup is required. See
+[runtime-dependencies.md](runtime-dependencies.md) for the per-client setup
+story.
+
 ## CLI
 
 The first CLI is a thin tool over the same native engine and durable connection

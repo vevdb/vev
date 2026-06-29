@@ -324,14 +324,14 @@ vev_prepared_query_free(query);
 vev_conn_close(conn);
 ```
 
-Durable connections use a separate opaque handle. The current backend is
-SQLite, selected by a plain filesystem path or `sqlite://...` URI:
+Durable connections use a separate opaque handle. Application code passes a Vev
+store path; the current local backend uses SQLite internally:
 
 ```c
 vev_prepared_query_t durable_query =
     vev_prepare_query_edn("[:find ?e ?email :where [?e :user/email ?email]]");
 
-vev_connection_t durable = vev_connect("app.vev.sqlite");
+vev_connection_t durable = vev_connect("app.vev");
 if (!vev_connection_ok(durable)) {
     const char *error = vev_connection_error(durable);
     vev_string_free(error);
@@ -437,7 +437,7 @@ convert to their EDN text strings, for example `":user/name"`.
 Durable connections use the same DB-value query path:
 
 ```python
-with vev.connect("app.vev.sqlite") as durable:
+with vev.connect("app.vev") as durable:
     assert durable.backend() == "sqlite"
     assert durable.basis_t() == 0
     assert durable.tx_count() == 0
@@ -523,7 +523,7 @@ the underlying ABI operation. Durable connections use `connect(path)` and query
 through immutable DB snapshots:
 
 ```java
-try (Vev.DurableConnection durable = vev.connect("app.vev.sqlite")) {
+try (Vev.DurableConnection durable = vev.connect("app.vev")) {
     String backend = durable.backend();
     long basisT = durable.basisT();
     long txCount = durable.txCount();
@@ -606,7 +606,7 @@ portable parser description as Clojure data.
 Durable connections use `connect`:
 
 ```clojure
-(def conn (d/connect "app.vev.sqlite"))
+(def conn (d/connect "app.vev"))
 
 (d/connection-info conn)
 (d/transact! conn [{:db/id 1 :user/name "Ada"}])

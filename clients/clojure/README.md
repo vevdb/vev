@@ -40,7 +40,7 @@ Application code should not pass Java paths or native library paths around:
 Durable usage should be similarly direct:
 
 ```clojure
-(def conn (d/connect "app.vev.sqlite"))
+(def conn (d/connect "app.vev"))
 
 (d/transact! conn [{:db/id 1 :user/name "Ada"}])
 (d/q '[:find ?name :where [?e :user/name ?name]] (d/db conn))
@@ -50,6 +50,10 @@ The current repo has not published the Java/Clojure/native artifacts yet, so
 local development still has extra setup. The Java loader already supports the
 future packaged shape by checking for bundled native resources after explicit
 local paths.
+
+The current durable backend uses SQLite internally, and the native Vev library
+depends on the platform SQLite runtime. Clojure code does not configure SQLite;
+it opens a Vev store with `d/connect`.
 
 ## Local Development
 

@@ -22,3 +22,7 @@ Likely package split before publishing:
 
 The current smoke already follows that wrapper direction: native handles are
 owned by Rust structs and released through `Drop`.
+
+Durable stores are opened through Vev APIs with paths such as `app.vev`. The
+Rust wrapper links to `libvev`; the current native library depends on the
+platform SQLite runtime, but Rust application code does not set up SQLite.

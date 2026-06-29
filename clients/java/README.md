@@ -65,3 +65,8 @@ bundled-native loading path.
 
 Run `scripts/smoke_jvm_package.sh` to test the local Maven repo from a
 temporary deps.edn project with only `dev.vevdb/vev-clj` as the Vev dependency.
+
+Durable stores are opened through Vev APIs with paths such as `app.vev`. The
+current native library depends on the platform SQLite runtime. Java and Clojure
+applications do not configure SQLite directly; they load Vev and call
+`connect`.

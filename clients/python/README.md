@@ -31,4 +31,8 @@ Planned package shape:
 
 The current API already wraps native handles with context managers for
 connections, DB snapshots, prepared queries, statements, transaction reports,
-and durable SQLite-backed connections.
+and durable Vev connections.
+
+Durable stores are opened through Vev APIs with paths such as `app.vev`. The
+Python package loads `libvev`; the current native library depends on the
+platform SQLite runtime, but Python application code does not set up SQLite.

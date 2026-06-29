@@ -29,3 +29,7 @@ C program.
 
 The C API owns opaque handles explicitly. Returned strings and arrays must be
 freed with the matching `vev_*_free` function documented in `include/vev.h`.
+
+Durable stores are opened through Vev APIs, for example with a path like
+`app.vev`. The current native library depends on the platform SQLite runtime;
+no SQLite schema setup is required by the C application.

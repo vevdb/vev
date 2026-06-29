@@ -28,3 +28,7 @@ The first polished package should keep the same basic shape:
 
 `scripts/smoke_go_package.sh` verifies that this package can be imported from a
 separate Go module using a local `replace` to this checkout.
+
+Durable stores are opened through Vev APIs with paths such as `app.vev`. The Go
+package uses cgo over `libvev`; the current native library depends on the
+platform SQLite runtime, but Go application code does not set up SQLite.

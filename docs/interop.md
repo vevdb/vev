@@ -66,6 +66,12 @@ local durable backend uses SQLite internally, but the CLI and host wrappers
 should present this as a Vev connection/store, not as application code
 programming SQLite directly.
 
+Runtime dependency details are tracked in
+[`runtime-dependencies.md`](runtime-dependencies.md). The current baseline is a
+documented system SQLite runtime dependency for `libvev`; future packages may
+bundle or statically link SQLite per platform without changing the public Vev
+API.
+
 The JVM path has a bundled-native loading shape. The Java loader checks
 explicit path configuration, local `build/lib`, then classpath resources under
 `dev/vevdb/vev/native/<platform>/<library>`. `scripts/stage_jvm_native.sh`

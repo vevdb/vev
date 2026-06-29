@@ -42,7 +42,7 @@
          :where [?e :user/name ?name]]
        next-db)
 
-  (def durable (d/connect "app.vev.sqlite"))
+  (def durable (d/connect "app.vev"))
 
   (d/transact! durable [{:db/id 1 :user/name "Durable Ada"}])
 
