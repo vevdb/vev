@@ -536,6 +536,44 @@ sqlite_latest_index_root_basis_raw :: proc(handle: rawptr) -> (u64, bool, string
     return 0, false, sqlite_error_text(db, \"sqlite latest index root read failed\")
 }
 
+sqlite_latest_index_chunk_row_count_raw :: proc(handle: rawptr, index_name: string) -> (u64, u64, bool, string) {
+    if handle == nil {
+        return 0, 0, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"\"
+    switch index_name {
+    case \":eavt\":
+        sql = \"SELECT r.basis_tx, c.row_count FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.eavt_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":aevt\":
+        sql = \"SELECT r.basis_tx, c.row_count FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.aevt_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":avet\":
+        sql = \"SELECT r.basis_tx, c.row_count FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.avet_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":vaet\":
+        sql = \"SELECT r.basis_tx, c.row_count FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.vaet_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case:
+        return 0, 0, false, \"unknown Vev index name\"
+    }
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return 0, 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return 0, 0, false, sqlite_error_text(db, \"sqlite prepare latest index chunk failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        return u64(sqlite3_column_int64(stmt, 0)), u64(sqlite3_column_int64(stmt, 1)), true, \"\"
+    }
+    if rc == SQLITE_DONE {
+        return 0, 0, false, \"sqlite DB has no Vev index roots\"
+    }
+    return 0, 0, false, sqlite_error_text(db, \"sqlite latest index chunk read failed\")
+}
+
 sqlite_clear_index_storage_raw :: proc(handle: rawptr) -> (bool, string) {
     if handle == nil {
         return false, \"sqlite handle was nil\"
@@ -601,6 +639,33 @@ sqlite_insert_index_root_raw :: proc(handle: rawptr, basis_tx: u64, eavt_chunk_i
         return 0, false, sqlite_error_text(db, \"sqlite index root insert failed\")
     }
     return u64(sqlite3_last_insert_rowid(db)), true, \"\"
+}
+
+sqlite_insert_index_chunk_edge_raw :: proc(handle: rawptr, parent_chunk_id: u64, child_chunk_id: u64, ordinal: i64) -> (bool, string) {
+    if handle == nil {
+        return false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"INSERT INTO vev_index_chunk_edges (parent_chunk_id, child_chunk_id, ordinal) VALUES (?, ?, ?)\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return false, sqlite_error_text(db, \"sqlite prepare index chunk edge insert failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if sqlite3_bind_int64(stmt, 1, i64(parent_chunk_id)) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 2, i64(child_chunk_id)) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 3, ordinal) != SQLITE_OK {
+        return false, sqlite_error_text(db, \"sqlite bind index chunk edge insert failed\")
+    }
+    if sqlite3_step(stmt) != SQLITE_DONE {
+        return false, sqlite_error_text(db, \"sqlite index chunk edge insert failed\")
+    }
+    return true, \"\"
 }
 
 sqlite_insert_datom_raw :: proc(handle: rawptr, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
@@ -941,6 +1006,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (set! basis datom.tx)))
     basis))
 
+(def sqlite-index-leaf-chunk-size 128)
+
 (defn index-int-slice-text [items: []int] -> string
   (let [builder (kstr.builder)]
     (defer (kstr.destroy! (addr builder)))
@@ -973,18 +1040,45 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (delete payload)
     (return inserted-id inserted-ok inserted-error)))
 
+(defn persist-bounded-index-chunks-sqlite-handle [handle: rawptr, basis-tx: u64, index-name: string, items: []int] -> [chunk-id: u64, ok: bool, error: string]
+  (when (<= (count items) sqlite-index-leaf-chunk-size)
+    (return (persist-one-index-chunk-sqlite-handle handle basis-tx index-name items)))
+  (let [leaf-ids (make [dynamic]u64) :defer
+        start 0]
+    (while (< start (count items))
+      (let [end (min (+ start sqlite-index-leaf-chunk-size) (count items))
+            [leaf-id leaf-ok leaf-error] (persist-one-index-chunk-sqlite-handle handle basis-tx index-name (slice items start end))]
+        (when (not leaf-ok)
+          (return 0 false leaf-error))
+        (arr.push! leaf-ids leaf-id)
+        (set! start end)))
+    (let [first-key (index-bound-text items true)
+          last-key (index-bound-text items false)
+          payload (string-owned "[]")
+          [parent-id parent-ok parent-error] (sqlite-insert-index-chunk-raw handle index-name 1 first-key last-key (i64 (count items)) payload basis-tx)]
+      (delete first-key)
+      (delete last-key)
+      (delete payload)
+      (when (not parent-ok)
+        (return 0 false parent-error))
+      (for [ordinal (arr.range 0 (count leaf-ids))]
+        (let [[edge-ok edge-error] (sqlite-insert-index-chunk-edge-raw handle parent-id leaf-ids[ordinal] (i64 ordinal))]
+          (when (not edge-ok)
+            (return 0 false edge-error))))
+      (return parent-id true ""))))
+
 (defn persist-index-root-sqlite-handle [handle: rawptr, db: DB] -> [ok: bool, error: string]
   (let [basis-tx (db-basis-tx db)
-        [eavt-id eavt-ok eavt-error] (persist-one-index-chunk-sqlite-handle handle basis-tx ":eavt" (slice db.eavt 0))]
+        [eavt-id eavt-ok eavt-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":eavt" (slice db.eavt 0))]
     (when (not eavt-ok)
       (return false eavt-error))
-    (let [[aevt-id aevt-ok aevt-error] (persist-one-index-chunk-sqlite-handle handle basis-tx ":aevt" (slice db.aevt 0))]
+    (let [[aevt-id aevt-ok aevt-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":aevt" (slice db.aevt 0))]
       (when (not aevt-ok)
         (return false aevt-error))
-      (let [[avet-id avet-ok avet-error] (persist-one-index-chunk-sqlite-handle handle basis-tx ":avet" (slice db.avet 0))]
+      (let [[avet-id avet-ok avet-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":avet" (slice db.avet 0))]
         (when (not avet-ok)
           (return false avet-error))
-        (let [[vaet-id vaet-ok vaet-error] (persist-one-index-chunk-sqlite-handle handle basis-tx ":vaet" (slice db.vaet 0))]
+        (let [[vaet-id vaet-ok vaet-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":vaet" (slice db.vaet 0))]
           (when (not vaet-ok)
             (return false vaet-error))
           (let [[_ root-ok root-error] (sqlite-insert-index-root-raw handle basis-tx eavt-id aevt-id avet-id vaet-id)]
@@ -1204,6 +1298,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn sqlite-conn-latest-index-root-basis [store: ^SQLite-Conn] -> [basis-tx: u64, ok: bool, error: string]
   (sqlite-latest-index-root-basis-raw store^.handle))
 
+(defn sqlite-conn-latest-index-chunk-row-count [store: ^SQLite-Conn, index-name: string] -> [basis-tx: u64, row-count: u64, ok: bool, error: string]
+  (sqlite-latest-index-chunk-row-count-raw store^.handle index-name))
+
 (defn sqlite-storage-architecture [path: string] -> [architecture: string, ok: bool, error: string]
   (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
     (when (not open-ok)
@@ -1235,6 +1332,14 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (let [[basis basis-ok basis-error] (sqlite-latest-index-root-basis-raw handle)]
       (sqlite-close-live-raw handle)
       (return basis basis-ok basis-error))))
+
+(defn sqlite-latest-index-chunk-row-count [path: string, index-name: string] -> [basis-tx: u64, row-count: u64, ok: bool, error: string]
+  (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
+    (when (not open-ok)
+      (return 0 0 false open-error))
+    (let [[basis rows row-ok row-error] (sqlite-latest-index-chunk-row-count-raw handle index-name)]
+      (sqlite-close-live-raw handle)
+      (return basis rows row-ok row-error))))
 
 (defn close-sqlite-conn [store: SQLite-Conn]
   (sqlite-close-live-raw store.handle)

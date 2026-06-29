@@ -355,9 +355,11 @@ index root/chunk tables. It writes one row per datom through a SQLite
 transaction, reopens from disk, rebuilds in-memory indexes, and then queries
 normally. The root/chunk tables and `storage-architecture` marker are present
 as the foundation for persisted Vev-owned logical indexes. Successful SQLite
-transactions and explicit persists now publish a first `single-chunk-index-v0`
-root with one payload chunk for each logical index at the committed basis tx;
-normal reopen does not use those chunks yet. The explicit persist API full-replaces
+transactions and explicit persists now publish bounded logical-index chunks for
+`eavt`, `aevt`, `avet`, and `vaet`: small indexes use one payload chunk, larger
+indexes use bounded leaf chunks plus a parent root chunk, and root rows record
+the visible chunk roots at the committed basis tx. Normal reopen does not use
+those chunks yet. The explicit persist API full-replaces
 durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the
@@ -379,10 +381,9 @@ write throughput across batch sizes and mixed read/write behavior through the
 SQLite-backed connection. A 10k-row durable run shows batch-100 writes are
 acceptable for this phase, while batch-1 and mixed read/write are dominated by
 per-commit immutable DB/index copying. The active durable milestone is now to
-replace the first coarse single-chunk root writer with bounded immutable chunks
-and chunk cursors, then replace whole-array DB/index ownership copies with
-shared immutable/chunked storage, and then scale the write harness to direct
-Datalevin `write-bench` comparisons.
+add chunk-backed read cursors and metadata/root-pointer reopen, then replace
+whole-array DB/index ownership copies with shared immutable/chunked storage,
+and then scale the write harness to direct Datalevin `write-bench` comparisons.
 
 ## Phase 7: Dogfood
 

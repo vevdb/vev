@@ -43,11 +43,12 @@ root/chunk tables, writes one row per datom through a SQLite transaction,
 reopens from disk, rebuilds the in-memory indexes from those rows, and then
 runs normal Vev queries. The older snapshot table remains as a compatibility
 fallback for databases created by the first SQLite snapshot slice. Vev now
-writes a first coarse `single-chunk-index-v0` root after successful SQLite
-transactions and explicit SQLite persists: one persisted payload chunk per
-logical index plus a root row at the committed basis tx. Reopen still ignores
-those chunks and rebuilds from datom rows; chunk-backed reopen/query is the next
-storage step.
+writes bounded logical-index chunks after successful SQLite transactions and
+explicit SQLite persists: small indexes use a single payload chunk, larger
+indexes use bounded leaf chunks plus a parent root chunk, and a root row records
+the visible chunk root for each logical index at the committed basis tx. Reopen
+still ignores those chunks and rebuilds from datom rows; chunk-backed
+reopen/query is the next storage step.
 
 There are now two write modes:
 
@@ -164,8 +165,8 @@ rather than a small local optimization:
 2. Preserve ordinary immutable DB snapshot semantics: reports, listeners, host
    handles, and `db` values must still see stable values after later writes.
 3. Keep SQLite as the durable log, metadata, and page/chunk store.
-4. Replace the first `single-chunk-index-v0` root writer with bounded immutable
-   chunks and root edges for `eavt`, `aevt`, `avet`, and `vaet`.
+4. Add chunk-backed read cursors for persisted `eavt`, then extend to `aevt`,
+   `avet`, and `vaet`.
 5. Replace normal reopen with metadata/root loading plus lazy or bounded chunk
    loading. Datom-log replay should become recovery/migration behavior, not the
    large-database startup path.

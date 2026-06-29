@@ -45,45 +45,43 @@ generation:
 - `vev_meta.storage-architecture = vev-sqlite-chunked-index-v0`
 
 The new tables are no longer only schema scaffolding. On successful SQLite
-transactions and explicit SQLite persists, Vev writes a first coarse
-`single-chunk-index-v0` root: one payload chunk for each logical index
-(`eavt`, `aevt`, `avet`, and `vaet`) plus a root row at the committed basis tx.
-The payload stores current in-memory datom-index order, so it is a persisted
-Vev index artifact rather than a SQL query table. Existing reopen behavior
-still uses datom-row replay and in-memory index rebuild; root/chunk loading is
-the next implementation step.
+transactions and explicit SQLite persists, Vev writes persisted logical index
+artifacts for `eavt`, `aevt`, `avet`, and `vaet`. Small indexes use a single
+payload chunk. Larger indexes are split into bounded leaf chunks with a parent
+root chunk linked through `vev_index_chunk_edges`. Root rows point at the
+visible chunk root for each index at the committed basis tx. The payload stores
+current in-memory datom-index order, so it is a persisted Vev index artifact
+rather than a SQL query table. Existing reopen behavior still uses datom-row
+replay and in-memory index rebuild; root/chunk loading is the next
+implementation step.
 
 ## Implementation Milestones
 
-1. Schema, metadata, and first root writer.
+1. Schema, metadata, and bounded root writer.
    Add root/chunk tables, architecture marker, inspection functions, and
-   single-chunk logical-index root publication. This is implemented; no query
+   bounded logical-index chunk/root publication. This is implemented; no query
    or reopen behavior changes yet.
 
-2. Replace single-chunk payloads with real chunking.
-   Split large index arrays into bounded immutable chunks with stable key
-   ranges and child edges. Keep datom rows as the durable recovery log.
-
-3. Add read-only chunk cursors.
+2. Add read-only chunk cursors.
    Teach Vev index accessors to read ranges from persisted chunks with an
    in-memory cache. The first cursor can coexist with the current in-memory
    arrays and be used by targeted reopen/query tests.
 
-4. Extend persisted indexes to `aevt`, `avet`, and `vaet`.
+3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are
    fully resident arrays, chunk-backed cursors, or a snapshot delta overlay.
 
-5. Replace whole-array DB snapshot ownership.
+4. Replace whole-array DB snapshot ownership.
    Move `DB` internals toward shared immutable index storage plus small per-tx
    deltas. A new DB value should share unchanged chunks with older snapshots and
    own only new/replaced chunks and delta data.
 
-6. Replace reopen rebuild behavior.
+5. Replace reopen rebuild behavior.
    Reopen should load metadata and latest root pointers first, then load chunks
    lazily or in bounded batches. Datom-log replay remains available for recovery
    and migration, not as the normal large-database startup path.
 
-7. Benchmark real workloads.
+6. Benchmark real workloads.
    Measure MusicBrainz open/query/reopen, Datalevin-style write-bench append
    workloads, and snapshot-heavy read/write loops. Compare against Datomic,
    DataScript, and Datalevin where applicable.
