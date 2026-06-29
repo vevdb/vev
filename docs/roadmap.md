@@ -358,9 +358,9 @@ as the foundation for persisted Vev-owned logical indexes. Successful SQLite
 transactions and explicit persists now publish bounded logical-index chunks for
 `eavt`, `aevt`, `avet`, and `vaet`: small indexes use one payload chunk, larger
 indexes use bounded leaf chunks plus a parent root chunk, and root rows record
-the visible chunk roots at the committed basis tx. Normal reopen does not use
-those chunks yet, but the storage layer can already load persisted latest index
-entries through root/chunk edges and validate them against rebuilt indexes. The
+the visible chunk roots at the committed basis tx. Reopen now loads latest root
+metadata before datom rows, then validates persisted latest index entries
+through root/chunk edges against rebuilt indexes. The
 explicit persist API full-replaces
 durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx

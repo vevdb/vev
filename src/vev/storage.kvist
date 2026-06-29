@@ -1195,6 +1195,43 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (let [[_ root-ok root-error] (sqlite-insert-index-root-raw handle basis-tx eavt-id aevt-id avet-id vaet-id)]
             (return root-ok root-error)))))))
 
+(defn storage-int-slices-equal? [left: []int, right: []int] -> bool
+  (when (not (= (count left) (count right)))
+    (return false))
+  (for [i (arr.range 0 (count left))]
+    (when (not (= left[i] right[i]))
+      (return false)))
+  true)
+
+(defn validate-sqlite-index [path: string, db-index: []int, index-name: string] -> [ok: bool, error: string]
+  (let [[loaded loaded-ok loaded-error] (sqlite-latest-index-entries path index-name)]
+    (when (not loaded-ok)
+      (return false loaded-error))
+    (defer (delete loaded))
+    (if (storage-int-slices-equal? (slice loaded 0) db-index)
+      (return true "")
+      (return false (fmt.tprintf "persisted %s index did not match rebuilt DB index" index-name)))))
+
+(defn validate-sqlite-indexes-for-db [path: string, db: DB, expected-basis: u64, has-root: bool] -> [ok: bool, error: string]
+  (when (not has-root)
+    (return true ""))
+  (let [basis (db-basis-tx db)]
+    (when (not (= basis expected-basis))
+      (return false (fmt.tprintf "persisted index basis %d did not match rebuilt DB basis %d" expected-basis basis)))
+    (let [[eavt-ok eavt-error] (validate-sqlite-index path (slice db.eavt 0) ":eavt")]
+      (when (not eavt-ok)
+        (return false eavt-error)))
+    (let [[aevt-ok aevt-error] (validate-sqlite-index path (slice db.aevt 0) ":aevt")]
+      (when (not aevt-ok)
+        (return false aevt-error)))
+    (let [[avet-ok avet-error] (validate-sqlite-index path (slice db.avet 0) ":avet")]
+      (when (not avet-ok)
+        (return false avet-error)))
+    (let [[vaet-ok vaet-error] (validate-sqlite-index path (slice db.vaet 0) ":vaet")]
+      (when (not vaet-ok)
+        (return false vaet-error)))
+    (return true "")))
+
 (defn save-db-sqlite [path: string, db: DB] -> [ok: bool, error: string]
   (let [[handle open-ok open-error] (sqlite-open-replace-datoms-raw path)]
     (when (not open-ok)
@@ -1217,15 +1254,31 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (sqlite-commit-close-raw handle)))
 
 (defn load-db-sqlite [path: string] -> [db: DB, ok: bool, error: string]
-  (let [[row-text row-ok row-error] (sqlite-load-datom-rows-text-raw path)]
+  (let [[root-basis root-ok root-error] (sqlite-latest-index-root-basis path)
+        has-root root-ok
+        [row-text row-ok row-error] (sqlite-load-datom-rows-text-raw path)]
     (when row-ok
       (defer (delete row-text))
-      (return (from-serializable-text row-text)))
+      (let [[db parsed-ok parsed-error] (from-serializable-text row-text)]
+        (when (not parsed-ok)
+          (return db false parsed-error))
+        (let [[valid-ok valid-error] (validate-sqlite-indexes-for-db path db root-basis has-root)]
+          (when (not valid-ok)
+            (delete-owned-db db)
+            (return (build-db (make [dynamic]Datom)) false valid-error)))
+        (return db true "")))
     (let [[snapshot-text snapshot-ok snapshot-error] (sqlite-load-snapshot-text-raw path)]
       (when (not snapshot-ok)
         (return (build-db (make [dynamic]Datom)) false row-error))
       (defer (delete snapshot-text))
-      (from-serializable-text snapshot-text))))
+      (let [[db parsed-ok parsed-error] (from-serializable-text snapshot-text)]
+        (when (not parsed-ok)
+          (return db false parsed-error))
+        (let [[valid-ok valid-error] (validate-sqlite-indexes-for-db path db root-basis has-root)]
+          (when (not valid-ok)
+            (delete-owned-db db)
+            (return (build-db (make [dynamic]Datom)) false valid-error)))
+        (return db true "")))))
 
 (defn open-conn-sqlite [path: string] -> [conn: Conn, ok: bool, error: string]
   (let [[db loaded-ok load-error] (load-db-sqlite path)]

@@ -51,11 +51,13 @@ payload chunk. Larger indexes are split into bounded leaf chunks with a parent
 root chunk linked through `vev_index_chunk_edges`. Root rows point at the
 visible chunk root for each index at the committed basis tx. The payload stores
 current in-memory datom-index order, so it is a persisted Vev index artifact
-rather than a SQL query table. Existing reopen behavior still uses datom-row
-replay and in-memory index rebuild. Vev can already follow the latest root,
-load leaf chunks in edge order, parse the persisted index-entry vector, and
-validate it against the rebuilt in-memory indexes. Wiring query/reopen to use
-that loader is the next implementation step.
+rather than a SQL query table. Reopen now reads the latest root metadata before
+the datom rows and validates persisted chunk indexes against the rebuilt
+in-memory indexes. Vev can follow the latest root, load leaf chunks in edge
+order, parse the persisted index-entry vector, and compare it to the rebuilt
+`DB`. This is still a guarded compatibility path: Vev materializes datom rows
+and rebuilds indexes before validation. Wiring query/reopen to use chunk-backed
+DB snapshots is the next implementation step.
 
 ## Implementation Milestones
 
@@ -80,9 +82,10 @@ that loader is the next implementation step.
    own only new/replaced chunks and delta data.
 
 5. Replace reopen rebuild behavior.
-   Reopen should load metadata and latest root pointers first, then load chunks
-   lazily or in bounded batches. Datom-log replay remains available for recovery
-   and migration, not as the normal large-database startup path.
+   Reopen now loads metadata and latest root pointers first, then validates the
+   chunks after datom-log rebuild. The next step is to construct `DB` index
+   views from chunk roots directly, with datom-log replay reserved for recovery
+   and migration rather than normal large-database startup.
 
 6. Benchmark real workloads.
    Measure MusicBrainz open/query/reopen, Datalevin-style write-bench append
