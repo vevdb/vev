@@ -30,6 +30,28 @@ The current integration stack is:
 7. only later, if justified, server/daemon packaging
 8. only later, if justified, transactor/peer-style packaging
 
+## Repository And Package Identity
+
+The canonical repository is:
+
+```text
+https://github.com/vevdb/vev
+```
+
+That should drive public package coordinates once Vev moves beyond local
+examples:
+
+- Clojure deps coordinate: `io.github.vevdb/vev-clj`
+- Java/Maven coordinate: `io.github.vevdb/vev-java`
+- native JVM artifacts by platform: `io.github.vevdb/vev-native-<platform>`
+- Rust crate name, if published: `vev`
+- Go module path, if published: `github.com/vevdb/vev/clients/go`
+- Node package name, if published: `@vevdb/vev`
+
+The first packaging pass should still support explicit local library paths and
+environment overrides. Bundled native artifacts can come after the wrapper APIs
+are stable enough to justify publishing.
+
 ## Native API
 
 The native Kvist API should be the first-class source-level surface.

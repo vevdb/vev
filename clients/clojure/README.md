@@ -7,6 +7,22 @@ native Vev shared library.
 The public API accepts ordinary Clojure data and serializes it to the same EDN
 text frontend used by C, Python, Rust, and Java callers.
 
+Current local development usage is path-based:
+
+```clojure
+{:deps {vev/vev-clj {:local/root "clients/clojure"}}}
+```
+
+The planned published coordinate is:
+
+```clojure
+{:deps {io.github.vevdb/vev-clj {:mvn/version "0.1.0"}}}
+```
+
+The package still expects a locally built native library path today, usually
+`build/lib/libvev.dylib`. A later packaged JVM distribution should use
+`io.github.vevdb/vev-java` plus platform native artifacts.
+
 ```clojure
 (require '[vev.core :as vev])
 

@@ -10,6 +10,8 @@ Vev is not trying to be a Datomic clone, a SQL database, or a database server fi
 
 ## Identity
 
+Repository: <https://github.com/vevdb/vev>
+
 Vev is designed around a few core principles:
 
 * Native and embedded by default.
