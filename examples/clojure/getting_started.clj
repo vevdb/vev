@@ -2,11 +2,12 @@
 ;; SPDX-License-Identifier: EPL-2.0
 
 (ns getting-started
-  (:require [vev.core :as vev]))
+  (:require [vev.core :as d]))
 
-(def conn (vev/create-conn))
+(comment
+  (def conn (d/create-conn))
 
-(vev/transact! conn
+  (d/transact! conn
                [[:db/add 100 :db/ident :user/friend]
                 [:db/add 100 :db/valueType :db.type/ref]
                 {:db/id 1
@@ -17,30 +18,34 @@
                  :user/email "grace@example.com"
                  :user/friend 1}])
 
-(def db (vev/db conn))
+  (def db (d/db conn))
 
-(println
- (vev/q '[:find ?name
-          :where [?e :user/name ?name]]
-        db))
+  (d/q '[:find ?name
+         :where [?e :user/name ?name]]
+       db)
 
-(println
- (vev/pull db
-           [:user/name {:user/friend [:user/name]}]
-           2))
+  (d/pull db
+          [:user/name {:user/friend [:user/name]}]
+          2)
 
-(println
- (vev/q '[:find ?name
-          :in $ ?email
-          :where [?e :user/email ?email]
-                 [?e :user/name ?name]]
-        db
-        "ada@example.com"))
+  (d/q '[:find ?name
+         :in $ ?email
+         :where [?e :user/email ?email]
+                [?e :user/name ?name]]
+       db
+       "ada@example.com")
 
-(def next-db
-  (vev/db-with db [{:db/id 3 :user/name "Barbara"}]))
+  (def next-db
+    (d/db-with db [{:db/id 3 :user/name "Barbara"}]))
 
-(println
- (vev/q '[:find ?name
-          :where [?e :user/name ?name]]
-        next-db))
+  (d/q '[:find ?name
+         :where [?e :user/name ?name]]
+       next-db)
+
+  (def durable (d/connect "app.vev.sqlite"))
+
+  (d/transact! durable [{:db/id 1 :user/name "Durable Ada"}])
+
+  (d/q '[:find ?name
+         :where [?e :user/name ?name]]
+       (d/db durable)))

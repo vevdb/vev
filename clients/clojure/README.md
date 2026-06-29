@@ -19,18 +19,18 @@ right platform native library itself:
 Application code should not pass Java paths or `libvev.dylib` around:
 
 ```clojure
-(require '[vev.core :as vev])
+(require '[vev.core :as d])
 
-(def conn (vev/create-conn))
+(def conn (d/create-conn))
 
-(vev/transact! conn
+(d/transact! conn
   [{:db/id 1
     :user/name "Ada"
     :user/email "ada@example.com"}])
 
-(def db (vev/db conn))
+(def db (d/db conn))
 
-(vev/q
+(d/q
   '[:find ?name
     :where [?e :user/name ?name]]
   db)
@@ -39,10 +39,10 @@ Application code should not pass Java paths or `libvev.dylib` around:
 Durable usage should be similarly direct:
 
 ```clojure
-(def conn (vev/connect "app.vev.sqlite"))
+(def conn (d/connect "app.vev.sqlite"))
 
-(vev/transact! conn [{:db/id 1 :user/name "Ada"}])
-(vev/q '[:find ?name :where [?e :user/name ?name]] (vev/db conn))
+(d/transact! conn [{:db/id 1 :user/name "Ada"}])
+(d/q '[:find ?name :where [?e :user/name ?name]] (d/db conn))
 ```
 
 The current repo has not published the Java/Clojure/native artifacts yet, so
@@ -66,10 +66,12 @@ When developing from the repo root, the root `:clj-dev` alias adds the locally
 built Java classes and the required JVM flags:
 
 ```sh
-VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev examples/clojure/getting_started.clj
+VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev
 ```
 
-That command is a repo smoke/development concern, not the desired public API.
+Then open `examples/clojure/getting_started.clj` and evaluate the forms inside
+its `(comment ...)` block one at a time. That command is a repo
+smoke/development concern, not the desired public API.
 Until native artifacts are packaged, no-arg `create-conn` and one-arg
 `connect` resolve the native library from the `vev.library` JVM property, then
 `VEV_LIB`, then `build/lib/libvev.dylib`.
@@ -77,14 +79,14 @@ Until native artifacts are packaged, no-arg `create-conn` and one-arg
 `q` accepts both DB-first Vev style and query-first Datomic/DataScript style:
 
 ```clojure
-(vev/q db '[:find ?name :where [?e :user/name ?name]])
-(vev/q '[:find ?name :where [?e :user/name ?name]] db)
+(d/q db '[:find ?name :where [?e :user/name ?name]])
+(d/q '[:find ?name :where [?e :user/name ?name]] db)
 ```
 
 For Datomic `d/query`-style host code, use `query` with a request map:
 
 ```clojure
-(vev/query
+(d/query
   {:query '[:find ?name
             :in $ ?email
             :where [?e :user/email ?email]
@@ -95,7 +97,7 @@ For Datomic `d/query`-style host code, use `query` with a request map:
 Return-map markers produce Clojure maps:
 
 ```clojure
-(vev/q
+(d/q
   '[:find ?name ?email
     :keys name email
     :where [?e :user/name ?name]
@@ -107,7 +109,7 @@ Return-map markers produce Clojure maps:
 Inputs are passed as ordinary arguments after the query and DB:
 
 ```clojure
-(vev/q
+(d/q
   db
   '[:find ?name
     :in [?email ...]
@@ -121,67 +123,67 @@ the call. Use `prepare` when the same query should be reused:
 
 ```clojure
 (def email-query
-  (vev/prepare conn
+  (d/prepare conn
     '[:find ?e ?email
       :in ?needle
       :where [?e :user/email ?email]
              [(= ?email ?needle)]]))
 
-(vev/prepared-edn email-query)
-(vev/q db email-query "ada@example.com")
+(d/prepared-edn email-query)
+(d/q db email-query "ada@example.com")
 ```
 
 `prepared-edn` also works for reusable pull patterns:
 
 ```clojure
 (def person-pattern
-  (vev/prepare-pull-pattern db
+  (d/prepare-pull-pattern db
     [:user/name {:user/friend [:user/name]}]))
 
-(vev/prepared-edn person-pattern)
-(vev/pull db person-pattern 1)
+(d/prepared-edn person-pattern)
+(d/pull db person-pattern 1)
 ```
 
 Pull follows the same DB-value shape:
 
 ```clojure
-(vev/pull db
+(d/pull db
   [:user/name {:user/friend [:user/name]}]
   1)
 
-(vev/pull-many db [:user/name] [1 2])
+(d/pull-many db [:user/name] [1 2])
 ```
 
 Immutable DB values support Datomic/DataScript-style `with` operations:
 
 ```clojure
-(let [report (vev/with db [{:db/id 3 :user/name "Barbara"}])
-      next-db (vev/db-with db [{:db/id 3 :user/name "Barbara"}])]
+(let [report (d/with db [{:db/id 3 :user/name "Barbara"}])
+      next-db (d/db-with db [{:db/id 3 :user/name "Barbara"}])]
   [(:ok report)
-   (vev/q db '[:find ?e :where [?e :user/name "Barbara"]])
-   (vev/q next-db '[:find ?e :where [?e :user/name "Barbara"]])])
+   (d/q db '[:find ?e :where [?e :user/name "Barbara"]])
+   (d/q next-db '[:find ?e :where [?e :user/name "Barbara"]])])
 ```
 
 A mutable connection can also be initialized from an immutable DB snapshot:
 
 ```clojure
-(def next-conn (vev/conn-from-db next-db))
+(def next-conn (d/conn-from-db next-db))
 
-(vev/transact! next-conn [{:db/id 4 :user/name "Dorothy"}])
-(vev/q (vev/db next-conn) '[:find ?name :where [?e :user/name ?name]])
+(d/transact! next-conn [{:db/id 4 :user/name "Dorothy"}])
+(d/q (d/db next-conn) '[:find ?name :where [?e :user/name ?name]])
 ```
 
 Durable connections use the same transaction and DB-value query shape. The
 current backend is SQLite:
 
 ```clojure
-(def durable (vev/connect "app.vev.sqlite"))
+(def durable (d/connect "app.vev.sqlite"))
 
-(vev/connection-info durable)
+(d/connection-info durable)
 ;; => {:backend :sqlite, :path "app.vev.sqlite", :basis-t 0, :tx-count 0, :tx-ids []}
 
-(vev/transact! durable [{:db/id 1 :user/name "Ada"}])
-(vev/q (vev/db durable) '[:find ?name :where [?e :user/name ?name]])
+(d/transact! durable [{:db/id 1 :user/name "Ada"}])
+(d/q (d/db durable) '[:find ?name :where [?e :user/name ?name]])
 ```
 
 The wrapper has JVM cleanup fallback for native handles, so examples use normal

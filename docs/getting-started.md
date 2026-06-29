@@ -23,41 +23,42 @@ and Clojure smoke clients.
 The Clojure API is the most Datomic-shaped public wrapper today:
 
 ```clojure
-(require '[vev.core :as vev])
+(require '[vev.core :as d])
 
-(def conn (vev/create-conn))
+(def conn (d/create-conn))
 
-(vev/transact! conn
+(d/transact! conn
   [{:db/id 1
     :artist/name "John Lennon"}
    {:db/id 2
     :artist/name "Yoko Ono"}])
 
-(def db (vev/db conn))
+(def db (d/db conn))
 
-(vev/q
+(d/q
   '[:find ?name
     :where [?e :artist/name ?name]]
   db)
 
-(vev/pull db [:artist/name] 1)
+(d/pull db [:artist/name] 1)
 ```
 
 Durability is a separate step:
 
 ```clojure
-(def durable (vev/connect "app.vev.sqlite"))
+(def durable (d/connect "app.vev.sqlite"))
 ```
 
 For local development from this repo:
 
 ```sh
-VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev examples/clojure/getting_started.clj
+VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev
 ```
 
-That `VEV_LIB` setting is local repo setup only. The intended published
-Clojure experience is a normal deps.edn dependency that loads the platform
-native library itself:
+Then open `examples/clojure/getting_started.clj` in an editor and evaluate the
+forms inside its `(comment ...)` block one at a time. That `VEV_LIB` setting is
+local repo setup only. The intended published Clojure experience is a normal
+deps.edn dependency that loads the platform native library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
