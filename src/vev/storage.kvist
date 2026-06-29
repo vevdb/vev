@@ -1413,6 +1413,17 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   handle: rawptr
 })
 
+(defstruct SQLite-Index-Cursor {
+  handle: rawptr
+  owns-handle: bool
+  index-name: string
+  page-size: int
+  row-count: int
+  page: [dynamic]int
+  page-start: int
+  page-end: int
+})
+
 (def Store-Conn SQLite-Conn)
 
 (defn insert-sqlite-tx-meta! [handle: rawptr, tx: u64, meta: []Tx-Meta] -> [ok: bool, error: string]
@@ -1701,6 +1712,83 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (let [[total total-ok total-error] (sqlite-latest-index-entry-pages-count-handle handle index-name page-size)]
       (sqlite-close-live-raw handle)
       (return total total-ok total-error))))
+
+(defn sqlite-open-index-cursor-handle [handle: rawptr, index-name: string, page-size: int] -> [out-cursor: SQLite-Index-Cursor, ok: bool, error: string]
+  (when (<= page-size 0)
+    (return (SQLite-Index-Cursor {}) false "sqlite index page size must be positive"))
+  (let [[_ rows rows-ok rows-error] (sqlite-latest-index-chunk-row-count-raw handle index-name)]
+    (when (not rows-ok)
+      (return (SQLite-Index-Cursor {}) false rows-error))
+    (return (SQLite-Index-Cursor {handle: handle
+                                  owns-handle: false
+                                  index-name: (string-owned index-name)
+                                  page-size: page-size
+                                  row-count: (int rows)
+                                  page: (make [dynamic]int)
+                                  page-start: 0
+                                  page-end: 0})
+            true
+            "")))
+
+(defn sqlite-conn-open-index-cursor [store: ^SQLite-Conn, index-name: string, page-size: int] -> [out-cursor: SQLite-Index-Cursor, ok: bool, error: string]
+  (sqlite-open-index-cursor-handle store^.handle index-name page-size))
+
+(defn sqlite-open-index-cursor [path: string, index-name: string, page-size: int] -> [out-cursor: SQLite-Index-Cursor, ok: bool, error: string]
+  (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
+    (when (not open-ok)
+      (return (SQLite-Index-Cursor {}) false open-error))
+    (let [[cursor cursor-ok cursor-error] (sqlite-open-index-cursor-handle handle index-name page-size)]
+      (when (not cursor-ok)
+        (sqlite-close-live-raw handle)
+        (return cursor false cursor-error))
+      (set! cursor.owns-handle true)
+      (return cursor true ""))))
+
+(defn sqlite-index-cursor-count [cursor: SQLite-Index-Cursor] -> int
+  cursor.row-count)
+
+(defn sqlite-index-cursor-load-page! [cursor: ^SQLite-Index-Cursor, offset: int] -> [ok: bool, error: string]
+  (when (< offset 0)
+    (return false "sqlite index cursor offset was negative"))
+  (when (>= offset cursor^.row-count)
+    (set! cursor^.page-start cursor^.row-count)
+    (set! cursor^.page-end cursor^.row-count)
+    (delete cursor^.page)
+    (set! cursor^.page (make [dynamic]int))
+    (return true ""))
+  (when (and (>= offset cursor^.page-start)
+             (< offset cursor^.page-end))
+    (return true ""))
+  (let [page-start (* (/ offset cursor^.page-size) cursor^.page-size)
+        [text base-offset loaded-ok loaded-error] (sqlite-latest-index-entries-page-text-raw cursor^.handle cursor^.index-name (i64 page-start) (i64 cursor^.page-size))]
+    (when (not loaded-ok)
+      (return false loaded-error))
+    (let [[parsed parsed-ok parsed-error] (parse-index-entries-text text)]
+      (delete text)
+      (when (not parsed-ok)
+        (return false parsed-error))
+      (let [window (copy-index-entry-window (slice parsed 0) (- page-start (int base-offset)) cursor^.page-size)]
+        (delete parsed)
+        (delete cursor^.page)
+        (set! cursor^.page window)
+        (set! cursor^.page-start page-start)
+        (set! cursor^.page-end (min (+ page-start (count window)) cursor^.row-count))
+        (return true "")))))
+
+(defn sqlite-index-cursor-at [cursor: ^SQLite-Index-Cursor, index: int] -> [entry: int, ok: bool, error: string]
+  (when (or (< index 0)
+            (>= index cursor^.row-count))
+    (return 0 false "sqlite index cursor position out of range"))
+  (let [[page-ok page-error] (sqlite-index-cursor-load-page! cursor index)]
+    (when (not page-ok)
+      (return 0 false page-error))
+    (return cursor^.page[(- index cursor^.page-start)] true "")))
+
+(defn close-sqlite-index-cursor [cursor: SQLite-Index-Cursor]
+  (when cursor.owns-handle
+    (sqlite-close-live-raw cursor.handle))
+  (delete cursor.index-name)
+  (delete cursor.page))
 
 (defn close-sqlite-conn [store: SQLite-Conn]
   (sqlite-close-live-raw store.handle)

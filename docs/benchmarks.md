@@ -605,19 +605,20 @@ cd /Users/andreas/Projects/kvist
 Current sample output on June 29, 2026:
 
 ```text
-engine=vev-sqlite workload=single-append n=1 min_us=126 median_us=286 p90_us=544 max_us=570 samples=50
-engine=vev-sqlite workload=batch-append n=100 min_us=2200 median_us=7544 p90_us=12360 max_us=15948 samples=20
-engine=vev-sqlite workload=batch-transact-memory n=100 min_us=973 median_us=1871 p90_us=2350 max_us=2477 samples=20
-engine=vev-sqlite workload=batch-append-sqlite n=100 min_us=1169 median_us=5804 p90_us=9881 max_us=13552 samples=20
-engine=vev-sqlite workload=batch-before-snapshot n=100 min_us=2 median_us=24 p90_us=86 max_us=92 samples=20
-engine=vev-sqlite workload=batch-resolve-tx n=100 min_us=140 median_us=141 p90_us=148 max_us=152 samples=20
-engine=vev-sqlite workload=batch-apply-resolved n=100 min_us=845 median_us=1740 p90_us=2302 max_us=2408 samples=20
-engine=vev-sqlite workload=append-log-copy n=100 min_us=176 median_us=197 p90_us=240 max_us=257 samples=30
-engine=vev-sqlite workload=append-index-build n=100 min_us=1457 median_us=1490 p90_us=1528 max_us=1549 samples=30
-engine=vev-sqlite workload=persisted-index-load n=2000 min_us=6819 median_us=7067 p90_us=8249 max_us=12247 samples=30
-engine=vev-sqlite workload=persisted-index-page-load n=2000 min_us=10335 median_us=10717 p90_us=11026 max_us=11563 samples=30
-engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=50290 median_us=58144 p90_us=60022 max_us=61161 samples=30
-engine=vev-sqlite workload=reopened-query n=2000 min_us=17 median_us=18 p90_us=21 max_us=228 samples=30
+engine=vev-sqlite workload=single-append n=1 min_us=115 median_us=273 p90_us=665 max_us=954 samples=50
+engine=vev-sqlite workload=batch-append n=100 min_us=2421 median_us=8422 p90_us=13346 max_us=18791 samples=20
+engine=vev-sqlite workload=batch-transact-memory n=100 min_us=963 median_us=1932 p90_us=2568 max_us=2605 samples=20
+engine=vev-sqlite workload=batch-append-sqlite n=100 min_us=1205 median_us=5901 p90_us=10028 max_us=13593 samples=20
+engine=vev-sqlite workload=batch-before-snapshot n=100 min_us=1 median_us=37 p90_us=79 max_us=89 samples=20
+engine=vev-sqlite workload=batch-resolve-tx n=100 min_us=144 median_us=147 p90_us=156 max_us=162 samples=20
+engine=vev-sqlite workload=batch-apply-resolved n=100 min_us=876 median_us=1776 p90_us=2251 max_us=2317 samples=20
+engine=vev-sqlite workload=append-log-copy n=100 min_us=184 median_us=223 p90_us=262 max_us=374 samples=30
+engine=vev-sqlite workload=append-index-build n=100 min_us=1517 median_us=1548 p90_us=1623 max_us=1642 samples=30
+engine=vev-sqlite workload=persisted-index-load n=2000 min_us=6760 median_us=7056 p90_us=7760 max_us=13029 samples=30
+engine=vev-sqlite workload=persisted-index-page-load n=2000 min_us=10357 median_us=10678 p90_us=10983 max_us=11039 samples=30
+engine=vev-sqlite workload=persisted-index-cursor-scan n=2000 min_us=7235 median_us=7340 p90_us=7464 max_us=7553 samples=30
+engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=57509 median_us=59757 p90_us=61672 max_us=62516 samples=30
+engine=vev-sqlite workload=reopened-query n=2000 min_us=18 median_us=19 p90_us=23 max_us=251 samples=30
 ```
 
 This is not yet the final write benchmark. It establishes a repeatable baseline
@@ -636,13 +637,14 @@ ids sort after existing ids. The pipeline split shows snapshot creation is now
 tens of microseconds, resolution is around 0.14ms, and applying
 already-resolved append ops is around 1.7ms. The append-only core rows show
 that copying the current datom log is sub-millisecond and incremental index
-construction is around 1.5ms. The persisted-index-load and
-persisted-index-page-load rows are
-the first storage-architecture measurements for chunk-backed reopen: they
-follow latest root pointers and materialize persisted index entries, either as
-whole logical indexes or as bounded persisted pages, without parsing datom rows
-or building a full `DB`. The remaining write/open work is now mostly index
-ownership/copy structure, chunk-backed `DB` snapshots, and the SQLite commit.
+construction is around 1.5ms. The persisted-index-load,
+persisted-index-page-load, and persisted-index-cursor-scan rows are the first
+storage-architecture measurements for chunk-backed reopen: they follow latest
+root pointers and materialize persisted index entries, either as whole logical
+indexes, bounded persisted pages, or through the cached cursor abstraction,
+without parsing datom rows or building a full `DB`. The remaining write/open
+work is now mostly index ownership/copy structure, chunk-backed `DB` snapshots,
+and the SQLite commit.
 
 ## SQLite Write Bench
 
