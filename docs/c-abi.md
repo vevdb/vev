@@ -437,8 +437,8 @@ The smoke also exercises DB-value `with`, `db-with`, and `conn-from-db` so the
 Python path follows the same immutable snapshot contract as C, Java, Clojure,
 and Rust. Transactions can use `transact_report` / `with_report` for typed
 report maps, while `transact` / `with_text` remain string helpers. Prepared
-queries and bound statements can return generic typed column batches without
-materializing result rows.
+queries expose `edn()` for a portable parser description, and bound statements
+can return generic typed column batches without materializing result rows.
 
 ## Rust Example
 
@@ -472,6 +472,8 @@ Rust:
 - transactions and ad hoc queries accept EDN strings
 - prepared queries can be reused with EDN input text or typed statement
   bindings
+- `PreparedQuery.edn()` returns the portable parser description exposed by the
+  C ABI
 - typed results convert entity ids, scalar values, and pull maps into Java
   values
 - `DB.queryColumns` exposes a first generic Java column facade for prepared
@@ -573,6 +575,8 @@ Inputs are ordinary Clojure arguments after the query:
 
 Plain Clojure `q`/`rows` calls prepare and close a temporary native query
 handle. Use `vev/prepare` with `with-open` when a query should be reused.
+Prepared queries can be inspected with `vev/prepared-edn`, which returns the
+portable parser description as Clojure data.
 
 Durable connections use `connect`:
 

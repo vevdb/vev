@@ -74,6 +74,7 @@ the call. Use `prepare` when the same query should be reused:
                       :in ?needle
                       :where [?e :user/email ?email]
                              [(= ?email ?needle)]])]
+  (vev/prepared-edn query)
   (vev/q db query "ada@example.com"))
 ```
 

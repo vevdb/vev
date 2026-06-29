@@ -290,6 +290,11 @@
   (let [engine (:engine source)]
     (->PreparedQuery engine (.prepare engine (edn-text query)))))
 
+(defn prepared-edn
+  "Return the portable EDN-ish parser value for a prepared query."
+  [^PreparedQuery query]
+  (edn/read-string (.edn (:native query))))
+
 (defn prepare-pull-pattern
   "Prepare a pull pattern from Clojure data or EDN text."
   [source pattern]

@@ -76,6 +76,7 @@ public final class Vev {
     private final MethodHandle txDbWith;
     private final MethodHandle queryEdnWithInputs;
     private final MethodHandle prepareQueryEdn;
+    private final MethodHandle preparedQueryEdn;
     private final MethodHandle preparedQueryFree;
     private final MethodHandle queryPreparedResultWithRulesTextAndInputs;
     private final MethodHandle queryDbPreparedResultWithRulesTextAndInputs;
@@ -237,6 +238,7 @@ public final class Vev {
         this.txDbWith = downcall("vev_tx_db_with", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.prepareQueryEdn = downcall("vev_prepare_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.preparedQueryEdn = downcall("vev_prepared_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryFree = downcall("vev_prepared_query_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.queryPreparedResultWithRulesTextAndInputs = downcall("vev_query_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithRulesTextAndInputs = downcall("vev_query_db_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -1520,9 +1522,19 @@ public final class Vev {
         }
 
         public Statement statement() throws Throwable {
+            requireOpen();
             MemorySegment stmt = (MemorySegment) stmtCreate.invoke(raw);
             if (isNull(stmt)) throw new IllegalStateException("failed to create statement");
             return new Statement(stmt);
+        }
+
+        public String edn() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) preparedQueryEdn.invoke(raw));
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("prepared query is closed");
         }
 
         @Override

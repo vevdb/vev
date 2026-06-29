@@ -89,6 +89,13 @@
                                              :in ?needle
                                              :where [?e :user/email ?email]
                                              [(= ?email ?needle)]])]
+        (let [prepared-ast (vev/prepared-edn email-query)]
+          (when-not (and (:ok prepared-ast)
+                         (seq (:clauses prepared-ast))
+                         (seq (:input-specs prepared-ast)))
+            (throw (ex-info "prepared query AST did not expose parser keys"
+                            {:prepared prepared-ast}))))
+
         (let [db (vev/db conn)
               rows (vev/q db email-query "grace@example.com")]
           (println "prepared rows:" rows)

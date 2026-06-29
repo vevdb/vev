@@ -102,6 +102,11 @@ public final class Smoke {
                             [(= ?email ?needle)]]
                     """);
                  Vev.Statement stmt = emailQuery.statement()) {
+                String preparedAst = emailQuery.edn();
+                if (!preparedAst.contains(":clauses") || !preparedAst.contains(":input-specs")) {
+                    throw new IllegalStateException("prepared query AST did not expose parser keys");
+                }
+
                 try (Vev.ResultSet result = conn.query(stmt.bindString("grace@example.com"))) {
                     List<List<Object>> rows = result.rows();
                     System.out.println("statement rows: " + rows);
