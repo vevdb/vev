@@ -3550,6 +3550,27 @@
     (= order .AVET) (slice db.avet 0)
     :else (slice db.vaet 0)))
 
+(defstruct DB-Index-View {
+  order: Public-Index-Order
+  indexes: []int
+})
+
+(defn db-index-view [db: DB, order: Public-Index-Order] -> DB-Index-View
+  (DB-Index-View {order: order
+                  indexes: (db-index-slice db order)}))
+
+(defn db-index-view-count [view: DB-Index-View] -> int
+  (count view.indexes))
+
+(defn db-index-view-at [view: DB-Index-View, index: int] -> int
+  view.indexes[index])
+
+(defn lower-bound-index-view-values [db: DB, view: DB-Index-View, values: []Value] -> int
+  (lower-bound-index-values db view.indexes (public-index-order-text view.order) values))
+
+(defn upper-bound-index-view-values [db: DB, view: DB-Index-View, values: []Value] -> int
+  (upper-bound-index-values db view.indexes (public-index-order-text view.order) values))
+
 (defn datom-index-position-value [datom: Datom, order: string, position: int] -> Value
   (if (= order ":eavt")
     (if (= position 0)
@@ -3650,13 +3671,14 @@
       (return false (fmt.tprintf "Attribute %s should be marked as :db/index true" attr))))
   (return true ""))
 
-(defn append-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
-  (let [order-text (public-index-order-text order)
-        low (lower-bound-index-values db indexes order-text values)
-        high (upper-bound-index-values db indexes order-text values)
+(defn append-index-view-datoms! [out: ^[dynamic]Datom, db: DB, view: DB-Index-View, values: []Value]
+  (let [order view.order
+        order-text (public-index-order-text order)
+        low (lower-bound-index-view-values db view values)
+        high (upper-bound-index-view-values db view values)
         i low]
     (while (< i high)
-      (let [datom-index indexes[i]]
+      (let [datom-index (db-index-view-at view i)]
         (when (datom-current-at? db datom-index)
           (let [datom db.datoms[datom-index]]
             (when (and (public-index-datom-visible? db order datom)
@@ -3664,22 +3686,24 @@
               (arr.push! out^ datom)))))
       (set! i (+ i 1)))))
 
-(defn append-seek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
-  (let [low (lower-bound-index-values db indexes (public-index-order-text order) values)
+(defn append-seek-index-view-datoms! [out: ^[dynamic]Datom, db: DB, view: DB-Index-View, values: []Value]
+  (let [order view.order
+        low (lower-bound-index-view-values db view values)
         i low]
-    (while (< i (count indexes))
-      (let [datom-index indexes[i]]
+    (while (< i (db-index-view-count view))
+      (let [datom-index (db-index-view-at view i)]
         (when (datom-current-at? db datom-index)
           (let [datom db.datoms[datom-index]]
             (when (public-index-datom-visible? db order datom)
               (arr.push! out^ datom)))))
       (set! i (+ i 1)))))
 
-(defn append-rseek-index-datoms! [out: ^[dynamic]Datom, db: DB, order: Public-Index-Order, indexes: []int, values: []Value]
-  (let [i (upper-bound-index-values db indexes (public-index-order-text order) values)]
+(defn append-rseek-index-view-datoms! [out: ^[dynamic]Datom, db: DB, view: DB-Index-View, values: []Value]
+  (let [order view.order
+        i (upper-bound-index-view-values db view values)]
     (while (> i 0)
       (set! i (- i 1))
-      (let [datom-index indexes[i]]
+      (let [datom-index (db-index-view-at view i)]
         (when (datom-current-at? db datom-index)
           (let [datom db.datoms[datom-index]]
             (when (public-index-datom-visible? db order datom)
@@ -3714,12 +3738,12 @@
 (defn datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
         index-order (public-index-order order)
-        indexes (db-index-slice db index-order)
+        view (db-index-view db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (append-index-datoms! (addr out) db index-order indexes (slice values 0))
+    (append-index-view-datoms! (addr out) db view (slice values 0))
     out))
 
 (defn datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
@@ -3732,12 +3756,12 @@
 (defn seek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
         index-order (public-index-order order)
-        indexes (db-index-slice db index-order)
+        view (db-index-view db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (append-seek-index-datoms! (addr out) db index-order indexes (slice values 0))
+    (append-seek-index-view-datoms! (addr out) db view (slice values 0))
     out))
 
 (defn seek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
@@ -3750,12 +3774,12 @@
 (defn rseek-datoms-with-args [db: DB, order: string, args: []Index-Arg] -> [dynamic]Datom
   (let [out (make [dynamic]Datom)
         index-order (public-index-order order)
-        indexes (db-index-slice db index-order)
+        view (db-index-view db index-order)
         [values ok] (resolve-index-args db args)]
     (defer (delete values))
     (when (not ok)
       (return out))
-    (append-rseek-index-datoms! (addr out) db index-order indexes (slice values 0))
+    (append-rseek-index-view-datoms! (addr out) db view (slice values 0))
     out))
 
 (defn rseek-datoms-checked-with-args [db: DB, order: string, args: []Index-Arg] -> Datoms-Result
