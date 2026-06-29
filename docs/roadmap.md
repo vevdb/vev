@@ -65,7 +65,7 @@ Non-goal:
 Status: mostly satisfied as the current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 371 tests. Remaining work is concentrated in exact
+suite currently passes 372 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
 targeted MusicBrainz/Datomic regressions, higher-level host wrapper
 ergonomics, and durable storage architecture.
@@ -221,9 +221,10 @@ path, and C exercises it directly. Prepared parser values now expose stable
 `:error-code` categories for malformed inputs across the public parser entry
 points, including `:edn-read` for reader-level malformed EDN. Prepared query
 values also expose return-map marker plus typed key metadata for `:keys`,
-`:strs`, and `:syms`. The remaining work is exact malformed-input behavior, exact parser
-record rendering where worth exposing, and wrapper ergonomics demanded by real
-host usage.
+`:strs`, and `:syms`, and direct `parse-clause-text` exposes single where-clause
+parser values. The remaining work is exact malformed-input behavior, exact
+parser record rendering where worth exposing, and wrapper ergonomics demanded by
+real host usage.
 
 ## Phase 5: MusicBrainz/Datomic Workload
 
