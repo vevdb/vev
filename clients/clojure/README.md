@@ -9,9 +9,9 @@ text frontend used by C, Python, Rust, and Java callers.
 
 ## Intended Published Usage
 
-Normal application setup should be one dependency. The package should pull in
-the Java wrapper and the right platform native artifact, then load the native
-library itself:
+Normal application setup should be one dependency. The Clojure package should
+pull in the Java wrapper, and the Java wrapper should pull in the right
+platform native artifact, then load the native library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
@@ -57,11 +57,15 @@ it opens a Vev store with `d/connect`.
 
 ## Local Development
 
-Current local development usage is path-based:
+Current local source development is path-based:
 
 ```clojure
 {:deps {vev/vev-clj {:local/root "clients/clojure"}}}
 ```
+
+That path only adds the Clojure source. It is useful when editing this repo, but
+it is not the intended application setup unless the root `:clj-dev` alias or
+equivalent Java/native classpath is also present.
 
 Build the native library and Java classes first:
 
@@ -84,8 +88,8 @@ That local repository can be consumed from a separate test project:
                             "--enable-native-access=ALL-UNNAMED"]}}}
 ```
 
-`scripts/smoke_jvm_package.sh` builds the local artifacts and verifies this
-shape from a temporary deps.edn project.
+`scripts/smoke_jvm_package.sh` builds the local artifacts and verifies the
+one-dependency Java and Clojure shapes from temporary deps.edn projects.
 
 When developing from the repo root, the root `:clj-dev` alias adds the locally
 built Java classes and the required JVM flags:

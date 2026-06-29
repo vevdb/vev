@@ -106,7 +106,9 @@ Deferred engine batch order:
    `scripts/stage_jvm_native.sh` now stages the current platform library into
    the resource layout consumed by the Java loader, and `scripts/package_jvm.sh`
    builds local Java/native/Clojure proof jars under `build/jvm` plus a local
-   Maven repository under `build/m2`.
+   Maven repository under `build/m2`. The local proof now verifies both
+   one-dependency JVM paths: `dev.vevdb:vev-java` pulls the platform native
+   artifact, and `dev.vevdb/vev-clj` pulls Java.
    Java now exposes C ABI transaction-function registries through
    `TxFunctionRegistry`; Clojure exposes the Datomic-shaped `tx-fns` wrapper
    where callbacks receive `(db & args)` and return ordinary tx-data.
@@ -421,7 +423,8 @@ into publishable clients: `dev.vevdb:vev-java` for the Java FFM wrapper,
 artifacts such as `dev.vevdb:vev-native-darwin-aarch64`. Local explicit
 library paths and `VEV_LIB`-style overrides remain supported, but the current
 JVM proof path already works through a local Maven repo with bundled native
-resources on the classpath.
+resources on the classpath. Java and Clojure each have a one-dependency local
+proof path; publication work should preserve that shape.
 
 ## Phase 9: Optional packaging expansion
 

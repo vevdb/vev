@@ -127,8 +127,9 @@ The same shape can be tested locally after `scripts/package_jvm.sh`:
  :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
 ```
 
-`scripts/smoke_jvm_package.sh` automates that local dependency check from a
-temporary project.
+`scripts/smoke_jvm_package.sh` automates that local dependency check from
+temporary projects. It verifies that `dev.vevdb/vev-clj` is enough for Clojure,
+and that `dev.vevdb:vev-java` is enough for Java.
 
 ## Python
 
@@ -199,6 +200,9 @@ Local Java runs need Java 21 preview FFM flags:
 ```
 
 Planned Maven coordinate: `dev.vevdb:vev-java`.
+That artifact is intended to pull in the platform native artifact
+transitively, so ordinary Java projects should also have a one-dependency Vev
+setup.
 
 ## C
 

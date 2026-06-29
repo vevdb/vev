@@ -59,17 +59,24 @@ write_pom() {
 EOF
 }
 
-dependency_block() {
+java_dependency_block() {
+  cat <<EOF
+  <dependencies>
+    <dependency>
+      <groupId>dev.vevdb</groupId>
+      <artifactId>$NATIVE_ARTIFACT</artifactId>
+      <version>$VERSION</version>
+    </dependency>
+  </dependencies>
+EOF
+}
+
+clojure_dependency_block() {
   cat <<EOF
   <dependencies>
     <dependency>
       <groupId>dev.vevdb</groupId>
       <artifactId>vev-java</artifactId>
-      <version>$VERSION</version>
-    </dependency>
-    <dependency>
-      <groupId>dev.vevdb</groupId>
-      <artifactId>$NATIVE_ARTIFACT</artifactId>
       <version>$VERSION</version>
     </dependency>
   </dependencies>
@@ -97,7 +104,7 @@ jar --create \
   --file "$OUT_DIR/vev-java-$VERSION.jar" \
   -C "$JAVA_CLASSES" .
 
-write_pom "$OUT_DIR/vev-java-$VERSION.pom" "vev-java"
+write_pom "$OUT_DIR/vev-java-$VERSION.pom" "vev-java" "$(java_dependency_block)"
 
 VEV_JVM_NATIVE_DIR="$NATIVE_CLASSES" "$ROOT/scripts/stage_jvm_native.sh" >/dev/null
 
@@ -113,7 +120,7 @@ jar --create \
   --file "$OUT_DIR/vev-clj-$VERSION.jar" \
   -C "$CLOJURE_CLASSES" .
 
-write_pom "$OUT_DIR/vev-clj-$VERSION.pom" "vev-clj" "$(dependency_block)"
+write_pom "$OUT_DIR/vev-clj-$VERSION.pom" "vev-clj" "$(clojure_dependency_block)"
 
 install_artifact "vev-java" "$OUT_DIR/vev-java-$VERSION.jar" "$OUT_DIR/vev-java-$VERSION.pom"
 install_artifact "$NATIVE_ARTIFACT" "$OUT_DIR/$NATIVE_ARTIFACT-$VERSION.jar" "$OUT_DIR/$NATIVE_ARTIFACT-$VERSION.pom"

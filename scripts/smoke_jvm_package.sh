@@ -26,7 +26,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat > "$TMP_DIR/deps.edn" <<EOF
+cat > "$TMP_DIR/deps-java.edn" <<EOF
+{:mvn/local-repo "$ROOT/build/m2"
+ :deps {dev.vevdb/vev-java {:mvn/version "$VERSION"}}
+ :aliases {:run {:jvm-opts ["--enable-preview"
+                            "--enable-native-access=ALL-UNNAMED"]}}}
+EOF
+
+(
+  cd "$TMP_DIR"
+  clojure -Sdeps "$(cat deps-java.edn)" -M:run -e "(import '[dev.vevdb.vev Vev])
+(with-open [vev (Vev/load)
+            conn (.createConn vev)]
+  (.transact conn \"[{:db/id 1 :user/name \\\"Ada\\\"}]\")
+  (with-open [db (.db conn)]
+    (let [rows (.queryRows vev (java.util.Map/of
+                                 \"query\" \"[:find ?name :where [?e :user/name ?name]]\"
+                                 \"args\" (java.util.List/of db)))]
+      (assert (= [[\"Ada\"]] (vec (map vec rows))))))
+  (println :vev-java-package-ok))"
+)
+
+cat > "$TMP_DIR/deps-clj.edn" <<EOF
 {:mvn/local-repo "$ROOT/build/m2"
  :deps {dev.vevdb/vev-clj {:mvn/version "$VERSION"}}
  :aliases {:run {:jvm-opts ["--enable-preview"
@@ -35,7 +56,7 @@ EOF
 
 (
   cd "$TMP_DIR"
-  clojure -M:run -e "(require '[vev.core :as d])
+  clojure -Sdeps "$(cat deps-clj.edn)" -M:run -e "(require '[vev.core :as d])
 (let [conn (d/create-conn)]
   (d/transact conn [{:db/id 1 :user/name \"Ada\"}])
   (assert (= #{[\"Ada\"]}

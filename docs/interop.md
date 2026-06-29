@@ -83,16 +83,17 @@ creates that resource tree for the current platform, and
 - `vev-clj-<version>.jar`
 
 It also writes a local Maven repository under `build/m2`, so the future
-published Clojure dependency shape can already be tested from outside the repo:
+published dependency shapes can already be tested from outside the repo:
 
 ```clojure
 {:mvn/local-repo "/path/to/vev/build/m2"
  :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
 ```
 
-These are not published releases yet, but they make the future
-`{:deps {dev.vevdb/vev-clj {:mvn/version ...}}}` story mechanically real.
-`scripts/smoke_jvm_package.sh` verifies the shape from a temporary project.
+For Java, the matching local Maven dependency is `dev.vevdb:vev-java`. These
+are not published releases yet, but they make the future one-dependency
+Clojure and Java stories mechanically real. `scripts/smoke_jvm_package.sh`
+verifies both shapes from temporary projects.
 
 The Python path has the same explicit-to-bundled fallback shape: explicit
 `vev.Library(path)`, `VEV_LIB`, repo `build/lib`, then
