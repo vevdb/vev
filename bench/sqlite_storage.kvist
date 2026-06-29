@@ -435,6 +435,45 @@
           (arr.push! samples elapsed))))
     (print-timing "persisted-index-cursor-scan" people-count (slice samples 0))))
 
+(defn measure-persisted-index-snapshot-open [path: string, people-count: int, sample-count: int, page-size: int]
+  (let [samples (make [dynamic]f64 0 sample-count)
+        expected-datoms (* people-count 3)
+        sample-log-index (/ expected-datoms 2)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            [snapshot snapshot-ok snapshot-error] (vev.sqlite-open-index-snapshot path page-size)]
+        (when (not snapshot-ok)
+          (fmt.printf "engine=vev-sqlite workload=persisted-index-snapshot-open ok=false error=%s\n" snapshot-error)
+          (return))
+        (let [view (vev.sqlite-index-snapshot-view (addr snapshot) (vev.public-index-order ":eavt"))
+              count (vev.db-index-view-count view)
+              first-entry (vev.db-index-view-at view 0)
+              middle-entry (vev.db-index-view-at view sample-log-index)
+              [datom datom-ok datom-error] (vev.sqlite-index-snapshot-datom-at-log-index (addr snapshot) sample-log-index)
+              elapsed (bench.elapsed-us start)]
+          (when (not (= count expected-datoms))
+            (vev.close-sqlite-index-snapshot! (addr snapshot))
+            (fmt.printf "engine=vev-sqlite workload=persisted-index-snapshot-open ok=false error=unexpected-index-count count=%d expected=%d\n" count expected-datoms)
+            (return))
+          (when (or (< first-entry 0) (< middle-entry 0))
+            (vev.close-sqlite-index-snapshot! (addr snapshot))
+            (fmt.printf "engine=vev-sqlite workload=persisted-index-snapshot-open ok=false error=invalid-index-entry first=%d middle=%d\n" first-entry middle-entry)
+            (return))
+          (when (not datom-ok)
+            (vev.close-sqlite-index-snapshot! (addr snapshot))
+            (fmt.printf "engine=vev-sqlite workload=persisted-index-snapshot-open ok=false error=%s\n" datom-error)
+            (return))
+          (when (= datom.a "")
+            (vev.delete-owned-datom datom)
+            (vev.close-sqlite-index-snapshot! (addr snapshot))
+            (fmt.printf "engine=vev-sqlite workload=persisted-index-snapshot-open ok=false error=empty-datom-attr\n")
+            (return))
+          (vev.delete-owned-datom datom)
+          (vev.close-sqlite-index-snapshot! (addr snapshot))
+          (arr.push! samples elapsed))))
+    (print-timing "persisted-index-snapshot-open" people-count (slice samples 0))))
+
 (defn measure-reopened-query [path: string, people-count: int, sample-count: int]
   (let [[conn ok error] (vev.open-conn-sqlite path)
         samples (make [dynamic]f64 0 sample-count)
@@ -486,5 +525,6 @@
       (measure-persisted-index-load reopen-path reopen-people reopen-samples)
       (measure-persisted-index-page-load reopen-path reopen-people reopen-samples 128)
       (measure-persisted-index-cursor-scan reopen-path reopen-people reopen-samples 128)
+      (measure-persisted-index-snapshot-open reopen-path reopen-people reopen-samples 128)
       (measure-reopen reopen-path reopen-people reopen-samples)
       (measure-reopened-query reopen-path reopen-people reopen-samples))))

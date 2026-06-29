@@ -66,8 +66,11 @@ On top of that page loader, Vev now has a read-only SQLite index cursor that
 keeps one cached page and serves `count`/`at` access over a persisted logical
 index. `DB-Index-View` now has both resident-array and SQLite-cursor modes, and
 the storage tests exercise the same view `count`/`at`/bound helpers over a
-persisted cursor. Normal reopened `DB` values still use resident arrays today,
-but the query-facing boundary can now represent a chunk-backed source. The
+persisted cursor. `SQLite-Index-Snapshot` now opens all four persisted logical
+index cursors directly from a SQLite path or live handle, without calling
+`load-db-sqlite`, and can resolve individual datoms by durable log index.
+Normal reopened `DB` values still use resident arrays today, but the
+query-facing boundary can now represent a chunk-backed source. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
 current-value, pull, and entity helper paths now go through a resident
 `DB-Index-View` boundary instead of directly owning the slice logic at each
@@ -86,8 +89,9 @@ longer read datom index slices directly. The remaining resident read coupling
 is concentrated in `db-index-slice` itself and the `eavt` entity-position side
 tables.
 This is still a guarded compatibility path: Vev materializes datom rows and
-rebuilds indexes before validation. Wiring query/reopen to use chunk-backed DB
-snapshots and paged index cursors is the next implementation step.
+rebuilds indexes before validation for normal `DB` values. Wiring query/reopen
+to use `SQLite-Index-Snapshot`/chunk-backed DB snapshots instead of resident
+arrays is the next implementation step.
 
 ## Implementation Milestones
 
@@ -112,9 +116,11 @@ snapshots and paged index cursors is the next implementation step.
    use that boundary too. Datom rows now carry durable `log_index` values and
    SQLite can fetch an individual datom by log index, which is the next required
    primitive for resolving persisted index entries without rebuilding the whole
-   DB. The remaining work is to make normal reopened DB values construct
-   persisted cursor-backed views where appropriate and decide how entity-position
-   side tables are represented in shared/chunked snapshots.
+   DB. `SQLite-Index-Snapshot` packages the four persisted cursors plus datom
+   lookup into the first lazy-reopen snapshot object. The remaining work is to
+   make normal reopened DB values construct persisted cursor-backed views where
+   appropriate and decide how entity-position side tables are represented in
+   shared/chunked snapshots.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are
