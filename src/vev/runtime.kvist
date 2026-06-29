@@ -15930,25 +15930,25 @@
   (return (query-relation-empty) false))
 
 (defn q-query-entity-int-threshold-pair-columns [db: DB, plan: Entity-Int-Threshold-Plan] -> Entity-Int-Pair-Columns
-  (let [indexes (slice db.avet 0)
+  (let [view (db-index-view db .AVET)
         all-current (all-datoms-current? db)]
     (when (and all-current (schema-value-type-long? db plan.value-attr))
-      (let [low (upper-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
-            high (lower-bound-index db indexes "avet" 0 plan.value-attr (Value {kind: .Float}))
+      (let [low (upper-bound-index-view db view "avet" 0 plan.value-attr (value-int plan.threshold))
+            high (lower-bound-index-view db view "avet" 0 plan.value-attr (Value {kind: .Float}))
             out (entity-int-pair-columns-with-capacity (- high low))
             i low]
         (while (< i high)
-          (let [datom db.datoms[indexes[i]]]
+          (let [datom db.datoms[(db-index-view-at view i)]]
             (append-entity-int-pair-column! (addr out) datom.e datom.v.int-value))
           (set! i (+ i 1)))
         (return out)))
-    (let [low (lower-bound-index db indexes "avet" 0 plan.value-attr (value-int plan.threshold))
+    (let [low (lower-bound-index-view db view "avet" 0 plan.value-attr (value-int plan.threshold))
           attr-prefix ([]Value [(value-keyword plan.value-attr)])
-          high (upper-bound-index-values db indexes "avet" attr-prefix)
+          high (upper-bound-index-view-values db view attr-prefix)
           out (entity-int-pair-columns-with-capacity (- high low))
           i low]
       (while (< i high)
-        (let [datom-index indexes[i]
+        (let [datom-index (db-index-view-at view i)
               datom db.datoms[datom-index]]
           (when (and (or all-current (datom-current-at? db datom-index))
                      (= datom.a plan.value-attr)
@@ -15963,12 +15963,12 @@
         seen-join-values (set.empty string)
         join-values (make [dynamic]Value)
         output-by-entity (make (map u64 Value))
-        avet-indexes (slice db.avet 0)
-        aevt-indexes (slice db.aevt 0)
-        left-low (lower-bound-index db avet-indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
-        left-high (upper-bound-index db avet-indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
-        output-low (lower-bound-index db aevt-indexes "aevt" 0 plan.output-attr (Value {}))
-        output-high (upper-bound-index db aevt-indexes "aevt" 0 plan.output-attr (Value {}))]
+        avet-view (db-index-view db .AVET)
+        aevt-view (db-index-view db .AEVT)
+        left-low (lower-bound-index-view db avet-view "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        left-high (upper-bound-index-view db avet-view "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        output-low (lower-bound-index-view db aevt-view "aevt" 0 plan.output-attr (Value {}))
+        output-high (upper-bound-index-view db aevt-view "aevt" 0 plan.output-attr (Value {}))]
     (defer (delete seen-join-values))
     (defer (delete join-values))
     (defer (delete output-by-entity))
@@ -15977,12 +15977,12 @@
     (set! out-stats.clause-candidates (- left-high left-low))
     (let [output-index output-low]
       (while (< output-index output-high)
-        (let [datom db.datoms[aevt-indexes[output-index]]]
+        (let [datom db.datoms[(db-index-view-at aevt-view output-index)]]
           (mmap.assoc! output-by-entity datom.e datom.v))
         (set! output-index (+ output-index 1))))
     (let [left-index left-low]
       (while (< left-index left-high)
-        (let [left-datom db.datoms[avet-indexes[left-index]]
+        (let [left-datom db.datoms[(db-index-view-at avet-view left-index)]
               [join-value join-ok] (cardinality-one-value-fast-all-current db left-datom.e plan.join-attr)]
           (when join-ok
             (let [[join-key join-key-ok] (primitive-value-dedupe-key join-value)]
@@ -15996,17 +15996,17 @@
         (set! left-index (+ left-index 1))))
     (let [right-candidates 0]
       (for [join-value join-values]
-        (let [right-low (lower-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
-              right-high (upper-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)]
+        (let [right-low (lower-bound-index-view db avet-view "avet" 0 plan.join-attr join-value)
+              right-high (upper-bound-index-view db avet-view "avet" 0 plan.join-attr join-value)]
           (set! right-candidates (+ right-candidates (- right-high right-low)))))
       (let [rows (make [dynamic]Result-Row 0 right-candidates)]
         (for [join-value join-values]
-          (let [right-low (lower-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
-                right-high (upper-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
+          (let [right-low (lower-bound-index-view db avet-view "avet" 0 plan.join-attr join-value)
+                right-high (upper-bound-index-view db avet-view "avet" 0 plan.join-attr join-value)
                 right-index right-low]
             (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- right-high right-low)))
             (while (< right-index right-high)
-              (let [right-datom db.datoms[avet-indexes[right-index]]
+              (let [right-datom db.datoms[(db-index-view-at avet-view right-index)]
                     [output output-ok] (mmap.get output-by-entity right-datom.e)]
                 (when output-ok
                   (append-three-value-row! (addr rows) (value-entity right-datom.e) output join-value)))
@@ -16019,24 +16019,24 @@
   (let [seen-join-values (set.empty string)
         join-values (make [dynamic]Value)
         output-by-entity (make (map u64 string))
-        avet-indexes (slice db.avet 0)
-        aevt-indexes (slice db.aevt 0)
-        left-low (lower-bound-index db avet-indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
-        left-high (upper-bound-index db avet-indexes "avet" 0 plan.left-filter-attr plan.left-filter-value)
-        output-low (lower-bound-index db aevt-indexes "aevt" 0 plan.output-attr (Value {}))
-        output-high (upper-bound-index db aevt-indexes "aevt" 0 plan.output-attr (Value {}))]
+        avet-view (db-index-view db .AVET)
+        aevt-view (db-index-view db .AEVT)
+        left-low (lower-bound-index-view db avet-view "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        left-high (upper-bound-index-view db avet-view "avet" 0 plan.left-filter-attr plan.left-filter-value)
+        output-low (lower-bound-index-view db aevt-view "aevt" 0 plan.output-attr (Value {}))
+        output-high (upper-bound-index-view db aevt-view "aevt" 0 plan.output-attr (Value {}))]
     (defer (delete seen-join-values))
     (defer (delete join-values))
     (defer (delete output-by-entity))
     (let [output-index output-low]
       (while (< output-index output-high)
-        (let [datom db.datoms[aevt-indexes[output-index]]]
+        (let [datom db.datoms[(db-index-view-at aevt-view output-index)]]
           (when (= datom.v.kind .String)
             (mmap.assoc! output-by-entity datom.e datom.v.text)))
         (set! output-index (+ output-index 1))))
     (let [left-index left-low]
       (while (< left-index left-high)
-        (let [left-datom db.datoms[avet-indexes[left-index]]
+        (let [left-datom db.datoms[(db-index-view-at avet-view left-index)]
               [join-value join-ok] (cardinality-one-value-fast-all-current db left-datom.e plan.join-attr)]
           (when (and join-ok (= join-value.kind .Int))
             (let [[join-key join-key-ok] (primitive-value-dedupe-key join-value)]
@@ -16050,18 +16050,18 @@
         (set! left-index (+ left-index 1))))
     (let [right-candidates 0]
       (for [join-value join-values]
-        (let [right-low (lower-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
-              right-high (upper-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)]
+        (let [right-low (lower-bound-index-view db avet-view "avet" 0 plan.join-attr join-value)
+              right-high (upper-bound-index-view db avet-view "avet" 0 plan.join-attr join-value)]
           (set! right-candidates (+ right-candidates (- right-high right-low)))))
       (let [out (Entity-String-Int-Triples {entities: (make [dynamic]u64 0 right-candidates)
                                             strings: (make [dynamic]string 0 right-candidates)
                                             ints: (make [dynamic]i64 0 right-candidates)})]
         (for [join-value join-values]
-          (let [right-low (lower-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
-                right-high (upper-bound-index db avet-indexes "avet" 0 plan.join-attr join-value)
+          (let [right-low (lower-bound-index-view db avet-view "avet" 0 plan.join-attr join-value)
+                right-high (upper-bound-index-view db avet-view "avet" 0 plan.join-attr join-value)
                 right-index right-low]
             (while (< right-index right-high)
-              (let [right-datom db.datoms[avet-indexes[right-index]]
+              (let [right-datom db.datoms[(db-index-view-at avet-view right-index)]
                     [output output-ok] (mmap.get output-by-entity right-datom.e)]
                 (when output-ok
                   (append-entity-string-int-triple! (addr out) right-datom.e output join-value.int-value)))
@@ -16081,13 +16081,13 @@
 
 (defn current-entity-attr-values [db: DB, attr: string, stats: ^Query-Stats] -> (map u64 Value)
   (let [out (make (map u64 Value))
-        indexes (slice db.aevt 0)
-        low (lower-bound-index db indexes "aevt" 0 attr (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 attr (Value {}))]
+        view (db-index-view db .AEVT)
+        low (lower-bound-index-view db view "aevt" 0 attr (Value {}))
+        high (upper-bound-index-view db view "aevt" 0 attr (Value {}))]
     (set! stats^.clause-candidates (+ stats^.clause-candidates (- high low)))
     (let [i low]
       (while (< i high)
-      (let [datom-index indexes[i]
+      (let [datom-index (db-index-view-at view i)
             datom db.datoms[datom-index]]
         (when (datom-current-at? db datom-index)
           (mmap.assoc! out datom.e datom.v)))
@@ -16095,17 +16095,17 @@
     out))
 
 (defn append-two-attr-entity-projection-cardinality-one-current-merge! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: ^Query-Stats]
-  (let [indexes (slice db.aevt 0)
-        first-low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
-        first-high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
-        second-low (lower-bound-index db indexes "aevt" 0 projection.second-attr (Value {}))
-        second-high (upper-bound-index db indexes "aevt" 0 projection.second-attr (Value {}))
+  (let [view (db-index-view db .AEVT)
+        first-low (lower-bound-index-view db view "aevt" 0 projection.first-attr (Value {}))
+        first-high (upper-bound-index-view db view "aevt" 0 projection.first-attr (Value {}))
+        second-low (lower-bound-index-view db view "aevt" 0 projection.second-attr (Value {}))
+        second-high (upper-bound-index-view db view "aevt" 0 projection.second-attr (Value {}))
         first-i first-low
         second-i second-low]
     (set! stats^.clause-candidates (+ stats^.clause-candidates (- first-high first-low) (- second-high second-low)))
     (while (and (< first-i first-high) (< second-i second-high))
-      (let [first-datom db.datoms[indexes[first-i]]
-            second-datom db.datoms[indexes[second-i]]]
+      (let [first-datom db.datoms[(db-index-view-at view first-i)]
+            second-datom db.datoms[(db-index-view-at view second-i)]]
         (cond
           (< first-datom.e second-datom.e)
           (set! first-i (+ first-i 1))
@@ -16120,9 +16120,9 @@
             (set! second-i (+ second-i 1))))))))
 
 (defn append-two-attr-entity-projection-cardinality-one! [rows: ^[dynamic]Result-Row, seen: ^Two-Primitive-Seen, db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: ^Query-Stats]
-  (let [indexes (slice db.aevt 0)
-        low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
+  (let [view (db-index-view db .AEVT)
+        low (lower-bound-index-view db view "aevt" 0 projection.first-attr (Value {}))
+        high (upper-bound-index-view db view "aevt" 0 projection.first-attr (Value {}))
         all-current (all-datoms-current? db)]
     (if all-current
       (append-two-attr-entity-projection-cardinality-one-current-merge! rows seen db query projection stats)
@@ -16131,7 +16131,7 @@
         (set! stats^.clause-candidates (+ stats^.clause-candidates (- high low)))
         (let [i low]
           (while (< i high)
-          (let [first-index indexes[i]
+          (let [first-index (db-index-view-at view i)
                 first-datom db.datoms[first-index]]
             (when (datom-current-at? db first-index)
               (let [[second-value has-second] (mmap.get second-values first-datom.e)]
@@ -16142,9 +16142,9 @@
 (defn q-two-attr-entity-projection-profiled [db: DB, query: Query, projection: Two-Attr-Entity-Projection, stats: Query-Stats] -> Profiled-Result-Set
   (let [out-stats stats
         seen (two-primitive-seen)
-        indexes (slice db.aevt 0)
-        low (lower-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
-        high (upper-bound-index db indexes "aevt" 0 projection.first-attr (Value {}))
+        view (db-index-view db .AEVT)
+        low (lower-bound-index-view db view "aevt" 0 projection.first-attr (Value {}))
+        high (upper-bound-index-view db view "aevt" 0 projection.first-attr (Value {}))
         rows (make [dynamic]Result-Row 0 (- high low))]
     (defer (delete-two-primitive-seen seen))
     (set! out-stats.steps 1)
@@ -16153,17 +16153,17 @@
       (append-two-attr-entity-projection-cardinality-one! (addr rows) (addr seen) db query projection (addr out-stats))
       (let [i low]
         (while (< i high)
-        (let [first-index indexes[i]
+        (let [first-index (db-index-view-at view i)
               first-datom db.datoms[first-index]]
           (set! out-stats.clause-candidates (+ out-stats.clause-candidates 1))
           (when (datom-current-at? db first-index)
-            (let [entity-indexes (slice db.eavt 0)
-                  second-low (lower-bound-index db entity-indexes "eavt-ea" first-datom.e projection.second-attr (Value {}))
-                  second-high (upper-bound-index db entity-indexes "eavt-ea" first-datom.e projection.second-attr (Value {}))
+            (let [entity-view (db-index-view db .EAVT)
+                  second-low (lower-bound-index-view db entity-view "eavt-ea" first-datom.e projection.second-attr (Value {}))
+                  second-high (upper-bound-index-view db entity-view "eavt-ea" first-datom.e projection.second-attr (Value {}))
                   j second-low]
               (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- second-high second-low)))
               (while (< j second-high)
-                (let [second-index entity-indexes[j]
+                (let [second-index (db-index-view-at entity-view j)
                       second-datom db.datoms[second-index]]
                   (when (datom-current-at? db second-index)
                     (append-two-attr-projection-row! (addr rows) (addr seen) query projection first-datom.v second-datom.v)))
@@ -16192,17 +16192,17 @@
     (append-two-value-row! rows first-value second-value)))
 
 (defn append-entity-attr-value-projection-cardinality-one-current-merge! [rows: ^[dynamic]Result-Row, db: DB, query: Query, projection: Entity-Attr-Value-Projection, stats: ^Query-Stats, filter-low: int, filter-high: int]
-  (let [filter-indexes (slice db.avet 0)
-        value-indexes (slice db.aevt 0)
-        value-low (lower-bound-index db value-indexes "aevt" 0 projection.value-attr (Value {}))
-        value-high (upper-bound-index db value-indexes "aevt" 0 projection.value-attr (Value {}))
+  (let [filter-view (db-index-view db .AVET)
+        value-view (db-index-view db .AEVT)
+        value-low (lower-bound-index-view db value-view "aevt" 0 projection.value-attr (Value {}))
+        value-high (upper-bound-index-view db value-view "aevt" 0 projection.value-attr (Value {}))
         filter-i filter-low
         value-i value-low]
     (set! stats^.clause-candidates (+ stats^.clause-candidates (- value-high value-low)))
     (while (and (< filter-i filter-high)
                 (< value-i value-high))
-      (let [filter-datom db.datoms[filter-indexes[filter-i]]
-            value-datom db.datoms[value-indexes[value-i]]]
+      (let [filter-datom db.datoms[(db-index-view-at filter-view filter-i)]
+            value-datom db.datoms[(db-index-view-at value-view value-i)]]
         (cond
           (< filter-datom.e value-datom.e)
             (set! filter-i (+ filter-i 1))
@@ -16218,9 +16218,9 @@
   (let [out-stats stats
         rows (make [dynamic]Result-Row)
         seen (two-primitive-seen)
-        filter-indexes (slice db.avet 0)
-        low (lower-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)
-        high (upper-bound-index db filter-indexes "avet" 0 projection.filter-attr projection.filter-value)
+        filter-view (db-index-view db .AVET)
+        low (lower-bound-index-view db filter-view "avet" 0 projection.filter-attr projection.filter-value)
+        high (upper-bound-index-view db filter-view "avet" 0 projection.filter-attr projection.filter-value)
         dedupe-required (not (and (all-datoms-current? db)
                                   (schema-cardinality-one? db projection.filter-attr)
                                   (schema-cardinality-one? db projection.value-attr)))]
@@ -16235,16 +16235,16 @@
       (return (profiled-result-set (result-set-ok rows) out-stats)))
     (let [i low]
       (while (< i high)
-      (let [filter-index filter-indexes[i]
+      (let [filter-index (db-index-view-at filter-view i)
             filter-datom db.datoms[filter-index]]
         (when (datom-current-at? db filter-index)
-          (let [entity-indexes (slice db.eavt 0)
-                value-low (lower-bound-index db entity-indexes "eavt-ea" filter-datom.e projection.value-attr (Value {}))
-                value-high (upper-bound-index db entity-indexes "eavt-ea" filter-datom.e projection.value-attr (Value {}))
+          (let [entity-view (db-index-view db .EAVT)
+                value-low (lower-bound-index-view db entity-view "eavt-ea" filter-datom.e projection.value-attr (Value {}))
+                value-high (upper-bound-index-view db entity-view "eavt-ea" filter-datom.e projection.value-attr (Value {}))
                 j value-low]
             (set! out-stats.clause-candidates (+ out-stats.clause-candidates (- value-high value-low)))
             (while (< j value-high)
-              (let [value-index entity-indexes[j]
+              (let [value-index (db-index-view-at entity-view j)
                     value-datom db.datoms[value-index]]
                 (when (datom-current-at? db value-index)
                   (if dedupe-required
