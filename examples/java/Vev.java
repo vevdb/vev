@@ -140,6 +140,7 @@ public final class Vev {
     private final MethodHandle preparedPullPatternFree;
     private final MethodHandle preparedPullPatternOk;
     private final MethodHandle preparedPullPatternError;
+    private final MethodHandle preparedPullPatternEdn;
     private final MethodHandle pullPrepared;
     private final MethodHandle pullLookupRefStringEdn;
     private final MethodHandle pullLookupRefStringPrepared;
@@ -302,6 +303,7 @@ public final class Vev {
         this.preparedPullPatternFree = downcall("vev_prepared_pull_pattern_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.preparedPullPatternOk = downcall("vev_prepared_pull_pattern_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
         this.preparedPullPatternError = downcall("vev_prepared_pull_pattern_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.preparedPullPatternEdn = downcall("vev_prepared_pull_pattern_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullPrepared = downcall("vev_pull_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullLookupRefStringEdn = downcall("vev_pull_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.pullLookupRefStringPrepared = downcall("vev_pull_lookup_ref_string_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -1555,6 +1557,11 @@ public final class Vev {
 
         private void requireOpen() {
             if (isNull(raw)) throw new IllegalStateException("prepared pull pattern is closed");
+        }
+
+        public String edn() throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) preparedPullPatternEdn.invoke(raw));
         }
 
         @Override

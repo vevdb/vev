@@ -291,9 +291,19 @@
     (->PreparedQuery engine (.prepare engine (edn-text query)))))
 
 (defn prepared-edn
-  "Return the portable EDN-ish parser value for a prepared query."
-  [^PreparedQuery query]
-  (edn/read-string (.edn (:native query))))
+  "Return the portable EDN-ish parser value for a prepared query or pull pattern."
+  [prepared]
+  (edn/read-string
+   (cond
+     (instance? PreparedQuery prepared)
+     (.edn (:native prepared))
+
+     (instance? PreparedPullPattern prepared)
+     (.edn (:native prepared))
+
+     :else
+     (throw (ex-info "prepared-edn expects a prepared query or pull pattern"
+                     {:value prepared})))))
 
 (defn prepare-pull-pattern
   "Prepare a pull pattern from Clojure data or EDN text."

@@ -114,7 +114,8 @@
 
         (let [db (vev/db conn)]
           (with-open [prepared-pattern (vev/prepare-pull-pattern db [:user/name])]
-            (let [lookup-pull (vev/pull db
+            (let [prepared-pattern-ast (vev/prepared-edn prepared-pattern)
+                  lookup-pull (vev/pull db
                                         [:user/name]
                                         [:user/email "ada@example.com"])
                   prepared-lookup-pull (vev/pull db
@@ -132,6 +133,11 @@
               (println "keyword lookup pull:" keyword-lookup-pull)
               (println "int lookup pull:" int-lookup-pull)
               (println "pull many:" many-pull)
+              (when-not (and (:ok prepared-pattern-ast)
+                             (seq (:pattern prepared-pattern-ast))
+                             (= :user/name (:attr (first (:pattern prepared-pattern-ast)))))
+                (throw (ex-info "prepared pull pattern AST did not expose parser keys"
+                                {:prepared prepared-pattern-ast})))
               (when-not (= {:user/name "Ada"} lookup-pull)
                 (throw (ex-info "unexpected lookup-ref pull" {:pull lookup-pull})))
               (when-not (= {:user/name "Ada"} prepared-lookup-pull)

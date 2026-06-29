@@ -309,6 +309,7 @@ vev_value_handle_t vev_pull_edn(vev_db_t db, const char *pattern_text, unsigned 
 vev_prepared_pull_pattern_t vev_prepare_pull_pattern_edn(const char *pattern_text);
 bool vev_prepared_pull_pattern_ok(vev_prepared_pull_pattern_t pattern);
 const char *vev_prepared_pull_pattern_error(vev_prepared_pull_pattern_t pattern);
+const char *vev_prepared_pull_pattern_edn(vev_prepared_pull_pattern_t pattern);
 void vev_prepared_pull_pattern_free(vev_prepared_pull_pattern_t pattern);
 vev_value_handle_t vev_pull_prepared(
     vev_db_t db,

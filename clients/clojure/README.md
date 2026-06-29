@@ -78,6 +78,15 @@ the call. Use `prepare` when the same query should be reused:
   (vev/q db query "ada@example.com"))
 ```
 
+`prepared-edn` also works for reusable pull patterns:
+
+```clojure
+(with-open [pattern (vev/prepare-pull-pattern db
+                     [:user/name {:user/friend [:user/name]}])]
+  (vev/prepared-edn pattern)
+  (vev/pull db pattern 1))
+```
+
 Pull follows the same DB-value shape:
 
 ```clojure

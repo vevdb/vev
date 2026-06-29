@@ -222,11 +222,19 @@ public final class Smoke {
                          :in ?pattern ?name
                          :where [?e :user/name ?name]]
                         """);
+                     Vev.PreparedPullPattern preparedPattern =
+                         vev.preparePullPattern("[:user/name {:user/friend [:user/name]}]");
                      Vev.Statement pullPatternStmt = pullPatternQuery.statement();
                      Vev.ResultSet result = conn.query(
                          pullPatternStmt.bindPullPatternAndString(
                              "[:user/name {:user/friend [:user/name]}]",
                              "Ada"))) {
+                    String preparedPatternEdn = preparedPattern.edn();
+                    if (!preparedPatternEdn.contains(":pattern")
+                        || !preparedPatternEdn.contains(":attr")
+                        || !preparedPatternEdn.contains(":nested-count")) {
+                        throw new IllegalStateException("unexpected prepared pull pattern EDN: " + preparedPatternEdn);
+                    }
                     Vev.MapValue pulled = (Vev.MapValue) result.scalar();
                     System.out.println("statement pull pattern: " + pulled);
                     Object friend = pulled.get(":user/friend");

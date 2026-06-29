@@ -871,6 +871,10 @@ Prepared query status is available through `vev_prepared_query_ok` and
 `vev_prepared_query_error`. `vev_prepared_query_edn` returns an owned EDN-ish
 description of the prepared parser value, including input specs, clauses,
 predicates, function clauses, rule calls, structured `not`/`or` groups, `ground`, `get-else`, `get-some`, pull finds, and aggregate finds.
+Prepared pull patterns have the same status shape, and
+`vev_prepared_pull_pattern_edn` returns an owned EDN-ish description with
+parsed attrs, nested patterns, limits, defaults, aliases, transforms, and
+recursion markers.
 Statement execution failures from direct visitor calls are available through
 `vev_stmt_error`.
 
@@ -1013,6 +1017,7 @@ Direct pull entry points use owned value handles:
 - `vev_prepare_pull_pattern_edn`
 - `vev_prepared_pull_pattern_ok`
 - `vev_prepared_pull_pattern_error`
+- `vev_prepared_pull_pattern_edn`
 - `vev_prepared_pull_pattern_free`
 - `vev_pull_prepared`
 - `vev_pull_lookup_ref_string_edn`

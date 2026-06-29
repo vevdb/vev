@@ -1226,6 +1226,32 @@ int main(void) {
     vev_value_handle_free(many_pull);
     vev_db_release(pull_db);
 
+    vev_prepared_pull_pattern_t prepared_pull_pattern =
+        vev_prepare_pull_pattern_edn("[:user/name {:user/friend [:user/name]}]");
+    if (prepared_pull_pattern == NULL || !vev_prepared_pull_pattern_ok(prepared_pull_pattern)) {
+        fprintf(stderr, "failed to prepare direct pull pattern\n");
+        if (prepared_pull_pattern != NULL) vev_prepared_pull_pattern_free(prepared_pull_pattern);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const char *prepared_pull_pattern_edn = vev_prepared_pull_pattern_edn(prepared_pull_pattern);
+    if (strstr(prepared_pull_pattern_edn, ":pattern") == NULL ||
+        strstr(prepared_pull_pattern_edn, ":attr") == NULL ||
+        strstr(prepared_pull_pattern_edn, ":nested-count") == NULL) {
+        fprintf(stderr, "unexpected prepared pull pattern EDN: %s\n", prepared_pull_pattern_edn);
+        vev_string_free(prepared_pull_pattern_edn);
+        vev_prepared_pull_pattern_free(prepared_pull_pattern);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("prepared pull pattern edn: %s\n", prepared_pull_pattern_edn);
+    vev_string_free(prepared_pull_pattern_edn);
+    vev_prepared_pull_pattern_free(prepared_pull_pattern);
+
     vev_prepared_query_t pull_pattern_query =
         vev_prepare_query_edn("[:find (pull ?e ?pattern) :in ?pattern ?name :where [?e :user/name ?name]]");
     if (pull_pattern_query == NULL) {
