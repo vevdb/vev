@@ -173,6 +173,20 @@ func (db *DB) QueryColumns(query *PreparedQuery, inputs string) (*ColumnResult, 
 	inputsText := cstring(inputs)
 	defer C.free(unsafe.Pointer(inputsText))
 	raw := C.vev_query_db_prepared_column_batch_with_inputs(db.raw, query.raw, inputsText)
+	return columnResultFromRaw(raw)
+}
+
+func (db *DB) QueryStatementRows(stmt *Statement) (*ResultSet, error) {
+	raw := C.vev_query_db_stmt_result(db.raw, stmt.raw)
+	return newResultSet(raw)
+}
+
+func (db *DB) QueryStatementColumns(stmt *Statement) (*ColumnResult, error) {
+	raw := C.vev_query_db_stmt_column_batch(db.raw, stmt.raw)
+	return columnResultFromRaw(raw)
+}
+
+func columnResultFromRaw(raw C.vev_column_batch_t) (*ColumnResult, error) {
 	if raw == nil {
 		return nil, nil
 	}
@@ -307,6 +321,45 @@ func (q *PreparedQuery) QueryRows(conn *Conn, inputs string) (*ResultSet, error)
 	defer C.free(unsafe.Pointer(inputsText))
 	raw := C.vev_query_prepared_result_with_inputs(conn.raw, q.raw, inputsText)
 	return newResultSet(raw)
+}
+
+func (q *PreparedQuery) Statement() (*Statement, error) {
+	raw := C.vev_stmt_create(q.raw)
+	if raw == nil {
+		return nil, fmt.Errorf("failed to create statement")
+	}
+	return &Statement{raw: raw}, nil
+}
+
+type Statement struct {
+	raw C.vev_stmt_t
+}
+
+func (s *Statement) Close() {
+	if s.raw != nil {
+		C.vev_stmt_free(s.raw)
+		s.raw = nil
+	}
+}
+
+func (s *Statement) BindString(value string) error {
+	C.vev_stmt_clear(s.raw)
+	valueText := cstring(value)
+	defer C.free(unsafe.Pointer(valueText))
+	if !bool(C.vev_stmt_bind_string(s.raw, valueText)) {
+		return fmt.Errorf("failed to bind string")
+	}
+	return nil
+}
+
+func (s *Statement) QueryRows(conn *Conn) (*ResultSet, error) {
+	raw := C.vev_query_stmt_result(conn.raw, s.raw)
+	return newResultSet(raw)
+}
+
+func (s *Statement) QueryColumns(conn *Conn) (*ColumnResult, error) {
+	raw := C.vev_query_stmt_column_batch(conn.raw, s.raw)
+	return columnResultFromRaw(raw)
 }
 
 type Entity uint64
@@ -639,6 +692,22 @@ func main() {
 	fmt.Println("typed rows:", typedRows)
 	mustEqual("typed rows", typedRows, [][]Value{{Entity(2), "grace@example.com"}})
 
+	stmt, err := query.Statement()
+	if err != nil {
+		panic(err)
+	}
+	defer stmt.Close()
+	if err := stmt.BindString("grace@example.com"); err != nil {
+		panic(err)
+	}
+	stmtRows, err := stmt.QueryRows(conn)
+	if err != nil {
+		panic(err)
+	}
+	statementRows := stmtRows.Rows()
+	stmtRows.Close()
+	mustEqual("statement rows", statementRows, [][]Value{{Entity(2), "grace@example.com"}})
+
 	conn.Transact(`
 		[[:db/add 90 :db/ident :user/email]
 		 [:db/add 90 :db/unique :db.unique/identity]]
@@ -720,6 +789,38 @@ func main() {
 	fmt.Println("column batch rows:", columnRows)
 	mustEqual("column batch kinds", columns.Kinds, []int{ColumnString})
 	mustEqual("column batch rows", columnRows, [][]Value{{"ada@example.com"}, {"grace@example.com"}})
+
+	allEmailStmt, err := allEmailTexts.Statement()
+	if err != nil {
+		panic(err)
+	}
+	defer allEmailStmt.Close()
+	liveColumns, err := allEmailStmt.QueryColumns(conn)
+	if err != nil {
+		panic(err)
+	}
+	if liveColumns == nil {
+		panic("expected live statement column batch")
+	}
+	liveColumnRows := liveColumns.Rows()
+	sort.Slice(liveColumnRows, func(i, j int) bool {
+		return fmt.Sprintf("%#v", liveColumnRows[i]) < fmt.Sprintf("%#v", liveColumnRows[j])
+	})
+	mustEqual("live statement column batch kinds", liveColumns.Kinds, []int{ColumnString})
+	mustEqual("live statement column batch rows", liveColumnRows, columnRows)
+	snapshotColumns, err := snapshot.QueryStatementColumns(allEmailStmt)
+	if err != nil {
+		panic(err)
+	}
+	if snapshotColumns == nil {
+		panic("expected snapshot statement column batch")
+	}
+	snapshotColumnRows := snapshotColumns.Rows()
+	sort.Slice(snapshotColumnRows, func(i, j int) bool {
+		return fmt.Sprintf("%#v", snapshotColumnRows[i]) < fmt.Sprintf("%#v", snapshotColumnRows[j])
+	})
+	mustEqual("snapshot statement column batch kinds", snapshotColumns.Kinds, []int{ColumnString})
+	mustEqual("snapshot statement column batch rows", snapshotColumnRows, columnRows)
 
 	conn.Transact(`[{:db/id 3 :user/name "Alan" :user/email "alan@example.com"}]`)
 	current := query.Query(conn, `["alan@example.com"]`)
