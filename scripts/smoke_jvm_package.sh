@@ -37,7 +37,7 @@ EOF
   cd "$TMP_DIR"
   clojure -M:run -e "(require '[vev.core :as d])
 (let [conn (d/create-conn)]
-  (d/transact! conn [{:db/id 1 :user/name \"Ada\"}])
+  (d/transact conn [{:db/id 1 :user/name \"Ada\"}])
   (assert (= #{[\"Ada\"]}
              (d/q '[:find ?name :where [?e :user/name ?name]]
                   (d/db conn))))

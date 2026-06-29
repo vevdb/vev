@@ -69,7 +69,7 @@ The Clojure API is the most Datomic-shaped public wrapper today:
 
 (def conn (d/create-conn))
 
-(d/transact! conn
+(d/transact conn
   [{:db/id 1
     :artist/name "John Lennon"}
    {:db/id 2

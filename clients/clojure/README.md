@@ -24,7 +24,7 @@ Application code should not pass Java paths or native library paths around:
 
 (def conn (d/create-conn))
 
-(d/transact! conn
+(d/transact conn
   [{:db/id 1
     :user/name "Ada"
     :user/email "ada@example.com"}])
@@ -42,7 +42,7 @@ Durable usage should be similarly direct:
 ```clojure
 (def conn (d/connect "app.vev"))
 
-(d/transact! conn [{:db/id 1 :user/name "Ada"}])
+(d/transact conn [{:db/id 1 :user/name "Ada"}])
 (d/q '[:find ?name :where [?e :user/name ?name]] (d/db conn))
 ```
 
@@ -194,7 +194,7 @@ A mutable connection can also be initialized from an immutable DB snapshot:
 ```clojure
 (def next-conn (d/conn-from-db next-db))
 
-(d/transact! next-conn [{:db/id 4 :user/name "Dorothy"}])
+(d/transact next-conn [{:db/id 4 :user/name "Dorothy"}])
 (d/q (d/db next-conn) '[:find ?name :where [?e :user/name ?name]])
 ```
 
@@ -206,7 +206,7 @@ Durable connections use the same transaction and DB-value query shape:
 (d/connection-info durable)
 ;; => {:backend :sqlite, :path "app.vev", :basis-t 0, :tx-count 0, :tx-ids []}
 
-(d/transact! durable [{:db/id 1 :user/name "Ada"}])
+(d/transact durable [{:db/id 1 :user/name "Ada"}])
 (d/q (d/db durable) '[:find ?name :where [?e :user/name ?name]])
 ```
 
@@ -217,8 +217,8 @@ explicitly when a handle is no longer needed.
 
 The current package is deliberately thin:
 
-- `transact!` and `with` return transaction report maps from typed native report handles
-- `transact-text!` and `with-text` return raw EDN report strings
+- `transact` and `with` return transaction report maps from typed native report handles
+- `transact-text` and `with-text` return raw EDN report strings
 - `q` returns a set of row vectors
 - `rows` returns an ordered vector of row vectors
 - entity ids are converted to integers

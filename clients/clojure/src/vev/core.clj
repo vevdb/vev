@@ -193,12 +193,14 @@
   [id]
   (Vev$Entity. (long id)))
 
-(defn transact-text!
+(defn transact-text
   "Transact Clojure data or EDN text and return the raw EDN report text."
   [^Conn conn tx]
   (.transact (:native conn) (edn-text tx)))
 
-(defn transact!
+(def transact-text! transact-text)
+
+(defn transact
   "Transact Clojure data or EDN text against a connection.
 
   Returns a Clojure transaction report map."
@@ -208,7 +210,7 @@
                        (.transactReport (:native conn) (edn-text tx)))]
     (clj-value (.value report))))
 
-(def transact transact!)
+(def transact! transact)
 
 (defn empty-db
   "Return an owned immutable empty DB value."

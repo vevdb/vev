@@ -574,7 +574,7 @@ serializes them through the same EDN/query path:
 
 (def conn (d/create-conn))
 
-(d/transact! conn
+(d/transact conn
   [{:db/id 1 :user/name "Ada"}])
 
 (def db (d/db conn))
@@ -609,7 +609,7 @@ Durable connections use `connect`:
 (def conn (d/connect "app.vev"))
 
 (d/connection-info conn)
-(d/transact! conn [{:db/id 1 :user/name "Ada"}])
+(d/transact conn [{:db/id 1 :user/name "Ada"}])
 (d/q (d/db conn) '[:find ?name :where [?e :user/name ?name]])
 ```
 

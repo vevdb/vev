@@ -56,7 +56,7 @@ intended to feel close to Datomic/DataScript:
 
 (def conn (d/create-conn))
 
-(d/transact! conn [{:db/id 1 :user/name "Ada"}])
+(d/transact conn [{:db/id 1 :user/name "Ada"}])
 
 (def db (d/db conn))
 
