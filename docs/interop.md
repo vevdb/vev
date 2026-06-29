@@ -107,8 +107,10 @@ bundled-native package layout.
 The Node path loads `VEV_NODE_NATIVE`, then a local `vev_native.node`, then
 `native/<platform>/vev_native.node` next to `vev.js`. The addon is linked with
 both repo-local and addon-relative rpaths so the platform `libvev` can sit next
-to the addon in a future package. `scripts/smoke_node_package.sh` verifies that
-temporary package layout.
+to the addon in a future package. `clients/node/package.json` contains the
+current `@vevdb/vev` package metadata while remaining private, and
+`scripts/smoke_node_package.sh` verifies that metadata plus the temporary
+bundled-native package layout.
 
 Odin consumption should use the C ABI through a small wrapper for now.
 `clients/odin/smoke.odin` proves the dynamic-loading path against the platform
