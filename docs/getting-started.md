@@ -8,19 +8,26 @@ Build the native library and run the available client smoke tests:
 scripts/smoke_clients.sh
 scripts/stage_jvm_native.sh
 scripts/package_jvm.sh
+scripts/smoke_jvm_package.sh
+scripts/smoke_python_package.sh
+scripts/smoke_node_package.sh
+scripts/smoke_go_package.sh
 ```
 
-This builds:
+Together, these build:
 
 - the platform native library under `build/lib`
 - JVM native-resource staging under `build/jvm-native`
 - local JVM proof jars under `build/jvm`
+- a local JVM Maven-style repository under `build/m2`
 - `build/lib/pkgconfig/vev.pc`
 - Java classes under `build/examples/java`
 - native smoke artifacts under `build/examples/*`
 
-The same command runs the available C, Python, Rust, Go, Node/TypeScript, Java,
-and Clojure smoke clients.
+`scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
+Node/TypeScript, Java, Clojure, and Odin smoke clients. The package smoke
+scripts then verify the current local JVM, Python, Node, and Go package shapes
+from temporary projects/directories.
 
 ## Clojure
 
@@ -56,17 +63,69 @@ Durability is a separate step:
 For local development from this repo:
 
 ```sh
-VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev
+clojure -M:clj-dev
 ```
 
 Then open `examples/clojure/getting_started.clj` in an editor and evaluate the
-forms inside its `(comment ...)` block one at a time. That `VEV_LIB` setting is
-local repo setup only. The intended published Clojure experience is a normal
-deps.edn dependency that pulls in and loads the platform native library itself:
+forms inside its `(comment ...)` block one at a time. This local alias uses the
+Java loader, which looks for the platform library under `build/lib`. The
+intended published Clojure experience is a normal deps.edn dependency that
+pulls in and loads the platform native library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
 ```
+
+The same shape can be tested locally after `scripts/package_jvm.sh`:
+
+```clojure
+{:mvn/local-repo "/path/to/vev/build/m2"
+ :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
+```
+
+`scripts/smoke_jvm_package.sh` automates that local dependency check from a
+temporary project.
+
+## Python
+
+The Python client is a pure `ctypes` wrapper today:
+
+```python
+import vev
+
+with vev.Library().create_conn() as conn:
+    conn.transact('[{:db/id 1 :user/name "Ada"}]')
+    print(conn.db().query('[:find ?name :where [?e :user/name ?name]]'))
+```
+
+`scripts/smoke_python_package.sh` simulates a future wheel layout by loading a
+bundled `native/<platform>/<library>` next to `vev.py`.
+
+## Node/TypeScript
+
+The Node wrapper loads a native N-API addon and exposes a small CommonJS API:
+
+```js
+const vev = require("@vevdb/vev");
+const conn = vev.openMemory();
+conn.transact('[{:db/id 1 :user/name "Ada"}]');
+console.log(conn.queryText('[:find ?name :where [?e :user/name ?name]]'));
+```
+
+`scripts/smoke_node_package.sh` simulates a future npm package by loading
+`native/<platform>/vev_native.node` and the adjacent platform `libvev` from a
+temporary package directory.
+
+## Go
+
+The Go wrapper is importable at the planned module path:
+
+```go
+import vev "github.com/vevdb/vev/clients/go"
+```
+
+`scripts/smoke_go_package.sh` verifies that shape from a temporary Go module
+using a local `replace` to this checkout.
 
 DB snapshots are passable immutable values. The wrapper has JVM cleanup
 fallbacks, so examples use normal Clojure binding style. Long-running services
@@ -118,7 +177,7 @@ Current smoke clients:
 - Rust: `clients/rust`
 - Go: `clients/go`
 - Node/TypeScript: `clients/node`
-- Odin: `clients/odin` documents the planned C ABI wrapper direction
+- Odin: `clients/odin`
 
 These are not polished published packages yet. They are kept under `clients/*`
 so the public host-language story can evolve in place while the engine and ABI

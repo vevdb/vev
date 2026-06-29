@@ -35,10 +35,16 @@ today is the native library plus host-client smoke packages:
 
 ```sh
 scripts/smoke_clients.sh
+scripts/smoke_jvm_package.sh
+scripts/smoke_python_package.sh
+scripts/smoke_node_package.sh
+scripts/smoke_go_package.sh
 ```
 
-That builds `build/lib/libvev.dylib`, writes `build/lib/pkgconfig/vev.pc`, and
-runs the available clients under `clients/*`.
+The first command builds the platform library under `build/lib`, writes
+`build/lib/pkgconfig/vev.pc`, and runs the available clients under `clients/*`.
+The package smoke scripts verify the current local JVM, Python,
+Node/TypeScript, and Go package shapes from temporary projects or directories.
 
 See [docs/getting-started.md](docs/getting-started.md) for the current local
 setup and host-language examples.
@@ -52,7 +58,7 @@ Current client work areas:
 * `clients/clojure`: Datomic-shaped Clojure wrapper over the Java client.
 * `clients/go`: cgo wrapper smoke.
 * `clients/node`: Node N-API / TypeScript smoke.
-* `clients/odin`: planned Odin wrapper over the C ABI.
+* `clients/odin`: Odin `core:dynlib` smoke wrapper over the C ABI.
 
 Runnable examples live under `examples/*`, including the Clojure
 getting-started script.

@@ -49,12 +49,15 @@ clients:
 - Node package name, if published: `@vevdb/vev`
 - Python package name, if published: `vev`
 - C SDK: `include/vev.h`, `libvev`, and pkg-config package `vev`
-- Odin package: later `clients/odin` wrapper over the C ABI, not generated Odin
+- Odin package: `clients/odin` currently has a dynamic C ABI smoke wrapper; a
+  fuller Odin package should grow from that shape, not generated Odin
 
 The first packaging pass still supports explicit local library paths and
-environment overrides, but the JVM path now has a concrete bundled-native
-loading shape. The Java loader checks explicit path configuration, local
-`build/lib`, then classpath resources under
+environment overrides, but several host package shapes now have concrete local
+proofs.
+
+The JVM path has a bundled-native loading shape. The Java loader checks
+explicit path configuration, local `build/lib`, then classpath resources under
 `dev/vevdb/vev/native/<platform>/<library>`. `scripts/stage_jvm_native.sh`
 creates that resource tree for the current platform, and
 `scripts/package_jvm.sh` builds local proof jars for the intended split:
@@ -63,12 +66,33 @@ creates that resource tree for the current platform, and
 - `vev-native-<platform>-<version>.jar`
 - `vev-clj-<version>.jar`
 
-These jars are not published releases yet, but they make the future
-`{:deps {dev.vevdb/vev-clj {:mvn/version ...}}}` story mechanically real.
+It also writes a local Maven repository under `build/m2`, so the future
+published Clojure dependency shape can already be tested from outside the repo:
 
-Odin consumption should use the C ABI through a small wrapper for now. Vev is
-implemented in Kvist and lowers through Odin, but generated Odin is build
-output, not the public Odin package surface.
+```clojure
+{:mvn/local-repo "/path/to/vev/build/m2"
+ :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
+```
+
+These are not published releases yet, but they make the future
+`{:deps {dev.vevdb/vev-clj {:mvn/version ...}}}` story mechanically real.
+`scripts/smoke_jvm_package.sh` verifies the shape from a temporary project.
+
+The Python path has the same explicit-to-bundled fallback shape: explicit
+`vev.Library(path)`, `VEV_LIB`, repo `build/lib`, then
+`native/<platform>/<library>` next to `vev.py`. `scripts/smoke_python_package.sh`
+verifies that temporary package layout.
+
+The Node path loads `VEV_NODE_NATIVE`, then a local `vev_native.node`, then
+`native/<platform>/vev_native.node` next to `vev.js`. The addon is linked with
+both repo-local and addon-relative rpaths so the platform `libvev` can sit next
+to the addon in a future package. `scripts/smoke_node_package.sh` verifies that
+temporary package layout.
+
+Odin consumption should use the C ABI through a small wrapper for now.
+`clients/odin/smoke.odin` proves the dynamic-loading path against the platform
+native library. Vev is implemented in Kvist and lowers through Odin, but
+generated Odin is build output, not the public Odin package surface.
 
 ## Native API
 

@@ -407,7 +407,7 @@ scripts/musicbrainz_clojure_vev_matrix.sh \
   --workload beatles-releases
 ```
 
-Rebuild `build/lib/libvev.dylib` before host comparisons:
+Rebuild the platform library under `build/lib` before host comparisons:
 
 ```sh
 scripts/build_c_abi.sh

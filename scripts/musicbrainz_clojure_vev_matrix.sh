@@ -6,7 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JAVA_OUT="$ROOT/build/examples/java"
-LIB="$ROOT/build/lib/libvev.dylib"
+LIB=""
 URI=""
 WORKLOAD="country-names"
 SAMPLES="10"
@@ -28,7 +28,7 @@ options:
   --workload name        workload name or suffix; default: country-names
   --samples n           timing samples; default: 10
   --warmups n           warmups; default: 5
-  --lib path            libvev dynamic library path
+  --lib path            native library path; default uses Java loader lookup
   --uri uri             open an existing durable Vev DB and skip EDN loading
   --schema path         Vev exported schema EDN path
   --values path         Vev exported single values EDN path

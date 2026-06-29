@@ -21,7 +21,7 @@ public final class Smoke {
 
     public static void main(String[] args) throws Throwable {
         if (args.length != 1) {
-            throw new IllegalArgumentException("usage: Smoke <path-to-libvev.dylib>");
+            throw new IllegalArgumentException("usage: Smoke <path-to-native-library>");
         }
 
         Vev vev = Vev.load(Path.of(args[0]));

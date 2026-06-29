@@ -1,7 +1,7 @@
 // Copyright (c) Andreas Flakstad and Vev contributors
 // SPDX-License-Identifier: EPL-2.0
 
-package main
+package vev
 
 /*
 #cgo CFLAGS: -I../../include
@@ -649,7 +649,7 @@ func mustEqual(label string, got any, want any) {
 	}
 }
 
-func main() {
+func Smoke() {
 	conn, err := OpenMemory()
 	if err != nil {
 		panic(err)
@@ -911,7 +911,4 @@ func main() {
 	durableRows.Close()
 	durableDB.Close()
 
-	if len(os.Args) > 1 && os.Args[1] == "--version" {
-		fmt.Println("version:", ownedString(C.vev_version()))
-	}
 }

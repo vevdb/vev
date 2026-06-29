@@ -15,8 +15,18 @@ RUST_EXAMPLE_DIR="$ROOT/build/examples/rust"
 JAVA_EXAMPLE_DIR="$ROOT/build/examples/java"
 GO_EXAMPLE_DIR="$ROOT/build/examples/go"
 NODE_EXAMPLE_DIR="$ROOT/build/examples/node"
+ODIN_EXAMPLE_DIR="$ROOT/build/examples/odin"
 
-mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR"
+case "$(uname -s)" in
+  Darwin) LIB_NAME="libvev.dylib" ;;
+  Linux) LIB_NAME="libvev.so" ;;
+  MINGW*|MSYS*|CYGWIN*) LIB_NAME="vev.dll" ;;
+  *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+
+LIB_PATH="$LIB_DIR/$LIB_NAME"
+
+mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR" "$ODIN_EXAMPLE_DIR"
 
 if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
   (
@@ -26,7 +36,7 @@ if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
 else
   "$KVIST_BIN" compile "$ROOT/src/vev_abi/vev_abi.kvist" -o "$GENERATED_DIR/vev_abi.odin"
 fi
-odin build "$GENERATED_DIR" -build-mode:dll -out:"$LIB_DIR/libvev.dylib"
+odin build "$GENERATED_DIR" -build-mode:dll -out:"$LIB_PATH"
 
 cat > "$PKGCONFIG_DIR/vev.pc" <<EOF
 prefix=$ROOT/build
@@ -55,7 +65,7 @@ python3 "$ROOT/clients/python/smoke.py"
 
 if command -v cargo >/dev/null 2>&1; then
   CARGO_TARGET_DIR="$RUST_EXAMPLE_DIR/target" \
-  RUSTFLAGS="-L native=$LIB_DIR -l dylib=vev -C link-arg=-Wl,-rpath,$LIB_DIR" \
+  VEV_LIB_DIR="$LIB_DIR" \
     cargo run \
       --quiet \
       --manifest-path "$ROOT/clients/rust/Cargo.toml"
@@ -75,13 +85,20 @@ fi
 if command -v go >/dev/null 2>&1; then
   (
     cd "$ROOT/clients/go"
-    go build -o "$GO_EXAMPLE_DIR/vev_go_smoke" smoke.go
+    go build -o "$GO_EXAMPLE_DIR/vev_go_smoke" ./cmd/vev-go-smoke
   )
   DYLD_LIBRARY_PATH="$LIB_DIR:${DYLD_LIBRARY_PATH:-}" \
     LD_LIBRARY_PATH="$LIB_DIR:${LD_LIBRARY_PATH:-}" \
     "$GO_EXAMPLE_DIR/vev_go_smoke"
 else
   echo "go not found; skipping Go smoke"
+fi
+
+if command -v odin >/dev/null 2>&1; then
+  odin build "$ROOT/clients/odin" -file -out:"$ODIN_EXAMPLE_DIR/vev_odin_smoke"
+  "$ODIN_EXAMPLE_DIR/vev_odin_smoke" "$LIB_PATH"
+else
+  echo "odin not found; skipping Odin smoke"
 fi
 
 if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
@@ -105,6 +122,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
         -L"$LIB_DIR" \
         -lvev \
         -Wl,-rpath,"$LIB_DIR" \
+        -Wl,-rpath,@loader_path \
         -o "$NODE_EXAMPLE_DIR/vev_native.node"
     else
       clang++ \
@@ -117,6 +135,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
         -L"$LIB_DIR" \
         -lvev \
         -Wl,-rpath,"$LIB_DIR" \
+        -Wl,-rpath,'$ORIGIN' \
         -o "$NODE_EXAMPLE_DIR/vev_native.node"
     fi
 
@@ -144,7 +163,7 @@ if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
     --enable-preview \
     --enable-native-access=ALL-UNNAMED \
     -cp "$JAVA_EXAMPLE_DIR" \
-    dev.vevdb.vev.examples.Smoke "$LIB_DIR/libvev.dylib"
+    dev.vevdb.vev.examples.Smoke "$LIB_PATH"
 
   if command -v clojure >/dev/null 2>&1; then
     clojure \
@@ -153,7 +172,7 @@ if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
       -Sdeps "{:paths [\"$JAVA_EXAMPLE_DIR\" \"$ROOT/clients/clojure/src\"]}" \
       -M \
       "$ROOT/examples/clojure/smoke.clj" \
-      "$LIB_DIR/libvev.dylib"
+      "$LIB_PATH"
   else
     echo "clojure not found; skipping Clojure smoke"
   fi

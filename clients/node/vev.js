@@ -3,8 +3,45 @@
 
 "use strict";
 
-const nativePath = process.env.VEV_NODE_NATIVE || "./vev_native.node";
-const native = require(nativePath);
+const path = require("path");
+
+function platformId() {
+  let os;
+  if (process.platform === "darwin") {
+    os = "darwin";
+  } else if (process.platform === "linux") {
+    os = "linux";
+  } else if (process.platform === "win32") {
+    os = "windows";
+  } else {
+    os = process.platform;
+  }
+
+  let arch;
+  if (process.arch === "arm64") {
+    arch = "aarch64";
+  } else if (process.arch === "x64") {
+    arch = "x86_64";
+  } else {
+    arch = process.arch;
+  }
+  return `${os}-${arch}`;
+}
+
+function nativePath() {
+  if (process.env.VEV_NODE_NATIVE) {
+    return process.env.VEV_NODE_NATIVE;
+  }
+  const local = path.join(__dirname, "vev_native.node");
+  try {
+    return require.resolve(local);
+  } catch (_error) {
+    return path.join(__dirname, "native", platformId(), "vev_native.node");
+  }
+}
+
+const nativePathValue = nativePath();
+const native = require(nativePathValue);
 
 class Conn {
   constructor(handle) {

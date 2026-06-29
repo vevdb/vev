@@ -105,7 +105,10 @@ Deferred engine batch order:
    `VEV_LIB`/`-Dvev.library` setup is only the local development fallback.
    `scripts/stage_jvm_native.sh` now stages the current platform library into
    the resource layout consumed by the Java loader, and `scripts/package_jvm.sh`
-   builds local Java/native/Clojure proof jars under `build/jvm`.
+   builds local Java/native/Clojure proof jars under `build/jvm` plus a local
+   Maven repository under `build/m2`.
+   Python and Node now also have tested temporary package layouts with bundled
+   platform-native artifacts, and Odin has a dynamic C ABI smoke wrapper.
 MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current
 real-data matrix passes; future MusicBrainz work should be targeted regression
 or performance coverage.
@@ -410,9 +413,10 @@ Next packaging work should use the canonical repository identity
 `https://github.com/vevdb/vev`. The JVM path should split the current examples
 into publishable clients: `dev.vevdb:vev-java` for the Java FFM wrapper,
 `dev.vevdb/vev-clj` for the Clojure API, and later platform native
-artifacts such as `dev.vevdb:vev-native-macos-aarch64`. Local explicit
-library paths and `VEV_LIB`-style overrides should remain the first supported
-loading mode before bundled native artifacts.
+artifacts such as `dev.vevdb:vev-native-darwin-aarch64`. Local explicit
+library paths and `VEV_LIB`-style overrides remain supported, but the current
+JVM proof path already works through a local Maven repo with bundled native
+resources on the classpath.
 
 ## Phase 9: Optional packaging expansion
 
