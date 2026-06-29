@@ -401,6 +401,10 @@ class Library:
         lib.vev_query_stmt_result.restype = ctypes.c_void_p
         lib.vev_query_db_stmt_result.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         lib.vev_query_db_stmt_result.restype = ctypes.c_void_p
+        lib.vev_query_stmt_column_batch.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.vev_query_stmt_column_batch.restype = ctypes.c_void_p
+        lib.vev_query_db_stmt_column_batch.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.vev_query_db_stmt_column_batch.restype = ctypes.c_void_p
         lib.vev_query_stmt_visit.argtypes = [
             ctypes.c_void_p,
             ctypes.c_void_p,
@@ -597,6 +601,49 @@ class Library:
             for index in range(count)
         ]
 
+    def _column_result_from_handle(self, handle: int) -> "ColumnResult | None":
+        if not handle:
+            return None
+        try:
+            kind = self.lib.vev_column_batch_kind(handle)
+            count = self.lib.vev_column_batch_count(handle)
+            entities = self.lib.vev_column_batch_entities_data(handle)
+            ints = self.lib.vev_column_batch_ints_data(handle)
+            if kind == VEV_COLUMN_BATCH_ENTITY:
+                return ColumnResult(
+                    count,
+                    (VEV_COLUMN_ENTITY,),
+                    (self._long_column(entities, count),),
+                )
+            if kind == VEV_COLUMN_BATCH_STRING:
+                return ColumnResult(
+                    count,
+                    (VEV_COLUMN_STRING,),
+                    (self._string_column(handle, count),),
+                )
+            if kind == VEV_COLUMN_BATCH_ENTITY_INT:
+                return ColumnResult(
+                    count,
+                    (VEV_COLUMN_ENTITY, VEV_COLUMN_INT),
+                    (
+                        self._long_column(entities, count),
+                        self._int_column(ints, count),
+                    ),
+                )
+            if kind == VEV_COLUMN_BATCH_ENTITY_STRING_INT:
+                return ColumnResult(
+                    count,
+                    (VEV_COLUMN_ENTITY, VEV_COLUMN_STRING, VEV_COLUMN_INT),
+                    (
+                        self._long_column(entities, count),
+                        self._string_column(handle, count),
+                        self._int_column(ints, count),
+                    ),
+                )
+            return None
+        finally:
+            self.lib.vev_column_batch_free(handle)
+
 
 _default_library: Library | None = None
 
@@ -697,8 +744,17 @@ class Connection:
 
     def _query_stmt(self, stmt: "Statement") -> "Result":
         self._require_open()
+        stmt._require_open()
         handle = self._library.lib.vev_query_stmt_result(self._handle, stmt._handle)
         return Result(self._library, handle)
+
+    def _query_stmt_columns(self, stmt: "Statement") -> "ColumnResult | None":
+        self._require_open()
+        stmt._require_open()
+        handle = self._library.lib.vev_query_stmt_column_batch(
+            self._handle, stmt._handle
+        )
+        return self._library._column_result_from_handle(handle)
 
     def _require_open(self) -> None:
         if not self._handle:
@@ -881,52 +937,21 @@ class DB:
         handle = self._library.lib.vev_query_db_prepared_column_batch_with_inputs(
             self._handle, prepared._handle, _bytes(inputs_edn)
         )
-        if not handle:
-            return None
-        try:
-            kind = self._library.lib.vev_column_batch_kind(handle)
-            count = self._library.lib.vev_column_batch_count(handle)
-            entities = self._library.lib.vev_column_batch_entities_data(handle)
-            ints = self._library.lib.vev_column_batch_ints_data(handle)
-            if kind == VEV_COLUMN_BATCH_ENTITY:
-                return ColumnResult(
-                    count,
-                    (VEV_COLUMN_ENTITY,),
-                    (self._library._long_column(entities, count),),
-                )
-            if kind == VEV_COLUMN_BATCH_STRING:
-                return ColumnResult(
-                    count,
-                    (VEV_COLUMN_STRING,),
-                    (self._library._string_column(handle, count),),
-                )
-            if kind == VEV_COLUMN_BATCH_ENTITY_INT:
-                return ColumnResult(
-                    count,
-                    (VEV_COLUMN_ENTITY, VEV_COLUMN_INT),
-                    (
-                        self._library._long_column(entities, count),
-                        self._library._int_column(ints, count),
-                    ),
-                )
-            if kind == VEV_COLUMN_BATCH_ENTITY_STRING_INT:
-                return ColumnResult(
-                    count,
-                    (VEV_COLUMN_ENTITY, VEV_COLUMN_STRING, VEV_COLUMN_INT),
-                    (
-                        self._library._long_column(entities, count),
-                        self._library._string_column(handle, count),
-                        self._library._int_column(ints, count),
-                    ),
-                )
-            return None
-        finally:
-            self._library.lib.vev_column_batch_free(handle)
+        return self._library._column_result_from_handle(handle)
 
     def query_stmt(self, stmt: "Statement") -> "Result":
         self._require_open()
+        stmt._require_open()
         handle = self._library.lib.vev_query_db_stmt_result(self._handle, stmt._handle)
         return Result(self._library, handle)
+
+    def query_stmt_columns(self, stmt: "Statement") -> "ColumnResult | None":
+        self._require_open()
+        stmt._require_open()
+        handle = self._library.lib.vev_query_db_stmt_column_batch(
+            self._handle, stmt._handle
+        )
+        return self._library._column_result_from_handle(handle)
 
     def with_text(self, tx_edn: str) -> str:
         self._require_open()
@@ -1171,6 +1196,12 @@ class Statement:
     def scalar(self, conn: Connection | DB) -> Any:
         with self.query(conn) as result:
             return result.scalar()
+
+    def columns(self, conn: Connection | DB) -> "ColumnResult | None":
+        self._require_open()
+        if isinstance(conn, Connection):
+            return conn._query_stmt_columns(self)
+        return conn.query_stmt_columns(self)
 
     def error(self) -> str:
         self._require_open()

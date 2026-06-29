@@ -87,6 +87,7 @@ public final class Vev {
     private final MethodHandle stmtBindPullPatternEdn;
     private final MethodHandle queryStmtResult;
     private final MethodHandle queryDbStmtResult;
+    private final MethodHandle queryDbStmtColumnBatch;
     private final MethodHandle queryPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedProfileEdnWithInputs;
@@ -247,6 +248,7 @@ public final class Vev {
         this.stmtBindPullPatternEdn = downcall("vev_stmt_bind_pull_pattern_edn", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryStmtResult = downcall("vev_query_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbStmtResult = downcall("vev_query_db_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbStmtColumnBatch = downcall("vev_query_db_stmt_column_batch", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryPreparedResultWithInputs = downcall("vev_query_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedProfileEdnWithInputs = downcall("vev_query_db_prepared_profile_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -1196,39 +1198,49 @@ public final class Vev {
                     handle.raw,
                     query.raw,
                     local.allocateUtf8String(inputs));
-                if (isNull(raw)) return null;
-                try {
-                    int kind = (int) columnBatchKind.invoke(raw);
-                    int count = (int) columnBatchCount.invoke(raw);
-                    return switch (kind) {
-                        case 1 -> new ColumnResult(
-                            count,
-                            new int[] { COLUMN_ENTITY },
-                            new Object[] { longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count) });
-                        case 2 -> new ColumnResult(
-                            count,
-                            new int[] { COLUMN_STRING },
-                            new Object[] { columnBatchStrings(raw, count) });
-                        case 3 -> new ColumnResult(
-                            count,
-                            new int[] { COLUMN_ENTITY, COLUMN_INT },
-                            new Object[] {
-                                longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count),
-                                longColumn((MemorySegment) columnBatchIntsData.invoke(raw), count),
-                            });
-                        case 4 -> new ColumnResult(
-                            count,
-                            new int[] { COLUMN_ENTITY, COLUMN_STRING, COLUMN_INT },
-                            new Object[] {
-                                longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count),
-                                columnBatchStrings(raw, count),
-                                longColumn((MemorySegment) columnBatchIntsData.invoke(raw), count),
-                            });
-                        default -> null;
-                    };
-                } finally {
-                    columnBatchFree.invoke(raw);
-                }
+                return columnResultFromBatch(raw);
+            }
+        }
+
+        public ColumnResult queryColumns(Statement stmt) throws Throwable {
+            requireOpen();
+            stmt.requireOpen();
+            return columnResultFromBatch((MemorySegment) queryDbStmtColumnBatch.invoke(handle.raw, stmt.raw));
+        }
+
+        private ColumnResult columnResultFromBatch(MemorySegment raw) throws Throwable {
+            if (isNull(raw)) return null;
+            try {
+                int kind = (int) columnBatchKind.invoke(raw);
+                int count = (int) columnBatchCount.invoke(raw);
+                return switch (kind) {
+                    case 1 -> new ColumnResult(
+                        count,
+                        new int[] { COLUMN_ENTITY },
+                        new Object[] { longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count) });
+                    case 2 -> new ColumnResult(
+                        count,
+                        new int[] { COLUMN_STRING },
+                        new Object[] { columnBatchStrings(raw, count) });
+                    case 3 -> new ColumnResult(
+                        count,
+                        new int[] { COLUMN_ENTITY, COLUMN_INT },
+                        new Object[] {
+                            longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count),
+                            longColumn((MemorySegment) columnBatchIntsData.invoke(raw), count),
+                        });
+                    case 4 -> new ColumnResult(
+                        count,
+                        new int[] { COLUMN_ENTITY, COLUMN_STRING, COLUMN_INT },
+                        new Object[] {
+                            longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count),
+                            columnBatchStrings(raw, count),
+                            longColumn((MemorySegment) columnBatchIntsData.invoke(raw), count),
+                        });
+                    default -> null;
+                };
+            } finally {
+                columnBatchFree.invoke(raw);
             }
         }
 
@@ -1618,6 +1630,7 @@ public final class Vev {
         }
 
         public Statement bindString(String value) throws Throwable {
+            requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 stmtClear.invoke(raw);
                 boolean ok = (boolean) stmtBindString.invoke(raw, local.allocateUtf8String(value));
@@ -1627,6 +1640,7 @@ public final class Vev {
         }
 
         public Statement bindStringCollection(String... values) throws Throwable {
+            requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 stmtClear.invoke(raw);
                 MemorySegment array = local.allocateArray(ValueLayout.ADDRESS, values.length);
@@ -1640,6 +1654,7 @@ public final class Vev {
         }
 
         public Statement bindPullPatternAndString(String pattern, String value) throws Throwable {
+            requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 stmtClear.invoke(raw);
                 boolean ok = (boolean) stmtBindPullPatternEdn.invoke(raw, local.allocateUtf8String(pattern));
@@ -1647,6 +1662,10 @@ public final class Vev {
                 if (!ok) throw new IllegalStateException("failed to bind pull pattern and string");
                 return this;
             }
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("statement is closed");
         }
 
         @Override

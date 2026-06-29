@@ -163,7 +163,7 @@ Status labels:
   Several exported collection/query functions repeat null checks, prepared-query checks, input parsing, cleanup, and result dispatch. Add local helpers or Vev macros before extending the matrix further.
 
 - `done` Adopt column batches in host adapters.
-  Java `DB.queryColumns`, Python `DB.query_columns`, Rust `Db::query_columns`, Go `DB.QueryColumns`, and the Clojure optimized query path now prefer the generic column-batch handle for flat prepared query results, then fall back to the generic result API. Exact-shape C functions remain available for low-level callers.
+  Java `DB.queryColumns`, Python `DB.query_columns`, Rust `Db::query_columns`, Go `DB.QueryColumns`, and the Clojure optimized query path now prefer the generic column-batch handle for flat prepared query results, then fall back to the generic result API. Java, Python, Rust, and Go also expose bound statement column batches over live connections and/or immutable DB snapshots where their adapter has a statement type. Exact-shape C functions remain available for low-level callers.
 
 - `todo` Add generic query/parser AST visitors.
   Source validation, source-input validation, relation-DB query rewriting, and EDN query section parsing all hand-walk the same query or EDN shapes. A reusable visitor/mapper plus single-pass section indexing would reduce duplicate traversal logic.
@@ -266,7 +266,7 @@ Status labels:
   `EDN-Doc` stores children as linked sibling indexes in one node array, which forces linear `edn-child-at` and cursor loops. Child spans or child-index arrays would better match Kvist slice-heavy traversal.
 
 - `done` Add generic typed result/column batches.
-  The C ABI exposes a native one-call column batch/result handle with typed column accessors. Java `DB.queryColumns` and the Clojure optimized query path use that generic batch path for flat prepared query results before falling back to the generic result API. Exact-shape low-level C functions remain available, but the public host adapter direction is now the generic column batch handle.
+  The C ABI exposes a native one-call column batch/result handle with typed column accessors. Java, Python, Rust, Go, and the Clojure optimized query path use that generic batch path for flat prepared query results before falling back to the generic result API. Java, Python, Rust, and Go also expose bound statement column batches for the adapters that have statement handles. Exact-shape low-level C functions remain available, but the public host adapter direction is now the generic column batch handle.
 
 - `later` Consolidate transitive graph execution.
   Forward/reverse adjacency construction, sparse/dense BFS, unbound-start emission, and alternating traversal all carry similar graph-walk logic. A graph traversal helper should come with the broader physical-operator layer.

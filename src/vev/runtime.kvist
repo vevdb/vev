@@ -10034,29 +10034,20 @@
       (query-source-input? query-value source)
       (query-source-db? sources source)))
 
-(defn validate-query-clause-source [query-value: Query, sources: []DB-Source, source: string] -> [ok: bool, error: string]
-  (if (query-source-known? query-value sources source)
-    (return true "")
-    (return false (fmt.tprintf "unknown query source: %s" source))))
+(defn append-unknown-query-source! [out: ^[dynamic]string, query-value: Query, sources: []DB-Source, source: string]
+  (when (not (query-source-known? query-value sources source))
+    (append-var-once! out source)))
 
-(defn validate-query-not-group-sources [query-value: Query, sources: []DB-Source, group: Not-Group] -> [ok: bool, error: string]
+(defn append-unknown-query-not-group-sources! [out: ^[dynamic]string, query-value: Query, sources: []DB-Source, group: Not-Group]
   (for [item group.clauses]
-    (if item.has-source
-      (let [[ok error] (validate-query-clause-source query-value sources item.source)]
-        (when (not ok)
-          (return false error)))))
+    (when item.has-source
+      (append-unknown-query-source! out query-value sources item.source)))
   (for [child group.not-groups]
-    (let [[ok error] (validate-query-not-group-sources query-value sources child)]
-      (when (not ok)
-        (return false error))))
-  (return true ""))
+    (append-unknown-query-not-group-sources! out query-value sources child)))
 
-(defn validate-query-or-group-sources [query-value: Query, sources: []DB-Source, group: Or-Group] -> [ok: bool, error: string]
+(defn append-unknown-query-or-group-sources! [out: ^[dynamic]string, query-value: Query, sources: []DB-Source, group: Or-Group]
   (for [branch group.branches]
-    (let [[ok error] (validate-query-not-group-sources query-value sources branch)]
-      (when (not ok)
-        (return false error))))
-  (return true ""))
+    (append-unknown-query-not-group-sources! out query-value sources branch)))
 
 (defn query-input-index-for-source [query-value: Query, source: string] -> [index: int, ok: bool]
   (when (> (count query-value.input-specs) 0)
@@ -10660,9 +10651,14 @@
       (let [vars-text (query-var-list-text (slice unknown 0))]
         (defer (delete vars-text))
         (return false (fmt.tprintf "Query for unknown vars: %s" vars-text))))
-    (for [name find-vars]
-      (when (string-slice-contains? (slice query-value.with 0) name)
-        (return false (fmt.tprintf ":find and :with should not use same variables: %s" name)))))
+    (let [overlap (make [dynamic]string) :defer]
+      (for [name find-vars]
+        (when (string-slice-contains? (slice query-value.with 0) name)
+          (append-var-once! (addr overlap) name)))
+      (when (> (count overlap) 0)
+        (let [vars-text (query-var-list-text (slice overlap 0))]
+          (defer (delete vars-text))
+          (return false (fmt.tprintf ":find and :with should not use same variables: %s" vars-text))))))
   (let [input-vars (query-input-vars-raw query-value) :defer]
     (when (string-slice-has-duplicate? (slice input-vars 0))
       (return false "Vars used in :in should be distinct")))
@@ -10949,29 +10945,24 @@
   (return true ""))
 
 (defn validate-query-sources [query-value: Query, sources: []DB-Source] -> [ok: bool, error: string]
+  (let [unknown (make [dynamic]string) :defer]
   (for [item query-value.clauses]
-    (if item.has-source
-      (let [[ok error] (validate-query-clause-source query-value sources item.source)]
-        (when (not ok)
-          (return false error)))))
+    (when item.has-source
+      (append-unknown-query-source! (addr unknown) query-value sources item.source)))
   (for [item query-value.rule-calls]
-    (if item.has-source
-      (let [[ok error] (validate-query-clause-source query-value sources item.source)]
-        (when (not ok)
-          (return false error)))))
+    (when item.has-source
+      (append-unknown-query-source! (addr unknown) query-value sources item.source)))
   (for [item query-value.pulls]
-    (if item.has-source
-      (let [[ok error] (validate-query-clause-source query-value sources item.source)]
-        (when (not ok)
-          (return false error)))))
+    (when item.has-source
+      (append-unknown-query-source! (addr unknown) query-value sources item.source)))
   (for [group query-value.not-groups]
-    (let [[ok error] (validate-query-not-group-sources query-value sources group)]
-      (when (not ok)
-        (return false error))))
+    (append-unknown-query-not-group-sources! (addr unknown) query-value sources group))
   (for [group query-value.or-groups]
-    (let [[ok error] (validate-query-or-group-sources query-value sources group)]
-      (when (not ok)
-        (return false error))))
+    (append-unknown-query-or-group-sources! (addr unknown) query-value sources group))
+  (when (> (count unknown) 0)
+    (let [vars-text (query-var-list-text (slice unknown 0))]
+      (defer (delete vars-text))
+      (return false (fmt.tprintf "Where uses unknown source vars: %s" vars-text)))))
   (return true ""))
 
 (defn rule-param-valid? [name: string] -> bool

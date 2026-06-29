@@ -436,7 +436,9 @@ with vev.connect("app.vev.sqlite") as durable:
 The smoke also exercises DB-value `with`, `db-with`, and `conn-from-db` so the
 Python path follows the same immutable snapshot contract as C, Java, Clojure,
 and Rust. Transactions can use `transact_report` / `with_report` for typed
-report maps, while `transact` / `with_text` remain string helpers.
+report maps, while `transact` / `with_text` remain string helpers. Prepared
+queries and bound statements can return generic typed column batches without
+materializing result rows.
 
 ## Rust Example
 
@@ -447,6 +449,7 @@ intended safe wrapper shape:
 - `Conn`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet` free their handles
   with `Drop`
 - statement methods expose typed scalar and collection bindings
+- prepared queries and bound statements can return generic typed column batches
 - result values are converted into a small Rust `Value` enum
 - transaction reports use an owned `TxReport` wrapper with typed `Value`
   traversal
@@ -471,8 +474,9 @@ Rust:
   bindings
 - typed results convert entity ids, scalar values, and pull maps into Java
   values
-- `DB.queryColumns` exposes a first generic Java column facade over the current
-  optimized entity, entity/int, and entity/string/int result shapes
+- `DB.queryColumns` exposes a first generic Java column facade for prepared
+  queries and bound statements on immutable DB snapshots, over the current
+  optimized entity, string, entity/int, and entity/string/int result shapes
 - immutable DB snapshots can be queried after the connection has advanced
 - `Vev.query(Map.of("query", ..., "args", List.of(db, ...)))` provides a
   Datomic-shaped request-map convenience for host examples
@@ -853,8 +857,11 @@ source inputs. Source-aware prepared queries are created with
 handles with `vev_stmt_bind_db_source`.
 
 Prepared query status is available through `vev_prepared_query_ok` and
-`vev_prepared_query_error`. Statement execution failures from direct visitor
-calls are available through `vev_stmt_error`.
+`vev_prepared_query_error`. `vev_prepared_query_edn` returns an owned EDN-ish
+description of the prepared parser value, including input specs, clauses,
+predicates, function clauses, rule calls, pull finds, and aggregate finds.
+Statement execution failures from direct visitor calls are available through
+`vev_stmt_error`.
 
 ## Result Handles
 

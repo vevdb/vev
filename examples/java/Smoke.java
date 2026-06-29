@@ -132,6 +132,23 @@ public final class Smoke {
                     }
                 }
 
+                try (Vev.PreparedQuery nameQuery = vev.prepare("""
+                        [:find ?name
+                         :in ?email
+                         :where [?e :user/email ?email]
+                                [?e :user/name ?name]]
+                        """);
+                     Vev.Statement nameStmt = nameQuery.statement();
+                     Vev.DB snapshot = conn.db()) {
+                    Vev.ColumnResult nameColumns = snapshot.queryColumns(nameStmt.bindString("grace@example.com"));
+                    if (nameColumns == null
+                            || nameColumns.rowCount() != 1
+                            || !Arrays.equals(nameColumns.kinds(), new int[] { Vev.COLUMN_STRING })
+                            || !Arrays.equals((String[]) nameColumns.columns()[0], new String[] { "Grace" })) {
+                        throw new IllegalStateException("unexpected statement column batch");
+                    }
+                }
+
                 try (Vev.PreparedQuery pullQuery = vev.prepare("""
                         [:find (pull ?e [:user/name {:user/friend [:user/name]}])
                          :where [?e :user/name "Ada"]]
