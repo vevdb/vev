@@ -39,17 +39,19 @@ The package still expects a locally built native library path today, usually
 ```clojure
 (require '[vev.core :as vev])
 
-(with-open [conn (vev/create-conn "build/lib/libvev.dylib")]
-  (vev/transact! conn
-    [{:db/id 1
-      :user/name "Ada"
-      :user/email "ada@example.com"}])
+(def conn (vev/create-conn "build/lib/libvev.dylib"))
 
-  (let [db (vev/db conn)]
-    (vev/q
-      db
-      '[:find ?name
-        :where [?e :user/name ?name]])))
+(vev/transact! conn
+  [{:db/id 1
+    :user/name "Ada"
+    :user/email "ada@example.com"}])
+
+(def db (vev/db conn))
+
+(vev/q
+  '[:find ?name
+    :where [?e :user/name ?name]]
+  db)
 ```
 
 `q` accepts both DB-first Vev style and query-first Datomic/DataScript style:
@@ -98,22 +100,26 @@ Plain `q`/`rows` calls prepare a temporary native query handle and close it afte
 the call. Use `prepare` when the same query should be reused:
 
 ```clojure
-(with-open [query (vev/prepare conn
-                    '[:find ?e ?email
-                      :in ?needle
-                      :where [?e :user/email ?email]
-                             [(= ?email ?needle)]])]
-  (vev/prepared-edn query)
-  (vev/q db query "ada@example.com"))
+(def email-query
+  (vev/prepare conn
+    '[:find ?e ?email
+      :in ?needle
+      :where [?e :user/email ?email]
+             [(= ?email ?needle)]]))
+
+(vev/prepared-edn email-query)
+(vev/q db email-query "ada@example.com")
 ```
 
 `prepared-edn` also works for reusable pull patterns:
 
 ```clojure
-(with-open [pattern (vev/prepare-pull-pattern db
-                     [:user/name {:user/friend [:user/name]}])]
-  (vev/prepared-edn pattern)
-  (vev/pull db pattern 1))
+(def person-pattern
+  (vev/prepare-pull-pattern db
+    [:user/name {:user/friend [:user/name]}]))
+
+(vev/prepared-edn person-pattern)
+(vev/pull db person-pattern 1)
 ```
 
 Pull follows the same DB-value shape:
@@ -139,20 +145,29 @@ Immutable DB values support Datomic/DataScript-style `with` operations:
 A mutable connection can also be initialized from an immutable DB snapshot:
 
 ```clojure
-(with-open [conn (vev/conn-from-db next-db)]
-  (vev/transact! conn [{:db/id 4 :user/name "Dorothy"}])
-  (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
+(def next-conn (vev/conn-from-db next-db))
+
+(vev/transact! next-conn [{:db/id 4 :user/name "Dorothy"}])
+(vev/q (vev/db next-conn) '[:find ?name :where [?e :user/name ?name]])
 ```
 
 Durable connections use the same transaction and DB-value query shape. The
 current backend is SQLite:
 
 ```clojure
-(with-open [conn (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite")]
-  (vev/connection-info conn) ; => {:backend :sqlite, :path "app.vev.sqlite", :basis-t 0, :tx-count 0, :tx-ids []}
-  (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
-  (vev/q (vev/db conn) '[:find ?name :where [?e :user/name ?name]]))
+(def durable (vev/connect "build/lib/libvev.dylib" "app.vev.sqlite"))
+
+(vev/connection-info durable)
+;; => {:backend :sqlite, :path "app.vev.sqlite", :basis-t 0, :tx-count 0, :tx-ids []}
+
+(vev/transact! durable [{:db/id 1 :user/name "Ada"}])
+(vev/q (vev/db durable) '[:find ?name :where [?e :user/name ?name]])
 ```
+
+The wrapper has JVM cleanup fallback for native handles, so examples use normal
+Clojure values. In long-running processes or tight loops that create many
+connections, DB snapshots, prepared queries, or pull patterns, call `.close`
+explicitly when a handle is no longer needed.
 
 The current package is deliberately thin:
 

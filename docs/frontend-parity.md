@@ -52,11 +52,14 @@ The Clojure package is a host adapter, not a separate parser. Its public API is
 intended to feel close to Datomic/DataScript:
 
 ```clojure
-(with-open [conn (vev/create-conn "build/lib/libvev.dylib")]
-  (vev/transact! conn [{:db/id 1 :user/name "Ada"}])
-  (let [db (vev/db conn)]
-    (vev/q db '[:find ?name :where [?e :user/name ?name]])
-    (vev/pull db [:user/name] 1)))
+(def conn (vev/create-conn "build/lib/libvev.dylib"))
+
+(vev/transact! conn [{:db/id 1 :user/name "Ada"}])
+
+(def db (vev/db conn))
+
+(vev/q db '[:find ?name :where [?e :user/name ?name]])
+(vev/pull db [:user/name] 1)
 ```
 
 The adapter should keep serializing Clojure data to the EDN text frontend unless
