@@ -875,6 +875,8 @@ Prepared pull patterns have the same status shape, and
 `vev_prepared_pull_pattern_edn` returns an owned EDN-ish description with
 parsed attrs, nested patterns, limits, defaults, aliases, transforms, and
 recursion markers.
+Prepared parser descriptions include both human-readable `:error` text and a
+stable `:error-code` keyword for host-facing malformed-input handling.
 Statement execution failures from direct visitor calls are available through
 `vev_stmt_error`.
 

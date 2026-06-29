@@ -198,9 +198,11 @@ path through the native library. The raw ABI exposes row handles, value-tree
 visitors, direct pull/pull-many handles, immutable DB snapshot handles, and a
 typed column-batch query result path for host callers that do not want per-row
 value materialization. Java, Python, Go, and Clojure expose the column-batch
-path, and C exercises it directly. The remaining work is exact malformed-input
-behavior, parser value rendering where host APIs expose it, and wrapper
-ergonomics demanded by real host usage.
+path, and C exercises it directly. Prepared parser values now expose stable
+`:error-code` categories for malformed inputs across the public parser entry
+points. The remaining work is exact malformed-input behavior, exact parser
+record rendering where worth exposing, and wrapper ergonomics demanded by real
+host usage.
 
 ## Phase 5: MusicBrainz/Datomic Workload
 
