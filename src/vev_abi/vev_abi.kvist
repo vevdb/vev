@@ -572,6 +572,9 @@ abi_free_string_array :: proc(array: rawptr) {
     if wrapper == nil {
         return
     }
+    for text in wrapper.values {
+        delete(text)
+    }
     delete(wrapper.values)
     delete(wrapper.data)
     delete(wrapper.lengths)
@@ -1272,6 +1275,55 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (if string-ok
       (return (Vev-Column-Batch (abi-alloc-column-batch 2 (abi-alloc-string-array strings))))
       (delete strings)))
+  (Vev-Column-Batch nil))
+
+(defn- column-batch-from-result [result: vev.Result-Set] -> Vev-Column-Batch
+  (when (not result.ok)
+    (return (Vev-Column-Batch nil)))
+  (when (= (count result.rows) 0)
+    (return (Vev-Column-Batch nil)))
+  (let [width (count result.rows[0].values)]
+    (when (= width 1)
+      (let [entity-values (make [dynamic]u64 0 (count result.rows))
+            entity-ok true]
+        (for [row result.rows]
+          (if (and (= (count row.values) 1)
+                   (= (count row.pulls) 0)
+                   (= row.values[0].kind .Entity))
+            (arr.push! entity-values row.values[0].entity)
+            (set! entity-ok false)))
+        (when entity-ok
+          (return (Vev-Column-Batch (abi-alloc-column-batch 1 (abi-alloc-u64-array entity-values)))))
+        (delete entity-values))
+      (let [string-values (make [dynamic]string 0 (count result.rows))
+            string-ok true]
+        (for [row result.rows]
+          (if (and (= (count row.values) 1)
+                   (= (count row.pulls) 0)
+                   (or (= row.values[0].kind .String)
+                       (= row.values[0].kind .Keyword)
+                       (= row.values[0].kind .Symbol)
+                       (= row.values[0].kind .Uuid)))
+            (arr.push! string-values (string-owned row.values[0].text))
+            (set! string-ok false)))
+        (when string-ok
+          (return (Vev-Column-Batch (abi-alloc-column-batch 2 (abi-alloc-string-array string-values)))))
+        (for [text string-values]
+          (delete text))
+        (delete string-values)))
+    (when (= width 2)
+      (let [pairs (vev.empty-entity-int-pair-columns)
+            pair-ok true]
+        (for [row result.rows]
+          (if (and (= (count row.values) 2)
+                   (= (count row.pulls) 0)
+                   (= row.values[0].kind .Entity)
+                   (= row.values[1].kind .Int))
+            (vev.append-entity-int-pair-column! (addr pairs) row.values[0].entity row.values[1].int-value)
+            (set! pair-ok false)))
+        (if pair-ok
+          (return (Vev-Column-Batch (abi-alloc-column-batch 3 (abi-alloc-entity-int-pairs pairs))))
+          (vev.delete-entity-int-pair-columns pairs)))))
   (Vev-Column-Batch nil))
 
 (defn- value-ptr [value: Vev-Value] -> ^vev.Value
@@ -2612,9 +2664,13 @@ abi_free_stmt :: proc(stmt: rawptr) {
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
         sources (stmt-sources-ptr stmt)]
-    (when (or (not query-ptr-value^.ok)
-              (> (count sources^) 0))
+    (when (not query-ptr-value^.ok)
       (return (Vev-Column-Batch nil)))
+    (when (> (count sources^) 0)
+      (let [result (vev.q-prepared-with-sources conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0) (slice sources^ 0))
+            out (column-batch-from-result result)]
+        (vev.delete-result-set-shallow result)
+        (return out)))
     (column-batch-from-query-inputs conn-ptr-value^.db query-ptr-value^.query (slice inputs^ 0))))
 
 @export
@@ -2626,9 +2682,13 @@ abi_free_stmt :: proc(stmt: rawptr) {
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
         sources (stmt-sources-ptr stmt)]
-    (when (or (not query-ptr-value^.ok)
-              (> (count sources^) 0))
+    (when (not query-ptr-value^.ok)
       (return (Vev-Column-Batch nil)))
+    (when (> (count sources^) 0)
+      (let [result (vev.q-prepared-with-sources db-ptr-value^ query-ptr-value^ (slice inputs^ 0) (slice sources^ 0))
+            out (column-batch-from-result result)]
+        (vev.delete-result-set-shallow result)
+        (return out)))
     (column-batch-from-query-inputs db-ptr-value^ query-ptr-value^.query (slice inputs^ 0))))
 
 @export

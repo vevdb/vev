@@ -942,8 +942,10 @@ that already know the expected result shape.
 Statement column batches use the same representation after inputs have been
 bound with `vev_stmt_bind_*`. `vev_query_stmt_column_batch` runs against the
 current connection DB, while `vev_query_db_stmt_column_batch` runs against a
-retained immutable `vev_db_t`. These return null for statements with bound DB
-sources until the flat column extractors grow source-aware variants.
+retained immutable `vev_db_t`. Statements without named DB sources use the
+current optimized column extractors. Source-bound statements fall back through
+the normal result engine and then build an owned flat column batch for supported
+entity, string, and entity/int shapes.
 
 Column pointers are borrowed and remain valid until the corresponding column
 handle or column batch is freed. Single string-column results use

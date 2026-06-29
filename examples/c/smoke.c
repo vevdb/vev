@@ -1326,6 +1326,69 @@ int main(void) {
     vev_result_free(source_result);
     vev_stmt_free(source_stmt);
     vev_prepared_query_free(source_query);
+
+    vev_prepared_query_t source_batch_query =
+        vev_prepare_query_edn_with_sources(
+            "[:find ?right-name"
+            " :in $left $right [?e ...]"
+            " :where [$left ?e :user/name ?left-name]"
+            "        [$right ?e :user/name ?right-name]]",
+            source_names,
+            2);
+    vev_stmt_t source_batch_stmt = source_batch_query == NULL ? NULL : vev_stmt_create(source_batch_query);
+    if (source_batch_query == NULL ||
+        source_batch_stmt == NULL ||
+        !vev_stmt_bind_db_source(source_batch_stmt, "$left", left_source) ||
+        !vev_stmt_bind_db_source(source_batch_stmt, "$right", right_source) ||
+        !vev_stmt_bind_entity_collection(source_batch_stmt, source_ids, 2)) {
+        fprintf(stderr, "failed to bind source statement column batch\n");
+        if (source_batch_stmt != NULL) vev_stmt_free(source_batch_stmt);
+        if (source_batch_query != NULL) vev_prepared_query_free(source_batch_query);
+        vev_db_release(left_source);
+        vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t source_batch = vev_query_stmt_column_batch(conn, source_batch_stmt);
+    if (source_batch == NULL ||
+        vev_column_batch_kind(source_batch) != VEV_COLUMN_BATCH_STRING ||
+        vev_column_batch_count(source_batch) != 2) {
+        fprintf(stderr, "unexpected source statement column batch shape\n");
+        if (source_batch != NULL) vev_column_batch_free(source_batch);
+        vev_stmt_free(source_batch_stmt);
+        vev_prepared_query_free(source_batch_query);
+        vev_db_release(left_source);
+        vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const void *const *source_batch_strings = vev_column_batch_string_data_array(source_batch);
+    const int *source_batch_lengths = vev_column_batch_string_lengths_data(source_batch);
+    if (!bytes_equal(source_batch_strings[0], source_batch_lengths[0], "Ada Right") ||
+        !bytes_equal(source_batch_strings[1], source_batch_lengths[1], "Grace Right")) {
+        fprintf(stderr, "unexpected source statement column batch contents\n");
+        vev_column_batch_free(source_batch);
+        vev_stmt_free(source_batch_stmt);
+        vev_prepared_query_free(source_batch_query);
+        vev_db_release(left_source);
+        vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("stmt-db-sources column-batch kind=%d rows=%d\n", vev_column_batch_kind(source_batch), vev_column_batch_count(source_batch));
+    vev_column_batch_free(source_batch);
+    vev_stmt_free(source_batch_stmt);
+    vev_prepared_query_free(source_batch_query);
+
     vev_db_release(left_source);
     vev_db_release(right_source);
     vev_conn_close(right_conn);
