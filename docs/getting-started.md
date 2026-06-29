@@ -10,6 +10,7 @@ scripts/stage_jvm_native.sh
 scripts/package_jvm.sh
 scripts/smoke_jvm_package.sh
 scripts/smoke_python_package.sh
+scripts/smoke_node_package.sh
 ```
 
 This builds:
@@ -96,6 +97,21 @@ with vev.Library().create_conn() as conn:
 
 `scripts/smoke_python_package.sh` simulates a future wheel layout by loading a
 bundled `native/<platform>/<library>` next to `vev.py`.
+
+## Node/TypeScript
+
+The Node wrapper loads a native N-API addon and exposes a small CommonJS API:
+
+```js
+const vev = require("@vevdb/vev");
+const conn = vev.openMemory();
+conn.transact('[{:db/id 1 :user/name "Ada"}]');
+console.log(conn.queryText('[:find ?name :where [?e :user/name ?name]]'));
+```
+
+`scripts/smoke_node_package.sh` simulates a future npm package by loading
+`native/<platform>/vev_native.node` and the adjacent platform `libvev` from a
+temporary package directory.
 
 DB snapshots are passable immutable values. The wrapper has JVM cleanup
 fallbacks, so examples use normal Clojure binding style. Long-running services

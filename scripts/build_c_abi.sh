@@ -122,6 +122,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
         -L"$LIB_DIR" \
         -lvev \
         -Wl,-rpath,"$LIB_DIR" \
+        -Wl,-rpath,@loader_path \
         -o "$NODE_EXAMPLE_DIR/vev_native.node"
     else
       clang++ \
@@ -134,6 +135,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
         -L"$LIB_DIR" \
         -lvev \
         -Wl,-rpath,"$LIB_DIR" \
+        -Wl,-rpath,'$ORIGIN' \
         -o "$NODE_EXAMPLE_DIR/vev_native.node"
     fi
 
