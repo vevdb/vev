@@ -7,12 +7,14 @@ Build the native library and run the available client smoke tests:
 ```sh
 scripts/smoke_clients.sh
 scripts/stage_jvm_native.sh
+scripts/package_jvm.sh
 ```
 
 This builds:
 
 - the platform native library under `build/lib`
 - JVM native-resource staging under `build/jvm-native`
+- local JVM proof jars under `build/jvm`
 - `build/lib/pkgconfig/vev.pc`
 - Java classes under `build/examples/java`
 - native smoke artifacts under `build/examples/*`

@@ -8,6 +8,7 @@ Current local development:
 ```sh
 scripts/build_c_abi.sh
 scripts/stage_jvm_native.sh
+scripts/package_jvm.sh
 ```
 
 That builds the platform native library under `build/lib`, compiles the Java
@@ -49,3 +50,14 @@ dev/vevdb/vev/native/linux-x86_64/libvev.so
 `scripts/stage_jvm_native.sh` creates that resource tree for the current
 platform. A published native artifact can package the staged files as jar
 resources.
+
+`scripts/package_jvm.sh` builds local proof jars under `build/jvm`:
+
+```text
+vev-java-0.1.0-SNAPSHOT.jar
+vev-native-<platform>-0.1.0-SNAPSHOT.jar
+vev-clj-0.1.0-SNAPSHOT.jar
+```
+
+Those jars are not published artifacts yet, but they verify the intended Maven
+split and bundled-native loading path.

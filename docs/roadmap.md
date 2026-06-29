@@ -104,7 +104,8 @@ Deferred engine batch order:
    dependency by bundling or depending on platform native resources; explicit
    `VEV_LIB`/`-Dvev.library` setup is only the local development fallback.
    `scripts/stage_jvm_native.sh` now stages the current platform library into
-   the resource layout consumed by the Java loader.
+   the resource layout consumed by the Java loader, and `scripts/package_jvm.sh`
+   builds local Java/native/Clojure proof jars under `build/jvm`.
 MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current
 real-data matrix passes; future MusicBrainz work should be targeted regression
 or performance coverage.

@@ -64,7 +64,12 @@ Build the native library and Java classes first:
 ```sh
 scripts/build_c_abi.sh
 scripts/stage_jvm_native.sh
+scripts/package_jvm.sh
 ```
+
+`scripts/package_jvm.sh` builds local Java, native-resource, and Clojure jars
+under `build/jvm`. They are proof artifacts for the eventual deps.edn/Maven
+path, not a published release.
 
 When developing from the repo root, the root `:clj-dev` alias adds the locally
 built Java classes and the required JVM flags:
