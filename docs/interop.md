@@ -97,8 +97,12 @@ verifies both shapes from temporary projects.
 
 The Python path has the same explicit-to-bundled fallback shape: explicit
 `vev.Library(path)`, `VEV_LIB`, repo `build/lib`, then
-`native/<platform>/<library>` next to `vev.py`. `scripts/smoke_python_package.sh`
-verifies that temporary package layout.
+`native/<platform>/<library>` next to `vev.py`. The public constructor shape is
+`vev.create_conn()` for in-memory work and `vev.connect("app.vev")` for durable
+stores; `vev.Library(path).create_conn()` is the explicit-library variant.
+`clients/python/pyproject.toml` defines the future `vev` package metadata, and
+`scripts/smoke_python_package.sh` validates that metadata plus the temporary
+bundled-native package layout.
 
 The Node path loads `VEV_NODE_NATIVE`, then a local `vev_native.node`, then
 `native/<platform>/vev_native.node` next to `vev.js`. The addon is linked with

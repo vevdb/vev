@@ -148,13 +148,17 @@ The Python client is a pure `ctypes` wrapper today:
 ```python
 import vev
 
-with vev.Library().create_conn() as conn:
+with vev.create_conn() as conn:
     conn.transact('[{:db/id 1 :user/name "Ada"}]')
-    print(conn.db().query('[:find ?name :where [?e :user/name ?name]]'))
+    print(conn.query_text('[:find ?name :where [?e :user/name ?name]]'))
+
+with vev.connect("app.vev") as conn:
+    conn.transact('[{:db/id 1 :user/name "Durable Ada"}]')
 ```
 
-`scripts/smoke_python_package.sh` simulates a future wheel layout by loading a
-bundled `native/<platform>/<library>` next to `vev.py`.
+`scripts/smoke_python_package.sh` validates the package metadata and simulates
+a future wheel layout by loading a bundled `native/<platform>/<library>` next
+to `vev.py`.
 
 ## Node/TypeScript
 

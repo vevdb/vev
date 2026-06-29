@@ -174,6 +174,15 @@ class Library:
         self.lib = ctypes.CDLL(str(self.path))
         self._configure()
 
+    def create_conn(self) -> "Connection":
+        return Connection(self)
+
+    def connect(self, uri: str | pathlib.Path) -> "DurableConnection":
+        return DurableConnection(self, uri)
+
+    def open_sqlite(self, path: str | pathlib.Path) -> "SQLiteConnection":
+        return SQLiteConnection(self, path)
+
     def _configure(self) -> None:
         lib = self.lib
 
@@ -702,8 +711,12 @@ def default_library() -> Library:
     return _default_library
 
 
-def open_memory() -> "Connection":
+def create_conn() -> "Connection":
     return Connection(default_library())
+
+
+def open_memory() -> "Connection":
+    return create_conn()
 
 
 def connect(uri: str | pathlib.Path) -> "DurableConnection":
