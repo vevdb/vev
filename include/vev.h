@@ -221,6 +221,8 @@ const char *vev_query_prepared_with_inputs(
 
 vev_result_t vev_query_stmt_result(vev_conn_t conn, vev_stmt_t stmt);
 vev_result_t vev_query_db_stmt_result(vev_db_t db, vev_stmt_t stmt);
+vev_column_batch_t vev_query_stmt_column_batch(vev_conn_t conn, vev_stmt_t stmt);
+vev_column_batch_t vev_query_db_stmt_column_batch(vev_db_t db, vev_stmt_t stmt);
 bool vev_query_stmt_visit(
     vev_conn_t conn,
     vev_stmt_t stmt,

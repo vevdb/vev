@@ -765,6 +765,64 @@ int main(void) {
         return 1;
     }
 
+    vev_prepared_query_t stmt_batch_query =
+        vev_prepare_query_edn("[:find ?name :in ?email :where [?e :user/email ?email] [?e :user/name ?name]]");
+    if (stmt_batch_query == NULL ||
+        !vev_prepared_query_ok(stmt_batch_query)) {
+        fprintf(stderr, "failed to prepare statement column batch query\n");
+        if (stmt_batch_query != NULL) {
+            vev_prepared_query_free(stmt_batch_query);
+        }
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_stmt_t stmt_batch_stmt = vev_stmt_create(stmt_batch_query);
+    if (stmt_batch_stmt == NULL ||
+        !vev_stmt_bind_string(stmt_batch_stmt, "ada@example.com")) {
+        fprintf(stderr, "failed to bind statement column batch query\n");
+        if (stmt_batch_stmt != NULL) {
+            vev_stmt_free(stmt_batch_stmt);
+        }
+        vev_prepared_query_free(stmt_batch_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t stmt_batch = vev_query_stmt_column_batch(conn, stmt_batch_stmt);
+    if (stmt_batch == NULL ||
+        vev_column_batch_kind(stmt_batch) != VEV_COLUMN_BATCH_STRING ||
+        vev_column_batch_count(stmt_batch) != 1) {
+        fprintf(stderr, "unexpected statement column batch shape\n");
+        if (stmt_batch != NULL) {
+            vev_column_batch_free(stmt_batch);
+        }
+        vev_stmt_free(stmt_batch_stmt);
+        vev_prepared_query_free(stmt_batch_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const void *const *stmt_batch_strings = vev_column_batch_string_data_array(stmt_batch);
+    const int *stmt_batch_lengths = vev_column_batch_string_lengths_data(stmt_batch);
+    if (!bytes_equal(stmt_batch_strings[0], stmt_batch_lengths[0], "Ada")) {
+        fprintf(stderr, "unexpected statement column batch contents\n");
+        vev_column_batch_free(stmt_batch);
+        vev_stmt_free(stmt_batch_stmt);
+        vev_prepared_query_free(stmt_batch_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("stmt column-batch kind=%d rows=%d\n", vev_column_batch_kind(stmt_batch), vev_column_batch_count(stmt_batch));
+    vev_column_batch_free(stmt_batch);
+    vev_stmt_free(stmt_batch_stmt);
+    vev_prepared_query_free(stmt_batch_query);
+
     vev_prepared_query_t collection_query =
         vev_prepare_query_edn("[:find ?name :in [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]");
     if (collection_query == NULL) {

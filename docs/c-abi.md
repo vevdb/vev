@@ -879,6 +879,8 @@ Current result-handle accessors:
 - `vev_result_pull_count`
 - `vev_result_pull`
 - `vev_result_visit`
+- `vev_query_stmt_column_batch`
+- `vev_query_db_stmt_column_batch`
 - `vev_query_stmt_visit`
 - `vev_query_db_stmt_visit`
 
@@ -890,6 +892,8 @@ and rendered pull results.
 For hot flat query shapes, the ABI also exposes column-oriented handles:
 
 - `vev_query_db_prepared_column_batch_with_inputs`
+- `vev_query_stmt_column_batch`
+- `vev_query_db_stmt_column_batch`
 - `vev_column_batch_kind`
 - `vev_column_batch_count`
 - `vev_column_batch_entities_data`
@@ -934,6 +938,12 @@ of `VEV_COLUMN_BATCH_ENTITY`, `VEV_COLUMN_BATCH_STRING`,
 `VEV_COLUMN_BATCH_ENTITY_INT`, `VEV_COLUMN_BATCH_ENTITY_STRING_INT`, or
 `VEV_COLUMN_BATCH_NONE`. The exact-shape functions remain public for callers
 that already know the expected result shape.
+
+Statement column batches use the same representation after inputs have been
+bound with `vev_stmt_bind_*`. `vev_query_stmt_column_batch` runs against the
+current connection DB, while `vev_query_db_stmt_column_batch` runs against a
+retained immutable `vev_db_t`. These return null for statements with bound DB
+sources until the flat column extractors grow source-aware variants.
 
 Column pointers are borrowed and remain valid until the corresponding column
 handle or column batch is freed. Single string-column results use
