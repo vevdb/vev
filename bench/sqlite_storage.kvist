@@ -509,6 +509,32 @@
           (arr.push! samples elapsed))))
     (print-timing "persisted-db-snapshot-open" people-count (slice samples 0))))
 
+(defn measure-persisted-db-snapshot-entity-read [path: string, people-count: int, sample-count: int, page-size: int]
+  (let [samples (make [dynamic]f64 0 sample-count)
+        entity (u64 (/ people-count 2))
+        [snapshot snapshot-ok snapshot-error] (vev.sqlite-open-db-snapshot path page-size)]
+    (defer (delete samples))
+    (when (not snapshot-ok)
+      (fmt.printf "engine=vev-sqlite workload=persisted-db-snapshot-entity-read ok=false error=%s\n" snapshot-error)
+      (return))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            [datoms datoms-ok datoms-error] (vev.sqlite-db-snapshot-entity-datoms (addr snapshot) entity)
+            elapsed (bench.elapsed-us start)]
+        (when (not datoms-ok)
+          (vev.close-sqlite-db-snapshot! (addr snapshot))
+          (fmt.printf "engine=vev-sqlite workload=persisted-db-snapshot-entity-read ok=false error=%s\n" datoms-error)
+          (return))
+        (when (not (= (count datoms) 3))
+          (vev.delete-owned-datoms datoms)
+          (vev.close-sqlite-db-snapshot! (addr snapshot))
+          (fmt.printf "engine=vev-sqlite workload=persisted-db-snapshot-entity-read ok=false error=unexpected-datom-count count=%d\n" (count datoms))
+          (return))
+        (vev.delete-owned-datoms datoms)
+        (arr.push! samples elapsed)))
+    (vev.close-sqlite-db-snapshot! (addr snapshot))
+    (print-timing "persisted-db-snapshot-entity-read" people-count (slice samples 0))))
+
 (defn measure-reopened-query [path: string, people-count: int, sample-count: int]
   (let [[conn ok error] (vev.open-conn-sqlite path)
         samples (make [dynamic]f64 0 sample-count)
@@ -562,5 +588,6 @@
       (measure-persisted-index-cursor-scan reopen-path reopen-people reopen-samples 128)
       (measure-persisted-index-snapshot-open reopen-path reopen-people reopen-samples 128)
       (measure-persisted-db-snapshot-open reopen-path reopen-people reopen-samples 128)
+      (measure-persisted-db-snapshot-entity-read reopen-path reopen-people reopen-samples 128)
       (measure-reopen reopen-path reopen-people reopen-samples)
       (measure-reopened-query reopen-path reopen-people reopen-samples))))

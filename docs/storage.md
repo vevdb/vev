@@ -61,8 +61,10 @@ index, which is needed for resolving persisted index entries without full
 datom-log materialization. `SQLite-Index-Snapshot` now packages the four
 persisted index cursors and datom lookup behind one path/open handle, and
 `SQLite-DB-Snapshot` adds basis tx plus datom count metadata, so Vev can open
-storage root/cursor state without `load-db-sqlite`. Normal reopen/query access
-through those cursors is the next storage step.
+storage root/cursor state without `load-db-sqlite`. It can also read a single
+entity by binary-searching persisted EAVT and resolving only that entity's
+datoms. Normal reopen/query access through those cursors is the next storage
+step.
 
 There are now two write modes:
 
@@ -141,6 +143,9 @@ wrapper when it has the successful transaction report in hand.
 - `persisted-db-snapshot-open`: open basis/datom-count metadata plus all
   persisted index cursors as a `SQLite-DB-Snapshot`, then resolve a
   representative datom by durable log index
+- `persisted-db-snapshot-entity-read`: keep a `SQLite-DB-Snapshot` open,
+  binary-search persisted EAVT for one entity, and materialize only that
+  entity's datoms by durable log index
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 

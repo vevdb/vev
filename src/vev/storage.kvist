@@ -2017,6 +2017,45 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn sqlite-db-snapshot-datom-at-log-index [snapshot: ^SQLite-DB-Snapshot, log-index: int] -> [datom: Datom, ok: bool, error: string]
   (sqlite-index-snapshot-datom-at-log-index (addr snapshot^.indexes) log-index))
 
+(defn sqlite-db-snapshot-eavt-entity-bound [snapshot: ^SQLite-DB-Snapshot, entity: u64, upper: bool] -> [position: int, ok: bool, error: string]
+  (let [view (sqlite-db-snapshot-index-view snapshot .EAVT)
+        low 0
+        high (db-index-view-count view)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            log-index (db-index-view-at view mid)
+            [datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index snapshot log-index)]
+        (when (not datom-ok)
+          (return low false datom-error))
+        (let [datom-entity datom.e]
+          (delete-owned-datom datom)
+          (if (if upper (<= datom-entity entity) (< datom-entity entity))
+            (set! low (+ mid 1))
+            (set! high mid)))))
+    (return low true "")))
+
+(defn sqlite-db-snapshot-eavt-entity-range [snapshot: ^SQLite-DB-Snapshot, entity: u64] -> [low: int, high: int, ok: bool, error: string]
+  (let [[range-low low-ok low-error] (sqlite-db-snapshot-eavt-entity-bound snapshot entity false)]
+    (when (not low-ok)
+      (return range-low range-low false low-error))
+    (let [[range-high high-ok high-error] (sqlite-db-snapshot-eavt-entity-bound snapshot entity true)]
+      (return range-low range-high high-ok high-error))))
+
+(defn sqlite-db-snapshot-entity-datoms [snapshot: ^SQLite-DB-Snapshot, entity: u64] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [[low high range-ok range-error] (sqlite-db-snapshot-eavt-entity-range snapshot entity)]
+    (when (not range-ok)
+      (return (make [dynamic]Datom) false range-error))
+    (let [out (make [dynamic]Datom 0 (- high low))
+          view (sqlite-db-snapshot-index-view snapshot .EAVT)]
+      (for [pos (arr.range low high)]
+        (let [log-index (db-index-view-at view pos)
+              [datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index snapshot log-index)]
+          (when (not datom-ok)
+            (delete-owned-datoms out)
+            (return (make [dynamic]Datom) false datom-error))
+          (arr.push! out datom)))
+      (return out true ""))))
+
 (defn sqlite-open-db-snapshot-handle [handle: rawptr, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
   (let [[basis basis-ok basis-error] (sqlite-latest-index-root-basis-raw handle)]
     (when (not basis-ok)
