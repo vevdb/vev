@@ -41,7 +41,7 @@ scripts/smoke_packages.sh
 
 The first command builds the platform library under `build/lib`, writes
 `build/lib/pkgconfig/vev.pc`, and runs the available clients under `clients/*`.
-The CLI smoke verifies `build/vev` against a temporary SQLite database.
+The CLI smoke verifies `build/vev` against a temporary durable Vev store.
 The package smoke script verifies the current local C SDK, JVM, Python,
 Node/TypeScript, and Go package shapes from temporary projects or directories.
 

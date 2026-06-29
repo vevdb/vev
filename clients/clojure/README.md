@@ -194,14 +194,13 @@ A mutable connection can also be initialized from an immutable DB snapshot:
 (d/q (d/db next-conn) '[:find ?name :where [?e :user/name ?name]])
 ```
 
-Durable connections use the same transaction and DB-value query shape. The
-current backend is SQLite:
+Durable connections use the same transaction and DB-value query shape:
 
 ```clojure
-(def durable (d/connect "app.vev.sqlite"))
+(def durable (d/connect "app.vev"))
 
 (d/connection-info durable)
-;; => {:backend :sqlite, :path "app.vev.sqlite", :basis-t 0, :tx-count 0, :tx-ids []}
+;; => {:backend :sqlite, :path "app.vev", :basis-t 0, :tx-count 0, :tx-ids []}
 
 (d/transact! durable [{:db/id 1 :user/name "Ada"}])
 (d/q (d/db durable) '[:find ?name :where [?e :user/name ?name]])

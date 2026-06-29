@@ -125,8 +125,9 @@
 (defn connect
   "Open a durable Vev connection.
 
-  The current backend is SQLite. A plain filesystem path and `sqlite://...` URI
-  both select the SQLite backend."
+  A plain filesystem path opens a local Vev store. The current local backend is
+  SQLite internally, but application code should treat the returned handle as a
+  Vev connection."
   ([uri]
    (let [engine (load-engine)]
      (try
@@ -145,8 +146,8 @@
 (defn open-sqlite
   "Open a durable SQLite-backed Vev connection.
 
-  Prefer `connect` for application code; this backend-specific alias remains
-  for compatibility and storage tests."
+  Prefer `connect` for application code; this backend-specific alias is for
+  storage tests and migration/debugging."
   ([sqlite-path]
    (connect sqlite-path))
   ([lib-path sqlite-path]

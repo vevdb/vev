@@ -59,10 +59,12 @@ proofs.
 The C SDK path is `include/vev.h`, `libvev`, and `build/lib/pkgconfig/vev.pc`.
 `scripts/smoke_c_package.sh` verifies that shape from a temporary C program.
 
-The CLI path builds `build/vev` from `clients/go/cmd/vev`. It currently exposes
-durable `info`, `transact`, `query`, and `pull` commands over the same C ABI and
-SQLite-backed connection handles used by host wrappers. `scripts/smoke_cli.sh`
-verifies that path.
+The CLI path builds `build/vev` from `src/vev_cli/main.kvist`. It currently
+exposes durable `info`, `transact`, `query`, and `pull` commands over the native
+Kvist implementation. `scripts/smoke_cli.sh` verifies that path. The current
+local durable backend uses SQLite internally, but the CLI and host wrappers
+should present this as a Vev connection/store, not as application code
+programming SQLite directly.
 
 The JVM path has a bundled-native loading shape. The Java loader checks
 explicit path configuration, local `build/lib`, then classpath resources under
