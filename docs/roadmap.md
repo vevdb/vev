@@ -360,9 +360,11 @@ transactions and explicit persists now publish bounded logical-index chunks for
 indexes use bounded leaf chunks plus a parent root chunk, and root rows record
 the visible chunk roots at the committed basis tx. Reopen now loads latest root
 metadata before datom rows, then validates persisted latest index entries
-through root/chunk edges against rebuilt indexes. The
-explicit persist API full-replaces
-durable datom rows from the connection's current datom log; the SQLite
+through root/chunk edges against rebuilt indexes. Bounded persisted index pages
+can also be loaded by offset/limit from the chunk tree, which is the first
+storage primitive needed for lazy chunk-backed cursors. The explicit persist
+API full-replaces durable datom rows from the connection's current datom log;
+the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the
 durable append fails. A first SQLite storage benchmark now measures
@@ -494,7 +496,8 @@ open/write/close/reopen/query; that exists. The active gate is:
 - shared immutable/chunked DB index storage avoids per-commit whole-array
   copies while preserving immutable snapshot semantics
 - reopen loads metadata/root pointers before any bounded chunk loading or
-  datom-log recovery replay
+  datom-log recovery replay; bounded index page loading now exists, but is not
+  yet the normal `DB` representation
 - transaction boundaries and SQLite-backed report metadata rows remain durable
 - immutable DB snapshot semantics remain visible through the native ABI
 - MusicBrainz/Datomic workshop queries continue to validate correctness and

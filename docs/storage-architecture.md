@@ -55,9 +55,11 @@ rather than a SQL query table. Reopen now reads the latest root metadata before
 the datom rows and validates persisted chunk indexes against the rebuilt
 in-memory indexes. Vev can follow the latest root, load leaf chunks in edge
 order, parse the persisted index-entry vector, and compare it to the rebuilt
-`DB`. This is still a guarded compatibility path: Vev materializes datom rows
-and rebuilds indexes before validation. Wiring query/reopen to use chunk-backed
-DB snapshots is the next implementation step.
+`DB`. It can also load a bounded entry page from the persisted chunk tree by
+offset and limit, reading only the leaf chunks that cover the requested window.
+This is still a guarded compatibility path: Vev materializes datom rows and
+rebuilds indexes before validation. Wiring query/reopen to use chunk-backed DB
+snapshots and paged index cursors is the next implementation step.
 
 ## Implementation Milestones
 
@@ -68,9 +70,10 @@ DB snapshots is the next implementation step.
 
 2. Add read-only chunk cursors.
    Teach Vev index accessors to read ranges from persisted chunks with an
-   in-memory cache. The first persisted-entry loader exists and is tested
-   against rebuilt indexes; the remaining work is range-oriented cursors rather
-   than whole-index materialization.
+   in-memory cache. Whole-index loading and bounded page loading now exist and
+   are tested against rebuilt indexes. The remaining work is a real cursor/view
+   object that can serve range scans to query operators without materializing a
+   full dynamic array.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are

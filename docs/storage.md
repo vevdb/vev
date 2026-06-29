@@ -49,8 +49,10 @@ indexes use bounded leaf chunks plus a parent root chunk, and a root row records
 the visible chunk root for each logical index at the committed basis tx. Reopen
 now loads the latest root metadata before datom rows, rebuilds from datom rows
 as the compatibility path, and validates persisted index entries back through
-root/chunk edges against those rebuilt indexes. Chunk-backed DB snapshots and
-query cursors are the next storage step.
+root/chunk edges against those rebuilt indexes. Vev can now also load bounded
+persisted index-entry pages by offset and limit, reading only the leaf chunks
+covering that page. Chunk-backed DB snapshots and query cursors are the next
+storage step.
 
 There are now two write modes:
 
@@ -119,6 +121,9 @@ wrapper when it has the successful transaction report in hand.
 - `append-index-build`: direct incremental index build cost for the copied log
 - `persisted-index-load`: load persisted logical indexes through SQLite
   root/chunk rows without building a full `DB`
+- persisted index page loading is now available as a storage primitive for the
+  next chunk-backed cursor work, though the benchmark still primarily reports
+  whole-index loading
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 
@@ -169,8 +174,8 @@ rather than a small local optimization:
 2. Preserve ordinary immutable DB snapshot semantics: reports, listeners, host
    handles, and `db` values must still see stable values after later writes.
 3. Keep SQLite as the durable log, metadata, and page/chunk store.
-4. Add chunk-backed read cursors for persisted `eavt`, then extend to `aevt`,
-   `avet`, and `vaet`.
+4. Add chunk-backed read cursors over the persisted page loader for `eavt`,
+   then extend to `aevt`, `avet`, and `vaet`.
 5. Replace normal reopen with metadata/root loading plus lazy or bounded chunk
    loading. Datom-log replay should become recovery/migration behavior, not the
    large-database startup path.

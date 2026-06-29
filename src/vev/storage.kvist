@@ -628,7 +628,7 @@ sqlite_latest_index_entries_text_raw :: proc(handle: rawptr, index_name: string)
     _ = sqlite3_finalize(stmt)
 
     child_stmt: ^SQLite3_Stmt
-    child_sql := \"SELECT '[' || COALESCE(group_concat(substr(child.payload_text, 2, length(child.payload_text) - 2), ' '), '') || ']' FROM vev_index_chunk_edges edge JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id WHERE edge.parent_chunk_id = ? ORDER BY edge.ordinal\"
+    child_sql := \"SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']' FROM (SELECT substr(child.payload_text, 2, length(child.payload_text) - 2) AS payload FROM vev_index_chunk_edges edge JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id WHERE edge.parent_chunk_id = ? ORDER BY edge.ordinal)\"
     child_sql_c, child_sql_c_ok := sqlite_cstring(child_sql)
     if !child_sql_c_ok {
         return \"\", false, \"failed to allocate sqlite SQL text\"
@@ -654,6 +654,104 @@ sqlite_latest_index_entries_text_raw :: proc(handle: rawptr, index_name: string)
         return \"\", false, \"failed to clone sqlite child index entries\"
     }
     return out, true, \"\"
+}
+
+sqlite_latest_index_entries_page_text_raw :: proc(handle: rawptr, index_name: string, offset: i64, limit: i64) -> (string, i64, bool, string) {
+    if handle == nil {
+        return \"\", 0, false, \"sqlite handle was nil\"
+    }
+    if offset < 0 {
+        return \"\", 0, false, \"sqlite index page offset was negative\"
+    }
+    if limit <= 0 {
+        return \"[]\", offset, true, \"\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"\"
+    switch index_name {
+    case \":eavt\":
+        sql = \"SELECT c.chunk_id, c.level, c.payload_text FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.eavt_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":aevt\":
+        sql = \"SELECT c.chunk_id, c.level, c.payload_text FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.aevt_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":avet\":
+        sql = \"SELECT c.chunk_id, c.level, c.payload_text FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.avet_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":vaet\":
+        sql = \"SELECT c.chunk_id, c.level, c.payload_text FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.vaet_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case:
+        return \"\", 0, false, \"unknown Vev index name\"
+    }
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return \"\", 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite prepare latest index page failed\")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_DONE {
+        _ = sqlite3_finalize(stmt)
+        return \"\", 0, false, \"sqlite DB has no Vev index roots\"
+    }
+    if rc != SQLITE_ROW {
+        _ = sqlite3_finalize(stmt)
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite latest index page read failed\")
+    }
+    root_id := sqlite3_column_int64(stmt, 0)
+    level := sqlite3_column_int64(stmt, 1)
+    if level == 0 {
+        raw := sqlite3_column_text(stmt, 2)
+        if raw == nil {
+            _ = sqlite3_finalize(stmt)
+            return \"\", 0, false, \"sqlite index chunk payload was null\"
+        }
+        out, err := strings.clone_from_cstring(raw)
+        _ = sqlite3_finalize(stmt)
+        if err != nil {
+            return \"\", 0, false, \"failed to clone sqlite index chunk payload\"
+        }
+        return out, 0, true, \"\"
+    }
+    _ = sqlite3_finalize(stmt)
+
+    leaf_size := i64(128)
+    first_ordinal := offset / leaf_size
+    last_ordinal := (offset + limit - 1) / leaf_size
+    base_offset := first_ordinal * leaf_size
+    child_stmt: ^SQLite3_Stmt
+    child_sql := \"SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']' FROM (SELECT substr(child.payload_text, 2, length(child.payload_text) - 2) AS payload FROM vev_index_chunk_edges edge JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id WHERE edge.parent_chunk_id = ? AND edge.ordinal BETWEEN ? AND ? ORDER BY edge.ordinal)\"
+    child_sql_c, child_sql_c_ok := sqlite_cstring(child_sql)
+    if !child_sql_c_ok {
+        return \"\", 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(child_sql_c)
+    if sqlite3_prepare_v2(db, child_sql_c, -1, &child_stmt, nil) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite prepare child index page failed\")
+    }
+    defer _ = sqlite3_finalize(child_stmt)
+    if sqlite3_bind_int64(child_stmt, 1, root_id) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child index root failed\")
+    }
+    if sqlite3_bind_int64(child_stmt, 2, first_ordinal) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind first child ordinal failed\")
+    }
+    if sqlite3_bind_int64(child_stmt, 3, last_ordinal) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind last child ordinal failed\")
+    }
+    child_rc := sqlite3_step(child_stmt)
+    if child_rc != SQLITE_ROW {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite child index page read failed\")
+    }
+    raw := sqlite3_column_text(child_stmt, 0)
+    if raw == nil {
+        return \"\", 0, false, \"sqlite child index page was null\"
+    }
+    out, err := strings.clone_from_cstring(raw)
+    if err != nil {
+        return \"\", 0, false, \"failed to clone sqlite child index page\"
+    }
+    return out, base_offset, true, \"\"
 }
 
 sqlite_clear_index_storage_raw :: proc(handle: rawptr) -> (bool, string) {
@@ -1203,6 +1301,16 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return false)))
   true)
 
+(defn copy-index-entry-window [items: []int, offset-within-items: int, limit: int] -> [dynamic]int
+  (let [out (make [dynamic]int)]
+    (when (<= limit 0)
+      (return out))
+    (let [start (min (max offset-within-items 0) (count items))
+          end (min (+ start limit) (count items))]
+      (for [i (arr.range start end)]
+        (arr.push! out items[i]))
+      (return out))))
+
 (defn validate-sqlite-index [path: string, db-index: []int, index-name: string] -> [ok: bool, error: string]
   (let [[loaded loaded-ok loaded-error] (sqlite-latest-index-entries path index-name)]
     (when (not loaded-ok)
@@ -1472,6 +1580,22 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (defer (delete text))
     (parse-index-entries-text text)))
 
+(defn sqlite-conn-latest-index-entry-page [store: ^SQLite-Conn, index-name: string, offset: int, limit: int] -> [entries: [dynamic]int, ok: bool, error: string]
+  (when (< offset 0)
+    (return (make [dynamic]int) false "sqlite index page offset was negative"))
+  (when (<= limit 0)
+    (return (make [dynamic]int) true ""))
+  (let [[text base-offset loaded-ok loaded-error] (sqlite-latest-index-entries-page-text-raw store^.handle index-name (i64 offset) (i64 limit))]
+    (when (not loaded-ok)
+      (return (make [dynamic]int) false loaded-error))
+    (defer (delete text))
+    (let [[parsed parsed-ok parsed-error] (parse-index-entries-text text)]
+      (when (not parsed-ok)
+        (return (make [dynamic]int) false parsed-error))
+      (defer (delete parsed))
+      (let [window (copy-index-entry-window (slice parsed 0) (- offset (int base-offset)) limit)]
+        (return window true "")))))
+
 (defn sqlite-storage-architecture [path: string] -> [architecture: string, ok: bool, error: string]
   (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
     (when (not open-ok)
@@ -1522,6 +1646,26 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return (make [dynamic]int) false loaded-error))
       (defer (delete text))
       (parse-index-entries-text text))))
+
+(defn sqlite-latest-index-entry-page [path: string, index-name: string, offset: int, limit: int] -> [entries: [dynamic]int, ok: bool, error: string]
+  (when (< offset 0)
+    (return (make [dynamic]int) false "sqlite index page offset was negative"))
+  (when (<= limit 0)
+    (return (make [dynamic]int) true ""))
+  (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
+    (when (not open-ok)
+      (return (make [dynamic]int) false open-error))
+    (let [[text base-offset loaded-ok loaded-error] (sqlite-latest-index-entries-page-text-raw handle index-name (i64 offset) (i64 limit))]
+      (sqlite-close-live-raw handle)
+      (when (not loaded-ok)
+        (return (make [dynamic]int) false loaded-error))
+      (defer (delete text))
+      (let [[parsed parsed-ok parsed-error] (parse-index-entries-text text)]
+        (when (not parsed-ok)
+          (return (make [dynamic]int) false parsed-error))
+        (defer (delete parsed))
+        (let [window (copy-index-entry-window (slice parsed 0) (- offset (int base-offset)) limit)]
+          (return window true ""))))))
 
 (defn close-sqlite-conn [store: SQLite-Conn]
   (sqlite-close-live-raw store.handle)
