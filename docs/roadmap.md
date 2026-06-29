@@ -370,9 +370,10 @@ cursor. SQLite datom rows now carry stable `log_index` values, append/full-save
 paths preserve those indexes, and storage tests fetch individual datoms by
 log index. `SQLite-Index-Snapshot` opens all four persisted logical index
 cursors from a SQLite path or live handle without calling `load-db-sqlite`, and
-can resolve datoms by durable log index. Normal query/reopen paths still
-construct resident views today, but the query-facing boundary can represent
-chunk-backed persisted cursors. Public
+can resolve datoms by durable log index. `SQLite-DB-Snapshot` adds basis tx and
+datom-count metadata around those cursors as the first durable DB snapshot
+shape. Normal query/reopen paths still construct resident views today, but the
+query-facing boundary can represent chunk-backed persisted cursors. Public
 datom index APIs plus transaction, schema, pull, entity helper, and general
 `Clause-Index-Scan` paths now go through `DB-Index-View`. Optimized
 entity-star, threshold, self-join, two-attribute, entity-attribute, entity-int,

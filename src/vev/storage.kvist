@@ -1530,6 +1530,12 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   vaet: SQLite-Index-Cursor
 })
 
+(defstruct SQLite-DB-Snapshot {
+  indexes: SQLite-Index-Snapshot
+  basis-tx: u64
+  datom-count: int
+})
+
 (def Store-Conn SQLite-Conn)
 
 (defn insert-sqlite-tx-meta! [handle: rawptr, tx: u64, meta: []Tx-Meta] -> [ok: bool, error: string]
@@ -2004,6 +2010,50 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn close-sqlite-index-snapshot [snapshot: SQLite-Index-Snapshot]
   (let [owned snapshot]
     (close-sqlite-index-snapshot! (addr owned))))
+
+(defn sqlite-db-snapshot-index-view [snapshot: ^SQLite-DB-Snapshot, order: Public-Index-Order] -> DB-Index-View
+  (sqlite-index-snapshot-view (addr snapshot^.indexes) order))
+
+(defn sqlite-db-snapshot-datom-at-log-index [snapshot: ^SQLite-DB-Snapshot, log-index: int] -> [datom: Datom, ok: bool, error: string]
+  (sqlite-index-snapshot-datom-at-log-index (addr snapshot^.indexes) log-index))
+
+(defn sqlite-open-db-snapshot-handle [handle: rawptr, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+  (let [[basis basis-ok basis-error] (sqlite-latest-index-root-basis-raw handle)]
+    (when (not basis-ok)
+      (return (SQLite-DB-Snapshot {}) false basis-error))
+    (let [[datom-count datom-count-ok datom-count-error] (sqlite-datom-count-raw handle)]
+      (when (not datom-count-ok)
+        (return (SQLite-DB-Snapshot {}) false datom-count-error))
+      (let [[indexes indexes-ok indexes-error] (sqlite-open-index-snapshot-handle handle page-size)]
+        (when (not indexes-ok)
+          (return (SQLite-DB-Snapshot {}) false indexes-error))
+        (return (SQLite-DB-Snapshot {indexes: indexes
+                                     basis-tx: basis
+                                     datom-count: (int datom-count)})
+                true
+                "")))))
+
+(defn sqlite-conn-open-db-snapshot [store: ^SQLite-Conn, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+  (sqlite-open-db-snapshot-handle store^.handle page-size))
+
+(defn sqlite-open-db-snapshot [path: string, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+  (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
+    (when (not open-ok)
+      (return (SQLite-DB-Snapshot {}) false open-error))
+    (let [[opened-snapshot snapshot-ok snapshot-error] (sqlite-open-db-snapshot-handle handle page-size)]
+      (when (not snapshot-ok)
+        (sqlite-close-live-raw handle)
+        (return opened-snapshot false snapshot-error))
+      (set! opened-snapshot.indexes.owns-handle true)
+      (return opened-snapshot true ""))))
+
+(defn close-sqlite-db-snapshot! [snapshot: ^SQLite-DB-Snapshot]
+  (close-sqlite-index-snapshot! (addr snapshot^.indexes))
+  (set! snapshot^ (SQLite-DB-Snapshot {})))
+
+(defn close-sqlite-db-snapshot [snapshot: SQLite-DB-Snapshot]
+  (let [owned snapshot]
+    (close-sqlite-db-snapshot! (addr owned))))
 
 (defn close-sqlite-conn [store: SQLite-Conn]
   (sqlite-close-live-raw store.handle)
