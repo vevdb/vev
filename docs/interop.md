@@ -49,7 +49,8 @@ clients:
 - Node package name, if published: `@vevdb/vev`
 - Python package name, if published: `vev`
 - C SDK: `include/vev.h`, `libvev`, and pkg-config package `vev`
-- Odin package: later `clients/odin` wrapper over the C ABI, not generated Odin
+- Odin package: `clients/odin` currently has a dynamic C ABI smoke wrapper; a
+  fuller Odin package should grow from that shape, not generated Odin
 
 The first packaging pass still supports explicit local library paths and
 environment overrides, but the JVM path now has a concrete bundled-native
@@ -74,9 +75,10 @@ published Clojure dependency shape can already be tested from outside the repo:
 These are not published releases yet, but they make the future
 `{:deps {dev.vevdb/vev-clj {:mvn/version ...}}}` story mechanically real.
 
-Odin consumption should use the C ABI through a small wrapper for now. Vev is
-implemented in Kvist and lowers through Odin, but generated Odin is build
-output, not the public Odin package surface.
+Odin consumption should use the C ABI through a small wrapper for now.
+`clients/odin/smoke.odin` proves the dynamic-loading path against the platform
+native library. Vev is implemented in Kvist and lowers through Odin, but
+generated Odin is build output, not the public Odin package surface.
 
 ## Native API
 

@@ -127,7 +127,7 @@ Current smoke clients:
 - Rust: `clients/rust`
 - Go: `clients/go`
 - Node/TypeScript: `clients/node`
-- Odin: `clients/odin` documents the planned C ABI wrapper direction
+- Odin: `clients/odin`
 
 These are not polished published packages yet. They are kept under `clients/*`
 so the public host-language story can evolve in place while the engine and ABI

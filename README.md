@@ -52,7 +52,7 @@ Current client work areas:
 * `clients/clojure`: Datomic-shaped Clojure wrapper over the Java client.
 * `clients/go`: cgo wrapper smoke.
 * `clients/node`: Node N-API / TypeScript smoke.
-* `clients/odin`: planned Odin wrapper over the C ABI.
+* `clients/odin`: Odin `core:dynlib` smoke wrapper over the C ABI.
 
 Runnable examples live under `examples/*`, including the Clojure
 getting-started script.

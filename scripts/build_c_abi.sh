@@ -15,6 +15,7 @@ RUST_EXAMPLE_DIR="$ROOT/build/examples/rust"
 JAVA_EXAMPLE_DIR="$ROOT/build/examples/java"
 GO_EXAMPLE_DIR="$ROOT/build/examples/go"
 NODE_EXAMPLE_DIR="$ROOT/build/examples/node"
+ODIN_EXAMPLE_DIR="$ROOT/build/examples/odin"
 
 case "$(uname -s)" in
   Darwin) LIB_NAME="libvev.dylib" ;;
@@ -25,7 +26,7 @@ esac
 
 LIB_PATH="$LIB_DIR/$LIB_NAME"
 
-mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR"
+mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR" "$ODIN_EXAMPLE_DIR"
 
 if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
   (
@@ -91,6 +92,13 @@ if command -v go >/dev/null 2>&1; then
     "$GO_EXAMPLE_DIR/vev_go_smoke"
 else
   echo "go not found; skipping Go smoke"
+fi
+
+if command -v odin >/dev/null 2>&1; then
+  odin build "$ROOT/clients/odin" -file -out:"$ODIN_EXAMPLE_DIR/vev_odin_smoke"
+  "$ODIN_EXAMPLE_DIR/vev_odin_smoke" "$LIB_PATH"
+else
+  echo "odin not found; skipping Odin smoke"
 fi
 
 if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
