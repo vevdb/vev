@@ -10,8 +10,9 @@ Current local development:
 scripts/build_c_abi.sh
 ```
 
-The build script links the smoke binary against the platform library under
-`build/lib` and runs it.
+The Rust crate has a `build.rs` that links against `VEV_LIB_DIR` or, by
+default, the platform library under the repo's `build/lib`. The top-level build
+script sets `VEV_LIB_DIR` explicitly and runs the smoke binary.
 
 Likely package split before publishing:
 

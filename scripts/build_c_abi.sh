@@ -65,7 +65,7 @@ python3 "$ROOT/clients/python/smoke.py"
 
 if command -v cargo >/dev/null 2>&1; then
   CARGO_TARGET_DIR="$RUST_EXAMPLE_DIR/target" \
-  RUSTFLAGS="-L native=$LIB_DIR -l dylib=vev -C link-arg=-Wl,-rpath,$LIB_DIR" \
+  VEV_LIB_DIR="$LIB_DIR" \
     cargo run \
       --quiet \
       --manifest-path "$ROOT/clients/rust/Cargo.toml"
