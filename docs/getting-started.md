@@ -11,6 +11,7 @@ scripts/package_jvm.sh
 scripts/smoke_jvm_package.sh
 scripts/smoke_python_package.sh
 scripts/smoke_node_package.sh
+scripts/smoke_go_package.sh
 ```
 
 Together, these build:
@@ -25,8 +26,8 @@ Together, these build:
 
 `scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
 Node/TypeScript, Java, Clojure, and Odin smoke clients. The package smoke
-scripts then verify the current local JVM, Python, and Node bundled-native
-package shapes from temporary projects/directories.
+scripts then verify the current local JVM, Python, Node, and Go package shapes
+from temporary projects/directories.
 
 ## Clojure
 
@@ -114,6 +115,17 @@ console.log(conn.queryText('[:find ?name :where [?e :user/name ?name]]'));
 `scripts/smoke_node_package.sh` simulates a future npm package by loading
 `native/<platform>/vev_native.node` and the adjacent platform `libvev` from a
 temporary package directory.
+
+## Go
+
+The Go wrapper is importable at the planned module path:
+
+```go
+import vev "github.com/vevdb/vev/clients/go"
+```
+
+`scripts/smoke_go_package.sh` verifies that shape from a temporary Go module
+using a local `replace` to this checkout.
 
 DB snapshots are passable immutable values. The wrapper has JVM cleanup
 fallbacks, so examples use normal Clojure binding style. Long-running services
