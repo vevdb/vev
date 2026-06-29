@@ -107,6 +107,8 @@ Deferred engine batch order:
    the resource layout consumed by the Java loader, and `scripts/package_jvm.sh`
    builds local Java/native/Clojure proof jars under `build/jvm` plus a local
    Maven repository under `build/m2`.
+   Python and Node now also have tested temporary package layouts with bundled
+   platform-native artifacts, and Odin has a dynamic C ABI smoke wrapper.
 MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current
 real-data matrix passes; future MusicBrainz work should be targeted regression
 or performance coverage.

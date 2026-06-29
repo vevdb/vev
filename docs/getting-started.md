@@ -13,7 +13,7 @@ scripts/smoke_python_package.sh
 scripts/smoke_node_package.sh
 ```
 
-This builds:
+Together, these build:
 
 - the platform native library under `build/lib`
 - JVM native-resource staging under `build/jvm-native`
@@ -23,8 +23,10 @@ This builds:
 - Java classes under `build/examples/java`
 - native smoke artifacts under `build/examples/*`
 
-The same command runs the available C, Python, Rust, Go, Node/TypeScript, Java,
-and Clojure smoke clients.
+`scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
+Node/TypeScript, Java, Clojure, and Odin smoke clients. The package smoke
+scripts then verify the current local JVM, Python, and Node bundled-native
+package shapes from temporary projects/directories.
 
 ## Clojure
 
