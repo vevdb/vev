@@ -1920,7 +1920,15 @@
       (return (predicate-value-equal? left right-entity))))
   false)
 
+(defn pull-pattern-input-value [pattern: []Pull-Spec] -> Value
+  (let [items (make [dynamic]Value 0 (count pattern)) :defer]
+    (for [spec pattern]
+      (arr.push! items (value-keyword spec.a)))
+    (value-vector (slice items 0))))
+
 (defn query-input-scalar-value [db: DB, input: Query-Input] -> [value: Value, ok: bool]
+  (when (= input.kind .PullPattern)
+    (return (pull-pattern-input-value (slice input.pattern 0)) true))
   (when input.has-lookup-ref
     (let [[_ lookup-ok] (resolve-lookup-ref db input.lookup-attr input.lookup-value)]
       (if lookup-ok
@@ -4162,6 +4170,18 @@
   false)
 
 (defn current-attr-exists? [db: DB, entity: u64, attr: string] -> bool
+  (when (reverse-attr? attr)
+    (let [forward-attr (forward-attr-for-reverse attr) :defer
+          indexes (slice db.vaet 0)
+          target (value-entity entity)
+          low (lower-bound-index db indexes "vaet" 0 "" target)
+          high (upper-bound-index db indexes "vaet" 0 "" target)]
+      (for [datom-index (slice indexes low high)]
+        (let [datom db.datoms[datom-index]]
+          (when (and (= datom.a forward-attr)
+                     (datom-current-at? db datom-index))
+            (return true))))
+      (return false)))
   (let [indexes (slice db.eavt 0)
         low (lower-bound-index db indexes "eavt-ea" entity attr (Value {}))
         high (upper-bound-index db indexes "eavt-ea" entity attr (Value {}))]
@@ -6969,10 +6989,8 @@
         (binding-with-value binding clause.out clause.default-value)))))
 
 (defn get-some-attr-result-value [db: DB, attr: string] -> Value
-  (let [[schema-e schema-ok] (schema-entity-for-attr db attr)]
-    (if schema-ok
-      (value-entity schema-e)
-      (value-keyword attr))))
+  (discard db)
+  (value-keyword attr))
 
 (defn apply-get-some [db: DB, binding: Binding, clause: Get-Some] -> [next: Binding, ok: bool]
   (let [[entity entity-ok] (resolve-entity-term db clause.e binding)]
@@ -12080,6 +12098,14 @@
 (defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
   (when (not (query-steps-are-relation-engine-supported? query))
     (return false))
+  (when (and (query-steps-are-clauses-and-predicates? query)
+             (> (+ (count query.inputs)
+                   (count query.collection-inputs)
+                   (count query.tuple-inputs)
+                   (count query.relation-inputs)
+                   (count query.input-specs))
+                0))
+    (return false))
   (when (and (query-uses-primary-relation-db-source? query)
              (or (> (count query.predicates) 0)
                  (> (count query.function-clauses) 0)
@@ -12374,6 +12400,44 @@
       (delete-query-relation branch-rel)
       (return has-match true))))
 
+(defn query-relation-apply-not-existence-typed [db: DB, rel: Query-Relation, clause-value: Clause] -> [out: Query-Relation, ok: bool]
+  (when (not (and rel.has-typed-columns
+                  (= clause-value.e.kind .Var)
+                  (query-relation-has-attr? rel clause-value.e.name)
+                  (= clause-value.a.kind .Value)
+                  (= clause-value.a.value.kind .Keyword)
+                  (= clause-value.v.kind .Wildcard)
+                  (or (= clause-value.tx-term.kind .Wildcard)
+                      (omitted-term? clause-value.tx-term))
+                  (or (= clause-value.op-term.kind .Wildcard)
+                      (omitted-term? clause-value.op-term))))
+    (return (query-relation-empty) false))
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+        builder (query-relation-builder (slice rel.attrs 0))
+        row 0]
+    (while (< row rel.typed-rows)
+      (let [[entity entity-ok] (query-relation-resolve-typed-entity-term db rel row clause-value.e)]
+        (when (not (and entity-ok (= entity.kind .Entity)))
+          (delete attrs)
+          (delete attr-sources)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false))
+        (when (not (current-attr-exists? db entity.entity clause-value.a.value.text))
+          (when (not (query-relation-builder-add-column-row! (addr builder) (slice rel.typed-columns 0) row))
+            (delete attrs)
+            (delete attr-sources)
+            (delete-query-relation-builder builder)
+            (return (query-relation-empty) false))))
+      (set! row (+ row 1)))
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: builder.tuples
+                             typed-columns: builder.typed-columns
+                             typed-rows: builder.typed-rows
+                             has-typed-columns: builder.typed-ok}) true)))
+
 (defn query-relation-apply-not-typed [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
@@ -12383,10 +12447,14 @@
              (= (count group.function-clauses) 0)
              (= (count group.not-groups) 0)
              (not (branch-has-source-input? query group)))
+    (let [[existence existence-ok] (query-relation-apply-not-existence-typed db rel group.clauses[0])]
+      (when existence-ok
+        (return existence true))
+      (delete-query-relation existence))
+    (let [clause group.clauses[0]]
     (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
           attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
           builder (query-relation-builder (slice rel.attrs 0))
-          clause group.clauses[0]
           row 0]
       (while (< row rel.typed-rows)
         (let [[matched match-ok] (typed-row-matches-single-db-clause? db sources rel row clause)]
@@ -12408,7 +12476,7 @@
                                tuples: builder.tuples
                                typed-columns: builder.typed-columns
                                typed-rows: builder.typed-rows
-                               has-typed-columns: builder.typed-ok}) true)))
+                               has-typed-columns: builder.typed-ok}) true))))
   (when (plain-typed-branch-group? group)
     (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
           attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
@@ -12796,12 +12864,21 @@
       (let [forward-attr (forward-attr-for-reverse clause-value.a.value.text) :defer]
         (when (not (= datom.a forward-attr))
           (return false))))
-    (and (unbound-clause-entity-term-matches? db clause-value.e e-value)
-         (unbound-clause-term-matches? clause-value.a a-value)
-         (unbound-clause-value-term-matches? db datom.a clause-value.v v-value)
-         (unbound-clause-optional-term-matches? clause-value.tx-term tx-value)
-         (unbound-clause-optional-term-matches? clause-value.op-term op-value)
-         (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value))))
+    (if (and (= clause-value.a.kind .Value)
+             (= clause-value.a.value.kind .Keyword)
+             (reverse-attr? clause-value.a.value.text))
+      (and (unbound-clause-entity-term-matches? db clause-value.e e-value)
+           (unbound-clause-term-matches? clause-value.a a-value)
+           (unbound-clause-entity-term-matches? db clause-value.v v-value)
+           (unbound-clause-optional-term-matches? clause-value.tx-term tx-value)
+           (unbound-clause-optional-term-matches? clause-value.op-term op-value)
+           (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value))
+      (and (unbound-clause-entity-term-matches? db clause-value.e e-value)
+           (unbound-clause-term-matches? clause-value.a a-value)
+           (unbound-clause-value-term-matches? db datom.a clause-value.v v-value)
+           (unbound-clause-optional-term-matches? clause-value.tx-term tx-value)
+           (unbound-clause-optional-term-matches? clause-value.op-term op-value)
+           (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value)))))
 
 (defn unbound-datom-clause-var-value [datom: Datom, clause-value: Clause, name: string] -> [value: Value, ok: bool]
   (let [[e-value a-value v-value] (unbound-datom-clause-values datom clause-value)]
@@ -12862,7 +12939,7 @@
         (return
           (and (= datom.a forward-attr)
                (typed-bound-entity-term-matches? db rel row clause-value.e e-value)
-               (typed-bound-clause-term-matches? db rel row datom.a clause-value.v v-value)
+               (typed-bound-entity-term-matches? db rel row clause-value.v v-value)
                (typed-bound-optional-term-matches? rel row clause-value.tx-term tx-value)
                (typed-bound-optional-term-matches? rel row clause-value.op-term op-value)
                (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value)))))
