@@ -6,6 +6,7 @@ Build the native library and run the available client smoke tests:
 
 ```sh
 scripts/smoke_clients.sh
+scripts/smoke_c_package.sh
 scripts/stage_jvm_native.sh
 scripts/package_jvm.sh
 scripts/smoke_jvm_package.sh
@@ -26,8 +27,8 @@ Together, these build:
 
 `scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
 Node/TypeScript, Java, Clojure, and Odin smoke clients. The package smoke
-scripts then verify the current local JVM, Python, Node, and Go package shapes
-from temporary projects/directories.
+scripts then verify the current local C SDK, JVM, Python, Node, and Go package
+shapes from temporary projects/directories.
 
 ## Clojure
 
@@ -168,6 +169,8 @@ PKG_CONFIG_PATH="$PWD/build/lib/pkgconfig" \
 ```
 
 Use `include/vev.h` for the current handle and ownership rules.
+`scripts/smoke_c_package.sh` verifies the pkg-config package from a temporary C
+program.
 
 ## Other Clients
 

@@ -56,6 +56,9 @@ The first packaging pass still supports explicit local library paths and
 environment overrides, but several host package shapes now have concrete local
 proofs.
 
+The C SDK path is `include/vev.h`, `libvev`, and `build/lib/pkgconfig/vev.pc`.
+`scripts/smoke_c_package.sh` verifies that shape from a temporary C program.
+
 The JVM path has a bundled-native loading shape. The Java loader checks
 explicit path configuration, local `build/lib`, then classpath resources under
 `dev/vevdb/vev/native/<platform>/<library>`. `scripts/stage_jvm_native.sh`
