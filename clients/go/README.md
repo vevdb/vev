@@ -26,6 +26,7 @@ The first polished package should keep the same basic shape:
 - explicit `Close` methods for native handles
 - EDN text APIs for parity with other hosts
 - prepared queries and typed statement bindings for repeated work
+- prepared pull patterns for direct `Pull`/`PullMany` reuse
 - `ParseClauseEDN` for DataScript-style single where-clause parser tooling
 
 `OpenMemory` remains as a compatibility alias for `CreateConn`.

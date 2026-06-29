@@ -217,14 +217,15 @@ path through the native library. The raw ABI exposes row handles, value-tree
 visitors, direct pull/pull-many handles, immutable DB snapshot handles, and a
 typed column-batch query result path for host callers that do not want per-row
 value materialization. Java, Python, Go, and Clojure expose the column-batch
-path, and C exercises it directly. Prepared parser values now expose stable
-`:error-code` categories for malformed inputs across the public parser entry
-points, including `:edn-read` for reader-level malformed EDN. Prepared query
-values also expose return-map marker plus typed key metadata for `:keys`,
-`:strs`, and `:syms`, and direct `parse-clause-text` exposes single where-clause
-parser values. The remaining work is exact malformed-input behavior, exact
-parser record rendering where worth exposing, and wrapper ergonomics demanded by
-real host usage.
+path, and C exercises it directly. Java, Clojure, Python, Rust, and Go expose
+prepared pull-pattern handles for direct pull/pull-many reuse. Prepared parser
+values now expose stable `:error-code` categories for malformed inputs across
+the public parser entry points, including `:edn-read` for reader-level malformed
+EDN. Prepared query values also expose return-map marker plus typed key metadata
+for `:keys`, `:strs`, and `:syms`, and direct `parse-clause-text` exposes single
+where-clause parser values. The remaining work is exact malformed-input
+behavior, exact parser record rendering where worth exposing, and wrapper
+ergonomics demanded by real host usage.
 
 ## Phase 5: MusicBrainz/Datomic Workload
 

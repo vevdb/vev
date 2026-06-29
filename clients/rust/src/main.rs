@@ -11,6 +11,7 @@ type VevConnection = *mut c_void;
 type VevColumnBatch = *mut c_void;
 type VevDb = *mut c_void;
 type VevPreparedQuery = *mut c_void;
+type VevPreparedPullPattern = *mut c_void;
 type VevResult = *mut c_void;
 type VevStmt = *mut c_void;
 type VevTxReport = *mut c_void;
@@ -130,6 +131,16 @@ unsafe extern "C" {
     fn vev_column_batch_string_dictionary_lengths_data(batch: VevColumnBatch) -> *const c_int;
     fn vev_column_batch_string_indices_data(batch: VevColumnBatch) -> *const c_int;
     fn vev_pull_edn(db: VevDb, pattern_text: *const c_char, entity: c_ulonglong) -> VevValueHandle;
+    fn vev_prepare_pull_pattern_edn(pattern_text: *const c_char) -> VevPreparedPullPattern;
+    fn vev_prepared_pull_pattern_ok(pattern: VevPreparedPullPattern) -> bool;
+    fn vev_prepared_pull_pattern_error(pattern: VevPreparedPullPattern) -> *const c_char;
+    fn vev_prepared_pull_pattern_edn(pattern: VevPreparedPullPattern) -> *const c_char;
+    fn vev_prepared_pull_pattern_free(pattern: VevPreparedPullPattern);
+    fn vev_pull_prepared(
+        db: VevDb,
+        pattern: VevPreparedPullPattern,
+        entity: c_ulonglong,
+    ) -> VevValueHandle;
     fn vev_pull_lookup_ref_string_edn(
         db: VevDb,
         pattern_text: *const c_char,
@@ -139,6 +150,12 @@ unsafe extern "C" {
     fn vev_pull_many_edn(
         db: VevDb,
         pattern_text: *const c_char,
+        entities: *const c_ulonglong,
+        entity_count: c_int,
+    ) -> VevValueHandle;
+    fn vev_pull_many_prepared(
+        db: VevDb,
+        pattern: VevPreparedPullPattern,
         entities: *const c_ulonglong,
         entity_count: c_int,
     ) -> VevValueHandle;
@@ -532,6 +549,12 @@ impl Db {
         Ok(handle.value())
     }
 
+    fn pull_prepared(&self, pattern: &PreparedPullPattern, entity: u64) -> Result<Value, String> {
+        let raw = unsafe { vev_pull_prepared(self.raw, pattern.raw, entity as c_ulonglong) };
+        let handle = ValueHandle::new(raw)?;
+        Ok(handle.value())
+    }
+
     fn pull_lookup_ref_string(
         &self,
         pattern: &str,
@@ -559,6 +582,23 @@ impl Db {
             vev_pull_many_edn(
                 self.raw,
                 pattern.as_ptr(),
+                entities.as_ptr(),
+                entities.len() as c_int,
+            )
+        };
+        let handle = ValueHandle::new(raw)?;
+        Ok(handle.value())
+    }
+
+    fn pull_many_prepared(
+        &self,
+        pattern: &PreparedPullPattern,
+        entities: &[u64],
+    ) -> Result<Value, String> {
+        let raw = unsafe {
+            vev_pull_many_prepared(
+                self.raw,
+                pattern.raw,
                 entities.as_ptr(),
                 entities.len() as c_int,
             )
@@ -764,6 +804,39 @@ impl Drop for PreparedQuery {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             unsafe { vev_prepared_query_free(self.raw) };
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
+struct PreparedPullPattern {
+    raw: VevPreparedPullPattern,
+}
+
+impl PreparedPullPattern {
+    fn new(pattern: &str) -> Result<Self, String> {
+        let pattern = cstring(pattern);
+        let raw = unsafe { vev_prepare_pull_pattern_edn(pattern.as_ptr()) };
+        if raw.is_null() {
+            return Err("failed to prepare pull pattern".to_string());
+        }
+        if !unsafe { vev_prepared_pull_pattern_ok(raw) } {
+            let err = unsafe { Library::owned_string(vev_prepared_pull_pattern_error(raw)) };
+            unsafe { vev_prepared_pull_pattern_free(raw) };
+            return Err(err);
+        }
+        Ok(Self { raw })
+    }
+
+    fn edn(&self) -> String {
+        unsafe { Library::owned_string(vev_prepared_pull_pattern_edn(self.raw)) }
+    }
+}
+
+impl Drop for PreparedPullPattern {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { vev_prepared_pull_pattern_free(self.raw) };
             self.raw = ptr::null_mut();
         }
     }
@@ -1098,6 +1171,32 @@ fn main() -> Result<(), String> {
     many_names.sort();
     if many_names != vec!["Ada".to_string(), "Grace".to_string()] {
         return Err("unexpected pull-many".to_string());
+    }
+
+    let prepared_pattern = PreparedPullPattern::new("[:user/name]")?;
+    let prepared_pattern_ast = prepared_pattern.edn();
+    if !prepared_pattern_ast.contains(":pattern") || !prepared_pattern_ast.contains(":attr") {
+        return Err("prepared pull pattern AST did not expose parser keys".to_string());
+    }
+    let prepared_pull = pull_db.pull_prepared(&prepared_pattern, 1)?;
+    println!("prepared direct pull: {prepared_pull:?}");
+    if prepared_pull.map_get(":user/name") != Some(&Value::String("Ada".to_string())) {
+        return Err("unexpected prepared pull".to_string());
+    }
+    let prepared_many = pull_db.pull_many_prepared(&prepared_pattern, &[1, 2])?;
+    let mut prepared_names: Vec<String> = match prepared_many {
+        Value::Vector(items) => items
+            .iter()
+            .filter_map(|item| match item.map_get(":user/name") {
+                Some(Value::String(name)) => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    prepared_names.sort();
+    if prepared_names != vec!["Ada".to_string(), "Grace".to_string()] {
+        return Err("unexpected prepared pull-many".to_string());
     }
 
     let pull_pattern_query = conn.prepare(

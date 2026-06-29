@@ -309,6 +309,26 @@ def main() -> int:
                 if names != ["Ada", "Grace"]:
                     raise RuntimeError("unexpected pull-many")
 
+                with vev.prepare_pull_pattern("[:user/name]") as prepared_pattern:
+                    prepared_pattern_ast = prepared_pattern.edn()
+                    if (
+                        ":pattern" not in prepared_pattern_ast
+                        or ":attr" not in prepared_pattern_ast
+                    ):
+                        raise RuntimeError(
+                            "prepared pull pattern AST did not expose parser keys"
+                        )
+                    prepared_pull = pull_db.pull(prepared_pattern, vev.Entity(1))
+                    prepared_many = pull_db.pull_many(
+                        prepared_pattern, [vev.Entity(1), vev.Entity(2)]
+                    )
+                    print(f"prepared direct pull: {prepared_pull}")
+                    if prepared_pull.get(":user/name") != "Ada":
+                        raise RuntimeError("unexpected prepared pull")
+                    prepared_names = sorted(item.get(":user/name") for item in prepared_many)
+                    if prepared_names != ["Ada", "Grace"]:
+                        raise RuntimeError("unexpected prepared pull-many")
+
             pull_pattern_query = conn.prepare(
                 """
                 [:find (pull ?e ?pattern)

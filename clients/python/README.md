@@ -55,11 +55,19 @@ with lib.create_conn() as conn:
 Parser tooling can inspect a single where clause with
 `vev.parse_clause_edn('[?e :user/name ?name]')`.
 
+Reusable pull patterns are prepared once and used through the same DB API:
+
+```python
+with vev.prepare_pull_pattern("[:user/name]") as pattern:
+    pull = db.pull(pattern, vev.Entity(1))
+    many = db.pull_many(pattern, [vev.Entity(1), vev.Entity(2)])
+```
+
 `open_memory()` remains as a compatibility alias for `create_conn()`.
 
 The current API already wraps native handles with context managers for
-connections, DB snapshots, prepared queries, statements, transaction reports,
-and durable Vev connections.
+connections, DB snapshots, prepared queries, prepared pull patterns,
+statements, transaction reports, and durable Vev connections.
 
 Durable stores are opened through Vev APIs with paths such as `app.vev`. The
 Python package loads `libvev`; the current native library depends on the

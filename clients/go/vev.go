@@ -257,6 +257,16 @@ func (db *DB) Pull(pattern string, entity uint64) (Value, error) {
 	return handle.Value(), nil
 }
 
+func (db *DB) PullPrepared(pattern *PreparedPullPattern, entity uint64) (Value, error) {
+	raw := C.vev_pull_prepared(db.raw, pattern.raw, C.ulonglong(entity))
+	handle, err := newValueHandle(raw)
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+	return handle.Value(), nil
+}
+
 func (db *DB) PullEDN(pattern string, entity uint64) (string, error) {
 	patternText := cstring(pattern)
 	defer C.free(unsafe.Pointer(patternText))
@@ -301,6 +311,20 @@ func (db *DB) PullMany(pattern string, entities []uint64) (Value, error) {
 	return handle.Value(), nil
 }
 
+func (db *DB) PullManyPrepared(pattern *PreparedPullPattern, entities []uint64) (Value, error) {
+	var ptr *C.ulonglong
+	if len(entities) > 0 {
+		ptr = (*C.ulonglong)(unsafe.Pointer(&entities[0]))
+	}
+	raw := C.vev_pull_many_prepared(db.raw, pattern.raw, ptr, C.int(len(entities)))
+	handle, err := newValueHandle(raw)
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+	return handle.Value(), nil
+}
+
 func (db *DB) DBWith(tx string) (*DB, error) {
 	txText := cstring(tx)
 	defer C.free(unsafe.Pointer(txText))
@@ -334,6 +358,36 @@ func ParseClauseEDN(clause string) string {
 	clauseText := cstring(clause)
 	defer C.free(unsafe.Pointer(clauseText))
 	return ownedString(C.vev_parse_clause_edn(clauseText))
+}
+
+type PreparedPullPattern struct {
+	raw C.vev_prepared_pull_pattern_t
+}
+
+func PreparePullPattern(pattern string) (*PreparedPullPattern, error) {
+	patternText := cstring(pattern)
+	defer C.free(unsafe.Pointer(patternText))
+	raw := C.vev_prepare_pull_pattern_edn(patternText)
+	if raw == nil {
+		return nil, fmt.Errorf("failed to prepare pull pattern")
+	}
+	if !bool(C.vev_prepared_pull_pattern_ok(raw)) {
+		err := ownedString(C.vev_prepared_pull_pattern_error(raw))
+		C.vev_prepared_pull_pattern_free(raw)
+		return nil, fmt.Errorf("%s", err)
+	}
+	return &PreparedPullPattern{raw: raw}, nil
+}
+
+func (p *PreparedPullPattern) Close() {
+	if p.raw != nil {
+		C.vev_prepared_pull_pattern_free(p.raw)
+		p.raw = nil
+	}
+}
+
+func (p *PreparedPullPattern) EDN() string {
+	return ownedString(C.vev_prepared_pull_pattern_edn(p.raw))
 }
 
 func (q *PreparedQuery) Close() {
@@ -819,6 +873,35 @@ func Smoke() {
 	}
 	sort.Strings(manyNames)
 	mustEqual("pull many", manyNames, []string{"Ada", "Grace"})
+
+	preparedPattern, err := PreparePullPattern("[:user/name]")
+	if err != nil {
+		panic(err)
+	}
+	defer preparedPattern.Close()
+	preparedPatternAST := preparedPattern.EDN()
+	if !strings.Contains(preparedPatternAST, ":pattern") || !strings.Contains(preparedPatternAST, ":attr") {
+		panic("prepared pull pattern AST did not expose parser keys")
+	}
+	preparedPull, err := snapshot.PullPrepared(preparedPattern, 1)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("prepared direct pull:", preparedPull)
+	preparedName, _ := mapGet(preparedPull, ":user/name")
+	mustEqual("prepared pull", preparedName, "Ada")
+	preparedMany, err := snapshot.PullManyPrepared(preparedPattern, []uint64{1, 2})
+	if err != nil {
+		panic(err)
+	}
+	preparedNames := make([]string, 0)
+	for _, item := range preparedMany.([]Value) {
+		if name, ok := mapGet(item, ":user/name"); ok {
+			preparedNames = append(preparedNames, name.(string))
+		}
+	}
+	sort.Strings(preparedNames)
+	mustEqual("prepared pull many", preparedNames, []string{"Ada", "Grace"})
 
 	allEmailTexts, err := Prepare(`[:find ?email :where [?e :user/email ?email]]`)
 	if err != nil {
