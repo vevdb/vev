@@ -430,8 +430,8 @@ int main(void) {
 
     vev_tx_report_t tx_report = vev_transact_edn_report(
         conn,
-        "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}"
-        " {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\"}]");
+        "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\" :user/age 37}"
+        " {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\" :user/age 41}]");
     print_and_free("tx", vev_tx_report_edn(tx_report));
     if (!tx_report_ok_or_error("tx", tx_report)) {
         vev_tx_report_free(tx_report);
@@ -1388,6 +1388,74 @@ int main(void) {
     vev_column_batch_free(source_batch);
     vev_stmt_free(source_batch_stmt);
     vev_prepared_query_free(source_batch_query);
+
+    vev_prepared_query_t source_triple_query =
+        vev_prepare_query_edn_with_sources(
+            "[:find ?e ?right-name ?age"
+            " :in $left $right [?e ...]"
+            " :where [$right ?e :user/name ?right-name]"
+            "        [$left ?e :user/age ?age]]",
+            source_names,
+            2);
+    vev_stmt_t source_triple_stmt = source_triple_query == NULL ? NULL : vev_stmt_create(source_triple_query);
+    if (source_triple_query == NULL ||
+        source_triple_stmt == NULL ||
+        !vev_stmt_bind_db_source(source_triple_stmt, "$left", left_source) ||
+        !vev_stmt_bind_db_source(source_triple_stmt, "$right", right_source) ||
+        !vev_stmt_bind_entity_collection(source_triple_stmt, source_ids, 2)) {
+        fprintf(stderr, "failed to bind source statement triple column batch\n");
+        if (source_triple_stmt != NULL) vev_stmt_free(source_triple_stmt);
+        if (source_triple_query != NULL) vev_prepared_query_free(source_triple_query);
+        vev_db_release(left_source);
+        vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t source_triple = vev_query_stmt_column_batch(conn, source_triple_stmt);
+    if (source_triple == NULL ||
+        vev_column_batch_kind(source_triple) != VEV_COLUMN_BATCH_ENTITY_STRING_INT ||
+        vev_column_batch_count(source_triple) != 2) {
+        fprintf(stderr, "unexpected source statement triple column batch shape\n");
+        if (source_triple != NULL) vev_column_batch_free(source_triple);
+        vev_stmt_free(source_triple_stmt);
+        vev_prepared_query_free(source_triple_query);
+        vev_db_release(left_source);
+        vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const unsigned long long *source_triple_entities = vev_column_batch_entities_data(source_triple);
+    const long long *source_triple_ints = vev_column_batch_ints_data(source_triple);
+    const void *const *source_triple_strings = vev_column_batch_string_data_array(source_triple);
+    const int *source_triple_lengths = vev_column_batch_string_lengths_data(source_triple);
+    if (source_triple_entities[0] != 1 ||
+        source_triple_ints[0] != 37 ||
+        !bytes_equal(source_triple_strings[0], source_triple_lengths[0], "Ada Right") ||
+        source_triple_entities[1] != 2 ||
+        source_triple_ints[1] != 41 ||
+        !bytes_equal(source_triple_strings[1], source_triple_lengths[1], "Grace Right")) {
+        fprintf(stderr, "unexpected source statement triple column batch contents\n");
+        vev_column_batch_free(source_triple);
+        vev_stmt_free(source_triple_stmt);
+        vev_prepared_query_free(source_triple_query);
+        vev_db_release(left_source);
+        vev_db_release(right_source);
+        vev_conn_close(right_conn);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("stmt-db-sources triple column-batch kind=%d rows=%d\n", vev_column_batch_kind(source_triple), vev_column_batch_count(source_triple));
+    vev_column_batch_free(source_triple);
+    vev_stmt_free(source_triple_stmt);
+    vev_prepared_query_free(source_triple_query);
 
     vev_db_release(left_source);
     vev_db_release(right_source);

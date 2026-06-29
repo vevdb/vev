@@ -945,7 +945,9 @@ current connection DB, while `vev_query_db_stmt_column_batch` runs against a
 retained immutable `vev_db_t`. Statements without named DB sources use the
 current optimized column extractors. Source-bound statements fall back through
 the normal result engine and then build an owned flat column batch for supported
-entity, string, and entity/int shapes.
+entity, string, entity/int, and entity/string/int shapes. Entity positions in
+source relation rows may be represented as integer ids; the fallback accepts
+those as entity column values when they are non-negative.
 
 Column pointers are borrowed and remain valid until the corresponding column
 handle or column batch is freed. Single string-column results use
@@ -954,6 +956,9 @@ entity/string/int columns, prefer
 `vev_entity_string_int_triples_string_data_array` plus
 `vev_entity_string_int_triples_string_lengths_data` so host adapters can read
 all borrowed UTF-8 byte pointers and lengths without one ABI call per cell.
+Optimized entity/string/int batches borrow strings from the DB. Fallback
+entity/string/int batches created from generic result rows copy string contents
+into the batch and release them when `vev_column_batch_free` is called.
 For repeated string-heavy results, adapters can instead use the optional string
 dictionary accessors: decode the dictionary entries once, then map each row
 through `vev_entity_string_int_triples_string_indices_data`. Vev only builds

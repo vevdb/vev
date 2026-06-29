@@ -66,6 +66,7 @@ ABI_Entity_String_Int_Triples :: struct {
     entities: [dynamic]u64,
     strings: [dynamic]string,
     ints: [dynamic]i64,
+    owns_strings: bool,
     string_data: [dynamic]rawptr,
     string_lengths: [dynamic]i32,
     string_dictionary: [dynamic]string,
@@ -638,11 +639,12 @@ abi_free_entity_int_pairs :: proc(array: rawptr) {
     free(wrapper)
 }
 
-abi_alloc_entity_string_int_triples :: proc(columns: vev__Entity_String_Int_Triples) -> rawptr {
+abi_alloc_entity_string_int_triples_with_ownership :: proc(columns: vev__Entity_String_Int_Triples, owns_strings: bool) -> rawptr {
     wrapper := new(ABI_Entity_String_Int_Triples)
     wrapper.entities = columns.entities
     wrapper.strings = columns.strings
     wrapper.ints = columns.ints
+    wrapper.owns_strings = owns_strings
     wrapper.string_data = make([dynamic]rawptr, 0, len(columns.strings))
     wrapper.string_lengths = make([dynamic]i32, 0, len(columns.strings))
     wrapper.string_dictionary = make([dynamic]string)
@@ -694,6 +696,10 @@ abi_alloc_entity_string_int_triples :: proc(columns: vev__Entity_String_Int_Trip
         wrapper.string_indices = make([dynamic]i32)
     }
     return rawptr(wrapper)
+}
+
+abi_alloc_entity_string_int_triples :: proc(columns: vev__Entity_String_Int_Triples) -> rawptr {
+    return abi_alloc_entity_string_int_triples_with_ownership(columns, false)
 }
 
 abi_entity_string_int_triples_count :: proc(array: rawptr) -> int {
@@ -800,6 +806,11 @@ abi_free_entity_string_int_triples :: proc(array: rawptr) {
     wrapper := (^ABI_Entity_String_Int_Triples)(array)
     if wrapper == nil {
         return
+    }
+    if wrapper.owns_strings {
+        for text in wrapper.strings {
+            delete(text)
+        }
     }
     delete(wrapper.entities)
     delete(wrapper.strings)
@@ -1277,6 +1288,14 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (delete strings)))
   (Vev-Column-Batch nil))
 
+(defn- column-batch-entity-id [value: vev.Value] -> [entity: u64, ok: bool]
+  (case value.kind
+    .Entity (return value.entity true)
+    .Int (if (>= value.int-value 0)
+           (return (u64 value.int-value) true)
+           (return 0 false))
+    :else (return 0 false)))
+
 (defn- column-batch-from-result [result: vev.Result-Set] -> Vev-Column-Batch
   (when (not result.ok)
     (return (Vev-Column-Batch nil)))
@@ -1287,11 +1306,16 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (let [entity-values (make [dynamic]u64 0 (count result.rows))
             entity-ok true]
         (for [row result.rows]
-          (if (and (= (count row.values) 1)
-                   (= (count row.pulls) 0)
-                   (= row.values[0].kind .Entity))
-            (arr.push! entity-values row.values[0].entity)
-            (set! entity-ok false)))
+          (let [entity: u64 0
+                entity-value-ok false]
+            (when (= (count row.values) 1)
+              (let [[resolved resolved-ok] (column-batch-entity-id row.values[0])]
+                (set! entity resolved)
+                (set! entity-value-ok resolved-ok)))
+            (if (and entity-value-ok
+                     (= (count row.pulls) 0))
+              (arr.push! entity-values entity)
+              (set! entity-ok false))))
         (when entity-ok
           (return (Vev-Column-Batch (abi-alloc-column-batch 1 (abi-alloc-u64-array entity-values)))))
         (delete entity-values))
@@ -1315,15 +1339,45 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (let [pairs (vev.empty-entity-int-pair-columns)
             pair-ok true]
         (for [row result.rows]
-          (if (and (= (count row.values) 2)
-                   (= (count row.pulls) 0)
-                   (= row.values[0].kind .Entity)
-                   (= row.values[1].kind .Int))
-            (vev.append-entity-int-pair-column! (addr pairs) row.values[0].entity row.values[1].int-value)
-            (set! pair-ok false)))
+          (let [entity: u64 0
+                entity-ok false]
+            (when (= (count row.values) 2)
+              (let [[resolved resolved-ok] (column-batch-entity-id row.values[0])]
+                (set! entity resolved)
+                (set! entity-ok resolved-ok)))
+            (if (and entity-ok
+                     (= (count row.pulls) 0)
+                     (= row.values[1].kind .Int))
+              (vev.append-entity-int-pair-column! (addr pairs) entity row.values[1].int-value)
+              (set! pair-ok false))))
         (if pair-ok
           (return (Vev-Column-Batch (abi-alloc-column-batch 3 (abi-alloc-entity-int-pairs pairs))))
-          (vev.delete-entity-int-pair-columns pairs)))))
+          (vev.delete-entity-int-pair-columns pairs))))
+    (when (= width 3)
+      (let [triples (vev.empty-entity-string-int-triples)
+            triple-ok true]
+        (for [row result.rows]
+          (let [entity: u64 0
+                entity-ok false]
+            (when (= (count row.values) 3)
+              (let [[resolved resolved-ok] (column-batch-entity-id row.values[0])]
+                (set! entity resolved)
+                (set! entity-ok resolved-ok)))
+            (if (and entity-ok
+                     (= (count row.pulls) 0)
+                     (or (= row.values[1].kind .String)
+                         (= row.values[1].kind .Keyword)
+                         (= row.values[1].kind .Symbol)
+                         (= row.values[1].kind .Uuid))
+                     (= row.values[2].kind .Int))
+              (vev.append-entity-string-int-triple! (addr triples) entity (string-owned row.values[1].text) row.values[2].int-value)
+              (set! triple-ok false))))
+        (if triple-ok
+          (return (Vev-Column-Batch (abi-alloc-column-batch 4 (abi-alloc-entity-string-int-triples-with-ownership triples true))))
+          (do
+            (for [text triples.strings]
+              (delete text))
+            (vev.delete-entity-string-int-triples triples))))))
   (Vev-Column-Batch nil))
 
 (defn- value-ptr [value: Vev-Value] -> ^vev.Value
