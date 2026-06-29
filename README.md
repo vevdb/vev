@@ -35,11 +35,13 @@ today is the native library plus host-client smoke packages:
 
 ```sh
 scripts/smoke_clients.sh
+scripts/smoke_cli.sh
 scripts/smoke_packages.sh
 ```
 
 The first command builds the platform library under `build/lib`, writes
 `build/lib/pkgconfig/vev.pc`, and runs the available clients under `clients/*`.
+The CLI smoke verifies `build/vev` against a temporary SQLite database.
 The package smoke script verifies the current local C SDK, JVM, Python,
 Node/TypeScript, and Go package shapes from temporary projects or directories.
 

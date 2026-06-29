@@ -6,6 +6,7 @@ Build the native library and run the available client smoke tests:
 
 ```sh
 scripts/smoke_clients.sh
+scripts/smoke_cli.sh
 scripts/smoke_packages.sh
 scripts/stage_jvm_native.sh
 scripts/package_jvm.sh
@@ -28,13 +29,30 @@ Together, these build:
 - local JVM proof jars under `build/jvm`
 - a local JVM Maven-style repository under `build/m2`
 - `build/lib/pkgconfig/vev.pc`
+- `build/vev`
 - Java classes under `build/examples/java`
 - native smoke artifacts under `build/examples/*`
 
 `scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
-Node/TypeScript, Java, Clojure, and Odin smoke clients. `scripts/smoke_packages.sh`
+Node/TypeScript, Java, Clojure, and Odin smoke clients. `scripts/smoke_cli.sh`
+verifies the CLI against a temporary SQLite database. `scripts/smoke_packages.sh`
 then verifies the current local C SDK, JVM, Python, Node, and Go package shapes
 from temporary projects/directories.
+
+## CLI
+
+The first CLI is a thin tool over the same native engine and durable connection
+API:
+
+```sh
+build/vev transact app.vev.sqlite '[{:db/id 1 :user/name "Ada"}]'
+build/vev query app.vev.sqlite '[:find ?name :where [?e :user/name ?name]]'
+build/vev pull app.vev.sqlite '[:user/name]' 1
+build/vev info app.vev.sqlite
+```
+
+Query, transaction, and pull arguments can also be loaded from files with
+`@path`, or from standard input with `-`.
 
 ## Clojure
 

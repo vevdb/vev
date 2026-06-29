@@ -28,3 +28,6 @@ The first polished package should keep the same basic shape:
 
 `scripts/smoke_go_package.sh` verifies that this package can be imported from a
 separate Go module using a local `replace` to this checkout.
+
+`cmd/vev` is the first user-facing CLI. It is intentionally thin and uses the
+same package API as the Go smoke command.

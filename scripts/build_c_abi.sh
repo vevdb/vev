@@ -86,6 +86,7 @@ if command -v go >/dev/null 2>&1; then
   (
     cd "$ROOT/clients/go"
     go build -o "$GO_EXAMPLE_DIR/vev_go_smoke" ./cmd/vev-go-smoke
+    go build -o "$ROOT/build/vev" ./cmd/vev
   )
   DYLD_LIBRARY_PATH="$LIB_DIR:${DYLD_LIBRARY_PATH:-}" \
     LD_LIBRARY_PATH="$LIB_DIR:${LD_LIBRARY_PATH:-}" \
