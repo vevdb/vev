@@ -516,13 +516,16 @@ directly from typed row values and checks candidate datoms without building a
 `Binding`. Plain multi-clause DB negative groups, including source-qualified
 clauses and nested plain `not` groups, now run each outer typed row through a
 branch-local typed relation, so inner clause matching can continue to use typed
-clause scans recursively. `not-join`, branch-local relation-source matching,
-and operators outside the typed evaluator still materialize one binding at a
-time to reuse existing semantics, but the surviving output stays typed instead
-of allocating a full intermediate binding relation. Plain branch-local predicate
-and function steps preserve their source order in the group model and run on
-typed columns when the predicate/function operator is supported by the typed
-evaluator.
+clause scans recursively. Plain `not-join` uses the same branch pipeline after
+projecting the input row to the declared join vars, so branch-local variables do
+not accidentally capture outer bindings. Source-input clauses such as `$rows`
+also run through the typed relation-source extender inside plain branch
+pipelines. Operators outside the typed evaluator still materialize one binding
+at a time to reuse existing semantics, but the surviving output stays typed
+instead of allocating a full intermediate binding relation. Plain branch-local
+predicate and function steps preserve their source order in the group model and
+run on typed columns when the predicate/function operator is supported by the
+typed evaluator.
 
 `ground` now streams over typed rows too. Scalar ground clauses resolve their
 source term directly from typed input columns and append only newly produced
@@ -537,11 +540,14 @@ clauses, now run as branch-local typed relation pipelines and append output by
 attribute name, so branches can use different clause orders without leaving
 typed columns. Plain branch-local predicate, function, and nested `not` steps
 use the same ordered typed pipeline when their operators are supported.
-Branches with `or-join`, branch-local relation-source matching, native or
-dynamic operators outside the typed evaluator, or more complex local pipelines
-reuse the existing single-binding branch semantics, and branch outputs are
-appended back into typed columns so `or` no longer forces a full relation
-materialization.
+Plain `or-join` branch pipelines use the same typed branch evaluator and append
+only declared join vars to the output relation, preserving branch-local
+variables such as predicate helper outputs. Plain branch-local source-input
+clauses such as `$rows` stay on the typed relation-source path for both `or` and
+`or-join`. Native or dynamic operators outside the typed evaluator, or more
+complex local pipelines reuse the existing single-binding branch semantics, and
+branch outputs are appended back into typed columns so `or` no longer forces a
+full relation materialization.
 
 Fallback rule calls now use the same streaming typed boundary. The preferred
 path is still the materialized rule relation plus typed join when eligible, but
@@ -646,6 +652,20 @@ appends only newly produced source variables as typed columns. This keeps
 multi-clause relation-source joins on the columnar path instead of converting
 each input row to a compatibility `Binding`.
 
+Bound source-input clauses now also have a keyed typed operator. If the source
+clause shares a primitive variable with the current typed relation, Vev builds a
+temporary key-to-source-row chain for that source value and probes it from each
+typed relation row. Unsupported value shapes fall back to the previous nested
+scan, but common relation-source joins such as `[?e :name ?n]` followed by
+`[$rows ?e :status ?s]` avoid `typed rows x source rows` scanning while still
+returning the normal `Query-Relation` representation.
+
+Source-input queries now enter the relation engine even when the source clauses
+appear inside `not`, `or`, or rule bodies rather than only as top-level clauses.
+The ordinary scalar/collection-input indexed planner remains the preferred path
+for simple non-source input queries, so this broadens source-aware physical
+execution without regressing the existing selective scalar-input fast path.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
@@ -672,7 +692,10 @@ Near-term query work should expand the relation engine in this order:
    relation columns while keeping the same logical relation API.
 2. Source-qualified collection operators: extend the direct source-aware
    relation representation to deeper nested source-qualified groups and broader
-   named source combinations.
+   named source combinations. Initial and bound source-input clauses are typed,
+   bound primitive source-input joins have a keyed typed operator, and
+   source-input clauses inside `not`, `or`, and rule bodies are detected as
+   relation-engine eligible.
 3. Rules: continue moving the positive-rule memo/delta evaluator from binding
    rows toward relation-native semi-naive behavior. DB clause steps and broad
    rule-call joins are now relation-native, and valid memo/delta relation caches

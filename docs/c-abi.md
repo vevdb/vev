@@ -879,6 +879,8 @@ Current result-handle accessors:
 - `vev_result_pull_count`
 - `vev_result_pull`
 - `vev_result_visit`
+- `vev_query_stmt_column_batch`
+- `vev_query_db_stmt_column_batch`
 - `vev_query_stmt_visit`
 - `vev_query_db_stmt_visit`
 
@@ -890,6 +892,8 @@ and rendered pull results.
 For hot flat query shapes, the ABI also exposes column-oriented handles:
 
 - `vev_query_db_prepared_column_batch_with_inputs`
+- `vev_query_stmt_column_batch`
+- `vev_query_db_stmt_column_batch`
 - `vev_column_batch_kind`
 - `vev_column_batch_count`
 - `vev_column_batch_entities_data`
@@ -935,6 +939,16 @@ of `VEV_COLUMN_BATCH_ENTITY`, `VEV_COLUMN_BATCH_STRING`,
 `VEV_COLUMN_BATCH_NONE`. The exact-shape functions remain public for callers
 that already know the expected result shape.
 
+Statement column batches use the same representation after inputs have been
+bound with `vev_stmt_bind_*`. `vev_query_stmt_column_batch` runs against the
+current connection DB, while `vev_query_db_stmt_column_batch` runs against a
+retained immutable `vev_db_t`. Statements without named DB sources use the
+current optimized column extractors. Source-bound statements fall back through
+the normal result engine and then build an owned flat column batch for supported
+entity, string, entity/int, and entity/string/int shapes. Entity positions in
+source relation rows may be represented as integer ids; the fallback accepts
+those as entity column values when they are non-negative.
+
 Column pointers are borrowed and remain valid until the corresponding column
 handle or column batch is freed. Single string-column results use
 `vev_string_array_data_array` plus `vev_string_array_lengths_data`. For
@@ -942,6 +956,9 @@ entity/string/int columns, prefer
 `vev_entity_string_int_triples_string_data_array` plus
 `vev_entity_string_int_triples_string_lengths_data` so host adapters can read
 all borrowed UTF-8 byte pointers and lengths without one ABI call per cell.
+Optimized entity/string/int batches borrow strings from the DB. Fallback
+entity/string/int batches created from generic result rows copy string contents
+into the batch and release them when `vev_column_batch_free` is called.
 For repeated string-heavy results, adapters can instead use the optional string
 dictionary accessors: decode the dictionary entries once, then map each row
 through `vev_entity_string_int_triples_string_indices_data`. Vev only builds

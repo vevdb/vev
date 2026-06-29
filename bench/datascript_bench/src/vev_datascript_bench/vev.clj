@@ -179,7 +179,7 @@
 (defn q2-columns-prepared []
   (with-open [prepared (v/prepare @db100k-2 q2-query)]
     (core/bench
-      (.queryEntityIntPairColumns (:native @db100k-2) (:native prepared) "[]"))))
+      (v/column-batch prepared @db100k-2))))
 
 (defn q2-profile-prepared []
   (with-open [prepared (v/prepare @db100k-2 q2-query)]
@@ -231,7 +231,7 @@
 (defn q4-columns-prepared []
   (with-open [prepared (v/prepare @db100k-4 q4-query)]
     (core/bench
-      (.queryEntityStringIntTripleColumns (:native @db100k-4) (:native prepared) "[]"))))
+      (v/column-batch prepared @db100k-4))))
 
 (defn q5 []
   (core/bench
@@ -250,7 +250,7 @@
 (defn q5-columns-prepared []
   (with-open [prepared (v/prepare @db100k-5 q5-query)]
     (core/bench
-      (.queryEntityStringIntTripleColumns (:native @db100k-5) (:native prepared) "[]"))))
+      (v/column-batch prepared @db100k-5))))
 
 (defn qpred1 []
   (core/bench
@@ -269,7 +269,7 @@
 (defn qpred1-columns-prepared []
   (with-open [prepared (v/prepare @db100k-p1 qpred1-query)]
     (core/bench
-      (.queryEntityIntPairColumns (:native @db100k-p1) (:native prepared) "[]"))))
+      (v/column-batch prepared @db100k-p1))))
 
 (defn qpred2 []
   (core/bench
@@ -288,7 +288,7 @@
 (defn qpred2-columns-prepared []
   (with-open [prepared (v/prepare @db100k-p2 qpred2-query)]
     (core/bench
-      (.queryEntityIntPairColumns (:native @db100k-p2) (:native prepared) "[50000]"))))
+      (v/column-batch prepared @db100k-p2 50000))))
 
 (defn rules-wide-3x3 []
   (with-open [db (rule-db (wide-entities 3 3))]

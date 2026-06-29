@@ -538,6 +538,48 @@
       :else
       nil)))
 
+(defn- column-kind [kind]
+  (cond
+    (= kind Vev/COLUMN_ENTITY) :entity
+    (= kind Vev/COLUMN_STRING) :string
+    (= kind Vev/COLUMN_INT) :int
+    (= kind Vev/COLUMN_BOOL) :bool
+    :else :unknown))
+
+(defn- column-result->map [^Vev$ColumnResult result]
+  (let [^ints kinds (.kinds result)
+        ^objects columns (.columns result)
+        width (alength kinds)]
+    {:row-count (.rowCount result)
+     :kinds (mapv #(column-kind (aget kinds %)) (range width))
+     :columns (mapv #(vec (aget columns %)) (range width))}))
+
+(defn column-batch
+  "Run a query and return Vev's native column batch when the query shape has a
+  specialized typed result path.
+
+  Returns nil when the query needs the general row/result representation. This
+  is the low-overhead host API for callers that want column-oriented data."
+  [query source & inputs]
+  (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
+    (if (instance? PreparedQuery query)
+      (column-result source query inputs)
+      (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+        (when-not rules
+          (with-open [prepared (prepare source query)]
+            (column-result source prepared inputs)))))))
+
+(defn columns
+  "Run a query and return an ergonomic column result map:
+
+  `{:row-count n :kinds [:entity :string ...] :columns [[...]
+  [...]]}`.
+
+  Returns nil when the query does not have a specialized typed column path."
+  [query source & inputs]
+  (when-let [result (apply column-batch query source inputs)]
+    (column-result->map result)))
+
 (defn- entity-column-rows [ids]
   (let [^longs ids ids
         n (alength ids)]

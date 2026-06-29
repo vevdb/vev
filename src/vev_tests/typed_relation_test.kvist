@@ -150,6 +150,89 @@
     (vev.delete-query-relation rel)
     (vev.delete-prepared-query-shallow prepared)))
 
+(t.deftest db-clause-with-bound-entity-and-value-builds-typed-relation
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        clause (vev.Clause {e: (vev.term-entity 1)
+                            a: (vev.term-var "attr")
+                            v: (vev.term-string "Ada")
+                            tx-term: (vev.term-wildcard)
+                            op-term: (vev.term-wildcard)})
+        rel (vev.query-relation-from-db-clause report.db-after clause "")]
+    (t.is rel.has-typed-columns)
+    (t.is (= rel.typed-rows 1))
+    (t.is (= (count rel.attrs) 1))
+    (t.is (= rel.attrs[0] "attr"))
+    (t.is (= rel.typed-columns[0].kind .Keyword))
+    (t.is (= rel.typed-columns[0].texts[0] ":user/name"))
+    (vev.delete-query-relation rel)))
+
+(t.deftest singleton-product-with-db-clause-keeps-typed-row
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        clause (vev.Clause {e: (vev.term-entity 1)
+                            a: (vev.term-var "attr")
+                            v: (vev.term-string "Ada")
+                            tx-term: (vev.term-wildcard)
+                            op-term: (vev.term-wildcard)})
+        left (vev.query-relation-singleton)
+        right (vev.query-relation-from-db-clause report.db-after clause "")
+        joined (vev.query-relation-join report.db-after ([]vev.DB-Source []) left right)]
+    (t.is joined.has-typed-columns)
+    (t.is (= joined.typed-rows 1))
+    (t.is (= (count joined.attrs) 1))
+    (t.is (= joined.attrs[0] "attr"))
+    (t.is (= joined.typed-columns[0].kind .Keyword))
+    (t.is (= joined.typed-columns[0].texts[0] ":user/name"))
+    (vev.delete-query-relation joined)
+    (vev.delete-query-relation right)
+    (vev.delete-query-relation left)))
+
+(t.deftest typed-db-clause-relation-projects-find-row
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        clause (vev.Clause {e: (vev.term-entity 1)
+                            a: (vev.term-var "attr")
+                            v: (vev.term-string "Ada")
+                            tx-term: (vev.term-wildcard)
+                            op-term: (vev.term-wildcard)})
+        left (vev.query-relation-singleton)
+        right (vev.query-relation-from-db-clause report.db-after clause "")
+        joined (vev.query-relation-join report.db-after ([]vev.DB-Source []) left right)
+        query (vev.query ([]string ["attr"]) ([]string []) ([]string []) ([]string []) ([]vev.Tuple-Input []) ([]vev.Relation-Input []) ([]vev.Clause [clause]) ([]vev.Predicate []) ([]vev.Function-Clause []) ([]vev.Rule []) ([]vev.Rule-Call []) ([]vev.Get-Else []) ([]vev.Get-Some []) ([]vev.Ground []) ([]vev.Not-Group []) ([]vev.Or-Group []) ([]vev.Pull-Find []) ([]vev.Aggregate-Find []))
+        [rows rows-ok] (vev.result-rows-for-typed-relation query joined)]
+    (t.is rows-ok)
+    (t.is (= (count rows) 1))
+    (t.is (= rows[0].values[0].kind .Keyword))
+    (t.is (= rows[0].values[0].text ":user/name"))
+    (vev.delete-result-rows-shallow rows)
+    (vev.delete-query-relation joined)
+    (vev.delete-query-relation right)
+    (vev.delete-query-relation left)))
+
+(t.deftest relation-engine-projects-bound-entity-attr-query
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        report (vev.seed-people (addr conn))
+        clause (vev.Clause {e: (vev.term-entity 1)
+                            a: (vev.term-var "attr")
+                            v: (vev.term-string "Ada")
+                            tx-term: (vev.term-wildcard)
+                            op-term: (vev.term-wildcard)})
+        query (vev.query ([]string ["attr"]) ([]string []) ([]string []) ([]string []) ([]vev.Tuple-Input []) ([]vev.Relation-Input []) ([]vev.Clause [clause]) ([]vev.Predicate []) ([]vev.Function-Clause []) ([]vev.Rule []) ([]vev.Rule-Call []) ([]vev.Get-Else []) ([]vev.Get-Some []) ([]vev.Ground []) ([]vev.Not-Group []) ([]vev.Or-Group []) ([]vev.Pull-Find []) ([]vev.Aggregate-Find []))
+        stats (vev.query-stats-empty)
+        rel (vev.relation-engine-relation-profiled report.db-after query ([]vev.Query-Input []) ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr stats))
+        [rows rows-ok] (vev.result-rows-for-typed-relation query rel)]
+    (t.is rows-ok)
+    (t.is (= rel.typed-rows 1))
+    (t.is (= (count rows) 1))
+    (t.is (= rows[0].values[0].text ":user/name"))
+    (vev.delete-result-rows-shallow rows)
+    (vev.delete-query-relation rel)))
+
 (t.deftest source-input-clause-producer-is-typed-only
   (defer (free_all context.allocator))
   (let [source (vev.value-vector
@@ -173,6 +256,52 @@
     (t.is (= rel.typed-columns[1].texts[0] "Ada"))
     (t.is (= rel.typed-columns[1].texts[1] "Bob"))
     (vev.delete-query-relation rel)))
+
+(t.deftest bound-source-input-clause-uses-typed-indexed-operator
+  (defer (free_all context.allocator))
+  (let [people-source (vev.value-vector
+                        ([]vev.Value [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ada"))
+                                      (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Bob"))
+                                      (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":name") (vev.value-string "Cy"))]))
+        status-source (vev.value-vector
+                        ([]vev.Value [(vev.value-vector3 (vev.value-int 99) (vev.value-keyword ":status") (vev.value-keyword ":ignored"))
+                                      (vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":status") (vev.value-keyword ":active"))
+                                      (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":status") (vev.value-keyword ":inactive"))
+                                      (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":status") (vev.value-keyword ":active"))]))
+        people-clause (vev.Clause {e: (vev.term-var "?e")
+                                   a: (vev.term-keyword ":name")
+                                   v: (vev.term-var "?name")
+                                   tx-term: (vev.term-wildcard)
+                                   op-term: (vev.term-wildcard)
+                                   source: "$people"
+                                   has-source: true
+                                   source-width: 3})
+        status-clause (vev.Clause {e: (vev.term-var "?e")
+                                   a: (vev.term-keyword ":status")
+                                   v: (vev.term-var "?status")
+                                   tx-term: (vev.term-wildcard)
+                                   op-term: (vev.term-wildcard)
+                                   source: "$status"
+                                   has-source: true
+                                   source-width: 3})
+        people-rel (vev.query-relation-from-source-value-clause people-source people-clause)
+        [out out-ok] (vev.query-relation-apply-source-input-clause-indexed-typed status-source people-rel status-clause)]
+    (t.is out-ok)
+    (t.is out.has-typed-columns)
+    (t.is (= out.typed-rows 3))
+    (t.is (= (count out.tuples) 0))
+    (t.is (= (count out.attrs) 3))
+    (t.is (= out.typed-columns[0].ints[0] 1))
+    (t.is (= out.typed-columns[1].texts[0] "Ada"))
+    (t.is (= out.typed-columns[2].texts[0] ":active"))
+    (t.is (= out.typed-columns[0].ints[1] 2))
+    (t.is (= out.typed-columns[1].texts[1] "Bob"))
+    (t.is (= out.typed-columns[2].texts[1] ":inactive"))
+    (t.is (= out.typed-columns[0].ints[2] 3))
+    (t.is (= out.typed-columns[1].texts[2] "Cy"))
+    (t.is (= out.typed-columns[2].texts[2] ":active"))
+    (vev.delete-query-relation out)
+    (vev.delete-query-relation people-rel)))
 
 (t.deftest two-attr-materialized-rule-producer-is-typed-only
   (defer (free_all context.allocator))
