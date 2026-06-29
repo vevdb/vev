@@ -57,6 +57,18 @@ in-memory indexes. Vev can follow the latest root, load leaf chunks in edge
 order, parse the persisted index-entry vector, and compare it to the rebuilt
 `DB`. It can also load a bounded entry page from the persisted chunk tree by
 offset and limit, reading only the leaf chunks that cover the requested window.
+On top of that page loader, Vev now has a read-only SQLite index cursor that
+keeps one cached page and serves `count`/`at` access over a persisted logical
+index. The cursor is not wired into normal `DB` query execution yet; it is the
+first concrete storage object that can become a chunk-backed index view. The
+public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
+current-value, pull, and entity helper paths now go through a resident
+`DB-Index-View` boundary instead of directly owning the slice logic at each
+call site; this is still array-backed, but it gives query-facing and
+write-facing code a place to accept chunk-backed index views later. The general
+`Clause-Index-Scan` query operator now also carries a `DB-Index-View` instead
+of a raw index slice, so ordinary clause planning/matching is starting to use
+the same storage-facing abstraction.
 This is still a guarded compatibility path: Vev materializes datom rows and
 rebuilds indexes before validation. Wiring query/reopen to use chunk-backed DB
 snapshots and paged index cursors is the next implementation step.
@@ -71,9 +83,12 @@ snapshots and paged index cursors is the next implementation step.
 2. Add read-only chunk cursors.
    Teach Vev index accessors to read ranges from persisted chunks with an
    in-memory cache. Whole-index loading and bounded page loading now exist and
-   are tested against rebuilt indexes. The remaining work is a real cursor/view
-   object that can serve range scans to query operators without materializing a
-   full dynamic array.
+   are tested against rebuilt indexes. A first read-only SQLite index cursor
+   exists with cached-page `count`/`at` access. Public datom index APIs and
+   key transaction/schema/validation, pull, entity helper, and general
+   `Clause-Index-Scan` paths now use a resident index-view boundary. The
+   remaining work is to migrate the specialized query operators and then add a
+   persisted cursor-backed implementation.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are
