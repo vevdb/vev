@@ -118,6 +118,11 @@ constructor shape is `vev.CreateConn()` for in-memory work and
 compatibility alias. `scripts/smoke_go_package.sh` verifies import from a
 separate temporary Go module using a local `replace`.
 
+The Rust path is a local Cargo package under `clients/rust`, already named
+`vev` with `publish = false`. It is still a smoke binary plus RAII wrapper in
+one package; before publication it should likely split into `vev-sys` for raw C
+ABI bindings and `vev` for the safe wrapper.
+
 Odin consumption should use the C ABI through a small wrapper for now.
 `clients/odin/smoke.odin` proves the dynamic-loading path against the platform
 native library. Vev is implemented in Kvist and lowers through Odin, but
