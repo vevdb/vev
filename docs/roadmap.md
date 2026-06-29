@@ -220,8 +220,8 @@ value materialization. Java, Python, Go, and Clojure expose the column-batch
 path, and C exercises it directly. Prepared parser values now expose stable
 `:error-code` categories for malformed inputs across the public parser entry
 points, including `:edn-read` for reader-level malformed EDN. Prepared query
-values also expose return-map marker/key metadata for `:keys`, `:strs`, and
-`:syms`. The remaining work is exact malformed-input behavior, exact parser
+values also expose return-map marker plus typed key metadata for `:keys`,
+`:strs`, and `:syms`. The remaining work is exact malformed-input behavior, exact parser
 record rendering where worth exposing, and wrapper ergonomics demanded by real
 host usage.
 
