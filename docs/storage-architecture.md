@@ -52,8 +52,10 @@ root chunk linked through `vev_index_chunk_edges`. Root rows point at the
 visible chunk root for each index at the committed basis tx. The payload stores
 current in-memory datom-index order, so it is a persisted Vev index artifact
 rather than a SQL query table. Existing reopen behavior still uses datom-row
-replay and in-memory index rebuild; root/chunk loading is the next
-implementation step.
+replay and in-memory index rebuild. Vev can already follow the latest root,
+load leaf chunks in edge order, parse the persisted index-entry vector, and
+validate it against the rebuilt in-memory indexes. Wiring query/reopen to use
+that loader is the next implementation step.
 
 ## Implementation Milestones
 
@@ -64,8 +66,9 @@ implementation step.
 
 2. Add read-only chunk cursors.
    Teach Vev index accessors to read ranges from persisted chunks with an
-   in-memory cache. The first cursor can coexist with the current in-memory
-   arrays and be used by targeted reopen/query tests.
+   in-memory cache. The first persisted-entry loader exists and is tested
+   against rebuilt indexes; the remaining work is range-oriented cursors rather
+   than whole-index materialization.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are

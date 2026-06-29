@@ -359,7 +359,9 @@ transactions and explicit persists now publish bounded logical-index chunks for
 `eavt`, `aevt`, `avet`, and `vaet`: small indexes use one payload chunk, larger
 indexes use bounded leaf chunks plus a parent root chunk, and root rows record
 the visible chunk roots at the committed basis tx. Normal reopen does not use
-those chunks yet. The explicit persist API full-replaces
+those chunks yet, but the storage layer can already load persisted latest index
+entries through root/chunk edges and validate them against rebuilt indexes. The
+explicit persist API full-replaces
 durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the

@@ -47,8 +47,10 @@ writes bounded logical-index chunks after successful SQLite transactions and
 explicit SQLite persists: small indexes use a single payload chunk, larger
 indexes use bounded leaf chunks plus a parent root chunk, and a root row records
 the visible chunk root for each logical index at the committed basis tx. Reopen
-still ignores those chunks and rebuilds from datom rows; chunk-backed
-reopen/query is the next storage step.
+still ignores those chunks and rebuilds from datom rows. The storage layer can
+already read the latest persisted index entries back through root/chunk edges
+and validate them against rebuilt indexes; chunk-backed reopen/query is the
+next storage step.
 
 There are now two write modes:
 
