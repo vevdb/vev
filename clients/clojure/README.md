@@ -174,6 +174,12 @@ the call. Use `prepare` when the same query should be reused:
 (d/q db email-query "ada@example.com")
 ```
 
+Single where clauses can be parsed directly for DataScript-style parser tooling:
+
+```clojure
+(d/parse-clause conn '[?e :user/email ?email])
+```
+
 `prepared-edn` also works for reusable pull patterns:
 
 ```clojure

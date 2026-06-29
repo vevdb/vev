@@ -425,6 +425,12 @@
      (throw (ex-info "prepared-edn expects a prepared query or pull pattern"
                      {:value prepared})))))
 
+(defn parse-clause
+  "Parse one Datalog where clause and return Vev's portable parser value."
+  [source clause]
+  (let [engine (:engine source)]
+    (edn/read-string (.parseClauseEdn engine (edn-text clause)))))
+
 (defn prepare-pull-pattern
   "Prepare a pull pattern from Clojure data or EDN text."
   [source pattern]

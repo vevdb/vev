@@ -330,6 +330,12 @@ func Prepare(query string) (*PreparedQuery, error) {
 	return &PreparedQuery{raw: raw}, nil
 }
 
+func ParseClauseEDN(clause string) string {
+	clauseText := cstring(clause)
+	defer C.free(unsafe.Pointer(clauseText))
+	return ownedString(C.vev_parse_clause_edn(clauseText))
+}
+
 func (q *PreparedQuery) Close() {
 	if q.raw != nil {
 		C.vev_prepared_query_free(q.raw)
@@ -717,6 +723,10 @@ func Smoke() {
 	preparedAST := query.EDN()
 	if !strings.Contains(preparedAST, ":clauses") || !strings.Contains(preparedAST, ":input-specs") {
 		panic("prepared query AST did not expose parser keys")
+	}
+	clauseAST := ParseClauseEDN("[?e :user/email ?email]")
+	if !strings.Contains(clauseAST, ":clauses") || !strings.Contains(clauseAST, ":user/email") {
+		panic("parse-clause AST did not expose parser keys")
 	}
 
 	prepared := query.Query(conn, `["grace@example.com"]`)

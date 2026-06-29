@@ -52,6 +52,9 @@ with lib.create_conn() as conn:
     ...
 ```
 
+Parser tooling can inspect a single where clause with
+`vev.parse_clause_edn('[?e :user/name ?name]')`.
+
 `open_memory()` remains as a compatibility alias for `create_conn()`.
 
 The current API already wraps native handles with context managers for

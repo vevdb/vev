@@ -102,6 +102,7 @@ public final class Vev {
     private final MethodHandle queryEdnWithInputs;
     private final MethodHandle prepareQueryEdn;
     private final MethodHandle preparedQueryEdn;
+    private final MethodHandle parseClauseEdn;
     private final MethodHandle preparedQueryFree;
     private final MethodHandle queryPreparedResultWithRulesTextAndInputs;
     private final MethodHandle queryDbPreparedResultWithRulesTextAndInputs;
@@ -344,6 +345,7 @@ public final class Vev {
         this.queryEdnWithInputs = downcall("vev_query_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.prepareQueryEdn = downcall("vev_prepare_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryEdn = downcall("vev_prepared_query_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.parseClauseEdn = downcall("vev_parse_clause_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.preparedQueryFree = downcall("vev_prepared_query_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.queryPreparedResultWithRulesTextAndInputs = downcall("vev_query_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithRulesTextAndInputs = downcall("vev_query_db_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -524,6 +526,12 @@ public final class Vev {
                 throw new IllegalStateException(error);
             }
             return new PreparedPullPattern(raw);
+        }
+    }
+
+    public String parseClauseEdn(String clause) throws Throwable {
+        try (Arena local = Arena.ofConfined()) {
+            return ownedString((MemorySegment) parseClauseEdn.invoke(local.allocateUtf8String(clause)));
         }
     }
 

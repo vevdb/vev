@@ -76,6 +76,9 @@ def main() -> int:
             prepared_ast = email_query.edn()
             if ":clauses" not in prepared_ast or ":input-specs" not in prepared_ast:
                 raise RuntimeError("prepared query AST did not expose parser keys")
+            clause_ast = vev.parse_clause_edn("[?e :user/email ?email]")
+            if ":clauses" not in clause_ast or ":user/email" not in clause_ast:
+                raise RuntimeError("parse-clause AST did not expose parser keys")
 
             with email_query.statement() as stmt:
                 rows = stmt.bind("grace@example.com").rows(conn)

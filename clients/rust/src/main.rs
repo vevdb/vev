@@ -84,6 +84,7 @@ unsafe extern "C" {
 
     fn vev_prepare_query_edn(query_text: *const c_char) -> VevPreparedQuery;
     fn vev_prepared_query_edn(query: VevPreparedQuery) -> *const c_char;
+    fn vev_parse_clause_edn(clause_text: *const c_char) -> *const c_char;
     fn vev_prepared_query_free(query: VevPreparedQuery);
 
     fn vev_stmt_create(query: VevPreparedQuery) -> VevStmt;
@@ -363,6 +364,11 @@ impl Conn {
 
     fn prepare(&self, query: &str) -> Result<PreparedQuery, String> {
         PreparedQuery::new(query)
+    }
+
+    fn parse_clause_edn(&self, clause: &str) -> String {
+        let clause = cstring(clause);
+        unsafe { Library::owned_string(vev_parse_clause_edn(clause.as_ptr())) }
     }
 
     fn db(&self) -> Result<Db, String> {
@@ -964,6 +970,10 @@ fn main() -> Result<(), String> {
     let prepared_ast = email_query.edn();
     if !prepared_ast.contains(":clauses") || !prepared_ast.contains(":input-specs") {
         return Err("prepared query AST did not expose parser keys".to_string());
+    }
+    let clause_ast = conn.parse_clause_edn("[?e :user/email ?email]");
+    if !clause_ast.contains(":clauses") || !clause_ast.contains(":user/email") {
+        return Err("parse-clause AST did not expose parser keys".to_string());
     }
     let mut stmt = email_query.statement()?;
     let rows = stmt

@@ -281,6 +281,8 @@ class Library:
         lib.vev_prepared_query_error.restype = ctypes.c_void_p
         lib.vev_prepared_query_edn.argtypes = [ctypes.c_void_p]
         lib.vev_prepared_query_edn.restype = ctypes.c_void_p
+        lib.vev_parse_clause_edn.argtypes = [ctypes.c_char_p]
+        lib.vev_parse_clause_edn.restype = ctypes.c_void_p
         lib.vev_prepared_query_free.argtypes = [ctypes.c_void_p]
 
         lib.vev_stmt_create.argtypes = [ctypes.c_void_p]
@@ -583,6 +585,9 @@ class Library:
         finally:
             self.lib.vev_string_free(ptr)
 
+    def parse_clause_edn(self, clause_edn: str) -> str:
+        return self.owned_text(self.lib.vev_parse_clause_edn(_bytes(clause_edn)))
+
     def value_to_python(self, value: int) -> Any:
         kind = self.lib.vev_value_kind(value)
         if kind == VEV_VALUE_NIL:
@@ -725,6 +730,10 @@ def connect(uri: str | pathlib.Path) -> "DurableConnection":
 
 def open_sqlite(path: str | pathlib.Path) -> "SQLiteConnection":
     return SQLiteConnection(default_library(), path)
+
+
+def parse_clause_edn(clause_edn: str) -> str:
+    return default_library().parse_clause_edn(clause_edn)
 
 
 class Connection:
