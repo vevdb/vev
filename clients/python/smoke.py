@@ -17,7 +17,7 @@ def remove_sqlite_files(path: pathlib.Path) -> None:
 
 
 def main() -> int:
-    with vev.open_memory() as conn:
+    with vev.create_conn() as conn:
         with conn.transact_report(
             """
             [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
@@ -328,7 +328,7 @@ def main() -> int:
             finally:
                 pull_pattern_query.close()
 
-            with vev.open_memory() as right_conn:
+            with vev.create_conn() as right_conn:
                 right_conn.transact(
                     """
                     [{:db/id 1 :user/name "Ada Right"}

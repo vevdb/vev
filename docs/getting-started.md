@@ -20,6 +20,7 @@ scripts/smoke_jvm_package.sh
 scripts/smoke_python_package.sh
 scripts/smoke_node_package.sh
 scripts/smoke_go_package.sh
+scripts/smoke_odin_package.sh
 ```
 
 Together, these build:
@@ -36,8 +37,8 @@ Together, these build:
 `scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
 Node/TypeScript, Java, Clojure, and Odin smoke clients. `scripts/smoke_cli.sh`
 verifies the CLI against a temporary durable Vev store. `scripts/smoke_packages.sh`
-then verifies the current local C SDK, JVM, Python, Node, and Go package shapes
-from temporary projects/directories.
+then verifies the current local C SDK, JVM, Python, Node, Go, and Odin package
+shapes from temporary projects/directories.
 
 The current durable backend uses SQLite internally and the native library links
 to the platform SQLite runtime. Application code still uses Vev APIs and Vev
@@ -148,13 +149,17 @@ The Python client is a pure `ctypes` wrapper today:
 ```python
 import vev
 
-with vev.Library().create_conn() as conn:
+with vev.create_conn() as conn:
     conn.transact('[{:db/id 1 :user/name "Ada"}]')
-    print(conn.db().query('[:find ?name :where [?e :user/name ?name]]'))
+    print(conn.query_text('[:find ?name :where [?e :user/name ?name]]'))
+
+with vev.connect("app.vev") as conn:
+    conn.transact('[{:db/id 1 :user/name "Durable Ada"}]')
 ```
 
-`scripts/smoke_python_package.sh` simulates a future wheel layout by loading a
-bundled `native/<platform>/<library>` next to `vev.py`.
+`scripts/smoke_python_package.sh` validates the package metadata and simulates
+a future wheel layout by loading a bundled `native/<platform>/<library>` next
+to `vev.py`.
 
 ## Node/TypeScript
 
@@ -177,6 +182,9 @@ The Go wrapper is importable at the planned module path:
 
 ```go
 import vev "github.com/vevdb/vev/clients/go"
+
+conn, err := vev.CreateConn()
+durable, err := vev.Connect("app.vev")
 ```
 
 `scripts/smoke_go_package.sh` verifies that shape from a temporary Go module

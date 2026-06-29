@@ -28,6 +28,16 @@ Or pass an explicit native library path:
 odin run clients/odin -file -- build/lib/libvev.dylib
 ```
 
+The focused package proof is:
+
+```sh
+scripts/smoke_odin_package.sh
+```
+
+It builds the smoke wrapper into a temporary directory and runs it against the
+platform native Vev library, mirroring how an Odin application would dynamically
+load `libvev`.
+
 A fuller Odin package can wrap the dynamic ABI table with Odin-native `Conn`,
 `DB`, prepared-query, and result types. Directly depending on generated Odin
 should remain a development/debug escape hatch rather than the documented

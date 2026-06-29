@@ -39,12 +39,38 @@ cp "$ROOT/build/lib/$LIB_NAME" "$TMP_DIR/native/$OS-$ARCH/$LIB_NAME"
 (
   cd "$TMP_DIR"
   env -u VEV_NODE_NATIVE node - <<'JS'
+const fs = require("fs");
 const vev = require("./vev");
+function removeStore(path) {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      fs.unlinkSync(`${path}${suffix}`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+}
+const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+if (pkg.name !== "@vevdb/vev" || pkg.main !== "vev.js" || pkg.types !== "vev.d.ts") {
+  throw new Error(`unexpected package metadata: ${JSON.stringify(pkg)}`);
+}
 const conn = vev.createConn();
 conn.transact('[{:db/id 1 :user/name "Ada"}]');
 const result = conn.queryText('[:find ?name :where [?e :user/name ?name]]');
 if (!result.includes('"Ada"')) {
   throw new Error(`unexpected query result: ${result}`);
+}
+const store = "tmp.vev.node-package.sqlite";
+removeStore(store);
+try {
+  const durable = vev.connect(store);
+  durable.transact('[{:db/id 2 :user/name "Durable Grace"}]');
+  const durableResult = durable.db().query(conn.prepare('[:find ?name :where [?e :user/name ?name]]'));
+  if (!durableResult.includes('"Durable Grace"')) {
+    throw new Error(`unexpected durable query result: ${durableResult}`);
+  }
+} finally {
+  removeStore(store);
 }
 console.log(":vev-node-package-ok");
 JS

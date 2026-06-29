@@ -25,7 +25,8 @@ PKG_CONFIG_PATH="$PWD/build/lib/pkgconfig" \
 ```
 
 `scripts/smoke_c_package.sh` verifies the pkg-config SDK shape from a temporary
-C program.
+C program, including in-memory query and durable `vev_connect` open/write/reopen
+query.
 
 The C API owns opaque handles explicitly. Returned strings and arrays must be
 freed with the matching `vev_*_free` function documented in `include/vev.h`.

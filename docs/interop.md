@@ -57,7 +57,9 @@ environment overrides, but several host package shapes now have concrete local
 proofs.
 
 The C SDK path is `include/vev.h`, `libvev`, and `build/lib/pkgconfig/vev.pc`.
-`scripts/smoke_c_package.sh` verifies that shape from a temporary C program.
+`scripts/smoke_c_package.sh` verifies that shape from a temporary C program,
+including in-memory query and durable open/write/reopen/query through
+`vev_connect`.
 
 The CLI path builds `build/vev` from `src/vev_cli/main.kvist`. It currently
 exposes durable `info`, `transact`, `query`, and `pull` commands over the native
@@ -97,19 +99,38 @@ verifies both shapes from temporary projects.
 
 The Python path has the same explicit-to-bundled fallback shape: explicit
 `vev.Library(path)`, `VEV_LIB`, repo `build/lib`, then
-`native/<platform>/<library>` next to `vev.py`. `scripts/smoke_python_package.sh`
-verifies that temporary package layout.
+`native/<platform>/<library>` next to `vev.py`. The public constructor shape is
+`vev.create_conn()` for in-memory work and `vev.connect("app.vev")` for durable
+stores; `vev.Library(path).create_conn()` is the explicit-library variant.
+`clients/python/pyproject.toml` defines the future `vev` package metadata, and
+`scripts/smoke_python_package.sh` validates that metadata plus the temporary
+bundled-native package layout.
 
 The Node path loads `VEV_NODE_NATIVE`, then a local `vev_native.node`, then
 `native/<platform>/vev_native.node` next to `vev.js`. The addon is linked with
 both repo-local and addon-relative rpaths so the platform `libvev` can sit next
-to the addon in a future package. `scripts/smoke_node_package.sh` verifies that
-temporary package layout.
+to the addon in a future package. `clients/node/package.json` contains the
+current `@vevdb/vev` package metadata while remaining private, and
+`scripts/smoke_node_package.sh` verifies that metadata plus the temporary
+bundled-native package layout.
+
+The Go path is a cgo package at `github.com/vevdb/vev/clients/go`. Its public
+constructor shape is `vev.CreateConn()` for in-memory work and
+`vev.Connect("app.vev")` for durable stores; `OpenMemory()` remains a
+compatibility alias. `scripts/smoke_go_package.sh` verifies import from a
+separate temporary Go module using a local `replace`.
+
+The Rust path is a local Cargo package under `clients/rust`, already named
+`vev` with `publish = false`. It is still a smoke binary plus RAII wrapper in
+one package; before publication it should likely split into `vev-sys` for raw C
+ABI bindings and `vev` for the safe wrapper.
 
 Odin consumption should use the C ABI through a small wrapper for now.
 `clients/odin/smoke.odin` proves the dynamic-loading path against the platform
 native library. Vev is implemented in Kvist and lowers through Odin, but
 generated Odin is build output, not the public Odin package surface.
+`scripts/smoke_odin_package.sh` now verifies this focused Odin wrapper path
+from a temporary build output.
 
 ## Native API
 

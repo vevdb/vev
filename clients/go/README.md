@@ -22,9 +22,12 @@ github.com/vevdb/vev/clients/go
 The first polished package should keep the same basic shape:
 
 - `Conn`, `DB`, durable connection, prepared query, statement, and result types
+- `CreateConn` for in-memory work and `Connect` for durable Vev stores
 - explicit `Close` methods for native handles
 - EDN text APIs for parity with other hosts
 - prepared queries and typed statement bindings for repeated work
+
+`OpenMemory` remains as a compatibility alias for `CreateConn`.
 
 `scripts/smoke_go_package.sh` verifies that this package can be imported from a
 separate Go module using a local `replace` to this checkout.

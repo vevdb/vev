@@ -27,6 +27,17 @@ cat > "$TMP_DIR/smoke.c" <<'EOF'
 #include "vev.h"
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+
+static void remove_store(const char *path) {
+    char wal[512];
+    char shm[512];
+    snprintf(wal, sizeof(wal), "%s-wal", path);
+    snprintf(shm, sizeof(shm), "%s-shm", path);
+    unlink(path);
+    unlink(wal);
+    unlink(shm);
+}
 
 int main(void) {
     vev_conn_t conn = vev_conn_open_memory();
@@ -53,6 +64,65 @@ int main(void) {
     }
     vev_string_free(result);
     vev_conn_close(conn);
+
+    const char *store = "tmp.vev.c-package.sqlite";
+    remove_store(store);
+    vev_connection_t durable = vev_connect(store);
+    if (!durable || !vev_connection_ok(durable)) {
+        fprintf(stderr, "failed to connect durable Vev store: %s\n",
+                durable ? vev_connection_error(durable) : "<null>");
+        if (durable) vev_connection_close(durable);
+        remove_store(store);
+        return 1;
+    }
+    vev_tx_report_t report = vev_connection_transact_edn_report(
+        durable,
+        "[{:db/id 2 :user/name \"Durable Grace\"}]");
+    if (!report) {
+        fprintf(stderr, "failed to transact durable store\n");
+        vev_connection_close(durable);
+        remove_store(store);
+        return 1;
+    }
+    vev_tx_report_free(report);
+    vev_connection_close(durable);
+
+    durable = vev_connect(store);
+    if (!durable || !vev_connection_ok(durable)) {
+        fprintf(stderr, "failed to reopen durable Vev store\n");
+        if (durable) vev_connection_close(durable);
+        remove_store(store);
+        return 1;
+    }
+    vev_db_t db = vev_connection_db(durable);
+    vev_prepared_query_t query = vev_prepare_query_edn("[:find ?name :where [?e :user/name ?name]]");
+    vev_result_t rows = vev_query_db_prepared_result_with_inputs(db, query, "[]");
+    if (!rows || !vev_result_ok(rows) || vev_result_row_count(rows) != 1) {
+        fprintf(stderr, "unexpected durable query result\n");
+        if (rows) vev_result_free(rows);
+        if (query) vev_prepared_query_free(query);
+        if (db) vev_db_release(db);
+        vev_connection_close(durable);
+        remove_store(store);
+        return 1;
+    }
+    const char *name = vev_result_value_text(rows, 0, 0);
+    if (!name || strcmp(name, "Durable Grace") != 0) {
+        fprintf(stderr, "unexpected durable row value: %s\n", name ? name : "<null>");
+        vev_result_free(rows);
+        vev_prepared_query_free(query);
+        vev_db_release(db);
+        vev_connection_close(durable);
+        remove_store(store);
+        return 1;
+    }
+    vev_string_free(name);
+    vev_result_free(rows);
+    vev_prepared_query_free(query);
+    vev_db_release(db);
+    vev_connection_close(durable);
+    remove_store(store);
+
     puts(":vev-c-package-ok");
     return 0;
 }

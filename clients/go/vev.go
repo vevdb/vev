@@ -38,12 +38,16 @@ type Conn struct {
 	raw C.vev_conn_t
 }
 
-func OpenMemory() (*Conn, error) {
+func CreateConn() (*Conn, error) {
 	raw := C.vev_conn_open_memory()
 	if raw == nil {
 		return nil, fmt.Errorf("failed to open Vev connection")
 	}
 	return &Conn{raw: raw}, nil
+}
+
+func OpenMemory() (*Conn, error) {
+	return CreateConn()
 }
 
 func ConnFromDB(db *DB) (*Conn, error) {
@@ -677,7 +681,7 @@ func mustEqual(label string, got any, want any) {
 }
 
 func Smoke() {
-	conn, err := OpenMemory()
+	conn, err := CreateConn()
 	if err != nil {
 		panic(err)
 	}

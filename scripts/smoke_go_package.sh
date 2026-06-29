@@ -44,7 +44,7 @@ import (
 )
 
 func main() {
-	conn, err := vev.OpenMemory()
+	conn, err := vev.CreateConn()
 	if err != nil {
 		panic(err)
 	}

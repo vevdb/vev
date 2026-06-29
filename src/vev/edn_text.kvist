@@ -181,6 +181,25 @@
     .Symbol (value-keyword ":symbol")
     :else (value-keyword ":unknown")))
 
+(defn parser-return-map-key-value [marker: string, key: string] -> Value
+  (cond
+    (= marker ":keys") (value-keyword (strings.concatenate ([]string [":" key])))
+    (= marker ":syms") (value-symbol key)
+    :else (value-string key)))
+
+(defn parser-return-map-keys-value [marker: string, keys: []string] -> Value
+  (let [out (make [dynamic]Value 0 (count keys))]
+    (for [key keys]
+      (arr.push! out (parser-return-map-key-value marker key)))
+    (Value {kind: .Vector items: out})))
+
+(defn parser-return-map-value [query: Query] -> Value
+  (if query.has-return-map
+    (value-map
+      ([]Value [(value-keyword ":marker") (value-keyword query.return-map-marker)
+                (value-keyword ":keys") (parser-return-map-keys-value query.return-map-marker (slice query.return-map-keys 0))]))
+    (value-nil)))
+
 (defn parser-pull-spec-value [spec: Pull-Spec] -> Value
   (value-map
     ([]Value [(value-keyword ":attr") (value-keyword spec.a)
@@ -298,6 +317,8 @@
 (defn parser-error-code [error: string] -> Value
   (cond
     (= error "") (value-keyword ":none")
+    (or (strings.contains error "EDN")
+        (strings.contains error "#uuid")) (value-keyword ":edn-read")
     (strings.contains error "unknown") (value-keyword ":unknown")
     (or (strings.contains error "duplicate")
         (strings.contains error "Only one of")) (value-keyword ":duplicate")
@@ -406,6 +427,7 @@
                 (value-keyword ":or-groups") (parser-or-groups-value (slice prepared.query.or-groups 0))
                 (value-keyword ":pulls") (parser-pull-finds-value (slice prepared.query.pulls 0))
                 (value-keyword ":aggregates") (parser-aggregate-finds-value (slice prepared.query.aggregates 0))
+                (value-keyword ":return-map") (parser-return-map-value prepared.query)
                 (value-keyword ":rules-count") (value-int (i64 (count prepared.query.rules)))
                 (value-keyword ":pull-count") (value-int (i64 (count prepared.query.pulls)))
                 (value-keyword ":aggregate-count") (value-int (i64 (count prepared.query.aggregates)))]))))
@@ -1999,6 +2021,9 @@
         where-steps (make [dynamic]Query-Step) :defer
           pulls (make [dynamic]Pull-Find) :defer
           aggregates (make [dynamic]Aggregate-Find) :defer
+          return-map-keys (make [dynamic]string) :defer
+          return-map-marker ""
+          has-return-map false
           return-map-allowed true
           return-map-scalar false
           has-rules-input false
@@ -2034,6 +2059,10 @@
         (return false (return-map-kind-error marker return-map-scalar)))
       (when (not (= (edn-vector-return-entry-count doc cursor)
                     (+ (count find) (count pulls) (count aggregates))))
+        (return false (return-map-count-error marker)))
+      (set! has-return-map true)
+      (set! return-map-marker marker)
+      (when (not (append-edn-return-keys! (addr return-map-keys) doc marker))
         (return false (return-map-count-error marker))))
       (set! cursor doc.nodes[cursor].next-sibling)
       (while (and (not (= cursor -1))
@@ -2071,7 +2100,7 @@
     (let [query-value (query-with-rules-input
                         (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
                         has-rules-input)]
-      (set! out^ query-value)
+      (set! out^ (if has-return-map (query-with-return-map query-value return-map-marker (slice return-map-keys 0)) query-value))
       (return true ""))))
 
 (defn edn-map-value-node [doc: EDN-Doc, map-node: int, key: string] -> int
@@ -2252,6 +2281,9 @@
         where-steps (make [dynamic]Query-Step) :defer
         pulls (make [dynamic]Pull-Find) :defer
         aggregates (make [dynamic]Aggregate-Find) :defer
+        return-map-keys (make [dynamic]string) :defer
+        return-map-marker ""
+        has-return-map false
         find-node (edn-map-value-node doc doc.root ":find")
         with-node (edn-map-value-node doc doc.root ":with")
         in-node (edn-map-value-node doc doc.root ":in")
@@ -2272,6 +2304,10 @@
             (return false (return-map-kind-error marker (edn-find-vector-scalar? doc find-node))))
           (when (not (= (edn-return-entry-count doc marker-node)
                         (+ (count find) (count pulls) (count aggregates))))
+            (return false (return-map-count-error marker)))
+          (set! has-return-map true)
+          (set! return-map-marker marker)
+          (when (not (append-edn-return-keys! (addr return-map-keys) doc marker))
             (return false (return-map-count-error marker)))))
     (let [[with-ok with-error] (append-edn-with-section! (addr with) doc with-node)]
       (when (not with-ok)
@@ -2288,6 +2324,8 @@
     (let [query-value (query-with-rules-input
                         (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
                         (or has-rules-input (> (count inline-rules) 0)))]
+      (when has-return-map
+        (set! query-value (query-with-return-map query-value return-map-marker (slice return-map-keys 0))))
       (delete query-value.rules)
       (let [owned-rules (arr.into [dynamic]Rule (slice inline-rules 0))]
         (set! query-value.rules owned-rules))

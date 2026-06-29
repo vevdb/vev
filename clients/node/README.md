@@ -25,6 +25,10 @@ Planned package name:
 @vevdb/vev
 ```
 
+`clients/node/package.json` contains the current package metadata and bundled
+native-file allowlist. It remains `"private": true` until the package is ready
+to publish, but the local smoke validates the intended package identity.
+
 Example:
 
 ```js
@@ -41,8 +45,8 @@ links the addon with both repo-local and addon-relative library rpaths, so a
 future package can place `vev_native.node` and the platform `libvev` in the same
 `native/<platform>` directory.
 
-`scripts/smoke_node_package.sh` verifies that package-like layout from a
-temporary directory without `VEV_NODE_NATIVE`.
+`scripts/smoke_node_package.sh` verifies the package metadata and package-like
+layout from a temporary directory without `VEV_NODE_NATIVE`.
 
 Durable stores are opened through Vev APIs with paths such as `app.vev`. The
 Node addon loads the Vev native library; the current native library depends on

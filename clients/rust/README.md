@@ -1,8 +1,8 @@
 # Vev Rust
 
-This is currently a Rust smoke client over Vev's C ABI. It is intentionally kept
-in `clients/rust` so it can grow into the Rust package without moving paths
-again.
+This is currently a Rust smoke client over Vev's C ABI. The local Cargo package
+is named `vev` with `publish = false`, so it can grow into the Rust crate
+without moving paths again.
 
 Current local development:
 
@@ -22,6 +22,9 @@ Likely package split before publishing:
 
 The current smoke already follows that wrapper direction: native handles are
 owned by Rust structs and released through `Drop`.
+
+The current binary target is still `vev-rust-smoke`; the package identity is
+the future public crate identity.
 
 Durable stores are opened through Vev APIs with paths such as `app.vev`. The
 Rust wrapper links to `libvev`; the current native library depends on the

@@ -385,7 +385,7 @@ library, but it shows the intended host-language shape:
 ```python
 import vev
 
-with vev.open_memory() as conn:
+with vev.create_conn() as conn:
     conn.transact("""
     [{:db/id 1
       :user/name "Ada"
