@@ -25,10 +25,11 @@
   (binding [*print-namespace-maps* false]
     (pr-str (vec inputs))))
 
-(defn- default-library-path []
-  (or (System/getProperty "vev.library")
-      (System/getenv "VEV_LIB")
-      "build/lib/libvev.dylib"))
+(defn- load-engine
+  ([]
+   (Vev/load))
+  ([lib-path]
+   (Vev/load (path lib-path))))
 
 (defn- keyword-text? [value]
   (and (string? value)
@@ -102,12 +103,17 @@
 (defn create-conn
   "Create an in-memory Vev connection.
 
-  With no arguments, uses the `vev.library` system property, then `VEV_LIB`,
-  then `build/lib/libvev.dylib`."
+  With no arguments, uses the Java wrapper's native library resolution:
+  `vev.library`, `VEV_LIB`, local `build/lib`, then bundled native resource."
   ([]
-   (create-conn (default-library-path)))
+   (let [engine (load-engine)]
+     (try
+       (->Conn engine (.createConn engine))
+       (catch Throwable error
+         (.close engine)
+         (throw error)))))
   ([lib-path]
-   (let [engine (Vev. (path lib-path))]
+   (let [engine (load-engine lib-path)]
      (try
        (->Conn engine (.createConn engine))
        (catch Throwable error
@@ -122,9 +128,14 @@
   The current backend is SQLite. A plain filesystem path and `sqlite://...` URI
   both select the SQLite backend."
   ([uri]
-   (connect (default-library-path) uri))
+   (let [engine (load-engine)]
+     (try
+       (->DurableConn engine (.connect engine (str uri)))
+       (catch Throwable error
+         (.close engine)
+         (throw error)))))
   ([lib-path uri]
-   (let [engine (Vev. (path lib-path))]
+   (let [engine (load-engine lib-path)]
      (try
        (->DurableConn engine (.connect engine (str uri)))
        (catch Throwable error
@@ -201,7 +212,8 @@
 (defn empty-db
   "Return an owned immutable empty DB value."
   ([]
-   (empty-db (default-library-path)))
+   (with-open [conn (create-conn)]
+     (db conn)))
   ([lib-path]
    (with-open [conn (create-conn lib-path)]
      (db conn))))
@@ -279,7 +291,8 @@
 (defn init-db
   "Create an immutable DB initialized by applying tx data to an empty DB."
   ([tx]
-   (init-db (default-library-path) tx))
+   (with-open [initial (empty-db)]
+     (db-with initial tx)))
   ([lib-path tx]
    (with-open [initial (empty-db lib-path)]
      (db-with initial tx))))
