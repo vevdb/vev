@@ -172,6 +172,14 @@ Special reportless fast paths are not the desired fix. They would make the
 benchmark look better while dodging the core requirement that Vev DB values are
 immutable values applications can pass around.
 
+The first resumed storage-copy cleanup removed an unnecessary full `DB` clone
+from registered/native transaction-function paths. Those paths now follow the
+ordinary live transaction ownership shape: the pre-transaction DB becomes the
+successful report's `db-before`, and the connection moves to the newly
+published `db-after`. This is not the shared-index representation yet, but it
+keeps all transaction entrypoints on the same publish boundary before the DB
+layout changes.
+
 ## SQLite Backend Shape
 
 SQLite is the first production durable backend.
