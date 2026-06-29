@@ -57,7 +57,9 @@ environment overrides, but several host package shapes now have concrete local
 proofs.
 
 The C SDK path is `include/vev.h`, `libvev`, and `build/lib/pkgconfig/vev.pc`.
-`scripts/smoke_c_package.sh` verifies that shape from a temporary C program.
+`scripts/smoke_c_package.sh` verifies that shape from a temporary C program,
+including in-memory query and durable open/write/reopen/query through
+`vev_connect`.
 
 The CLI path builds `build/vev` from `src/vev_cli/main.kvist`. It currently
 exposes durable `info`, `transact`, `query`, and `pull` commands over the native
