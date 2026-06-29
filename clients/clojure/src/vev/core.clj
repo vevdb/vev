@@ -4,7 +4,7 @@
 (ns vev.core
   (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
-           [vev Vev Vev$ColumnResult Vev$Entity Vev$MapValue Vev$PreparedPullPattern]))
+           [dev.vevdb.vev Vev Vev$ColumnResult Vev$Entity Vev$MapValue Vev$PreparedPullPattern]))
 
 (defn- path [value]
   (cond

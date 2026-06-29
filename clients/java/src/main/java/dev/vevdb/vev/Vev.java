@@ -1,7 +1,7 @@
 // Copyright (c) Andreas Flakstad and Vev contributors
 // SPDX-License-Identifier: EPL-2.0
 
-package vev;
+package dev.vevdb.vev;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -184,6 +184,22 @@ public final class Vev {
     private final MethodHandle valueMapCount;
     private final MethodHandle valueMapKey;
     private final MethodHandle valueMapValue;
+
+    public static Path defaultLibraryPath() {
+        String property = System.getProperty("vev.library");
+        if (property != null && !property.isBlank()) {
+            return Path.of(property);
+        }
+        String env = System.getenv("VEV_LIB");
+        if (env != null && !env.isBlank()) {
+            return Path.of(env);
+        }
+        return Path.of("build", "lib", "libvev.dylib");
+    }
+
+    public static Vev load() {
+        return load(defaultLibraryPath());
+    }
 
     public static Vev load(Path libraryPath) {
         return new Vev(libraryPath);

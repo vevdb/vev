@@ -400,9 +400,9 @@ surface.
 
 Next packaging work should use the canonical repository identity
 `https://github.com/vevdb/vev`. The JVM path should split the current examples
-into publishable clients: `io.github.vevdb/vev-java` for the Java FFM wrapper,
-`io.github.vevdb/vev-clj` for the Clojure API, and later platform native
-artifacts such as `io.github.vevdb/vev-native-macos-aarch64`. Local explicit
+into publishable clients: `dev.vevdb:vev-java` for the Java FFM wrapper,
+`dev.vevdb/vev-clj` for the Clojure API, and later platform native
+artifacts such as `dev.vevdb:vev-native-macos-aarch64`. Local explicit
 library paths and `VEV_LIB`-style overrides should remain the first supported
 loading mode before bundled native artifacts.
 

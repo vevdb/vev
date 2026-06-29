@@ -9,13 +9,14 @@ KVIST_BIN="${KVIST_BIN:-kvist}"
 
 GENERATED_DIR="$ROOT/build/generated/vev_abi"
 LIB_DIR="$ROOT/build/lib"
+PKGCONFIG_DIR="$LIB_DIR/pkgconfig"
 EXAMPLE_DIR="$ROOT/build/examples/c"
 RUST_EXAMPLE_DIR="$ROOT/build/examples/rust"
 JAVA_EXAMPLE_DIR="$ROOT/build/examples/java"
 GO_EXAMPLE_DIR="$ROOT/build/examples/go"
 NODE_EXAMPLE_DIR="$ROOT/build/examples/node"
 
-mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR"
+mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR"
 
 if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
   (
@@ -26,6 +27,19 @@ else
   "$KVIST_BIN" compile "$ROOT/src/vev_abi/vev_abi.kvist" -o "$GENERATED_DIR/vev_abi.odin"
 fi
 odin build "$GENERATED_DIR" -build-mode:dll -out:"$LIB_DIR/libvev.dylib"
+
+cat > "$PKGCONFIG_DIR/vev.pc" <<EOF
+prefix=$ROOT/build
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=$ROOT/include
+
+Name: Vev
+Description: Embedded native Datalog database
+Version: 0.1.0
+Libs: -L\${libdir} -lvev
+Cflags: -I\${includedir}
+EOF
 
 clang \
   -I"$ROOT/include" \
@@ -44,10 +58,10 @@ if command -v cargo >/dev/null 2>&1; then
   RUSTFLAGS="-L native=$LIB_DIR -l dylib=vev -C link-arg=-Wl,-rpath,$LIB_DIR" \
     cargo run \
       --quiet \
-      --manifest-path "$ROOT/examples/rust/Cargo.toml"
+      --manifest-path "$ROOT/clients/rust/Cargo.toml"
 elif command -v rustc >/dev/null 2>&1; then
   rustc \
-    "$ROOT/examples/rust/smoke.rs" \
+    "$ROOT/clients/rust/src/main.rs" \
     -L "$LIB_DIR" \
     -l dylib=vev \
     -C "link-arg=-Wl,-rpath,$LIB_DIR" \
@@ -123,14 +137,14 @@ if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
     --enable-preview \
     --release 21 \
     -d "$JAVA_EXAMPLE_DIR" \
-    "$ROOT/examples/java/Vev.java" \
+    "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java" \
     "$ROOT/examples/java/Smoke.java"
 
   java \
     --enable-preview \
     --enable-native-access=ALL-UNNAMED \
     -cp "$JAVA_EXAMPLE_DIR" \
-    vev.Smoke "$LIB_DIR/libvev.dylib"
+    dev.vevdb.vev.examples.Smoke "$LIB_DIR/libvev.dylib"
 
   if command -v clojure >/dev/null 2>&1; then
     clojure \

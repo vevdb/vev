@@ -57,6 +57,21 @@ program, and runs the Python smoke program through the thin
 it also compiles and runs the Rust, Go, Node/TypeScript, Java, and Clojure
 smoke programs against the same shared library.
 
+The build also writes a development pkg-config file:
+
+```sh
+PKG_CONFIG_PATH="$PWD/build/lib/pkgconfig" \
+  clang examples/c/smoke.c $(pkg-config --cflags --libs vev) \
+  -Wl,-rpath,"$PWD/build/lib" \
+  -o build/examples/c/vev_c_smoke
+```
+
+For now the C SDK is the public header plus the native library:
+
+- `include/vev.h`
+- `build/lib/libvev.dylib`
+- `build/lib/pkgconfig/vev.pc`
+
 ## ABI Benchmark
 
 The ABI benchmark compares native Kvist prepared queries against equivalent C
@@ -442,7 +457,7 @@ can return generic typed column batches without materializing result rows.
 
 ## Rust Example
 
-[examples/rust](../examples/rust) is a small Cargo package. It mirrors the
+[clients/rust](../clients/rust) is a small Cargo package. It mirrors the
 intended safe wrapper shape:
 
 - raw FFI declarations stay private to the module
@@ -469,10 +484,10 @@ connection or retained immutable DB snapshot.
 
 ## Java And Clojure Examples
 
-[Vev.java](../examples/java/Vev.java) is a small Java 21 Foreign Function &
-Memory wrapper over `libvev.dylib`. It is still an example wrapper, not a
-published artifact. The wrapper exposes the same core host shape as Python and
-Rust:
+[Vev.java](../clients/java/src/main/java/dev/vevdb/vev/Vev.java) is the Java 21 Foreign
+Function & Memory wrapper over `libvev.dylib`. It is not published yet, but it
+now lives under the planned client package layout. The wrapper exposes the same
+core host shape as Python and Rust:
 
 - `Vev`, `Connection`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet`
   close their native handles explicitly

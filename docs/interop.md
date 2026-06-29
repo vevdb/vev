@@ -41,16 +41,22 @@ https://github.com/vevdb/vev
 That should drive public package coordinates once Vev moves beyond local
 examples:
 
-- Clojure deps coordinate: `io.github.vevdb/vev-clj`
-- Java/Maven coordinate: `io.github.vevdb/vev-java`
-- native JVM artifacts by platform: `io.github.vevdb/vev-native-<platform>`
+- Clojure deps coordinate: `dev.vevdb/vev-clj`
+- Java/Maven coordinate: `dev.vevdb:vev-java`
+- native JVM artifacts by platform: `dev.vevdb:vev-native-<platform>`
 - Rust crate name, if published: `vev`
 - Go module path, if published: `github.com/vevdb/vev/clients/go`
 - Node package name, if published: `@vevdb/vev`
+- C SDK: `include/vev.h`, `libvev`, and pkg-config package `vev`
+- Odin package: later `clients/odin` wrapper over the C ABI, not generated Odin
 
 The first packaging pass should still support explicit local library paths and
 environment overrides. Bundled native artifacts can come after the wrapper APIs
 are stable enough to justify publishing.
+
+Odin consumption should use the C ABI through a small wrapper for now. Vev is
+implemented in Kvist and lowers through Odin, but generated Odin is build
+output, not the public Odin package surface.
 
 ## Native API
 

@@ -61,12 +61,12 @@ done
 
 mkdir -p "$JAVA_OUT"
 
-if [[ ! -f "$JAVA_OUT/vev/Vev.class" || "$ROOT/examples/java/Vev.java" -nt "$JAVA_OUT/vev/Vev.class" ]]; then
+if [[ ! -f "$JAVA_OUT/dev/vevdb/vev/Vev.class" || "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java" -nt "$JAVA_OUT/dev/vevdb/vev/Vev.class" ]]; then
   javac \
     --enable-preview \
     --release 21 \
     -d "$JAVA_OUT" \
-    "$ROOT/examples/java/Vev.java"
+    "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java"
 fi
 
 clojure \
