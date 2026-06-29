@@ -98,6 +98,8 @@ unsafe extern "C" {
 
     fn vev_query_stmt_result(conn: VevConn, stmt: VevStmt) -> VevResult;
     fn vev_query_db_stmt_result(db: VevDb, stmt: VevStmt) -> VevResult;
+    fn vev_query_stmt_column_batch(conn: VevConn, stmt: VevStmt) -> VevColumnBatch;
+    fn vev_query_db_stmt_column_batch(db: VevDb, stmt: VevStmt) -> VevColumnBatch;
     fn vev_query_prepared_result_with_inputs(
         conn: VevConn,
         query: VevPreparedQuery,
@@ -486,6 +488,16 @@ impl Db {
         result
     }
 
+    fn query_stmt_columns(&self, stmt: &Statement<'_>) -> Result<Option<ColumnResult>, String> {
+        let raw = unsafe { vev_query_db_stmt_column_batch(self.raw, stmt.raw) };
+        if raw.is_null() {
+            return Ok(None);
+        }
+        let result = unsafe { ColumnResult::from_raw(raw) };
+        unsafe { vev_column_batch_free(raw) };
+        result
+    }
+
     fn with_report(&self, tx: &str) -> Result<TxReport, String> {
         let tx = cstring(tx);
         let raw = unsafe { vev_with_edn_report(self.raw, tx.as_ptr()) };
@@ -801,6 +813,20 @@ impl Statement<'_> {
         let raw = unsafe { vev_query_db_stmt_result(db.raw, self.raw) };
         ResultSet::new(raw)
     }
+
+    fn columns_conn(&self, conn: &Conn) -> Result<Option<ColumnResult>, String> {
+        let raw = unsafe { vev_query_stmt_column_batch(conn.raw, self.raw) };
+        if raw.is_null() {
+            return Ok(None);
+        }
+        let result = unsafe { ColumnResult::from_raw(raw) };
+        unsafe { vev_column_batch_free(raw) };
+        result
+    }
+
+    fn columns_db(&self, db: &Db) -> Result<Option<ColumnResult>, String> {
+        db.query_stmt_columns(self)
+    }
 }
 
 impl Drop for Statement<'_> {
@@ -985,6 +1011,23 @@ fn main() -> Result<(), String> {
             ]
     {
         return Err("unexpected column batch rows".to_string());
+    }
+    let all_email_stmt = all_email_texts.statement()?;
+    let live_columns = all_email_stmt
+        .columns_conn(&conn)?
+        .ok_or_else(|| "expected live statement column batch".to_string())?;
+    let mut live_rows = live_columns.rows();
+    live_rows.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+    if live_columns.kinds != vec![VEV_COLUMN_STRING] || live_rows != column_rows {
+        return Err("unexpected live statement column batch rows".to_string());
+    }
+    let snapshot_columns = all_email_stmt
+        .columns_db(&column_db)?
+        .ok_or_else(|| "expected snapshot statement column batch".to_string())?;
+    let mut snapshot_column_rows = snapshot_columns.rows();
+    snapshot_column_rows.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+    if snapshot_columns.kinds != vec![VEV_COLUMN_STRING] || snapshot_column_rows != column_rows {
+        return Err("unexpected snapshot statement column batch rows".to_string());
     }
 
     let pull_query = conn.prepare(

@@ -449,6 +449,7 @@ intended safe wrapper shape:
 - `Conn`, `DB`, `PreparedQuery`, `Statement`, and `ResultSet` free their handles
   with `Drop`
 - statement methods expose typed scalar and collection bindings
+- prepared queries and bound statements can return generic typed column batches
 - result values are converted into a small Rust `Value` enum
 - transaction reports use an owned `TxReport` wrapper with typed `Value`
   traversal
