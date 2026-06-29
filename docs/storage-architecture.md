@@ -73,7 +73,11 @@ self-join, two-attribute, entity-attribute, entity-int, entity string/int,
 top-N aggregate, and missing-attribute projection operators use the same
 boundary for their `avet`/`aevt`/`eavt` scans. The low-level latest-attribute
 and cardinality-one fast entity helpers also read datom indexes through that
-boundary now, while still using resident entity-position side tables.
+boundary now. Schema validation, transaction cardinality retractions, recursive
+rule adjacency builders, and the remaining optimized typed/projection scans no
+longer read datom index slices directly. The remaining resident read coupling
+is concentrated in `db-index-slice` itself and the `eavt` entity-position side
+tables.
 This is still a guarded compatibility path: Vev materializes datom rows and
 rebuilds indexes before validation. Wiring query/reopen to use chunk-backed DB
 snapshots and paged index cursors is the next implementation step.
@@ -95,8 +99,11 @@ snapshots and paged index cursors is the next implementation step.
    entity-attribute, entity-int, entity string/int, top-N aggregate, and
    missing-attribute projection paths plus low-level latest-attribute and
    cardinality-one fast entity helpers now use a resident index-view boundary.
-   The remaining work is to migrate the remaining specialized query operators
-   and then add a persisted cursor-backed implementation.
+   Schema validation, transaction cardinality retractions, recursive rule
+   adjacency builders, and the remaining optimized typed/projection scans now
+   use that boundary too. The remaining work is to replace the resident view
+   implementation with a persisted cursor-backed implementation and decide how
+   entity-position side tables are represented in shared/chunked snapshots.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are
