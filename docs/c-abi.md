@@ -870,7 +870,7 @@ handles with `vev_stmt_bind_db_source`.
 Prepared query status is available through `vev_prepared_query_ok` and
 `vev_prepared_query_error`. `vev_prepared_query_edn` returns an owned EDN-ish
 description of the prepared parser value, including input specs, clauses,
-predicates, function clauses, rule calls, structured `not`/`or` groups, pull finds, and aggregate finds.
+predicates, function clauses, rule calls, structured `not`/`or` groups, `ground`, `get-else`, `get-some`, pull finds, and aggregate finds.
 Statement execution failures from direct visitor calls are available through
 `vev_stmt_error`.
 
