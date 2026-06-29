@@ -371,7 +371,10 @@ through a resident `DB-Index-View` boundary, which is the first query-facing
 boundary for swapping resident arrays for persisted cursors. Optimized
 entity-star, threshold, self-join, two-attribute, entity-attribute, entity-int,
 entity string/int, top-N aggregate, and missing-attribute projection operators
-also consume the same boundary for their `avet`/`aevt`/`eavt` scans. The
+also consume the same boundary for their `avet`/`aevt`/`eavt` scans. Low-level
+latest-attribute and cardinality-one fast entity helpers read datom indexes
+through the same boundary while still using resident entity-position side
+tables. The
 explicit persist API
 full-replaces durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx

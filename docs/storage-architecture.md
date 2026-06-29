@@ -71,7 +71,9 @@ of a raw index slice, so ordinary clause planning/matching is starting to use
 the same storage-facing abstraction. The optimized entity-star, threshold,
 self-join, two-attribute, entity-attribute, entity-int, entity string/int,
 top-N aggregate, and missing-attribute projection operators use the same
-boundary for their `avet`/`aevt`/`eavt` scans.
+boundary for their `avet`/`aevt`/`eavt` scans. The low-level latest-attribute
+and cardinality-one fast entity helpers also read datom indexes through that
+boundary now, while still using resident entity-position side tables.
 This is still a guarded compatibility path: Vev materializes datom rows and
 rebuilds indexes before validation. Wiring query/reopen to use chunk-backed DB
 snapshots and paged index cursors is the next implementation step.
@@ -91,7 +93,8 @@ snapshots and paged index cursors is the next implementation step.
    key transaction/schema/validation, pull, entity helper, general
    `Clause-Index-Scan`, entity-star, threshold, self-join, two-attribute,
    entity-attribute, entity-int, entity string/int, top-N aggregate, and
-   missing-attribute projection paths now use a resident index-view boundary.
+   missing-attribute projection paths plus low-level latest-attribute and
+   cardinality-one fast entity helpers now use a resident index-view boundary.
    The remaining work is to migrate the remaining specialized query operators
    and then add a persisted cursor-backed implementation.
 
