@@ -3,8 +3,9 @@
 Vev tracks the local `../datascript/test/datascript/test/*.cljc` namespaces as
 the in-memory compatibility checklist. Most engine-level namespaces now have
 local Vev coverage; remaining work is concentrated in exact parser/API shape,
-measured performance for recursive rules and large queries, MusicBrainz/Datomic
-workload coverage, durable storage, and host wrapper ergonomics.
+measured performance for recursive rules and large queries, targeted
+MusicBrainz/Datomic regressions, durable storage architecture, and host wrapper
+ergonomics.
 
 See `docs/datascript-test-port-ledger.md` for namespace-by-namespace port
 status.
@@ -58,11 +59,12 @@ DataScript work should focus on the areas where Vev still differs in engine
 semantics or required native interop, not on already-covered syntax families.
 
 1. Tighten parser validation against the upstream parser namespaces. Query,
-   pull, rule, return-map, and transaction text parsing are broad now, but
-   malformed-shape handling still trails DataScript.
-2. Use the MusicBrainz/Day-of-Datomic workload in `docs/musicbrainz.md` to
-   validate real Datomic-shaped tutorial usage across in-memory and
-   SQLite-backed paths.
+   pull, rule, return-map, and transaction text parsing are broad now, and
+   portable parser values expose stable `:error-code` categories, but exact
+   parser object/diagnostic parity still trails DataScript.
+2. Keep the MusicBrainz/Day-of-Datomic workload as targeted regression and
+   performance coverage. The current real-data comparison matrix passes; new
+   MusicBrainz work should be driven by a specific query/API/storage gap.
 3. Continue the SQLite storage backend behind the storage-neutral
    `connect`/durable-connection boundary only when MusicBrainz or larger
    write-bench runs justify the shared immutable index-storage work.

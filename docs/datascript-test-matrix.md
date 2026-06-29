@@ -95,12 +95,13 @@ These are useful, but not the next engine-parity gate.
 ## Batch Order
 
 1. Tighten parser validation against `parser_*.cljc`, especially malformed
-   `:find`, `:in`, `:where`, rule, pull, and return-map shapes. This matters
-   because EDN text/prepared APIs are the compatibility route for non-Kvist
-   consumers.
-2. Grow the MusicBrainz/Day-of-Datomic workload from the mini EDN fixture into
-   the upstream `Datomic/mbrainz-sample` schema/query set and the 1968-1973
-   sample backup.
+   `:find`, `:in`, `:where`, rule, pull, transaction, and return-map shapes.
+   Portable prepared parser values now expose stable `:error-code` categories;
+   exact DataScript parser record/message parity remains the open work.
+2. Keep MusicBrainz/Day-of-Datomic as targeted regression and performance
+   coverage. The real-data comparison matrix currently passes, so new
+   MusicBrainz work should start from a specific failing query/API/storage
+   shape rather than broad expansion.
 3. Continue SQLite storage work with write/reopen measurements and metadata
    inspection only where MusicBrainz or larger write-bench runs need it.
 4. Replace the current rule/fixpoint and aggregate hot paths with measured

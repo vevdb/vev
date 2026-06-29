@@ -65,10 +65,10 @@ Non-goal:
 Status: mostly satisfied as the current compatibility gate. The broad in-memory surface is present:
 query, pull, tx-data, schema, lookup refs, tuples, indexes, parser text paths,
 prepared APIs, and host-facing EDN/C ABI query paths. The local compatibility
-suite currently passes 369 tests. Remaining work is concentrated in exact
+suite currently passes 370 tests. Remaining work is concentrated in exact
 parser diagnostics/object rendering, query/rule planner maturity,
-MusicBrainz/Datomic workload coverage, higher-level host wrapper ergonomics,
-and durable storage integration.
+targeted MusicBrainz/Datomic regressions, higher-level host wrapper
+ergonomics, and durable storage architecture.
 
 Deferred engine batch order:
 
@@ -98,8 +98,9 @@ Deferred engine batch order:
    storage through storage-neutral `connect`/connection handles, and make
    Clojure and Java feel close to Datomic/DataScript for common tutorials,
    including listener/report callbacks where useful.
-MusicBrainz/Datomic comparison is no longer part of this deferred list; it is
-the next active phase.
+MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current
+real-data matrix passes; future MusicBrainz work should be targeted regression
+or performance coverage.
 
 ## Current Query Engine State
 
@@ -441,11 +442,11 @@ Do not continue durable storage by solving:
 - every host language
 - every deployment story
 
-The in-memory semantic core, EDN/C ABI surface, performance baseline, and first
-SQLite durable loop are now strong enough to start MusicBrainz/Day-of-Datomic
-validation. The next durable-storage gate is no longer proving that SQLite can
-open/write/close/reopen/query; that exists. The next durable-storage gate, when
-we return to storage, is:
+The in-memory semantic core, EDN/C ABI surface, performance baseline, first
+SQLite durable loop, and MusicBrainz/Day-of-Datomic validation are now strong
+enough for the current phase. The next durable-storage gate is no longer
+proving that SQLite can open/write/close/reopen/query; that exists. The next
+durable-storage gate, when we return to storage, is:
 
 - shared immutable/chunked DB index storage avoids per-commit whole-array
   copies while preserving immutable snapshot semantics
