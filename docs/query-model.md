@@ -652,6 +652,14 @@ appends only newly produced source variables as typed columns. This keeps
 multi-clause relation-source joins on the columnar path instead of converting
 each input row to a compatibility `Binding`.
 
+Bound source-input clauses now also have a keyed typed operator. If the source
+clause shares a primitive variable with the current typed relation, Vev builds a
+temporary key-to-source-row chain for that source value and probes it from each
+typed relation row. Unsupported value shapes fall back to the previous nested
+scan, but common relation-source joins such as `[?e :name ?n]` followed by
+`[$rows ?e :status ?s]` avoid `typed rows x source rows` scanning while still
+returning the normal `Query-Relation` representation.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
@@ -678,7 +686,8 @@ Near-term query work should expand the relation engine in this order:
    relation columns while keeping the same logical relation API.
 2. Source-qualified collection operators: extend the direct source-aware
    relation representation to deeper nested source-qualified groups and broader
-   named source combinations.
+   named source combinations. Initial and bound source-input clauses are typed,
+   and bound primitive source-input joins now have a keyed typed operator.
 3. Rules: continue moving the positive-rule memo/delta evaluator from binding
    rows toward relation-native semi-naive behavior. DB clause steps and broad
    rule-call joins are now relation-native, and valid memo/delta relation caches

@@ -6504,6 +6504,50 @@
         (return op-value true))))
   (return (Value {}) false))
 
+(defn source-row-position-value [source-row: Value, width: int, position: int] -> [value: Value, ok: bool]
+  (when (and (= width 1)
+             (not (= source-row.kind .Vector)))
+    (if (= position 0)
+      (return source-row true)
+      (return (Value {}) false)))
+  (when (not (= source-row.kind .Vector))
+    (return (Value {}) false))
+  (when (not (= (count source-row.items) width))
+    (return (Value {}) false))
+  (when (or (< position 0)
+            (>= position width))
+    (return (Value {}) false))
+  (return source-row.items[position] true))
+
+(defn clause-term-at-source-position [clause: Clause, position: int] -> [term: Term, ok: bool]
+  (case position
+    0 (return clause.e true)
+    1 (return clause.a true)
+    2 (return clause.v true)
+    3 (return clause.tx-term true)
+    4 (return clause.op-term true)
+    :else (return (Term {}) false)))
+
+(defn source-input-clause-bound-key-position [rel: Query-Relation, clause: Clause] -> [position: int, ok: bool]
+  (let [position 0]
+    (while (< position clause.source-width)
+      (let [[term term-ok] (clause-term-at-source-position clause position)]
+        (when (and term-ok
+                   (= term.kind .Var)
+                   (query-relation-has-attr? rel term.name))
+          (return position true)))
+      (set! position (+ position 1))))
+  (return 0 false))
+
+(defn query-relation-source-bound-row-key [rel: Query-Relation, rel-row: int, clause: Clause, position: int] -> [key: string, ok: bool]
+  (let [[term term-ok] (clause-term-at-source-position clause position)]
+    (when (not (and term-ok (= term.kind .Var)))
+      (return "" false))
+    (let [[value value-ok] (query-relation-typed-row-value rel rel-row term.name)]
+      (when (not value-ok)
+        (return "" false))
+      (primitive-value-dedupe-key value))))
+
 (defn typed-relation-source-row-matches? [clause: Clause, source-row: Value, rel: Query-Relation, rel-row: int] -> bool
   (when (and (= clause.source-width 1)
              (not (= source-row.kind .Vector)))
@@ -13173,6 +13217,69 @@
           (arr.push! produced value))))
     (query-relation-builder-add-column-row-with-values! builder (slice rel.typed-columns 0) rel-row (slice produced 0))))
 
+(defn query-relation-apply-source-input-clause-indexed-typed [source: Value, rel: Query-Relation, clause-value: Clause] -> [out: Query-Relation, ok: bool]
+  (let [[key-position key-position-ok] (source-input-clause-bound-key-position rel clause-value)]
+    (when (not key-position-ok)
+      (return (query-relation-empty) false))
+    (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+          attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+          bucket-heads (make (map string int))
+          next-indexes (make [dynamic]int 0 (count source.items))]
+      (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.e "")
+      (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.a "")
+      (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.v "")
+      (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.tx-term "")
+      (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.op-term "")
+      (let [source-row-index 0]
+        (while (< source-row-index (count source.items))
+          (let [[value value-ok] (source-row-position-value source.items[source-row-index] clause-value.source-width key-position)]
+            (if value-ok
+              (let [[key key-ok] (primitive-value-dedupe-key value)]
+                (if key-ok
+                  (let [[head found] (mmap.get bucket-heads key)]
+                    (if found
+                      (arr.push! next-indexes head)
+                      (arr.push! next-indexes -1))
+                    (mmap.assoc! bucket-heads key source-row-index))
+                  (arr.push! next-indexes -1)))
+              (arr.push! next-indexes -1)))
+          (set! source-row-index (+ source-row-index 1))))
+      (let [builder (query-relation-builder (slice attrs 0))
+            rel-row 0]
+        (while (< rel-row rel.typed-rows)
+          (let [[key key-ok] (query-relation-source-bound-row-key rel rel-row clause-value key-position)]
+            (when (not key-ok)
+              (delete attrs)
+              (delete attr-sources)
+              (delete bucket-heads)
+              (delete next-indexes)
+              (delete-query-relation-builder builder)
+              (return (query-relation-empty) false))
+            (let [[head found] (mmap.get bucket-heads key)]
+              (when found
+                (let [source-index head]
+                  (while (>= source-index 0)
+                    (let [source-row source.items[source-index]]
+                      (when (typed-relation-source-row-matches? clause-value source-row rel rel-row)
+                        (when (not (append-typed-relation-source-row! (addr builder) (slice attrs 0) rel rel-row clause-value source-row))
+                          (delete attrs)
+                          (delete attr-sources)
+                          (delete bucket-heads)
+                          (delete next-indexes)
+                          (delete-query-relation-builder builder)
+                          (return (query-relation-empty) false))))
+                    (set! source-index next-indexes[source-index]))))))
+          (set! rel-row (+ rel-row 1)))
+        (delete bucket-heads)
+        (delete next-indexes)
+        (return (Query-Relation {attrs: attrs
+                                 attr-sources: attr-sources
+                                 attr-index: (query-relation-attr-index (slice attrs 0))
+                                 tuples: builder.tuples
+                                 typed-columns: builder.typed-columns
+                                 typed-rows: builder.typed-rows
+                                 has-typed-columns: builder.typed-ok}) true)))))
+
 (defn query-relation-apply-source-input-clause-typed [query: Query, inputs: []Query-Input, rel: Query-Relation, clause-value: Clause] -> [out: Query-Relation, ok: bool]
   (when (or (not rel.has-typed-columns)
             (not clause-value.has-source))
@@ -13185,6 +13292,10 @@
     (let [[source source-ok] (query-input-source-value inputs[index])]
       (when (not (and source-ok (= source.kind .Vector)))
         (return (query-relation-empty) false))
+      (let [[indexed indexed-ok] (query-relation-apply-source-input-clause-indexed-typed source rel clause-value)]
+        (when indexed-ok
+          (return indexed true))
+        (delete-query-relation indexed))
       (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
             attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))]
         (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.e "")
