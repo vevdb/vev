@@ -184,7 +184,7 @@ Status labels:
   Public datom index APIs now convert order strings once to a typed `Public-Index-Order` and use `db-index-slice` to select `eavt`, `aevt`, `avet`, or `vaet`. Datoms, seek, and reverse-seek share the same typed dispatch path while preserving the public `:eavt`/`:aevt`/`:avet`/`:vaet` API.
 
 - `partial` Add structured parser diagnostics and malformed-input suites.
-  Portable prepared parser values now include stable `:error-code` categories across binding, `:in`, `:with`, rules, query, pull-pattern, and tx-data parser entry points, including `:edn-read` for reader-level malformed EDN across query, rules, pull, and tx-data values. Remaining work is exact malformed-input namespace coverage and DataScript/Clojure parser record or diagnostic text parity where that is worth exposing.
+  Portable prepared parser values now include stable `:error-code` categories across binding, `:in`, `:with`, rules, query, pull-pattern, and tx-data parser entry points, including `:edn-read` for reader-level malformed EDN across query, rules, pull, and tx-data values. Prepared query values also retain and render return-map marker/key metadata for `:keys`, `:strs`, and `:syms`. Remaining work is exact malformed-input namespace coverage and DataScript/Clojure parser record or diagnostic text parity where that is worth exposing.
 
 - `done` Add test support helpers for Vev values and results.
   Vev tests now have row-level `Value` matchers for entity, string, integer, and arbitrary expected values. Existing result search helpers delegate through those matchers, giving compatibility tests a less verbose pattern for result-row assertions without introducing a larger fixture DSL.
