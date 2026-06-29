@@ -6,9 +6,15 @@ Build the native library and run the available client smoke tests:
 
 ```sh
 scripts/smoke_clients.sh
-scripts/smoke_c_package.sh
+scripts/smoke_packages.sh
 scripts/stage_jvm_native.sh
 scripts/package_jvm.sh
+```
+
+For focused package checks, the aggregate package smoke runs:
+
+```sh
+scripts/smoke_c_package.sh
 scripts/smoke_jvm_package.sh
 scripts/smoke_python_package.sh
 scripts/smoke_node_package.sh
@@ -26,9 +32,9 @@ Together, these build:
 - native smoke artifacts under `build/examples/*`
 
 `scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
-Node/TypeScript, Java, Clojure, and Odin smoke clients. The package smoke
-scripts then verify the current local C SDK, JVM, Python, Node, and Go package
-shapes from temporary projects/directories.
+Node/TypeScript, Java, Clojure, and Odin smoke clients. `scripts/smoke_packages.sh`
+then verifies the current local C SDK, JVM, Python, Node, and Go package shapes
+from temporary projects/directories.
 
 ## Clojure
 
