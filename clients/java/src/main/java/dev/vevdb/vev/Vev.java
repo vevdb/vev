@@ -10,11 +10,16 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.lang.ref.Cleaner;
 import java.util.UUID;
@@ -194,7 +199,11 @@ public final class Vev {
         if (env != null && !env.isBlank()) {
             return Path.of(env);
         }
-        return Path.of("build", "lib", "libvev.dylib");
+        Path localBuild = Path.of("build", "lib", platformLibraryName());
+        if (Files.exists(localBuild)) {
+            return localBuild;
+        }
+        return extractBundledLibrary();
     }
 
     public static Vev load() {
@@ -203,6 +212,57 @@ public final class Vev {
 
     public static Vev load(Path libraryPath) {
         return new Vev(libraryPath);
+    }
+
+    private static String platformLibraryName() {
+        return System.mapLibraryName("vev");
+    }
+
+    private static String platformId() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        String archName = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
+
+        String os;
+        if (osName.contains("mac") || osName.contains("darwin")) {
+            os = "darwin";
+        } else if (osName.contains("linux")) {
+            os = "linux";
+        } else if (osName.contains("windows")) {
+            os = "windows";
+        } else {
+            os = osName.replaceAll("[^a-z0-9]+", "-");
+        }
+
+        String arch;
+        if (archName.equals("aarch64") || archName.equals("arm64")) {
+            arch = "aarch64";
+        } else if (archName.equals("x86_64") || archName.equals("amd64")) {
+            arch = "x86_64";
+        } else {
+            arch = archName.replaceAll("[^a-z0-9_]+", "-");
+        }
+
+        return os + "-" + arch;
+    }
+
+    private static Path extractBundledLibrary() {
+        String resource = "/dev/vevdb/vev/native/" + platformId() + "/" + platformLibraryName();
+        try (InputStream input = Vev.class.getResourceAsStream(resource)) {
+            if (input == null) {
+                throw new IllegalStateException(
+                    "could not find Vev native library. Set -Dvev.library=/path/to/" + platformLibraryName()
+                    + ", set VEV_LIB, build build/lib/" + platformLibraryName()
+                    + ", or include bundled resource " + resource);
+            }
+            Path dir = Files.createTempDirectory("vev-native-");
+            Path library = dir.resolve(platformLibraryName());
+            Files.copy(input, library, StandardCopyOption.REPLACE_EXISTING);
+            library.toFile().deleteOnExit();
+            dir.toFile().deleteOnExit();
+            return library;
+        } catch (IOException error) {
+            throw new IllegalStateException("failed to extract bundled Vev native library", error);
+        }
     }
 
     public Vev(Path libraryPath) {

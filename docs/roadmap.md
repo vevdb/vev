@@ -98,6 +98,11 @@ Deferred engine batch order:
    storage through storage-neutral `connect`/connection handles, and make
    Clojure and Java feel close to Datomic/DataScript for common tutorials,
    including listener/report callbacks where useful.
+   Clojure examples should use `[vev.core :as d]` and tutorial files should
+   keep executable examples inside `(comment ...)` blocks for REPL evaluation.
+   Published JVM packages should make the common path a normal deps.edn/Maven
+   dependency by bundling or depending on platform native resources; explicit
+   `VEV_LIB`/`-Dvev.library` setup is only the local development fallback.
 MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current
 real-data matrix passes; future MusicBrainz work should be targeted regression
 or performance coverage.

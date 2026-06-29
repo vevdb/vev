@@ -9,8 +9,9 @@ text frontend used by C, Python, Rust, and Java callers.
 
 ## Intended Published Usage
 
-Normal application setup should be one dependency. The package should load the
-right platform native library itself:
+Normal application setup should be one dependency. The package should pull in
+the Java wrapper and the right platform native artifact, then load the native
+library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
@@ -46,7 +47,9 @@ Durable usage should be similarly direct:
 ```
 
 The current repo has not published the Java/Clojure/native artifacts yet, so
-local development still has extra setup.
+local development still has extra setup. The Java loader already supports the
+future packaged shape by checking for bundled native resources after explicit
+local paths.
 
 ## Local Development
 
@@ -74,7 +77,7 @@ its `(comment ...)` block one at a time. That command is a repo
 smoke/development concern, not the desired public API.
 Until native artifacts are packaged, no-arg `create-conn` and one-arg
 `connect` resolve the native library from the `vev.library` JVM property, then
-`VEV_LIB`, then `build/lib/libvev.dylib`.
+`VEV_LIB`, then a local `build/lib` library, then a bundled platform resource.
 
 `q` accepts both DB-first Vev style and query-first Datomic/DataScript style:
 

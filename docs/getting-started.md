@@ -10,7 +10,7 @@ scripts/smoke_clients.sh
 
 This builds:
 
-- `build/lib/libvev.dylib`
+- the platform native library under `build/lib`
 - `build/lib/pkgconfig/vev.pc`
 - Java classes under `build/examples/java`
 - native smoke artifacts under `build/examples/*`
@@ -58,7 +58,7 @@ VEV_LIB=build/lib/libvev.dylib clojure -M:clj-dev
 Then open `examples/clojure/getting_started.clj` in an editor and evaluate the
 forms inside its `(comment ...)` block one at a time. That `VEV_LIB` setting is
 local repo setup only. The intended published Clojure experience is a normal
-deps.edn dependency that loads the platform native library itself:
+deps.edn dependency that pulls in and loads the platform native library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
