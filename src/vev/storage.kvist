@@ -958,6 +958,24 @@ sqlite_prepare_insert_datom_raw :: proc(handle: rawptr) -> (rawptr, bool, string
     return rawptr(stmt), true, \"\"
 }
 
+sqlite_prepare_datom_by_log_index_raw :: proc(handle: rawptr) -> (rawptr, bool, string) {
+    if handle == nil {
+        return nil, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"SELECT e, a, value_text, tx, added FROM vev_datoms WHERE log_index = ? ORDER BY id LIMIT 1\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return nil, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return nil, false, sqlite_error_text(db, \"sqlite prepare datom log-index read failed\")
+    }
+    return rawptr(stmt), true, \"\"
+}
+
 sqlite_finalize_stmt_raw :: proc(stmt_handle: rawptr) {
     if stmt_handle != nil {
         _ = sqlite3_finalize((^SQLite3_Stmt)(stmt_handle))
@@ -979,6 +997,55 @@ sqlite_step_tx_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, tx: u64) ->
         return false, sqlite_error_text(db, \"sqlite insert tx failed\")
     }
     return true, \"\"
+}
+
+sqlite_step_prepared_datom_by_log_index_text_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_index: i64) -> (string, bool, string) {
+    if handle == nil {
+        return \"\", false, \"sqlite handle was nil\"
+    }
+    if stmt_handle == nil {
+        return \"\", false, \"sqlite statement was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt := (^SQLite3_Stmt)(stmt_handle)
+    _ = sqlite3_reset(stmt)
+    _ = sqlite3_clear_bindings(stmt)
+    if sqlite3_bind_int64(stmt, 1, log_index) != SQLITE_OK {
+        return \"\", false, sqlite_error_text(db, \"sqlite bind datom log-index read failed\")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        a_raw := sqlite3_column_text(stmt, 1)
+        value_raw := sqlite3_column_text(stmt, 2)
+        if a_raw == nil || value_raw == nil {
+            return \"\", false, \"sqlite datom row had null text\"
+        }
+        a_text, a_err := strings.clone_from_cstring(a_raw)
+        if a_err != nil {
+            return \"\", false, \"failed to clone sqlite datom attr\"
+        }
+        defer delete(a_text)
+        value_text, value_err := strings.clone_from_cstring(value_raw)
+        if value_err != nil {
+            return \"\", false, \"failed to clone sqlite datom value\"
+        }
+        defer delete(value_text)
+        formatted := fmt.tprintf(\"[%d %s %s %d %v]\",
+            sqlite3_column_int64(stmt, 0),
+            vev__attr_serializable_text(a_text),
+            value_text,
+            sqlite3_column_int64(stmt, 3),
+            sqlite3_column_int(stmt, 4) != 0)
+        out, out_err := strings.clone(formatted)
+        if out_err != nil {
+            return \"\", false, \"failed to clone sqlite datom log-index text\"
+        }
+        return out, true, \"\"
+    }
+    if rc == SQLITE_DONE {
+        return \"\", false, \"sqlite datom log-index not found\"
+    }
+    return \"\", false, sqlite_error_text(db, \"sqlite datom log-index read failed\")
 }
 
 sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
@@ -1532,6 +1599,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defstruct SQLite-DB-Snapshot {
   indexes: SQLite-Index-Snapshot
+  datom-stmt: rawptr
   basis-tx: u64
   datom-count: int
 })
@@ -2014,8 +2082,28 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn sqlite-db-snapshot-index-view [snapshot: ^SQLite-DB-Snapshot, order: Public-Index-Order] -> DB-Index-View
   (sqlite-index-snapshot-view (addr snapshot^.indexes) order))
 
+(defn datom-from-owned-serial-text [text: string] -> [datom: Datom, ok: bool, error: string]
+  (let [doc (empty-edn-doc)
+        [read-ok read-error] (read-edn-text! (addr doc) text)]
+    (when (not read-ok)
+      (delete doc.nodes)
+      (return (Datom {}) false read-error))
+    (let [[parsed-datom parsed-ok parsed-error] (datom-from-edn-node doc doc.root)]
+      (delete doc.nodes)
+      (return parsed-datom parsed-ok parsed-error))))
+
 (defn sqlite-db-snapshot-datom-at-log-index [snapshot: ^SQLite-DB-Snapshot, log-index: int] -> [datom: Datom, ok: bool, error: string]
-  (sqlite-index-snapshot-datom-at-log-index (addr snapshot^.indexes) log-index))
+  (if (not (= snapshot^.datom-stmt nil))
+    (let [[text loaded-ok loaded-error] (sqlite-step-prepared-datom-by-log-index-text-raw snapshot^.indexes.handle snapshot^.datom-stmt (i64 log-index))]
+      (when (not loaded-ok)
+        (return (Datom {}) false loaded-error))
+      (defer (delete text))
+      (datom-from-owned-serial-text text))
+    (let [[text loaded-ok loaded-error] (sqlite-load-datom-by-log-index-text-raw snapshot^.indexes.handle (i64 log-index))]
+    (when (not loaded-ok)
+      (return (Datom {}) false loaded-error))
+    (defer (delete text))
+      (datom-from-owned-serial-text text))))
 
 (defn sqlite-db-snapshot-eavt-entity-bound [snapshot: ^SQLite-DB-Snapshot, entity: u64, upper: bool] -> [position: int, ok: bool, error: string]
   (let [view (sqlite-db-snapshot-index-view snapshot .EAVT)
@@ -2056,6 +2144,62 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (arr.push! out datom)))
       (return out true ""))))
 
+(defn sqlite-db-snapshot-aevt-attr-bound [snapshot: ^SQLite-DB-Snapshot, attr: string, upper: bool] -> [position: int, ok: bool, error: string]
+  (let [view (sqlite-db-snapshot-index-view snapshot .AEVT)
+        low 0
+        high (db-index-view-count view)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            log-index (db-index-view-at view mid)
+            [datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index snapshot log-index)]
+        (when (not datom-ok)
+          (return low false datom-error))
+        (let [compare (strings.compare datom.a attr)]
+          (delete-owned-datom datom)
+          (if (if upper (<= compare 0) (< compare 0))
+            (set! low (+ mid 1))
+            (set! high mid)))))
+    (return low true "")))
+
+(defn sqlite-db-snapshot-aevt-attr-range [snapshot: ^SQLite-DB-Snapshot, attr: string] -> [low: int, high: int, ok: bool, error: string]
+  (let [[range-low low-ok low-error] (sqlite-db-snapshot-aevt-attr-bound snapshot attr false)]
+    (when (not low-ok)
+      (return range-low range-low false low-error))
+    (let [[range-high high-ok high-error] (sqlite-db-snapshot-aevt-attr-bound snapshot attr true)]
+      (return range-low range-high high-ok high-error))))
+
+(defn sqlite-db-snapshot-attr-datoms [snapshot: ^SQLite-DB-Snapshot, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [[low high range-ok range-error] (sqlite-db-snapshot-aevt-attr-range snapshot attr)]
+    (when (not range-ok)
+      (return (make [dynamic]Datom) false range-error))
+    (let [out (make [dynamic]Datom 0 (- high low))
+          view (sqlite-db-snapshot-index-view snapshot .AEVT)]
+      (for [pos (arr.range low high)]
+        (let [log-index (db-index-view-at view pos)
+              [datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index snapshot log-index)]
+          (when (not datom-ok)
+            (delete-owned-datoms out)
+            (return (make [dynamic]Datom) false datom-error))
+          (arr.push! out datom)))
+      (return out true ""))))
+
+(defn sqlite-db-snapshot-entity-attr-datoms [snapshot: ^SQLite-DB-Snapshot, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [[low high range-ok range-error] (sqlite-db-snapshot-eavt-entity-range snapshot entity)]
+    (when (not range-ok)
+      (return (make [dynamic]Datom) false range-error))
+    (let [out (make [dynamic]Datom)
+          view (sqlite-db-snapshot-index-view snapshot .EAVT)]
+      (for [pos (arr.range low high)]
+        (let [log-index (db-index-view-at view pos)
+              [datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index snapshot log-index)]
+          (when (not datom-ok)
+            (delete-owned-datoms out)
+            (return (make [dynamic]Datom) false datom-error))
+          (if (= datom.a attr)
+            (arr.push! out datom)
+            (delete-owned-datom datom))))
+      (return out true ""))))
+
 (defn sqlite-open-db-snapshot-handle [handle: rawptr, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
   (let [[basis basis-ok basis-error] (sqlite-latest-index-root-basis-raw handle)]
     (when (not basis-ok)
@@ -2066,11 +2210,16 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (let [[indexes indexes-ok indexes-error] (sqlite-open-index-snapshot-handle handle page-size)]
         (when (not indexes-ok)
           (return (SQLite-DB-Snapshot {}) false indexes-error))
+        (let [[datom-stmt datom-stmt-ok datom-stmt-error] (sqlite-prepare-datom-by-log-index-raw handle)]
+          (when (not datom-stmt-ok)
+            (close-sqlite-index-snapshot indexes)
+            (return (SQLite-DB-Snapshot {}) false datom-stmt-error))
         (return (SQLite-DB-Snapshot {indexes: indexes
+                                     datom-stmt: datom-stmt
                                      basis-tx: basis
                                      datom-count: (int datom-count)})
                 true
-                "")))))
+                  ""))))))
 
 (defn sqlite-conn-open-db-snapshot [store: ^SQLite-Conn, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
   (sqlite-open-db-snapshot-handle store^.handle page-size))
@@ -2087,6 +2236,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return opened-snapshot true ""))))
 
 (defn close-sqlite-db-snapshot! [snapshot: ^SQLite-DB-Snapshot]
+  (sqlite-finalize-stmt-raw snapshot^.datom-stmt)
   (close-sqlite-index-snapshot! (addr snapshot^.indexes))
   (set! snapshot^ (SQLite-DB-Snapshot {})))
 

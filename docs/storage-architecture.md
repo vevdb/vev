@@ -72,7 +72,11 @@ index cursors directly from a SQLite path or live handle, without calling
 `SQLite-DB-Snapshot` wraps that index snapshot with basis tx and datom-count
 metadata, giving normal reopen/query code a durable snapshot shape to target. It
 can also binary-search persisted EAVT for an entity and materialize only that
-entity's datoms from durable log indexes. Normal reopened `DB` values still use
+entity's datoms from durable log indexes. The same snapshot can binary-search
+persisted AEVT for an attribute and materialize entity+attribute reads without
+resident datom/index arrays. The snapshot owns a reusable prepared SQLite
+statement for datom-by-log-index resolution so broad materialization does not
+prepare one SQL statement per datom. Normal reopened `DB` values still use
 resident arrays today, but the query-facing boundary can now represent a
 chunk-backed source. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
@@ -123,10 +127,12 @@ arrays is the next implementation step.
    DB. `SQLite-Index-Snapshot` packages the four persisted cursors plus datom
    lookup, and `SQLite-DB-Snapshot` adds basis/datom-count metadata as the first
    lazy-reopen DB snapshot object. It can now use persisted EAVT plus datom
-   lookup to read one entity without resident datom/index arrays. The remaining
-   work is to make normal reopened DB values construct persisted cursor-backed
-   views where appropriate and decide how entity-position side tables are
-   represented in shared/chunked snapshots.
+   lookup to read one entity, and persisted AEVT plus datom lookup to read an
+   attribute or entity+attribute, without resident datom/index arrays. Datom
+   lookup is backed by a reusable prepared statement on the snapshot. The
+   remaining work is to make normal reopened DB values construct persisted
+   cursor-backed views where appropriate and decide how entity-position side
+   tables are represented in shared/chunked snapshots.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are
