@@ -28,6 +28,32 @@ Vev is designed around a few core principles:
 
 The goal is to make the database feel like an ordinary part of the host program rather than an external service that everything revolves around.
 
+## Current Usage
+
+Vev is still under active development. The most complete local integration path
+today is the native library plus host-client smoke packages:
+
+```sh
+scripts/build_c_abi.sh
+```
+
+That builds `build/lib/libvev.dylib`, writes `build/lib/pkgconfig/vev.pc`, and
+runs the available clients under `clients/*`.
+
+Current client work areas:
+
+* `clients/c`: raw C ABI smoke and `vev.h` usage.
+* `clients/python`: pure `ctypes` wrapper.
+* `clients/rust`: Rust RAII smoke wrapper over the C ABI.
+* `clients/java`: Java 21 FFM wrapper, planned as `dev.vevdb:vev-java`.
+* `clients/clojure`: Datomic-shaped Clojure wrapper over the Java client.
+* `clients/go`: cgo wrapper smoke.
+* `clients/node`: Node N-API / TypeScript smoke.
+* `clients/odin`: planned Odin wrapper over the C ABI.
+
+Runnable examples live under `examples/*`, including the Clojure
+getting-started script.
+
 ## Thesis
 
 Vev exists to make immutable database values a normal programming model outside the Clojure ecosystem.

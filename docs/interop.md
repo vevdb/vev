@@ -38,8 +38,8 @@ The canonical repository is:
 https://github.com/vevdb/vev
 ```
 
-That should drive public package coordinates once Vev moves beyond local
-examples:
+That should drive public package coordinates once Vev moves beyond local smoke
+clients:
 
 - Clojure deps coordinate: `dev.vevdb/vev-clj`
 - Java/Maven coordinate: `dev.vevdb:vev-java`
@@ -47,6 +47,7 @@ examples:
 - Rust crate name, if published: `vev`
 - Go module path, if published: `github.com/vevdb/vev/clients/go`
 - Node package name, if published: `@vevdb/vev`
+- Python package name, if published: `vev`
 - C SDK: `include/vev.h`, `libvev`, and pkg-config package `vev`
 - Odin package: later `clients/odin` wrapper over the C ABI, not generated Odin
 
@@ -174,7 +175,7 @@ The implementation lives in `src/vev_abi` with the public header in
 - register transaction functions that return EDN tx-data
 - free returned strings and handles
 
-See `docs/c-abi.md`, `examples/c/smoke.c`, and the Python/Rust/Java/Clojure
+See `docs/c-abi.md`, `clients/c/smoke.c`, and the Python/Rust/Java/Clojure
 smoke examples, plus the Go and Node/TypeScript smoke examples.
 
 ## Clojure/JVM
@@ -217,7 +218,7 @@ The first Go surface should stay close to the C ABI:
 - prepared queries for repeated execution
 - explicit close/release behavior
 
-The current `examples/go/smoke.go` proves that path through `cgo`, including
+The current `clients/go/smoke.go` proves that path through `cgo`, including
 typed result rows, pull, lookup refs, immutable DB snapshots, `conn-from-db`,
 and durable SQLite reopen checks. A fuller Go client can grow from the same
 shape once real callers prove which typed statement bindings and

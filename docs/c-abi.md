@@ -51,9 +51,9 @@ scripts/build_c_abi.sh
 ```
 
 The script compiles `src/vev_abi/vev_abi.kvist` to Odin, builds
-`build/lib/libvev.dylib`, compiles `examples/c/smoke.c`, runs the C smoke
+`build/lib/libvev.dylib`, compiles `clients/c/smoke.c`, runs the C smoke
 program, and runs the Python smoke program through the thin
-`examples/python/vev.py` adapter. When the relevant toolchains are available,
+`clients/python/vev.py` adapter. When the relevant toolchains are available,
 it also compiles and runs the Rust, Go, Node/TypeScript, Java, and Clojure
 smoke programs against the same shared library.
 
@@ -61,7 +61,7 @@ The build also writes a development pkg-config file:
 
 ```sh
 PKG_CONFIG_PATH="$PWD/build/lib/pkgconfig" \
-  clang examples/c/smoke.c $(pkg-config --cflags --libs vev) \
+  clang clients/c/smoke.c $(pkg-config --cflags --libs vev) \
   -Wl,-rpath,"$PWD/build/lib" \
   -o build/examples/c/vev_c_smoke
 ```
@@ -379,7 +379,7 @@ for simple C tooling and logging.
 ## Python Adapter
 
 The raw `ctypes` surface is intentionally hidden behind a small Python adapter
-in [vev.py](../examples/python/vev.py). It is still an example, not a packaged
+in [vev.py](../clients/python/vev.py). It is still a smoke client, not a packaged
 library, but it shows the intended host-language shape:
 
 ```python

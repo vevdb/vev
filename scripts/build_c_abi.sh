@@ -43,7 +43,7 @@ EOF
 
 clang \
   -I"$ROOT/include" \
-  "$ROOT/examples/c/smoke.c" \
+  "$ROOT/clients/c/smoke.c" \
   -L"$LIB_DIR" \
   -lvev \
   -Wl,-rpath,"$LIB_DIR" \
@@ -51,7 +51,7 @@ clang \
 
 "$EXAMPLE_DIR/vev_c_smoke"
 
-python3 "$ROOT/examples/python/smoke.py"
+python3 "$ROOT/clients/python/smoke.py"
 
 if command -v cargo >/dev/null 2>&1; then
   CARGO_TARGET_DIR="$RUST_EXAMPLE_DIR/target" \
@@ -74,7 +74,7 @@ fi
 
 if command -v go >/dev/null 2>&1; then
   (
-    cd "$ROOT/examples/go"
+    cd "$ROOT/clients/go"
     go build -o "$GO_EXAMPLE_DIR/vev_go_smoke" smoke.go
   )
   DYLD_LIBRARY_PATH="$LIB_DIR:${DYLD_LIBRARY_PATH:-}" \
@@ -101,7 +101,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
         -undefined dynamic_lookup \
         -I"$ROOT/include" \
         -I"$NODE_INCLUDE_DIR" \
-        "$ROOT/examples/node/vev_native.cc" \
+        "$ROOT/clients/node/vev_native.cc" \
         -L"$LIB_DIR" \
         -lvev \
         -Wl,-rpath,"$LIB_DIR" \
@@ -113,7 +113,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
         -fPIC \
         -I"$ROOT/include" \
         -I"$NODE_INCLUDE_DIR" \
-        "$ROOT/examples/node/vev_native.cc" \
+        "$ROOT/clients/node/vev_native.cc" \
         -L"$LIB_DIR" \
         -lvev \
         -Wl,-rpath,"$LIB_DIR" \
@@ -121,7 +121,7 @@ if command -v node >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
     fi
 
     VEV_NODE_NATIVE="$NODE_EXAMPLE_DIR/vev_native.node" \
-      node "$ROOT/examples/node/smoke.js"
+      node "$ROOT/clients/node/smoke.js"
   else
     echo "node_api.h not found; skipping Node smoke"
   fi
