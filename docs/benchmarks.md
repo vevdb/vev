@@ -602,22 +602,22 @@ cd /Users/andreas/Projects/kvist
   run /Users/andreas/Projects/vev/.worktrees/codex-item-vev-datalog/bench/sqlite_storage.kvist
 ```
 
-Current sample output on June 26, 2026:
+Current sample output on June 29, 2026:
 
 ```text
-engine=vev-sqlite workload=single-append n=1 min_us=73 median_us=86 p90_us=111 max_us=219 samples=50
-engine=vev-sqlite workload=batch-append n=100 min_us=1595 median_us=4835 p90_us=5484 max_us=5517 samples=20
-engine=vev-sqlite workload=batch-transact-memory n=100 min_us=913 median_us=3790 p90_us=4503 max_us=4697 samples=20
-engine=vev-sqlite workload=batch-append-sqlite n=100 min_us=730 median_us=1022 p90_us=1095 max_us=1101 samples=20
-engine=vev-sqlite workload=batch-before-snapshot n=100 min_us=2 median_us=36 p90_us=91 max_us=118 samples=20
-engine=vev-sqlite workload=batch-resolve-tx n=100 min_us=171 median_us=1180 p90_us=1291 max_us=1327 samples=20
-engine=vev-sqlite workload=batch-apply-resolved n=100 min_us=743 median_us=2622 p90_us=3221 max_us=3260 samples=20
-engine=vev-sqlite workload=append-log-copy n=100 min_us=181 median_us=193 p90_us=225 max_us=263 samples=30
-engine=vev-sqlite workload=append-index-build n=100 min_us=1376 median_us=1396 p90_us=1417 max_us=1476 samples=30
-engine=vev-sqlite workload=persisted-index-load n=2000 ...
-engine=vev-sqlite workload=persisted-index-page-load n=2000 ...
-engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=43157 median_us=43740 p90_us=44350 max_us=45349 samples=30
-engine=vev-sqlite workload=reopened-query n=2000 min_us=17 median_us=18 p90_us=22 max_us=212 samples=30
+engine=vev-sqlite workload=single-append n=1 min_us=126 median_us=286 p90_us=544 max_us=570 samples=50
+engine=vev-sqlite workload=batch-append n=100 min_us=2200 median_us=7544 p90_us=12360 max_us=15948 samples=20
+engine=vev-sqlite workload=batch-transact-memory n=100 min_us=973 median_us=1871 p90_us=2350 max_us=2477 samples=20
+engine=vev-sqlite workload=batch-append-sqlite n=100 min_us=1169 median_us=5804 p90_us=9881 max_us=13552 samples=20
+engine=vev-sqlite workload=batch-before-snapshot n=100 min_us=2 median_us=24 p90_us=86 max_us=92 samples=20
+engine=vev-sqlite workload=batch-resolve-tx n=100 min_us=140 median_us=141 p90_us=148 max_us=152 samples=20
+engine=vev-sqlite workload=batch-apply-resolved n=100 min_us=845 median_us=1740 p90_us=2302 max_us=2408 samples=20
+engine=vev-sqlite workload=append-log-copy n=100 min_us=176 median_us=197 p90_us=240 max_us=257 samples=30
+engine=vev-sqlite workload=append-index-build n=100 min_us=1457 median_us=1490 p90_us=1528 max_us=1549 samples=30
+engine=vev-sqlite workload=persisted-index-load n=2000 min_us=6819 median_us=7067 p90_us=8249 max_us=12247 samples=30
+engine=vev-sqlite workload=persisted-index-page-load n=2000 min_us=10335 median_us=10717 p90_us=11026 max_us=11563 samples=30
+engine=vev-sqlite workload=reopen-rebuild n=2000 min_us=50290 median_us=58144 p90_us=60022 max_us=61161 samples=30
+engine=vev-sqlite workload=reopened-query n=2000 min_us=17 median_us=18 p90_us=21 max_us=228 samples=30
 ```
 
 This is not yet the final write benchmark. It establishes a repeatable baseline
@@ -625,18 +625,19 @@ for SQLite-backed single-transaction appends, multi-entity transaction batches,
 full persisted DB reopen cost, and query performance after reopen. The current
 batch row measures the whole `transact-sqlite-*` path. The split rows show the
 current bottleneck: SQLite append for a 100-entity / 300-datom transaction is
-around 1ms median, while in-memory transaction/index maintenance is around
-3.8ms median as the DB grows. The main fixes so far: ordinary non-schema
+around 5.8ms median in this run, while in-memory transaction/index maintenance
+is around 1.9ms median as the DB grows. The main fixes so far: ordinary non-schema
 transactions skip unnecessary full-schema validation, transaction DB snapshots
 clone existing indexes/schema caches instead of rebuilding every index from
 datoms, append-only eligibility avoids current-DB lookups for new-entity bulk
 imports, ordered new-entity imports avoid formatted entity/attr eligibility
 keys, and `eavt` entity metadata is extended instead of rebuilt when new entity
 ids sort after existing ids. The pipeline split shows snapshot creation is now
-tens of microseconds, resolution is around 1.2ms, and applying already-resolved
-append ops is around 2.6ms. The append-only core rows show that copying the
-current datom log is sub-millisecond and incremental index construction is
-around 1.4ms. The persisted-index-load and persisted-index-page-load rows are
+tens of microseconds, resolution is around 0.14ms, and applying
+already-resolved append ops is around 1.7ms. The append-only core rows show
+that copying the current datom log is sub-millisecond and incremental index
+construction is around 1.5ms. The persisted-index-load and
+persisted-index-page-load rows are
 the first storage-architecture measurements for chunk-backed reopen: they
 follow latest root pointers and materialize persisted index entries, either as
 whole logical indexes or as bounded persisted pages, without parsing datom rows
