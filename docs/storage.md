@@ -180,6 +180,14 @@ published `db-after`. This is not the shared-index representation yet, but it
 keeps all transaction entrypoints on the same publish boundary before the DB
 layout changes.
 
+The direct datom append paths now also share the transaction engine's guarded
+append-only index builder when the appended datoms are simple additions that do
+not touch validation schema and do not repeat current or in-batch facts.
+Retractions, schema datoms, repeated facts, and unkeyable values still fall back
+to full DB/index rebuilds. This keeps `db-with-datoms`, `with-datoms`, and
+`transact-datoms` on the same incremental-index path used by ordinary
+append-only transactions without changing their correctness model.
+
 ## SQLite Backend Shape
 
 SQLite is the first production durable backend.

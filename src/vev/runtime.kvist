@@ -5902,6 +5902,56 @@
           (set.add! seen-ea (entity-attr-key op.e op.a))))))
   "eligible:general")
 
+(defn datom-modifies-validation-schema? [datom: Datom] -> bool
+  (or (= datom.a ":db/ident")
+      (= datom.a ":db/valueType")
+      (= datom.a ":db/cardinality")
+      (= datom.a ":db/unique")
+      (= datom.a ":db/isComponent")))
+
+(defn datom-add-op [datom: Datom] -> Tx-Op
+  (Tx-Op {kind: .Add
+          e: datom.e
+          a: datom.a
+          v: datom.v}))
+
+(defn append-only-datoms-all-entities-absent? [db: DB, datoms: []Datom] -> bool
+  (let [last-entity (u64 0)
+        have-last false]
+    (for [datom datoms]
+      (when (or (not have-last)
+                (not (= datom.e last-entity)))
+        (let [[_ _ exists] (eavt-entity-range db datom.e)]
+          (when exists
+            (return false)))
+        (set! last-entity datom.e)
+        (set! have-last true))))
+  true)
+
+(defn append-only-datoms-eligible? [before: DB, datoms: []Datom] -> bool
+  (let [seen-facts (set.empty string)
+        all-new-entities (append-only-datoms-all-entities-absent? before datoms)]
+    (defer (delete seen-facts))
+    (for [datom datoms]
+      (when (or (not datom.added)
+                (datom-modifies-validation-schema? datom))
+        (return false))
+      (let [op (datom-add-op datom)
+            [fact-key fact-ok] (op-fact-key op)]
+        (when (not fact-ok)
+          (return false))
+        (when (or (set.contains? seen-facts fact-key)
+                  (and (not all-new-entities)
+                       (current-db-fact-exists? before op)))
+          (return false))
+        (set.add! seen-facts fact-key))))
+  true)
+
+(defn build-db-with-appended-datoms [before: DB, datoms: [dynamic]Datom, start-index: int, appended: []Datom] -> DB
+  (if (append-only-datoms-eligible? before appended)
+    (build-db-append-only before datoms start-index)
+    (build-db datoms)))
+
 (defn transact-ops-with-tempids-from-before [conn: ^Conn, before: DB, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [expanded-ops (expand-tuple-ops before ops)
         expanded-schema-changed (ops-modify-validation-schema? (slice expanded-ops 0))
@@ -6015,10 +6065,11 @@
       report.db-before)))
 
 (defn db-with-datoms [db: DB, datoms: []Datom] -> DB
-  (let [out (clone-datoms db.datoms)]
+  (let [out (clone-datoms db.datoms)
+        start-index (count out)]
     (for [datom datoms]
       (arr.push! out datom))
-    (build-db out)))
+    (build-db-with-appended-datoms db out start-index datoms)))
 
 (defn next-tx-after-datoms [current-next-tx: u64, datoms: []Datom] -> u64
   (let [candidate (+ (max-tx datoms) 1)]
@@ -6032,10 +6083,11 @@
 
 (defn with-datoms [db: DB, datoms: []Datom] -> Tx-Report
   (let [before (clone-db db)
-        out (clone-datoms db.datoms)]
+        out (clone-datoms db.datoms)
+        start-index (count out)]
     (for [datom datoms]
       (arr.push! out datom))
-    (let [after (build-db out)
+    (let [after (build-db-with-appended-datoms before out start-index datoms)
           tx-data (arr.into [dynamic]Datom datoms)]
       (Tx-Report {ok: true
                   error: ""
@@ -6048,10 +6100,11 @@
 
 (defn transact-datoms [conn: ^Conn, datoms: []Datom] -> Tx-Report
   (let [before conn^.db
-        out (clone-datoms conn^.db.datoms)]
+        out (clone-datoms conn^.db.datoms)
+        start-index (count out)]
     (for [datom datoms]
       (arr.push! out datom))
-    (let [after (build-db out)
+    (let [after (build-db-with-appended-datoms before out start-index datoms)
           tx-data (arr.into [dynamic]Datom datoms)
           tx (report-tx-for-datoms conn^.next-tx datoms)]
       (set! conn^.db after)
