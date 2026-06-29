@@ -15,6 +15,7 @@ This builds:
 - the platform native library under `build/lib`
 - JVM native-resource staging under `build/jvm-native`
 - local JVM proof jars under `build/jvm`
+- a local JVM Maven-style repository under `build/m2`
 - `build/lib/pkgconfig/vev.pc`
 - Java classes under `build/examples/java`
 - native smoke artifacts under `build/examples/*`
@@ -67,6 +68,13 @@ pulls in and loads the platform native library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
+```
+
+The same shape can be tested locally after `scripts/package_jvm.sh`:
+
+```clojure
+{:mvn/local-repo "/path/to/vev/build/m2"
+ :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
 ```
 
 DB snapshots are passable immutable values. The wrapper has JVM cleanup

@@ -68,8 +68,17 @@ scripts/package_jvm.sh
 ```
 
 `scripts/package_jvm.sh` builds local Java, native-resource, and Clojure jars
-under `build/jvm`. They are proof artifacts for the eventual deps.edn/Maven
-path, not a published release.
+under `build/jvm` and a local Maven-style repository under `build/m2`. They are
+proof artifacts for the eventual deps.edn/Maven path, not a published release.
+
+That local repository can be consumed from a separate test project:
+
+```clojure
+{:mvn/local-repo "/path/to/vev/build/m2"
+ :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}
+ :aliases {:run {:jvm-opts ["--enable-preview"
+                            "--enable-native-access=ALL-UNNAMED"]}}}
+```
 
 When developing from the repo root, the root `:clj-dev` alias adds the locally
 built Java classes and the required JVM flags:

@@ -59,5 +59,6 @@ vev-native-<platform>-0.1.0-SNAPSHOT.jar
 vev-clj-0.1.0-SNAPSHOT.jar
 ```
 
-Those jars are not published artifacts yet, but they verify the intended Maven
-split and bundled-native loading path.
+It also writes a local Maven-style repository under `build/m2`. Those artifacts
+are not published yet, but they verify the intended Maven split and
+bundled-native loading path.

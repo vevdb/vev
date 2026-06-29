@@ -63,7 +63,15 @@ creates that resource tree for the current platform, and
 - `vev-native-<platform>-<version>.jar`
 - `vev-clj-<version>.jar`
 
-These jars are not published releases yet, but they make the future
+It also writes a local Maven repository under `build/m2`, so the future
+published Clojure dependency shape can already be tested from outside the repo:
+
+```clojure
+{:mvn/local-repo "/path/to/vev/build/m2"
+ :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
+```
+
+These are not published releases yet, but they make the future
 `{:deps {dev.vevdb/vev-clj {:mvn/version ...}}}` story mechanically real.
 
 Odin consumption should use the C ABI through a small wrapper for now. Vev is
