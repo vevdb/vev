@@ -68,7 +68,8 @@ call site; this is still array-backed, but it gives query-facing and
 write-facing code a place to accept chunk-backed index views later. The general
 `Clause-Index-Scan` query operator now also carries a `DB-Index-View` instead
 of a raw index slice, so ordinary clause planning/matching is starting to use
-the same storage-facing abstraction.
+the same storage-facing abstraction. The optimized entity-star projection
+stream uses the same boundary for its `avet`/`aevt` streams.
 This is still a guarded compatibility path: Vev materializes datom rows and
 rebuilds indexes before validation. Wiring query/reopen to use chunk-backed DB
 snapshots and paged index cursors is the next implementation step.
@@ -85,10 +86,11 @@ snapshots and paged index cursors is the next implementation step.
    in-memory cache. Whole-index loading and bounded page loading now exist and
    are tested against rebuilt indexes. A first read-only SQLite index cursor
    exists with cached-page `count`/`at` access. Public datom index APIs and
-   key transaction/schema/validation, pull, entity helper, and general
-   `Clause-Index-Scan` paths now use a resident index-view boundary. The
-   remaining work is to migrate the specialized query operators and then add a
-   persisted cursor-backed implementation.
+   key transaction/schema/validation, pull, entity helper, general
+   `Clause-Index-Scan`, and entity-star projection stream paths now use a
+   resident index-view boundary. The remaining work is to migrate the remaining
+   specialized query operators and then add a persisted cursor-backed
+   implementation.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are

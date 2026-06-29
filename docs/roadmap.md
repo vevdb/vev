@@ -368,8 +368,9 @@ it is not yet used by normal query/reopen paths, but it is the first concrete
 chunk-backed index view object. Public datom index APIs plus transaction,
 schema, pull, entity helper, and general `Clause-Index-Scan` paths now go
 through a resident `DB-Index-View` boundary, which is the first query-facing
-boundary for swapping resident arrays for persisted cursors. The explicit
-persist API
+boundary for swapping resident arrays for persisted cursors. Optimized
+entity-star projection streams also consume the same boundary for their
+`avet`/`aevt` scans. The explicit persist API
 full-replaces durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the
