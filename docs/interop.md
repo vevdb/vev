@@ -129,6 +129,8 @@ Odin consumption should use the C ABI through a small wrapper for now.
 `clients/odin/smoke.odin` proves the dynamic-loading path against the platform
 native library. Vev is implemented in Kvist and lowers through Odin, but
 generated Odin is build output, not the public Odin package surface.
+`scripts/smoke_odin_package.sh` now verifies this focused Odin wrapper path
+from a temporary build output.
 
 ## Native API
 
