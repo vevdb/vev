@@ -52,9 +52,11 @@ as the compatibility path, and validates persisted index entries back through
 root/chunk edges against those rebuilt indexes. Vev can now also load bounded
 persisted index-entry pages by offset and limit, reading only the leaf chunks
 covering that page. A read-only SQLite index cursor wraps that page loader with
-cached-page `count`/`at` access over persisted logical index entries. Chunk-
-backed DB snapshots and query access through those cursors are the next storage
-step.
+cached-page `count`/`at` access over persisted logical index entries. The
+runtime `DB-Index-View` abstraction can now wrap either resident arrays or a
+SQLite cursor, and tests exercise view `count`/`at`/bound helpers over a
+persisted cursor. Chunk-backed DB snapshots and normal reopen/query access
+through those cursors are the next storage step.
 
 There are now two write modes:
 
@@ -179,8 +181,9 @@ rather than a small local optimization:
 3. Keep SQLite as the durable log, metadata, and page/chunk store.
 4. Add chunk-backed read cursors over the persisted page loader for `eavt`,
    then extend to `aevt`, `avet`, and `vaet`. The first cursor exists for all
-   four persisted indexes; the next step is to make normal index accessors use
-   an index-view boundary.
+   four persisted indexes, and the index-view boundary can wrap those cursors.
+   The next step is to make reopened DB snapshots choose those cursor-backed
+   views instead of rebuilding resident arrays for normal access.
 5. Replace normal reopen with metadata/root loading plus lazy or bounded chunk
    loading. Datom-log replay should become recovery/migration behavior, not the
    large-database startup path.

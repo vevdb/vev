@@ -59,8 +59,10 @@ order, parse the persisted index-entry vector, and compare it to the rebuilt
 offset and limit, reading only the leaf chunks that cover the requested window.
 On top of that page loader, Vev now has a read-only SQLite index cursor that
 keeps one cached page and serves `count`/`at` access over a persisted logical
-index. The cursor is not wired into normal `DB` query execution yet; it is the
-first concrete storage object that can become a chunk-backed index view. The
+index. `DB-Index-View` now has both resident-array and SQLite-cursor modes, and
+the storage tests exercise the same view `count`/`at`/bound helpers over a
+persisted cursor. Normal reopened `DB` values still use resident arrays today,
+but the query-facing boundary can now represent a chunk-backed source. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
 current-value, pull, and entity helper paths now go through a resident
 `DB-Index-View` boundary instead of directly owning the slice logic at each
@@ -92,8 +94,9 @@ snapshots and paged index cursors is the next implementation step.
 2. Add read-only chunk cursors.
    Teach Vev index accessors to read ranges from persisted chunks with an
    in-memory cache. Whole-index loading and bounded page loading now exist and
-   are tested against rebuilt indexes. A first read-only SQLite index cursor
-   exists with cached-page `count`/`at` access. Public datom index APIs and
+   are tested against rebuilt indexes. A read-only SQLite index cursor exists
+   with cached-page `count`/`at` access, and `DB-Index-View` can now wrap that
+   cursor as well as resident arrays. Public datom index APIs and
    key transaction/schema/validation, pull, entity helper, general
    `Clause-Index-Scan`, entity-star, threshold, self-join, two-attribute,
    entity-attribute, entity-int, entity string/int, top-N aggregate, and
@@ -101,8 +104,8 @@ snapshots and paged index cursors is the next implementation step.
    cardinality-one fast entity helpers now use a resident index-view boundary.
    Schema validation, transaction cardinality retractions, recursive rule
    adjacency builders, and the remaining optimized typed/projection scans now
-   use that boundary too. The remaining work is to replace the resident view
-   implementation with a persisted cursor-backed implementation and decide how
+   use that boundary too. The remaining work is to make normal reopened DB
+   values construct persisted cursor-backed views where appropriate and decide how
    entity-position side tables are represented in shared/chunked snapshots.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.

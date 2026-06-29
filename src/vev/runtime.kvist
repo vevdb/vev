@@ -3550,32 +3550,88 @@
     (= order .AVET) (slice db.avet 0)
     :else (slice db.vaet 0)))
 
+(defenum DB-Index-View-Kind [
+  Resident
+  SQLite-Cursor
+])
+
 (defstruct DB-Index-View {
+  kind: DB-Index-View-Kind
   order: Public-Index-Order
   indexes: []int
+  sqlite-cursor: ^SQLite-Index-Cursor
 })
 
 (defn db-index-view [db: DB, order: Public-Index-Order] -> DB-Index-View
-  (DB-Index-View {order: order
+  (DB-Index-View {kind: .Resident
+                  order: order
                   indexes: (db-index-slice db order)}))
 
+(defn db-index-view-from-sqlite-cursor [order: Public-Index-Order, cursor: ^SQLite-Index-Cursor] -> DB-Index-View
+  (DB-Index-View {kind: .SQLite-Cursor
+                  order: order
+                  sqlite-cursor: cursor}))
+
 (defn db-index-view-count [view: DB-Index-View] -> int
-  (count view.indexes))
+  (if (= view.kind .SQLite-Cursor)
+    (sqlite-index-cursor-count view.sqlite-cursor^)
+    (count view.indexes)))
 
 (defn db-index-view-at [view: DB-Index-View, index: int] -> int
-  view.indexes[index])
+  (if (= view.kind .SQLite-Cursor)
+    (let [[entry ok _] (sqlite-index-cursor-at view.sqlite-cursor index)]
+      (if ok entry 0))
+    view.indexes[index]))
 
 (defn lower-bound-index-view-values [db: DB, view: DB-Index-View, values: []Value] -> int
-  (lower-bound-index-values db view.indexes (public-index-order-text view.order) values))
+  (let [order (public-index-order-text view.order)
+        low 0
+        high (db-index-view-count view)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            datom-index (db-index-view-at view mid)
+            compare (datom-index-compare-values-core db.datoms[datom-index] order values)]
+        (if (< compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
 
 (defn upper-bound-index-view-values [db: DB, view: DB-Index-View, values: []Value] -> int
-  (upper-bound-index-values db view.indexes (public-index-order-text view.order) values))
+  (let [order (public-index-order-text view.order)
+        low 0
+        high (db-index-view-count view)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            datom-index (db-index-view-at view mid)
+            compare (datom-index-compare-values-core db.datoms[datom-index] order values)]
+        (if (<= compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
 
 (defn lower-bound-index-view [db: DB, view: DB-Index-View, order: string, e: u64, a: string, v: Value] -> int
-  (lower-bound-index db view.indexes order e a v))
+  (let [low 0
+        high (db-index-view-count view)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            datom-index (db-index-view-at view mid)
+            compare (datom-prefix-compare db order datom-index e a v)]
+        (if (< compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
 
 (defn upper-bound-index-view [db: DB, view: DB-Index-View, order: string, e: u64, a: string, v: Value] -> int
-  (upper-bound-index db view.indexes order e a v))
+  (let [low 0
+        high (db-index-view-count view)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            datom-index (db-index-view-at view mid)
+            compare (datom-prefix-compare db order datom-index e a v)]
+        (if (<= compare 0)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    low))
 
 (defn datom-index-position-value [datom: Datom, order: string, position: int] -> Value
   (if (= order ":eavt")
