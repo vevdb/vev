@@ -62,3 +62,6 @@ vev-clj-0.1.0-SNAPSHOT.jar
 It also writes a local Maven-style repository under `build/m2`. Those artifacts
 are not published yet, but they verify the intended Maven split and
 bundled-native loading path.
+
+Run `scripts/smoke_jvm_package.sh` to test the local Maven repo from a
+temporary deps.edn project with only `dev.vevdb/vev-clj` as the Vev dependency.

@@ -74,6 +74,7 @@ published Clojure dependency shape can already be tested from outside the repo:
 
 These are not published releases yet, but they make the future
 `{:deps {dev.vevdb/vev-clj {:mvn/version ...}}}` story mechanically real.
+`scripts/smoke_jvm_package.sh` verifies the shape from a temporary project.
 
 Odin consumption should use the C ABI through a small wrapper for now.
 `clients/odin/smoke.odin` proves the dynamic-loading path against the platform

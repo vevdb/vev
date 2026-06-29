@@ -8,6 +8,7 @@ Build the native library and run the available client smoke tests:
 scripts/smoke_clients.sh
 scripts/stage_jvm_native.sh
 scripts/package_jvm.sh
+scripts/smoke_jvm_package.sh
 ```
 
 This builds:
@@ -76,6 +77,9 @@ The same shape can be tested locally after `scripts/package_jvm.sh`:
 {:mvn/local-repo "/path/to/vev/build/m2"
  :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
 ```
+
+`scripts/smoke_jvm_package.sh` automates that local dependency check from a
+temporary project.
 
 DB snapshots are passable immutable values. The wrapper has JVM cleanup
 fallbacks, so examples use normal Clojure binding style. Long-running services

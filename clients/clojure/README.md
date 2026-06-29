@@ -80,6 +80,9 @@ That local repository can be consumed from a separate test project:
                             "--enable-native-access=ALL-UNNAMED"]}}}
 ```
 
+`scripts/smoke_jvm_package.sh` builds the local artifacts and verifies this
+shape from a temporary deps.edn project.
+
 When developing from the repo root, the root `:clj-dev` alias adds the locally
 built Java classes and the required JVM flags:
 
