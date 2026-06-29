@@ -42,6 +42,8 @@ generation:
   `avet`, and `vaet`
 - `vev_index_chunk_edges`: parent/child links for multi-level chunk trees
 - `vev_index_roots`: basis tx to root chunk pointers
+- `vev_datoms.log_index`: stable datom-log position used by persisted index
+  entries
 - `vev_meta.storage-architecture = vev-sqlite-chunked-index-v0`
 
 The new tables are no longer only schema scaffolding. On successful SQLite
@@ -51,16 +53,26 @@ payload chunk. Larger indexes are split into bounded leaf chunks with a parent
 root chunk linked through `vev_index_chunk_edges`. Root rows point at the
 visible chunk root for each index at the committed basis tx. The payload stores
 current in-memory datom-index order, so it is a persisted Vev index artifact
-rather than a SQL query table. Reopen now reads the latest root metadata before
-the datom rows and validates persisted chunk indexes against the rebuilt
-in-memory indexes. Vev can follow the latest root, load leaf chunks in edge
-order, parse the persisted index-entry vector, and compare it to the rebuilt
-`DB`. It can also load a bounded entry page from the persisted chunk tree by
-offset and limit, reading only the leaf chunks that cover the requested window.
+rather than a SQL query table. Those datom positions are now durable too:
+SQLite writes `vev_datoms.log_index`, preserves log-index order on load, and
+can fetch a single serialized datom by log index. Reopen now reads the latest
+root metadata before the datom rows and validates persisted chunk indexes
+against the rebuilt in-memory indexes. Vev can follow the latest root, load
+leaf chunks in edge order, parse the persisted index-entry vector, and compare
+it to the rebuilt `DB`. It can also load a bounded entry page from the
+persisted chunk tree by offset and limit, reading only the leaf chunks that
+cover the requested window.
 On top of that page loader, Vev now has a read-only SQLite index cursor that
 keeps one cached page and serves `count`/`at` access over a persisted logical
-index. The cursor is not wired into normal `DB` query execution yet; it is the
-first concrete storage object that can become a chunk-backed index view. The
+index. `DB-Index-View` now has both resident-array and SQLite-cursor modes, and
+the storage tests exercise the same view `count`/`at`/bound helpers over a
+persisted cursor. `SQLite-Index-Snapshot` now opens all four persisted logical
+index cursors directly from a SQLite path or live handle, without calling
+`load-db-sqlite`, and can resolve individual datoms by durable log index.
+`SQLite-DB-Snapshot` wraps that index snapshot with basis tx and datom-count
+metadata, giving normal reopen/query code a durable snapshot shape to target.
+Normal reopened `DB` values still use resident arrays today, but the
+query-facing boundary can now represent a chunk-backed source. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
 current-value, pull, and entity helper paths now go through a resident
 `DB-Index-View` boundary instead of directly owning the slice logic at each
@@ -68,10 +80,20 @@ call site; this is still array-backed, but it gives query-facing and
 write-facing code a place to accept chunk-backed index views later. The general
 `Clause-Index-Scan` query operator now also carries a `DB-Index-View` instead
 of a raw index slice, so ordinary clause planning/matching is starting to use
-the same storage-facing abstraction.
+the same storage-facing abstraction. The optimized entity-star, threshold,
+self-join, two-attribute, entity-attribute, entity-int, entity string/int,
+top-N aggregate, and missing-attribute projection operators use the same
+boundary for their `avet`/`aevt`/`eavt` scans. The low-level latest-attribute
+and cardinality-one fast entity helpers also read datom indexes through that
+boundary now. Schema validation, transaction cardinality retractions, recursive
+rule adjacency builders, and the remaining optimized typed/projection scans no
+longer read datom index slices directly. The remaining resident read coupling
+is concentrated in `db-index-slice` itself and the `eavt` entity-position side
+tables.
 This is still a guarded compatibility path: Vev materializes datom rows and
-rebuilds indexes before validation. Wiring query/reopen to use chunk-backed DB
-snapshots and paged index cursors is the next implementation step.
+rebuilds indexes before validation for normal `DB` values. Wiring query/reopen
+to use `SQLite-Index-Snapshot`/chunk-backed DB snapshots instead of resident
+arrays is the next implementation step.
 
 ## Implementation Milestones
 
@@ -83,12 +105,25 @@ snapshots and paged index cursors is the next implementation step.
 2. Add read-only chunk cursors.
    Teach Vev index accessors to read ranges from persisted chunks with an
    in-memory cache. Whole-index loading and bounded page loading now exist and
-   are tested against rebuilt indexes. A first read-only SQLite index cursor
-   exists with cached-page `count`/`at` access. Public datom index APIs and
-   key transaction/schema/validation, pull, entity helper, and general
-   `Clause-Index-Scan` paths now use a resident index-view boundary. The
-   remaining work is to migrate the specialized query operators and then add a
-   persisted cursor-backed implementation.
+   are tested against rebuilt indexes. A read-only SQLite index cursor exists
+   with cached-page `count`/`at` access, and `DB-Index-View` can now wrap that
+   cursor as well as resident arrays. Public datom index APIs and
+   key transaction/schema/validation, pull, entity helper, general
+   `Clause-Index-Scan`, entity-star, threshold, self-join, two-attribute,
+   entity-attribute, entity-int, entity string/int, top-N aggregate, and
+   missing-attribute projection paths plus low-level latest-attribute and
+   cardinality-one fast entity helpers now use a resident index-view boundary.
+   Schema validation, transaction cardinality retractions, recursive rule
+   adjacency builders, and the remaining optimized typed/projection scans now
+   use that boundary too. Datom rows now carry durable `log_index` values and
+   SQLite can fetch an individual datom by log index, which is the next required
+   primitive for resolving persisted index entries without rebuilding the whole
+   DB. `SQLite-Index-Snapshot` packages the four persisted cursors plus datom
+   lookup, and `SQLite-DB-Snapshot` adds basis/datom-count metadata as the first
+   lazy-reopen DB snapshot object. The remaining work is to make normal reopened
+   DB values construct persisted cursor-backed views where appropriate and
+   decide how entity-position side tables are represented in shared/chunked
+   snapshots.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are

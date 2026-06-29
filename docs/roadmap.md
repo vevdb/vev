@@ -364,12 +364,28 @@ through root/chunk edges against rebuilt indexes. Bounded persisted index pages
 can also be loaded by offset/limit from the chunk tree, which is the first
 storage primitive needed for lazy chunk-backed cursors. A read-only SQLite
 index cursor now wraps that page loader with cached-page `count`/`at` access;
-it is not yet used by normal query/reopen paths, but it is the first concrete
-chunk-backed index view object. Public datom index APIs plus transaction,
-schema, pull, entity helper, and general `Clause-Index-Scan` paths now go
-through a resident `DB-Index-View` boundary, which is the first query-facing
-boundary for swapping resident arrays for persisted cursors. The explicit
-persist API
+`DB-Index-View` now has resident-array and SQLite-cursor modes, and storage
+tests exercise the same view `count`/`at`/bound helpers over a persisted
+cursor. SQLite datom rows now carry stable `log_index` values, append/full-save
+paths preserve those indexes, and storage tests fetch individual datoms by
+log index. `SQLite-Index-Snapshot` opens all four persisted logical index
+cursors from a SQLite path or live handle without calling `load-db-sqlite`, and
+can resolve datoms by durable log index. `SQLite-DB-Snapshot` adds basis tx and
+datom-count metadata around those cursors as the first durable DB snapshot
+shape. Normal query/reopen paths still construct resident views today, but the
+query-facing boundary can represent chunk-backed persisted cursors. Public
+datom index APIs plus transaction, schema, pull, entity helper, and general
+`Clause-Index-Scan` paths now go through `DB-Index-View`. Optimized
+entity-star, threshold, self-join, two-attribute, entity-attribute, entity-int,
+entity string/int, top-N aggregate, and missing-attribute projection operators
+also consume the same boundary for their `avet`/`aevt`/`eavt` scans. Low-level
+latest-attribute and cardinality-one fast entity helpers read datom indexes
+through the same boundary. Schema validation, transaction cardinality
+retractions, recursive rule adjacency builders, and the remaining optimized
+typed/projection scans no longer read datom index slices directly. The
+remaining resident read coupling is concentrated in `db-index-slice` itself and
+the `eavt` entity-position side tables. The
+explicit persist API
 full-replaces durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the
