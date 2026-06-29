@@ -39,6 +39,11 @@ public final class Vev {
         String apply(DB db, List<Object> args) throws Throwable;
     }
 
+    @FunctionalInterface
+    public interface TxReportListener {
+        void accept(Object report) throws Throwable;
+    }
+
     private final Arena arena;
     private final Cleaner.Cleanable cleanable;
     private final SymbolLookup symbols;
@@ -47,6 +52,8 @@ public final class Vev {
     private final MethodHandle connClose;
     private final MethodHandle connDb;
     private final MethodHandle connFromDb;
+    private final MethodHandle connListenTxReport;
+    private final MethodHandle connUnlistenTxReport;
     private final MethodHandle connectionOpen;
     private final MethodHandle connectionOk;
     private final MethodHandle connectionError;
@@ -287,6 +294,8 @@ public final class Vev {
         this.connClose = downcall("vev_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connDb = downcall("vev_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connFromDb = downcall("vev_conn_from_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connListenTxReport = downcall("vev_conn_listen_tx_report", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connUnlistenTxReport = downcall("vev_conn_unlisten_tx_report", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionOpen = downcall("vev_connect", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionOk = downcall("vev_connection_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
         this.connectionError = downcall("vev_connection_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -688,6 +697,10 @@ public final class Vev {
         }
     }
 
+    private void txReportListenerCallback(TxReportListener listener, MemorySegment user, MemorySegment report) throws Throwable {
+        listener.accept(valueToJava((MemorySegment) txReportValue.invoke(report)));
+    }
+
     private static boolean isNull(MemorySegment segment) {
         return segment == null || segment.equals(MemorySegment.NULL);
     }
@@ -956,6 +969,38 @@ public final class Vev {
         }
     }
 
+    public final class TxReportListenerRegistration implements AutoCloseable {
+        private final Arena arena;
+        private final Connection conn;
+        private final String name;
+        private final TxReportListener listener;
+        private boolean open;
+
+        private TxReportListenerRegistration(Arena arena, Connection conn, String name, TxReportListener listener) {
+            this.arena = arena;
+            this.conn = conn;
+            this.name = name;
+            this.listener = listener;
+            this.open = true;
+        }
+
+        @Override
+        public void close() {
+            if (open) {
+                try (Arena local = Arena.ofConfined()) {
+                    if (!isNull(conn.raw)) {
+                        connUnlistenTxReport.invoke(conn.raw, local.allocateUtf8String(name));
+                    }
+                } catch (Throwable error) {
+                    throw new RuntimeException(error);
+                } finally {
+                    open = false;
+                    arena.close();
+                }
+            }
+        }
+    }
+
     public final class Connection implements AutoCloseable {
         private MemorySegment raw;
 
@@ -990,6 +1035,40 @@ public final class Vev {
             return new TxReport((MemorySegment) txCommitReport.invoke(raw, tx.raw));
         }
 
+        public TxReportListenerRegistration listen(String name, TxReportListener listener) throws Throwable {
+            requireOpen();
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("listener name is required");
+            if (listener == null) throw new IllegalArgumentException("transaction listener callback is required");
+            Arena listenerArena = Arena.ofShared();
+            MethodHandle callback = MethodHandles.lookup()
+                .findVirtual(
+                    Vev.class,
+                    "txReportListenerCallback",
+                    MethodType.methodType(void.class, TxReportListener.class, MemorySegment.class, MemorySegment.class))
+                .bindTo(Vev.this)
+                .bindTo(listener);
+            MemorySegment stub = LINKER.upcallStub(
+                callback,
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+                listenerArena);
+            boolean ok;
+            try (Arena local = Arena.ofConfined()) {
+                ok = (boolean) connListenTxReport.invoke(raw, local.allocateUtf8String(name), stub, MemorySegment.NULL);
+            }
+            if (!ok) {
+                listenerArena.close();
+                throw new IllegalStateException("failed to register transaction listener: " + name);
+            }
+            return new TxReportListenerRegistration(listenerArena, this, name, listener);
+        }
+
+        public boolean unlisten(String name) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return (boolean) connUnlistenTxReport.invoke(raw, local.allocateUtf8String(name));
+            }
+        }
+
         public String queryText(String query, String inputs) throws Throwable {
             try (Arena local = Arena.ofConfined()) {
                 return ownedString((MemorySegment) queryEdnWithInputs.invoke(raw, local.allocateUtf8String(query), local.allocateUtf8String(inputs)));
@@ -1017,9 +1096,14 @@ public final class Vev {
         }
 
         public DB db() throws Throwable {
+            requireOpen();
             MemorySegment db = (MemorySegment) connDb.invoke(raw);
             if (isNull(db)) throw new IllegalStateException("failed to retain DB snapshot");
             return new DB(db);
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("connection is closed");
         }
 
         @Override

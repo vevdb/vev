@@ -35,9 +35,19 @@ EOF
 
 (
   cd "$TMP_DIR"
-  clojure -Sdeps "$(cat deps-java.edn)" -M:run -e "(import '[dev.vevdb.vev Vev])
+  clojure -Sdeps "$(cat deps-java.edn)" -M:run -e "(import '[dev.vevdb.vev Vev Vev\$TxReportListener])
 (with-open [vev (Vev/load)
             conn (.createConn vev)]
+  (let [seen (atom 0)]
+    (with-open [listener (.listen conn \"java-listener\"
+                                  (reify Vev\$TxReportListener
+                                    (accept [_ report]
+                                      (when (.contains (str report) \":user/listener\")
+                                        (swap! seen inc)))))]
+      (.transact conn \"[[:db/add 1 :user/listener \\\"heard\\\"]]\")
+      (assert (= 1 @seen)))
+    (.transact conn \"[[:db/add 1 :user/listener \\\"after-close\\\"]]\")
+    (assert (= 1 @seen)))
   (.transact conn \"[{:db/id 1 :user/name \\\"Ada\\\"}]\")
   (with-open [db (.db conn)]
     (let [rows (.queryRows vev (java.util.Map/of
@@ -58,6 +68,12 @@ EOF
   cd "$TMP_DIR"
   clojure -Sdeps "$(cat deps-clj.edn)" -M:run -e "(require '[vev.core :as d])
 (let [conn (d/create-conn)]
+  (let [seen (atom [])]
+    (with-open [listener (d/listen conn :clj-listener #(swap! seen conj (:tx-data %)))]
+      (d/transact conn [[:db/add 1 :user/listener \"heard\"]])
+      (assert (= 1 (count @seen))))
+    (d/transact conn [[:db/add 1 :user/listener \"after-close\"]])
+    (assert (= 1 (count @seen))))
   (d/transact conn [{:db/id 1 :user/name \"Ada\"}])
   (assert (= #{[\"Ada\"]}
              (d/q '[:find ?name :where [?e :user/name ?name]]

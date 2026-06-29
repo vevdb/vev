@@ -111,7 +111,9 @@ Deferred engine batch order:
    artifact, and `dev.vevdb/vev-clj` pulls Java.
    Java now exposes C ABI transaction-function registries through
    `TxFunctionRegistry`; Clojure exposes the Datomic-shaped `tx-fns` wrapper
-   where callbacks receive `(db & args)` and return ordinary tx-data.
+   where callbacks receive `(db & args)` and return ordinary tx-data. Java and
+   Clojure also expose in-memory transaction report listeners through
+   `Connection.listen` and `d/listen`/`d/unlisten`.
    Python and Node now also have tested temporary package layouts with bundled
    platform-native artifacts, and Odin has a dynamic C ABI smoke wrapper.
 MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current

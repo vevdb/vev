@@ -98,6 +98,16 @@ process:
   (d/transact conn [[:artist/rename 1 "John Winston Lennon"]] fns))
 ```
 
+Successful transaction reports can be observed with listeners:
+
+```clojure
+(def listener
+  (d/listen conn :audit #(println (:tx-data %))))
+
+(d/transact conn [{:db/id 3 :artist/name "George Harrison"}])
+(d/unlisten conn listener)
+```
+
 Durability is a separate step:
 
 ```clojure

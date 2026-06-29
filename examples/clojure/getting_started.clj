@@ -35,8 +35,15 @@
        db
        "ada@example.com")
 
+  (def listener
+    (d/listen conn :audit #(println (:tx-data %))))
+
+  (d/transact conn [{:db/id 3 :user/name "Barbara"}])
+
+  (d/unlisten conn listener)
+
   (def next-db
-    (d/db-with db [{:db/id 3 :user/name "Barbara"}]))
+    (d/db-with db [{:db/id 4 :user/name "Katherine"}]))
 
   (d/q '[:find ?name
          :where [?e :user/name ?name]]

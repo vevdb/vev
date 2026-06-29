@@ -4,7 +4,7 @@
 (ns vev.core
   (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
-           [dev.vevdb.vev Vev Vev$ColumnResult Vev$Entity Vev$MapValue Vev$PreparedPullPattern Vev$TxFunction]))
+           [dev.vevdb.vev Vev Vev$ColumnResult Vev$Entity Vev$MapValue Vev$PreparedPullPattern Vev$TxFunction Vev$TxReportListener]))
 
 (defn- path [value]
   (cond
@@ -101,6 +101,11 @@
     (.close ^java.lang.AutoCloseable native)))
 
 (defrecord TxFnRegistry [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
+(defrecord TxListenerRegistration [native]
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
@@ -232,6 +237,50 @@
      (clj-value (.value report)))))
 
 (def transact! transact)
+
+(defn- listener-name [key]
+  (cond
+    (keyword? key) (str key)
+    (symbol? key) (str key)
+    (string? key) key
+    :else (throw (ex-info "listener key must be a keyword, symbol, or string"
+                          {:key key}))))
+
+(defn listen
+  "Register a transaction listener on an in-memory connection.
+
+  The callback receives a Clojure transaction report map after successful
+  commits. The returned registration is AutoCloseable; `unlisten` can also
+  remove by key."
+  [conn key f]
+  (when-not (instance? Conn conn)
+    (throw (ex-info "transaction listeners currently require an in-memory connection"
+                    {:conn conn})))
+  (let [callback (reify Vev$TxReportListener
+                   (accept [_ report]
+                     (f (clj-value report))))]
+    (->TxListenerRegistration
+     (.listen (:native conn) (listener-name key) callback))))
+
+(def listen! listen)
+
+(defn unlisten
+  "Remove a transaction listener registration or listener key."
+  [conn key-or-registration]
+  (cond
+    (instance? TxListenerRegistration key-or-registration)
+    (do
+      (.close ^java.lang.AutoCloseable key-or-registration)
+      true)
+
+    (instance? Conn conn)
+    (.unlisten (:native conn) (listener-name key-or-registration))
+
+    :else
+    (throw (ex-info "transaction listeners currently require an in-memory connection"
+                    {:conn conn}))))
+
+(def unlisten! unlisten)
 
 (defn empty-db
   "Return an owned immutable empty DB value."

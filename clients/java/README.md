@@ -72,6 +72,19 @@ try (Vev.TxFunctionRegistry fns = vev.txFunctionRegistry()) {
 The Java callback returns EDN tx-data text. Higher-level clients such as
 Clojure can wrap this and let callbacks return ordinary host data.
 
+Successful transaction reports can be observed with a listener registration:
+
+```java
+try (Vev.TxReportListenerRegistration listener =
+         conn.listen("audit", report -> System.out.println(report))) {
+    conn.transact("[{:db/id 2 :user/name \"Grace\"}]");
+}
+```
+
+The callback receives the decoded report value while the native report handle is
+still valid. Keep data you need by copying it into ordinary Java structures
+inside the callback.
+
 The first published package should still support explicit native library paths.
 Bundled platform native artifacts should be published as separate
 `dev.vevdb:vev-native-<platform>` packages or merged into the runtime classpath

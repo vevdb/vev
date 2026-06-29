@@ -37,6 +37,18 @@ Application code should not pass Java paths or native library paths around:
   db)
 ```
 
+Transaction listeners are report callbacks on successful commits:
+
+```clojure
+(def listener
+  (d/listen conn :audit
+    (fn [report]
+      (println (:tx-data report)))))
+
+(d/transact conn [{:db/id 2 :user/name "Grace"}])
+(d/unlisten conn listener)
+```
+
 Durable usage should be similarly direct:
 
 ```clojure

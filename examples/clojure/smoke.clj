@@ -30,6 +30,18 @@
         (when-not (and (:ok tx) (integer? (:tx tx)) (map? (:tempids tx)))
           (throw (ex-info "unexpected transaction report" {:report tx}))))
 
+      (let [seen (atom [])]
+        (with-open [_listener (vev/listen conn :smoke-listener
+                                          #(swap! seen conj (:tx-data %)))]
+          (vev/transact conn [[:db/add 1 :user/listener "heard"]])
+          (when-not (= 1 (count @seen))
+            (throw (ex-info "listener did not observe successful transaction"
+                            {:seen @seen}))))
+        (vev/transact conn [[:db/add 1 :user/listener "after-unlisten"]])
+        (when-not (= 1 (count @seen))
+          (throw (ex-info "listener observed transaction after close"
+                          {:seen @seen}))))
+
       (let [db (vev/db conn)
             names (vev/q
                    db
