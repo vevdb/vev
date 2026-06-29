@@ -347,12 +347,17 @@ Packaging:
 - embedded native library path remains primary
 - CLI binary exercises the same engine path
 
-Status: first proof complete; deeper architecture deferred. Vev now has snapshot-file persistence, SQLite-backed datom row
+Status: first proof complete; shared-index architecture active. Vev now has snapshot-file persistence, SQLite-backed datom row
 persistence, explicit SQLite tx metadata rows, a native SQLite-backed
 connection wrapper, and raw C ABI durable connection handles. The SQLite slice
-creates metadata, transaction, tx metadata, and datom tables, writes one row
-per datom through a SQLite transaction, reopens from disk, rebuilds in-memory
-indexes, and then queries normally. The explicit persist API full-replaces
+creates metadata, transaction, tx metadata, datom, and forward-compatible
+index root/chunk tables. It writes one row per datom through a SQLite
+transaction, reopens from disk, rebuilds in-memory indexes, and then queries
+normally. The root/chunk tables and `storage-architecture` marker are present
+as the foundation for persisted Vev-owned logical indexes. Successful SQLite
+transactions and explicit persists now publish a first `single-chunk-index-v0`
+root with one payload chunk for each logical index at the committed basis tx;
+normal reopen does not use those chunks yet. The explicit persist API full-replaces
 durable datom rows from the connection's current datom log; the SQLite
 connection wrapper appends each successful transaction's report tx-data plus tx
 metadata rows as it commits and rolls the in-memory connection back if the
@@ -373,9 +378,10 @@ rebuilding it. A first Datalevin-style local write harness now measures pure
 write throughput across batch sizes and mixed read/write behavior through the
 SQLite-backed connection. A 10k-row durable run shows batch-100 writes are
 acceptable for this phase, while batch-1 and mixed read/write are dominated by
-per-commit immutable DB/index copying. The next durable milestone, when storage
-work resumes, is replacing whole-array DB/index ownership copies with shared
-immutable/chunked DB index storage, then scaling the write harness to direct
+per-commit immutable DB/index copying. The active durable milestone is now to
+replace the first coarse single-chunk root writer with bounded immutable chunks
+and chunk cursors, then replace whole-array DB/index ownership copies with
+shared immutable/chunked storage, and then scale the write harness to direct
 Datalevin `write-bench` comparisons.
 
 ## Phase 7: Dogfood
@@ -478,12 +484,14 @@ Do not continue durable storage by solving:
 
 The in-memory semantic core, EDN/C ABI surface, performance baseline, first
 SQLite durable loop, and MusicBrainz/Day-of-Datomic validation are now strong
-enough for the current phase. The next durable-storage gate is no longer
-proving that SQLite can open/write/close/reopen/query; that exists. The next
-durable-storage gate, when we return to storage, is:
+enough to make durable storage architecture the active phase. The next
+durable-storage gate is no longer proving that SQLite can
+open/write/close/reopen/query; that exists. The active gate is:
 
 - shared immutable/chunked DB index storage avoids per-commit whole-array
   copies while preserving immutable snapshot semantics
+- reopen loads metadata/root pointers before any bounded chunk loading or
+  datom-log recovery replay
 - transaction boundaries and SQLite-backed report metadata rows remain durable
 - immutable DB snapshot semantics remain visible through the native ABI
 - MusicBrainz/Datomic workshop queries continue to validate correctness and

@@ -3,10 +3,9 @@
 Vev has completed the first durable SQLite proof phase. Durable storage is not
 production-complete, but the basic semantic loop is now real and measured:
 open, write, close, reopen, query, transaction metadata, host connection
-handles, and Datalevin-style write-bench scaffolding all exist. The next active
-project phase is MusicBrainz/Day-of-Datomic workload validation. Further
-storage architecture work should resume when that workload or larger durable
-benchmarks make the current representation the limiting factor.
+handles, and Datalevin-style write-bench scaffolding all exist. The active
+storage phase is now the shared immutable/chunked index architecture described
+in `docs/storage-architecture.md`.
 
 The storage layer must preserve the existing semantic model:
 
@@ -39,11 +38,16 @@ The SQLite-backed slice persists datoms as rows:
 - `transact-sqlite-tx-data`
 - `transact-sqlite-text`
 
-It creates Vev metadata, transaction, and datom tables, writes one row per
-datom through a SQLite transaction, reopens from disk, rebuilds the in-memory
-indexes from those rows, and then runs normal Vev queries. The older snapshot
-table remains as a compatibility fallback for databases created by the first
-SQLite snapshot slice.
+It creates Vev metadata, transaction, datom, and forward-compatible index
+root/chunk tables, writes one row per datom through a SQLite transaction,
+reopens from disk, rebuilds the in-memory indexes from those rows, and then
+runs normal Vev queries. The older snapshot table remains as a compatibility
+fallback for databases created by the first SQLite snapshot slice. Vev now
+writes a first coarse `single-chunk-index-v0` root after successful SQLite
+transactions and explicit SQLite persists: one persisted payload chunk per
+logical index plus a root row at the committed basis tx. Reopen still ignores
+those chunks and rebuilds from datom rows; chunk-backed reopen/query is the next
+storage step.
 
 There are now two write modes:
 
@@ -150,23 +154,23 @@ new DB value can share old index pages and only add/replace the affected tail
 or page set. Special reportless fast paths are not the desired fix; transaction
 reports, listeners, and `db` snapshots still need correct immutable values.
 
-## Deferred Storage Architecture Work
+## Active Storage Architecture Work
 
-The current SQLite path is good enough to move on from the first durability
-phase. The known follow-up is architectural rather than a small local
-optimization:
+The current SQLite path is correct, but the known follow-up is architectural
+rather than a small local optimization:
 
 1. Replace whole-array DB/index ownership copies with shared immutable DB/index
    storage or chunked index pages.
 2. Preserve ordinary immutable DB snapshot semantics: reports, listeners, host
    handles, and `db` values must still see stable values after later writes.
-3. Keep SQLite as the durable log and metadata backend until measurements show
-   that persisted logical indexes are needed.
-4. Scale `bench/write_bench.kvist` to upstream Datalevin write-bench sizes only
-   after the shared-index representation exists or after MusicBrainz shows the
-   current path is acceptable for imports.
-5. Add persisted materialized current-datom/index structures only after reopen
-   or query measurements prove full in-memory rebuild is the bottleneck.
+3. Keep SQLite as the durable log, metadata, and page/chunk store.
+4. Replace the first `single-chunk-index-v0` root writer with bounded immutable
+   chunks and root edges for `eavt`, `aevt`, `avet`, and `vaet`.
+5. Replace normal reopen with metadata/root loading plus lazy or bounded chunk
+   loading. Datom-log replay should become recovery/migration behavior, not the
+   large-database startup path.
+6. Scale `bench/write_bench.kvist`, MusicBrainz reopen/query, and
+   snapshot-heavy loops against this representation.
 
 Special reportless fast paths are not the desired fix. They would make the
 benchmark look better while dodging the core requirement that Vev DB values are
@@ -203,9 +207,8 @@ Initial schema direction:
 - append-only transaction table
 - append-only datom table storing `e`, `a`, typed value payload, `tx`, and
   `added`
+- persisted logical index root/chunk tables for Vev-owned index segments
 - optional materialized current-datom table once commit/read costs need it
-- optional persisted logical index tables/pages once full-load rebuild is too
-  slow
 
 Current implementation status and later order:
 
@@ -228,8 +231,8 @@ Current implementation status and later order:
    incremental index build, and SQLite append cost. The next write-performance
    milestone, when we return to storage, is replacing whole-array DB/index
    ownership copies with a shared immutable DB/index representation.
-4. Move selected logical indexes to persisted structures only after benchmarks
-   show full rebuild is the bottleneck.
+4. Move selected logical indexes to persisted structures, starting with a single
+   read-only chunk writer/cursor and then expanding to the full index set.
 5. Keep extending the new `bench/write_bench.kvist` harness until it can run at
    Datalevin `write-bench` scale, then compare commit/reopen behavior against
    existing systems.

@@ -1,0 +1,69 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev-tests)
+
+(import fmt "core:fmt")
+(import os "core:os")
+(import t "kvist:test")
+(import vev "../vev")
+
+(defn remove-sqlite-files [path: string]
+  (os.remove path)
+  (os.remove (fmt.tprintf "%s-wal" path))
+  (os.remove (fmt.tprintf "%s-shm" path)))
+
+(t.deftest sqlite-initializes-chunked-index-metadata
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.storage-architecture.sqlite")
+  (let [path "tmp.vev.storage-architecture.sqlite"
+        [architecture architecture-ok architecture-error] (vev.sqlite-storage-architecture path)
+        [root-count root-count-ok root-count-error] (vev.sqlite-index-root-count path)
+        [chunk-count chunk-count-ok chunk-count-error] (vev.sqlite-index-chunk-count path)
+        [_ latest-ok latest-error] (vev.sqlite-latest-index-root-basis path)]
+    (defer (remove-sqlite-files path))
+    (t.is architecture-ok)
+    (t.is (= architecture-error ""))
+    (t.is (= architecture "vev-sqlite-chunked-index-v0"))
+    (t.is root-count-ok)
+    (t.is (= root-count-error ""))
+    (t.is (= root-count 0))
+    (t.is chunk-count-ok)
+    (t.is (= chunk-count-error ""))
+    (t.is (= chunk-count 0))
+    (t.is (not latest-ok))
+    (t.is (= latest-error "sqlite DB has no Vev index roots"))))
+
+(t.deftest sqlite-live-connection-exposes-chunked-index-metadata
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.storage-architecture-live.sqlite")
+  (let [path "tmp.vev.storage-architecture-live.sqlite"
+        [store opened-ok opened-error] (vev.open-sqlite-conn path)
+        report (vev.transact-sqlite-text
+                 (addr store)
+                 "[{:db/id 1 :user/name \"Ada\"} {:db/id 2 :user/name \"Grace\"}]")
+        second-report (vev.transact-sqlite-text
+                        (addr store)
+                        "[{:db/id 3 :user/name \"Frances\"}]")
+        [architecture architecture-ok architecture-error] (vev.sqlite-conn-storage-architecture (addr store))
+        [root-count root-count-ok root-count-error] (vev.sqlite-conn-index-root-count (addr store))
+        [chunk-count chunk-count-ok chunk-count-error] (vev.sqlite-conn-index-chunk-count (addr store))
+        [basis basis-ok basis-error] (vev.sqlite-conn-latest-index-root-basis (addr store))]
+    (defer (remove-sqlite-files path))
+    (t.is opened-ok)
+    (t.is (= opened-error ""))
+    (t.is report.ok)
+    (t.is second-report.ok)
+    (t.is architecture-ok)
+    (t.is (= architecture-error ""))
+    (t.is (= architecture "vev-sqlite-chunked-index-v0"))
+    (t.is root-count-ok)
+    (t.is (= root-count-error ""))
+    (t.is (= root-count 2))
+    (t.is chunk-count-ok)
+    (t.is (= chunk-count-error ""))
+    (t.is (= chunk-count 8))
+    (t.is basis-ok)
+    (t.is (= basis-error ""))
+    (t.is (= basis 2))
+    (vev.close-sqlite-conn store)))
