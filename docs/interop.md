@@ -226,8 +226,11 @@ The implementation lives in `src/vev_abi` with the public header in
 - register transaction functions that return EDN tx-data
 - free returned strings and handles
 
-See `docs/c-abi.md`, `clients/c/smoke.c`, and the Python/Rust/Java/Clojure
-smoke examples, plus the Go and Node/TypeScript smoke examples.
+Java exposes the raw transaction-function callback path as
+`TxFunctionRegistry`; Clojure wraps it as `tx-fns`, where callbacks return
+ordinary Clojure tx-data. See `docs/c-abi.md`, `clients/c/smoke.c`, and the
+Python/Rust/Java/Clojure smoke examples, plus the Go and Node/TypeScript smoke
+examples.
 
 ## Clojure/JVM
 

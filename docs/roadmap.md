@@ -107,6 +107,9 @@ Deferred engine batch order:
    the resource layout consumed by the Java loader, and `scripts/package_jvm.sh`
    builds local Java/native/Clojure proof jars under `build/jvm` plus a local
    Maven repository under `build/m2`.
+   Java now exposes C ABI transaction-function registries through
+   `TxFunctionRegistry`; Clojure exposes the Datomic-shaped `tx-fns` wrapper
+   where callbacks receive `(db & args)` and return ordinary tx-data.
    Python and Node now also have tested temporary package layouts with bundled
    platform-native artifacts, and Odin has a dynamic C ABI smoke wrapper.
 MusicBrainz/Datomic comparison is no longer an upcoming phase gate. The current
@@ -405,7 +408,9 @@ open/transact/close/reopen/query through the raw C ABI and the Python, Rust,
 Java, and Clojure example wrappers. The ABI-vs-native benchmark covers small
 lookups, DB snapshots, transaction reports, many-row results, direct row
 visitors, nested pull-many values, and host-provided transaction function
-callbacks. Further interop work should be driven by specific adapter needs,
+callbacks. The Java and Clojure wrappers now expose that transaction-function
+registry path, while still requiring the function ident to be installed in the
+DB like Datomic. Further interop work should be driven by specific adapter needs,
 especially packaging and richer host-specific APIs over the stable raw C
 surface.
 

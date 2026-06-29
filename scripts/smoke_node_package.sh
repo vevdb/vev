@@ -40,7 +40,7 @@ cp "$ROOT/build/lib/$LIB_NAME" "$TMP_DIR/native/$OS-$ARCH/$LIB_NAME"
   cd "$TMP_DIR"
   env -u VEV_NODE_NATIVE node - <<'JS'
 const vev = require("./vev");
-const conn = vev.openMemory();
+const conn = vev.createConn();
 conn.transact('[{:db/id 1 :user/name "Ada"}]');
 const result = conn.queryText('[:find ?name :where [?e :user/name ?name]]');
 if (!result.includes('"Ada"')) {

@@ -35,6 +35,38 @@ Planned Maven coordinate:
 dev.vevdb:vev-java
 ```
 
+Basic usage:
+
+```java
+try (Vev vev = Vev.load();
+     Vev.Connection conn = vev.createConn()) {
+    conn.transact("[{:db/id 1 :user/name \"Ada\"}]");
+    try (Vev.DB db = conn.db()) {
+        System.out.println(vev.queryRows(Map.of(
+            "query", "[:find ?name :where [?e :user/name ?name]]",
+            "args", List.of(db))));
+    }
+}
+```
+
+Transaction functions use a host registry plus a Datomic-style installed ident
+in the DB:
+
+```java
+try (Vev.TxFunctionRegistry fns = vev.txFunctionRegistry()) {
+    fns.register(":user/set-age", (db, args) ->
+        "[[:db/add " + args.get(0) + " :user/age " + args.get(1) + "]]");
+    conn.transact("[[:db/add 100 :db/ident :user/set-age]]");
+    try (Vev.TxReport report =
+             conn.transactReport("[[:user/set-age 1 42]]", fns)) {
+        System.out.println(report.value());
+    }
+}
+```
+
+The Java callback returns EDN tx-data text. Higher-level clients such as
+Clojure can wrap this and let callbacks return ordinary host data.
+
 The first published package should still support explicit native library paths.
 Bundled platform native artifacts should be published as separate
 `dev.vevdb:vev-native-<platform>` packages or merged into the runtime classpath

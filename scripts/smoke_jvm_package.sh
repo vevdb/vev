@@ -41,5 +41,13 @@ EOF
   (assert (= #{[\"Ada\"]}
              (d/q '[:find ?name :where [?e :user/name ?name]]
                   (d/db conn))))
+  (with-open [fns (d/tx-fns conn {:user/set-name
+                                  (fn [db e name]
+                                    [[:db/add e :user/name name]])})]
+    (d/transact conn [[:db/add 100 :db/ident :user/set-name]])
+    (d/transact conn [[:user/set-name 2 \"Grace\"]] fns)
+    (assert (= #{[\"Grace\"]}
+               (d/q '[:find ?name :where [2 :user/name ?name]]
+                    (d/db conn)))))
   (println :vev-jvm-package-ok))"
 )

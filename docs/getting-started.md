@@ -85,6 +85,19 @@ The Clojure API is the most Datomic-shaped public wrapper today:
 (d/pull db [:artist/name] 1)
 ```
 
+Registered transaction functions use the same Datomic-shaped tx-data calls.
+Install the ident in the DB, then provide executable behavior from the host
+process:
+
+```clojure
+(with-open [fns (d/tx-fns conn
+                  {:artist/rename
+                   (fn [db e name]
+                     [[:db/add e :artist/name name]])})]
+  (d/transact conn [[:db/add 100 :db/ident :artist/rename]])
+  (d/transact conn [[:artist/rename 1 "John Winston Lennon"]] fns))
+```
+
 Durability is a separate step:
 
 ```clojure
@@ -138,7 +151,7 @@ The Node wrapper loads a native N-API addon and exposes a small CommonJS API:
 
 ```js
 const vev = require("@vevdb/vev");
-const conn = vev.openMemory();
+const conn = vev.createConn();
 conn.transact('[{:db/id 1 :user/name "Ada"}]');
 console.log(conn.queryText('[:find ?name :where [?e :user/name ?name]]'));
 ```

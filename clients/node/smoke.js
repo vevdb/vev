@@ -26,7 +26,7 @@ function removeSqliteFiles(path) {
   }
 }
 
-const conn = vev.openMemory();
+const conn = vev.createConn();
 
 const tx = conn.transact(`
   [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}

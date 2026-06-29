@@ -32,4 +32,5 @@ export class PreparedQuery {
 }
 
 export function connect(uri: string): DurableConn;
+export function createConn(): Conn;
 export function openMemory(): Conn;

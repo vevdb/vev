@@ -179,6 +179,23 @@ Pull follows the same DB-value shape:
 (d/pull-many db [:user/name] [1 2])
 ```
 
+Transaction functions follow Datomic's installed-ident model: the DB contains
+the function ident, while the host registry supplies the executable callback for
+this process.
+
+```clojure
+(with-open [fns (d/tx-fns conn
+                  {:user/set-name
+                   (fn [db e name]
+                     [[:db/add e :user/name name]])})]
+  (d/transact conn [[:db/add 100 :db/ident :user/set-name]])
+  (d/transact conn [[:user/set-name 1 "Ada"]] fns))
+```
+
+The callback receives `(db & args)` and returns ordinary tx-data. The DB value
+is valid for the callback call; keep durable application state outside the
+callback if it needs to outlive the transaction.
+
 Immutable DB values support Datomic/DataScript-style `with` operations:
 
 ```clojure

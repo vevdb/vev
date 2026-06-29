@@ -198,6 +198,12 @@ released. This keeps the raw ABI simple while preserving normal transaction
 rollback semantics: if the callback fails or its returned tx-data is invalid,
 earlier segment operations are rolled back and listeners are not notified.
 
+The Java wrapper exposes this as `TxFunctionRegistry`, and the Clojure wrapper
+exposes `tx-fns`. Clojure callbacks receive `(db & args)` and return ordinary
+tx-data. The DB still needs the function ident installed with `:db/ident`,
+matching Datomic's model that transaction functions are named by DB idents
+while executable host code is supplied by the running process.
+
 ## Listener and derivation extension point
 
 Named report-sink listeners exist inside the engine. Raw C ABI transaction
