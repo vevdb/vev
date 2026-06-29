@@ -7,10 +7,12 @@ Current local development:
 
 ```sh
 scripts/build_c_abi.sh
+scripts/stage_jvm_native.sh
 ```
 
 That builds the platform native library under `build/lib`, compiles the Java
-wrapper into `build/examples/java`, and runs the Java smoke.
+wrapper into `build/examples/java`, runs the Java smoke, and stages the native
+library under `build/jvm-native` using the resource layout below.
 
 The wrapper loads the native library in this order:
 
@@ -43,3 +45,7 @@ dev/vevdb/vev/native/darwin-aarch64/libvev.dylib
 dev/vevdb/vev/native/darwin-x86_64/libvev.dylib
 dev/vevdb/vev/native/linux-x86_64/libvev.so
 ```
+
+`scripts/stage_jvm_native.sh` creates that resource tree for the current
+platform. A published native artifact can package the staged files as jar
+resources.

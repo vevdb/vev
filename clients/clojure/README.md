@@ -63,6 +63,7 @@ Build the native library and Java classes first:
 
 ```sh
 scripts/build_c_abi.sh
+scripts/stage_jvm_native.sh
 ```
 
 When developing from the repo root, the root `:clj-dev` alias adds the locally
