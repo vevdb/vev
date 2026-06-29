@@ -1534,6 +1534,47 @@
     (t.is (= result.stats.clause-candidates 3))
     (t.is (= result.stats.max-intermediate-bindings 1))))
 
+(t.deftest source-input-not-or-uses-relation-engine
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [{:db/id 1 :name "Ada"}
+             {:db/id 2 :name "Bob"}])
+        blocked (vev.q-text-profiled-with-inputs
+                  conn.db
+                  "[:find ?name :in $blocks :where [?e :name ?name] (not [$blocks ?e :blocked true])]"
+                  ([]vev.Query-Input
+                    [(vev.query-input-collection
+                       ([]vev.Value
+                         [(vev.value-vector3
+                            (vev.value-int 2)
+                            (vev.value-keyword ":blocked")
+                            (vev.value-bool true))]))]))
+        either (vev.q-text-profiled-with-inputs
+                 conn.db
+                 "[:find ?name :in $tags :where [?e :name ?name] (or [$tags ?e :tag :a] [$tags ?e :tag :b])]"
+                 ([]vev.Query-Input
+                   [(vev.query-input-collection
+                      ([]vev.Value
+                        [(vev.value-vector3
+                           (vev.value-int 1)
+                           (vev.value-keyword ":tag")
+                           (vev.value-keyword ":a"))
+                         (vev.value-vector3
+                           (vev.value-int 2)
+                           (vev.value-keyword ":tag")
+                           (vev.value-keyword ":b"))]))]))]
+    (t.is blocked.result.ok)
+    (t.is (= (count blocked.result.rows) 1))
+    (t.is (= blocked.result.rows[0].values[0].text "Ada"))
+    (t.is (= blocked.stats.steps 2))
+    (t.is (= blocked.stats.max-intermediate-bindings 2))
+    (t.is either.result.ok)
+    (t.is (= (count either.result.rows) 2))
+    (t.is (= either.stats.steps 2))
+    (t.is (= either.stats.max-intermediate-bindings 2))))
+
 (t.deftest datascript-bench-star-and-self-join-use-triple-columns
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

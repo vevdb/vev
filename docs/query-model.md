@@ -660,6 +660,12 @@ scan, but common relation-source joins such as `[?e :name ?n]` followed by
 `[$rows ?e :status ?s]` avoid `typed rows x source rows` scanning while still
 returning the normal `Query-Relation` representation.
 
+Source-input queries now enter the relation engine even when the source clauses
+appear inside `not`, `or`, or rule bodies rather than only as top-level clauses.
+The ordinary scalar/collection-input indexed planner remains the preferred path
+for simple non-source input queries, so this broadens source-aware physical
+execution without regressing the existing selective scalar-input fast path.
+
 Rule execution now has dependency analysis for rule-call graphs. Acyclic rule
 graphs are recognized and evaluated with a single bounded pass instead of the
 generic recursive fixpoint loop. The dependency graph also exposes strongly
@@ -687,7 +693,9 @@ Near-term query work should expand the relation engine in this order:
 2. Source-qualified collection operators: extend the direct source-aware
    relation representation to deeper nested source-qualified groups and broader
    named source combinations. Initial and bound source-input clauses are typed,
-   and bound primitive source-input joins now have a keyed typed operator.
+   bound primitive source-input joins have a keyed typed operator, and
+   source-input clauses inside `not`, `or`, and rule bodies are detected as
+   relation-engine eligible.
 3. Rules: continue moving the positive-rule memo/delta evaluator from binding
    rows toward relation-native semi-naive behavior. DB clause steps and broad
    rule-call joins are now relation-native, and valid memo/delta relation caches
