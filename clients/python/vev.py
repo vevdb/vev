@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import pathlib
 import sys
 import uuid
@@ -103,17 +104,52 @@ class VevError(RuntimeError):
     pass
 
 
-def _default_library_path() -> pathlib.Path:
-    root = pathlib.Path(__file__).resolve().parents[2]
+def _platform_library_name() -> str:
     if sys.platform == "darwin":
-        library = "libvev.dylib"
+        return "libvev.dylib"
+    if sys.platform.startswith("linux"):
+        return "libvev.so"
+    if sys.platform in ("win32", "cygwin"):
+        return "vev.dll"
+    return "libvev"
+
+
+def _platform_id() -> str:
+    if sys.platform == "darwin":
+        os_name = "darwin"
     elif sys.platform.startswith("linux"):
-        library = "libvev.so"
+        os_name = "linux"
     elif sys.platform in ("win32", "cygwin"):
-        library = "vev.dll"
+        os_name = "windows"
     else:
-        library = "libvev"
-    return root / "build" / "lib" / library
+        os_name = sys.platform
+
+    machine = os.uname().machine.lower() if hasattr(os, "uname") else ""
+    if machine in ("arm64", "aarch64"):
+        arch = "aarch64"
+    elif machine in ("x86_64", "amd64"):
+        arch = "x86_64"
+    else:
+        arch = machine or "unknown"
+    return f"{os_name}-{arch}"
+
+
+def _default_library_path() -> pathlib.Path:
+    env_path = os.environ.get("VEV_LIB")
+    if env_path:
+        return pathlib.Path(env_path)
+
+    library = _platform_library_name()
+    root = pathlib.Path(__file__).resolve().parents[2]
+    local = root / "build" / "lib" / library
+    if local.exists():
+        return local
+
+    bundled = pathlib.Path(__file__).resolve().parent / "native" / _platform_id() / library
+    if bundled.exists():
+        return bundled
+
+    return local
 
 
 def _bytes(text: str) -> bytes:

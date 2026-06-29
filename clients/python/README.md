@@ -9,13 +9,19 @@ scripts/build_c_abi.sh
 python3 clients/python/smoke.py
 ```
 
-The adapter loads the native library from:
+The adapter loads the native library in this order:
 
-```text
-build/lib/<platform-library-name>
-```
+- explicit path passed to `vev.Library`
+- `VEV_LIB`
+- local repo `build/lib/<platform-library-name>`
+- future bundled `native/<platform>/<platform-library-name>` package resource
 
-or from an explicit path when constructing `vev.Library`.
+The bundled-resource path mirrors the JVM native artifact layout and is intended
+for future wheels.
+
+`scripts/smoke_python_package.sh` verifies that future shape by copying
+`vev.py` and the platform native library to a temporary package-like directory
+and importing it without `VEV_LIB`.
 
 Planned package shape:
 

@@ -9,6 +9,7 @@ scripts/smoke_clients.sh
 scripts/stage_jvm_native.sh
 scripts/package_jvm.sh
 scripts/smoke_jvm_package.sh
+scripts/smoke_python_package.sh
 ```
 
 This builds:
@@ -80,6 +81,21 @@ The same shape can be tested locally after `scripts/package_jvm.sh`:
 
 `scripts/smoke_jvm_package.sh` automates that local dependency check from a
 temporary project.
+
+## Python
+
+The Python client is a pure `ctypes` wrapper today:
+
+```python
+import vev
+
+with vev.Library().create_conn() as conn:
+    conn.transact('[{:db/id 1 :user/name "Ada"}]')
+    print(conn.db().query('[:find ?name :where [?e :user/name ?name]]'))
+```
+
+`scripts/smoke_python_package.sh` simulates a future wheel layout by loading a
+bundled `native/<platform>/<library>` next to `vev.py`.
 
 DB snapshots are passable immutable values. The wrapper has JVM cleanup
 fallbacks, so examples use normal Clojure binding style. Long-running services
