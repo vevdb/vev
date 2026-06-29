@@ -103,6 +103,10 @@ class PreparedQuery {
   rows(conn, inputs = "[]") {
     return native.queryPreparedRows(conn._handle, this._handle, String(inputs));
   }
+
+  edn() {
+    return native.preparedQueryEdn(this._handle);
+  }
 }
 
 function openMemory() {

@@ -450,6 +450,8 @@ intended safe wrapper shape:
   with `Drop`
 - statement methods expose typed scalar and collection bindings
 - prepared queries and bound statements can return generic typed column batches
+- `PreparedQuery::edn()` returns the portable parser description exposed by the
+  C ABI
 - result values are converted into a small Rust `Value` enum
 - transaction reports use an owned `TxReport` wrapper with typed `Value`
   traversal
@@ -459,6 +461,11 @@ bindings, homogeneous collection bindings, pull-pattern statement bindings,
 pull result traversal, direct pull APIs, DB snapshots, querying a snapshot with
 a statement, immutable `db-with`, deriving a connection from a DB value, and
 SQLite-backed open/write/close/reopen/query.
+
+The Go and Node smoke wrappers follow the same adapter contract: prepared
+query handles are ordinary host objects, can be inspected through
+`PreparedQuery.EDN()` / `PreparedQuery.edn()`, and can run against either a live
+connection or retained immutable DB snapshot.
 
 ## Java And Clojure Examples
 

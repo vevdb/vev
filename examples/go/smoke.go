@@ -310,6 +310,10 @@ func (q *PreparedQuery) Close() {
 	}
 }
 
+func (q *PreparedQuery) EDN() string {
+	return ownedString(C.vev_prepared_query_edn(q.raw))
+}
+
 func (q *PreparedQuery) Query(conn *Conn, inputs string) string {
 	inputsText := cstring(inputs)
 	defer C.free(unsafe.Pointer(inputsText))
@@ -678,6 +682,11 @@ func main() {
 		panic(err)
 	}
 	defer query.Close()
+
+	preparedAST := query.EDN()
+	if !strings.Contains(preparedAST, ":clauses") || !strings.Contains(preparedAST, ":input-specs") {
+		panic("prepared query AST did not expose parser keys")
+	}
 
 	prepared := query.Query(conn, `["grace@example.com"]`)
 	fmt.Println("prepared:", prepared)

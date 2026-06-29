@@ -51,6 +51,8 @@ const query = conn.prepare(`
           [(= ?email ?needle)]]
 `);
 
+mustContain("prepared AST", query.edn(), ":clauses", ":input-specs");
+
 const prepared = query.query(conn, `["grace@example.com"]`);
 console.log("prepared:", prepared);
 mustContain("prepared query", prepared, "2", `"grace@example.com"`);
