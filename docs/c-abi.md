@@ -668,11 +668,19 @@ prepared-query handle. This should eventually be replaced by explicit engine
 copying or interned immutable values, but the ABI boundary already has the right
 handle ownership shape.
 
-DB snapshots returned by `vev_conn_db` copy the current DB into an owned
-immutable snapshot storage value. `vev_db_retain` is cheap: it increments the
-snapshot storage refcount and returns another owned handle. DB handles can be
-queried after later transactions on the connection, and they can outlive the
-connection that produced them.
+DB snapshots are moving to a storage-neutral owned handle internally. Memory
+connections still wrap a resident immutable DB snapshot. Durable connections are
+being wired to wrap a retained `Store-DB` snapshot so prepared queries and pull
+can run over persisted index chunks instead of rebuilding resident arrays.
+`vev_db_retain` remains cheap: it increments the snapshot storage refcount and
+returns another owned handle. DB handles can be queried after later transactions
+on the connection, and they can outlive the connection that produced them.
+
+Current caveat: the storage-neutral `vev_db_t` wrapper changes are in the Kvist
+ABI source, but the C ABI build is still blocked by the raw Odin transaction
+listener callback helper in `src/vev_abi/vev_abi.kvist`. Until that callback
+glue is fixed or moved out of the raw block, this public behavior is not yet
+verified by the C/JVM smoke tests.
 
 DB values also support immutable transaction operations through the ABI:
 

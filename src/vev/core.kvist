@@ -166,6 +166,17 @@
   v: Value
 })
 
+(defstruct Tx-Publish-Plan {
+  append-only: bool
+  new-entities-after-existing: bool
+  start-index: int
+  appended-count: int
+  eavt: [dynamic]int
+  aevt: [dynamic]int
+  avet: [dynamic]int
+  vaet: [dynamic]int
+})
+
 (defstruct Tx-Report {
   ok: bool
   error: string
@@ -178,6 +189,7 @@
   datom-start-index: int
   append-only: bool
   new-entities-after-existing: bool
+  publish-plan: Tx-Publish-Plan
 })
 
 (defstruct Tx-Fn-Result {
@@ -1287,6 +1299,49 @@
           (value-less? left.v right.v)
           (< left-index right-index))))))
 
+(defn datom-less-order? [left: Datom, right: Datom, order: string, left-index: int, right-index: int] -> bool
+  (cond
+    (= order "eavt")
+      (if (not (= left.e right.e))
+        (< left.e right.e)
+        (if (not (= left.a right.a))
+          (string-less? left.a right.a)
+          (if (not (value-equal? left.v right.v))
+            (value-less? left.v right.v)
+            (< left.tx right.tx))))
+    (= order "aevt")
+      (if (not (= left.a right.a))
+        (string-less? left.a right.a)
+        (if (not (= left.e right.e))
+          (< left.e right.e)
+          (if (not (value-equal? left.v right.v))
+            (value-less? left.v right.v)
+            (< left.tx right.tx))))
+    (= order "avet")
+      (if (not (= left.a right.a))
+        (string-less? left.a right.a)
+        (if (not (value-equal? left.v right.v))
+          (value-less? left.v right.v)
+          (if (not (= left.e right.e))
+            (< left.e right.e)
+            (< left.tx right.tx))))
+    (= order "fact-log")
+      (if (not (= left.e right.e))
+        (< left.e right.e)
+        (if (not (= left.a right.a))
+          (string-less? left.a right.a)
+          (if (not (value-equal? left.v right.v))
+            (value-less? left.v right.v)
+            (< left-index right-index))))
+    :else
+      (if (not (value-equal? left.v right.v))
+        (value-less? left.v right.v)
+        (if (not (= left.a right.a))
+          (string-less? left.a right.a)
+          (if (not (= left.e right.e))
+            (< left.e right.e)
+            (< left.tx right.tx))))))
+
 (defn datom-index-less? [datoms: []Datom, order: string, left: int, right: int] -> bool
   (cond
     (= order "eavt") (datom-less-eavt? datoms left right)
@@ -1338,6 +1393,65 @@
     (sort-datom-indexes! (addr indexes) datoms order)
     indexes))
 
+(defn sorted-appended-datom-slice-indexes [datoms: []Datom, start-index: int, order: string] -> [dynamic]int
+  (let [indexes (make [dynamic]int 0 (count datoms))]
+    (for [_ index datoms]
+      (arr.push! indexes index))
+    (sort-datom-indexes! (addr indexes) datoms order)
+    (let [i 0]
+      (while (< i (count indexes))
+        (set! indexes[i] (+ indexes[i] start-index))
+        (set! i (+ i 1))))
+    indexes))
+
+(defn tx-publish-plan-empty [start-index: int, appended-count: int] -> Tx-Publish-Plan
+  (let [eavt (make [dynamic]int)
+        aevt (make [dynamic]int)
+        avet (make [dynamic]int)
+        vaet (make [dynamic]int)]
+    (Tx-Publish-Plan {append-only: false
+                      new-entities-after-existing: false
+                      start-index: start-index
+                      appended-count: appended-count
+                      eavt: eavt
+                      aevt: aevt
+                      avet: avet
+                      vaet: vaet})))
+
+(defn tx-publish-plan-for-append [datoms: []Datom, start-index: int, new-entities-after-existing: bool] -> Tx-Publish-Plan
+  (let [eavt (sorted-appended-datom-slice-indexes datoms start-index "eavt")
+        aevt (sorted-appended-datom-slice-indexes datoms start-index "aevt")
+        avet (sorted-appended-datom-slice-indexes datoms start-index "avet")
+        vaet (sorted-appended-datom-slice-indexes datoms start-index "vaet")]
+    (Tx-Publish-Plan {append-only: true
+                      new-entities-after-existing: new-entities-after-existing
+                      start-index: start-index
+                      appended-count: (count datoms)
+                      eavt: eavt
+                      aevt: aevt
+                      avet: avet
+                      vaet: vaet})))
+
+(defn clone-tx-publish-plan [plan: Tx-Publish-Plan] -> Tx-Publish-Plan
+  (let [eavt (arr.into [dynamic]int (slice plan.eavt 0))
+        aevt (arr.into [dynamic]int (slice plan.aevt 0))
+        avet (arr.into [dynamic]int (slice plan.avet 0))
+        vaet (arr.into [dynamic]int (slice plan.vaet 0))]
+    (Tx-Publish-Plan {append-only: plan.append-only
+                      new-entities-after-existing: plan.new-entities-after-existing
+                      start-index: plan.start-index
+                      appended-count: plan.appended-count
+                      eavt: eavt
+                      aevt: aevt
+                      avet: avet
+                      vaet: vaet})))
+
+(defn delete-tx-publish-plan [plan: Tx-Publish-Plan]
+  (delete plan.eavt)
+  (delete plan.aevt)
+  (delete plan.avet)
+  (delete plan.vaet))
+
 (defn merge-datom-indexes [datoms: []Datom, existing: []int, added: []int, order: string] -> [dynamic]int
   (let [out (make [dynamic]int 0 (+ (count existing) (count added)))
         left 0
@@ -1376,6 +1490,11 @@
     (if (datom-indexes-can-concat? datoms existing (slice added 0) order)
       (concat-datom-indexes existing (slice added 0))
       (merge-datom-indexes datoms existing (slice added 0) order))))
+
+(defn append-index-with-added [datoms: []Datom, existing: []int, added: []int, order: string] -> [dynamic]int
+  (if (datom-indexes-can-concat? datoms existing added order)
+    (concat-datom-indexes existing added)
+    (merge-datom-indexes datoms existing added order)))
 
 (defn added-entities-after-existing? [db: DB, datoms: []Datom, start-index: int] -> bool
   (when (= (count db.eavt) 0)
@@ -1580,53 +1699,69 @@
          schema-unique: schema-unique
          schema-ref: schema-ref})))
 
+(defn build-current-index-appended-range [current: []int, start-index: int, end-index: int] -> [dynamic]int
+  (let [out (arr.into [dynamic]int current)
+        index start-index]
+    (while (< index end-index)
+      (arr.push! out index)
+      (set! index (+ index 1)))
+    out))
+
 (defn build-db-append-only-merged [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
+  (let [new-entities-after-existing (added-entities-after-existing? db (slice datoms 0) start-index)
+        plan (tx-publish-plan-for-append (slice datoms start-index) start-index new-entities-after-existing)]
+    (defer (delete-tx-publish-plan plan))
+    (build-db-append-only-with-publish-plan db datoms plan)))
+
+(defn build-db-append-only-merged-with-publish-plan [db: DB, datoms: [dynamic]Datom, plan: Tx-Publish-Plan] -> DB
   (let [slice-datoms (slice datoms 0)
-        eavt (append-index slice-datoms (slice db.eavt 0) start-index "eavt")
+        eavt (append-index-with-added slice-datoms (slice db.eavt 0) (slice plan.eavt 0) "eavt")
         [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
-        current (arr.into [dynamic]int (slice db.current 0))]
-    (let [index start-index]
-      (while (< index (count datoms))
-        (arr.push! current index)
-        (set! index (+ index 1))))
+        current (build-current-index-appended-range (slice db.current 0) plan.start-index (+ plan.start-index plan.appended-count))]
     (DB {datoms: datoms
          current: current
          eavt: eavt
          eavt-entities: eavt-entities
          eavt-entity-starts: eavt-entity-starts
-         aevt: (append-index slice-datoms (slice db.aevt 0) start-index "aevt")
-         avet: (append-index slice-datoms (slice db.avet 0) start-index "avet")
-         vaet: (append-index slice-datoms (slice db.vaet 0) start-index "vaet")
+         aevt: (append-index-with-added slice-datoms (slice db.aevt 0) (slice plan.aevt 0) "aevt")
+         avet: (append-index-with-added slice-datoms (slice db.avet 0) (slice plan.avet 0) "avet")
+         vaet: (append-index-with-added slice-datoms (slice db.vaet 0) (slice plan.vaet 0) "vaet")
          schema-value-types: (clone-schema-value-types db.schema-value-types)
          schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)
          schema-unique: (clone-schema-unique db.schema-unique)
          schema-ref: (clone-schema-ref db.schema-ref)})))
 
 (defn build-db-append-only-new-entities [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
+  (let [plan (tx-publish-plan-for-append (slice datoms start-index) start-index true)]
+    (defer (delete-tx-publish-plan plan))
+    (build-db-append-only-new-entities-with-publish-plan db datoms plan)))
+
+(defn build-db-append-only-new-entities-with-publish-plan [db: DB, datoms: [dynamic]Datom, plan: Tx-Publish-Plan] -> DB
   (let [slice-datoms (slice datoms 0)
-        eavt (append-eavt-index-new-entities slice-datoms (slice db.eavt 0) start-index)
+        eavt (concat-datom-indexes (slice db.eavt 0) (slice plan.eavt 0))
         [eavt-entities eavt-entity-starts] (append-eavt-entities-new-entities slice-datoms
                                                                               (slice eavt 0)
                                                                               (slice db.eavt-entities 0)
                                                                               (slice db.eavt-entity-starts 0)
                                                                               (count db.eavt))
-        current (arr.into [dynamic]int (slice db.current 0))]
-    (let [index start-index]
-      (while (< index (count datoms))
-        (arr.push! current index)
-        (set! index (+ index 1))))
+        current (build-current-index-appended-range (slice db.current 0) plan.start-index (+ plan.start-index plan.appended-count))]
     (DB {datoms: datoms
          current: current
          eavt: eavt
          eavt-entities: eavt-entities
          eavt-entity-starts: eavt-entity-starts
-         aevt: (append-index slice-datoms (slice db.aevt 0) start-index "aevt")
-         avet: (append-index slice-datoms (slice db.avet 0) start-index "avet")
-         vaet: (append-index slice-datoms (slice db.vaet 0) start-index "vaet")
+         aevt: (append-index-with-added slice-datoms (slice db.aevt 0) (slice plan.aevt 0) "aevt")
+         avet: (append-index-with-added slice-datoms (slice db.avet 0) (slice plan.avet 0) "avet")
+         vaet: (append-index-with-added slice-datoms (slice db.vaet 0) (slice plan.vaet 0) "vaet")
          schema-value-types: (clone-schema-value-types db.schema-value-types)
          schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)
          schema-unique: (clone-schema-unique db.schema-unique)
          schema-ref: (clone-schema-ref db.schema-ref)})))
+
+(defn build-db-append-only-with-publish-plan [db: DB, datoms: [dynamic]Datom, plan: Tx-Publish-Plan] -> DB
+  (if plan.new-entities-after-existing
+    (build-db-append-only-new-entities-with-publish-plan db datoms plan)
+    (build-db-append-only-merged-with-publish-plan db datoms plan)))
 
 (defn build-db-append-only [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
   (if (added-entities-after-existing? db (slice datoms 0) start-index)

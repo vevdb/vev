@@ -238,14 +238,16 @@
     (delete-owned-db report.db-after))
   (delete report.tx-data)
   (delete report.tx-meta)
-  (delete report.tempids))
+  (delete report.tempids)
+  (delete-tx-publish-plan report.publish-plan))
 
 (defn delete-live-tx-report-shallow [report: Tx-Report]
   (when report.ok
     (delete-owned-db report.db-before))
   (delete report.tx-data)
   (delete report.tx-meta)
-  (delete report.tempids))
+  (delete report.tempids)
+  (delete-tx-publish-plan report.publish-plan))
 
 (defn clone-datoms [datoms: [dynamic]Datom] -> [dynamic]Datom
   (arr.into [dynamic]Datom (slice datoms 0)))
@@ -270,7 +272,8 @@
                 tempids: tempids
                 datom-start-index: report.datom-start-index
                 append-only: report.append-only
-                new-entities-after-existing: report.new-entities-after-existing})))
+                new-entities-after-existing: report.new-entities-after-existing
+                publish-plan: (clone-tx-publish-plan report.publish-plan)})))
 
 (defn listen! [conn: ^Conn, name: string, reports: ^[dynamic]Tx-Report] -> bool
   (for [listener index conn^.listeners]
@@ -7515,7 +7518,8 @@
               tempids: (make [dynamic]Tempid)
               datom-start-index: 0
               append-only: false
-              new-entities-after-existing: false}))
+              new-entities-after-existing: false
+              publish-plan: (tx-publish-plan-empty 0 0)}))
 
 (defn reset-conn-with-meta [conn: ^Conn, next-db: DB, tx-meta: []Tx-Meta] -> Tx-Report
   (let [before (clone-db conn^.db)
@@ -7544,7 +7548,8 @@
                              tempids: (make [dynamic]Tempid)
                              datom-start-index: 0
                              append-only: false
-                             new-entities-after-existing: false})]
+                             new-entities-after-existing: false
+                             publish-plan: (tx-publish-plan-empty 0 (count tx-data))})]
       (notify-listeners! conn report)
       report)))
 
@@ -7919,7 +7924,10 @@
 
 (defn build-db-with-appended-datoms [before: DB, datoms: [dynamic]Datom, start-index: int, appended: []Datom] -> DB
   (if (append-only-datoms-eligible? before appended)
-    (build-db-append-only before datoms start-index)
+    (let [new-entities-after-existing (added-entities-after-existing? before (slice datoms 0) start-index)
+          plan (tx-publish-plan-for-append appended start-index new-entities-after-existing)]
+      (defer (delete-tx-publish-plan plan))
+      (build-db-append-only-with-publish-plan before datoms plan))
     (build-db datoms)))
 
 (defn transact-ops-with-tempids-from-before [conn: ^Conn, before: DB, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
@@ -7969,10 +7977,15 @@
               (arr.push! tx-data (datom-owned datom))))
           (when (= op.kind .Add)
             (set.add! seen-ea (entity-attr-key op.e op.a))))))
+    (let [new-entities-after-existing (and append-only-ok
+                                           (added-entities-after-existing? before (slice after-datoms 0) start-index))
+          publish-plan (if append-only-ok
+                         (tx-publish-plan-for-append (slice tx-data 0) start-index new-entities-after-existing)
+                         (tx-publish-plan-empty start-index (count tx-data)))]
     (delete expanded-ops)
     (delete compacted-ops)
     (let [after (if append-only-ok
-                  (build-db-append-only before after-datoms start-index)
+                  (build-db-append-only-with-publish-plan before after-datoms publish-plan)
                   (build-db after-datoms))]
       (set! conn^.db after)
       (set! conn^.next-tx (+ conn^.next-tx 1))
@@ -7991,10 +8004,10 @@
                                  tempids: report-tempids
                                  datom-start-index: start-index
                                  append-only: append-only-ok
-                                 new-entities-after-existing: (and append-only-ok
-                                                                   (added-entities-after-existing? before (slice after-datoms 0) start-index))})]
+                                 new-entities-after-existing: new-entities-after-existing
+                                 publish-plan: publish-plan})]
           (notify-listeners! conn report)
-          report)))))
+          report))))))
 
 (defn transact-ops-with-tempids [conn: ^Conn, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [before conn^.db]
@@ -8063,7 +8076,14 @@
     (for [datom datoms]
       (arr.push! out datom))
     (let [append-only-ok (append-only-datoms-eligible? before datoms)
-          after (build-db-with-appended-datoms before out start-index datoms)
+          new-entities-after-existing (and append-only-ok
+                                           (added-entities-after-existing? before (slice out 0) start-index))
+          publish-plan (if append-only-ok
+                         (tx-publish-plan-for-append datoms start-index new-entities-after-existing)
+                         (tx-publish-plan-empty start-index (count datoms)))
+          after (if append-only-ok
+                  (build-db-append-only-with-publish-plan before out publish-plan)
+                  (build-db out))
           tx-data (arr.into [dynamic]Datom datoms)]
       (Tx-Report {ok: true
                   error: ""
@@ -8075,8 +8095,8 @@
                   tempids: (make [dynamic]Tempid)
                   datom-start-index: start-index
                   append-only: append-only-ok
-                  new-entities-after-existing: (and append-only-ok
-                                                    (added-entities-after-existing? before (slice out 0) start-index))}))))
+                  new-entities-after-existing: new-entities-after-existing
+                  publish-plan: publish-plan}))))
 
 (defn transact-datoms [conn: ^Conn, datoms: []Datom] -> Tx-Report
   (let [before conn^.db
@@ -8085,12 +8105,17 @@
     (for [datom datoms]
       (arr.push! out datom))
     (let [append-only-ok (append-only-datoms-eligible? before datoms)
-          after (build-db-with-appended-datoms before out start-index datoms)
           tx-data (arr.into [dynamic]Datom datoms)
           tx (report-tx-for-datoms conn^.next-tx datoms)]
-      (set! conn^.db after)
-      (set! conn^.next-tx (next-tx-after-datoms conn^.next-tx (slice conn^.db.datoms 0)))
-      (let [report (Tx-Report {ok: true
+      (let [new-entities-after-existing (and append-only-ok
+                                             (added-entities-after-existing? before (slice out 0) start-index))
+            publish-plan (if append-only-ok
+                           (tx-publish-plan-for-append datoms start-index new-entities-after-existing)
+                           (tx-publish-plan-empty start-index (count datoms)))
+            after (if append-only-ok
+                    (build-db-append-only-with-publish-plan before out publish-plan)
+                    (build-db out))
+            report (Tx-Report {ok: true
                                error: ""
                                db-before: before
                                db-after: after
@@ -8100,8 +8125,10 @@
                                tempids: (make [dynamic]Tempid)
                                datom-start-index: start-index
                                append-only: append-only-ok
-                               new-entities-after-existing: (and append-only-ok
-                                                                 (added-entities-after-existing? before (slice out 0) start-index))})]
+                               new-entities-after-existing: new-entities-after-existing
+                               publish-plan: publish-plan})]
+        (set! conn^.db after)
+        (set! conn^.next-tx (next-tx-after-datoms conn^.next-tx (slice conn^.db.datoms 0)))
         (notify-listeners! conn report)
         report))))
 

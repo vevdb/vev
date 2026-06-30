@@ -165,6 +165,32 @@
     (vev.delete-owned-db base-db)
     (vev.delete-owned-db after-db)))
 
+(t.deftest shared-int-index-direct-merge-uses-shared-log-and-tx-slice
+  (defer (free_all context.allocator))
+  (let [base-db (vev.init-db ([]vev.Datom [(vev.datom-tx 1 ":item/a" (vev.value-string "a") 1 true)
+                                           (vev.datom-tx 2 ":item/b" (vev.value-string "b") 1 true)]))
+        after-db (vev.init-db ([]vev.Datom [(vev.datom-tx 1 ":item/a" (vev.value-string "a") 1 true)
+                                            (vev.datom-tx 2 ":item/b" (vev.value-string "b") 1 true)
+                                            (vev.datom-tx 3 ":item/a" (vev.value-string "c") 2 true)
+                                            (vev.datom-tx 4 ":item/b" (vev.value-string "d") 2 true)]))
+        log (vev.shared-datom-log-from-slice (slice base-db.datoms 0) 1)
+        base-aevt (vev.shared-int-index-from-slice (slice base-db.aevt 0) 1)
+        appended (slice after-db.datoms 2)
+        merged-aevt (vev.shared-int-index-with-merged-appended-datom-slice-direct base-aevt log appended 2 "aevt")
+        [first-refs first-ok] (vev.shared-int-index-ref-count-at merged-aevt 0)
+        [second-refs second-ok] (vev.shared-int-index-ref-count-at merged-aevt 2)]
+    (t.is (shared-index-values-match? merged-aevt (slice after-db.aevt 0)))
+    (t.is first-ok)
+    (t.is second-ok)
+    (t.is (= first-refs 2))
+    (t.is (= second-refs 2))
+    (vev.delete-shared-int-index base-aevt)
+    (t.is (shared-index-values-match? merged-aevt (slice after-db.aevt 0)))
+    (vev.delete-shared-int-index merged-aevt)
+    (vev.delete-shared-datom-log log)
+    (vev.delete-owned-db base-db)
+    (vev.delete-owned-db after-db)))
+
 (t.deftest shared-datom-log-at-borrowed-uses-chunk-starts
   (defer (free_all context.allocator))
   (let [db (vev.init-db ([]vev.Datom [(vev.datom-tx 1 ":item/a" (vev.value-string "a") 1 true)
@@ -307,7 +333,8 @@
                                 tempids: tempids
                                 datom-start-index: 2
                                 append-only: true
-                                new-entities-after-existing: true})
+                                new-entities-after-existing: true
+                                publish-plan: (vev.tx-publish-plan-for-append (slice tx-data 0) 2 true)})
         appended-snapshot (vev.shared-db-snapshot-with-tx-report base-snapshot after-db report)
         [base-datom-refs base-datom-refs-ok] (vev.shared-datom-log-ref-count-at base-snapshot.datoms 0)
         [base-current-refs base-current-refs-ok] (vev.shared-int-index-ref-count-at base-snapshot.indexes.current 0)

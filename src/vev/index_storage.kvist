@@ -185,17 +185,6 @@
   (let [added (sorted-new-datom-indexes datoms start-index order) :defer]
     (shared-int-index-with-appended-slice base (slice added 0))))
 
-(defn sorted-appended-datom-slice-indexes [datoms: []Datom, start-index: int, order: string] -> [dynamic]int
-  (let [indexes (make [dynamic]int 0 (count datoms))]
-    (for [_ index datoms]
-      (arr.push! indexes index))
-    (sort-datom-indexes! (addr indexes) datoms order)
-    (let [i 0]
-      (while (< i (count indexes))
-        (set! indexes[i] (+ indexes[i] start-index))
-        (set! i (+ i 1))))
-    indexes))
-
 (defn shared-int-index-with-appended-sorted-datom-slice [base: Shared-Int-Index, datoms: []Datom, start-index: int, order: string] -> Shared-Int-Index
   (let [added (sorted-appended-datom-slice-indexes datoms start-index order) :defer]
     (shared-int-index-with-appended-slice base (slice added 0))))
@@ -295,10 +284,49 @@
     (return false))
   (not (datom-index-less? datoms order added-index chunk.values[(- (count chunk.values) 1)])))
 
+(defn shared-datom-log-or-appended-at-borrowed [log: Shared-Datom-Log, appended: []Datom, start-index: int, index: int] -> [datom: Datom, ok: bool]
+  (if (< index start-index)
+    (shared-datom-log-at-borrowed log index)
+    (let [appended-index (- index start-index)]
+      (when (or (< appended-index 0)
+                (>= appended-index (count appended)))
+        (return (Datom {}) false))
+      (return appended[appended-index] true))))
+
+(defn shared-datom-index-less? [log: Shared-Datom-Log, appended: []Datom, start-index: int, order: string, left-index: int, right-index: int] -> bool
+  (let [[left left-ok] (shared-datom-log-or-appended-at-borrowed log appended start-index left-index)
+        [right right-ok] (shared-datom-log-or-appended-at-borrowed log appended start-index right-index)]
+    (when (or (not left-ok)
+              (not right-ok))
+      (return false))
+    (datom-less-order? left right order left-index right-index)))
+
+(defn appended-datom-index-less-than-base? [base-datoms: []Datom, appended: []Datom, start-index: int, order: string, appended-index: int, base-index: int] -> bool
+  (let [appended-offset (- appended-index start-index)]
+    (when (or (< base-index 0)
+              (>= base-index (count base-datoms))
+              (< appended-offset 0)
+              (>= appended-offset (count appended)))
+      (return false))
+    (datom-less-order? appended[appended-offset] base-datoms[base-index] order appended-index base-index)))
+
+(defn shared-int-chunk-before-or-at-added-direct? [log: Shared-Datom-Log, appended: []Datom, start-index: int, order: string, chunk: Shared-Int-Chunk, added-index: int] -> bool
+  (when (= (count chunk.values) 0)
+    (return false))
+  (not (shared-datom-index-less? log appended start-index order added-index chunk.values[(- (count chunk.values) 1)])))
+
+(defn shared-int-chunk-before-or-at-added-across-append? [base-datoms: []Datom, appended: []Datom, start-index: int, order: string, chunk: Shared-Int-Chunk, added-index: int] -> bool
+  (when (= (count chunk.values) 0)
+    (return false))
+  (not (appended-datom-index-less-than-base? base-datoms appended start-index order added-index chunk.values[(- (count chunk.values) 1)])))
+
 (defn shared-int-index-with-merged-appended-datoms [base: Shared-Int-Index, datoms: []Datom, start-index: int, order: string] -> Shared-Int-Index
+  (let [added (sorted-new-datom-indexes datoms start-index order) :defer]
+    (shared-int-index-with-merged-appended-indexes base datoms order (slice added 0))))
+
+(defn shared-int-index-with-merged-appended-indexes [base: Shared-Int-Index, datoms: []Datom, order: string, added: []int] -> Shared-Int-Index
   (let [out (shared-int-index-empty base.chunk-size)
         pending (make [dynamic]int 0 base.chunk-size)
-        added (sorted-new-datom-indexes datoms start-index order) :defer
         chunk-index 0
         chunk-offset 0
         added-index 0]
@@ -332,6 +360,107 @@
             (set! out.count (+ out.count (count base.chunks[chunk-index].values)))
             (set! chunk-index (+ chunk-index 1)))
         (datom-index-less? datoms order added[added-index] base.chunks[chunk-index].values[chunk-offset])
+          (do
+            (shared-int-index-push-merged-value! (addr out) (addr pending) added[added-index])
+            (set! added-index (+ added-index 1)))
+        :else
+          (do
+            (shared-int-index-push-merged-value! (addr out) (addr pending) base.chunks[chunk-index].values[chunk-offset])
+            (set! chunk-offset (+ chunk-offset 1))
+            (when (>= chunk-offset (count base.chunks[chunk-index].values))
+              (set! chunk-index (+ chunk-index 1))
+              (set! chunk-offset 0)))))
+    (shared-int-index-flush-pending! (addr out) (addr pending))
+    (delete pending)
+    out))
+
+(defn shared-int-index-with-merged-appended-indexes-across-append [base: Shared-Int-Index, base-datoms: []Datom, appended: []Datom, start-index: int, order: string, added: []int] -> Shared-Int-Index
+  (let [out (shared-int-index-empty base.chunk-size)
+        pending (make [dynamic]int 0 base.chunk-size)
+        chunk-index 0
+        chunk-offset 0
+        added-index 0]
+    (while (or (< chunk-index (count base.chunks))
+               (< added-index (count added)))
+      (cond
+        (>= chunk-index (count base.chunks))
+          (do
+            (shared-int-index-append-slice! (addr out) (addr pending) (slice added added-index))
+            (set! added-index (count added)))
+        (>= added-index (count added))
+          (if (= chunk-offset 0)
+            (do
+              (shared-int-index-flush-pending! (addr out) (addr pending))
+              (retain-shared-int-chunk! base.chunks[chunk-index])
+              (arr.push! out.chunks base.chunks[chunk-index])
+              (set! out.count (+ out.count (count base.chunks[chunk-index].values)))
+              (set! chunk-index (+ chunk-index 1)))
+            (do
+              (shared-int-index-push-merged-value! (addr out) (addr pending) base.chunks[chunk-index].values[chunk-offset])
+              (set! chunk-offset (+ chunk-offset 1))
+              (when (>= chunk-offset (count base.chunks[chunk-index].values))
+                (set! chunk-index (+ chunk-index 1))
+                (set! chunk-offset 0))))
+        (and (= chunk-offset 0)
+             (shared-int-chunk-before-or-at-added-across-append? base-datoms appended start-index order base.chunks[chunk-index] added[added-index]))
+          (do
+            (shared-int-index-flush-pending! (addr out) (addr pending))
+            (retain-shared-int-chunk! base.chunks[chunk-index])
+            (arr.push! out.chunks base.chunks[chunk-index])
+            (set! out.count (+ out.count (count base.chunks[chunk-index].values)))
+            (set! chunk-index (+ chunk-index 1)))
+        (appended-datom-index-less-than-base? base-datoms appended start-index order added[added-index] base.chunks[chunk-index].values[chunk-offset])
+          (do
+            (shared-int-index-push-merged-value! (addr out) (addr pending) added[added-index])
+            (set! added-index (+ added-index 1)))
+        :else
+          (do
+            (shared-int-index-push-merged-value! (addr out) (addr pending) base.chunks[chunk-index].values[chunk-offset])
+            (set! chunk-offset (+ chunk-offset 1))
+            (when (>= chunk-offset (count base.chunks[chunk-index].values))
+              (set! chunk-index (+ chunk-index 1))
+              (set! chunk-offset 0)))))
+    (shared-int-index-flush-pending! (addr out) (addr pending))
+    (delete pending)
+    out))
+
+(defn shared-int-index-with-merged-appended-datom-slice-direct [base: Shared-Int-Index, log: Shared-Datom-Log, appended: []Datom, start-index: int, order: string] -> Shared-Int-Index
+  (let [out (shared-int-index-empty base.chunk-size)
+        pending (make [dynamic]int 0 base.chunk-size)
+        added (sorted-appended-datom-slice-indexes appended start-index order) :defer
+        chunk-index 0
+        chunk-offset 0
+        added-index 0]
+    (while (or (< chunk-index (count base.chunks))
+               (< added-index (count added)))
+      (cond
+        (>= chunk-index (count base.chunks))
+          (do
+            (shared-int-index-append-slice! (addr out) (addr pending) (slice added added-index))
+            (set! added-index (count added)))
+        (>= added-index (count added))
+          (if (= chunk-offset 0)
+            (do
+              (shared-int-index-flush-pending! (addr out) (addr pending))
+              (retain-shared-int-chunk! base.chunks[chunk-index])
+              (arr.push! out.chunks base.chunks[chunk-index])
+              (set! out.count (+ out.count (count base.chunks[chunk-index].values)))
+              (set! chunk-index (+ chunk-index 1)))
+            (do
+              (shared-int-index-push-merged-value! (addr out) (addr pending) base.chunks[chunk-index].values[chunk-offset])
+              (set! chunk-offset (+ chunk-offset 1))
+              (when (>= chunk-offset (count base.chunks[chunk-index].values))
+                (set! chunk-index (+ chunk-index 1))
+                (set! chunk-offset 0))))
+        (and (= chunk-offset 0)
+             (shared-int-chunk-before-or-at-added-direct? log appended start-index order base.chunks[chunk-index] added[added-index]))
+          (do
+            (shared-int-index-flush-pending! (addr out) (addr pending))
+            (retain-shared-int-chunk! base.chunks[chunk-index])
+            (arr.push! out.chunks base.chunks[chunk-index])
+            (set! out.count (+ out.count (count base.chunks[chunk-index].values)))
+            (set! chunk-index (+ chunk-index 1)))
+        (shared-datom-index-less? log appended start-index order added[added-index] base.chunks[chunk-index].values[chunk-offset])
           (do
             (shared-int-index-push-merged-value! (addr out) (addr pending) added[added-index])
             (set! added-index (+ added-index 1)))
@@ -390,6 +519,24 @@
                           vaet: (if append-only
                                   (shared-int-index-with-merged-appended-datoms base.vaet (slice after.datoms 0) start-index "vaet")
                                   (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0)))}))
+
+(defn shared-db-int-indexes-with-append-publish-plan [base: Shared-DB-Int-Indexes, before: DB, appended: []Datom, plan: Tx-Publish-Plan] -> Shared-DB-Int-Indexes
+  (Shared-DB-Int-Indexes {current: (shared-int-index-with-appended-range base.current plan.start-index (+ plan.start-index plan.appended-count))
+                          eavt: (if plan.new-entities-after-existing
+                                  (shared-int-index-with-appended-slice base.eavt (slice plan.eavt 0))
+                                  (shared-int-index-with-merged-appended-indexes-across-append base.eavt (slice before.datoms 0) appended plan.start-index "eavt" (slice plan.eavt 0)))
+                          aevt: (shared-int-index-with-merged-appended-indexes-across-append base.aevt (slice before.datoms 0) appended plan.start-index "aevt" (slice plan.aevt 0))
+                          avet: (shared-int-index-with-merged-appended-indexes-across-append base.avet (slice before.datoms 0) appended plan.start-index "avet" (slice plan.avet 0))
+                          vaet: (shared-int-index-with-merged-appended-indexes-across-append base.vaet (slice before.datoms 0) appended plan.start-index "vaet" (slice plan.vaet 0))}))
+
+(defn shared-db-int-indexes-with-appended-datom-slice-direct [base: Shared-DB-Int-Indexes, log: Shared-Datom-Log, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
+  (Shared-DB-Int-Indexes {current: (shared-int-index-with-appended-range base.current start-index (+ start-index (count appended)))
+                          eavt: (if new-entities-after-existing
+                                  (shared-int-index-with-appended-sorted-datom-slice base.eavt appended start-index "eavt")
+                                  (shared-int-index-with-merged-appended-datom-slice-direct base.eavt log appended start-index "eavt"))
+                          aevt: (shared-int-index-with-merged-appended-datom-slice-direct base.aevt log appended start-index "aevt")
+                          avet: (shared-int-index-with-merged-appended-datom-slice-direct base.avet log appended start-index "avet")
+                          vaet: (shared-int-index-with-merged-appended-datom-slice-direct base.vaet log appended start-index "vaet")}))
 
 (defn retain-shared-db-int-indexes [indexes: Shared-DB-Int-Indexes] -> Shared-DB-Int-Indexes
   (Shared-DB-Int-Indexes {current: (retain-shared-int-index indexes.current)
@@ -519,13 +666,32 @@
   (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms appended)
                        indexes: (shared-db-int-indexes-with-appended-datom-slice-mode base.indexes after appended start-index append-only new-entities-after-existing)}))
 
+(defn shared-db-snapshot-with-appended-datoms-direct [base: Shared-DB-Snapshot, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> Shared-DB-Snapshot
+  (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms appended)
+                       indexes: (shared-db-int-indexes-with-appended-datom-slice-direct base.indexes base.datoms appended start-index new-entities-after-existing)}))
+
+(defn shared-db-snapshot-with-append-tx-report [base: Shared-DB-Snapshot, report: Tx-Report] -> Shared-DB-Snapshot
+  (let [indexes (shared-db-int-indexes-with-append-publish-plan base.indexes report.db-before (slice report.tx-data 0) report.publish-plan)]
+    (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms (slice report.tx-data 0))
+                         indexes: indexes})))
+
 (defn shared-db-snapshot-with-tx-report [base: Shared-DB-Snapshot, after: DB, report: Tx-Report] -> Shared-DB-Snapshot
-  (shared-db-snapshot-with-appended-datoms-mode base
-                                                after
-                                                (slice report.tx-data 0)
-                                                report.datom-start-index
-                                                report.append-only
-                                                report.new-entities-after-existing))
+  (if report.append-only
+    (shared-db-snapshot-with-append-tx-report base report)
+    (shared-db-snapshot-with-appended-datoms-mode base
+                                                  after
+                                                  (slice report.tx-data 0)
+                                                  report.datom-start-index
+                                                  false
+                                                  false)))
+
+(defn shared-db-snapshot-with-tx-report-direct [base: Shared-DB-Snapshot, after: DB, report: Tx-Report] -> Shared-DB-Snapshot
+  (if report.append-only
+    (shared-db-snapshot-with-appended-datoms-direct base
+                                                    (slice report.tx-data 0)
+                                                    report.datom-start-index
+                                                    report.new-entities-after-existing)
+    (shared-db-snapshot-with-tx-report base after report)))
 
 (defn retain-shared-db-snapshot [snapshot: Shared-DB-Snapshot] -> Shared-DB-Snapshot
   (Shared-DB-Snapshot {datoms: (retain-shared-datom-log snapshot.datoms)
@@ -561,7 +727,18 @@
   (let [report (transact-tx-data (addr conn^.conn) tx-data)]
     (when (not report.ok)
       (return report))
-    (let [next-snapshot (shared-db-snapshot-with-tx-report conn^.snapshot conn^.conn.db report)]
+    (let [next-snapshot (if report.append-only
+                          (shared-db-snapshot-with-append-tx-report conn^.snapshot report)
+                          (shared-db-snapshot-with-tx-report conn^.snapshot conn^.conn.db report))]
+      (delete-shared-db-snapshot conn^.snapshot)
+      (set! conn^.snapshot next-snapshot))
+    report))
+
+(defn shared-conn-transact-direct [conn: ^Shared-Conn, tx-data: []Tx-Data] -> Tx-Report
+  (let [report (transact-tx-data (addr conn^.conn) tx-data)]
+    (when (not report.ok)
+      (return report))
+    (let [next-snapshot (shared-db-snapshot-with-tx-report-direct conn^.snapshot conn^.conn.db report)]
       (delete-shared-db-snapshot conn^.snapshot)
       (set! conn^.snapshot next-snapshot))
     report))

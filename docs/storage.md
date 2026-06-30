@@ -84,8 +84,11 @@ resident rebuilt `DB`.
 `Store-DB` is the internal storage-neutral immutable DB snapshot handle for
 this path. It currently wraps a retained `SQLite-DB-Snapshot`, exposes the
 same `DB-Read-Source` boundary as resident DBs, and can run text/prepared
-queries without rebuilding resident arrays. This is the shape the public
-host-facing `d/db` handles should eventually use.
+queries without rebuilding resident arrays. It also has a shared-snapshot
+variant for the shared in-memory publish path. The C ABI `vev_db_t` wrapper has
+started moving to this shape internally, but public C/JVM verification is still
+blocked by the raw Odin transaction-listener callback compile issue in
+`src/vev_abi/vev_abi.kvist`.
 
 There are now two write modes:
 
@@ -222,15 +225,31 @@ onto Vev's durable API:
 This harness is intentionally smaller than the final external benchmark. It is
 for regular development runs and accepts `--total`, `--report-every`,
 `--mixed-operations`, `--batch`, and `--seed-batch` so larger runs can be
-launched without source edits. It also has `--workload pure|mixed|both` and
-`--path`, which allows the Datalevin-style sequence of writing a durable store
-first and then running mixed read/write against the same store. It uses a plain
-long `:item/key`, matching Datalevin's write-bench schema.
+launched without source edits. It also has
+`--workload pure|mixed|snapshot-heavy|shared-snapshot-heavy|shared-snapshot-heavy-direct|shared-store-db-heavy|both`
+and `--path`, which allows the Datalevin-style sequence of writing a durable
+store first and then running mixed read/write against the same store. It uses a
+plain long `:item/key`, matching Datalevin's write-bench schema.
 The `snapshot-heavy` workload keeps the same durable write path but calls the
 ordinary DB snapshot API after each commit and retains every old DB value until
 the end of the run. That workload is the current Batch 4 acceptance harness for
 Datomic-style code that passes DB snapshots around while a connection continues
 to transact.
+The `shared-store-db-heavy` workload measures the storage-neutral host-facing
+shape over the shared in-memory publish path. It commits typed tx-data through
+`Store-Conn`, retains every `Store-DB`, and closes those retained handles at the
+end. A local batch-1, 200-write run on June 30, 2026 matched raw
+`shared-snapshot-heavy` almost exactly: both ended near 0.172 ms commit latency
+and 0.012 ms snapshot-retain latency at 200 writes. That means the
+storage-neutral `Store-DB` wrapper is not adding visible cost at this scale;
+the remaining work is still the shared publication adapter and resident-index
+boundary.
+The `shared-snapshot-heavy-direct` workload routes successful append-only
+transactions through the direct shared-log comparison path. A local batch-1,
+300-write comparison with chunk size 1024 ended around 0.248 ms commit latency
+for default shared publication, 0.458 ms for direct shared-log comparison, and
+0.246 ms for storage-neutral `Store-DB`. The direct path is useful to keep
+measured, but it is not the current hot path.
 
 A 10k-row local run on June 26, 2026 shows the current durable shape clearly:
 
@@ -357,6 +376,10 @@ values.
 SQLite snapshot. That keeps the host-facing immutable DB handle direction
 storage-neutral: the same `q-result-store-db-*` wrappers can query persisted
 snapshots and shared in-memory snapshots through `DB-Read-Source`.
+`q-result-store-db-prepared-with-input-text` is the prepared-query-with-inputs
+variant used by the ABI direction, so durable host DB handles can execute
+ordinary prepared queries without resident DB rebuild once the ABI wrapper
+build is unblocked.
 `Store-Conn` is also now storage-neutral at the connection boundary. The
 default `open-store` functions still create SQLite-backed stores, while
 `create-shared-store` creates the in-memory shared-index publish path. Both use
@@ -367,6 +390,54 @@ instead of separate resident, SQLite, and shared APIs.
 This lets storage-neutral callers, including the CLI, print parsed query results
 from retained SQLite/shared snapshots without reopening or reaching through a
 resident `DB` field just for value rendering.
+The write benchmark now has a `shared-store-db-heavy` workload over this same
+storage-neutral connection/snapshot API. It provides the current host-handle
+acceptance check for the shared publish path, and early numbers match the raw
+shared snapshot workload closely, so the next optimization should target direct
+shared chunk publication rather than another host wrapper bypass.
+It also has `shared-snapshot-heavy-direct`, which keeps the direct shared-log
+merge experiment measured. That experiment is still slower than the default
+resident-comparison adapter, so the next storage step remains a real transaction
+publish plan that produces per-index merge/tail inputs directly.
+Append-only transaction reports now carry the first version of that boundary as
+a `Tx-Publish-Plan`. It owns the ordered appended EAVT/AEVT/AVET/VAET tails
+consumed by shared index publication, so shared storage consumes
+transaction-owned publication metadata instead of deriving a storage-side plan
+after the fact. A local batch-1, 300-write retained-snapshot run ended near
+0.268 ms commit latency for the default shared path and 0.267 ms for
+storage-neutral `Store-DB`. The remaining storage work is to avoid duplicate
+sorting/materialization while building both resident indexes and the publish
+plan.
+Resident append-only DB construction now consumes the same `Tx-Publish-Plan`
+tails used by shared publication, so appended EAVT/AEVT/AVET/VAET tails are not
+sorted again just to build the resident post-commit DB. A local batch-1,
+300-write retained-snapshot run improved to about 0.155 ms commit latency for
+the default shared path and 0.154 ms for storage-neutral `Store-DB`; direct
+shared-log comparison remains slower at about 0.259 ms. The next storage
+architecture target is therefore not more duplicate-tail sorting cleanup, but
+removing the remaining resident post-commit DB dependency from append-only
+shared publication.
+Append-only shared index merges now compare old index entries through
+`db-before.datoms` plus new entries through `report.tx-data`, rather than
+comparing through the resident post-commit `after.datoms` array. The merge is
+still the same generic chunk-retaining shared-index algorithm, but it no longer
+depends on the post-commit resident datom log as its comparison source. A local
+batch-1, 300-write retained-snapshot run ended near 0.151 ms commit latency for
+the default shared path and 0.145 ms for storage-neutral `Store-DB`; direct
+shared-log comparison remains slower at about 0.261 ms. The next storage
+architecture target is to keep shrinking the resident transaction application
+path so shared publication can eventually be driven directly from resolved tx
+ops and report metadata.
+Append-only shared snapshot publication now has a report-only helper:
+`shared-db-snapshot-with-append-tx-report`. The outer compatibility helper still
+accepts a post-commit resident `DB` for non-append fallback publishing, but
+successful append-only commits no longer pass that `DB` into the shared
+publication helper. `Shared-Conn` now branches at the call site too, so
+append-only reports go directly to the report-only helper and do not pass the
+post-commit resident `DB` into shared publication at all. A local batch-1,
+300-write retained-snapshot run stayed in the same range: about 0.146 ms commit
+latency for the default shared path and 0.145 ms for storage-neutral
+`Store-DB`; direct shared-log comparison remains slower at about 0.267 ms.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing
