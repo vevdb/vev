@@ -226,7 +226,7 @@ This harness is intentionally smaller than the final external benchmark. It is
 for regular development runs and accepts `--total`, `--report-every`,
 `--mixed-operations`, `--batch`, and `--seed-batch` so larger runs can be
 launched without source edits. It also has
-`--workload pure|mixed|snapshot-heavy|shared-snapshot-heavy|shared-store-db-heavy|both`
+`--workload pure|mixed|snapshot-heavy|shared-snapshot-heavy|shared-snapshot-heavy-direct|shared-store-db-heavy|both`
 and `--path`, which allows the Datalevin-style sequence of writing a durable
 store first and then running mixed read/write against the same store. It uses a
 plain long `:item/key`, matching Datalevin's write-bench schema.
@@ -244,6 +244,12 @@ and 0.012 ms snapshot-retain latency at 200 writes. That means the
 storage-neutral `Store-DB` wrapper is not adding visible cost at this scale;
 the remaining work is still the shared publication adapter and resident-index
 boundary.
+The `shared-snapshot-heavy-direct` workload routes successful append-only
+transactions through the direct shared-log comparison path. A local batch-1,
+300-write comparison with chunk size 1024 ended around 0.248 ms commit latency
+for default shared publication, 0.458 ms for direct shared-log comparison, and
+0.246 ms for storage-neutral `Store-DB`. The direct path is useful to keep
+measured, but it is not the current hot path.
 
 A 10k-row local run on June 26, 2026 shows the current durable shape clearly:
 
@@ -389,6 +395,10 @@ storage-neutral connection/snapshot API. It provides the current host-handle
 acceptance check for the shared publish path, and early numbers match the raw
 shared snapshot workload closely, so the next optimization should target direct
 shared chunk publication rather than another host wrapper bypass.
+It also has `shared-snapshot-heavy-direct`, which keeps the direct shared-log
+merge experiment measured. That experiment is still slower than the default
+resident-comparison adapter, so the next storage step remains a real transaction
+publish plan that produces per-index merge/tail inputs directly.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing

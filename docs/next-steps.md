@@ -470,6 +470,14 @@ Implemented so far:
   not another lookup tweak; it is for the transaction engine to emit ordered
   per-index publish tails or merge inputs directly, so shared publication can
   avoid both resident index materialization and repeated shared-log lookups.
+- The direct shared-log publication path is now exposed as an explicit
+  benchmark-only connection entry point and `shared-snapshot-heavy-direct`
+  workload. A local batch-1, 300-write comparison with chunk size 1024 ended
+  around 0.248 ms commit latency for the default shared adapter, 0.458 ms for
+  direct shared-log comparison, and 0.246 ms for storage-neutral `Store-DB`.
+  This keeps the direct path measurable while confirming it should not become
+  the hot path until the transaction engine emits better per-index publish
+  inputs.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -542,10 +550,10 @@ Work:
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
 6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`,
-   `shared-store-db-heavy`, `pure --batch 1`, and `mixed` write-bench after
-   each representation step so the architecture work is measured against the
-   actual immutable DB-value workload and the storage-neutral host handle
-   boundary.
+   `shared-snapshot-heavy-direct`, `shared-store-db-heavy`, `pure --batch 1`,
+   and `mixed` write-bench after each representation step so the architecture
+   work is measured against the actual immutable DB-value workload, the direct
+   shared-log experiment, and the storage-neutral host handle boundary.
 
 Acceptance:
 
