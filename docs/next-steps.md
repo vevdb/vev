@@ -342,9 +342,11 @@ Implemented so far:
   lifetime shape needed for old DB values in reports and host handles.
 - `shared-db-snapshot-with-appended-db` can now build a new shared snapshot
   from an old snapshot plus a post-transaction resident DB. It shares the old
-  datom-log chunks and appends only new datom chunks, while rebuilding shared
-  index chunks from the post-transaction DB for now. Tests verify the base
-  datom chunk is retained and the appended snapshot remains queryable.
+  datom-log chunks and appends only new datom chunks. Shared int indexes now
+  also retain old chunks when the post-transaction index preserves the old index
+  as an exact prefix, with fallback rebuild for merged/reordered indexes. Tests
+  verify the base datom, current, and EAVT chunks are retained and the appended
+  snapshot remains queryable.
 
 Work:
 
@@ -354,8 +356,9 @@ Work:
    build and retain those shared indexes instead of publishing only owned
    `[]int` arrays.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
-   Datom-log sharing works for appended snapshots; index chunk sharing is still
-   the next step.
+   Datom-log sharing works for appended snapshots. Index chunk sharing now
+   works for exact-prefix append cases; the next step is making merged indexes
+   page/chunk-share unchanged ranges instead of rebuilding.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact.
 4. Fold the existing append-only incremental path into this representation
