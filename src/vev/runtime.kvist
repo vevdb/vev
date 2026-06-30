@@ -4232,7 +4232,7 @@
   (cond
     (= spec.a "*") (= (count spec.pattern) 0)
     (= spec.a ":db/id") (= (count spec.pattern) 0)
-    (reverse-attr? spec.a) (= (count spec.pattern) 0)
+    (reverse-attr? spec.a) true
     :else true))
 
 (defn db-read-source-pull-default-attr [spec: Pull-Spec] -> Pull-Attr
@@ -4287,12 +4287,25 @@
               (return (Pull-Result {}) false datoms-error))
             (for [datom datoms]
               (when (< seen limit)
-                (set! seen (+ seen 1))
-                (arr.push! attrs
-                  (Pull-Attr {a: (pull-output-attr spec)
-                              key-kind: (pull-output-key-kind spec)
-                              v: (value-entity datom.e)
-                              attrs: (make [dynamic]Pull-Attr)}))))
+                (let [children (make [dynamic]Pull-Attr)]
+                  (when (> (count spec.pattern) 0)
+                    (let [[child child-ok child-error] (db-read-source-pull-result-for-pattern source datom.e (slice spec.pattern 0))]
+                      (when (not child-ok)
+                        (delete-pull-attrs-owned-values children)
+                        (delete-owned-datoms datoms)
+                        (delete-pull-attrs-owned-values attrs)
+                        (return (Pull-Result {}) false child-error))
+                      (delete children)
+                      (set! children child.attrs)))
+                  (if (pull-include-ref-result? spec (slice children 0))
+                    (do
+                      (set! seen (+ seen 1))
+                      (arr.push! attrs
+                        (Pull-Attr {a: (pull-output-attr spec)
+                                    key-kind: (pull-output-key-kind spec)
+                                    v: (value-entity datom.e)
+                                    attrs: children})))
+                    (delete-pull-attrs-owned-values children)))))
             (when (and (= seen 0) spec.has-default)
               (arr.push! attrs (db-read-source-pull-default-attr spec)))
             (delete-owned-datoms datoms))
