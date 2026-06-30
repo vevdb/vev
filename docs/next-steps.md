@@ -52,6 +52,8 @@ Implemented so far:
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
+- source-backed query result rows use owned value copies, and callers now have
+  `delete-result-set-owned-values` for the matching cleanup shape.
 
 Work:
 
@@ -79,9 +81,9 @@ Remaining in this batch:
    - predicates/functions where inputs are already materialized
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary.
-4. Decide ownership cleanup for source-backed result rows. Today the helper
-   returns ordinary `Result-Set` values, but some values are owned because the
-   source does not keep resident datom arrays alive.
+4. Decide the public API shape for source-backed result ownership before this
+   becomes host-facing. Internally the cleanup path is explicit now, but the C
+   ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
 
 Acceptance:
 
