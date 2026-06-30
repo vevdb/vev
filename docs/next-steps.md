@@ -36,6 +36,12 @@ Implemented so far:
   `SQLite-DB-Snapshot`.
 - source-backed index scans can ask for `eavt`, `aevt`, `avet`, and `vaet`
   views without owning resident arrays.
+- source-backed data clauses now build a `Clause-Index-Scan` over
+  `DB-Read-Source` ranges instead of using a separate ad hoc candidate picker,
+  including entity/int comparison at source boundaries, omitted tx/op terms, and
+  reverse attribute data clauses such as `[301 :item/_parent ?child]`. EDN
+  lookup-ref entity terms such as `[[:user/email "ada@example.com"] :user/name
+  ?name]` now resolve against the same source before binding.
 - source-backed attr and entity+attr datom reads work over persisted SQLite
   index chunks.
 - source-backed reads check currentness by resolving the matching
@@ -51,7 +57,9 @@ Implemented so far:
   `[(count ?name) ?len]` are also supported, including tuple/destructuring
   function outputs over owned source bindings. `ground` clauses such as
   `[(ground 301) ?e]` now bind values before later source-backed data clauses,
-  and source-backed `get-else`/`get-some` clauses can read current attr values
+  source-backed reverse data clauses can scan reverse refs through `vaet`,
+  source-backed lookup-ref entity clauses resolve through source indexes, and
+  source-backed `get-else`/`get-some` clauses can read current attr values
   directly from the persisted source. Source-backed `missing?` works through the
   same not-group path used for ordinary negated data clauses. Source-backed
   `or` and `or-join` clauses now execute branch groups over the same persisted
@@ -69,19 +77,22 @@ Implemented so far:
   source-backed pull finds, and bounded pull recursion now walks the same
   persisted source with cycle guards. Source-backed query APIs also have
   `with-fns` variants so native pull xform callbacks can run against persisted
-  snapshots. Named `$source` qualifiers are supported as aliases for the same
-  single persisted snapshot source, including named-source pull finds. Both
-  bounded recursion and unbounded `...` recursion have source-backed persisted
-  snapshot coverage.
+  snapshots. Named `$source` qualifiers can now resolve to distinct
+  `DB-Read-Source` values for source-backed data clauses, pull finds, and
+  source-taking function forms such as `get-else`/`get-some`, with the original
+  single-source functions preserved as wrappers. Both bounded recursion and
+  unbounded `...` recursion have source-backed persisted snapshot coverage.
   Source-backed text queries also accept scalar `:in` values through direct
   `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
-  retraction case. It also checks that primary `$` and named `$source` aliases
-  work over the same snapshot until true multi-source durable querying is
-  implemented, plus predicate filtering with both matching and empty results,
-  scalar and destructuring function output, `ground`, `get-else`,
-  `get-some`, `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
+  retraction case. It also checks that primary `$`, same-source named aliases,
+  and a distinct named `DB-Read-Source` work for source-backed data clauses,
+  pull finds, `get-else`, and `get-some`, plus predicate filtering with both
+  matching and empty results, scalar and destructuring function output,
+  `ground`, `get-else`, `get-some`, reverse data clauses, lookup-ref entity
+  clauses,
+  `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
   wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
   nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
   built-in and callback pull xforms, bounded and unbounded pull recursion,
@@ -92,6 +103,22 @@ Implemented so far:
   and from `reopen-rebuild`.
 - source-backed query result rows use owned value copies, and callers now have
   `delete-result-set-owned-values` for the matching cleanup shape.
+- source-backed function clauses copy produced values into owned result
+  bindings and then shallow-clean temporary function result containers, avoiding
+  leaked vector/map wrappers without deleting scalar values that may be borrowed
+  from existing bindings.
+- prepared query objects can now execute directly against `DB-Read-Source`
+  through `q-prepared-db-read-source...` wrappers. This keeps the durable
+  snapshot path aligned with the prepared-query API that host bindings will use,
+  instead of making persisted snapshots depend on text parsing at call time.
+- an ownership-tagged `Query-Result` wrapper now exists for source-backed
+  prepared and text queries. The new wrappers return `Query-Result` and clean up
+  with `delete-query-result`, which is the direction host handles should follow
+  so callers do not have to know whether row values are shallow or owned copies.
+- C ABI result handles now carry an internal ownership tag. Existing resident
+  query handles still default to shallow cleanup, but the handle/free machinery
+  can now safely hold source-backed `Query-Result` values with owned row values
+  when source-backed ABI entry points are added.
 
 Work:
 
@@ -112,22 +139,20 @@ Work:
 
 Remaining in this batch:
 
-1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
-   new source-backed plain-clause query runner.
-2. Broaden `q-text-db-read-source` beyond plain data clauses:
-   - true multiple distinct source-qualified durable snapshots
-   - richer function-output ownership cleanup for temporary strings/containers
-     produced by shared function evaluators
-3. Extend source-backed pull beyond simple forward scalar/many attrs or
-   explicitly route full pull through the same source boundary. Flat literal
-   forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
-   and pattern-variable pull finds plus defaults, limits, and built-in xforms
-   are now covered; callback xforms and bounded recursion are also covered.
-   Unbounded recursion and named-source aliases have persisted snapshot coverage
-   too. Remaining pull work is true multi-source named pull sources.
-4. Decide the public API shape for source-backed result ownership before this
-   becomes host-facing. Internally the cleanup path is explicit now, but the C
-   ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
+1. Thread `DB-Read-Source` into ordinary resident query execution beyond the
+   source-backed runner. The low-level source-backed clause scan now uses the
+   same `Clause-Index-Scan` shape and source-backed prepared queries are
+   available, but the full resident query engine still has `DB`/`DB-Source`
+   entry points and shallow binding/result ownership.
+2. Add host-facing source-backed query entry points on top of the
+   ownership-aware result handle. Raw `Result-Set` cleanup is still available
+   internally, but host-facing code should get a single result handle/free
+   operation.
+3. Decide whether lookup-ref source resolution must enforce `:db/unique`
+   metadata once persisted schema metadata is queryable without resident DB
+   rebuilds. The current source-backed lookup-ref query path resolves by AVET
+   value, which is useful for persisted snapshots but does not yet consult
+   source-backed schema metadata.
 
 Acceptance:
 
