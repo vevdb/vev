@@ -136,9 +136,10 @@ Implemented so far:
   same source index boundary for resident and persisted SQLite snapshot sources,
   so query-facing code no longer needs to reach for resident `eavt` side tables
   just to answer entity-local reads. Source-level typed integer reads and
-  equality checks now sit on the same boundary, and one typed entity/int
-  projection fallback now uses those helpers instead of resident entity-position
-  side tables.
+  equality checks now sit on the same boundary. Typed entity/int and
+  entity/string/int projection fallbacks now use those helpers instead of
+  resident entity-position side tables, with owned string copies tracked in the
+  typed string/int column container when needed.
 
 Work:
 
@@ -204,12 +205,9 @@ Work:
 2. Replace direct `eavt-entities` / `eavt-entity-starts` reads in query-facing
    code with source methods. The source methods exist, source-level integer and
    equality helpers are covered for resident and persisted snapshots, and the
-   entity/int projection fallback has started using them. The remaining work is
-   migrating the string/int triple column path that still calls the
-   resident-only entity-position helpers. That path stores borrowed strings in
-   typed columns today, while `DB-Read-Source` value helpers return owned values
-   for SQLite snapshots, so it should move together with the typed result-column
-   ownership cleanup instead of being forced through a temporary owned string.
+   entity/int plus string/int projection fallbacks now use them. Runtime
+   string/int typed columns can now mark owned string copies, and the ABI wrapper
+   reads that ownership bit for cleanup.
 3. Keep the resident side table as an implementation detail for resident DBs,
    not as a query-engine assumption.
 

@@ -17034,6 +17034,7 @@
   entities: [dynamic]u64
   strings: [dynamic]string
   ints: [dynamic]i64
+  owns-strings: bool
 })
 
 (defstruct Entity-Int-Pair-Filter {
@@ -17131,22 +17132,35 @@
                               ints: (make [dynamic]i64)}))
 
 (defn delete-entity-string-int-triples [columns: Entity-String-Int-Triples]
+  (when columns.owns-strings
+    (for [text columns.strings]
+      (delete text)))
   (delete columns.entities)
   (delete columns.strings)
   (delete columns.ints))
 
 (defn reset-entity-string-int-triples-capacity! [columns: ^Entity-String-Int-Triples, capacity: int]
+  (when columns^.owns-strings
+    (for [text columns^.strings]
+      (delete text)))
   (delete columns^.entities)
   (delete columns^.strings)
   (delete columns^.ints)
   (set! columns^.entities (make [dynamic]u64 0 capacity))
   (set! columns^.strings (make [dynamic]string 0 capacity))
-  (set! columns^.ints (make [dynamic]i64 0 capacity)))
+  (set! columns^.ints (make [dynamic]i64 0 capacity))
+  (set! columns^.owns-strings false))
 
 (defn append-entity-string-int-triple! [columns: ^Entity-String-Int-Triples, entity: u64, text: string, value: i64]
   (arr.push! columns^.entities entity)
   (arr.push! columns^.strings text)
   (arr.push! columns^.ints value))
+
+(defn append-owned-entity-string-int-triple! [columns: ^Entity-String-Int-Triples, entity: u64, text: string, value: i64]
+  (arr.push! columns^.entities entity)
+  (arr.push! columns^.strings (string-owned text))
+  (arr.push! columns^.ints value)
+  (set! columns^.owns-strings true))
 
 (defn empty-entity-two-value-plan [] -> Entity-Two-Value-Plan
   (Entity-Two-Value-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
@@ -18294,29 +18308,33 @@
               (set! best-high high)))
           (set! filter-i (+ filter-i 1))))
         (reset-entity-string-int-triples-capacity! (addr out) (- best-high best-low))
-        (let [i best-low
-              entity-pos 0]
+        (let [db-alias db
+              source (resident-db-read-source (addr db-alias))
+              i best-low]
           (while (< i best-high)
           (let [filter-datom-index (db-index-view-at filter-view i)
                 filter-datom db.datoms[filter-datom-index]]
-            (let [[next-entity-pos entity-pos-ok] (eavt-entity-position-at-or-after db entity-pos filter-datom.e)]
-              (set! entity-pos next-entity-pos)
-            (let [filters-match entity-pos-ok]
+            (let [filters-match true]
               (let [filter-i 0]
                 (while (< filter-i (count plan.filters))
                 (when (not (= filter-i best-filter-index))
                   (let [filter plan.filters[filter-i]]
-                    (when (not (cardinality-one-value-matches-at-entity-position-all-current? db filter-datom.e entity-pos filter.attr filter.value))
-                      (set! filters-match false))))
+                    (let [[matches matches-ok _] (db-read-source-cardinality-one-value-matches-fast-all-current? source filter-datom.e filter.attr filter.value)]
+                      (when (not (and matches-ok matches))
+                        (set! filters-match false)))))
                 (set! filter-i (+ filter-i 1))))
               (when filters-match
-                (let [[first-value first-ok] (cardinality-one-value-at-entity-position-all-current db filter-datom.e entity-pos plan.first-attr)
-                      [second-value second-ok] (cardinality-one-value-at-entity-position-all-current db filter-datom.e entity-pos plan.second-attr)]
+                (let [[first-value first-ok _] (db-read-source-cardinality-one-value-fast-all-current source filter-datom.e plan.first-attr)
+                      [second-value second-ok _] (db-read-source-cardinality-one-value-fast-all-current source filter-datom.e plan.second-attr)]
                   (when (and first-ok
                              second-ok
                              (= first-value.kind .String)
                              (= second-value.kind .Int))
-                    (append-entity-string-int-triple! (addr out) filter-datom.e first-value.text second-value.int-value)))))))
+                    (append-owned-entity-string-int-triple! (addr out) filter-datom.e first-value.text second-value.int-value))
+                  (when first-ok
+                    (delete-owned-value first-value))
+                  (when second-ok
+                    (delete-owned-value second-value))))))
           (set! i (+ i 1))))
         (delete plan.filters)
         (return out true)))))
