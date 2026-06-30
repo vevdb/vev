@@ -50,16 +50,16 @@ Implemented so far:
   materialized bindings and scalar function clauses such as
   `[(count ?name) ?len]` are also supported, including tuple/destructuring
   function outputs over owned source bindings. Flat literal pull finds such as
-  `(pull ?e [:db/id :item/name])` and wildcard pulls such as `(pull ?e [*])`
-  now render from the same source-backed snapshot without rebuilding a resident
-  DB.
+  `(pull ?e [:db/id :item/name])`, wildcard pulls such as `(pull ?e [*])`, and
+  flat reverse-ref pulls such as `(pull ?e [:item/_parent])` now render from the
+  same source-backed snapshot without rebuilding a resident DB.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
   retraction case. It also checks that primary `$` source-qualified clauses work
   and named source-qualified clauses fail explicitly until multi-source durable
   querying is implemented, plus predicate filtering with both matching and empty
   results, scalar and destructuring function output, flat literal pull finds,
-  and wildcard pull finds.
+  wildcard pull finds, and flat reverse-ref pull finds.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
@@ -93,8 +93,8 @@ Remaining in this batch:
      produced by shared function evaluators
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary. Flat literal
-   forward and wildcard pull finds are now covered; remaining pull work is
-   nested attrs, reverse attrs, pull options/defaults/xforms, pattern variables,
+   forward, wildcard, and flat reverse-ref pull finds are now covered; remaining
+   pull work is nested attrs, pull options/defaults/xforms, pattern variables,
    and source-qualified named pull sources.
 4. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C

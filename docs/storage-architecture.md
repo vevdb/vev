@@ -85,8 +85,8 @@ simple pull-value map, and execute the first parsed EDN query shape over a
 persisted source: plain data clauses with `:find` variables, including
 multi-clause joins, primary `$` source-qualified clauses, predicate filters, and
 scalar plus destructuring function clauses over already materialized values. It
-can also render flat literal pull finds over forward attrs and wildcard pulls
-from the persisted snapshot. The
+can also render flat literal pull finds over forward attrs, wildcard pulls, and
+flat reverse-ref pulls from the persisted snapshot. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
 current-value, pull, and entity helper paths now go through a resident
 `DB-Index-View` boundary instead of directly owning the slice logic at each
