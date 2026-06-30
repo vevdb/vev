@@ -374,6 +374,9 @@ append position and eligibility from the resident DB and emitted `tx-data`
 after the resident transaction completes. This keeps the storage adapter
 aligned with the transaction engine and is the first small boundary change
 toward a real shared publish plan.
+That path now goes through `shared-db-snapshot-with-tx-report`, which is the
+explicit report-to-shared-snapshot boundary future direct shared publication
+should replace internally.
 The resident entity-range helper now uses the same `DB-Index-View` binary-search
 shape as the source boundary instead of reading the `eavt-entities` /
 `eavt-entity-starts` side table directly. The side table still exists as a

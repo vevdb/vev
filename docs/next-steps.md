@@ -452,6 +452,11 @@ Implemented so far:
   the transaction's appended datom slice plus the report start index, not from
   the resident post-commit datom log. General interleaved append-only index
   merges still compare through the resident post-commit datom log.
+- `Shared-Conn` now publishes through a `shared-db-snapshot-with-tx-report`
+  boundary. That helper still receives the resident post-commit `DB` for the
+  remaining adapter paths, but it centralizes the transaction-report-to-shared
+  snapshot conversion that future direct shared publication should replace
+  internally.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -507,7 +512,8 @@ Work:
    instead of maintaining it as a separate optimization. The first fold is in
    place: datom append position plus append-only/new-entity decisions are now
    report metadata owned by the transaction engine, not storage-adapter
-   recomputation.
+   recomputation. `Shared-Conn` now consumes that metadata through a single
+   report-shaped shared snapshot publish helper.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
 6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`, `pure --batch 1`, and
