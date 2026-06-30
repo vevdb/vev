@@ -316,6 +316,13 @@ only new datom chunks. Shared int indexes also retain old chunks when the
 post-transaction index keeps the old index as an exact prefix; merged or
 reordered indexes still rebuild for correctness. Replacing that fallback with
 range/page sharing is the next Batch 4 implementation step.
+`Shared-Conn` now provides the first connection-shaped publish path over those
+shared snapshots. It still applies transactions through the existing resident
+connection, then publishes a new retained `Shared-DB-Snapshot` from the previous
+snapshot and the post-transaction DB. That is an intermediate architecture
+step, not the final storage model: the next version should build shared chunks
+directly at the commit boundary instead of adapting from resident arrays after
+the fact.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

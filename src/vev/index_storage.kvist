@@ -39,6 +39,12 @@
   indexes: Shared-DB-Int-Indexes
 })
 
+(defstruct Shared-Conn {
+  conn: Conn
+  snapshot: Shared-DB-Snapshot
+  chunk-size: int
+})
+
 (defn shared-int-chunk [values: []int] -> Shared-Int-Chunk
   (let [refs (make [dynamic]int 0 1)
         owned (arr.into [dynamic]int values)]
@@ -278,3 +284,28 @@
 (defn delete-shared-db-snapshot [snapshot: Shared-DB-Snapshot]
   (delete-shared-datom-log snapshot.datoms)
   (delete-shared-db-int-indexes snapshot.indexes))
+
+(defn create-shared-conn [chunk-size: int] -> Shared-Conn
+  (let [conn (create-conn)
+        size (max 1 chunk-size)]
+    (Shared-Conn {conn: conn
+                  snapshot: (shared-db-snapshot-from-db conn.db size)
+                  chunk-size: size})))
+
+(defn delete-shared-conn [conn: Shared-Conn]
+  (delete-shared-db-snapshot conn.snapshot)
+  (delete conn.conn.listeners)
+  (delete-owned-db conn.conn.db))
+
+(defn shared-conn-read-source [conn: ^Shared-Conn] -> DB-Read-Source
+  (shared-db-snapshot-read-source (addr conn^.snapshot)))
+
+(defn shared-conn-transact [conn: ^Shared-Conn, tx-data: []Tx-Data] -> Tx-Report
+  (let [start-index (count conn^.conn.db.datoms)
+        report (transact-tx-data (addr conn^.conn) tx-data)]
+    (when (not report.ok)
+      (return report))
+    (let [next-snapshot (shared-db-snapshot-with-appended-db conn^.snapshot conn^.conn.db start-index)]
+      (delete-shared-db-snapshot conn^.snapshot)
+      (set! conn^.snapshot next-snapshot))
+    report))

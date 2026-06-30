@@ -347,14 +347,21 @@ Implemented so far:
   as an exact prefix, with fallback rebuild for merged/reordered indexes. Tests
   verify the base datom, current, and EAVT chunks are retained and the appended
   snapshot remains queryable.
+- `Shared-Conn` is the first connection-side publish wrapper for this
+  representation. It still delegates transaction application to the existing
+  resident `Conn`, but successful commits publish a `Shared-DB-Snapshot` from
+  the old snapshot plus the post-transaction DB. Tests verify the published
+  source is queryable and retains old datom/current/EAVT chunks across a simple
+  append commit.
 
 Work:
 
 1. Introduce a DB index storage layer with immutable base chunks plus a small
-   transaction delta. The first retained chunk primitive and grouped DB int
-   index wrapper exist; the next step is to move a transaction publish path to
-   build and retain those shared indexes instead of publishing only owned
-   `[]int` arrays.
+   transaction delta. The first retained chunk primitive, grouped DB int index
+   wrapper, retained DB snapshot, and connection-side shared publish wrapper
+   exist. The next step is to make transaction publication build shared chunks
+   directly instead of publishing through a resident `DB` and then adapting it
+   into a shared snapshot.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases; the next step is making merged indexes
