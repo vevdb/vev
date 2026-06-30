@@ -1611,12 +1611,14 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   Empty
   Resident
   SQLite-Snapshot
+  Shared-Snapshot
 ])
 
 (defstruct Store-DB {
   kind: Store-DB-Kind
   resident: DB
   sqlite-snapshot: SQLite-DB-Snapshot
+  shared-snapshot: Shared-DB-Snapshot
 })
 
 (defn insert-sqlite-tx-meta! [handle: rawptr, tx: u64, meta: []Tx-Meta] -> [ok: bool, error: string]
@@ -2278,10 +2280,15 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: sqlite-snapshot}) true "")
       (return (Store-DB {}) false snapshot-error))))
 
+(defn shared-store-db [conn: ^Shared-Conn] -> Store-DB
+  (Store-DB {kind: .Shared-Snapshot
+             shared-snapshot: (retain-shared-db-snapshot conn^.snapshot)}))
+
 (defn store-db-read-source [snapshot: ^Store-DB] -> [source: DB-Read-Source, ok: bool, error: string]
   (case snapshot^.kind
     .Resident (return (resident-db-read-source (addr snapshot^.resident)) true "")
     .SQLite-Snapshot (return (sqlite-db-read-source (addr snapshot^.sqlite-snapshot)) true "")
+    .Shared-Snapshot (return (shared-db-snapshot-read-source (addr snapshot^.shared-snapshot)) true "")
      (return (DB-Read-Source {}) false "store DB snapshot is not open")))
 
 (defn q-result-store-db-text [snapshot: ^Store-DB, text: string] -> Query-Result
@@ -2320,6 +2327,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (case snapshot^.kind
     .Resident (delete-owned-db snapshot^.resident)
     .SQLite-Snapshot (close-sqlite-db-snapshot! (addr snapshot^.sqlite-snapshot))
+    .Shared-Snapshot (delete-shared-db-snapshot snapshot^.shared-snapshot)
      (do))
   (set! snapshot^ (Store-DB {})))
 

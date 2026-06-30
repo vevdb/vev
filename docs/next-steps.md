@@ -394,6 +394,12 @@ Implemented so far:
   `db-after` remain independently queryable. This is the host-facing DB-value
   lifetime shape needed before the C/JVM handles can stop depending on resident
   DB clones.
+- `Store-DB`, the storage-neutral immutable DB handle, now has a
+  `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
+  variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
+  `q-result-store-db-*` query wrappers run against it through `DB-Read-Source`.
+  A test verifies the retained store DB snapshot remains queryable after the
+  shared connection advances.
 
 Work:
 
@@ -414,8 +420,9 @@ Work:
    reducing per-value overhead inside the shared merge builder.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact. Shared transaction reports now exist for the
-   prototype shared connection path; the next step is wiring host-facing DB
-   handles to that shape instead of resident `DB` clones.
+   prototype shared connection path, and `Store-DB` can now wrap shared
+   snapshots. The next step is wiring C/JVM DB handles to storage-neutral
+   `Store-DB` snapshots instead of resident `DB` clones.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization.
 5. Preserve resident-array mode as a useful small/in-memory implementation

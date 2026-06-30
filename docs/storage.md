@@ -348,6 +348,10 @@ pushing every remaining added value individually.
 snapshots. That lets a report's `db-before` and `db-after` be queried after the
 connection has advanced, without cloning resident DB arrays for those report
 values.
+`Store-DB` can now also wrap a retained shared in-memory snapshot, not only a
+SQLite snapshot. That keeps the host-facing immutable DB handle direction
+storage-neutral: the same `q-result-store-db-*` wrappers can query persisted
+snapshots and shared in-memory snapshots through `DB-Read-Source`.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
