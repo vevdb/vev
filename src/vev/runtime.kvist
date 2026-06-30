@@ -4062,27 +4062,87 @@
         (binding-store! (addr out) name value)
         (return out true)))))
 
-(defn db-read-source-apply-function-clause [binding: Binding, function: Function-Clause] -> [out-binding: Binding, ok: bool, error: string]
-  (when (not (= function.out-binding.kind .None))
-    (return (Binding {}) false "SQLite DB snapshot source does not yet support destructuring function outputs"))
-  (when function.is-tuple
-    (return (Binding {}) false "SQLite DB snapshot source does not yet support tuple function outputs"))
-  (let [[value value-ok] (apply-function-op function binding)]
-    (when (not value-ok)
-      (return (Binding {}) false ""))
-    (let [owned-value (value-owned value)
-          [next next-ok] (db-read-source-binding-with-owned-value binding function.out owned-value)]
-      (return next next-ok ""))))
+(defn db-read-source-bind-input-pattern-owned [binding: Binding, pattern: Input-Binding, value: Value] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (case pattern.kind
+      .Ignore (arr.push! out (db-read-source-clone-binding-owned binding))
+      .None (arr.push! out (db-read-source-clone-binding-owned binding))
+      .Var
+        (let [owned-value (value-owned value)
+              [next ok] (db-read-source-binding-with-owned-value binding pattern.name owned-value)]
+          (when ok
+            (arr.push! out next)))
+      .Tuple
+        (when (and (= value.kind .Vector)
+                   (= (count pattern.items) (count value.items)))
+          (let [current (make [dynamic]Binding)]
+            (arr.push! current (db-read-source-clone-binding-owned binding))
+            (for [item index pattern.items]
+              (let [next-current (make [dynamic]Binding)]
+                (for [candidate current]
+                  (let [bound (db-read-source-bind-input-pattern-owned candidate item value.items[index])]
+                    (for [bound-item bound]
+                      (arr.push! next-current bound-item))
+                    (delete bound))
+                  (db-read-source-delete-binding-owned candidate))
+                (delete current)
+                (set! current next-current)))
+            (for [candidate current]
+              (arr.push! out candidate))
+            (delete current)))
+      .Collection
+        (when (and (= value.kind .Vector)
+                   (= (count pattern.items) 1))
+          (for [item value.items]
+            (let [bound (db-read-source-bind-input-pattern-owned binding pattern.items[0] item)]
+              (for [bound-item bound]
+                (arr.push! out bound-item))
+              (delete bound))))
+      :else (do))
+    out))
+
+(defn db-read-source-bind-tuple-output [binding: Binding, names: []string, value: Value] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (and (= value.kind .Vector)
+               (= (count value.items) (count names)))
+      (let [current (make [dynamic]Binding)]
+        (arr.push! current (db-read-source-clone-binding-owned binding))
+        (for [name index names]
+          (let [next-current (make [dynamic]Binding)]
+            (for [candidate current]
+              (if (= name "_")
+                (arr.push! next-current (db-read-source-clone-binding-owned candidate))
+                (let [owned-value (value-owned value.items[index])
+                      [next ok] (db-read-source-binding-with-owned-value candidate name owned-value)]
+                  (when ok
+                    (arr.push! next-current next))))
+              (db-read-source-delete-binding-owned candidate))
+            (delete current)
+            (set! current next-current)))
+        (for [candidate current]
+          (arr.push! out candidate))
+        (delete current)))
+    out))
 
 (defn db-read-source-bindings-after-function [input-bindings: []Binding, function: Function-Clause] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
   (let [out (make [dynamic]Binding)]
     (for [binding input-bindings]
-      (let [[next next-ok next-error] (db-read-source-apply-function-clause binding function)]
-        (when (> (count next-error) 0)
-          (db-read-source-delete-bindings-owned out)
-          (return (make [dynamic]Binding) false next-error))
-        (when next-ok
-          (arr.push! out next))))
+      (let [[value value-ok] (apply-function-op function binding)]
+        (when value-ok
+          (if (not (= function.out-binding.kind .None))
+            (let [bound (db-read-source-bind-input-pattern-owned binding function.out-binding value)]
+              (for [item bound]
+                (arr.push! out item))
+              (delete bound))
+            (if function.is-tuple
+              (let [bound (db-read-source-bind-tuple-output binding function.out-vars value)]
+                (for [item bound]
+                  (arr.push! out item))
+                (delete bound))
+              (let [owned-value (value-owned value)
+                    [next next-ok] (db-read-source-binding-with-owned-value binding function.out owned-value)]
+                (when next-ok
+                  (arr.push! out next))))))))
     (return out true "")))
 
 (defn db-read-source-pull-spec-supported? [spec: Pull-Spec] -> bool
