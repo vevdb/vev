@@ -123,7 +123,8 @@ Implemented so far:
 - source-backed lookup refs now also resolve tuple lookup-ref values before the
   AVET lookup, including ref-component resolution through entity ids, ints,
   idents, and nested lookup-ref vector values. The persisted snapshot test
-  covers a unique tuple attr lookup ref.
+  covers unique tuple attr lookup refs with both scalar components and a
+  ref-typed component resolved through a nested lookup ref.
 
 Work:
 
@@ -158,6 +159,11 @@ Remaining in this batch:
    handles now, or pause that until the raw-Odin ABI compile issue is fixed in
    Kvist/the ABI layer. The source-backed engine path is now ahead of the C ABI
    exposure path.
+4. Audit same-transaction tuple maintenance when schema, data, and tuple
+   component attrs are introduced together. The source-backed tuple lookup-ref
+   coverage now uses a second transaction for the ref component so it tests the
+   persisted source lookup path directly; tuple derivation ordering should be
+   tightened separately.
 
 Acceptance:
 
