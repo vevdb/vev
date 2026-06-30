@@ -30,6 +30,12 @@
       (return true)))
   false)
 
+(defn native-tag-value [value: vev.Value] -> vev.Native-Query-Function-Result
+  (when (not (= value.kind .String))
+    (return (vev.native-query-function-none)))
+  (vev.native-query-function-result
+    (vev.value-string (fmt.tprintf "tag:%s" value.text))))
+
 (t.deftest sqlite-initializes-chunked-index-metadata
   (defer (free_all context.allocator))
   (remove-sqlite-files "tmp.vev.storage-architecture.sqlite")
@@ -267,6 +273,10 @@
             source-query-pull-reverse-nested (vev.q-text-db-read-source db-snapshot-source "[:find (pull ?e [{:item/_parent [:item/child-name]}]) :where [?e :item/name \"item-301\"]]")
             source-query-pull-nested (vev.q-text-db-read-source db-snapshot-source "[:find (pull ?e [{:item/parent [:item/name]}]) :where [?e :item/parent 301] [(= ?e 302)]]")
             source-query-pull-xform (vev.q-text-db-read-source db-snapshot-source "[:find (pull ?e [[:item/child-name :xform vector] {[:item/parent :xform name] [:name]} [:item/missing :xform vector]]) :where [?e :item/parent 301] [(= ?e 302)]]")
+            source-query-pull-callback-xform (vev.q-text-db-read-source-with-fns
+                                               db-snapshot-source
+                                               "[:find (pull ?e [[:item/child-name :xform tag-value]]) :where [?e :item/parent 301] [(= ?e 302)]]"
+                                               ([]vev.Native-Query-Fn [(vev.pull-xform-fn "tag-value" native-tag-value)]))
             source-query-pull-recursion (vev.q-text-db-read-source db-snapshot-source "[:find (pull ?e [:db/id :item/child-name {:item/parent 1}]) :where [?e :item/parent 301] [(= ?e 302)]]")
             source-query-pull-default (vev.q-text-db-read-source db-snapshot-source "[:find (pull ?e [[:item/missing :default \"fallback\"]]) :where [?e :item/name]]")
             source-query-pull-reverse-default (vev.q-text-db-read-source db-snapshot-source "[:find (pull ?e [[:item/_missing :default 42]]) :where [?e :item/name]]")
@@ -466,6 +476,12 @@
         (t.is (= source-query-pull-xform.rows[0].pulls[0].attrs[2].a ":item/missing"))
         (t.is (= source-query-pull-xform.rows[0].pulls[0].attrs[2].v.kind .Vector))
         (t.is (= source-query-pull-xform.rows[0].pulls[0].attrs[2].v.items[0].kind .Nil))
+        (t.is source-query-pull-callback-xform.ok)
+        (t.is (= source-query-pull-callback-xform.error ""))
+        (t.is (= (count source-query-pull-callback-xform.rows) 1))
+        (t.is (= source-query-pull-callback-xform.rows[0].pulls[0].attrs[0].a ":item/child-name"))
+        (t.is (= source-query-pull-callback-xform.rows[0].pulls[0].attrs[0].v.kind .String))
+        (t.is (= source-query-pull-callback-xform.rows[0].pulls[0].attrs[0].v.text "tag:child-302"))
         (t.is source-query-pull-recursion.ok)
         (t.is (= source-query-pull-recursion.error ""))
         (t.is (= (count source-query-pull-recursion.rows) 1))
@@ -536,6 +552,7 @@
         (vev.delete-result-set-owned-values source-query-pull-reverse-nested)
         (vev.delete-result-set-owned-values source-query-pull-nested)
         (vev.delete-result-set-owned-values source-query-pull-xform)
+        (vev.delete-result-set-owned-values source-query-pull-callback-xform)
         (vev.delete-result-set-owned-values source-query-pull-recursion)
         (vev.delete-result-set-owned-values source-query-pull-default)
         (vev.delete-result-set-owned-values source-query-pull-reverse-default)

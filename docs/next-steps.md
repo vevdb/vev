@@ -67,7 +67,9 @@ Implemented so far:
   `[:item/_parent :limit 1]` are enforced during source-backed scans. Built-in
   pull xforms `:xform vector` and `:xform name` are also supported for
   source-backed pull finds, and bounded pull recursion now walks the same
-  persisted source with cycle guards.
+  persisted source with cycle guards. Source-backed query APIs also have
+  `with-fns` variants so native pull xform callbacks can run against persisted
+  snapshots.
   Source-backed text queries also accept scalar `:in` values through direct
   `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
@@ -79,8 +81,8 @@ Implemented so far:
   `get-some`, `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
   wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
   nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
-  built-in pull xforms, bounded pull recursion, scalar inputs, and pull pattern
-  inputs through both direct `Query-Input` and EDN input text.
+  built-in and callback pull xforms, bounded pull recursion, scalar inputs, and
+  pull pattern inputs through both direct `Query-Input` and EDN input text.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
@@ -116,9 +118,9 @@ Remaining in this batch:
    explicitly route full pull through the same source boundary. Flat literal
    forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
    and pattern-variable pull finds plus defaults, limits, and built-in xforms
-   are now covered; bounded recursion is also covered. Remaining pull work is
-   unbounded-recursion stress coverage, callback xforms, and source-qualified
-   named pull sources.
+   are now covered; callback xforms and bounded recursion are also covered.
+   Remaining pull work is unbounded-recursion stress coverage and
+   source-qualified named pull sources.
 4. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
