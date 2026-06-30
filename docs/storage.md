@@ -488,8 +488,26 @@ latency for `shared-snapshot-heavy`, 0.146 ms for `shared-store-db-heavy`, and
 0.259 ms for the benchmark-only direct shared-log path.
 Source-stable lookup-ref writes also resolve through that boundary now. Simple
 add/retract tx-data can resolve a lookup-ref entity or a ref-valued lookup-ref
-value against `DB-Read-Source`, while intermediate-tx-db cases still fall back
-to the resident resolver if the same transaction creates the lookup target attr.
+value against `DB-Read-Source`. Same-transaction lookup attrs also resolve
+through the write-state overlay when the lookup attr's unique schema fact has
+already been emitted and the lookup target fact is an explicit entity add or
+tempid entity add anywhere in the same transaction. If that tempid resolves
+through a source-backed identity upsert, lookup refs see the upserted entity
+without a resident intermediate DB, so common out-of-order lookup-ref writes no
+longer need a resident fallback.
+Tempid upserts through already-installed unique tuple attrs are also
+source-backed for simple component facts and source-backed lookup-ref component
+facts, plus value-tempid component facts whose target tempids resolve through
+source-backed identity upserts: the shared write resolver reads tuple schemas
+through `DB-Read-Source`, builds the same-tx tuple value, and resolves the
+upsert target without rebuilding a resident intermediate DB.
+Same-transaction tuple lookup refs use the same overlay for tuple component
+facts, including component values written through lookup refs and tuple lookup
+values that contain nested lookup-ref components, so a ref-valued lookup ref can
+target a tuple identity introduced by the same transaction.
+Scalar identity-upsert conflicts and conflicting unique tuple tempid upserts are
+also detected on the source-backed write-state path when one tempid would
+resolve to multiple existing entities.
 Source-stable ident entity writes also use the same path: `:db/ident` entity
 terms resolve through source-backed schema reads, while idents created in the
 same transaction still fall back to the resident intermediate-tx-db resolver.
@@ -515,9 +533,8 @@ force the resident resolver. Explicit-ID schema-only transactions also resolve
 through the shared write-state path for common non-tuple schema installation;
 mixed schema/data transactions and tuple schema changes still stay on resident
 fallback. The remaining work is therefore the general write-state overlay:
-tuple maintenance, transaction functions, mixed schema validation, and any
-remaining value-tempid/upsert conflict shapes should stop requiring a rebuilt
-resident DB.
+transaction functions and mixed schema validation should stop requiring a
+rebuilt resident DB.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing

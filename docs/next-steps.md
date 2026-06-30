@@ -728,23 +728,36 @@ Work:
    attrs when values are already entity ids or same-transaction literal/value
    tempids, plus source-stable and order-safe same-transaction value lookup
    refs. Same-transaction lookup attrs can also resolve entity lookup refs when
-   the unique schema fact and lookup target fact are already emitted earlier in
-   the transaction. Same-transaction tuple schema define-and-use is
+   the unique schema fact is already emitted earlier in the transaction and the
+   target fact is an explicit entity add, tempid entity add, or source-backed
+   identity tempid upsert anywhere in the same tx. This covers both lookup-ref
+   entity positions and ref-valued lookup-ref positions without building a
+   resident intermediate DB.
+   Same-transaction tuple schema define-and-use is
    source-backed for explicit tuple schema facts plus ordinary component
    writes. Same-transaction unique schema define-and-use is source-backed for
    order-safe explicit entity writes. Built-in
    compare-and-swap transaction data is also source-backed for source-stable
-   entity/value shapes.
+   entity/value shapes. Tempid upserts through already-installed unique tuple
+   attrs now resolve through the same source-backed write-state path for simple
+   component facts, source-backed lookup-ref component facts, and value-tempid
+   component facts whose target tempids resolve through source-backed identity
+   upserts.
+   Same-transaction tuple lookup-ref targets are also source-backed, including
+   tuple component facts written through value
+   lookup-refs and tuple lookup-ref values that contain nested lookup-ref
+   components, so ref-valued lookup refs can point at a tuple identity created
+   by the same transaction without a resident intermediate DB. Scalar
+   identity-upsert conflict detection and conflicting unique tuple tempid
+   upsert detection also run through the write-state path for source-backed
+   existing entities.
    `Shared-Write-State` now counts source-backed resolver use versus resident
    fallback use, so this remaining work can be tracked directly. The next step
    is to move the remaining intermediate-tx-db resolver state behind the same
-   boundary: registered transaction functions, same-tx lookup attrs that depend
-   on later target facts or tempid/upsert resolution, same-tx unique
-   tempid/upsert shapes, tuple upsert/lookup-ref shapes that need
-   transaction-local tuple identity reads, and any remaining identity-upsert
-   conflict shapes that need
-   transaction-local overlay reads should use a write-state overlay instead of
-   forcing a full resident DB rebuild on every append-only commit.
+   boundary: registered transaction functions and same-tx unique tempid/upsert
+   shapes beyond source-backed identity target resolution should use a
+   write-state overlay instead of forcing a full resident DB rebuild on every
+   append-only commit.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases, and append-only/new-entity publication
