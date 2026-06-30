@@ -2307,11 +2307,51 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (q-result-text-db-read-source source text)
       (query-result-owned-values (result-set-error source-error)))))
 
+(defn q-result-store-db-text-with-input-text [snapshot: ^Store-DB, text: string, inputs-text: string] -> Query-Result
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (if source-ok
+      (q-result-text-db-read-source-with-input-text source text inputs-text)
+      (query-result-owned-values (result-set-error source-error)))))
+
 (defn q-result-store-db-prepared [snapshot: ^Store-DB, prepared: Prepared-Query] -> Query-Result
   (let [[source source-ok source-error] (store-db-read-source snapshot)]
     (if source-ok
       (q-result-prepared-db-read-source source prepared)
       (query-result-owned-values (result-set-error source-error)))))
+
+(defn store-db-result-value [snapshot: ^Store-DB, result: Result-Set] -> [value: Value, ok: bool, error: string]
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (if source-ok
+      (db-read-source-result-set-value source result)
+      (return (Value {}) false source-error))))
+
+(defn q-store-db-value-text-with-input-text [snapshot: ^Store-DB, text: string, inputs-text: string] -> [value: Value, ok: bool, error: string]
+  (let [result (q-result-store-db-text-with-input-text snapshot text inputs-text)]
+    (defer (delete-query-result result))
+    (if result.result.ok
+      (store-db-result-value snapshot result.result)
+      (return (value-map
+                ([]Value [(value-keyword ":ok") (value-bool false)
+                          (value-keyword ":error") (value-string result.result.error)
+                          (value-keyword ":rows") (value-vector ([]Value []))]))
+              true
+              ""))))
+
+(defn pull-store-db-value-text [snapshot: ^Store-DB, pattern-text: string, entity: u64] -> [value: Value, ok: bool, error: string]
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (when (not source-ok)
+      (return (Value {}) false source-error))
+    (let [[pattern pattern-ok pattern-error] (parse-pull-pattern-text pattern-text)]
+      (when (not pattern-ok)
+        (delete pattern)
+        (return (Value {}) false pattern-error))
+      (let [[pull pull-ok pull-error] (db-read-source-pull-result-for-pattern source entity (slice pattern 0))]
+        (delete pattern)
+        (when (not pull-ok)
+          (return (Value {}) false pull-error))
+        (let [[rendered rendered-ok rendered-error] (db-read-source-pull-result-value source pull)]
+          (delete-pull-result-owned-values pull)
+          (return rendered rendered-ok rendered-error))))))
 
 (defn sqlite-open-db-snapshot [path: string, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
   (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
@@ -2425,6 +2465,19 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (case store^.kind
     .SQLite (q-result-sqlite-conn-text (addr store^.sqlite) text)
     .Shared (q-result-text-db-read-source (shared-conn-read-source (addr store^.shared)) text)
+     (query-result-owned-values (result-set-error "store is not open"))))
+
+(defn q-result-store-text-with-input-text [store: ^Store-Conn, text: string, inputs-text: string] -> Query-Result
+  (case store^.kind
+    .SQLite
+      (let [[snapshot snapshot-ok snapshot-error] (sqlite-conn-open-db-snapshot (addr store^.sqlite) sqlite-db-source-default-page-size)]
+        (when (not snapshot-ok)
+          (return (query-result-owned-values (result-set-error snapshot-error))))
+        (let [source (sqlite-db-read-source (addr snapshot))
+              result (q-result-text-db-read-source-with-input-text source text inputs-text)]
+          (close-sqlite-db-snapshot! (addr snapshot))
+          result))
+    .Shared (q-result-text-db-read-source-with-input-text (shared-conn-read-source (addr store^.shared)) text inputs-text)
      (query-result-owned-values (result-set-error "store is not open"))))
 
 (defn q-result-store-prepared [store: ^Store-Conn, prepared: Prepared-Query] -> Query-Result

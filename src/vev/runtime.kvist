@@ -4156,6 +4156,38 @@
       (return "" false schema-error))
     (db-read-source-schema-keyword-property source schema-e schema-attr)))
 
+(defn db-read-source-schema-bool-property [source: DB-Read-Source, entity: u64, schema-attr: string] -> [value: bool, ok: bool, error: string]
+  (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity schema-attr)]
+    (when (not datoms-ok)
+      (return false false datoms-error))
+    (for [datom datoms]
+      (when (= datom.v.kind .Bool)
+        (let [out datom.v.bool-value]
+          (delete-owned-datoms datoms)
+          (return out true ""))))
+    (delete-owned-datoms datoms)
+    (return false false "")))
+
+(defn db-read-source-schema-bool? [source: DB-Read-Source, attr: string, schema-attr: string] -> [value: bool, ok: bool, error: string]
+  (let [[schema-e schema-ok schema-error] (db-read-source-schema-entity-for-attr source attr)]
+    (when (not schema-ok)
+      (return false (= schema-error "") schema-error))
+    (let [[bool-value bool-ok bool-error] (db-read-source-schema-bool-property source schema-e schema-attr)]
+      (if bool-ok
+        (return bool-value true "")
+        (return false (= bool-error "") bool-error)))))
+
+(defn db-read-source-schema-cardinality-many? [source: DB-Read-Source, attr: string] -> [many: bool, ok: bool, error: string]
+  (let [[cardinality cardinality-ok cardinality-error] (db-read-source-schema-keyword source attr ":db/cardinality")]
+    (when (not cardinality-ok)
+      (return false (= cardinality-error "") cardinality-error))
+    (let [out (= cardinality ":db.cardinality/many")]
+      (delete cardinality)
+      (return out true ""))))
+
+(defn db-read-source-schema-component? [source: DB-Read-Source, attr: string] -> [component: bool, ok: bool, error: string]
+  (db-read-source-schema-bool? source attr ":db/isComponent"))
+
 (defn db-read-source-schema-ref? [source: DB-Read-Source, attr: string] -> [ref: bool, ok: bool, error: string]
   (let [[value value-ok value-error] (db-read-source-schema-keyword source attr ":db/valueType")]
     (when (not value-ok)
@@ -18906,6 +18938,83 @@
     (value-nil)
     (pull-render-attrs-map db (slice result.attrs 0))))
 
+(defn db-read-source-pull-render-attr-value [source: DB-Read-Source, pulled: Pull-Attr] -> [value: Value, ok: bool, error: string]
+  (if (> (count pulled.attrs) 0)
+    (db-read-source-pull-render-attrs-map source (slice pulled.attrs 0))
+    (if (and (= pulled.v.kind .Entity)
+             (not (= pulled.a ":db/id")))
+      (return (pull-render-ref-id-map pulled.v.entity) true "")
+      (return (value-owned pulled.v) true ""))))
+
+(defn db-read-source-pull-render-attr-is-many? [source: DB-Read-Source, pulled: Pull-Attr, count-for-attr: int] -> [many: bool, ok: bool, error: string]
+  (when (> count-for-attr 1)
+    (return true true ""))
+  (when (reverse-attr? pulled.a)
+    (let [forward (forward-attr-for-reverse pulled.a) :defer
+          [component component-ok component-error] (db-read-source-schema-component? source forward)]
+      (return (not component) component-ok component-error)))
+  (db-read-source-schema-cardinality-many? source pulled.a))
+
+(defn db-read-source-pull-render-group-values [source: DB-Read-Source, attrs: []Pull-Attr, attr-name: string] -> [values: [dynamic]Value, ok: bool, error: string]
+  (let [out (make [dynamic]Value)]
+    (for [pulled attrs]
+      (when (= pulled.a attr-name)
+        (let [[rendered rendered-ok rendered-error] (db-read-source-pull-render-attr-value source pulled)]
+          (when (not rendered-ok)
+            (delete out)
+            (return (make [dynamic]Value) false rendered-error))
+          (arr.push! out rendered))))
+    (return out true "")))
+
+(defn db-read-source-pull-render-attrs-map [source: DB-Read-Source, attrs: []Pull-Attr] -> [value: Value, ok: bool, error: string]
+  (let [builder (value-map-builder (* (count attrs) 2))
+        i 0]
+    (defer (delete-value-map-builder builder))
+    (while (< i (count attrs))
+      (let [pulled attrs[i]
+            key (pull-render-attr-key pulled)]
+        (when (not (value-map-builder-has-key? builder key))
+          (let [[values values-ok values-error] (db-read-source-pull-render-group-values source attrs pulled.a)]
+            (when (not values-ok)
+              (return (Value {}) false values-error))
+            (let [[many many-ok many-error] (db-read-source-pull-render-attr-is-many? source pulled (count values))]
+              (when (not many-ok)
+                (delete values)
+                (return (Value {}) false many-error))
+              (let [rendered (if many
+                               (value-vector (slice values 0))
+                               values[0])]
+                (discard (value-map-builder-put-new! (addr builder) key rendered))
+                (delete values)))))
+      (set! i (+ i 1)))
+    (set! value (value-map-builder-value builder))
+    (set! ok true)
+    (set! error "")
+    (return))
+  (return (Value {}) false "unreachable source pull render path")))
+
+(defn db-read-source-pull-result-value [source: DB-Read-Source, result: Pull-Result] -> [value: Value, ok: bool, error: string]
+  (if (= (count result.attrs) 0)
+    (return (value-nil) true "")
+    (db-read-source-pull-render-attrs-map source (slice result.attrs 0))))
+
+(defn db-read-source-pull-many-result-values [source: DB-Read-Source, results: []Pull-Result] -> [values: [dynamic]Value, ok: bool, error: string]
+  (let [out (make [dynamic]Value 0 (count results))]
+    (for [result results]
+      (let [[rendered rendered-ok rendered-error] (db-read-source-pull-result-value source result)]
+        (when (not rendered-ok)
+          (delete out)
+          (return (make [dynamic]Value) false rendered-error))
+        (arr.push! out rendered)))
+    (return out true "")))
+
+(defn db-read-source-pull-many-results-value [source: DB-Read-Source, results: []Pull-Result] -> [value: Value, ok: bool, error: string]
+  (let [[items items-ok items-error] (db-read-source-pull-many-result-values source results)]
+    (when (not items-ok)
+      (return (Value {}) false items-error))
+    (defer (delete items))
+    (return (value-vector (slice items 0)) true "")))
+
 (defn pull-many-result-values [db: DB, results: []Pull-Result] -> [dynamic]Value
   (let [out (make [dynamic]Value 0 (count results))]
     (for [result results]
@@ -18936,6 +19045,46 @@
     ([]Value [(value-keyword ":ok") (value-bool result.ok)
               (value-keyword ":error") (value-string result.error)
               (value-keyword ":rows") (result-rows-value db (slice result.rows 0))])))
+
+(defn db-read-source-result-row-values-value [row: Result-Row] -> Value
+  (let [items (make [dynamic]Value 0 (count row.values))]
+    (defer (delete items))
+    (for [item row.values]
+      (arr.push! items (value-owned item)))
+    (value-vector (slice items 0))))
+
+(defn db-read-source-result-row-value [source: DB-Read-Source, row: Result-Row] -> [value: Value, ok: bool, error: string]
+  (let [values (db-read-source-result-row-values-value row)
+        [pulls pulls-ok pulls-error] (db-read-source-pull-many-results-value source (slice row.pulls 0))]
+    (when (not pulls-ok)
+      (delete-owned-value values)
+      (return (Value {}) false pulls-error))
+    (return (value-map
+              ([]Value [(value-keyword ":values") values
+                        (value-keyword ":pulls") pulls]))
+            true
+            "")))
+
+(defn db-read-source-result-rows-value [source: DB-Read-Source, rows: []Result-Row] -> [value: Value, ok: bool, error: string]
+  (let [items (make [dynamic]Value 0 (count rows))]
+    (defer (delete items))
+    (for [row rows]
+      (let [[row-value row-ok row-error] (db-read-source-result-row-value source row)]
+        (when (not row-ok)
+          (return (Value {}) false row-error))
+        (arr.push! items row-value)))
+    (return (value-vector (slice items 0)) true "")))
+
+(defn db-read-source-result-set-value [source: DB-Read-Source, result: Result-Set] -> [value: Value, ok: bool, error: string]
+  (let [[rows rows-ok rows-error] (db-read-source-result-rows-value source (slice result.rows 0))]
+    (when (not rows-ok)
+      (return (Value {}) false rows-error))
+    (return (value-map
+              ([]Value [(value-keyword ":ok") (value-bool result.ok)
+                        (value-keyword ":error") (value-string result.error)
+                        (value-keyword ":rows") rows]))
+            true
+            "")))
 
 (defn query-stats-value [stats: Query-Stats] -> Value
   (value-map

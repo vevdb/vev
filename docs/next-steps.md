@@ -407,6 +407,11 @@ Implemented so far:
   `q-result-store-prepared`, `q-result-store-text`, `transact-store-text`, and
   `close-store` functions now work over both variants. A focused test verifies
   that a retained shared `Store-DB` remains immutable after the store advances.
+- `Store-DB` can now render source-backed query results to serializable
+  `Value` maps without a resident `DB`, including pull result rendering through
+  `DB-Read-Source` schema reads. The CLI `query` and `pull` commands now open a
+  read-only store, retain a `Store-DB`, and render through that storage-neutral
+  snapshot instead of reaching through `store.sqlite.conn.db`.
 
 Work:
 
@@ -429,7 +434,8 @@ Work:
    / `db-after` semantics exact. Shared transaction reports now exist for the
    prototype shared connection path, and `Store-DB` can now wrap shared
    snapshots. `Store-Conn` now has SQLite and shared variants behind the same
-   storage-neutral API. The next step is wiring C/JVM DB handles to
+   storage-neutral API, and source-backed result rendering lets CLI reads avoid
+   resident DB rendering. The next step is wiring C/JVM DB handles to
    storage-neutral `Store-DB` snapshots instead of resident `DB` clones.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization.

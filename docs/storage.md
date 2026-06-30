@@ -358,6 +358,10 @@ default `open-store` functions still create SQLite-backed stores, while
 the same `store-db`, `q-result-store-*`, `transact-store-text`, and
 `close-store` entry points, so host bindings can move toward one DB-handle shape
 instead of separate resident, SQLite, and shared APIs.
+`Store-DB` can also render query and pull values through `DB-Read-Source`.
+This lets storage-neutral callers, including the CLI, print parsed query results
+from retained SQLite/shared snapshots without reopening or reaching through a
+resident `DB` field just for value rendering.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
