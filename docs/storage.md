@@ -75,6 +75,12 @@ also an internal source-only SQLite connection opener that skips
 `load-db-sqlite` and keeps only the live SQLite handle plus a small resident
 shell for cleanup/error reporting. That source-only handle can query through
 the persisted snapshot wrappers and rejects transactions explicitly.
+The storage-neutral aliases (`open-store-read-only`, `q-result-store-text`, and
+`q-result-store-prepared`) now expose this mode inside Vev without making
+query-facing code mention SQLite. `store-read-only?` and
+`store-resident-db-available?` make the current compatibility boundary explicit:
+read-only stores can query persisted index chunks, but they do not contain a
+resident rebuilt `DB`.
 
 There are now two write modes:
 
@@ -167,20 +173,31 @@ wrapper when it has the successful transaction report in hand.
 - `persisted-db-snapshot-source-join-query`: parse and execute a multi-clause
   EDN join query against `SQLite-DB-Snapshot` through the source-backed query
   path, without reopening resident arrays
-- live SQLite connection source queries: internal text/prepared wrappers query
-  the latest persisted snapshot through source-backed reads, then close the
-  snapshot before returning owned result rows
-- source-only SQLite connection open/query: skips resident datom-log replay and
-  uses the live handle only for short-lived persisted snapshot reads
-- `sqlite-conn-source-prepared-query`: open a normal live SQLite connection and
+- live store source queries: internal text/prepared wrappers query the latest
+  persisted snapshot through source-backed reads, then close the snapshot before
+  returning owned result rows
+- read-only store open/query: skips resident datom-log replay and uses the live
+  handle only for short-lived persisted snapshot reads
+- `store-conn-source-prepared-query`: open a normal live durable store and
   measure the prepared-query wrapper that opens/closes a short-lived persisted
   snapshot for each read
-- `sqlite-source-conn-open`: open a source-only SQLite connection without
-  resident datom-log replay
-- `sqlite-source-conn-prepared-query`: query through a source-only SQLite
-  connection, opening short-lived persisted snapshots for each read
+- `store-read-only-open`: open a read-only durable store without resident
+  datom-log replay
+- `store-read-only-prepared-query`: query through a read-only durable store,
+  opening short-lived persisted snapshots for each read
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
+
+`bench/sqlite_storage.kvist` accepts `--workload <name>` to run one workload.
+The group names `append`, `durable`, and `source` run related subsets; `all`
+remains the default.
+
+The current `source` subset exercises the persisted source query path, the
+store-level prepared query wrapper, and read-only store open/query without
+resident datom-log replay. While adding this selector, the source-backed clause
+matcher was tightened to treat scanned datom values as borrowed and copy only
+when a value is stored in an output binding. That keeps source snapshot query
+cleanup valid for larger scans.
 
 The first benchmark pass found and fixed a serializer ownership bug: storage
 callers delete `value-serializable-text` results, so that function must return

@@ -101,6 +101,13 @@ Implemented so far:
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
+- `bench/sqlite_storage.kvist` now accepts `--workload <name>`, plus the
+  groups `append`, `durable`, and `source`, so durable source reads can be
+  measured without running the full write/reopen suite. The source connection
+  benchmark labels now use storage-neutral names:
+  `store-conn-source-prepared-query`, `store-read-only-open`, and
+  `store-read-only-prepared-query`. The `source` group has been verified to
+  run cleanly against the storage-neutral wrappers.
 - source-backed query result rows use owned value copies, and callers now have
   `delete-result-set-owned-values` for the matching cleanup shape.
 - SQLite-backed live connections can now run text and prepared queries through
@@ -113,10 +120,21 @@ Implemented so far:
   resident connection shell for cleanup/error reporting, and rejects
   transactions explicitly. Source-only connections can run the same
   persisted-snapshot text/prepared query wrappers.
+- storage-neutral read-only store wrappers now sit on top of that mode:
+  `open-store-read-only`, `q-result-store-text`, and
+  `q-result-store-prepared`. Tests use these names so the next host-facing API
+  work does not have to expose SQLite-specific query calls.
+- `store-read-only?` and `store-resident-db-available?` make the current
+  boundary explicit: source-only durable stores can query persisted chunks but
+  cannot provide a resident rebuilt `DB` value.
 - source-backed function clauses copy produced values into owned result
   bindings and then shallow-clean temporary function result containers, avoiding
   leaked vector/map wrappers without deleting scalar values that may be borrowed
   from existing bindings.
+- source-backed data-clause matching now treats scanned datom values as
+  borrowed candidates and copies only when a value is stored in an output
+  binding. This fixes cleanup for larger source-backed scans and matches the
+  ownership model of persisted index cursors.
 - prepared query objects can now execute directly against `DB-Read-Source`
   through `q-prepared-db-read-source...` wrappers. This keeps the durable
   snapshot path aligned with the prepared-query API that host bindings will use,
@@ -244,11 +262,16 @@ Work:
      owned `Query-Result` values.
    - an internal source-only SQLite connection opener now skips resident rebuild
      on open and rejects writes explicitly
+   - storage-neutral read-only store wrappers now expose that path internally
+     without requiring callers to mention SQLite-specific query functions
 2. Keep datom-log replay available for recovery, validation, migration, and
    fallback.
 3. Update C ABI/JVM/Clojure connection DB snapshots so the public API can pass
    the durable snapshot as an immutable DB value.
-4. Make errors explicit when a query path still requires resident arrays.
+4. Make errors explicit when a query path still requires resident arrays. The
+   first explicit guard is `store-resident-db-available?`; host-facing snapshot
+   handles still need to turn this into a public error/alternate source-backed
+   DB handle.
 
 Acceptance:
 
