@@ -115,10 +115,30 @@ Implemented so far:
   prepared and text queries. The new wrappers return `Query-Result` and clean up
   with `delete-query-result`, which is the direction host handles should follow
   so callers do not have to know whether row values are shallow or owned copies.
-- C ABI result handles now carry an internal ownership tag. Existing resident
-  query handles still default to shallow cleanup, but the handle/free machinery
-  can now safely hold source-backed `Query-Result` values with owned row values
-  when source-backed ABI entry points are added.
+  Resident text and prepared query wrappers now use the same `Query-Result`
+  shape, tagged as shallow cleanup.
+- source-backed lookup-ref resolution now consults current persisted schema
+  datoms and requires the lookup attr to have `:db/unique` set to either
+  `:db.unique/identity` or `:db.unique/value`, matching the resident resolver's
+  basic guard. The storage architecture test covers both a successful unique
+  lookup ref and a rejected non-unique lookup ref.
+- source-backed lookup refs now also resolve tuple lookup-ref values before the
+  AVET lookup, including ref-component resolution through entity ids, ints,
+  idents, and nested lookup-ref vector values. The persisted snapshot test
+  covers unique tuple attr lookup refs with both scalar components and a
+  ref-typed component resolved through a nested lookup ref.
+- same-transaction tuple maintenance now removes stale pending derived tuple
+  adds for the same entity and tuple attr even when the pending ops have an
+  empty map group. The persisted source test keeps schema, entity data, tuple
+  components, and lookup-ref coverage in one transaction.
+- `DB-Read-Source` now exposes source-neutral `eavt` entity ranges,
+  entity+attr positions, and cardinality-one value reads. These helpers use the
+  same source index boundary for resident and persisted SQLite snapshot sources,
+  so query-facing code no longer needs to reach for resident `eavt` side tables
+  just to answer entity-local reads. Source-level typed integer reads and
+  equality checks now sit on the same boundary, and one typed entity/int
+  projection fallback now uses those helpers instead of resident entity-position
+  side tables.
 
 Work:
 
@@ -144,15 +164,19 @@ Remaining in this batch:
    same `Clause-Index-Scan` shape and source-backed prepared queries are
    available, but the full resident query engine still has `DB`/`DB-Source`
    entry points and shallow binding/result ownership.
-2. Add host-facing source-backed query entry points on top of the
-   ownership-aware result handle. Raw `Result-Set` cleanup is still available
-   internally, but host-facing code should get a single result handle/free
-   operation.
-3. Decide whether lookup-ref source resolution must enforce `:db/unique`
-   metadata once persisted schema metadata is queryable without resident DB
-   rebuilds. The current source-backed lookup-ref query path resolves by AVET
-   value, which is useful for persisted snapshots but does not yet consult
-   source-backed schema metadata.
+2. Carry the ownership-tagged `Query-Result` shape into C ABI/JVM result
+   handles. Internal resident and source-backed wrappers now use this shape, but
+   the attempted C ABI ownership-tag patch exposed an ABI compile issue around
+   the raw Odin wrapper block. Rechecking `scripts/build_c_abi.sh` still fails
+   during `kvist compile` at the raw Odin transaction-listener callback call
+   (`abi_tx_listener_notify`), before generated Odin is written. Host handles
+   remain pending rather than partially merged. Raw `Result-Set` cleanup is
+   still available internally, but host-facing code should get a single result
+   handle/free operation.
+3. Decide whether Batch 1 should keep pushing host-facing source-backed query
+   handles now, or pause that until the raw-Odin ABI compile issue is fixed in
+   Kvist/the ABI layer. The source-backed engine path is now ahead of the C ABI
+   exposure path.
 
 Acceptance:
 
@@ -164,6 +188,8 @@ Acceptance:
 
 ## Batch 2: Entity Position Side Tables
 
+Status: started.
+
 Goal:
 
 - remove the remaining `eavt` resident side-table dependency from query-facing
@@ -172,10 +198,18 @@ Goal:
 Work:
 
 1. Decide the representation for entity ranges over chunked `eavt`:
-   - derive ranges by binary search over persisted `eavt` cursor first
+   - derive ranges by binary search over persisted `eavt` cursor first. This is
+     now implemented at the `DB-Read-Source` helper boundary.
    - add persisted entity range side tables only if benchmarks require it
 2. Replace direct `eavt-entities` / `eavt-entity-starts` reads in query-facing
-   code with source methods.
+   code with source methods. The source methods exist, source-level integer and
+   equality helpers are covered for resident and persisted snapshots, and the
+   entity/int projection fallback has started using them. The remaining work is
+   migrating the string/int triple column path that still calls the
+   resident-only entity-position helpers. That path stores borrowed strings in
+   typed columns today, while `DB-Read-Source` value helpers return owned values
+   for SQLite snapshots, so it should move together with the typed result-column
+   ownership cleanup instead of being forced through a temporary owned string.
 3. Keep the resident side table as an implementation detail for resident DBs,
    not as a query-engine assumption.
 
