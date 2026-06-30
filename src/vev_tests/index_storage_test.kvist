@@ -16,6 +16,14 @@
         (return false))))
   true)
 
+(defn shared-index-view-matches-slice? [view: vev.DB-Index-View, expected: []int] -> bool
+  (when (not (= (vev.db-index-view-count view) (count expected)))
+    (return false))
+  (for [value position expected]
+    (when (not (= (vev.db-index-view-at view position) value))
+      (return false)))
+  true)
+
 (t.deftest shared-int-index-retains-old-chunks
   (defer (free_all context.allocator))
   (let [base (vev.shared-int-index-from-slice ([]int [1 3 5 7 9]) 2)
@@ -41,3 +49,26 @@
     (vev.delete-shared-int-index retained)
     (t.is (shared-index-values-match? appended ([]int [1 3 5 7 9 11 13 15])))
     (vev.delete-shared-int-index appended)))
+
+(t.deftest shared-db-int-indexes-can-back-index-views
+  (defer (free_all context.allocator))
+  (let [datoms ([]vev.Datom [(vev.datom-tx 2 ":item/name" (vev.value-string "b") 1 true)
+                              (vev.datom-tx 1 ":item/name" (vev.value-string "a") 1 true)
+                              (vev.datom-tx 1 ":item/rank" (vev.value-int 10) 1 true)
+                              (vev.datom-tx 3 ":item/name" (vev.value-string "c") 1 true)])
+        db (vev.init-db datoms)
+        shared (vev.shared-db-int-indexes-from-db db 2)
+        retained (vev.retain-shared-db-int-indexes shared)
+        eavt-view (vev.shared-db-int-index-view (addr shared) .EAVT)
+        aevt-view (vev.shared-db-int-index-view (addr shared) .AEVT)
+        avet-view (vev.shared-db-int-index-view (addr shared) .AVET)
+        vaet-view (vev.shared-db-int-index-view (addr shared) .VAET)]
+    (t.is (shared-index-view-matches-slice? eavt-view (slice db.eavt 0)))
+    (t.is (shared-index-view-matches-slice? aevt-view (slice db.aevt 0)))
+    (t.is (shared-index-view-matches-slice? avet-view (slice db.avet 0)))
+    (t.is (shared-index-view-matches-slice? vaet-view (slice db.vaet 0)))
+    (vev.delete-shared-db-int-indexes shared)
+    (let [retained-eavt-view (vev.shared-db-int-index-view (addr retained) .EAVT)]
+      (t.is (shared-index-view-matches-slice? retained-eavt-view (slice db.eavt 0))))
+    (vev.delete-shared-db-int-indexes retained)
+    (vev.delete-owned-db db)))

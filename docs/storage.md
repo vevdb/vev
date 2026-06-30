@@ -294,6 +294,10 @@ while sharing old chunks, and has tests for releasing old and new handles
 independently. It is not yet wired into `DB.eavt`, `DB.aevt`, `DB.avet`, or
 `DB.vaet`; the next storage step is to add a DB-index wrapper around this
 chunked representation and move resident index publication to that boundary.
+That wrapper now exists as `Shared-DB-Int-Indexes`, and the existing
+`DB-Index-View` abstraction can read from it. The remaining step is changing
+transaction publication to store or retain these shared indexes as part of DB
+snapshots, rather than only materializing owned resident arrays.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

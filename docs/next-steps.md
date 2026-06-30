@@ -318,12 +318,19 @@ Implemented so far:
   chunks, supports old snapshot retention plus append-by-new-chunks, and has
   tests proving older and newer handles can be released independently while
   surviving snapshots still read correctly. It is not wired into `DB` yet.
+- `Shared-DB-Int-Indexes` now groups the resident int index arrays, and
+  `DB-Index-View` can read from shared chunked indexes in addition to resident
+  slices and SQLite cursors. Tests compare shared-backed `eavt`, `aevt`, `avet`,
+  and `vaet` views against the current resident arrays and verify retained
+  grouped index handles survive after the original handle is released.
 
 Work:
 
 1. Introduce a DB index storage layer with immutable base chunks plus a small
-   transaction delta. The first retained chunk primitive exists; the next step
-   is a DB-index wrapper that can replace resident `[]int` index publication.
+   transaction delta. The first retained chunk primitive and grouped DB int
+   index wrapper exist; the next step is to move a transaction publish path to
+   build and retain those shared indexes instead of publishing only owned
+   `[]int` arrays.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact.

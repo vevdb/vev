@@ -3606,6 +3606,7 @@
 (defenum DB-Index-View-Kind [
   Resident
   SQLite-Cursor
+  Shared-Int-Index
 ])
 
 (defstruct DB-Index-View {
@@ -3613,6 +3614,7 @@
   order: Public-Index-Order
   indexes: []int
   sqlite-cursor: ^SQLite-Index-Cursor
+  shared-index: ^Shared-Int-Index
 })
 
 (defenum DB-Read-Source-Kind [
@@ -3660,6 +3662,18 @@
                   order: order
                   sqlite-cursor: cursor}))
 
+(defn db-index-view-from-shared-int-index [order: Public-Index-Order, index: ^Shared-Int-Index] -> DB-Index-View
+  (DB-Index-View {kind: .Shared-Int-Index
+                  order: order
+                  shared-index: index}))
+
+(defn shared-db-int-index-view [indexes: ^Shared-DB-Int-Indexes, order: Public-Index-Order] -> DB-Index-View
+  (cond
+    (= order .EAVT) (db-index-view-from-shared-int-index order (addr indexes^.eavt))
+    (= order .AEVT) (db-index-view-from-shared-int-index order (addr indexes^.aevt))
+    (= order .AVET) (db-index-view-from-shared-int-index order (addr indexes^.avet))
+    :else (db-index-view-from-shared-int-index order (addr indexes^.vaet))))
+
 (defn db-read-source-index-view [source: DB-Read-Source, order: Public-Index-Order] -> DB-Index-View
   (case source.kind
     .Resident (db-index-view source.db^ order)
@@ -3678,15 +3692,20 @@
       (return range-low range-high (> range-high range-low) true ""))))
 
 (defn db-index-view-count [view: DB-Index-View] -> int
-  (if (= view.kind .SQLite-Cursor)
-    (sqlite-index-cursor-count view.sqlite-cursor^)
-    (count view.indexes)))
+  (case view.kind
+    .SQLite-Cursor (sqlite-index-cursor-count view.sqlite-cursor^)
+    .Shared-Int-Index (shared-int-index-count view.shared-index^)
+     (count view.indexes)))
 
 (defn db-index-view-at [view: DB-Index-View, index: int] -> int
-  (if (= view.kind .SQLite-Cursor)
-    (let [[entry ok _] (sqlite-index-cursor-at view.sqlite-cursor index)]
-      (if ok entry 0))
-    view.indexes[index]))
+  (case view.kind
+    .SQLite-Cursor
+      (let [[entry ok _] (sqlite-index-cursor-at view.sqlite-cursor index)]
+        (if ok entry 0))
+    .Shared-Int-Index
+      (let [[entry ok] (shared-int-index-at view.shared-index^ index)]
+        (if ok entry 0))
+     view.indexes[index]))
 
 (defn db-read-source-datom-at-entry [source: DB-Read-Source, entry: int] -> [datom: Datom, ok: bool, error: string]
   (case source.kind
