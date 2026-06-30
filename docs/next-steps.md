@@ -103,6 +103,11 @@ Implemented so far:
   and from `reopen-rebuild`.
 - source-backed query result rows use owned value copies, and callers now have
   `delete-result-set-owned-values` for the matching cleanup shape.
+- SQLite-backed live connections can now run text and prepared queries through
+  a short-lived `SQLite-DB-Snapshot` plus `DB-Read-Source`, returning the
+  ownership-tagged `Query-Result` shape after closing the storage snapshot.
+  This starts the normal durable read path without forcing callers through
+  `load-db-sqlite`.
 - source-backed function clauses copy produced values into owned result
   bindings and then shallow-clean temporary function result containers, avoiding
   leaked vector/map wrappers without deleting scalar values that may be borrowed
@@ -229,7 +234,9 @@ Work:
 
 1. Add an explicit durable read mode for SQLite-backed connections:
    - compatibility resident mode can remain for debugging/recovery
-   - normal read mode should construct a `SQLite-DB-Snapshot` from latest roots
+   - normal read mode should construct a `SQLite-DB-Snapshot` from latest roots.
+     The first internal text/prepared query wrappers now do this and return
+     owned `Query-Result` values.
 2. Keep datom-log replay available for recovery, validation, migration, and
    fallback.
 3. Update C ABI/JVM/Clojure connection DB snapshots so the public API can pass

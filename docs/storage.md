@@ -66,7 +66,11 @@ entity by binary-searching persisted EAVT and resolving only that entity's
 datoms, plus attribute and entity+attribute reads by binary-searching persisted
 AEVT/EAVT and resolving matching durable log indexes. The DB snapshot keeps a
 prepared datom-by-log-index statement open for repeated materialization.
-Normal reopen/query access through those cursors is the next storage step.
+Live SQLite connections now have internal text and prepared query wrappers
+(`q-result-sqlite-conn-text` and `q-result-sqlite-conn-prepared`) that open a
+short-lived `SQLite-DB-Snapshot`, query through `DB-Read-Source`, close the
+storage snapshot, and return an owned `Query-Result`. Normal public
+`connect`/`db` access through those cursors is the next storage step.
 
 There are now two write modes:
 
@@ -159,6 +163,9 @@ wrapper when it has the successful transaction report in hand.
 - `persisted-db-snapshot-source-join-query`: parse and execute a multi-clause
   EDN join query against `SQLite-DB-Snapshot` through the source-backed query
   path, without reopening resident arrays
+- live SQLite connection source queries: internal text/prepared wrappers query
+  the latest persisted snapshot through source-backed reads, then close the
+  snapshot before returning owned result rows
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 
