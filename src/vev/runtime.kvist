@@ -3876,6 +3876,16 @@
         (delete-owned-datoms out)
         (return (make [dynamic]Datom) false scan-error)))))
 
+(defn db-read-source-datoms-by-entity [source: DB-Read-Source, entity: u64] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-entity entity)])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .EAVT values)]
+    (if scan-ok
+      (return out true "")
+      (do
+        (delete-owned-datoms out)
+        (return (make [dynamic]Datom) false scan-error)))))
+
 (defn db-read-source-pull-attrs-value [source: DB-Read-Source, entity: u64, attrs: []string] -> [value: Value, ok: bool, error: string]
   (let [items (make [dynamic]Value)]
     (for [attr attrs]
@@ -4146,8 +4156,7 @@
     (return out true "")))
 
 (defn db-read-source-pull-spec-supported? [spec: Pull-Spec] -> bool
-  (and (not (= spec.a "*"))
-       (not (reverse-attr? spec.a))
+  (and (not (reverse-attr? spec.a))
        (= (count spec.pattern) 0)
        (not spec.has-default)
        (not spec.has-xform)
@@ -4165,24 +4174,43 @@
     (for [spec pattern]
       (when (not (db-read-source-pull-spec-supported? spec))
         (delete-pull-attrs-owned-values attrs)
-        (return (Pull-Result {}) false "SQLite DB snapshot source currently supports flat forward pull attrs only"))
-      (if (= spec.a ":db/id")
-        (arr.push! attrs
-          (Pull-Attr {a: (pull-output-attr spec)
-                      key-kind: (pull-output-key-kind spec)
-                      v: (value-entity entity)
-                      attrs: (make [dynamic]Pull-Attr)}))
-        (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity spec.a)]
-          (when (not datoms-ok)
-            (delete-pull-attrs-owned-values attrs)
-            (return (Pull-Result {}) false datoms-error))
-          (for [datom datoms]
+        (return (Pull-Result {}) false "SQLite DB snapshot source currently supports flat forward and wildcard pull attrs only"))
+      (cond
+        (= spec.a "*")
+          (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity source entity)]
+            (when (not datoms-ok)
+              (delete-pull-attrs-owned-values attrs)
+              (return (Pull-Result {}) false datoms-error))
             (arr.push! attrs
-              (Pull-Attr {a: (pull-output-attr spec)
-                          key-kind: (pull-output-key-kind spec)
-                          v: (value-owned datom.v)
-                          attrs: (make [dynamic]Pull-Attr)})))
-          (delete-owned-datoms datoms))))
+              (Pull-Attr {a: ":db/id"
+                          key-kind: .Keyword
+                          v: (value-entity entity)
+                          attrs: (make [dynamic]Pull-Attr)}))
+            (for [datom datoms]
+              (arr.push! attrs
+                (Pull-Attr {a: datom.a
+                            key-kind: .Keyword
+                            v: (value-owned datom.v)
+                            attrs: (make [dynamic]Pull-Attr)})))
+            (delete-owned-datoms datoms))
+        (= spec.a ":db/id")
+          (arr.push! attrs
+            (Pull-Attr {a: (pull-output-attr spec)
+                        key-kind: (pull-output-key-kind spec)
+                        v: (value-entity entity)
+                        attrs: (make [dynamic]Pull-Attr)}))
+        :else
+          (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity spec.a)]
+            (when (not datoms-ok)
+              (delete-pull-attrs-owned-values attrs)
+              (return (Pull-Result {}) false datoms-error))
+            (for [datom datoms]
+              (arr.push! attrs
+                (Pull-Attr {a: (pull-output-attr spec)
+                            key-kind: (pull-output-key-kind spec)
+                            v: (value-owned datom.v)
+                            attrs: (make [dynamic]Pull-Attr)})))
+            (delete-owned-datoms datoms))))
     (return (Pull-Result {e: entity attrs: attrs}) true "")))
 
 (defn db-read-source-pulls-for-binding [source: DB-Read-Source, query-value: Query, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool, error: string]
