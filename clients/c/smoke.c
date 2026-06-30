@@ -1549,6 +1549,18 @@ int main(void) {
     printf("snapshot-db rows: %d\n", old_rows);
     vev_result_free(old);
 
+    const char *old_edn = vev_query_db_prepared_with_inputs(snapshot, all_emails, "[]");
+    if (old_edn == NULL || strstr(old_edn, "ada@example.com") == NULL || strstr(old_edn, "alan@example.com") != NULL) {
+        fprintf(stderr, "unexpected snapshot DB EDN result: %s\n", old_edn ? old_edn : "null");
+        if (old_edn != NULL) vev_string_free(old_edn);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+    vev_string_free(old_edn);
+
     if (current_rows != 3 || old_rows != 2) {
         fprintf(stderr, "unexpected snapshot row counts\n");
         vev_db_release(snapshot);

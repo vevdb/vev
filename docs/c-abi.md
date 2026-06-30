@@ -676,11 +676,13 @@ can run over persisted index chunks instead of rebuilding resident arrays.
 returns another owned handle. DB handles can be queried after later transactions
 on the connection, and they can outlive the connection that produced them.
 
-Current caveat: the storage-neutral `vev_db_t` wrapper changes are in the Kvist
-ABI source, but the C ABI build is still blocked by the raw Odin transaction
-listener callback helper in `src/vev_abi/vev_abi.kvist`. Until that callback
-glue is fixed or moved out of the raw block, this public behavior is not yet
-verified by the C/JVM smoke tests.
+Current caveat: the storage-neutral `vev_db_t` wrapper now builds through the
+full C ABI script, which produces `libvev` and passes the C, Python, Rust, Go,
+Node, Java, and Clojure smoke coverage, including in-memory direct nested pull
+through `vev_pull_edn`, DB-handle prepared queries, and host-wrapper nested
+pull traversal. Shared source-backed `Store-DB` direct nested pull is now
+covered, and the storage suite now covers the same nested direct pull shape
+through a retained read-only SQLite `Store-DB`.
 
 DB values also support immutable transaction operations through the ABI:
 

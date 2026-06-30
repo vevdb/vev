@@ -3911,7 +3911,10 @@
               (Value {}))))))))
 
 (defn index-position-equal? [actual: Value, expected: Value] -> bool
-  (predicate-value-equal? actual expected))
+  (if (and (= actual.kind .Keyword)
+           (or (= expected.kind .Keyword) (= expected.kind .String)))
+    (= actual.text expected.text)
+    (predicate-value-equal? actual expected)))
 
 (defn index-position-compare [actual: Value, expected: Value] -> int
   (if (and (= actual.kind .Entity) (= expected.kind .Int))
@@ -19042,7 +19045,7 @@
     (db-read-source-pull-render-attrs-map source (slice pulled.attrs 0))
     (if (and (= pulled.v.kind .Entity)
              (not (= pulled.a ":db/id")))
-      (return (pull-render-ref-id-map pulled.v.entity) true "")
+      (return (value-map ([]Value [(value-keyword (string-owned ":db/id")) (value-entity pulled.v.entity)])) true "")
       (return (value-owned pulled.v) true ""))))
 
 (defn db-read-source-pull-render-attr-is-many? [source: DB-Read-Source, pulled: Pull-Attr, count-for-attr: int] -> [many: bool, ok: bool, error: string]
@@ -19066,31 +19069,32 @@
     (return out true "")))
 
 (defn db-read-source-pull-render-attrs-map [source: DB-Read-Source, attrs: []Pull-Attr] -> [value: Value, ok: bool, error: string]
-  (let [builder (value-map-builder (* (count attrs) 2))
+  (let [items (make [dynamic]Value 0 (* (count attrs) 2))
+        emitted (make [dynamic]string)
         i 0]
-    (defer (delete-value-map-builder builder))
+    (defer (delete emitted))
     (while (< i (count attrs))
-      (let [pulled attrs[i]
-            key (pull-render-attr-key pulled)]
-        (when (not (value-map-builder-has-key? builder key))
+      (let [pulled attrs[i]]
+        (if (string-slice-contains? (slice emitted 0) pulled.a)
+          (do)
           (let [[values values-ok values-error] (db-read-source-pull-render-group-values source attrs pulled.a)]
             (when (not values-ok)
+              (delete-owned-value (value-map-owned items))
               (return (Value {}) false values-error))
             (let [[many many-ok many-error] (db-read-source-pull-render-attr-is-many? source pulled (count values))]
               (when (not many-ok)
-                (delete values)
+                (delete-owned-value (value-vector-owned values))
+                (delete-owned-value (value-map-owned items))
                 (return (Value {}) false many-error))
               (let [rendered (if many
                                (value-vector (slice values 0))
                                values[0])]
-                (discard (value-map-builder-put-new! (addr builder) key rendered))
+                (arr.push! items (value-owned (pull-render-attr-key pulled)))
+                (arr.push! items rendered)
+                (arr.push! emitted pulled.a)
                 (delete values)))))
-      (set! i (+ i 1)))
-    (set! value (value-map-builder-value builder))
-    (set! ok true)
-    (set! error "")
-    (return))
-  (return (Value {}) false "unreachable source pull render path")))
+      (set! i (+ i 1))))
+    (return (value-map-owned items) true "")))
 
 (defn db-read-source-pull-result-value [source: DB-Read-Source, result: Pull-Result] -> [value: Value, ok: bool, error: string]
   (if (= (count result.attrs) 0)
@@ -19159,8 +19163,8 @@
       (delete-owned-value values)
       (return (Value {}) false pulls-error))
     (return (value-map
-              ([]Value [(value-keyword ":values") values
-                        (value-keyword ":pulls") pulls]))
+              ([]Value [(value-keyword (string-owned ":values")) values
+                        (value-keyword (string-owned ":pulls")) pulls]))
             true
             "")))
 
@@ -19179,9 +19183,9 @@
     (when (not rows-ok)
       (return (Value {}) false rows-error))
     (return (value-map
-              ([]Value [(value-keyword ":ok") (value-bool result.ok)
-                        (value-keyword ":error") (value-string result.error)
-                        (value-keyword ":rows") rows]))
+              ([]Value [(value-keyword (string-owned ":ok")) (value-bool result.ok)
+                        (value-keyword (string-owned ":error")) (value-string (string-owned result.error))
+                        (value-keyword (string-owned ":rows")) rows]))
             true
             "")))
 

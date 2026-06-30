@@ -133,6 +133,12 @@ Implemented so far:
   text/prepared queries, and close the retained snapshot explicitly. This is
   the internal shape the C ABI/JVM/Clojure durable `d/db` handle should map to
   once the ABI callback compile blocker is cleared.
+- source-backed `Store-DB` direct pulls now render owned nested ref maps through
+  the same `DB-Read-Source` boundary as source-backed pull finds. The shared
+  storage-neutral API test covers retaining a `Store-DB`, querying it, and
+  pulling `[:item/name {:item/friend [:item/name]}]` without using a resident
+  DB clone. The storage architecture test also covers the retained SQLite
+  read-only `Store-DB` variant with `[:user/name {:user/friend [:user/name]}]`.
 - source-backed function clauses copy produced values into owned result
   bindings and then shallow-clean temporary function result containers, avoiding
   leaked vector/map wrappers without deleting scalar values that may be borrowed
@@ -218,21 +224,17 @@ Remaining in this batch:
    ABI wrapper has been moved in that direction: `vev_db_t` storage now wraps a
    `Store-DB`, result handles track whether row values are owned or shallow, and
    the main prepared-query DB-handle path can route through
-   `q-result-store-db-prepared-with-input-text`. This is not yet verified by a
-   C ABI build because `kvist build src/vev_abi/vev_abi.kvist` still stops in
-   the raw Odin transaction-listener callback helper
-   (`abi_tx_listener_notify`) before generated Odin is written.
-3. Fix the raw-Odin ABI callback compile issue or move the listener callback
-   glue out of the raw block. Once that is green, add a C/JVM smoke that proves
-   `vev_connection_db` returns a chunk-backed `Store-DB` snapshot for durable
-   connections and that `vev_query_db_prepared_result_with_inputs` plus
-   `vev_pull_edn` work without resident rebuild. Current failure, verified with
-   `kvist build src/vev_abi/vev_abi.kvist`, is still mapped to the raw Odin
-   listener callback area with `case expects clause/body pairs followed by
-   default`. Extracting the raw Odin block and checking it directly reaches
-   only missing-type errors, so the next pass should treat this as a
-   Kvist/generated-source/source-map issue or move the callback listener glue
-   into a smaller raw sidecar before continuing ABI DB-handle verification.
+   `q-result-store-db-prepared-with-input-text`. The old ABI compile blocker is
+   gone: the failure was malformed ABI `case` defaults, not the raw listener
+   callback helper. `scripts/build_c_abi.sh` now builds `libvev` and passes the
+   C, Python, Rust, Go, Node, Java, and Clojure smoke coverage, including
+   direct nested pull through `vev_pull_edn`, storage-neutral DB-snapshot
+   prepared query rendering, and host-wrapper nested pull traversal.
+3. Continue moving host-visible DB-value transaction operations off resident
+   guards. Query and pull DB-value paths are storage-neutral now; immutable
+   `with`/transaction-report paths still intentionally guard on resident
+   snapshots until the write-state overlay can produce reports without a
+   resident `DB`.
 
 Acceptance:
 
@@ -574,12 +576,12 @@ Implemented so far:
   without entering the resident transaction resolver. This covers simple
   add/retract tx-data where the entity position is a unique lookup ref, or the
   value position is a ref-valued lookup ref, as long as the transaction does
-  not also create the lookup target attr in the same intermediate tx DB. Those
-  intermediate-tx-db cases, tempids, nested maps, schema-changing tx-data, tx
-  fns, tuple maintenance, and upsert-heavy shapes still fall back to the
-  resident resolver. The focused shared connection test verifies that a
-  retained source-backed snapshot can resolve both lookup-ref entity and
-  lookup-ref value writes through `DB-Read-Source`.
+  not require later target facts or tempid/upsert resolution from the same
+  intermediate tx DB. Order-safe lookup attrs introduced earlier in the same tx
+  are now covered by the write-state path too. The focused shared connection
+  tests verify that retained source-backed snapshots can resolve lookup-ref
+  entity and lookup-ref value writes through `DB-Read-Source` and through
+  already-emitted tx-local ops.
 - Source-stable ident entity writes now use the same shared write-state/source
   boundary. Simple add/retract tx-data with `:db/ident` entity terms can
   resolve the entity through source-backed schema reads, while idents created
@@ -632,10 +634,9 @@ Implemented so far:
   source-backed shared write-state path. The resolver discovers tuple schemas
   through `DB-Read-Source`, computes tuple values from the source plus
   already-resolved tx ops, emits derived tuple maintenance ops, and handles
-  component replacement without recording a resident fallback. Mixed "define
-  tuple schema and use it in the same tx" shapes still stay on the resident
-  fallback path until the write-state overlay can represent schema changes
-  inside the transaction.
+  component replacement without recording a resident fallback. Same-transaction
+  tuple schema define-and-use is also source-backed for explicit tuple schema
+  facts plus ordinary component writes.
 - Mixed schema/data transactions now have a safe source-backed subset:
   explicit schema facts and ordinary data facts can share a tx when the data
   facts do not depend on attrs/idents introduced by that same transaction.
@@ -644,13 +645,22 @@ Implemented so far:
   schema overlay.
 - Same-transaction scalar schema define-and-use now has a source-backed subset:
   a tx can install a simple non-ref, non-tuple, non-unique attr and write data
-  for that attr in the same transaction. Ref attrs, tuple attrs, unique attrs,
-  and other cases where resolution depends on transaction-local schema overlay
-  state still use the resident fallback path.
+  for that attr in the same transaction. Same-transaction unique schema
+  define-and-use is source-backed for explicit entity writes when the unique
+  schema fact appears before the data facts, preserving the existing
+  order-sensitive validation semantics. Other cases where resolution depends on
+  transaction-local schema overlay state still use the resident fallback path.
 - Same-transaction ref schema define-and-use now also has a source-backed
-  subset when the data side uses already-resolved entity values. Lookup-ref,
-  tempid-string, tuple, and unique behavior for attrs introduced in the same
-  transaction still need a fuller transaction-local schema overlay.
+  subset when the data side uses already-resolved entity values or
+  same-transaction literal/value tempids, plus value lookup refs whose lookup
+  attr is source-stable or order-safe lookup attrs introduced earlier in the
+  same transaction. Unique attrs introduced in the same transaction still need
+  a fuller transaction-local schema overlay for tempid/upsert-heavy shapes.
+- Same-transaction tuple schema define-and-use now has a source-backed subset
+  for explicit tuple schema facts and ordinary component facts in the same tx.
+  The resolver scans tuple schemas declared by the tx while maintaining derived
+  tuple values, so the common "install tuple attr and immediately write its
+  components" shape no longer falls back to resident resolution.
 - Built-in compare-and-swap transaction data (`:db.fn/cas` / `:db/cas`) now
   resolves through `Shared-Write-State` for source-stable entity/value shapes,
   including lookup-ref expected values. Failed CAS reports the same
@@ -715,15 +725,24 @@ Work:
    plus simple tuple maintenance over already-installed tuple schemas and
    schema-independent mixed schema/data transactions. Same-transaction scalar
    schema define-and-use is source-backed for simple scalar attrs and for ref
-   attrs when values are already entity ids. Built-in compare-and-swap
-   transaction data is also source-backed for source-stable entity/value shapes.
+   attrs when values are already entity ids or same-transaction literal/value
+   tempids, plus source-stable and order-safe same-transaction value lookup
+   refs. Same-transaction lookup attrs can also resolve entity lookup refs when
+   the unique schema fact and lookup target fact are already emitted earlier in
+   the transaction. Same-transaction tuple schema define-and-use is
+   source-backed for explicit tuple schema facts plus ordinary component
+   writes. Same-transaction unique schema define-and-use is source-backed for
+   order-safe explicit entity writes. Built-in
+   compare-and-swap transaction data is also source-backed for source-stable
+   entity/value shapes.
    `Shared-Write-State` now counts source-backed resolver use versus resident
    fallback use, so this remaining work can be tracked directly. The next step
    is to move the remaining intermediate-tx-db resolver state behind the same
-   boundary: registered transaction functions, schema-dependent mixed
-   schema/data transactions for tuple/unique attrs and ref attrs that need
-   same-tx lookup-ref/tempid resolution, same-tx tuple schema define-and-use,
-   and any remaining identity-upsert conflict shapes that need
+   boundary: registered transaction functions, same-tx lookup attrs that depend
+   on later target facts or tempid/upsert resolution, same-tx unique
+   tempid/upsert shapes, tuple upsert/lookup-ref shapes that need
+   transaction-local tuple identity reads, and any remaining identity-upsert
+   conflict shapes that need
    transaction-local overlay reads should use a write-state overlay instead of
    forcing a full resident DB rebuild on every append-only commit.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
@@ -748,9 +767,11 @@ Work:
    storage-neutral API, and source-backed result rendering lets CLI reads avoid
    resident DB rendering. The ABI `vev_db_t` wrapper has been changed to store a
    `Store-DB` internally, with resident-only guards for DB-value transaction
-   operations. The next step is to get the ABI build unblocked and verify that
-   C/JVM DB handles use SQLite/shared snapshots rather than resident `DB`
-   clones.
+   operations. The ABI build is unblocked and the full host smoke script is
+   green, including nested direct pull through DB handles. Shared and durable
+   SQLite `Store-DB` nested-pull regressions now cover source-backed DB values;
+   the next step is to keep moving DB-value transaction operations off
+   resident-only guards.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization. The first fold is in
    place: datom append position plus append-only/new-entity decisions are now

@@ -86,9 +86,14 @@ this path. It currently wraps a retained `SQLite-DB-Snapshot`, exposes the
 same `DB-Read-Source` boundary as resident DBs, and can run text/prepared
 queries without rebuilding resident arrays. It also has a shared-snapshot
 variant for the shared in-memory publish path. The C ABI `vev_db_t` wrapper has
-started moving to this shape internally, but public C/JVM verification is still
-blocked by the raw Odin transaction-listener callback compile issue in
-`src/vev_abi/vev_abi.kvist`.
+started moving to this shape internally. The previous ABI compile blocker is
+gone: `scripts/build_c_abi.sh` now builds `libvev` and passes the C, Python,
+Rust, Go, Node, Java, and Clojure smoke coverage, including in-memory direct
+nested pull through `vev_pull_edn`, storage-neutral DB-handle prepared queries,
+and host-wrapper nested pull traversal. Shared `Store-DB` direct nested pull is
+covered through the source-backed renderer, and the storage architecture test
+now covers the same nested direct pull shape through a retained read-only
+SQLite `Store-DB`.
 
 There are now two write modes:
 
