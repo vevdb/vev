@@ -342,6 +342,8 @@ shared chunks and retains any old chunk copied contiguously by the merge. This
 is a memory/copy architecture step, not a finished latency win: the current path
 still builds resident indexes first, and the shared merge builder has per-value
 overhead that should be reduced when publication moves fully to shared chunks.
+The first overhead reduction batches the tail of added indexes instead of
+pushing every remaining added value individually.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

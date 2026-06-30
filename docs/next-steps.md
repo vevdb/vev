@@ -382,10 +382,11 @@ Implemented so far:
   contiguously. Tests cover an interleaved `aevt` merge retaining old chunks.
   This reduces retained-snapshot copying pressure, but it is not yet a latency
   win in the small append-heavy sample: local `shared-snapshot-heavy` at batch 1,
-  500 writes, chunk size 1024 ended around 0.475 ms commit latency, and 1000
-  writes ended around 0.804 ms. The remaining work is to avoid still building
-  resident indexes first and to make the merge builder emit chunk-sized runs
-  with less per-value overhead.
+  500 writes, chunk size 1024 ended around 0.446 ms commit latency after adding
+  a batched added-tail append, and 1000 writes ended around 0.804 ms before that
+  tail batching. The remaining work is to avoid still building resident indexes
+  first and to make the merge builder emit chunk-sized runs with less per-value
+  overhead.
 
 Work:
 
