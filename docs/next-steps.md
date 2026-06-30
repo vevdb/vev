@@ -427,6 +427,13 @@ Implemented so far:
   chunk. This is the structural prerequisite for making direct shared-index
   merges compare old shared datoms with new transaction datoms without
   regressing publish latency.
+- The direct old-shared-vs-new merge was retried on top of chunk-start lookup,
+  including a fast estimated-chunk path. It remained slower on the current
+  `shared-snapshot-heavy` sample, so the hot publication path deliberately
+  stays on resident post-commit datom comparisons for now. The retained
+  primitive is indexed shared datom-log lookup; the next direct-publication
+  step should avoid building resident indexes first, rather than adding another
+  indirect comparison layer to the current adapter.
 - `Shared-Tx-Report` now gives the shared connection path retained
   `db-before` and `db-after` shared snapshots plus shallow report metadata. A
   test transacts through `Shared-Conn`, moves the connection forward with a
@@ -471,10 +478,11 @@ Work:
    merge. Append-only shared publication now consumes `report.tx-data` directly
    for the shared datom log, while merged shared indexes still compare through
    the resident post-commit datom log for performance. Shared datom logs now
-   keep chunk-start offsets for indexed access; the next step is to retry direct
-   old-shared-vs-new index merging on top of that representation, then make the
-   transaction engine itself publish shared chunks instead of building a
-   resident `DB` first.
+   keep chunk-start offsets for indexed access, and the direct shared-vs-new
+   merge retry proved that lookup primitive is not enough by itself. The next
+   step is to make the transaction engine publish shared chunks directly,
+   avoiding the resident `DB`/resident-index adapter rather than making that
+   adapter more elaborate.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact. Shared transaction reports now exist for the
    prototype shared connection path, and `Store-DB` can now wrap shared

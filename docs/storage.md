@@ -403,6 +403,13 @@ removing that remaining resident comparison source.
 to find the chunk for a datom position. This keeps retained/appended partial
 chunks addressable without scanning through all previous chunks and gives the
 next direct shared-index merge attempt the right lookup primitive.
+That direct merge was retried after adding chunk starts and an estimated-chunk
+fast path. It was still slower than the current resident-comparison merge in
+the small retained-snapshot benchmark, so it is not the default hot path. The
+useful retained result is indexed shared datom lookup; the next production
+storage step is to publish shared datom/index chunks directly from the
+transaction application path, instead of adapting from a fully built resident
+`DB` and trying to make that adapter ever more clever.
 
 SQLite rollback cleanup now also follows the live-report ownership rule. When
 an in-memory transaction succeeds but SQLite append fails, the wrapper restores
