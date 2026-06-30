@@ -166,6 +166,9 @@ wrapper when it has the successful transaction report in hand.
 - live SQLite connection source queries: internal text/prepared wrappers query
   the latest persisted snapshot through source-backed reads, then close the
   snapshot before returning owned result rows
+- `sqlite-conn-source-prepared-query`: open a normal live SQLite connection and
+  measure the prepared-query wrapper that opens/closes a short-lived persisted
+  snapshot for each read
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 
