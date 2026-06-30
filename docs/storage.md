@@ -365,8 +365,11 @@ resident `DB` field just for value rendering.
 The resident entity-range helper now uses the same `DB-Index-View` binary-search
 shape as the source boundary instead of reading the `eavt-entities` /
 `eavt-entity-starts` side table directly. The side table still exists as a
-resident implementation detail and for remaining position-indexed helpers, but
-ordinary entity range/existence checks no longer require it.
+resident DB build/index maintenance detail, but ordinary entity range/existence
+checks no longer require it.
+The unused position-indexed resident helpers have also been removed, so
+query-facing code no longer exposes `eavt-entity-starts` positions as an API
+shape.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
