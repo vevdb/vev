@@ -141,6 +141,11 @@
     (set! out.count (+ out.count (count values)))
     out))
 
+(defn shared-int-index-with-appended-tail [base: Shared-Int-Index, values: []int] -> Shared-Int-Index
+  (if (<= base.count (count values))
+    (shared-int-index-with-appended-slice base (slice values base.count))
+    (shared-int-index-from-slice values base.chunk-size)))
+
 (defn shared-int-index-prefix-matches-slice? [base: Shared-Int-Index, values: []int] -> bool
   (when (> base.count (count values))
     (return false))
@@ -170,6 +175,20 @@
   (Shared-DB-Int-Indexes {current: (shared-int-index-from-base-prefix-or-slice base.current (slice after.current 0))
                           eavt: (shared-int-index-from-base-prefix-or-slice base.eavt (slice after.eavt 0))
                           eavt-entity-starts: (shared-int-index-from-base-prefix-or-slice base.eavt-entity-starts (slice after.eavt-entity-starts 0))
+                          aevt: (shared-int-index-from-base-prefix-or-slice base.aevt (slice after.aevt 0))
+                          avet: (shared-int-index-from-base-prefix-or-slice base.avet (slice after.avet 0))
+                          vaet: (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0))}))
+
+(defn shared-db-int-indexes-with-appended-db-mode [base: Shared-DB-Int-Indexes, after: DB, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
+  (Shared-DB-Int-Indexes {current: (if append-only
+                                     (shared-int-index-with-appended-tail base.current (slice after.current 0))
+                                     (shared-int-index-from-base-prefix-or-slice base.current (slice after.current 0)))
+                          eavt: (if new-entities-after-existing
+                                  (shared-int-index-with-appended-tail base.eavt (slice after.eavt 0))
+                                  (shared-int-index-from-base-prefix-or-slice base.eavt (slice after.eavt 0)))
+                          eavt-entity-starts: (if new-entities-after-existing
+                                                (shared-int-index-with-appended-tail base.eavt-entity-starts (slice after.eavt-entity-starts 0))
+                                                (shared-int-index-from-base-prefix-or-slice base.eavt-entity-starts (slice after.eavt-entity-starts 0)))
                           aevt: (shared-int-index-from-base-prefix-or-slice base.aevt (slice after.aevt 0))
                           avet: (shared-int-index-from-base-prefix-or-slice base.avet (slice after.avet 0))
                           vaet: (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0))}))
@@ -277,6 +296,10 @@
   (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms (slice after.datoms start-index))
                        indexes: (shared-db-int-indexes-with-appended-db base.indexes after)}))
 
+(defn shared-db-snapshot-with-appended-db-mode [base: Shared-DB-Snapshot, after: DB, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Snapshot
+  (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms (slice after.datoms start-index))
+                       indexes: (shared-db-int-indexes-with-appended-db-mode base.indexes after append-only new-entities-after-existing)}))
+
 (defn retain-shared-db-snapshot [snapshot: Shared-DB-Snapshot] -> Shared-DB-Snapshot
   (Shared-DB-Snapshot {datoms: (retain-shared-datom-log snapshot.datoms)
                        indexes: (retain-shared-db-int-indexes snapshot.indexes)}))
@@ -305,7 +328,10 @@
         report (transact-tx-data (addr conn^.conn) tx-data)]
     (when (not report.ok)
       (return report))
-    (let [next-snapshot (shared-db-snapshot-with-appended-db conn^.snapshot conn^.conn.db start-index)]
+    (let [append-only (append-only-datoms-eligible? report.db-before (slice report.tx-data 0))
+          new-entities-after-existing (and append-only
+                                           (added-entities-after-existing? report.db-before (slice conn^.conn.db.datoms 0) start-index))
+          next-snapshot (shared-db-snapshot-with-appended-db-mode conn^.snapshot conn^.conn.db start-index append-only new-entities-after-existing)]
       (delete-shared-db-snapshot conn^.snapshot)
       (set! conn^.snapshot next-snapshot))
     report))

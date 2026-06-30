@@ -324,9 +324,12 @@ step, not the final storage model: the next version should build shared chunks
 directly at the commit boundary instead of adapting from resident arrays after
 the fact. `bench/write_bench.kvist --workload shared-snapshot-heavy` measures
 that path separately from SQLite-backed `snapshot-heavy`; a local batch-1,
-100-write sample showed the shared path faster, but still with increasing
-commit latency because merged/reordered indexes are adapted from resident
-arrays.
+100-write sample showed the shared path faster. Shared publication now also
+uses append-only/new-entity facts from the transaction report to retain
+`current`, `eavt`, and `eavt-entity-starts` directly when those indexes are
+known prefixes. A local batch-1, 500-write sample with chunk size 64 ended at
+about 0.323 ms commit latency. The remaining increase comes from indexes that
+still rebuild or scan merged/reordered resident arrays.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
