@@ -156,6 +156,9 @@ wrapper when it has the successful transaction report in hand.
 - `persisted-db-snapshot-source-query`: parse and execute a one-clause EDN
   query against `SQLite-DB-Snapshot` through the new source-backed query path,
   without reopening resident arrays
+- `persisted-db-snapshot-source-join-query`: parse and execute a multi-clause
+  EDN join query against `SQLite-DB-Snapshot` through the source-backed query
+  path, without reopening resident arrays
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 

@@ -3886,10 +3886,16 @@
     (return term.value true)
     (return (Value {}) false)))
 
-(defn db-read-source-clause-candidates [source: DB-Read-Source, clause-value: Clause] -> [datoms: [dynamic]Datom, ok: bool, error: string]
-  (let [[e-value e-ok] (db-read-source-term-constant-value clause-value.e)
-        [a-value a-ok] (db-read-source-term-constant-value clause-value.a)
-        [v-value v-ok] (db-read-source-term-constant-value clause-value.v)]
+(defn db-read-source-term-resolved-value [term: Term, binding: Binding] -> [value: Value, ok: bool]
+  (case term.kind
+    .Value (return term.value true)
+    .Var (binding-lookup binding term.name)
+    :else (return (Value {}) false)))
+
+(defn db-read-source-clause-candidates-for-binding [source: DB-Read-Source, clause-value: Clause, binding: Binding] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [[e-value e-ok] (db-read-source-term-resolved-value clause-value.e binding)
+        [a-value a-ok] (db-read-source-term-resolved-value clause-value.a binding)
+        [v-value v-ok] (db-read-source-term-resolved-value clause-value.v binding)]
     (cond
       (and e-ok a-ok (= e-value.kind .Entity) (= a-value.kind .Keyword))
         (db-read-source-datoms-by-entity-attr source e-value.entity a-value.text)
@@ -3922,6 +3928,12 @@
               (delete-owned-datoms out)
               (return (make [dynamic]Datom) false scan-error)))))))
 
+(defn db-read-source-clause-candidates [source: DB-Read-Source, clause-value: Clause] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [binding (Binding {items: (make [dynamic]Var-Binding)})
+        [datoms datoms-ok datoms-error] (db-read-source-clause-candidates-for-binding source clause-value binding)]
+    (delete binding.items)
+    (return datoms datoms-ok datoms-error)))
+
 (defn db-read-source-term-matches-datom-value? [term: Term, value: Value] -> bool
   (case term.kind
     .Value (predicate-value-equal? term.value value)
@@ -3941,8 +3953,95 @@
     (and (= clause-value.v.kind .Var) (= clause-value.v.name name)) (return (value-owned datom.v) true)
     :else (return (Value {}) false)))
 
+(defn db-read-source-clone-binding-owned [binding: Binding] -> Binding
+  (let [items (make [dynamic]Var-Binding 0 (count binding.items))]
+    (for [item binding.items]
+      (arr.push! items (Var-Binding {name: item.name value: (value-owned item.value)})))
+    (Binding {items: items})))
+
+(defn db-read-source-delete-binding-owned [binding: Binding]
+  (for [item binding.items]
+    (delete-owned-value item.value))
+  (delete binding.items))
+
+(defn db-read-source-delete-bindings-owned [bindings: [dynamic]Binding]
+  (for [binding bindings]
+    (db-read-source-delete-binding-owned binding))
+  (delete bindings))
+
+(defn db-read-source-binding-match-owned! [binding: ^Binding, term: Term, value: Value] -> bool
+  (case term.kind
+    .Value
+      (let [matched (predicate-value-equal? term.value value)]
+        (delete-owned-value value)
+        matched)
+    .Wildcard
+      (do
+        (delete-owned-value value)
+        true)
+    .Var
+      (let [[existing exists] (binding-lookup binding^ term.name)]
+        (if exists
+          (let [matched (predicate-value-equal? existing value)]
+            (delete-owned-value value)
+            matched)
+          (do
+            (binding-store! binding term.name value)
+            true)))
+    :else
+      (do
+        (delete-owned-value value)
+        false)))
+
+(defn db-read-source-binding-after-clause-datom [binding: Binding, clause-value: Clause, datom: Datom] -> [out-binding: Binding, ok: bool]
+  (let [candidate-binding (db-read-source-clone-binding-owned binding)]
+    (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.e (value-entity datom.e)))
+      (db-read-source-delete-binding-owned candidate-binding)
+      (return (Binding {}) false))
+    (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.a (value-keyword (string-owned datom.a))))
+      (db-read-source-delete-binding-owned candidate-binding)
+      (return (Binding {}) false))
+    (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.v (value-owned datom.v)))
+      (db-read-source-delete-binding-owned candidate-binding)
+      (return (Binding {}) false))
+    (return candidate-binding true)))
+
+(defn db-read-source-bindings-after-clause [source: DB-Read-Source, input-bindings: []Binding, clause-value: Clause] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [out (make [dynamic]Binding)]
+    (for [binding input-bindings]
+      (let [[datoms datoms-ok datoms-error] (db-read-source-clause-candidates-for-binding source clause-value binding)]
+        (when (not datoms-ok)
+          (db-read-source-delete-bindings-owned out)
+          (return (make [dynamic]Binding) false datoms-error))
+        (for [datom datoms]
+          (let [[next next-ok] (db-read-source-binding-after-clause-datom binding clause-value datom)]
+            (when next-ok
+              (arr.push! out next))))
+        (delete-owned-datoms datoms)))
+    (return out true "")))
+
+(defn db-read-source-result-rows-for-bindings [query-value: Query, bindings: []Binding] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)]
+    (for [binding bindings]
+      (let [values (make [dynamic]Value 0 (count query-value.find))
+            pulls (make [dynamic]Pull-Result)
+            row-ok true]
+        (for [name query-value.find]
+          (let [[value value-ok] (binding-lookup binding name)]
+            (if value-ok
+              (arr.push! values (value-owned value))
+              (set! row-ok false))))
+        (if row-ok
+          (arr.push! rows (Result-Row {values: values pulls: pulls}))
+          (do
+            (for [value values]
+              (delete-owned-value value))
+            (delete values)
+            (delete pulls)))))
+    (result-set-ok rows)))
+
 (defn db-read-source-q-query [source: DB-Read-Source, query-value: Query] -> Result-Set
-  (when (not (and (= (count query-value.clauses) 1)
+  (when (not (and (> (count query-value.clauses) 0)
                   (= (count query-value.predicates) 0)
                   (= (count query-value.function-clauses) 0)
                   (= (count query-value.rule-calls) 0)
@@ -3953,31 +4052,18 @@
                   (= (count query-value.or-groups) 0)
                   (= (count query-value.aggregates) 0)
                   (= (count query-value.pulls) 0)))
-    (return (result-set-error "SQLite DB snapshot source currently supports one plain data clause")))
-  (let [clause-value query-value.clauses[0]
-        [datoms datoms-ok datoms-error] (db-read-source-clause-candidates source clause-value)]
-    (when (not datoms-ok)
-      (return (result-set-error datoms-error)))
-    (defer (delete-owned-datoms datoms))
-    (let [rows (make [dynamic]Result-Row)]
-      (for [datom datoms]
-        (when (db-read-source-clause-datom-matches? clause-value datom)
-          (let [values (make [dynamic]Value 0 (count query-value.find))
-                pulls (make [dynamic]Pull-Result)
-                row-ok true]
-            (for [name query-value.find]
-              (let [[value value-ok] (db-read-source-value-for-find-var clause-value datom name)]
-                (if value-ok
-                  (arr.push! values value)
-                  (set! row-ok false))))
-            (if row-ok
-              (arr.push! rows (Result-Row {values: values pulls: pulls}))
-              (do
-                (for [value values]
-                  (delete-owned-value value))
-                (delete values)
-                (delete pulls))))))
-      (result-set-ok rows))))
+    (return (result-set-error "SQLite DB snapshot source currently supports plain data clauses only")))
+  (let [bindings (make [dynamic]Binding)]
+    (arr.push! bindings (Binding {items: (make [dynamic]Var-Binding)}))
+    (for [clause-value query-value.clauses]
+      (let [[next next-ok next-error] (db-read-source-bindings-after-clause source (slice bindings 0) clause-value)]
+        (db-read-source-delete-bindings-owned bindings)
+        (when (not next-ok)
+          (return (result-set-error next-error)))
+        (set! bindings next)))
+    (let [result (db-read-source-result-rows-for-bindings query-value (slice bindings 0))]
+      (db-read-source-delete-bindings-owned bindings)
+      result)))
 
 (defn public-avet-attr? [db: DB, attr: string] -> bool
   (when (not (db-has-schema? db))
