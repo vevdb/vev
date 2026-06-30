@@ -86,7 +86,8 @@ persisted source: plain data clauses with `:find` variables, including
 multi-clause joins, primary `$` source-qualified clauses, predicate filters, and
 scalar plus destructuring function clauses over already materialized values. It
 can also render flat literal pull finds over forward attrs, wildcard pulls, flat
-reverse-ref pulls, and nested forward-ref pulls from the persisted snapshot. The
+reverse-ref pulls, nested forward-ref pulls, and pull pattern inputs from the
+persisted snapshot. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
 current-value, pull, and entity helper paths now go through a resident
 `DB-Index-View` boundary instead of directly owning the slice logic at each

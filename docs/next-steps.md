@@ -51,17 +51,19 @@ Implemented so far:
   `[(count ?name) ?len]` are also supported, including tuple/destructuring
   function outputs over owned source bindings. Flat literal pull finds such as
   `(pull ?e [:db/id :item/name])`, wildcard pulls such as `(pull ?e [*])`, flat
-  reverse-ref pulls such as `(pull ?e [:item/_parent])`, and nested forward-ref
-  pulls such as `(pull ?e [{:item/parent [:item/name]}])` now render from the
-  same source-backed snapshot without rebuilding a resident DB.
+  reverse-ref pulls such as `(pull ?e [:item/_parent])`, nested forward-ref
+  pulls such as `(pull ?e [{:item/parent [:item/name]}])`, and pull pattern
+  inputs such as `(pull ?e ?pattern)` now render from the same source-backed
+  snapshot without rebuilding a resident DB.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
   retraction case. It also checks that primary `$` source-qualified clauses work
   and named source-qualified clauses fail explicitly until multi-source durable
   querying is implemented, plus predicate filtering with both matching and empty
   results, scalar and destructuring function output, flat literal pull finds,
-  wildcard pull finds, flat reverse-ref pull finds, and nested forward-ref pull
-  finds.
+  wildcard pull finds, flat reverse-ref pull finds, nested forward-ref pull
+  finds, and pull pattern inputs through both direct `Query-Input` and EDN input
+  text.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
@@ -95,10 +97,9 @@ Remaining in this batch:
      produced by shared function evaluators
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary. Flat literal
-   forward, wildcard, flat reverse-ref, and nested forward-ref pull finds are
-   now covered; remaining pull work is nested reverse attrs, pull
-   options/defaults/xforms, pattern variables, and source-qualified named pull
-   sources.
+   forward, wildcard, flat reverse-ref, nested forward-ref, and pattern-variable
+   pull finds are now covered; remaining pull work is nested reverse attrs, pull
+   options/defaults/xforms, and source-qualified named pull sources.
 4. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
