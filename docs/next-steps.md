@@ -457,6 +457,9 @@ Implemented so far:
   remaining adapter paths, but it centralizes the transaction-report-to-shared
   snapshot conversion that future direct shared publication should replace
   internally.
+- `Shared-Tx-Report` now preserves the same append start and append-mode
+  metadata as ordinary `Tx-Report`, so retained shared reports do not lose the
+  publish facts that produced their `db-after` snapshot.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing

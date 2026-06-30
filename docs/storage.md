@@ -377,6 +377,8 @@ toward a real shared publish plan.
 That path now goes through `shared-db-snapshot-with-tx-report`, which is the
 explicit report-to-shared-snapshot boundary future direct shared publication
 should replace internally.
+Retained `Shared-Tx-Report` values preserve that append start and append-mode
+metadata too, alongside their shared `db-before`/`db-after` snapshots.
 The resident entity-range helper now uses the same `DB-Index-View` binary-search
 shape as the source boundary instead of reading the `eavt-entities` /
 `eavt-entity-starts` side table directly. The side table still exists as a
