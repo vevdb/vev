@@ -4226,8 +4226,7 @@
     (return out true "")))
 
 (defn db-read-source-pull-spec-supported? [spec: Pull-Spec] -> bool
-  (when (or spec.has-default
-            spec.has-xform
+  (when (or spec.has-xform
             spec.has-recursion
             spec.has-limit)
     (return false))
@@ -4236,6 +4235,12 @@
     (= spec.a ":db/id") (= (count spec.pattern) 0)
     (reverse-attr? spec.a) (= (count spec.pattern) 0)
     :else true))
+
+(defn db-read-source-pull-default-attr [spec: Pull-Spec] -> Pull-Attr
+  (Pull-Attr {a: (pull-output-attr spec)
+              key-kind: (pull-output-key-kind spec)
+              v: (value-owned spec.default-value)
+              attrs: (make [dynamic]Pull-Attr)}))
 
 (defn db-read-source-pull-entity [value: Value] -> [entity: u64, ok: bool]
   (cond
@@ -4275,19 +4280,24 @@
                         attrs: (make [dynamic]Pull-Attr)}))
         (reverse-attr? spec.a)
           (let [forward-attr (forward-attr-for-reverse spec.a) :defer
-                [datoms datoms-ok datoms-error] (db-read-source-datoms-by-reverse-entity-attr source entity forward-attr)]
+                [datoms datoms-ok datoms-error] (db-read-source-datoms-by-reverse-entity-attr source entity forward-attr)
+                found false]
             (when (not datoms-ok)
               (delete-pull-attrs-owned-values attrs)
               (return (Pull-Result {}) false datoms-error))
             (for [datom datoms]
+              (set! found true)
               (arr.push! attrs
                 (Pull-Attr {a: (pull-output-attr spec)
                             key-kind: (pull-output-key-kind spec)
                             v: (value-entity datom.e)
                             attrs: (make [dynamic]Pull-Attr)})))
+            (when (and (not found) spec.has-default)
+              (arr.push! attrs (db-read-source-pull-default-attr spec)))
             (delete-owned-datoms datoms))
         :else
-          (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity spec.a)]
+          (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity spec.a)
+                found false]
             (when (not datoms-ok)
               (delete-pull-attrs-owned-values attrs)
               (return (Pull-Result {}) false datoms-error))
@@ -4304,12 +4314,16 @@
                     (delete children)
                     (set! children child.attrs)))
                 (if (pull-include-ref-result? spec (slice children 0))
-                  (arr.push! attrs
-                    (Pull-Attr {a: (pull-output-attr spec)
-                                key-kind: (pull-output-key-kind spec)
-                                v: (value-owned datom.v)
-                                attrs: children}))
+                  (do
+                    (set! found true)
+                    (arr.push! attrs
+                      (Pull-Attr {a: (pull-output-attr spec)
+                                  key-kind: (pull-output-key-kind spec)
+                                  v: (value-owned datom.v)
+                                  attrs: children})))
                   (delete-pull-attrs-owned-values children))))
+            (when (and (not found) spec.has-default)
+              (arr.push! attrs (db-read-source-pull-default-attr spec)))
             (delete-owned-datoms datoms))))
     (return (Pull-Result {e: entity attrs: attrs}) true "")))
 

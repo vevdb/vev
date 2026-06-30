@@ -53,7 +53,8 @@ Implemented so far:
   `(pull ?e [:db/id :item/name])`, wildcard pulls such as `(pull ?e [*])`, flat
   reverse-ref pulls such as `(pull ?e [:item/_parent])`, nested forward-ref
   pulls such as `(pull ?e [{:item/parent [:item/name]}])`, and pull pattern
-  inputs such as `(pull ?e ?pattern)` now render from the same source-backed
+  inputs such as `(pull ?e ?pattern)`, and missing-attr defaults such as
+  `[:item/missing :default "fallback"]` now render from the same source-backed
   snapshot without rebuilding a resident DB. Source-backed text queries also
   accept scalar `:in` values through direct `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
@@ -63,8 +64,8 @@ Implemented so far:
   querying is implemented, plus predicate filtering with both matching and empty
   results, scalar and destructuring function output, flat literal pull finds,
   wildcard pull finds, flat reverse-ref pull finds, nested forward-ref pull
-  finds, scalar inputs, and pull pattern inputs through both direct `Query-Input`
-  and EDN input text.
+  finds, pull defaults, scalar inputs, and pull pattern inputs through both
+  direct `Query-Input` and EDN input text.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
@@ -99,8 +100,9 @@ Remaining in this batch:
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary. Flat literal
    forward, wildcard, flat reverse-ref, nested forward-ref, and pattern-variable
-   pull finds are now covered; remaining pull work is nested reverse attrs, pull
-   options/defaults/xforms, and source-qualified named pull sources.
+   pull finds and defaults are now covered; remaining pull work is nested
+   reverse attrs, pull limits/xforms/recursion, and source-qualified named pull
+   sources.
 4. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
