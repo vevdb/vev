@@ -54,7 +54,8 @@ Implemented so far:
   reverse-ref pulls such as `(pull ?e [:item/_parent])`, nested forward-ref
   pulls such as `(pull ?e [{:item/parent [:item/name]}])`, and pull pattern
   inputs such as `(pull ?e ?pattern)` now render from the same source-backed
-  snapshot without rebuilding a resident DB.
+  snapshot without rebuilding a resident DB. Source-backed text queries also
+  accept scalar `:in` values through direct `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
   retraction case. It also checks that primary `$` source-qualified clauses work
@@ -62,8 +63,8 @@ Implemented so far:
   querying is implemented, plus predicate filtering with both matching and empty
   results, scalar and destructuring function output, flat literal pull finds,
   wildcard pull finds, flat reverse-ref pull finds, nested forward-ref pull
-  finds, and pull pattern inputs through both direct `Query-Input` and EDN input
-  text.
+  finds, scalar inputs, and pull pattern inputs through both direct `Query-Input`
+  and EDN input text.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
