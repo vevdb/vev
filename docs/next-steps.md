@@ -205,8 +205,11 @@ Work:
    code with source methods. The source methods exist, source-level integer and
    equality helpers are covered for resident and persisted snapshots, and the
    entity/int projection fallback has started using them. The remaining work is
-   migrating the rest of the typed query fast paths that still call the
-   resident-only helpers.
+   migrating the string/int triple column path that still calls the
+   resident-only entity-position helpers. That path stores borrowed strings in
+   typed columns today, while `DB-Read-Source` value helpers return owned values
+   for SQLite snapshots, so it should move together with the typed result-column
+   ownership cleanup instead of being forced through a temporary owned string.
 3. Keep the resident side table as an implementation detail for resident DBs,
    not as a query-engine assumption.
 
