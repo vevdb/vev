@@ -307,7 +307,10 @@ the resident `DB.current` side table.
 Datoms can now also be stored in `Shared-Datom-Log` retained chunks. The
 source-backed query path has a variant that reads both datoms and indexes from
 shared chunks, so simple data-clause queries can execute without a resident
-`DB` pointer for materialization.
+`DB` pointer for materialization. `Shared-DB-Snapshot` packages those shared
+datom and index chunks into one retained immutable DB-value handle; tests retain
+one snapshot, release the original handle, and continue querying through the
+retained value.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

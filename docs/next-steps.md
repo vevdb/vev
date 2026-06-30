@@ -336,6 +336,10 @@ Implemented so far:
   source-backed query test now runs without a resident `DB` pointer for datom
   materialization, while still filtering retractions through the shared
   `current` index.
+- `Shared-DB-Snapshot` now packages the shared datom log and shared indexes as
+  one retained immutable DB-value handle. The query test retains a snapshot,
+  releases the original, and queries through the retained handle, matching the
+  lifetime shape needed for old DB values in reports and host handles.
 
 Work:
 
