@@ -31,6 +31,21 @@
       (vev.delete-live-tx-report-shallow report)
       true)))
 
+(defn seed-write-schema-shared [conn: ^vev.Shared-Conn] -> bool
+  (let [tx (make [dynamic]vev.Tx-Data 0 4) :defer]
+    ;; Match Datalevin write-bench: :item/key is a plain long, not unique identity.
+    (arr.push! tx (vev.add 201 ":db/ident" (vev.value-keyword ":item/key")))
+    (arr.push! tx (vev.add 201 ":db/valueType" (vev.value-keyword ":db.type/long")))
+    (arr.push! tx (vev.add 202 ":db/ident" (vev.value-keyword ":item/value")))
+    (arr.push! tx (vev.add 202 ":db/valueType" (vev.value-keyword ":db.type/string")))
+    (let [report (vev.shared-conn-transact conn (slice tx 0))]
+      (when (not report.ok)
+        (fmt.printf "engine=vev-shared workload=write-schema ok=false error=%s\n" report.error)
+        (vev.delete-tx-report-shallow report)
+        (return false))
+      (vev.delete-live-tx-report-shallow report)
+      true)))
+
 (defn item-entity [index: int] -> u64
   (+ (u64 index) 1000))
 
@@ -219,6 +234,11 @@
     (vev.delete-owned-db snapshot))
   (delete dbs))
 
+(defn delete-retained-shared-snapshots [snapshots: [dynamic]vev.Shared-DB-Snapshot]
+  (for [snapshot snapshots]
+    (vev.delete-shared-db-snapshot snapshot))
+  (delete snapshots))
+
 (defn print-snapshot-heavy-header [batch-size: int, total: int]
   (fmt.printf "engine=vev-sqlite workload=snapshot-heavy batch=%d total=%d columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms\n"
               batch-size
@@ -310,6 +330,63 @@
     (vev.close-sqlite-conn store)
     (remove-sqlite-files path)))
 
+(defn measure-shared-snapshot-heavy-write [chunk-size: int, batch-size: int, total: int, report-every: int]
+  (let [conn (vev.create-shared-conn chunk-size)
+        retained (make [dynamic]vev.Shared-DB-Snapshot)]
+    (when (not (seed-write-schema-shared (addr conn)))
+      (delete retained)
+      (vev.delete-shared-conn conn)
+      (return))
+    (fmt.printf "engine=vev-shared workload=shared-snapshot-heavy chunk=%d batch=%d total=%d columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms\n"
+                chunk-size
+                batch-size
+                total)
+    (let [start (time.now)
+          interval-start start
+          call-us 0.0
+          commit-us 0.0
+          snapshot-us 0.0
+          commits 0
+          inserted 0
+          written 0]
+      (while (< written total)
+        (let [remaining (- total written)
+              actual-batch (min batch-size remaining)
+              tx (item-batch-tx (+ written 1) actual-batch 0)
+              before (time.now)
+              report (vev.shared-conn-transact (addr conn) (slice tx 0))
+              commit-elapsed (bench.elapsed-us before)]
+          (set! call-us (+ call-us commit-elapsed))
+          (set! commit-us (+ commit-us commit-elapsed))
+          (set! commits (+ commits 1))
+          (when (not report.ok)
+            (fmt.printf "engine=vev-shared workload=shared-snapshot-heavy ok=false error=%s\n" report.error)
+            (vev.delete-tx-report-shallow report)
+            (delete tx)
+            (delete-retained-shared-snapshots retained)
+            (vev.delete-shared-conn conn)
+            (return))
+          (vev.delete-live-tx-report-shallow report)
+          (delete tx)
+          (let [snapshot-before (time.now)
+                snapshot (vev.retain-shared-db-snapshot conn.snapshot)
+                snapshot-elapsed (bench.elapsed-us snapshot-before)]
+            (arr.push! retained snapshot)
+            (set! call-us (+ call-us snapshot-elapsed))
+            (set! snapshot-us (+ snapshot-us snapshot-elapsed)))
+          (set! inserted (+ inserted actual-batch))
+          (set! written (+ written actual-batch))
+          (when (or (= written total)
+                    (= (% written report-every) 0))
+            (print-snapshot-heavy-row written (count retained) inserted start interval-start call-us commit-us snapshot-us commits)
+            (set! call-us 0.0)
+            (set! commit-us 0.0)
+            (set! snapshot-us 0.0)
+            (set! commits 0)
+            (set! interval-start (time.now))))))
+    (delete-retained-shared-snapshots retained)
+    (vev.delete-shared-conn conn)))
+
 (defn run-pure-workload [path: string, batch-size: int, total: int, report-every: int]
   (measure-pure-write path batch-size total report-every)
   (remove-sqlite-files path))
@@ -330,6 +407,7 @@
         mixed-operations (max 1 (cli.int-option os.args "--mixed-operations" (* total 2)))
         seed-batch (max 1 (cli.int-option os.args "--seed-batch" 100))
         selected-batch (cli.int-option os.args "--batch" 0)
+        chunk-size (max 1 (cli.int-option os.args "--chunk-size" 1024))
         workload (cli.option os.args "--workload" "both")
         path (cli.option os.args "--path" "tmp.vev.write-bench.sqlite")]
     (if (= workload "pure")
@@ -340,14 +418,17 @@
         (measure-mixed-read-write path total mixed-operations report-every)
         (if (= workload "snapshot-heavy")
           (measure-snapshot-heavy-write path (max 1 selected-batch) total report-every)
-          (if (= workload "both")
-            (let [mixed-path (fmt.tprintf "%s.mixed" path)
-                  snapshot-path (fmt.tprintf "%s.snapshot" path)]
-              (if (> selected-batch 0)
-                (run-pure-workload path selected-batch total report-every)
-                (run-all-pure-workloads path total report-every))
-              (when (seed-pure-write mixed-path total seed-batch)
-                (measure-mixed-read-write mixed-path total mixed-operations report-every))
-              (measure-snapshot-heavy-write snapshot-path (max 1 selected-batch) total report-every)
-              (remove-sqlite-files mixed-path))
-            (fmt.printf "unknown --workload %s; expected pure, mixed, snapshot-heavy, or both\n" workload)))))))
+          (if (= workload "shared-snapshot-heavy")
+            (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
+            (if (= workload "both")
+              (let [mixed-path (fmt.tprintf "%s.mixed" path)
+                    snapshot-path (fmt.tprintf "%s.snapshot" path)]
+                (if (> selected-batch 0)
+                  (run-pure-workload path selected-batch total report-every)
+                  (run-all-pure-workloads path total report-every))
+                (when (seed-pure-write mixed-path total seed-batch)
+                  (measure-mixed-read-write mixed-path total mixed-operations report-every))
+                (measure-snapshot-heavy-write snapshot-path (max 1 selected-batch) total report-every)
+                (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
+                (remove-sqlite-files mixed-path))
+              (fmt.printf "unknown --workload %s; expected pure, mixed, snapshot-heavy, shared-snapshot-heavy, or both\n" workload))))))))

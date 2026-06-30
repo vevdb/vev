@@ -301,7 +301,47 @@ snapshots, rather than only materializing owned resident arrays.
 `DB-Read-Source` can also wrap a resident datom log with shared chunked index
 views, and a source-backed query test now runs EDN text over that source. This
 is the first executable query path over the new in-memory shared-index
-representation.
+representation. Currentness for that path now also reads the shared chunked
+`current` index, so add/retract history is filtered without reaching back to
+the resident `DB.current` side table.
+Datoms can now also be stored in `Shared-Datom-Log` retained chunks. The
+source-backed query path has a variant that reads both datoms and indexes from
+shared chunks, so simple data-clause queries can execute without a resident
+`DB` pointer for materialization. `Shared-DB-Snapshot` packages those shared
+datom and index chunks into one retained immutable DB-value handle; tests retain
+one snapshot, release the original handle, and continue querying through the
+retained value.
+Appended shared snapshots can now share the old datom-log chunks and append
+only new datom chunks. Shared int indexes also retain old chunks when the
+post-transaction index keeps the old index as an exact prefix; merged or
+reordered indexes still rebuild for correctness. Replacing that fallback with
+range/page sharing is the next Batch 4 implementation step.
+`Shared-Conn` now provides the first connection-shaped publish path over those
+shared snapshots. It still applies transactions through the existing resident
+connection, then publishes a new retained `Shared-DB-Snapshot` from the previous
+snapshot and the post-transaction DB. That is an intermediate architecture
+step, not the final storage model: the next version should build shared chunks
+directly at the commit boundary instead of adapting from resident arrays after
+the fact. `bench/write_bench.kvist --workload shared-snapshot-heavy` measures
+that path separately from SQLite-backed `snapshot-heavy`; a local batch-1,
+100-write sample showed the shared path faster. Shared publication now also
+uses append-only/new-entity facts from the transaction report to retain
+`current`, `eavt`, and `eavt-entity-starts` directly when those indexes are
+known prefixes. A local batch-1, 500-write sample with chunk size 64 ended at
+about 0.323 ms commit latency. The remaining increase comes from indexes that
+still rebuild or scan merged/reordered resident arrays.
+`Shared-Int-Index` also has a tested same-offset page-sharing constructor for
+retaining unchanged chunks while replacing changed pages. It is currently a
+building block, not the default publish fallback: comparing every old page in
+the append-heavy workload cost more than exact-prefix-or-rebuild. The durable
+storage direction is therefore merge-aware page publication, where the merge
+knows which pages are unchanged instead of rediscovering it by scanning.
+Append-only shared publication now has that first merge-aware path for the
+logical int indexes. It streams sorted new datom indexes together with old
+shared chunks and retains any old chunk copied contiguously by the merge. This
+is a memory/copy architecture step, not a finished latency win: the current path
+still builds resident indexes first, and the shared merge builder has per-value
+overhead that should be reduced when publication moves fully to shared chunks.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
@@ -347,9 +387,10 @@ Current implementation status and later order:
    DB log datoms, so chunked imports are independent from per-file input buffer
    lifetimes.
    The benchmark now separates snapshot, resolution, apply, log copy,
-   incremental index build, and SQLite append cost. The next write-performance
-   milestone, when we return to storage, is replacing whole-array DB/index
-   ownership copies with a shared immutable DB/index representation.
+   incremental index build, SQLite append cost, and a shared snapshot-heavy
+   publish path. The next write-performance milestone is replacing the
+   remaining resident-array adaptation in `Shared-Conn` with direct shared
+   chunk publication.
 4. Move selected logical indexes to persisted structures, starting with a single
    read-only chunk writer/cursor and then expanding to the full index set.
 5. Keep extending the new `bench/write_bench.kvist` harness until it can run at

@@ -327,24 +327,92 @@ Implemented so far:
   chunked index views while still materializing datoms/currentness from the
   resident datom log. A source-backed EDN query test proves the existing
   persisted/source query runner can execute over this representation.
+- Shared-resident source currentness now reads the shared chunked `current`
+  index with binary search instead of using the resident `DB.current` array.
+  The query test includes an add/retract pair and verifies the retracted fact
+  is filtered through the shared current index path.
+- `Shared-Datom-Log` now stores datoms in retained immutable chunks, and
+  `DB-Read-Source` has a shared-datoms-plus-shared-indexes variant. A
+  source-backed query test now runs without a resident `DB` pointer for datom
+  materialization, while still filtering retractions through the shared
+  `current` index.
+- `Shared-DB-Snapshot` now packages the shared datom log and shared indexes as
+  one retained immutable DB-value handle. The query test retains a snapshot,
+  releases the original, and queries through the retained handle, matching the
+  lifetime shape needed for old DB values in reports and host handles.
+- `shared-db-snapshot-with-appended-db` can now build a new shared snapshot
+  from an old snapshot plus a post-transaction resident DB. It shares the old
+  datom-log chunks and appends only new datom chunks. Shared int indexes now
+  also retain old chunks when the post-transaction index preserves the old index
+  as an exact prefix, with fallback rebuild for merged/reordered indexes. Tests
+  verify the base datom, current, and EAVT chunks are retained and the appended
+  snapshot remains queryable.
+- `Shared-Conn` is the first connection-side publish wrapper for this
+  representation. It still delegates transaction application to the existing
+  resident `Conn`, but successful commits publish a `Shared-DB-Snapshot` from
+  the old snapshot plus the post-transaction DB. Tests verify the published
+  source is queryable and retains old datom/current/EAVT chunks across a simple
+  append commit.
+- `bench/write_bench.kvist` now has a `shared-snapshot-heavy` workload for
+  the new publish path. A local batch-1, 100-write sample with chunk size 64
+  reported about 0.049-0.145 ms shared commit latency versus about
+  0.206-0.481 ms for the SQLite-backed resident `snapshot-heavy` path. This is
+  a useful improvement, but the upward slope remains because `Shared-Conn`
+  still adapts from resident post-commit arrays instead of building shared
+  chunks directly at commit time.
+- Shared publish now carries append-only/new-entity facts from the transaction
+  result into snapshot publication. Append-only commits retain the `current`
+  index directly, and ordered new-entity commits also retain `eavt` and
+  `eavt-entity-starts` directly without scanning old prefixes. A local
+  batch-1, 500-write `shared-snapshot-heavy` sample with chunk size 64 ended at
+  about 0.323 ms commit latency, versus the earlier resident snapshot-heavy
+  baseline growing past 2 ms near 500 writes. The remaining slope is mainly the
+  indexes that still need merge/range chunk sharing (`aevt`, `avet`, `vaet` and
+  non-new-entity `eavt` cases).
+- `Shared-Int-Index` now has an explicit page-sharing constructor that can
+  retain unchanged same-offset chunks while rebuilding changed pages. Tests
+  cover old handle release plus retained unchanged pages. This is deliberately
+  not wired into every publish fallback yet: a blind "compare every old page"
+  experiment made the append-heavy benchmark slower than exact-prefix-or-rebuild.
+  The next production version needs merge-aware sharing or a cost model that can
+  predict when page comparison will actually save enough copying.
+- Append-only shared publication now has a merge-aware index builder for
+  `eavt`, `aevt`, `avet`, and `vaet`. It merges sorted new datom indexes with
+  old shared chunks and retains any old chunk that the merge copies
+  contiguously. Tests cover an interleaved `aevt` merge retaining old chunks.
+  This reduces retained-snapshot copying pressure, but it is not yet a latency
+  win in the small append-heavy sample: local `shared-snapshot-heavy` at batch 1,
+  500 writes, chunk size 1024 ended around 0.475 ms commit latency, and 1000
+  writes ended around 0.804 ms. The remaining work is to avoid still building
+  resident indexes first and to make the merge builder emit chunk-sized runs
+  with less per-value overhead.
 
 Work:
 
 1. Introduce a DB index storage layer with immutable base chunks plus a small
-   transaction delta. The first retained chunk primitive and grouped DB int
-   index wrapper exist; the next step is to move a transaction publish path to
-   build and retain those shared indexes instead of publishing only owned
-   `[]int` arrays.
+   transaction delta. The first retained chunk primitive, grouped DB int index
+   wrapper, retained DB snapshot, and connection-side shared publish wrapper
+   exist. The next step is to make transaction publication build shared chunks
+   directly instead of publishing through a resident `DB` and then adapting it
+   into a shared snapshot.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
+   Datom-log sharing works for appended snapshots. Index chunk sharing now
+   works for exact-prefix append cases, and append-only/new-entity publication
+   can skip prefix proof for the known-prefix indexes. Same-offset page sharing
+   exists as a tested primitive, but is not yet used blindly on the hot publish
+   fallback because it regressed append-heavy commits. Merge-aware append-only
+   index publication now retains full old chunks copied contiguously by the
+   merge. The next step is removing the resident-index-first adaptation and
+   reducing per-value overhead inside the shared merge builder.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
-6. Re-run `snapshot-heavy`, `pure --batch 1`, and `mixed` write-bench after each
-   representation step so the architecture work is measured against the actual
-   immutable DB-value workload.
+6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`, `pure --batch 1`, and
+   `mixed` write-bench after each representation step so the architecture work
+   is measured against the actual immutable DB-value workload.
 
 Acceptance:
 
