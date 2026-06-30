@@ -103,6 +103,12 @@ Remaining in this batch:
 1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
    new source-backed plain-clause query runner.
 2. Broaden `q-text-db-read-source` beyond plain data clauses:
+   - `or` / `or-join` branch groups over source-backed clauses. A first
+     implementation attempt reused the source-backed not-group branch evaluator
+     but exposed a Kvist `case expects clause/body pairs followed by default`
+     diagnostic when source queries admitted nonzero `or-groups`; keep this as
+     the next source-query semantics gap rather than leaving a brittle partial
+     implementation.
    - named or multiple source-qualified clauses
    - richer function-output ownership cleanup for temporary strings/containers
      produced by shared function evaluators
