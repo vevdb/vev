@@ -70,9 +70,22 @@ persisted cursor. `SQLite-Index-Snapshot` now opens all four persisted logical
 index cursors directly from a SQLite path or live handle, without calling
 `load-db-sqlite`, and can resolve individual datoms by durable log index.
 `SQLite-DB-Snapshot` wraps that index snapshot with basis tx and datom-count
-metadata, giving normal reopen/query code a durable snapshot shape to target.
-Normal reopened `DB` values still use resident arrays today, but the
-query-facing boundary can now represent a chunk-backed source. The
+metadata, giving normal reopen/query code a durable snapshot shape to target. It
+can also binary-search persisted EAVT for an entity and materialize only that
+entity's datoms from durable log indexes. The same snapshot can binary-search
+persisted AEVT for an attribute and materialize entity+attribute reads without
+resident datom/index arrays. The snapshot owns a reusable prepared SQLite
+statement for datom-by-log-index resolution so broad materialization does not
+prepare one SQL statement per datom. Normal reopened `DB` values still use
+resident arrays today, but the query-facing boundary can now represent a
+chunk-backed source. `DB-Read-Source` can now wrap either a resident `DB` or a
+`SQLite-DB-Snapshot`, expose logical index views, filter retracted facts through
+source-backed currentness checks, run attr/entity+attr datom reads, render a
+simple pull-value map, and execute the first parsed EDN query shape over a
+persisted source: plain data clauses with `:find` variables, including
+multi-clause joins, primary `$` source-qualified clauses, predicate filters, and
+scalar function clauses over already materialized values. It can also render
+flat literal pull finds over forward attrs from the persisted snapshot. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
 current-value, pull, and entity helper paths now go through a resident
 `DB-Index-View` boundary instead of directly owning the slice logic at each
@@ -95,7 +108,21 @@ rebuilds indexes before validation for normal `DB` values. Wiring query/reopen
 to use `SQLite-Index-Snapshot`/chunk-backed DB snapshots instead of resident
 arrays is the next implementation step.
 
+The June 30, 2026 local SQLite storage benchmark now includes
+`persisted-db-snapshot-source-query` and
+`persisted-db-snapshot-source-join-query`, which parse and execute simple
+queries against a persisted `SQLite-DB-Snapshot` source. In that run the
+one-clause source query median was about 1.1ms, the three-clause joined source
+query median was about 3.4ms for the 2,000-entity fixture, and the compatibility
+`reopen-rebuild` path was about 61ms. This is not the final query path, but it
+proves parsed query execution can begin from persisted Vev index chunks without
+first rebuilding a resident `DB`.
+
 ## Implementation Milestones
+
+The concrete batch plan for the active storage phase is maintained in
+`docs/next-steps.md`. This section records the architectural milestones and
+current status.
 
 1. Schema, metadata, and bounded root writer.
    Add root/chunk tables, architecture marker, inspection functions, and
@@ -120,10 +147,13 @@ arrays is the next implementation step.
    primitive for resolving persisted index entries without rebuilding the whole
    DB. `SQLite-Index-Snapshot` packages the four persisted cursors plus datom
    lookup, and `SQLite-DB-Snapshot` adds basis/datom-count metadata as the first
-   lazy-reopen DB snapshot object. The remaining work is to make normal reopened
-   DB values construct persisted cursor-backed views where appropriate and
-   decide how entity-position side tables are represented in shared/chunked
-   snapshots.
+   lazy-reopen DB snapshot object. It can now use persisted EAVT plus datom
+   lookup to read one entity, and persisted AEVT plus datom lookup to read an
+   attribute or entity+attribute, without resident datom/index arrays. Datom
+   lookup is backed by a reusable prepared statement on the snapshot. The
+   remaining work is to make normal reopened DB values construct persisted
+   cursor-backed views where appropriate and decide how entity-position side
+   tables are represented in shared/chunked snapshots.
 
 3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
    Query planning should choose the same Vev logical indexes whether they are

@@ -61,8 +61,12 @@ index, which is needed for resolving persisted index entries without full
 datom-log materialization. `SQLite-Index-Snapshot` now packages the four
 persisted index cursors and datom lookup behind one path/open handle, and
 `SQLite-DB-Snapshot` adds basis tx plus datom count metadata, so Vev can open
-storage root/cursor state without `load-db-sqlite`. Normal reopen/query access
-through those cursors is the next storage step.
+storage root/cursor state without `load-db-sqlite`. It can also read a single
+entity by binary-searching persisted EAVT and resolving only that entity's
+datoms, plus attribute and entity+attribute reads by binary-searching persisted
+AEVT/EAVT and resolving matching durable log indexes. The DB snapshot keeps a
+prepared datom-by-log-index statement open for repeated materialization.
+Normal reopen/query access through those cursors is the next storage step.
 
 There are now two write modes:
 
@@ -141,6 +145,20 @@ wrapper when it has the successful transaction report in hand.
 - `persisted-db-snapshot-open`: open basis/datom-count metadata plus all
   persisted index cursors as a `SQLite-DB-Snapshot`, then resolve a
   representative datom by durable log index
+- `persisted-db-snapshot-entity-read`: keep a `SQLite-DB-Snapshot` open,
+  binary-search persisted EAVT for one entity, and materialize only that
+  entity's datoms by durable log index
+- `persisted-db-snapshot-entity-attr-read`: read one entity+attribute from a
+  persisted DB snapshot without reopening resident arrays
+- `persisted-db-snapshot-attr-read`: scan one attribute through persisted AEVT
+  and materialize matching datoms; sampled lightly because it intentionally
+  materializes many rows through the snapshot's prepared log-index reader
+- `persisted-db-snapshot-source-query`: parse and execute a one-clause EDN
+  query against `SQLite-DB-Snapshot` through the new source-backed query path,
+  without reopening resident arrays
+- `persisted-db-snapshot-source-join-query`: parse and execute a multi-clause
+  EDN join query against `SQLite-DB-Snapshot` through the source-backed query
+  path, without reopening resident arrays
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 

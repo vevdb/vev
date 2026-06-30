@@ -372,8 +372,12 @@ log index. `SQLite-Index-Snapshot` opens all four persisted logical index
 cursors from a SQLite path or live handle without calling `load-db-sqlite`, and
 can resolve datoms by durable log index. `SQLite-DB-Snapshot` adds basis tx and
 datom-count metadata around those cursors as the first durable DB snapshot
-shape. Normal query/reopen paths still construct resident views today, but the
-query-facing boundary can represent chunk-backed persisted cursors. Public
+shape, and can binary-search persisted EAVT to materialize one entity's datoms
+without resident datom/index arrays. It can also use persisted AEVT/EAVT for
+attribute and entity+attribute reads, using a reusable prepared log-index
+reader for repeated datom materialization. Normal query/reopen paths still
+construct resident views today, but the query-facing boundary can represent
+chunk-backed persisted cursors. Public
 datom index APIs plus transaction, schema, pull, entity helper, and general
 `Clause-Index-Scan` paths now go through `DB-Index-View`. Optimized
 entity-star, threshold, self-join, two-attribute, entity-attribute, entity-int,
@@ -526,3 +530,9 @@ open/write/close/reopen/query; that exists. The active gate is:
   performance on both in-memory and durable paths
 
 Storage must preserve established semantics instead of reshaping them.
+
+The concrete implementation order for this gate lives in
+`docs/next-steps.md`. In short: first make `SQLite-DB-Snapshot` a real
+query-facing source, then remove the remaining resident `eavt` side-table
+assumptions, then make normal durable reopen use chunk-backed snapshots, then
+replace per-commit whole-array copies with shared immutable index storage.
