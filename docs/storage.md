@@ -401,6 +401,9 @@ that tail to the retained shared base, instead of slicing the resident
 post-commit `eavt` array.
 For general append-only shared publication, the shared datom log is now extended
 from `report.tx-data` instead of slicing the resident post-commit datom array.
+The ordered new-entity `eavt` tail now also uses the appended `report.tx-data`
+slice plus the report start index as its datom source, so that path no longer
+needs the resident post-commit datom log for EAVT publication.
 The shared `eavt`, `aevt`, `avet`, and `vaet` merge builders still compare
 through the resident post-commit datom log for O(1) datom access. A direct
 old-shared-vs-new merge was correct but slower with the current chunked datom

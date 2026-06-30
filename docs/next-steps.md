@@ -448,6 +448,10 @@ Implemented so far:
   has already been applied. This is a small but important step toward making
   the transaction engine emit a publish plan that shared storage can consume
   directly.
+- Ordered new-entity shared publication now builds the appended EAVT tail from
+  the transaction's appended datom slice plus the report start index, not from
+  the resident post-commit datom log. General interleaved append-only index
+  merges still compare through the resident post-commit datom log.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -490,7 +494,8 @@ Work:
    merge retry proved that lookup primitive is not enough by itself. The next
    step is to make the transaction engine publish shared chunks directly,
    avoiding the resident `DB`/resident-index adapter rather than making that
-   adapter more elaborate.
+   adapter more elaborate. Ordered new-entity EAVT tail publication is now one
+   small direct slice-based path in that direction.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact. Shared transaction reports now exist for the
    prototype shared connection path, and `Store-DB` can now wrap shared
