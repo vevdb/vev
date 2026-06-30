@@ -326,8 +326,10 @@ the fact. `bench/write_bench.kvist --workload shared-snapshot-heavy` measures
 that path separately from SQLite-backed `snapshot-heavy`; a local batch-1,
 100-write sample showed the shared path faster. Shared publication now also
 uses append-only/new-entity facts from the transaction report to retain
-`current`, `eavt`, and `eavt-entity-starts` directly when those indexes are
-known prefixes. A local batch-1, 500-write sample with chunk size 64 ended at
+`current` and `eavt` directly when those indexes are known prefixes.
+`eavt-entity-starts` is a resident DB build/index maintenance side table, not
+part of shared immutable snapshots. A local batch-1, 500-write sample with chunk
+size 64 ended at
 about 0.323 ms commit latency. The remaining increase comes from indexes that
 still rebuild or scan merged/reordered resident arrays.
 `Shared-Int-Index` also has a tested same-offset page-sharing constructor for

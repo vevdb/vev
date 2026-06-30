@@ -375,8 +375,9 @@ Implemented so far:
   chunks directly at commit time.
 - Shared publish now carries append-only/new-entity facts from the transaction
   result into snapshot publication. Append-only commits retain the `current`
-  index directly, and ordered new-entity commits also retain `eavt` and
-  `eavt-entity-starts` directly without scanning old prefixes. A local
+  index directly, and ordered new-entity commits also retain `eavt` directly
+  without scanning old prefixes. `eavt-entity-starts` is now a resident DB
+  build/index maintenance side table, not part of shared immutable snapshots. A local
   batch-1, 500-write `shared-snapshot-heavy` sample with chunk size 64 ended at
   about 0.323 ms commit latency, versus the earlier resident snapshot-heavy
   baseline growing past 2 ms near 500 writes. The remaining slope is mainly the
