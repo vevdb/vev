@@ -22,6 +22,14 @@
       (return false)))
   true)
 
+(defn result-has-string-row? [result: vev.Result-Set, text: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text))
+      (return true)))
+  false)
+
 (t.deftest sqlite-initializes-chunked-index-metadata
   (defer (free_all context.allocator))
   (remove-sqlite-files "tmp.vev.storage-architecture.sqlite")
@@ -550,6 +558,8 @@
           predicate-empty-result (vev.q-text-db-read-source source "[:find ?name :where [?e :user/name ?name] [(= ?name \"Missing\")]]")
           function-result (vev.q-text-db-read-source source "[:find ?name ?len :where [?e :user/name ?name] [(count ?name) ?len] [(= ?len 3)]]")
           tuple-function-result (vev.q-text-db-read-source source "[:find ?tuple-name ?id :where [?e :user/name ?name] [(= ?name \"Ada\")] [(vector ?name ?e) [?tuple-name ?id]]]")
+          or-result (vev.q-text-db-read-source source "[:find ?name :where (or [?e :user/name \"Ada\"] [?e :user/name \"Grace\"]) [?e :user/name ?name]]")
+          or-join-result (vev.q-text-db-read-source source "[:find ?name :where [?e :user/name ?name] (or-join [?e] [?e :user/email \"ada@example.com\"] [?e :user/name \"Grace\"])]")
           named-source-error (vev.q-text-db-read-source source "[:find ?name :where [$other 1 :user/name ?name]]")]
       (t.is emails-ok)
       (t.is (= emails-error ""))
@@ -602,6 +612,16 @@
       (t.is (= tuple-function-result.rows[0].values[0].text "Ada"))
       (t.is (= tuple-function-result.rows[0].values[1].kind .Entity))
       (t.is (= tuple-function-result.rows[0].values[1].entity 1))
+      (t.is or-result.ok)
+      (t.is (= or-result.error ""))
+      (t.is (= (count or-result.rows) 2))
+      (t.is (result-has-string-row? or-result "Ada"))
+      (t.is (result-has-string-row? or-result "Grace"))
+      (t.is or-join-result.ok)
+      (t.is (= or-join-result.error ""))
+      (t.is (= (count or-join-result.rows) 2))
+      (t.is (result-has-string-row? or-join-result "Ada"))
+      (t.is (result-has-string-row? or-join-result "Grace"))
       (t.is (not named-source-error.ok))
       (t.is (= named-source-error.error "SQLite DB snapshot source currently supports only primary $ source clauses"))
       (vev.delete-owned-datoms emails)
@@ -613,6 +633,8 @@
       (vev.delete-result-set-owned-values predicate-empty-result)
       (vev.delete-result-set-owned-values function-result)
       (vev.delete-result-set-owned-values tuple-function-result)
+      (vev.delete-result-set-owned-values or-result)
+      (vev.delete-result-set-owned-values or-join-result)
       (vev.delete-result-set-owned-values named-source-error))
     (vev.close-sqlite-db-snapshot! (addr snapshot))
     (vev.close-sqlite-conn store)))

@@ -53,7 +53,9 @@ Implemented so far:
   `[(ground 301) ?e]` now bind values before later source-backed data clauses,
   and source-backed `get-else`/`get-some` clauses can read current attr values
   directly from the persisted source. Source-backed `missing?` works through the
-  same not-group path used for ordinary negated data clauses.
+  same not-group path used for ordinary negated data clauses. Source-backed
+  `or` and `or-join` clauses now execute branch groups over the same persisted
+  snapshot source and merge owned branch bindings back into the incoming row.
   Flat literal pull finds such as `(pull ?e [:db/id :item/name])`, wildcard
   pulls such as `(pull ?e [*])`, flat reverse-ref pulls such as
   `(pull ?e [:item/_parent])`, nested forward-ref pulls such as
@@ -71,7 +73,7 @@ Implemented so far:
   and named source-qualified clauses fail explicitly until multi-source durable
   querying is implemented, plus predicate filtering with both matching and empty
   results, scalar and destructuring function output, `ground`, `get-else`,
-  `get-some`, and `missing?`/not-group clauses, flat literal pull finds,
+  `get-some`, `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
   wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
   nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
   pull pattern inputs through both direct `Query-Input` and EDN input text.
@@ -103,12 +105,6 @@ Remaining in this batch:
 1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
    new source-backed plain-clause query runner.
 2. Broaden `q-text-db-read-source` beyond plain data clauses:
-   - `or` / `or-join` branch groups over source-backed clauses. A first
-     implementation attempt reused the source-backed not-group branch evaluator
-     but exposed a Kvist `case expects clause/body pairs followed by default`
-     diagnostic when source queries admitted nonzero `or-groups`; keep this as
-     the next source-query semantics gap rather than leaving a brittle partial
-     implementation.
    - named or multiple source-qualified clauses
    - richer function-output ownership cleanup for temporary strings/containers
      produced by shared function evaluators
