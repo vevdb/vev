@@ -226,7 +226,13 @@ Remaining in this batch:
    glue out of the raw block. Once that is green, add a C/JVM smoke that proves
    `vev_connection_db` returns a chunk-backed `Store-DB` snapshot for durable
    connections and that `vev_query_db_prepared_result_with_inputs` plus
-   `vev_pull_edn` work without resident rebuild.
+   `vev_pull_edn` work without resident rebuild. Current failure, verified with
+   `kvist build src/vev_abi/vev_abi.kvist`, is still mapped to the raw Odin
+   listener callback area with `case expects clause/body pairs followed by
+   default`. Extracting the raw Odin block and checking it directly reaches
+   only missing-type errors, so the next pass should treat this as a
+   Kvist/generated-source/source-map issue or move the callback listener glue
+   into a smaller raw sidecar before continuing ABI DB-handle verification.
 
 Acceptance:
 
@@ -548,6 +554,12 @@ Implemented so far:
   local batch-1, 300-write sample stayed in the same range: about 0.150 ms
   commit latency for both `shared-snapshot-heavy` and `shared-store-db-heavy`,
   with the benchmark-only direct shared-log path around 0.274 ms.
+- `Shared-Write-State` now tracks `source-resolves` and
+  `resident-fallbacks`, making the remaining resolver boundary observable in
+  tests and future benchmarks. A focused test proves ordinary source-backed
+  tx-data increments the source counter and that explicit tuple-schema writes
+  no longer record the resident fallback path. This is measurement
+  infrastructure for the remaining Batch 4 work, not a semantic shortcut.
 - The first write resolver read has moved behind that boundary. Simple direct
   shared tx-data now checks direct eligibility using cached `Shared-Write-State`
   schema facts (`has-tuple-schema` and ref attrs), and only consults
@@ -596,7 +608,9 @@ Implemented so far:
   separately from generic unique attrs, preassigns tempids for the whole simple
   transaction before emitting ops, and uses source-backed lookup-ref reads to
   choose an existing entity when one exists. Generic `:db.unique/value` attrs
-  still stay out of the upsert path and are left to normal validation.
+  are treated as normal non-upsert tempid assignments and are left to normal
+  validation, including conflict rejection, without entering the resident
+  resolver.
 - `:db/retractAttr` and `:db/retractEntity` now expand through
   `Shared-Write-State` using `DB-Read-Source` current-state scans. The shared
   path reads current entity facts from EAVT, recursively retracts component
@@ -610,9 +624,40 @@ Implemented so far:
 - Explicit-ID schema-only transactions now resolve through the same
   source-backed shared write-state path. This covers common schema installation
   commits for `:db/ident`, `:db/valueType`, `:db/cardinality`, `:db/unique`,
-  `:db/index`, and `:db/isComponent` while deliberately leaving tuple schema and
-  mixed "define schema and use it in the same tx" shapes on the resident
-  intermediate-DB path.
+  `:db/index`, and `:db/isComponent`.
+- Explicit tuple-schema installation now also resolves through
+  `Shared-Write-State`, including the same final tuple-schema validation as the
+  resident path.
+- Simple writes against existing tuple schemas now also stay on the
+  source-backed shared write-state path. The resolver discovers tuple schemas
+  through `DB-Read-Source`, computes tuple values from the source plus
+  already-resolved tx ops, emits derived tuple maintenance ops, and handles
+  component replacement without recording a resident fallback. Mixed "define
+  tuple schema and use it in the same tx" shapes still stay on the resident
+  fallback path until the write-state overlay can represent schema changes
+  inside the transaction.
+- Mixed schema/data transactions now have a safe source-backed subset:
+  explicit schema facts and ordinary data facts can share a tx when the data
+  facts do not depend on attrs/idents introduced by that same transaction.
+  Schema-dependent mixed transactions still fall back to the resident resolver,
+  preserving intermediate-tx-db semantics until `Shared-Write-State` has a real
+  schema overlay.
+- Same-transaction scalar schema define-and-use now has a source-backed subset:
+  a tx can install a simple non-ref, non-tuple, non-unique attr and write data
+  for that attr in the same transaction. Ref attrs, tuple attrs, unique attrs,
+  and other cases where resolution depends on transaction-local schema overlay
+  state still use the resident fallback path.
+- Same-transaction ref schema define-and-use now also has a source-backed
+  subset when the data side uses already-resolved entity values. Lookup-ref,
+  tempid-string, tuple, and unique behavior for attrs introduced in the same
+  transaction still need a fuller transaction-local schema overlay.
+- Built-in compare-and-swap transaction data (`:db.fn/cas` / `:db/cas`) now
+  resolves through `Shared-Write-State` for source-stable entity/value shapes,
+  including lookup-ref expected values. Failed CAS reports the same
+  DataScript-style current-value error string without entering the resident
+  resolver. General registered transaction functions still require a DB value
+  and stay on the resident fallback path until the write-state overlay can
+  expose the needed transaction-local read API.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -664,13 +709,23 @@ Work:
    on that boundary now, as are simple `:db/current-tx` value writes,
    ordinary non-upsert tempid entity writes, simple value-tempid ref writes,
    current-tx value-tempids, literal string/negative-int ref tempids, identity
-   tempid upserts, source-backed `retractAttr`/`retractEntity` expansion, and
-   explicit-ID schema-only transactions. The next step is to move the remaining
-   intermediate-tx-db resolver state behind the same boundary: tuple
-   maintenance, transaction functions, mixed schema/data transactions, tuple
-   schema changes, and any remaining value-tempid/upsert conflict shapes should
-   use a write-state overlay instead of forcing a full resident DB rebuild on
-   every append-only commit.
+   tempid upserts, unique/value tempid validation, source-backed
+   `retractAttr`/`retractEntity` expansion, and
+   explicit-ID schema-only transactions, including tuple-schema installation,
+   plus simple tuple maintenance over already-installed tuple schemas and
+   schema-independent mixed schema/data transactions. Same-transaction scalar
+   schema define-and-use is source-backed for simple scalar attrs and for ref
+   attrs when values are already entity ids. Built-in compare-and-swap
+   transaction data is also source-backed for source-stable entity/value shapes.
+   `Shared-Write-State` now counts source-backed resolver use versus resident
+   fallback use, so this remaining work can be tracked directly. The next step
+   is to move the remaining intermediate-tx-db resolver state behind the same
+   boundary: registered transaction functions, schema-dependent mixed
+   schema/data transactions for tuple/unique attrs and ref attrs that need
+   same-tx lookup-ref/tempid resolution, same-tx tuple schema define-and-use,
+   and any remaining identity-upsert conflict shapes that need
+   transaction-local overlay reads should use a write-state overlay instead of
+   forcing a full resident DB rebuild on every append-only commit.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases, and append-only/new-entity publication
@@ -750,6 +805,11 @@ Implemented so far:
   before checking attr existence. Source-qualified `not`/`missing?` shapes can
   stay on the typed anti scan while using the correct source DB, instead of
   accidentally checking the primary DB.
+- Aggregate/projection fallback rendering now records binding materialization
+  through the same `Query-Stats` helper as clause fallback paths. This does not
+  remove materialization yet, but it makes the remaining typed-to-binding
+  boundary visible in profiles instead of hiding it behind an otherwise typed
+  operator plan.
 
 Work:
 

@@ -4226,6 +4226,18 @@
       (delete value)
       (return out true ""))))
 
+(defn db-read-source-schema-ident-for-entity [source: DB-Read-Source, entity: u64] -> [attr: string, ok: bool, error: string]
+  (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity ":db/ident")]
+    (when (not datoms-ok)
+      (return "" false datoms-error))
+    (for [datom datoms]
+      (when (= datom.v.kind .Keyword)
+        (let [out (string-owned datom.v.text)]
+          (delete-owned-datoms datoms)
+          (return out true ""))))
+    (delete-owned-datoms datoms)
+    (return "" false "")))
+
 (defn db-read-source-schema-tuple-attrs [source: DB-Read-Source, attr: string] -> [attrs: [dynamic]string, ok: bool, error: string]
   (let [out (make [dynamic]string)
         [schema-e schema-ok schema-error] (db-read-source-schema-entity-for-attr source attr)]
@@ -4242,6 +4254,40 @@
               (arr.push! out (string-owned item.text))))))
       (delete-owned-datoms datoms)
       (return out true ""))))
+
+(defn db-read-source-tuple-schemas-containing [source: DB-Read-Source, attr: string] -> [schemas: [dynamic]Tuple-Schema, ok: bool, error: string]
+  (let [out (make [dynamic]Tuple-Schema)
+        [datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source ":db/tupleAttrs")]
+    (when (not datoms-ok)
+      (return out false datoms-error))
+    (for [datom datoms]
+      (let [[tuple-attr ident-ok ident-error] (db-read-source-schema-ident-for-entity source datom.e)]
+        (when (not ident-ok)
+          (when (not (= ident-error ""))
+            (delete-owned-datoms datoms)
+            (for [schema out]
+              (delete schema.attr)
+              (delete schema.attrs))
+            (delete out)
+            (return (make [dynamic]Tuple-Schema) false ident-error))
+          (continue))
+        (let [[attrs attrs-ok attrs-error] (db-read-source-schema-tuple-attrs source tuple-attr)]
+          (when (not attrs-ok)
+            (delete tuple-attr)
+            (delete-owned-datoms datoms)
+            (for [schema out]
+              (delete schema.attr)
+              (delete schema.attrs))
+            (delete out)
+            (return (make [dynamic]Tuple-Schema) false attrs-error))
+          (let [schema (Tuple-Schema {attr: tuple-attr attrs: attrs})]
+            (if (tuple-schema-contains? schema attr)
+              (arr.push! out schema)
+              (do
+                (delete tuple-attr)
+                (delete attrs)))))))
+    (delete-owned-datoms datoms)
+    (return out true "")))
 
 (defn db-read-source-resolve-ref-component-value [source: DB-Read-Source, value: Value] -> [resolved: Value, ok: bool, error: string]
   (cond
@@ -9573,6 +9619,9 @@
 (defn query-stats-observe-bindings! [stats: ^Query-Stats, count-value: int]
   (when (> count-value stats^.max-intermediate-bindings)
     (set! stats^.max-intermediate-bindings count-value)))
+
+(defn query-stats-observe-materialization! [stats: ^Query-Stats, count-value: int]
+  (set! stats^.binding-materializations (+ stats^.binding-materializations count-value)))
 
 (defn term-var-name? [term: Term, name: string] -> bool
   (and (= term.kind .Var)
@@ -15558,7 +15607,7 @@
     (delete-query-relation typed))
   (let [bindings (make [dynamic]Binding)]
     (let [materialized (query-relation-materialized-bindings rel) :defer]
-      (set! stats^.binding-materializations (+ stats^.binding-materializations (count materialized)))
+      (query-stats-observe-materialization! stats (count materialized))
       (for [tuple materialized]
         (append-bindings-after-clause-with-sources-profiled! (addr bindings) db sources clause-value tuple stats))
     (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
@@ -18526,6 +18575,7 @@
             (do
               (delete-result-rows-shallow typed-aggregate-rows)
               (let [materialized (query-relation-materialized-bindings post-rel) :defer]
+                (query-stats-observe-materialization! (addr stats) (count materialized))
                 (if (= (count query.find) 0)
                   (let [values (make [dynamic]Value 0 (count query.aggregates))
                         pulls (make [dynamic]Pull-Result)]
@@ -18541,6 +18591,7 @@
               (do
                 (delete-result-rows-shallow typed-rows)
                 (let [materialized (query-relation-materialized-bindings post-rel) :defer]
+                  (query-stats-observe-materialization! (addr stats) (count materialized))
                   (set! rows (result-rows-for-bindings-with-sources-and-fns db sources query inputs (slice materialized 0) registry))))))))
       (delete-query-relation post-rel)
       (set! stats.output-rows (count rows))

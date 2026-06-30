@@ -405,6 +405,74 @@
     (vev.delete-live-tx-report-shallow report2)
     (vev.delete-shared-conn conn)))
 
+(t.deftest shared-conn-tracks-write-resolver-boundary
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        source-report (vev.shared-conn-transact
+                        (addr conn)
+                        ([]vev.Tx-Data [(vev.add 1 ":item/name" (vev.value-string "Ada"))]))]
+    (t.is source-report.ok)
+    (t.is source-report.append-only)
+    (t.is (= conn.write.source-resolves 1))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (let [tuple-schema (vev.tuple-attrs-schema-tx 100 ":item/name+age" ":item/name" ":item/age")
+          tuple-report (vev.shared-conn-transact (addr conn) (slice tuple-schema 0))]
+      (t.is tuple-report.ok)
+      (t.is (= conn.write.source-resolves 2))
+      (t.is (= conn.write.resident-fallbacks 0))
+      (vev.delete-live-tx-report-shallow tuple-report)
+      (delete tuple-schema))
+    (vev.delete-live-tx-report-shallow source-report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-validates-tuple-schema-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        bad (vev.shared-conn-transact
+              (addr conn)
+              ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":item/name+age"))
+                               (vev.add 100 ":db/tupleAttrs" (vev.value-keyword ":item/name"))]))]
+    (t.is (not bad.ok))
+    (t.is (= bad.error "invalid tuple schema"))
+    (t.is (= conn.write.source-resolves 1))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (vev.delete-live-tx-report-shallow bad)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-maintains-existing-tuples-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        tuple-schema (vev.tuple-attrs-schema-tx 100 ":item/name+age" ":item/name" ":item/age")
+        schema (vev.shared-conn-transact (addr conn) (slice tuple-schema 0))
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 1 ":item/name" (vev.value-string "Ada"))
+                                  (vev.add 1 ":item/age" (vev.value-int 37))]))
+        update (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 1 ":item/age" (vev.value-int 38))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?tuple :where [1 :item/name+age ?tuple]]")]
+    (t.is schema.ok)
+    (t.is report.ok)
+    (t.is update.ok)
+    (t.is (= conn.write.source-resolves 3))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .Vector))
+    (t.is (= (count result.rows[0].values[0].items) 2))
+    (t.is (= result.rows[0].values[0].items[0].kind .String))
+    (t.is (= result.rows[0].values[0].items[0].text "Ada"))
+    (t.is (= result.rows[0].values[0].items[1].kind .Int))
+    (t.is (= result.rows[0].values[0].items[1].int-value 38))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow schema)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-live-tx-report-shallow update)
+    (delete tuple-schema)
+    (vev.delete-shared-conn conn)))
+
 (t.deftest shared-conn-resolves-simple-lookup-ref-writes-through-source
   (defer (free_all context.allocator))
   (let [conn (vev.create-shared-conn 2)
@@ -530,6 +598,80 @@
     (t.is (= result.rows[0].values[0].text "grace@example.com"))
     (vev.delete-result-set-owned-values result)
     (vev.delete-live-tx-report-shallow schema)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-independent-mixed-schema-data-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":user/email"))
+                                  (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/identity"))
+                                  (vev.add 1 ":item/name" (vev.value-string "Ada"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?name :where [1 :item/name ?name]]")]
+    (t.is report.ok)
+    (t.is (= conn.write.source-resolves 1))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].text "Ada"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-keeps-schema-dependent-mixed-data-on-resident-fallback
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":user/email"))
+                                  (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/identity"))
+                                  (vev.add 1 ":user/email" (vev.value-string "ada@example.com"))]))]
+    (t.is report.ok)
+    (t.is (= conn.write.source-resolves 0))
+    (t.is (= conn.write.resident-fallbacks 1))
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-scalar-schema-define-and-use-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":item/title"))
+                                  (vev.add 100 ":db/valueType" (vev.value-keyword ":db.type/string"))
+                                  (vev.add 1 ":item/title" (vev.value-string "Ada"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?title :where [1 :item/title ?title]]")]
+    (t.is report.ok)
+    (t.is (= conn.write.source-resolves 1))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].text "Ada"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-ref-schema-define-and-use-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":item/friend"))
+                                  (vev.add 100 ":db/valueType" (vev.value-keyword ":db.type/ref"))
+                                  (vev.add 1 ":item/friend" (vev.value-entity 2))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?friend :where [1 :item/friend ?friend]]")]
+    (t.is report.ok)
+    (t.is (= conn.write.source-resolves 1))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].entity 2))
+    (vev.delete-result-set-owned-values result)
     (vev.delete-live-tx-report-shallow report)
     (vev.delete-shared-conn conn)))
 
@@ -764,6 +906,108 @@
     (t.is (= (count result.rows) 1))
     (t.is (result-has-entity-string-row? result 1 "Ada"))
     (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow seed)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-validates-unique-value-tempids-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        schema (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":user/email"))
+                                  (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/value"))]))
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add-tempid "a" ":user/email" (vev.value-string "ada@example.com"))
+                                  (vev.add-tempid "a" ":user/name" (vev.value-string "Ada"))]))
+        conflict (vev.shared-conn-transact
+                   (addr conn)
+                   ([]vev.Tx-Data [(vev.add-tempid "b" ":user/email" (vev.value-string "ada@example.com"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?e ?name :where [?e :user/name ?name]]")
+        [a-e a-ok] (vev.tempid-lookup (slice report.tempids 0) "a")]
+    (t.is schema.ok)
+    (t.is report.ok)
+    (t.is a-ok)
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (result-has-entity-string-row? result a-e "Ada"))
+    (t.is (not conflict.ok))
+    (t.is (= conflict.error "schema unique conflict"))
+    (t.is (= conn.write.source-resolves 3))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow schema)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-live-tx-report-shallow conflict)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-cas-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        seed (vev.shared-conn-transact
+               (addr conn)
+               ([]vev.Tx-Data [(vev.add 1 ":item/weight" (vev.value-int 200))]))
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.cas 1 ":item/weight" (vev.value-int 200) (vev.value-int 300))]))
+        failed (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.cas 1 ":item/weight" (vev.value-int 200) (vev.value-int 400))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?weight :where [1 :item/weight ?weight]]")]
+    (t.is seed.ok)
+    (t.is report.ok)
+    (t.is (= (count report.tx-data) 2))
+    (t.is (not failed.ok))
+    (t.is (= failed.error ":db.fn/cas failed on datom [1 :item/weight 300], expected 200"))
+    (t.is (= conn.write.source-resolves 3))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].int-value 300))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow seed)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-live-tx-report-shallow failed)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-cas-lookup-refs-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        schema (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":user/email"))
+                                  (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/identity"))
+                                  (vev.add 101 ":db/ident" (vev.value-keyword ":user/friend"))
+                                  (vev.add 101 ":db/valueType" (vev.value-keyword ":db.type/ref"))]))
+        seed (vev.shared-conn-transact
+               (addr conn)
+               ([]vev.Tx-Data [(vev.add 1 ":user/email" (vev.value-string "ada@example.com"))
+                                (vev.add 2 ":user/email" (vev.value-string "grace@example.com"))
+                                (vev.add 3 ":user/email" (vev.value-string "barbara@example.com"))
+                                (vev.add 1 ":user/friend" (vev.value-entity 2))]))
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.cas-expected-lookup-ref
+                                    1
+                                    ":user/friend"
+                                    ":user/email"
+                                    (vev.value-string "grace@example.com")
+                                    (vev.value-entity 3))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?email :where [1 :user/friend ?friend] [?friend :user/email ?email]]")]
+    (t.is schema.ok)
+    (t.is seed.ok)
+    (t.is report.ok)
+    (t.is (= conn.write.source-resolves 3))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].text "barbara@example.com"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow schema)
     (vev.delete-live-tx-report-shallow seed)
     (vev.delete-live-tx-report-shallow report)
     (vev.delete-shared-conn conn)))
