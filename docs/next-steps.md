@@ -112,9 +112,9 @@ Implemented so far:
   snapshot path aligned with the prepared-query API that host bindings will use,
   instead of making persisted snapshots depend on text parsing at call time.
 - an ownership-tagged `Query-Result` wrapper now exists for source-backed
-  prepared queries. The first wrappers return `Query-Result` and clean up with
-  `delete-query-result`, which is the direction host handles should follow so
-  callers do not have to know whether row values are shallow or owned copies.
+  prepared and text queries. The new wrappers return `Query-Result` and clean up
+  with `delete-query-result`, which is the direction host handles should follow
+  so callers do not have to know whether row values are shallow or owned copies.
 
 Work:
 
@@ -140,10 +140,9 @@ Remaining in this batch:
    same `Clause-Index-Scan` shape and source-backed prepared queries are
    available, but the full resident query engine still has `DB`/`DB-Source`
    entry points and shallow binding/result ownership.
-2. Carry the ownership-tagged `Query-Result` shape through the remaining
-   source-backed query wrappers and then into C ABI/JVM result handles. Raw
-   `Result-Set` cleanup is still available internally, but host-facing code
-   should get a single result handle/free operation.
+2. Carry the ownership-tagged `Query-Result` shape into C ABI/JVM result
+   handles. Raw `Result-Set` cleanup is still available internally, but
+   host-facing code should get a single result handle/free operation.
 3. Decide whether lookup-ref source resolution must enforce `:db/unique`
    metadata once persisted schema metadata is queryable without resident DB
    rebuilds. The current source-backed lookup-ref query path resolves by AVET
