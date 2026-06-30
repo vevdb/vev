@@ -115,6 +115,8 @@ Implemented so far:
   prepared and text queries. The new wrappers return `Query-Result` and clean up
   with `delete-query-result`, which is the direction host handles should follow
   so callers do not have to know whether row values are shallow or owned copies.
+  Resident text and prepared query wrappers now use the same `Query-Result`
+  shape, tagged as shallow cleanup.
 - source-backed lookup-ref resolution now consults current persisted schema
   datoms and requires the lookup attr to have `:db/unique` set to either
   `:db.unique/identity` or `:db.unique/value`, matching the resident resolver's
@@ -155,8 +157,9 @@ Remaining in this batch:
    available, but the full resident query engine still has `DB`/`DB-Source`
    entry points and shallow binding/result ownership.
 2. Carry the ownership-tagged `Query-Result` shape into C ABI/JVM result
-   handles. The attempted C ABI ownership-tag patch exposed an ABI compile
-   issue around the raw Odin wrapper block, so this remains pending rather than
+   handles. Internal resident and source-backed wrappers now use this shape, but
+   the attempted C ABI ownership-tag patch exposed an ABI compile issue around
+   the raw Odin wrapper block, so host handles remain pending rather than
    partially merged. Raw `Result-Set` cleanup is still available internally, but
    host-facing code should get a single result handle/free operation.
 3. Decide whether Batch 1 should keep pushing host-facing source-backed query
