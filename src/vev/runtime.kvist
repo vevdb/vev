@@ -3876,6 +3876,26 @@
         (delete-owned-datoms out)
         (return (make [dynamic]Datom) false scan-error)))))
 
+(defn db-read-source-datoms-by-entity [source: DB-Read-Source, entity: u64] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-entity entity)])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .EAVT values)]
+    (if scan-ok
+      (return out true "")
+      (do
+        (delete-owned-datoms out)
+        (return (make [dynamic]Datom) false scan-error)))))
+
+(defn db-read-source-datoms-by-reverse-entity-attr [source: DB-Read-Source, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-entity entity) (value-keyword attr)])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .VAET values)]
+    (if scan-ok
+      (return out true "")
+      (do
+        (delete-owned-datoms out)
+        (return (make [dynamic]Datom) false scan-error)))))
+
 (defn db-read-source-pull-attrs-value [source: DB-Read-Source, entity: u64, attrs: []string] -> [value: Value, ok: bool, error: string]
   (let [items (make [dynamic]Value)]
     (for [attr attrs]
@@ -4062,37 +4082,229 @@
         (binding-store! (addr out) name value)
         (return out true)))))
 
-(defn db-read-source-apply-function-clause [binding: Binding, function: Function-Clause] -> [out-binding: Binding, ok: bool, error: string]
-  (when (not (= function.out-binding.kind .None))
-    (return (Binding {}) false "SQLite DB snapshot source does not yet support destructuring function outputs"))
-  (when function.is-tuple
-    (return (Binding {}) false "SQLite DB snapshot source does not yet support tuple function outputs"))
-  (let [[value value-ok] (apply-function-op function binding)]
-    (when (not value-ok)
-      (return (Binding {}) false ""))
-    (let [owned-value (value-owned value)
-          [next next-ok] (db-read-source-binding-with-owned-value binding function.out owned-value)]
-      (return next next-ok ""))))
+(defn db-read-source-bind-input-pattern-owned [binding: Binding, pattern: Input-Binding, value: Value] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (case pattern.kind
+      .Ignore (arr.push! out (db-read-source-clone-binding-owned binding))
+      .None (arr.push! out (db-read-source-clone-binding-owned binding))
+      .Var
+        (let [owned-value (value-owned value)
+              [next ok] (db-read-source-binding-with-owned-value binding pattern.name owned-value)]
+          (when ok
+            (arr.push! out next)))
+      .Tuple
+        (when (and (= value.kind .Vector)
+                   (= (count pattern.items) (count value.items)))
+          (let [current (make [dynamic]Binding)]
+            (arr.push! current (db-read-source-clone-binding-owned binding))
+            (for [item index pattern.items]
+              (let [next-current (make [dynamic]Binding)]
+                (for [candidate current]
+                  (let [bound (db-read-source-bind-input-pattern-owned candidate item value.items[index])]
+                    (for [bound-item bound]
+                      (arr.push! next-current bound-item))
+                    (delete bound))
+                  (db-read-source-delete-binding-owned candidate))
+                (delete current)
+                (set! current next-current)))
+            (for [candidate current]
+              (arr.push! out candidate))
+            (delete current)))
+      .Collection
+        (when (and (= value.kind .Vector)
+                   (= (count pattern.items) 1))
+          (for [item value.items]
+            (let [bound (db-read-source-bind-input-pattern-owned binding pattern.items[0] item)]
+              (for [bound-item bound]
+                (arr.push! out bound-item))
+              (delete bound))))
+      :else (do))
+    out))
+
+(defn db-read-source-bind-tuple-output [binding: Binding, names: []string, value: Value] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (and (= value.kind .Vector)
+               (= (count value.items) (count names)))
+      (let [current (make [dynamic]Binding)]
+        (arr.push! current (db-read-source-clone-binding-owned binding))
+        (for [name index names]
+          (let [next-current (make [dynamic]Binding)]
+            (for [candidate current]
+              (if (= name "_")
+                (arr.push! next-current (db-read-source-clone-binding-owned candidate))
+                (let [owned-value (value-owned value.items[index])
+                      [next ok] (db-read-source-binding-with-owned-value candidate name owned-value)]
+                  (when ok
+                    (arr.push! next-current next))))
+              (db-read-source-delete-binding-owned candidate))
+            (delete current)
+            (set! current next-current)))
+        (for [candidate current]
+          (arr.push! out candidate))
+        (delete current)))
+    out))
 
 (defn db-read-source-bindings-after-function [input-bindings: []Binding, function: Function-Clause] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
   (let [out (make [dynamic]Binding)]
     (for [binding input-bindings]
-      (let [[next next-ok next-error] (db-read-source-apply-function-clause binding function)]
-        (when (> (count next-error) 0)
-          (db-read-source-delete-bindings-owned out)
-          (return (make [dynamic]Binding) false next-error))
-        (when next-ok
-          (arr.push! out next))))
+      (let [[value value-ok] (apply-function-op function binding)]
+        (when value-ok
+          (if (not (= function.out-binding.kind .None))
+            (let [bound (db-read-source-bind-input-pattern-owned binding function.out-binding value)]
+              (for [item bound]
+                (arr.push! out item))
+              (delete bound))
+            (if function.is-tuple
+              (let [bound (db-read-source-bind-tuple-output binding function.out-vars value)]
+                (for [item bound]
+                  (arr.push! out item))
+                (delete bound))
+              (let [owned-value (value-owned value)
+                    [next next-ok] (db-read-source-binding-with-owned-value binding function.out owned-value)]
+                (when next-ok
+                  (arr.push! out next))))))))
+    (return out true "")))
+
+(defn db-read-source-ground-source-owned [ground: Ground, binding: Binding] -> [value: Value, ok: bool]
+  (case ground.source.kind
+    .Value (return (value-owned ground.source.value) true)
+    .Var
+      (let [[value value-ok] (binding-lookup binding ground.source.name)]
+        (if value-ok
+          (return (value-owned value) true)
+          (return (Value {}) false)))
+    :else (return (Value {}) false)))
+
+(defn db-read-source-ground-bind-values [binding: Binding, vars: []string, values: []Value] -> [next: Binding, ok: bool]
+  (when (not (= (count vars) (count values)))
+    (return (Binding {}) false))
+  (let [current (db-read-source-clone-binding-owned binding)]
+    (for [name index vars]
+      (when (not (= name ""))
+        (let [owned-value (value-owned values[index])
+              [next next-ok] (db-read-source-binding-with-owned-value current name owned-value)]
+          (db-read-source-delete-binding-owned current)
+          (when (not next-ok)
+            (return (Binding {}) false))
+          (set! current next))))
+    (return current true)))
+
+(defn db-read-source-bindings-after-ground [input-bindings: []Binding, ground: Ground] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [out (make [dynamic]Binding)]
+    (for [binding input-bindings]
+      (let [[source source-ok] (db-read-source-ground-source-owned ground binding)]
+        (when source-ok
+          (cond
+            (not (= ground.binding.kind .None))
+              (let [bound (db-read-source-bind-input-pattern-owned binding ground.binding source)]
+                (for [item bound]
+                  (arr.push! out item))
+                (delete bound))
+            ground.is-tuple
+              (when (= source.kind .Vector)
+                (let [[next next-ok] (db-read-source-ground-bind-values binding ground.tuple-vars (slice source.items 0))]
+                  (when next-ok
+                    (arr.push! out next))))
+            ground.is-relation
+              (when (= source.kind .Vector)
+                (for [row source.items]
+                  (when (and (= row.kind .Vector)
+                             (= (count row.items) ground.width))
+                    (let [[next next-ok] (db-read-source-ground-bind-values binding ground.tuple-vars (slice row.items 0))]
+                      (when next-ok
+                        (arr.push! out next))))))
+            ground.is-collection
+              (when (= source.kind .Vector)
+                (for [value source.items]
+                  (let [owned-value (value-owned value)
+                        [next next-ok] (db-read-source-binding-with-owned-value binding ground.out owned-value)]
+                    (when next-ok
+                      (arr.push! out next)))))
+            (= ground.out "")
+              (arr.push! out (db-read-source-clone-binding-owned binding))
+            :else
+              (let [[next next-ok] (db-read-source-binding-with-owned-value binding ground.out (value-owned source))]
+                (when next-ok
+                  (arr.push! out next)))))
+        (when source-ok
+          (delete-owned-value source))))
+    (return out true "")))
+
+(defn db-read-source-query-input-specs [query-value: Query] -> [dynamic]Query-Input-Spec
+  (let [out (make [dynamic]Query-Input-Spec)]
+    (if (> (count query-value.input-specs) 0)
+      (for [spec query-value.input-specs]
+        (arr.push! out spec))
+      (append-legacy-query-input-specs! (addr out) query-value))
+    out))
+
+(defn db-read-source-input-pattern [query-value: Query, inputs: []Query-Input, name: string] -> [pattern: []Pull-Spec, ok: bool]
+  (let [input-index 0
+        specs (db-read-source-query-input-specs query-value) :defer]
+    (for [spec specs]
+      (when (and (= spec.kind .Scalar)
+                 (not (query-source-input-name? spec.name)))
+        (when (= spec.name name)
+          (when (and (< input-index (count inputs))
+                     (= inputs[input-index].kind .PullPattern))
+            (return (slice inputs[input-index].pattern 0) true))
+          (return ([]Pull-Spec []) false))
+        (set! input-index (+ input-index 1)))))
+  (return ([]Pull-Spec []) false))
+
+(defn db-read-source-pull-find-pattern [query-value: Query, inputs: []Query-Input, pull-find: Pull-Find] -> [pattern: []Pull-Spec, ok: bool]
+  (if pull-find.has-pattern-var
+    (db-read-source-input-pattern query-value inputs pull-find.pattern-var)
+    (return (slice pull-find.pattern 0) true)))
+
+(defn db-read-source-initial-bindings [query-value: Query, inputs: []Query-Input] -> [bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [out (make [dynamic]Binding)
+        initial (Binding {items: (make [dynamic]Var-Binding)})
+        specs (db-read-source-query-input-specs query-value) :defer
+        input-index 0]
+    (arr.push! out initial)
+    (for [spec specs]
+      (cond
+        (= spec.kind .Ignore)
+          (when (< input-index (count inputs))
+            (set! input-index (+ input-index 1)))
+        (and (= spec.kind .Scalar)
+             (query-source-input-name? spec.name))
+          (do)
+        (= spec.kind .Scalar)
+          (do
+            (when (< input-index (count inputs))
+              (let [input inputs[input-index]]
+                (when (not (= input.kind .PullPattern))
+                  (let [empty-db (DB {})
+                        [value value-ok] (query-input-bound-value empty-db spec.name input)]
+                    (when (not value-ok)
+                      (db-read-source-delete-bindings-owned out)
+                      (return (make [dynamic]Binding) false "SQLite DB snapshot source could not bind scalar query input"))
+                    (for [binding-index (arr.range 0 (count out))]
+                      (binding-store! (addr out[binding-index]) spec.name (value-owned value)))))))
+            (set! input-index (+ input-index 1)))
+        :else
+          (do
+            (db-read-source-delete-bindings-owned out)
+            (return (make [dynamic]Binding) false "SQLite DB snapshot source currently supports scalar query inputs only"))))
     (return out true "")))
 
 (defn db-read-source-pull-spec-supported? [spec: Pull-Spec] -> bool
-  (and (not (= spec.a "*"))
-       (not (reverse-attr? spec.a))
-       (= (count spec.pattern) 0)
-       (not spec.has-default)
-       (not spec.has-xform)
-       (not spec.has-recursion)
-       (not spec.has-limit)))
+  (when (or spec.has-xform
+            spec.has-recursion)
+    (return false))
+  (cond
+    (= spec.a "*") (= (count spec.pattern) 0)
+    (= spec.a ":db/id") (= (count spec.pattern) 0)
+    (reverse-attr? spec.a) true
+    :else true))
+
+(defn db-read-source-pull-default-attr [spec: Pull-Spec] -> Pull-Attr
+  (Pull-Attr {a: (pull-output-attr spec)
+              key-kind: (pull-output-key-kind spec)
+              v: (value-owned spec.default-value)
+              attrs: (make [dynamic]Pull-Attr)}))
 
 (defn db-read-source-pull-entity [value: Value] -> [entity: u64, ok: bool]
   (cond
@@ -4105,27 +4317,98 @@
     (for [spec pattern]
       (when (not (db-read-source-pull-spec-supported? spec))
         (delete-pull-attrs-owned-values attrs)
-        (return (Pull-Result {}) false "SQLite DB snapshot source currently supports flat forward pull attrs only"))
-      (if (= spec.a ":db/id")
-        (arr.push! attrs
-          (Pull-Attr {a: (pull-output-attr spec)
-                      key-kind: (pull-output-key-kind spec)
-                      v: (value-entity entity)
-                      attrs: (make [dynamic]Pull-Attr)}))
-        (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity spec.a)]
-          (when (not datoms-ok)
-            (delete-pull-attrs-owned-values attrs)
-            (return (Pull-Result {}) false datoms-error))
-          (for [datom datoms]
+        (return (Pull-Result {}) false "SQLite DB snapshot source currently supports forward, wildcard, reverse, nested, pattern-input, default, and limit pull attrs only"))
+      (cond
+        (= spec.a "*")
+          (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity source entity)]
+            (when (not datoms-ok)
+              (delete-pull-attrs-owned-values attrs)
+              (return (Pull-Result {}) false datoms-error))
             (arr.push! attrs
-              (Pull-Attr {a: (pull-output-attr spec)
-                          key-kind: (pull-output-key-kind spec)
-                          v: (value-owned datom.v)
-                          attrs: (make [dynamic]Pull-Attr)})))
-          (delete-owned-datoms datoms))))
+              (Pull-Attr {a: ":db/id"
+                          key-kind: .Keyword
+                          v: (value-entity entity)
+                          attrs: (make [dynamic]Pull-Attr)}))
+            (for [datom datoms]
+              (arr.push! attrs
+                (Pull-Attr {a: datom.a
+                            key-kind: .Keyword
+                            v: (value-owned datom.v)
+                            attrs: (make [dynamic]Pull-Attr)})))
+            (delete-owned-datoms datoms))
+        (= spec.a ":db/id")
+          (arr.push! attrs
+            (Pull-Attr {a: (pull-output-attr spec)
+                        key-kind: (pull-output-key-kind spec)
+                        v: (value-entity entity)
+                        attrs: (make [dynamic]Pull-Attr)}))
+        (reverse-attr? spec.a)
+          (let [forward-attr (forward-attr-for-reverse spec.a) :defer
+                [datoms datoms-ok datoms-error] (db-read-source-datoms-by-reverse-entity-attr source entity forward-attr)
+                limit (pull-limit spec)
+                seen 0]
+            (when (not datoms-ok)
+              (delete-pull-attrs-owned-values attrs)
+              (return (Pull-Result {}) false datoms-error))
+            (for [datom datoms]
+              (when (< seen limit)
+                (let [children (make [dynamic]Pull-Attr)]
+                  (when (> (count spec.pattern) 0)
+                    (let [[child child-ok child-error] (db-read-source-pull-result-for-pattern source datom.e (slice spec.pattern 0))]
+                      (when (not child-ok)
+                        (delete-pull-attrs-owned-values children)
+                        (delete-owned-datoms datoms)
+                        (delete-pull-attrs-owned-values attrs)
+                        (return (Pull-Result {}) false child-error))
+                      (delete children)
+                      (set! children child.attrs)))
+                  (if (pull-include-ref-result? spec (slice children 0))
+                    (do
+                      (set! seen (+ seen 1))
+                      (arr.push! attrs
+                        (Pull-Attr {a: (pull-output-attr spec)
+                                    key-kind: (pull-output-key-kind spec)
+                                    v: (value-entity datom.e)
+                                    attrs: children})))
+                    (delete-pull-attrs-owned-values children)))))
+            (when (and (= seen 0) spec.has-default)
+              (arr.push! attrs (db-read-source-pull-default-attr spec)))
+            (delete-owned-datoms datoms))
+        :else
+          (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity spec.a)
+                limit (pull-limit spec)
+                seen 0]
+            (when (not datoms-ok)
+              (delete-pull-attrs-owned-values attrs)
+              (return (Pull-Result {}) false datoms-error))
+            (for [datom datoms]
+              (when (< seen limit)
+                (let [children (make [dynamic]Pull-Attr)]
+                  (when (and (> (count spec.pattern) 0)
+                             (= datom.v.kind .Entity))
+                    (let [[child child-ok child-error] (db-read-source-pull-result-for-pattern source datom.v.entity (slice spec.pattern 0))]
+                      (when (not child-ok)
+                        (delete-pull-attrs-owned-values children)
+                        (delete-owned-datoms datoms)
+                        (delete-pull-attrs-owned-values attrs)
+                        (return (Pull-Result {}) false child-error))
+                      (delete children)
+                      (set! children child.attrs)))
+                  (if (pull-include-ref-result? spec (slice children 0))
+                    (do
+                      (set! seen (+ seen 1))
+                      (arr.push! attrs
+                        (Pull-Attr {a: (pull-output-attr spec)
+                                    key-kind: (pull-output-key-kind spec)
+                                    v: (value-owned datom.v)
+                                    attrs: children})))
+                    (delete-pull-attrs-owned-values children)))))
+            (when (and (= seen 0) spec.has-default)
+              (arr.push! attrs (db-read-source-pull-default-attr spec)))
+            (delete-owned-datoms datoms))))
     (return (Pull-Result {e: entity attrs: attrs}) true "")))
 
-(defn db-read-source-pulls-for-binding [source: DB-Read-Source, query-value: Query, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool, error: string]
+(defn db-read-source-pulls-for-binding [source: DB-Read-Source, query-value: Query, inputs: []Query-Input, binding: Binding] -> [pulls: [dynamic]Pull-Result, ok: bool, error: string]
   (let [out (make [dynamic]Pull-Result 0 (count query-value.pulls))]
     (for [pull-find query-value.pulls]
       (when (and pull-find.has-source (not (= pull-find.source "$")))
@@ -4133,11 +4416,6 @@
           (delete-pull-result-owned-values pull))
         (delete out)
         (return (make [dynamic]Pull-Result) false "SQLite DB snapshot source currently supports only primary $ source pulls"))
-      (when pull-find.has-pattern-var
-        (for [pull out]
-          (delete-pull-result-owned-values pull))
-        (delete out)
-        (return (make [dynamic]Pull-Result) false "SQLite DB snapshot source currently supports literal pull patterns only"))
       (let [[entity-value entity-value-ok] (binding-lookup binding pull-find.var)]
         (when (not entity-value-ok)
           (for [pull out]
@@ -4150,20 +4428,26 @@
               (delete-pull-result-owned-values pull))
             (delete out)
             (return (make [dynamic]Pull-Result) false "pull entity value must be an entity id"))
-          (let [[pull pull-ok pull-error] (db-read-source-pull-result-for-pattern source entity (slice pull-find.pattern 0))]
+          (let [[pattern pattern-ok] (db-read-source-pull-find-pattern query-value inputs pull-find)]
+            (when (not pattern-ok)
+              (for [existing out]
+                (delete-pull-result-owned-values existing))
+              (delete out)
+              (return (make [dynamic]Pull-Result) false "pull pattern input must be a pull pattern"))
+            (let [[pull pull-ok pull-error] (db-read-source-pull-result-for-pattern source entity pattern)]
             (when (not pull-ok)
               (for [existing out]
                 (delete-pull-result-owned-values existing))
               (delete out)
               (return (make [dynamic]Pull-Result) false pull-error))
-            (arr.push! out pull)))))
+            (arr.push! out pull))))))
     (return out true "")))
 
-(defn db-read-source-result-rows-for-bindings [source: DB-Read-Source, query-value: Query, bindings: []Binding] -> Result-Set
+(defn db-read-source-result-rows-for-bindings [source: DB-Read-Source, query-value: Query, inputs: []Query-Input, bindings: []Binding] -> Result-Set
   (let [rows (make [dynamic]Result-Row)]
     (for [binding bindings]
       (let [values (make [dynamic]Value 0 (count query-value.find))
-            [pulls pulls-ok pulls-error] (db-read-source-pulls-for-binding source query-value binding)
+            [pulls pulls-ok pulls-error] (db-read-source-pulls-for-binding source query-value inputs binding)
             row-ok true]
         (when (not pulls-ok)
           (for [value values]
@@ -4194,26 +4478,27 @@
       (return (Clause {}) false "SQLite DB snapshot source currently supports only primary $ source clauses"))
     (return clause-value true "")))
 
-(defn db-read-source-q-query [source: DB-Read-Source, query-value: Query] -> Result-Set
+(defn db-read-source-q-query-with-inputs [source: DB-Read-Source, query-value: Query, inputs: []Query-Input] -> Result-Set
   (when (not (and (> (count query-value.clauses) 0)
                   (= (count query-value.rule-calls) 0)
                   (= (count query-value.get-elses) 0)
                   (= (count query-value.get-somes) 0)
-                  (= (count query-value.grounds) 0)
                   (= (count query-value.not-groups) 0)
                   (= (count query-value.or-groups) 0)
                   (= (count query-value.aggregates) 0)))
-    (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, and scalar function clauses only")))
+    (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, and ground clauses only")))
   (for [step query-value.where-steps]
     (when (not (or (= step.kind .Clause)
                    (= step.kind .Predicate)
-                   (= step.kind .Function)))
-      (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, and scalar function clauses only"))))
-  (let [bindings (make [dynamic]Binding)]
-    (arr.push! bindings (Binding {items: (make [dynamic]Var-Binding)}))
+                   (= step.kind .Function)
+                   (= step.kind .Ground)))
+      (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, and ground clauses only"))))
+  (let [[bindings bindings-ok bindings-error] (db-read-source-initial-bindings query-value inputs)]
+    (when (not bindings-ok)
+      (return (result-set-error bindings-error)))
     (for [step query-value.where-steps]
-      (if (= step.kind .Clause)
-        (do
+      (cond
+        (= step.kind .Clause)
           (let [clause-value query-value.clauses[step.index]
                 [source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
             (when (not source-clause-ok)
@@ -4223,20 +4508,27 @@
               (db-read-source-delete-bindings-owned bindings)
               (when (not next-ok)
                 (return (result-set-error next-error)))
-              (set! bindings next))))
-        (if (= step.kind .Predicate)
+              (set! bindings next)))
+        (= step.kind .Predicate)
           (let [next (db-read-source-bindings-after-predicate (slice bindings 0) query-value.predicates[step.index])]
             (db-read-source-delete-bindings-owned bindings)
             (set! bindings next))
-          (if (= step.kind .Function)
-            (let [[next next-ok next-error] (db-read-source-bindings-after-function (slice bindings 0) query-value.function-clauses[step.index])]
-              (db-read-source-delete-bindings-owned bindings)
-              (when (not next-ok)
-                (return (result-set-error next-error)))
-              (set! bindings next))
-            (do
-              (db-read-source-delete-bindings-owned bindings)
-              (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, and scalar function clauses only")))))))
+        (= step.kind .Function)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-function (slice bindings 0) query-value.function-clauses[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (result-set-error next-error)))
+            (set! bindings next))
+        (= step.kind .Ground)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-ground (slice bindings 0) query-value.grounds[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (result-set-error next-error)))
+            (set! bindings next))
+        :else
+          (do
+            (db-read-source-delete-bindings-owned bindings)
+            (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, and ground clauses only")))))
     (when (= (count query-value.where-steps) 0)
       (for [clause-value query-value.clauses]
         (let [[source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
@@ -4248,9 +4540,12 @@
             (when (not next-ok)
               (return (result-set-error next-error)))
             (set! bindings next)))))
-    (let [result (db-read-source-result-rows-for-bindings source query-value (slice bindings 0))]
+    (let [result (db-read-source-result-rows-for-bindings source query-value inputs (slice bindings 0))]
       (db-read-source-delete-bindings-owned bindings)
       result)))
+
+(defn db-read-source-q-query [source: DB-Read-Source, query-value: Query] -> Result-Set
+  (db-read-source-q-query-with-inputs source query-value ([]Query-Input [])))
 
 (defn public-avet-attr? [db: DB, attr: string] -> bool
   (when (not (db-has-schema? db))

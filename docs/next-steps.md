@@ -48,16 +48,30 @@ Implemented so far:
   over entity, attr, and value positions, including multi-clause joins and
   primary `$` source-qualified clauses. Ordered predicate filters over already
   materialized bindings and scalar function clauses such as
-  `[(count ?name) ?len]` are also supported. Flat literal pull finds such as
-  `(pull ?e [:db/id :item/name])` now render from the same source-backed
-  snapshot without rebuilding a resident DB.
+  `[(count ?name) ?len]` are also supported, including tuple/destructuring
+  function outputs over owned source bindings. `ground` clauses such as
+  `[(ground 301) ?e]` now bind values before later source-backed data clauses.
+  Flat literal pull finds such as `(pull ?e [:db/id :item/name])`, wildcard
+  pulls such as `(pull ?e [*])`, flat reverse-ref pulls such as
+  `(pull ?e [:item/_parent])`, nested forward-ref pulls such as
+  `(pull ?e [{:item/parent [:item/name]}])`, nested reverse-ref pulls such as
+  `(pull ?e [{:item/_parent [:item/child-name]}])`, pull pattern inputs such as
+  `(pull ?e ?pattern)`, and missing-attr defaults such as
+  `[:item/missing :default "fallback"]` now render from the same source-backed
+  snapshot without rebuilding a resident DB. Pull attr limits such as
+  `[:item/_parent :limit 1]` are enforced during source-backed scans.
+  Source-backed text queries also accept scalar `:in` values through direct
+  `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
   retraction case. It also checks that primary `$` source-qualified clauses work
   and named source-qualified clauses fail explicitly until multi-source durable
   querying is implemented, plus predicate filtering with both matching and empty
-  results, scalar function output, a flat literal pull find, and the current
-  explicit rejection of destructuring function outputs.
+  results, scalar and destructuring function output, `ground` clauses, flat
+  literal pull finds, wildcard pull finds, flat reverse-ref pull finds, nested
+  forward-ref and nested reverse-ref pull finds, pull defaults and limits,
+  scalar inputs, and pull pattern inputs through both direct `Query-Input` and
+  EDN input text.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
@@ -87,13 +101,14 @@ Remaining in this batch:
    new source-backed plain-clause query runner.
 2. Broaden `q-text-db-read-source` beyond plain data clauses:
    - named or multiple source-qualified clauses
-   - destructuring and tuple function outputs; scalar function outputs are now
-     covered by copying the produced value into the source-owned binding
+   - richer function-output ownership cleanup for temporary strings/containers
+     produced by shared function evaluators
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary. Flat literal
-   forward pull finds are now covered; remaining pull work is nested attrs,
-   wildcard pulls, reverse attrs, pull options/defaults/xforms, pattern
-   variables, and source-qualified named pull sources.
+   forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
+   and pattern-variable pull finds plus defaults and limits are now covered;
+   remaining pull work is pull xforms/recursion and source-qualified named pull
+   sources.
 4. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.

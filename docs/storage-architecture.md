@@ -84,8 +84,11 @@ source-backed currentness checks, run attr/entity+attr datom reads, render a
 simple pull-value map, and execute the first parsed EDN query shape over a
 persisted source: plain data clauses with `:find` variables, including
 multi-clause joins, primary `$` source-qualified clauses, predicate filters, and
-scalar function clauses over already materialized values. It can also render
-flat literal pull finds over forward attrs from the persisted snapshot. The
+scalar plus destructuring function clauses over already materialized values, and
+`ground` clauses that bind values before later source-backed clauses. It can
+also render flat literal pull finds over forward attrs, wildcard pulls, flat
+reverse-ref pulls, nested forward/reverse-ref pulls, scalar inputs, and pull
+pattern inputs plus pull defaults/limits from the persisted snapshot. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
 current-value, pull, and entity helper paths now go through a resident
 `DB-Index-View` boundary instead of directly owning the slice logic at each
