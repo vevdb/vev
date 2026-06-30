@@ -83,6 +83,41 @@
     (t.is (shared-index-values-match? appended ([]int [0 1 2 3 4 5 6])))
     (vev.delete-shared-int-index appended)))
 
+(t.deftest shared-int-index-appends-sorted-new-datoms
+  (defer (free_all context.allocator))
+  (let [db (vev.init-db ([]vev.Datom [(vev.datom-tx 1 ":item/name" (vev.value-string "a") 1 true)
+                                      (vev.datom-tx 2 ":item/z" (vev.value-string "z") 2 true)
+                                      (vev.datom-tx 2 ":item/a" (vev.value-string "a") 2 true)
+                                      (vev.datom-tx 3 ":item/name" (vev.value-string "c") 2 true)]))
+        base (vev.shared-int-index-from-slice (slice db.eavt 0 1) 2)
+        appended (vev.shared-int-index-with-appended-sorted-datoms base (slice db.datoms 0) 1 "eavt")
+        [base-refs base-refs-ok] (vev.shared-int-index-ref-count-at appended 0)]
+    (t.is (shared-index-values-match? appended (slice db.eavt 0)))
+    (t.is base-refs-ok)
+    (t.is (= base-refs 2))
+    (vev.delete-shared-int-index base)
+    (t.is (shared-index-values-match? appended (slice db.eavt 0)))
+    (vev.delete-shared-int-index appended)
+    (vev.delete-owned-db db)))
+
+(t.deftest shared-int-index-appends-sorted-datom-slice
+  (defer (free_all context.allocator))
+  (let [after-db (vev.init-db ([]vev.Datom [(vev.datom-tx 1 ":item/name" (vev.value-string "a") 1 true)
+                                            (vev.datom-tx 4 ":item/z" (vev.value-string "z") 2 true)
+                                            (vev.datom-tx 4 ":item/a" (vev.value-string "a") 2 true)
+                                            (vev.datom-tx 5 ":item/name" (vev.value-string "c") 2 true)]))
+        base (vev.shared-int-index-from-slice (slice after-db.eavt 0 1) 2)
+        appended (slice after-db.datoms 1)
+        merged (vev.shared-int-index-with-appended-sorted-datom-slice base appended 1 "eavt")
+        [base-refs base-refs-ok] (vev.shared-int-index-ref-count-at merged 0)]
+    (t.is (shared-index-values-match? merged (slice after-db.eavt 0)))
+    (t.is base-refs-ok)
+    (t.is (= base-refs 2))
+    (vev.delete-shared-int-index base)
+    (t.is (shared-index-values-match? merged (slice after-db.eavt 0)))
+    (vev.delete-shared-int-index merged)
+    (vev.delete-owned-db after-db)))
+
 (t.deftest shared-int-index-retains-unchanged-pages
   (defer (free_all context.allocator))
   (let [base (vev.shared-int-index-from-slice ([]int [1 2 3 4 5 6]) 2)
@@ -130,6 +165,23 @@
     (vev.delete-owned-db base-db)
     (vev.delete-owned-db after-db)))
 
+(t.deftest shared-datom-log-at-borrowed-uses-chunk-starts
+  (defer (free_all context.allocator))
+  (let [db (vev.init-db ([]vev.Datom [(vev.datom-tx 1 ":item/a" (vev.value-string "a") 1 true)
+                                      (vev.datom-tx 2 ":item/b" (vev.value-string "b") 1 true)
+                                      (vev.datom-tx 3 ":item/c" (vev.value-string "c") 1 true)]))
+        log (vev.shared-datom-log-from-slice (slice db.datoms 0) 2)
+        [first-datom first-ok] (vev.shared-datom-log-at-borrowed log 0)
+        [third-datom third-ok] (vev.shared-datom-log-at-borrowed log 2)
+        [_ missing-ok] (vev.shared-datom-log-at-borrowed log 3)]
+    (t.is first-ok)
+    (t.is (= first-datom.e 1))
+    (t.is third-ok)
+    (t.is (= third-datom.e 3))
+    (t.is (not missing-ok))
+    (vev.delete-shared-datom-log log)
+    (vev.delete-owned-db db)))
+
 (t.deftest shared-db-int-indexes-can-back-index-views
   (defer (free_all context.allocator))
   (let [datoms ([]vev.Datom [(vev.datom-tx 2 ":item/name" (vev.value-string "b") 1 true)
@@ -165,6 +217,33 @@
     (vev.delete-shared-datom-log log)
     (t.is (shared-datom-log-has? retained 1 2 ":item/name"))
     (vev.delete-shared-datom-log retained)))
+
+(t.deftest shared-datom-log-indexes-appended-chunk-starts
+  (defer (free_all context.allocator))
+  (let [base (vev.shared-datom-log-from-slice ([]vev.Datom [(vev.datom-tx 1 ":item/name" (vev.value-string "a") 1 true)
+                                                            (vev.datom-tx 2 ":item/name" (vev.value-string "b") 1 true)
+                                                            (vev.datom-tx 3 ":item/name" (vev.value-string "c") 1 true)]) 2)
+        appended (vev.shared-datom-log-with-appended-slice base ([]vev.Datom [(vev.datom-tx 4 ":item/name" (vev.value-string "d") 2 true)
+                                                                              (vev.datom-tx 5 ":item/name" (vev.value-string "e") 2 true)
+                                                                              (vev.datom-tx 6 ":item/name" (vev.value-string "f") 2 true)]))
+        [chunk0 chunk0-ok] (vev.shared-datom-log-chunk-index-at appended 0)
+        [chunk2 chunk2-ok] (vev.shared-datom-log-chunk-index-at appended 2)
+        [chunk3 chunk3-ok] (vev.shared-datom-log-chunk-index-at appended 3)
+        [chunk5 chunk5-ok] (vev.shared-datom-log-chunk-index-at appended 5)]
+    (t.is chunk0-ok)
+    (t.is chunk2-ok)
+    (t.is chunk3-ok)
+    (t.is chunk5-ok)
+    (t.is (= chunk0 0))
+    (t.is (= chunk2 1))
+    (t.is (= chunk3 2))
+    (t.is (= chunk5 3))
+    (t.is (shared-datom-log-has? appended 0 1 ":item/name"))
+    (t.is (shared-datom-log-has? appended 3 4 ":item/name"))
+    (t.is (shared-datom-log-has? appended 5 6 ":item/name"))
+    (vev.delete-shared-datom-log base)
+    (t.is (shared-datom-log-has? appended 2 3 ":item/name"))
+    (vev.delete-shared-datom-log appended)))
 
 (t.deftest shared-resident-index-source-runs-source-backed-query
   (defer (free_all context.allocator))
@@ -215,7 +294,21 @@
                                             (vev.datom-tx 2 ":item/name" (vev.value-string "b") 1 true)
                                             (vev.datom-tx 3 ":item/name" (vev.value-string "c") 2 true)]))
         base-snapshot (vev.shared-db-snapshot-from-db base-db 2)
-        appended-snapshot (vev.shared-db-snapshot-with-appended-db base-snapshot after-db 2)
+        tx-data (arr.into [dynamic]vev.Datom (slice after-db.datoms 2))
+        tx-meta (make [dynamic]vev.Tx-Meta)
+        tempids (make [dynamic]vev.Tempid)
+        report (vev.Tx-Report {ok: true
+                                error: ""
+                                db-before: base-db
+                                db-after: after-db
+                                tx-data: tx-data
+                                tx: 2
+                                tx-meta: tx-meta
+                                tempids: tempids
+                                datom-start-index: 2
+                                append-only: true
+                                new-entities-after-existing: true})
+        appended-snapshot (vev.shared-db-snapshot-with-tx-report base-snapshot after-db report)
         [base-datom-refs base-datom-refs-ok] (vev.shared-datom-log-ref-count-at base-snapshot.datoms 0)
         [base-current-refs base-current-refs-ok] (vev.shared-int-index-ref-count-at base-snapshot.indexes.current 0)
         [base-eavt-refs base-eavt-refs-ok] (vev.shared-int-index-ref-count-at base-snapshot.indexes.eavt 0)
@@ -234,6 +327,9 @@
     (vev.delete-result-set-owned-values result)
     (vev.delete-shared-db-snapshot base-snapshot)
     (vev.delete-shared-db-snapshot appended-snapshot)
+    (delete tx-data)
+    (delete tx-meta)
+    (delete tempids)
     (vev.delete-owned-db base-db)
     (vev.delete-owned-db after-db)))
 
@@ -255,6 +351,12 @@
         result (vev.q-text-db-read-source source "[:find ?e ?name :where [?e :item/name ?name]]")]
     (t.is report1.ok)
     (t.is report2.ok)
+    (t.is (= report1.datom-start-index 0))
+    (t.is (= report2.datom-start-index 2))
+    (t.is report1.append-only)
+    (t.is report1.new-entities-after-existing)
+    (t.is report2.append-only)
+    (t.is report2.new-entities-after-existing)
     (t.is datom-refs-before-ok)
     (t.is current-refs-before-ok)
     (t.is eavt-refs-before-ok)
@@ -291,6 +393,9 @@
         after-result (vev.q-text-db-read-source after-source "[:find ?e ?name :where [?e :item/name ?name]]")]
     (t.is report.ok)
     (t.is (= (count report.tx-data) 1))
+    (t.is (= report.datom-start-index 0))
+    (t.is report.append-only)
+    (t.is report.new-entities-after-existing)
     (t.is (= (count before-result.rows) 0))
     (t.is (= (count after-result.rows) 1))
     (t.is (result-has-entity-string-row? after-result 1 "a"))

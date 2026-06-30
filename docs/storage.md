@@ -367,6 +367,18 @@ instead of separate resident, SQLite, and shared APIs.
 This lets storage-neutral callers, including the CLI, print parsed query results
 from retained SQLite/shared snapshots without reopening or reaching through a
 resident `DB` field just for value rendering.
+Transaction reports now include the transaction engine's datom append start
+index plus append-only and ordered-new-entity publication facts. The shared
+connection publish path uses those fields directly, instead of recomputing
+append position and eligibility from the resident DB and emitted `tx-data`
+after the resident transaction completes. This keeps the storage adapter
+aligned with the transaction engine and is the first small boundary change
+toward a real shared publish plan.
+That path now goes through `shared-db-snapshot-with-tx-report`, which is the
+explicit report-to-shared-snapshot boundary future direct shared publication
+should replace internally.
+Retained `Shared-Tx-Report` values preserve that append start and append-mode
+metadata too, alongside their shared `db-before`/`db-after` snapshots.
 The resident entity-range helper now uses the same `DB-Index-View` binary-search
 shape as the source boundary instead of reading the `eavt-entities` /
 `eavt-entity-starts` side table directly. The side table still exists as a
@@ -388,6 +400,31 @@ directly from the committed datom range instead of copied from the resident
 post-commit `current` array. This is still an intermediate architecture because
 the transaction engine builds a resident DB first, but it removes one index from
 the resident-index adaptation step.
+Ordered new-entity `eavt` publication follows the same direction: it builds the
+appended tail by sorting only the new datom indexes in EAVT order and appending
+that tail to the retained shared base, instead of slicing the resident
+post-commit `eavt` array.
+For general append-only shared publication, the shared datom log is now extended
+from `report.tx-data` instead of slicing the resident post-commit datom array.
+The ordered new-entity `eavt` tail now also uses the appended `report.tx-data`
+slice plus the report start index as its datom source, so that path no longer
+needs the resident post-commit datom log for EAVT publication.
+The shared `eavt`, `aevt`, `avet`, and `vaet` merge builders still compare
+through the resident post-commit datom log for O(1) datom access. A direct
+old-shared-vs-new merge was correct but slower with the current chunked datom
+log, so the next structural step is efficient shared datom random access before
+removing that remaining resident comparison source.
+`Shared-Datom-Log` now carries per-chunk start offsets and uses binary search
+to find the chunk for a datom position. This keeps retained/appended partial
+chunks addressable without scanning through all previous chunks and gives the
+next direct shared-index merge attempt the right lookup primitive.
+That direct merge was retried after adding chunk starts and an estimated-chunk
+fast path. It was still slower than the current resident-comparison merge in
+the small retained-snapshot benchmark, so it is not the default hot path. The
+useful retained result is indexed shared datom lookup; the next production
+storage step is to publish shared datom/index chunks directly from the
+transaction application path, instead of adapting from a fully built resident
+`DB` and trying to make that adapter ever more clever.
 
 SQLite rollback cleanup now also follows the live-report ownership rule. When
 an in-memory transaction succeeds but SQLite append fails, the wrapper restores

@@ -353,13 +353,12 @@ Implemented so far:
   one retained immutable DB-value handle. The query test retains a snapshot,
   releases the original, and queries through the retained handle, matching the
   lifetime shape needed for old DB values in reports and host handles.
-- `shared-db-snapshot-with-appended-db` can now build a new shared snapshot
-  from an old snapshot plus a post-transaction resident DB. It shares the old
-  datom-log chunks and appends only new datom chunks. Shared int indexes now
-  also retain old chunks when the post-transaction index preserves the old index
-  as an exact prefix, with fallback rebuild for merged/reordered indexes. Tests
-  verify the base datom, current, and EAVT chunks are retained and the appended
-  snapshot remains queryable.
+- `shared-db-snapshot-with-tx-report` can now build a new shared snapshot from
+  an old snapshot plus a transaction report. It shares the old datom-log chunks
+  and appends only the report tx-data chunks. Shared int indexes retain old
+  chunks for known append/prefix cases, with fallback rebuild for
+  merged/reordered indexes. Tests verify the base datom, current, and EAVT
+  chunks are retained and the appended snapshot remains queryable.
 - `Shared-Conn` is the first connection-side publish wrapper for this
   representation. It still delegates transaction application to the existing
   resident `Conn`, but successful commits publish a `Shared-DB-Snapshot` from
@@ -412,6 +411,28 @@ Implemented so far:
   the shared path still delegates transaction application to the resident
   engine, but one more shared index no longer depends on resident index
   materialization.
+- Ordered new-entity shared publication now also builds the appended `eavt`
+  tail from the new datoms sorted in EAVT order, rather than slicing the
+  resident post-commit `eavt` array. General append-only interleaved `eavt`
+  still uses the merge-aware shared builder.
+- Append-only `Shared-Conn` publication now appends the shared datom log from
+  `report.tx-data` instead of slicing the resident post-commit datom array.
+  The shared index merge builders still use the resident post-commit datom log
+  as their O(1) comparison source until shared datom logs have a better random
+  access shape; a fully direct old-shared-vs-new merge was correct but slower
+  with the current chunk representation.
+- `Shared-Datom-Log` now stores per-chunk start offsets, so datom lookup can
+  find the containing chunk with binary search instead of scanning chunk by
+  chunk. This is the structural prerequisite for making direct shared-index
+  merges compare old shared datoms with new transaction datoms without
+  regressing publish latency.
+- The direct old-shared-vs-new merge was retried on top of chunk-start lookup,
+  including a fast estimated-chunk path. It remained slower on the current
+  `shared-snapshot-heavy` sample, so the hot publication path deliberately
+  stays on resident post-commit datom comparisons for now. The retained
+  primitive is indexed shared datom-log lookup; the next direct-publication
+  step should avoid building resident indexes first, rather than adding another
+  indirect comparison layer to the current adapter.
 - `Shared-Tx-Report` now gives the shared connection path retained
   `db-before` and `db-after` shared snapshots plus shallow report metadata. A
   test transacts through `Shared-Conn`, moves the connection forward with a
@@ -419,6 +440,25 @@ Implemented so far:
   `db-after` remain independently queryable. This is the host-facing DB-value
   lifetime shape needed before the C/JVM handles can stop depending on resident
   DB clones.
+- Transaction reports now carry the transaction engine's datom append start
+  index plus append-only and ordered-new-entity publication facts. `Shared-Conn`
+  consumes those fields directly instead of recomputing append position and
+  eligibility from the resident DB and `tx-data` after the resident transaction
+  has already been applied. This is a small but important step toward making
+  the transaction engine emit a publish plan that shared storage can consume
+  directly.
+- Ordered new-entity shared publication now builds the appended EAVT tail from
+  the transaction's appended datom slice plus the report start index, not from
+  the resident post-commit datom log. General interleaved append-only index
+  merges still compare through the resident post-commit datom log.
+- `Shared-Conn` now publishes through a `shared-db-snapshot-with-tx-report`
+  boundary. That helper still receives the resident post-commit `DB` for the
+  remaining adapter paths, but it centralizes the transaction-report-to-shared
+  snapshot conversion that future direct shared publication should replace
+  internally.
+- `Shared-Tx-Report` now preserves the same append start and append-mode
+  metadata as ordinary `Tx-Report`, so retained shared reports do not lose the
+  publish facts that produced their `db-after` snapshot.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -444,8 +484,9 @@ Work:
    transaction delta. The first retained chunk primitive, grouped DB int index
    wrapper, retained DB snapshot, and connection-side shared publish wrapper
    exist. The next step is to make transaction publication build shared chunks
-   directly instead of publishing through a resident `DB` and then adapting it
-   into a shared snapshot.
+   directly from the transaction engine's append/publish metadata instead of
+   publishing through a resident `DB` and then adapting it into a shared
+   snapshot.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases, and append-only/new-entity publication
@@ -453,8 +494,15 @@ Work:
    exists as a tested primitive, but is not yet used blindly on the hot publish
    fallback because it regressed append-heavy commits. Merge-aware append-only
    index publication now retains full old chunks copied contiguously by the
-   merge. The next step is removing the resident-index-first adaptation and
-   continuing to reduce per-value overhead inside the shared merge builder.
+   merge. Append-only shared publication now consumes `report.tx-data` directly
+   for the shared datom log, while merged shared indexes still compare through
+   the resident post-commit datom log for performance. Shared datom logs now
+   keep chunk-start offsets for indexed access, and the direct shared-vs-new
+   merge retry proved that lookup primitive is not enough by itself. The next
+   step is to make the transaction engine publish shared chunks directly,
+   avoiding the resident `DB`/resident-index adapter rather than making that
+   adapter more elaborate. Ordered new-entity EAVT tail publication is now one
+   small direct slice-based path in that direction.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact. Shared transaction reports now exist for the
    prototype shared connection path, and `Store-DB` can now wrap shared
@@ -463,7 +511,11 @@ Work:
    resident DB rendering. The next step is wiring C/JVM DB handles to
    storage-neutral `Store-DB` snapshots instead of resident `DB` clones.
 4. Fold the existing append-only incremental path into this representation
-   instead of maintaining it as a separate optimization.
+   instead of maintaining it as a separate optimization. The first fold is in
+   place: datom append position plus append-only/new-entity decisions are now
+   report metadata owned by the transaction engine, not storage-adapter
+   recomputation. `Shared-Conn` now consumes that metadata through a single
+   report-shaped shared snapshot publish helper.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
 6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`, `pure --batch 1`, and

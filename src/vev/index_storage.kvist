@@ -21,6 +21,7 @@
 
 (defstruct Shared-Datom-Log {
   chunks: [dynamic]Shared-Datom-Chunk
+  chunk-starts: [dynamic]int
   count: int
   chunk-size: int
 })
@@ -53,6 +54,9 @@
   tx: u64
   tx-meta: [dynamic]Tx-Meta
   tempids: [dynamic]Tempid
+  datom-start-index: int
+  append-only: bool
+  new-entities-after-existing: bool
 })
 
 (defn shared-int-chunk [values: []int] -> Shared-Int-Chunk
@@ -176,6 +180,57 @@
         (set! out.count (+ out.count (- chunk-end offset)))
         (set! offset chunk-end)))
     out))
+
+(defn shared-int-index-with-appended-sorted-datoms [base: Shared-Int-Index, datoms: []Datom, start-index: int, order: string] -> Shared-Int-Index
+  (let [added (sorted-new-datom-indexes datoms start-index order) :defer]
+    (shared-int-index-with-appended-slice base (slice added 0))))
+
+(defn sorted-appended-datom-slice-indexes [datoms: []Datom, start-index: int, order: string] -> [dynamic]int
+  (let [indexes (make [dynamic]int 0 (count datoms))]
+    (for [_ index datoms]
+      (arr.push! indexes index))
+    (sort-datom-indexes! (addr indexes) datoms order)
+    (let [i 0]
+      (while (< i (count indexes))
+        (set! indexes[i] (+ indexes[i] start-index))
+        (set! i (+ i 1))))
+    indexes))
+
+(defn shared-int-index-with-appended-sorted-datom-slice [base: Shared-Int-Index, datoms: []Datom, start-index: int, order: string] -> Shared-Int-Index
+  (let [added (sorted-appended-datom-slice-indexes datoms start-index order) :defer]
+    (shared-int-index-with-appended-slice base (slice added 0))))
+
+(defn shared-datom-log-at-borrowed [log: Shared-Datom-Log, position: int] -> [datom: Datom, ok: bool]
+  (when (or (< position 0)
+            (>= position log.count)
+            (= (count log.chunk-starts) 0))
+    (return (Datom {}) false))
+  (let [estimated (/ position log.chunk-size)]
+    (when (and (>= estimated 0)
+               (< estimated (count log.chunks)))
+      (let [start log.chunk-starts[estimated]
+            offset (- position start)
+            chunk log.chunks[estimated]]
+        (when (and (>= offset 0)
+                   (< offset (count chunk.values)))
+          (return chunk.values[offset] true)))))
+  (let [low 0
+        high (count log.chunk-starts)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)]
+        (if (<= log.chunk-starts[mid] position)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    (let [found-index (- low 1)]
+      (when (or (< found-index 0)
+                (>= found-index (count log.chunks)))
+        (return (Datom {}) false))
+      (let [offset (- position log.chunk-starts[found-index])
+            chunk log.chunks[found-index]]
+        (when (or (< offset 0)
+                  (>= offset (count chunk.values)))
+          (return (Datom {}) false))
+        (return chunk.values[offset] true)))))
 
 (defn shared-int-chunk-matches-slice? [chunk: Shared-Int-Chunk, values: []int, start: int] -> bool
   (when (> (+ start (count chunk.values)) (count values))
@@ -315,20 +370,13 @@
                           avet: (shared-int-index-from-slice (slice db.avet 0) chunk-size)
                           vaet: (shared-int-index-from-slice (slice db.vaet 0) chunk-size)}))
 
-(defn shared-db-int-indexes-with-appended-db [base: Shared-DB-Int-Indexes, after: DB] -> Shared-DB-Int-Indexes
-  (Shared-DB-Int-Indexes {current: (shared-int-index-from-base-prefix-or-slice base.current (slice after.current 0))
-                          eavt: (shared-int-index-from-base-prefix-or-slice base.eavt (slice after.eavt 0))
-                          aevt: (shared-int-index-from-base-prefix-or-slice base.aevt (slice after.aevt 0))
-                          avet: (shared-int-index-from-base-prefix-or-slice base.avet (slice after.avet 0))
-                          vaet: (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0))}))
-
-(defn shared-db-int-indexes-with-appended-db-mode [base: Shared-DB-Int-Indexes, after: DB, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
+(defn shared-db-int-indexes-with-appended-datom-slice-mode [base: Shared-DB-Int-Indexes, after: DB, appended: []Datom, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
   (Shared-DB-Int-Indexes {current: (if append-only
-                                     (shared-int-index-with-appended-range base.current start-index (count after.datoms))
+                                     (shared-int-index-with-appended-range base.current start-index (+ start-index (count appended)))
                                      (shared-int-index-from-base-prefix-or-slice base.current (slice after.current 0)))
                           eavt: (cond
                                   new-entities-after-existing
-                                    (shared-int-index-with-appended-tail base.eavt (slice after.eavt 0))
+                                    (shared-int-index-with-appended-sorted-datom-slice base.eavt appended start-index "eavt")
                                   append-only
                                     (shared-int-index-with-merged-appended-datoms base.eavt (slice after.datoms 0) start-index "eavt")
                                   :else
@@ -378,6 +426,7 @@
 
 (defn shared-datom-log-empty [chunk-size: int] -> Shared-Datom-Log
   (Shared-Datom-Log {chunks: (make [dynamic]Shared-Datom-Chunk)
+                     chunk-starts: (make [dynamic]int)
                      count: 0
                      chunk-size: (max 1 chunk-size)}))
 
@@ -388,24 +437,28 @@
     (while (< start (count values))
       (let [end (min (+ start size) (count values))
             chunk (shared-datom-chunk (slice values start end))]
+        (arr.push! out.chunk-starts start)
         (arr.push! out.chunks chunk)
         (set! start end)))
     (set! out.count (count values))
     out))
 
 (defn retain-shared-datom-log [log: Shared-Datom-Log] -> Shared-Datom-Log
-  (let [chunks (make [dynamic]Shared-Datom-Chunk 0 (count log.chunks))]
+  (let [chunks (make [dynamic]Shared-Datom-Chunk 0 (count log.chunks))
+        chunk-starts (arr.into [dynamic]int (slice log.chunk-starts 0))]
     (for [chunk log.chunks]
       (retain-shared-datom-chunk! chunk)
       (arr.push! chunks chunk))
     (Shared-Datom-Log {chunks: chunks
+                       chunk-starts: chunk-starts
                        count: log.count
                        chunk-size: log.chunk-size})))
 
 (defn delete-shared-datom-log [log: Shared-Datom-Log]
   (for [chunk log.chunks]
     (release-shared-datom-chunk! chunk))
-  (delete log.chunks))
+  (delete log.chunks)
+  (delete log.chunk-starts))
 
 (defn shared-datom-log-ref-count-at [log: Shared-Datom-Log, chunk-index: int] -> [refs: int, ok: bool]
   (when (or (< chunk-index 0)
@@ -415,38 +468,64 @@
 
 (defn shared-datom-log-with-appended-slice [base: Shared-Datom-Log, values: []Datom] -> Shared-Datom-Log
   (let [out (retain-shared-datom-log base)
+        base-count out.count
         start 0]
     (while (< start (count values))
       (let [end (min (+ start out.chunk-size) (count values))
             chunk (shared-datom-chunk (slice values start end))]
+        (arr.push! out.chunk-starts (+ base-count start))
         (arr.push! out.chunks chunk)
         (set! start end)))
     (set! out.count (+ out.count (count values)))
     out))
 
+(defn shared-datom-log-chunk-index-at [log: Shared-Datom-Log, position: int] -> [chunk-index: int, ok: bool]
+  (when (or (< position 0)
+            (>= position log.count)
+            (= (count log.chunk-starts) 0))
+    (return 0 false))
+  (let [low 0
+        high (count log.chunk-starts)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)]
+        (if (<= log.chunk-starts[mid] position)
+          (set! low (+ mid 1))
+          (set! high mid))))
+    (let [found-index (- low 1)]
+      (when (or (< found-index 0)
+                (>= found-index (count log.chunks)))
+        (return 0 false))
+      (return found-index true))))
+
 (defn shared-datom-log-at [log: Shared-Datom-Log, position: int] -> [datom: Datom, ok: bool]
   (when (or (< position 0)
             (>= position log.count))
     (return (Datom {}) false))
-  (let [remaining position]
-    (for [chunk log.chunks]
-      (let [chunk-count (count chunk.values)]
-        (if (< remaining chunk-count)
-          (return (datom-owned chunk.values[remaining]) true)
-          (set! remaining (- remaining chunk-count))))))
-  (return (Datom {}) false))
+  (let [[chunk-index chunk-ok] (shared-datom-log-chunk-index-at log position)]
+    (when (not chunk-ok)
+      (return (Datom {}) false))
+    (let [offset (- position log.chunk-starts[chunk-index])
+          chunk log.chunks[chunk-index]]
+      (when (or (< offset 0)
+                (>= offset (count chunk.values)))
+        (return (Datom {}) false))
+      (return (datom-owned chunk.values[offset]) true))))
 
 (defn shared-db-snapshot-from-db [db: DB, chunk-size: int] -> Shared-DB-Snapshot
   (Shared-DB-Snapshot {datoms: (shared-datom-log-from-slice (slice db.datoms 0) chunk-size)
                        indexes: (shared-db-int-indexes-from-db db chunk-size)}))
 
-(defn shared-db-snapshot-with-appended-db [base: Shared-DB-Snapshot, after: DB, start-index: int] -> Shared-DB-Snapshot
-  (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms (slice after.datoms start-index))
-                       indexes: (shared-db-int-indexes-with-appended-db base.indexes after)}))
+(defn shared-db-snapshot-with-appended-datoms-mode [base: Shared-DB-Snapshot, after: DB, appended: []Datom, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Snapshot
+  (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms appended)
+                       indexes: (shared-db-int-indexes-with-appended-datom-slice-mode base.indexes after appended start-index append-only new-entities-after-existing)}))
 
-(defn shared-db-snapshot-with-appended-db-mode [base: Shared-DB-Snapshot, after: DB, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Snapshot
-  (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms (slice after.datoms start-index))
-                       indexes: (shared-db-int-indexes-with-appended-db-mode base.indexes after start-index append-only new-entities-after-existing)}))
+(defn shared-db-snapshot-with-tx-report [base: Shared-DB-Snapshot, after: DB, report: Tx-Report] -> Shared-DB-Snapshot
+  (shared-db-snapshot-with-appended-datoms-mode base
+                                                after
+                                                (slice report.tx-data 0)
+                                                report.datom-start-index
+                                                report.append-only
+                                                report.new-entities-after-existing))
 
 (defn retain-shared-db-snapshot [snapshot: Shared-DB-Snapshot] -> Shared-DB-Snapshot
   (Shared-DB-Snapshot {datoms: (retain-shared-datom-log snapshot.datoms)
@@ -479,14 +558,10 @@
   (shared-db-snapshot-read-source (addr conn^.snapshot)))
 
 (defn shared-conn-transact [conn: ^Shared-Conn, tx-data: []Tx-Data] -> Tx-Report
-  (let [start-index (count conn^.conn.db.datoms)
-        report (transact-tx-data (addr conn^.conn) tx-data)]
+  (let [report (transact-tx-data (addr conn^.conn) tx-data)]
     (when (not report.ok)
       (return report))
-    (let [append-only (append-only-datoms-eligible? report.db-before (slice report.tx-data 0))
-          new-entities-after-existing (and append-only
-                                           (added-entities-after-existing? report.db-before (slice conn^.conn.db.datoms 0) start-index))
-          next-snapshot (shared-db-snapshot-with-appended-db-mode conn^.snapshot conn^.conn.db start-index append-only new-entities-after-existing)]
+    (let [next-snapshot (shared-db-snapshot-with-tx-report conn^.snapshot conn^.conn.db report)]
       (delete-shared-db-snapshot conn^.snapshot)
       (set! conn^.snapshot next-snapshot))
     report))
@@ -505,7 +580,10 @@
                                              tx-data: owned-tx-data
                                              tx: report.tx
                                              tx-meta: owned-tx-meta
-                                             tempids: owned-tempids})]
+                                             tempids: owned-tempids
+                                             datom-start-index: report.datom-start-index
+                                             append-only: report.append-only
+                                             new-entities-after-existing: report.new-entities-after-existing})]
         (delete-live-tx-report-shallow report)
         shared-report)
       (let [empty-tx-data (make [dynamic]Datom)
@@ -518,6 +596,9 @@
                                              tx-data: empty-tx-data
                                              tx: 0
                                              tx-meta: empty-tx-meta
-                                             tempids: empty-tempids})]
+                                             tempids: empty-tempids
+                                             datom-start-index: 0
+                                             append-only: false
+                                             new-entities-after-existing: false})]
         (delete-tx-report-shallow report)
         shared-report))))
