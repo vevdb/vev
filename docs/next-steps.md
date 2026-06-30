@@ -459,6 +459,16 @@ Implemented so far:
 - `Shared-Tx-Report` now preserves the same append start and append-mode
   metadata as ordinary `Tx-Report`, so retained shared reports do not lose the
   publish facts that produced their `db-after` snapshot.
+- Shared index publication now has a tested direct merge primitive that compares
+  old datoms from `Shared-Datom-Log` with new datoms from the transaction slice,
+  without using the resident post-commit datom array as the comparison source.
+  This is intentionally not the default `Shared-Conn` path yet: a local
+  `shared-snapshot-heavy` batch-1 sample regressed to about 0.31 ms commit
+  latency at 200 writes when routed through direct shared-log comparison,
+  compared with the faster resident-comparison adapter. The useful next step is
+  not another lookup tweak; it is for the transaction engine to emit ordered
+  per-index publish tails or merge inputs directly, so shared publication can
+  avoid both resident index materialization and repeated shared-log lookups.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
