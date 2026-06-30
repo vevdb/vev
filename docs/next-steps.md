@@ -50,7 +50,12 @@ Implemented so far:
   materialized bindings and scalar function clauses such as
   `[(count ?name) ?len]` are also supported, including tuple/destructuring
   function outputs over owned source bindings. `ground` clauses such as
-  `[(ground 301) ?e]` now bind values before later source-backed data clauses.
+  `[(ground 301) ?e]` now bind values before later source-backed data clauses,
+  and source-backed `get-else`/`get-some` clauses can read current attr values
+  directly from the persisted source. Source-backed `missing?` works through the
+  same not-group path used for ordinary negated data clauses. Source-backed
+  `or` and `or-join` clauses now execute branch groups over the same persisted
+  snapshot source and merge owned branch bindings back into the incoming row.
   Flat literal pull finds such as `(pull ?e [:db/id :item/name])`, wildcard
   pulls such as `(pull ?e [*])`, flat reverse-ref pulls such as
   `(pull ?e [:item/_parent])`, nested forward-ref pulls such as
@@ -59,17 +64,27 @@ Implemented so far:
   `(pull ?e ?pattern)`, and missing-attr defaults such as
   `[:item/missing :default "fallback"]` now render from the same source-backed
   snapshot without rebuilding a resident DB. Pull attr limits such as
-  `[:item/_parent :limit 1]` are enforced during source-backed scans.
+  `[:item/_parent :limit 1]` are enforced during source-backed scans. Built-in
+  pull xforms `:xform vector` and `:xform name` are also supported for
+  source-backed pull finds, and bounded pull recursion now walks the same
+  persisted source with cycle guards. Source-backed query APIs also have
+  `with-fns` variants so native pull xform callbacks can run against persisted
+  snapshots. Named `$source` qualifiers are supported as aliases for the same
+  single persisted snapshot source, including named-source pull finds. Both
+  bounded recursion and unbounded `...` recursion have source-backed persisted
+  snapshot coverage.
   Source-backed text queries also accept scalar `:in` values through direct
   `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
-  retraction case. It also checks that primary `$` source-qualified clauses work
-  and named source-qualified clauses fail explicitly until multi-source durable
-  querying is implemented, plus predicate filtering with both matching and empty
-  results, scalar and destructuring function output, `ground` clauses, flat
-  literal pull finds, wildcard pull finds, flat reverse-ref pull finds, nested
-  forward-ref and nested reverse-ref pull finds, pull defaults and limits,
+  retraction case. It also checks that primary `$` and named `$source` aliases
+  work over the same snapshot until true multi-source durable querying is
+  implemented, plus predicate filtering with both matching and empty results,
+  scalar and destructuring function output, `ground`, `get-else`,
+  `get-some`, `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
+  wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
+  nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
+  built-in and callback pull xforms, bounded and unbounded pull recursion,
   scalar inputs, and pull pattern inputs through both direct `Query-Input` and
   EDN input text.
 - `bench/sqlite_storage.kvist` now reports
@@ -100,15 +115,16 @@ Remaining in this batch:
 1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
    new source-backed plain-clause query runner.
 2. Broaden `q-text-db-read-source` beyond plain data clauses:
-   - named or multiple source-qualified clauses
+   - true multiple distinct source-qualified durable snapshots
    - richer function-output ownership cleanup for temporary strings/containers
      produced by shared function evaluators
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary. Flat literal
    forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
-   and pattern-variable pull finds plus defaults and limits are now covered;
-   remaining pull work is pull xforms/recursion and source-qualified named pull
-   sources.
+   and pattern-variable pull finds plus defaults, limits, and built-in xforms
+   are now covered; callback xforms and bounded recursion are also covered.
+   Unbounded recursion and named-source aliases have persisted snapshot coverage
+   too. Remaining pull work is true multi-source named pull sources.
 4. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
