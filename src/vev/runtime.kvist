@@ -4166,11 +4166,16 @@
     (return out true "")))
 
 (defn db-read-source-pull-spec-supported? [spec: Pull-Spec] -> bool
-  (and (= (count spec.pattern) 0)
-       (not spec.has-default)
-       (not spec.has-xform)
-       (not spec.has-recursion)
-       (not spec.has-limit)))
+  (when (or spec.has-default
+            spec.has-xform
+            spec.has-recursion
+            spec.has-limit)
+    (return false))
+  (cond
+    (= spec.a "*") (= (count spec.pattern) 0)
+    (= spec.a ":db/id") (= (count spec.pattern) 0)
+    (reverse-attr? spec.a) (= (count spec.pattern) 0)
+    :else true))
 
 (defn db-read-source-pull-entity [value: Value] -> [entity: u64, ok: bool]
   (cond
@@ -4227,11 +4232,24 @@
               (delete-pull-attrs-owned-values attrs)
               (return (Pull-Result {}) false datoms-error))
             (for [datom datoms]
-              (arr.push! attrs
-                (Pull-Attr {a: (pull-output-attr spec)
-                            key-kind: (pull-output-key-kind spec)
-                            v: (value-owned datom.v)
-                            attrs: (make [dynamic]Pull-Attr)})))
+              (let [children (make [dynamic]Pull-Attr)]
+                (when (and (> (count spec.pattern) 0)
+                           (= datom.v.kind .Entity))
+                  (let [[child child-ok child-error] (db-read-source-pull-result-for-pattern source datom.v.entity (slice spec.pattern 0))]
+                    (when (not child-ok)
+                      (delete-pull-attrs-owned-values children)
+                      (delete-owned-datoms datoms)
+                      (delete-pull-attrs-owned-values attrs)
+                      (return (Pull-Result {}) false child-error))
+                    (delete children)
+                    (set! children child.attrs)))
+                (if (pull-include-ref-result? spec (slice children 0))
+                  (arr.push! attrs
+                    (Pull-Attr {a: (pull-output-attr spec)
+                                key-kind: (pull-output-key-kind spec)
+                                v: (value-owned datom.v)
+                                attrs: children}))
+                  (delete-pull-attrs-owned-values children))))
             (delete-owned-datoms datoms))))
     (return (Pull-Result {e: entity attrs: attrs}) true "")))
 
