@@ -107,6 +107,10 @@ Implemented so far:
   bindings and then shallow-clean temporary function result containers, avoiding
   leaked vector/map wrappers without deleting scalar values that may be borrowed
   from existing bindings.
+- prepared query objects can now execute directly against `DB-Read-Source`
+  through `q-prepared-db-read-source...` wrappers. This keeps the durable
+  snapshot path aligned with the prepared-query API that host bindings will use,
+  instead of making persisted snapshots depend on text parsing at call time.
 
 Work:
 
@@ -128,9 +132,10 @@ Work:
 Remaining in this batch:
 
 1. Thread `DB-Read-Source` into ordinary resident query execution beyond the
-   source-backed plain-clause runner. The low-level source-backed clause scan now
-   uses the same `Clause-Index-Scan` shape, but the full resident query engine
-   still has `DB`/`DB-Source` entry points and shallow binding/result ownership.
+   source-backed runner. The low-level source-backed clause scan now uses the
+   same `Clause-Index-Scan` shape and source-backed prepared queries are
+   available, but the full resident query engine still has `DB`/`DB-Source`
+   entry points and shallow binding/result ownership.
 2. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
