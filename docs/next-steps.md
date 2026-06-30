@@ -400,6 +400,13 @@ Implemented so far:
   `q-result-store-db-*` query wrappers run against it through `DB-Read-Source`.
   A test verifies the retained store DB snapshot remains queryable after the
   shared connection advances.
+- `Store-Conn` is now a real tagged storage-neutral connection wrapper instead
+  of an alias for `SQLite-Conn`. `open-store` and `open-store-read-only` still
+  produce SQLite-backed stores, while `create-shared-store` produces the
+  shared in-memory publish path. The same `store-db`,
+  `q-result-store-prepared`, `q-result-store-text`, `transact-store-text`, and
+  `close-store` functions now work over both variants. A focused test verifies
+  that a retained shared `Store-DB` remains immutable after the store advances.
 
 Work:
 
@@ -421,8 +428,9 @@ Work:
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact. Shared transaction reports now exist for the
    prototype shared connection path, and `Store-DB` can now wrap shared
-   snapshots. The next step is wiring C/JVM DB handles to storage-neutral
-   `Store-DB` snapshots instead of resident `DB` clones.
+   snapshots. `Store-Conn` now has SQLite and shared variants behind the same
+   storage-neutral API. The next step is wiring C/JVM DB handles to
+   storage-neutral `Store-DB` snapshots instead of resident `DB` clones.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization.
 5. Preserve resident-array mode as a useful small/in-memory implementation

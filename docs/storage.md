@@ -352,6 +352,12 @@ values.
 SQLite snapshot. That keeps the host-facing immutable DB handle direction
 storage-neutral: the same `q-result-store-db-*` wrappers can query persisted
 snapshots and shared in-memory snapshots through `DB-Read-Source`.
+`Store-Conn` is also now storage-neutral at the connection boundary. The
+default `open-store` functions still create SQLite-backed stores, while
+`create-shared-store` creates the in-memory shared-index publish path. Both use
+the same `store-db`, `q-result-store-*`, `transact-store-text`, and
+`close-store` entry points, so host bindings can move toward one DB-handle shape
+instead of separate resident, SQLite, and shared APIs.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
