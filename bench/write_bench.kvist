@@ -239,6 +239,11 @@
     (vev.delete-shared-db-snapshot snapshot))
   (delete snapshots))
 
+(defn delete-retained-store-dbs [snapshots: [dynamic]vev.Store-DB]
+  (for [i (arr.range 0 (count snapshots))]
+    (vev.close-store-db! (addr snapshots[i])))
+  (delete snapshots))
+
 (defn print-snapshot-heavy-header [batch-size: int, total: int]
   (fmt.printf "engine=vev-sqlite workload=snapshot-heavy batch=%d total=%d columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms\n"
               batch-size
@@ -387,6 +392,68 @@
     (delete-retained-shared-snapshots retained)
     (vev.delete-shared-conn conn)))
 
+(defn measure-shared-store-db-heavy-write [chunk-size: int, batch-size: int, total: int, report-every: int]
+  (let [store (vev.create-shared-store chunk-size)
+        retained (make [dynamic]vev.Store-DB)]
+    (when (not (seed-write-schema-shared (addr store.shared)))
+      (delete retained)
+      (vev.close-store store)
+      (return))
+    (fmt.printf "engine=vev-shared workload=shared-store-db-heavy chunk=%d batch=%d total=%d columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms\n"
+                chunk-size
+                batch-size
+                total)
+    (let [start (time.now)
+          interval-start start
+          call-us 0.0
+          commit-us 0.0
+          snapshot-us 0.0
+          commits 0
+          inserted 0
+          written 0]
+      (while (< written total)
+        (let [remaining (- total written)
+              actual-batch (min batch-size remaining)
+              tx (item-batch-tx (+ written 1) actual-batch 0)
+              before (time.now)
+              report (vev.transact-store-tx-data (addr store) (slice tx 0))
+              commit-elapsed (bench.elapsed-us before)]
+          (set! call-us (+ call-us commit-elapsed))
+          (set! commit-us (+ commit-us commit-elapsed))
+          (set! commits (+ commits 1))
+          (when (not report.ok)
+            (fmt.printf "engine=vev-shared workload=shared-store-db-heavy ok=false error=%s\n" report.error)
+            (vev.delete-tx-report-shallow report)
+            (delete tx)
+            (delete-retained-store-dbs retained)
+            (vev.close-store store)
+            (return))
+          (vev.delete-live-tx-report-shallow report)
+          (delete tx)
+          (let [snapshot-before (time.now)
+                [snapshot snapshot-ok snapshot-error] (vev.store-db (addr store))
+                snapshot-elapsed (bench.elapsed-us snapshot-before)]
+            (when (not snapshot-ok)
+              (fmt.printf "engine=vev-shared workload=shared-store-db-heavy ok=false error=%s\n" snapshot-error)
+              (delete-retained-store-dbs retained)
+              (vev.close-store store)
+              (return))
+            (arr.push! retained snapshot)
+            (set! call-us (+ call-us snapshot-elapsed))
+            (set! snapshot-us (+ snapshot-us snapshot-elapsed)))
+          (set! inserted (+ inserted actual-batch))
+          (set! written (+ written actual-batch))
+          (when (or (= written total)
+                    (= (% written report-every) 0))
+            (print-snapshot-heavy-row written (count retained) inserted start interval-start call-us commit-us snapshot-us commits)
+            (set! call-us 0.0)
+            (set! commit-us 0.0)
+            (set! snapshot-us 0.0)
+            (set! commits 0)
+            (set! interval-start (time.now))))))
+    (delete-retained-store-dbs retained)
+    (vev.close-store store)))
+
 (defn run-pure-workload [path: string, batch-size: int, total: int, report-every: int]
   (measure-pure-write path batch-size total report-every)
   (remove-sqlite-files path))
@@ -420,15 +487,18 @@
           (measure-snapshot-heavy-write path (max 1 selected-batch) total report-every)
           (if (= workload "shared-snapshot-heavy")
             (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
-            (if (= workload "both")
-              (let [mixed-path (fmt.tprintf "%s.mixed" path)
-                    snapshot-path (fmt.tprintf "%s.snapshot" path)]
-                (if (> selected-batch 0)
-                  (run-pure-workload path selected-batch total report-every)
-                  (run-all-pure-workloads path total report-every))
-                (when (seed-pure-write mixed-path total seed-batch)
-                  (measure-mixed-read-write mixed-path total mixed-operations report-every))
-                (measure-snapshot-heavy-write snapshot-path (max 1 selected-batch) total report-every)
-                (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
-                (remove-sqlite-files mixed-path))
-              (fmt.printf "unknown --workload %s; expected pure, mixed, snapshot-heavy, shared-snapshot-heavy, or both\n" workload))))))))
+            (if (= workload "shared-store-db-heavy")
+              (measure-shared-store-db-heavy-write chunk-size (max 1 selected-batch) total report-every)
+              (if (= workload "both")
+                (let [mixed-path (fmt.tprintf "%s.mixed" path)
+                      snapshot-path (fmt.tprintf "%s.snapshot" path)]
+                  (if (> selected-batch 0)
+                    (run-pure-workload path selected-batch total report-every)
+                    (run-all-pure-workloads path total report-every))
+                  (when (seed-pure-write mixed-path total seed-batch)
+                    (measure-mixed-read-write mixed-path total mixed-operations report-every))
+                  (measure-snapshot-heavy-write snapshot-path (max 1 selected-batch) total report-every)
+                  (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
+                  (measure-shared-store-db-heavy-write chunk-size (max 1 selected-batch) total report-every)
+                  (remove-sqlite-files mixed-path))
+                (fmt.printf "unknown --workload %s; expected pure, mixed, snapshot-heavy, shared-snapshot-heavy, shared-store-db-heavy, or both\n" workload)))))))))

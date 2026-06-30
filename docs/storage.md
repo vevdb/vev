@@ -225,15 +225,25 @@ onto Vev's durable API:
 This harness is intentionally smaller than the final external benchmark. It is
 for regular development runs and accepts `--total`, `--report-every`,
 `--mixed-operations`, `--batch`, and `--seed-batch` so larger runs can be
-launched without source edits. It also has `--workload pure|mixed|both` and
-`--path`, which allows the Datalevin-style sequence of writing a durable store
-first and then running mixed read/write against the same store. It uses a plain
-long `:item/key`, matching Datalevin's write-bench schema.
+launched without source edits. It also has
+`--workload pure|mixed|snapshot-heavy|shared-snapshot-heavy|shared-store-db-heavy|both`
+and `--path`, which allows the Datalevin-style sequence of writing a durable
+store first and then running mixed read/write against the same store. It uses a
+plain long `:item/key`, matching Datalevin's write-bench schema.
 The `snapshot-heavy` workload keeps the same durable write path but calls the
 ordinary DB snapshot API after each commit and retains every old DB value until
 the end of the run. That workload is the current Batch 4 acceptance harness for
 Datomic-style code that passes DB snapshots around while a connection continues
 to transact.
+The `shared-store-db-heavy` workload measures the storage-neutral host-facing
+shape over the shared in-memory publish path. It commits typed tx-data through
+`Store-Conn`, retains every `Store-DB`, and closes those retained handles at the
+end. A local batch-1, 200-write run on June 30, 2026 matched raw
+`shared-snapshot-heavy` almost exactly: both ended near 0.172 ms commit latency
+and 0.012 ms snapshot-retain latency at 200 writes. That means the
+storage-neutral `Store-DB` wrapper is not adding visible cost at this scale;
+the remaining work is still the shared publication adapter and resident-index
+boundary.
 
 A 10k-row local run on June 26, 2026 shows the current durable shape clearly:
 
@@ -374,6 +384,11 @@ instead of separate resident, SQLite, and shared APIs.
 This lets storage-neutral callers, including the CLI, print parsed query results
 from retained SQLite/shared snapshots without reopening or reaching through a
 resident `DB` field just for value rendering.
+The write benchmark now has a `shared-store-db-heavy` workload over this same
+storage-neutral connection/snapshot API. It provides the current host-handle
+acceptance check for the shared publish path, and early numbers match the raw
+shared snapshot workload closely, so the next optimization should target direct
+shared chunk publication rather than another host wrapper bypass.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing

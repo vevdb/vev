@@ -488,6 +488,15 @@ Implemented so far:
   `DB-Read-Source` schema reads. The CLI `query` and `pull` commands now open a
   read-only store, retain a `Store-DB`, and render through that storage-neutral
   snapshot instead of reaching through `store.sqlite.conn.db`.
+- `bench/write_bench.kvist` now has a `shared-store-db-heavy` workload. It uses
+  the storage-neutral `Store-Conn`/`Store-DB` APIs over the shared publish path,
+  commits typed tx-data without EDN text roundtrips, retains every `Store-DB`
+  snapshot until the end of the run, and closes those retained handles
+  explicitly. A local batch-1, 200-write sample with chunk size 1024 matched
+  raw `shared-snapshot-heavy` almost exactly: both ended near 0.172 ms commit
+  latency and 0.012 ms snapshot-retain latency at 200 writes. The host-facing
+  `Store-DB` wrapper is therefore not the current bottleneck; the remaining
+  slope is still the shared publication adapter/resident-index boundary.
 
 Work:
 
@@ -532,9 +541,11 @@ Work:
    report-shaped shared snapshot publish helper.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
-6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`, `pure --batch 1`, and
-   `mixed` write-bench after each representation step so the architecture work
-   is measured against the actual immutable DB-value workload.
+6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`,
+   `shared-store-db-heavy`, `pure --batch 1`, and `mixed` write-bench after
+   each representation step so the architecture work is measured against the
+   actual immutable DB-value workload and the storage-neutral host handle
+   boundary.
 
 Acceptance:
 
