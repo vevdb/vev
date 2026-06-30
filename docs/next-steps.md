@@ -52,7 +52,8 @@ Implemented so far:
   function outputs over owned source bindings. `ground` clauses such as
   `[(ground 301) ?e]` now bind values before later source-backed data clauses,
   and source-backed `get-else`/`get-some` clauses can read current attr values
-  directly from the persisted source.
+  directly from the persisted source. Source-backed `missing?` works through the
+  same not-group path used for ordinary negated data clauses.
   Flat literal pull finds such as `(pull ?e [:db/id :item/name])`, wildcard
   pulls such as `(pull ?e [*])`, flat reverse-ref pulls such as
   `(pull ?e [:item/_parent])`, nested forward-ref pulls such as
@@ -69,11 +70,11 @@ Implemented so far:
   retraction case. It also checks that primary `$` source-qualified clauses work
   and named source-qualified clauses fail explicitly until multi-source durable
   querying is implemented, plus predicate filtering with both matching and empty
-  results, scalar and destructuring function output, `ground`, `get-else`, and
-  `get-some` clauses, flat literal pull finds, wildcard pull finds, flat
-  reverse-ref pull finds, nested forward-ref and nested reverse-ref pull finds,
-  pull defaults and limits, scalar inputs, and pull pattern inputs through both
-  direct `Query-Input` and EDN input text.
+  results, scalar and destructuring function output, `ground`, `get-else`,
+  `get-some`, and `missing?`/not-group clauses, flat literal pull finds,
+  wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
+  nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
+  pull pattern inputs through both direct `Query-Input` and EDN input text.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.

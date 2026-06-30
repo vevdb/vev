@@ -4335,6 +4335,71 @@
           (arr.push! out next))))
     (return out true "")))
 
+(defn db-read-source-not-group-step-bindings [source: DB-Read-Source, group: Not-Group, bindings: [dynamic]Binding, step: Query-Step] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (cond
+    (= step.kind .Clause)
+      (let [clause-value group.clauses[step.index]
+            [source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
+        (when (not source-clause-ok)
+          (db-read-source-delete-bindings-owned bindings)
+          (return (make [dynamic]Binding) false source-clause-error))
+        (let [[next next-ok next-error] (db-read-source-bindings-after-clause source (slice bindings 0) source-clause)]
+          (db-read-source-delete-bindings-owned bindings)
+          (return next next-ok next-error)))
+    (= step.kind .Predicate)
+      (let [next (db-read-source-bindings-after-predicate (slice bindings 0) group.predicates[step.index])]
+        (db-read-source-delete-bindings-owned bindings)
+        (return next true ""))
+    (= step.kind .Function)
+      (let [[next next-ok next-error] (db-read-source-bindings-after-function (slice bindings 0) group.function-clauses[step.index])]
+        (db-read-source-delete-bindings-owned bindings)
+        (return next next-ok next-error))
+    :else
+      (do
+        (db-read-source-delete-bindings-owned bindings)
+        (return (make [dynamic]Binding) false "SQLite DB snapshot source currently supports not groups with data, predicate, and function clauses only"))))
+
+(defn db-read-source-not-group-matches? [source: DB-Read-Source, group: Not-Group, binding: Binding] -> [matched: bool, ok: bool, error: string]
+  (let [bindings (make [dynamic]Binding)]
+    (arr.push! bindings (db-read-source-clone-binding-owned binding))
+    (if (> (count group.steps) 0)
+      (for [step group.steps]
+        (let [[next next-ok next-error] (db-read-source-not-group-step-bindings source group bindings step)]
+          (when (not next-ok)
+            (delete next)
+            (return false false next-error))
+          (set! bindings next)
+          (when (= (count bindings) 0)
+            (delete bindings)
+            (return false true ""))))
+      (for [clause-value group.clauses]
+        (let [[source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
+          (when (not source-clause-ok)
+            (db-read-source-delete-bindings-owned bindings)
+            (return false false source-clause-error))
+          (let [[next next-ok next-error] (db-read-source-bindings-after-clause source (slice bindings 0) source-clause)]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return false false next-error))
+            (set! bindings next)
+            (when (= (count bindings) 0)
+              (delete bindings)
+              (return false true ""))))))
+    (let [did-match (> (count bindings) 0)]
+      (db-read-source-delete-bindings-owned bindings)
+      (return did-match true ""))))
+
+(defn db-read-source-bindings-after-not-group [source: DB-Read-Source, input-bindings: []Binding, group: Not-Group] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [out (make [dynamic]Binding)]
+    (for [binding input-bindings]
+      (let [[matched matched-ok matched-error] (db-read-source-not-group-matches? source group binding)]
+        (when (not matched-ok)
+          (db-read-source-delete-bindings-owned out)
+          (return (make [dynamic]Binding) false matched-error))
+        (when (not matched)
+          (arr.push! out (db-read-source-clone-binding-owned binding)))))
+    (return out true "")))
+
 (defn db-read-source-query-input-specs [query-value: Query] -> [dynamic]Query-Input-Spec
   (let [out (make [dynamic]Query-Input-Spec)]
     (if (> (count query-value.input-specs) 0)
@@ -4586,18 +4651,18 @@
 (defn db-read-source-q-query-with-inputs [source: DB-Read-Source, query-value: Query, inputs: []Query-Input] -> Result-Set
   (when (not (and (> (count query-value.clauses) 0)
                   (= (count query-value.rule-calls) 0)
-                  (= (count query-value.not-groups) 0)
                   (= (count query-value.or-groups) 0)
                   (= (count query-value.aggregates) 0)))
-    (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, and get-some clauses only")))
+    (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, get-some, and not/missing? clauses only")))
   (for [step query-value.where-steps]
     (when (not (or (= step.kind .Clause)
                    (= step.kind .Predicate)
                    (= step.kind .Function)
                    (= step.kind .Ground)
                    (= step.kind .GetElse)
-                   (= step.kind .GetSome)))
-      (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, and get-some clauses only"))))
+                   (= step.kind .GetSome)
+                   (= step.kind .Not)))
+      (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, get-some, and not/missing? clauses only"))))
   (let [[bindings bindings-ok bindings-error] (db-read-source-initial-bindings query-value inputs)]
     (when (not bindings-ok)
       (return (result-set-error bindings-error)))
@@ -4642,10 +4707,16 @@
             (when (not next-ok)
               (return (result-set-error next-error)))
             (set! bindings next))
+        (= step.kind .Not)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-not-group source (slice bindings 0) query-value.not-groups[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (result-set-error next-error)))
+            (set! bindings next))
         :else
           (do
             (db-read-source-delete-bindings-owned bindings)
-            (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, and get-some clauses only")))))
+            (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, get-some, and not/missing? clauses only")))))
     (when (= (count query-value.where-steps) 0)
       (for [clause-value query-value.clauses]
         (let [[source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
