@@ -298,6 +298,10 @@ That wrapper now exists as `Shared-DB-Int-Indexes`, and the existing
 `DB-Index-View` abstraction can read from it. The remaining step is changing
 transaction publication to store or retain these shared indexes as part of DB
 snapshots, rather than only materializing owned resident arrays.
+`DB-Read-Source` can also wrap a resident datom log with shared chunked index
+views, and a source-backed query test now runs EDN text over that source. This
+is the first executable query path over the new in-memory shared-index
+representation.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

@@ -24,6 +24,16 @@
       (return false)))
   true)
 
+(defn result-has-entity-string-row? [result: vev.Result-Set, entity: u64, text: string] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .Entity)
+               (= row.values[0].entity entity)
+               (= row.values[1].kind .String)
+               (= row.values[1].text text))
+      (return true)))
+  false)
+
 (t.deftest shared-int-index-retains-old-chunks
   (defer (free_all context.allocator))
   (let [base (vev.shared-int-index-from-slice ([]int [1 3 5 7 9]) 2)
@@ -71,4 +81,22 @@
     (let [retained-eavt-view (vev.shared-db-int-index-view (addr retained) .EAVT)]
       (t.is (shared-index-view-matches-slice? retained-eavt-view (slice db.eavt 0))))
     (vev.delete-shared-db-int-indexes retained)
+    (vev.delete-owned-db db)))
+
+(t.deftest shared-resident-index-source-runs-source-backed-query
+  (defer (free_all context.allocator))
+  (let [datoms ([]vev.Datom [(vev.datom-tx 2 ":item/name" (vev.value-string "b") 1 true)
+                              (vev.datom-tx 1 ":item/name" (vev.value-string "a") 1 true)
+                              (vev.datom-tx 1 ":item/rank" (vev.value-int 10) 1 true)
+                              (vev.datom-tx 3 ":item/name" (vev.value-string "c") 1 true)])
+        db (vev.init-db datoms)
+        shared (vev.shared-db-int-indexes-from-db db 2)
+        source (vev.shared-resident-index-db-read-source (addr db) (addr shared))
+        result (vev.q-text-db-read-source source "[:find ?e ?name :where [?e :item/name ?name]]")]
+    (t.is (= (count result.rows) 3))
+    (t.is (result-has-entity-string-row? result 1 "a"))
+    (t.is (result-has-entity-string-row? result 2 "b"))
+    (t.is (result-has-entity-string-row? result 3 "c"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-shared-db-int-indexes shared)
     (vev.delete-owned-db db)))

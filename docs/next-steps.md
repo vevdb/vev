@@ -323,6 +323,10 @@ Implemented so far:
   slices and SQLite cursors. Tests compare shared-backed `eavt`, `aevt`, `avet`,
   and `vaet` views against the current resident arrays and verify retained
   grouped index handles survive after the original handle is released.
+- `DB-Read-Source` now has a shared-resident-index variant. It scans shared
+  chunked index views while still materializing datoms/currentness from the
+  resident datom log. A source-backed EDN query test proves the existing
+  persisted/source query runner can execute over this representation.
 
 Work:
 
