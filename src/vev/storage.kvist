@@ -1574,6 +1574,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   path: string
   conn: Conn
   handle: rawptr
+  source-only: bool
 })
 
 (defstruct SQLite-Index-Cursor {
@@ -1746,6 +1747,21 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (delete-owned-db conn.db)
           (delete conn.listeners)
           (return (SQLite-Conn {path: (string-owned path) conn: (create-conn)}) false handle-error))))))
+
+(defn open-sqlite-source-conn [path: string] -> [store: SQLite-Conn, ok: bool, error: string]
+  (let [[handle handle-ok handle-error] (sqlite-open-live-raw path)]
+    (if handle-ok
+      (return (SQLite-Conn {path: (string-owned path)
+                            conn: (create-conn)
+                            handle: handle
+                            source-only: true})
+              true
+              "")
+      (return (SQLite-Conn {path: (string-owned path)
+                            conn: (create-conn)
+                            source-only: true})
+              false
+              handle-error))))
 
 (defn sqlite-conn-tx-count [store: ^SQLite-Conn] -> [tx-count: u64, ok: bool, error: string]
   (sqlite-tx-count-raw store^.handle))
@@ -2278,6 +2294,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (delete restored.listeners)))
 
 (defn transact-sqlite-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> Tx-Report
+  (when store^.source-only
+    (return (failed-tx-report store^.conn.db "SQLite source connection is read-only; open a writable SQLite connection to transact")))
   (let [report (transact-tx-data (addr store^.conn) tx-data)]
     (when (not report.ok)
       (return report))

@@ -70,7 +70,11 @@ Live SQLite connections now have internal text and prepared query wrappers
 (`q-result-sqlite-conn-text` and `q-result-sqlite-conn-prepared`) that open a
 short-lived `SQLite-DB-Snapshot`, query through `DB-Read-Source`, close the
 storage snapshot, and return an owned `Query-Result`. Normal public
-`connect`/`db` access through those cursors is the next storage step.
+`connect`/`db` access through those cursors is the next storage step. There is
+also an internal source-only SQLite connection opener that skips
+`load-db-sqlite` and keeps only the live SQLite handle plus a small resident
+shell for cleanup/error reporting. That source-only handle can query through
+the persisted snapshot wrappers and rejects transactions explicitly.
 
 There are now two write modes:
 
@@ -166,9 +170,15 @@ wrapper when it has the successful transaction report in hand.
 - live SQLite connection source queries: internal text/prepared wrappers query
   the latest persisted snapshot through source-backed reads, then close the
   snapshot before returning owned result rows
+- source-only SQLite connection open/query: skips resident datom-log replay and
+  uses the live handle only for short-lived persisted snapshot reads
 - `sqlite-conn-source-prepared-query`: open a normal live SQLite connection and
   measure the prepared-query wrapper that opens/closes a short-lived persisted
   snapshot for each read
+- `sqlite-source-conn-open`: open a source-only SQLite connection without
+  resident datom-log replay
+- `sqlite-source-conn-prepared-query`: query through a source-only SQLite
+  connection, opening short-lived persisted snapshots for each read
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 

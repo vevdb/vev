@@ -108,6 +108,11 @@ Implemented so far:
   ownership-tagged `Query-Result` shape after closing the storage snapshot.
   This starts the normal durable read path without forcing callers through
   `load-db-sqlite`.
+- SQLite also has an internal source-only connection opener that skips
+  `load-db-sqlite` entirely, keeps only the live SQLite handle plus an empty
+  resident connection shell for cleanup/error reporting, and rejects
+  transactions explicitly. Source-only connections can run the same
+  persisted-snapshot text/prepared query wrappers.
 - source-backed function clauses copy produced values into owned result
   bindings and then shallow-clean temporary function result containers, avoiding
   leaked vector/map wrappers without deleting scalar values that may be borrowed
@@ -237,6 +242,8 @@ Work:
    - normal read mode should construct a `SQLite-DB-Snapshot` from latest roots.
      The first internal text/prepared query wrappers now do this and return
      owned `Query-Result` values.
+   - an internal source-only SQLite connection opener now skips resident rebuild
+     on open and rejects writes explicitly
 2. Keep datom-log replay available for recovery, validation, migration, and
    fallback.
 3. Update C ABI/JVM/Clojure connection DB snapshots so the public API can pass
