@@ -327,6 +327,10 @@ Implemented so far:
   chunked index views while still materializing datoms/currentness from the
   resident datom log. A source-backed EDN query test proves the existing
   persisted/source query runner can execute over this representation.
+- Shared-resident source currentness now reads the shared chunked `current`
+  index with binary search instead of using the resident `DB.current` array.
+  The query test includes an add/retract pair and verifies the retracted fact
+  is filtered through the shared current index path.
 
 Work:
 

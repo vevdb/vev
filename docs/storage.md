@@ -301,7 +301,9 @@ snapshots, rather than only materializing owned resident arrays.
 `DB-Read-Source` can also wrap a resident datom log with shared chunked index
 views, and a source-backed query test now runs EDN text over that source. This
 is the first executable query path over the new in-memory shared-index
-representation.
+representation. Currentness for that path now also reads the shared chunked
+`current` index, so add/retract history is filtered without reaching back to
+the resident `DB.current` side table.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
