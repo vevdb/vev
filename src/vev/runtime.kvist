@@ -3998,6 +3998,22 @@
             (delete-owned-datom datom)
             (return (Value {}) false "")))))))
 
+(defn db-read-source-cardinality-one-int-value-fast-all-current [source: DB-Read-Source, entity: u64, attr: string] -> [value: i64, ok: bool, error: string]
+  (let [[owned-value value-ok value-error] (db-read-source-cardinality-one-value-fast-all-current source entity attr)]
+    (when (not value-ok)
+      (return 0 false value-error))
+    (defer (delete-owned-value owned-value))
+    (if (= owned-value.kind .Int)
+      (return owned-value.int-value true "")
+      (return 0 false ""))))
+
+(defn db-read-source-cardinality-one-value-matches-fast-all-current? [source: DB-Read-Source, entity: u64, attr: string, expected: Value] -> [matches: bool, ok: bool, error: string]
+  (let [[value value-ok value-error] (db-read-source-cardinality-one-value-fast-all-current source entity attr)]
+    (when (not value-ok)
+      (return false (= value-error "") value-error))
+    (defer (delete-owned-value value))
+    (return (value-equal? value expected) true "")))
+
 (defn db-read-source-datoms-by-reverse-entity-attr [source: DB-Read-Source, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
   (let [out (make [dynamic]Datom)
         values ([]Value [(value-entity entity) (value-keyword attr)])
@@ -18126,38 +18142,35 @@
           (delete plan.filters)
           (return out false))
         (reset-entity-int-pair-columns-capacity! (addr out) (- best-high best-low))
-        (let [direct-value-lookup (all-datoms-current? db)]
-          (let [i best-low
-                entity-pos 0]
+        (let [direct-value-lookup (all-datoms-current? db)
+              db-alias db
+              source (resident-db-read-source (addr db-alias))]
+          (let [i best-low]
             (while (< i best-high)
             (let [filter-datom-index (db-index-view-at filter-view i)
                   filter-datom db.datoms[filter-datom-index]]
               (when (or direct-value-lookup (datom-current-at? db filter-datom-index))
-                (let [entity-pos-ok true]
-                  (when direct-value-lookup
-                    (let [[next-entity-pos next-ok] (eavt-entity-position-at-or-after db entity-pos filter-datom.e)]
-                      (set! entity-pos next-entity-pos)
-                      (set! entity-pos-ok next-ok)))
-                (let [filters-match (or (not direct-value-lookup) entity-pos-ok)]
+                (let [filters-match true]
                   (let [filter-i 0]
                     (while (< filter-i (count plan.filters))
                     (when (not (= filter-i best-filter-index))
                       (let [filter plan.filters[filter-i]]
                         (if direct-value-lookup
-                          (when (not (cardinality-one-value-matches-at-entity-position-all-current? db filter-datom.e entity-pos filter.attr filter.value))
-                            (set! filters-match false))
+                          (let [[matches matches-ok _] (db-read-source-cardinality-one-value-matches-fast-all-current? source filter-datom.e filter.attr filter.value)]
+                            (when (not (and matches-ok matches))
+                              (set! filters-match false)))
                           (let [[filter-value filter-ok] (latest-attr-value db filter-datom.e filter.attr)]
                             (when (not (and filter-ok (value-equal? filter-value filter.value)))
                               (set! filters-match false))))))
                     (set! filter-i (+ filter-i 1))))
                   (when filters-match
                     (if direct-value-lookup
-                      (let [[int-value int-ok] (cardinality-one-int-value-at-entity-position-all-current db filter-datom.e entity-pos plan.value-attr)]
+                      (let [[int-value int-ok _] (db-read-source-cardinality-one-int-value-fast-all-current source filter-datom.e plan.value-attr)]
                         (when int-ok
                           (append-entity-int-pair-column! (addr out) filter-datom.e int-value)))
                       (let [[value value-ok] (latest-attr-value db filter-datom.e plan.value-attr)]
                         (when (and value-ok (= value.kind .Int))
-                          (append-entity-int-pair-column! (addr out) filter-datom.e value.int-value))))))))
+                          (append-entity-int-pair-column! (addr out) filter-datom.e value.int-value)))))))
             (set! i (+ i 1)))))
         (delete plan.filters)
         (return out true))))))

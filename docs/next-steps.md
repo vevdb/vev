@@ -135,7 +135,10 @@ Implemented so far:
   entity+attr positions, and cardinality-one value reads. These helpers use the
   same source index boundary for resident and persisted SQLite snapshot sources,
   so query-facing code no longer needs to reach for resident `eavt` side tables
-  just to answer entity-local reads.
+  just to answer entity-local reads. Source-level typed integer reads and
+  equality checks now sit on the same boundary, and one typed entity/int
+  projection fallback now uses those helpers instead of resident entity-position
+  side tables.
 
 Work:
 
@@ -199,8 +202,11 @@ Work:
      now implemented at the `DB-Read-Source` helper boundary.
    - add persisted entity range side tables only if benchmarks require it
 2. Replace direct `eavt-entities` / `eavt-entity-starts` reads in query-facing
-   code with source methods. The source methods exist; the remaining work is
-   migrating typed query fast paths that still call the resident-only helpers.
+   code with source methods. The source methods exist, source-level integer and
+   equality helpers are covered for resident and persisted snapshots, and the
+   entity/int projection fallback has started using them. The remaining work is
+   migrating the rest of the typed query fast paths that still call the
+   resident-only helpers.
 3. Keep the resident side table as an implementation detail for resident DBs,
    not as a query-engine assumption.
 
