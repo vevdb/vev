@@ -174,6 +174,17 @@ Implemented so far:
   entity/string/int projection fallbacks now use those helpers instead of
   resident entity-position side tables, with owned string copies tracked in the
   typed string/int column container when needed.
+- The legacy resident `eavt-entity-range` helper now uses `DB-Index-View`
+  binary search over `eavt` instead of reading `eavt-entities` /
+  `eavt-entity-starts` directly. Transaction append-eligibility checks still get
+  the same return shape, but the side table is no longer required for ordinary
+  entity range existence checks.
+- Dead resident-only position helpers that exposed `eavt-entity-starts`
+  positions into query-facing code have been removed:
+  `eavt-entity-position-at-or-after`, `eavt-entity-range-at-position`,
+  `eavt-entity-attr-position-at-entity-position`, and the cardinality-one
+  `...at-entity-position...` wrappers. The remaining cardinality-one fast
+  helpers start from entity/attr terms and use the `DB-Index-View` range path.
 
 Work:
 
@@ -241,7 +252,9 @@ Work:
    equality helpers are covered for resident and persisted snapshots, and the
    entity/int plus string/int projection fallbacks now use them. Runtime
    string/int typed columns can now mark owned string copies, and the ABI wrapper
-   reads that ownership bit for cleanup.
+   reads that ownership bit for cleanup. The legacy resident entity-range helper
+   now also uses the same `DB-Index-View` binary-search shape instead of the
+   side table, and the dead position-indexed helpers have been removed.
 3. Keep the resident side table as an implementation detail for resident DBs,
    not as a query-engine assumption.
 
@@ -362,8 +375,9 @@ Implemented so far:
   chunks directly at commit time.
 - Shared publish now carries append-only/new-entity facts from the transaction
   result into snapshot publication. Append-only commits retain the `current`
-  index directly, and ordered new-entity commits also retain `eavt` and
-  `eavt-entity-starts` directly without scanning old prefixes. A local
+  index directly, and ordered new-entity commits also retain `eavt` directly
+  without scanning old prefixes. `eavt-entity-starts` is now a resident DB
+  build/index maintenance side table, not part of shared immutable snapshots. A local
   batch-1, 500-write `shared-snapshot-heavy` sample with chunk size 64 ended at
   about 0.323 ms commit latency, versus the earlier resident snapshot-heavy
   baseline growing past 2 ms near 500 writes. The remaining slope is mainly the
@@ -382,10 +396,47 @@ Implemented so far:
   contiguously. Tests cover an interleaved `aevt` merge retaining old chunks.
   This reduces retained-snapshot copying pressure, but it is not yet a latency
   win in the small append-heavy sample: local `shared-snapshot-heavy` at batch 1,
-  500 writes, chunk size 1024 ended around 0.475 ms commit latency, and 1000
-  writes ended around 0.804 ms. The remaining work is to avoid still building
-  resident indexes first and to make the merge builder emit chunk-sized runs
-  with less per-value overhead.
+  500 writes, chunk size 1024 ended around 0.446 ms commit latency after adding
+  a batched added-tail append, and 1000 writes ended around 0.804 ms before that
+  tail batching. The remaining work is to avoid still building resident indexes
+  first and to make the merge builder emit chunk-sized runs with less per-value
+  overhead.
+- The shared merge builder now emits full chunk-sized appended slices directly
+  when the pending buffer is empty, instead of pushing those values one at a
+  time through the pending buffer. This does not remove the resident-index-first
+  adaptation yet, but it reduces one source of per-value overhead in the
+  append-only shared index path.
+- Append-only shared publication now builds the `current` index tail directly
+  from the committed datom range instead of slicing or prefix-checking the
+  resident post-commit `current` array. This is a small direct-publication step:
+  the shared path still delegates transaction application to the resident
+  engine, but one more shared index no longer depends on resident index
+  materialization.
+- `Shared-Tx-Report` now gives the shared connection path retained
+  `db-before` and `db-after` shared snapshots plus shallow report metadata. A
+  test transacts through `Shared-Conn`, moves the connection forward with a
+  second transaction, and verifies the first report's shared `db-before` and
+  `db-after` remain independently queryable. This is the host-facing DB-value
+  lifetime shape needed before the C/JVM handles can stop depending on resident
+  DB clones.
+- `Store-DB`, the storage-neutral immutable DB handle, now has a
+  `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
+  variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
+  `q-result-store-db-*` query wrappers run against it through `DB-Read-Source`.
+  A test verifies the retained store DB snapshot remains queryable after the
+  shared connection advances.
+- `Store-Conn` is now a real tagged storage-neutral connection wrapper instead
+  of an alias for `SQLite-Conn`. `open-store` and `open-store-read-only` still
+  produce SQLite-backed stores, while `create-shared-store` produces the
+  shared in-memory publish path. The same `store-db`,
+  `q-result-store-prepared`, `q-result-store-text`, `transact-store-text`, and
+  `close-store` functions now work over both variants. A focused test verifies
+  that a retained shared `Store-DB` remains immutable after the store advances.
+- `Store-DB` can now render source-backed query results to serializable
+  `Value` maps without a resident `DB`, including pull result rendering through
+  `DB-Read-Source` schema reads. The CLI `query` and `pull` commands now open a
+  read-only store, retain a `Store-DB`, and render through that storage-neutral
+  snapshot instead of reaching through `store.sqlite.conn.db`.
 
 Work:
 
@@ -403,9 +454,14 @@ Work:
    fallback because it regressed append-heavy commits. Merge-aware append-only
    index publication now retains full old chunks copied contiguously by the
    merge. The next step is removing the resident-index-first adaptation and
-   reducing per-value overhead inside the shared merge builder.
+   continuing to reduce per-value overhead inside the shared merge builder.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
-   / `db-after` semantics exact.
+   / `db-after` semantics exact. Shared transaction reports now exist for the
+   prototype shared connection path, and `Store-DB` can now wrap shared
+   snapshots. `Store-Conn` now has SQLite and shared variants behind the same
+   storage-neutral API, and source-backed result rendering lets CLI reads avoid
+   resident DB rendering. The next step is wiring C/JVM DB handles to
+   storage-neutral `Store-DB` snapshots instead of resident `DB` clones.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization.
 5. Preserve resident-array mode as a useful small/in-memory implementation

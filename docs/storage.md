@@ -326,8 +326,10 @@ the fact. `bench/write_bench.kvist --workload shared-snapshot-heavy` measures
 that path separately from SQLite-backed `snapshot-heavy`; a local batch-1,
 100-write sample showed the shared path faster. Shared publication now also
 uses append-only/new-entity facts from the transaction report to retain
-`current`, `eavt`, and `eavt-entity-starts` directly when those indexes are
-known prefixes. A local batch-1, 500-write sample with chunk size 64 ended at
+`current` and `eavt` directly when those indexes are known prefixes.
+`eavt-entity-starts` is a resident DB build/index maintenance side table, not
+part of shared immutable snapshots. A local batch-1, 500-write sample with chunk
+size 64 ended at
 about 0.323 ms commit latency. The remaining increase comes from indexes that
 still rebuild or scan merged/reordered resident arrays.
 `Shared-Int-Index` also has a tested same-offset page-sharing constructor for
@@ -342,6 +344,37 @@ shared chunks and retains any old chunk copied contiguously by the merge. This
 is a memory/copy architecture step, not a finished latency win: the current path
 still builds resident indexes first, and the shared merge builder has per-value
 overhead that should be reduced when publication moves fully to shared chunks.
+The first overhead reduction batches the tail of added indexes instead of
+pushing every remaining added value individually.
+The merge builder also emits full chunk-sized appended slices directly when the
+pending buffer is empty, avoiding per-value pending-buffer pushes for those
+runs.
+`Shared-Tx-Report` now preserves transaction report DB values as retained shared
+snapshots. That lets a report's `db-before` and `db-after` be queried after the
+connection has advanced, without cloning resident DB arrays for those report
+values.
+`Store-DB` can now also wrap a retained shared in-memory snapshot, not only a
+SQLite snapshot. That keeps the host-facing immutable DB handle direction
+storage-neutral: the same `q-result-store-db-*` wrappers can query persisted
+snapshots and shared in-memory snapshots through `DB-Read-Source`.
+`Store-Conn` is also now storage-neutral at the connection boundary. The
+default `open-store` functions still create SQLite-backed stores, while
+`create-shared-store` creates the in-memory shared-index publish path. Both use
+the same `store-db`, `q-result-store-*`, `transact-store-text`, and
+`close-store` entry points, so host bindings can move toward one DB-handle shape
+instead of separate resident, SQLite, and shared APIs.
+`Store-DB` can also render query and pull values through `DB-Read-Source`.
+This lets storage-neutral callers, including the CLI, print parsed query results
+from retained SQLite/shared snapshots without reopening or reaching through a
+resident `DB` field just for value rendering.
+The resident entity-range helper now uses the same `DB-Index-View` binary-search
+shape as the source boundary instead of reading the `eavt-entities` /
+`eavt-entity-starts` side table directly. The side table still exists as a
+resident DB build/index maintenance detail, but ordinary entity range/existence
+checks no longer require it.
+The unused position-indexed resident helpers have also been removed, so
+query-facing code no longer exposes `eavt-entity-starts` positions as an API
+shape.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
@@ -350,6 +383,11 @@ Retractions, schema datoms, repeated facts, and unkeyable values still fall back
 to full DB/index rebuilds. This keeps `db-with-datoms`, `with-datoms`, and
 `transact-datoms` on the same incremental-index path used by ordinary
 append-only transactions without changing their correctness model.
+In the shared publication path, append-only `current` indexes are now extended
+directly from the committed datom range instead of copied from the resident
+post-commit `current` array. This is still an intermediate architecture because
+the transaction engine builds a resident DB first, but it removes one index from
+the resident-index adaptation step.
 
 SQLite rollback cleanup now also follows the live-report ownership rule. When
 an in-memory transaction succeeds but SQLite append fails, the wrapper restores

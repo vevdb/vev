@@ -28,7 +28,6 @@
 (defstruct Shared-DB-Int-Indexes {
   current: Shared-Int-Index
   eavt: Shared-Int-Index
-  eavt-entity-starts: Shared-Int-Index
   aevt: Shared-Int-Index
   avet: Shared-Int-Index
   vaet: Shared-Int-Index
@@ -45,10 +44,31 @@
   chunk-size: int
 })
 
+(defstruct Shared-Tx-Report {
+  ok: bool
+  error: string
+  db-before: Shared-DB-Snapshot
+  db-after: Shared-DB-Snapshot
+  tx-data: [dynamic]Datom
+  tx: u64
+  tx-meta: [dynamic]Tx-Meta
+  tempids: [dynamic]Tempid
+})
+
 (defn shared-int-chunk [values: []int] -> Shared-Int-Chunk
   (let [refs (make [dynamic]int 0 1)
         owned (arr.into [dynamic]int values)]
     (arr.push! refs 1)
+    (Shared-Int-Chunk {values: owned refs: refs})))
+
+(defn shared-int-chunk-from-range [start: int, end: int] -> Shared-Int-Chunk
+  (let [refs (make [dynamic]int 0 1)
+        owned (make [dynamic]int 0 (max 0 (- end start)))
+        value start]
+    (arr.push! refs 1)
+    (while (< value end)
+      (arr.push! owned value)
+      (set! value (+ value 1)))
     (Shared-Int-Chunk {values: owned refs: refs})))
 
 (defn retain-shared-int-chunk! [chunk: Shared-Int-Chunk]
@@ -146,6 +166,17 @@
     (shared-int-index-with-appended-slice base (slice values base.count))
     (shared-int-index-from-slice values base.chunk-size)))
 
+(defn shared-int-index-with-appended-range [base: Shared-Int-Index, start: int, end: int] -> Shared-Int-Index
+  (let [out (retain-shared-int-index base)
+        offset start]
+    (while (< offset end)
+      (let [chunk-end (min (+ offset out.chunk-size) end)
+            chunk (shared-int-chunk-from-range offset chunk-end)]
+        (arr.push! out.chunks chunk)
+        (set! out.count (+ out.count (- chunk-end offset)))
+        (set! offset chunk-end)))
+    out))
+
 (defn shared-int-chunk-matches-slice? [chunk: Shared-Int-Chunk, values: []int, start: int] -> bool
   (when (> (+ start (count chunk.values)) (count values))
     (return false))
@@ -185,6 +216,25 @@
   (when (>= (count pending^) out^.chunk-size)
     (shared-int-index-flush-pending! out pending)))
 
+(defn shared-int-index-append-slice! [out: ^Shared-Int-Index, pending: ^[dynamic]int, values: []int]
+  (let [offset 0]
+    (while (< offset (count values))
+      (if (and (= (count pending^) 0)
+               (>= (- (count values) offset) out^.chunk-size))
+        (let [end (+ offset out^.chunk-size)]
+          (arr.push! out^.chunks (shared-int-chunk (slice values offset end)))
+          (set! out^.count (+ out^.count out^.chunk-size))
+          (set! offset end))
+        (let [space (- out^.chunk-size (count pending^))
+              take (min space (- (count values) offset))
+              end (+ offset take)]
+          (for [value (slice values offset end)]
+            (arr.push! pending^ value))
+          (set! out^.count (+ out^.count take))
+          (set! offset end)
+          (when (>= (count pending^) out^.chunk-size)
+            (shared-int-index-flush-pending! out pending)))))))
+
 (defn shared-int-chunk-before-or-at-added? [datoms: []Datom, order: string, chunk: Shared-Int-Chunk, added-index: int] -> bool
   (when (= (count chunk.values) 0)
     (return false))
@@ -202,8 +252,8 @@
       (cond
         (>= chunk-index (count base.chunks))
           (do
-            (shared-int-index-push-merged-value! (addr out) (addr pending) added[added-index])
-            (set! added-index (+ added-index 1)))
+            (shared-int-index-append-slice! (addr out) (addr pending) (slice added added-index))
+            (set! added-index (count added)))
         (>= added-index (count added))
           (if (= chunk-offset 0)
             (do
@@ -261,7 +311,6 @@
 (defn shared-db-int-indexes-from-db [db: DB, chunk-size: int] -> Shared-DB-Int-Indexes
   (Shared-DB-Int-Indexes {current: (shared-int-index-from-slice (slice db.current 0) chunk-size)
                           eavt: (shared-int-index-from-slice (slice db.eavt 0) chunk-size)
-                          eavt-entity-starts: (shared-int-index-from-slice (slice db.eavt-entity-starts 0) chunk-size)
                           aevt: (shared-int-index-from-slice (slice db.aevt 0) chunk-size)
                           avet: (shared-int-index-from-slice (slice db.avet 0) chunk-size)
                           vaet: (shared-int-index-from-slice (slice db.vaet 0) chunk-size)}))
@@ -269,14 +318,13 @@
 (defn shared-db-int-indexes-with-appended-db [base: Shared-DB-Int-Indexes, after: DB] -> Shared-DB-Int-Indexes
   (Shared-DB-Int-Indexes {current: (shared-int-index-from-base-prefix-or-slice base.current (slice after.current 0))
                           eavt: (shared-int-index-from-base-prefix-or-slice base.eavt (slice after.eavt 0))
-                          eavt-entity-starts: (shared-int-index-from-base-prefix-or-slice base.eavt-entity-starts (slice after.eavt-entity-starts 0))
                           aevt: (shared-int-index-from-base-prefix-or-slice base.aevt (slice after.aevt 0))
                           avet: (shared-int-index-from-base-prefix-or-slice base.avet (slice after.avet 0))
                           vaet: (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0))}))
 
 (defn shared-db-int-indexes-with-appended-db-mode [base: Shared-DB-Int-Indexes, after: DB, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
   (Shared-DB-Int-Indexes {current: (if append-only
-                                     (shared-int-index-with-appended-tail base.current (slice after.current 0))
+                                     (shared-int-index-with-appended-range base.current start-index (count after.datoms))
                                      (shared-int-index-from-base-prefix-or-slice base.current (slice after.current 0)))
                           eavt: (cond
                                   new-entities-after-existing
@@ -285,9 +333,6 @@
                                     (shared-int-index-with-merged-appended-datoms base.eavt (slice after.datoms 0) start-index "eavt")
                                   :else
                                     (shared-int-index-from-base-prefix-or-slice base.eavt (slice after.eavt 0)))
-                          eavt-entity-starts: (if new-entities-after-existing
-                                                (shared-int-index-with-appended-tail base.eavt-entity-starts (slice after.eavt-entity-starts 0))
-                                                (shared-int-index-from-base-prefix-or-slice base.eavt-entity-starts (slice after.eavt-entity-starts 0)))
                           aevt: (if append-only
                                   (shared-int-index-with-merged-appended-datoms base.aevt (slice after.datoms 0) start-index "aevt")
                                   (shared-int-index-from-base-prefix-or-slice base.aevt (slice after.aevt 0)))
@@ -301,7 +346,6 @@
 (defn retain-shared-db-int-indexes [indexes: Shared-DB-Int-Indexes] -> Shared-DB-Int-Indexes
   (Shared-DB-Int-Indexes {current: (retain-shared-int-index indexes.current)
                           eavt: (retain-shared-int-index indexes.eavt)
-                          eavt-entity-starts: (retain-shared-int-index indexes.eavt-entity-starts)
                           aevt: (retain-shared-int-index indexes.aevt)
                           avet: (retain-shared-int-index indexes.avet)
                           vaet: (retain-shared-int-index indexes.vaet)}))
@@ -309,7 +353,6 @@
 (defn delete-shared-db-int-indexes [indexes: Shared-DB-Int-Indexes]
   (delete-shared-int-index indexes.current)
   (delete-shared-int-index indexes.eavt)
-  (delete-shared-int-index indexes.eavt-entity-starts)
   (delete-shared-int-index indexes.aevt)
   (delete-shared-int-index indexes.avet)
   (delete-shared-int-index indexes.vaet))
@@ -425,6 +468,13 @@
   (delete conn.conn.listeners)
   (delete-owned-db conn.conn.db))
 
+(defn delete-shared-tx-report-shallow [report: Shared-Tx-Report]
+  (delete-shared-db-snapshot report.db-before)
+  (delete-shared-db-snapshot report.db-after)
+  (delete report.tx-data)
+  (delete report.tx-meta)
+  (delete report.tempids))
+
 (defn shared-conn-read-source [conn: ^Shared-Conn] -> DB-Read-Source
   (shared-db-snapshot-read-source (addr conn^.snapshot)))
 
@@ -440,3 +490,34 @@
       (delete-shared-db-snapshot conn^.snapshot)
       (set! conn^.snapshot next-snapshot))
     report))
+
+(defn shared-conn-transact-report [conn: ^Shared-Conn, tx-data: []Tx-Data] -> Shared-Tx-Report
+  (let [before-snapshot (retain-shared-db-snapshot conn^.snapshot)
+        report (shared-conn-transact conn tx-data)]
+    (if report.ok
+      (let [owned-tx-data (arr.into [dynamic]Datom (slice report.tx-data 0))
+            owned-tx-meta (clone-tx-meta (slice report.tx-meta 0))
+            owned-tempids (arr.into [dynamic]Tempid (slice report.tempids 0))
+            shared-report (Shared-Tx-Report {ok: true
+                                             error: ""
+                                             db-before: before-snapshot
+                                             db-after: (retain-shared-db-snapshot conn^.snapshot)
+                                             tx-data: owned-tx-data
+                                             tx: report.tx
+                                             tx-meta: owned-tx-meta
+                                             tempids: owned-tempids})]
+        (delete-live-tx-report-shallow report)
+        shared-report)
+      (let [empty-tx-data (make [dynamic]Datom)
+            empty-tx-meta (make [dynamic]Tx-Meta)
+            empty-tempids (make [dynamic]Tempid)
+            shared-report (Shared-Tx-Report {ok: false
+                                             error: report.error
+                                             db-before: before-snapshot
+                                             db-after: (retain-shared-db-snapshot before-snapshot)
+                                             tx-data: empty-tx-data
+                                             tx: 0
+                                             tx-meta: empty-tx-meta
+                                             tempids: empty-tempids})]
+        (delete-tx-report-shallow report)
+        shared-report))))
