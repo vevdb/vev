@@ -3606,6 +3606,7 @@
 (defenum DB-Index-View-Kind [
   Resident
   SQLite-Cursor
+  Shared-Int-Index
 ])
 
 (defstruct DB-Index-View {
@@ -3613,16 +3614,19 @@
   order: Public-Index-Order
   indexes: []int
   sqlite-cursor: ^SQLite-Index-Cursor
+  shared-index: ^Shared-Int-Index
 })
 
 (defenum DB-Read-Source-Kind [
   Resident
+  Shared-Resident-Indexes
   SQLite-Snapshot
 ])
 
 (defstruct DB-Read-Source {
   kind: DB-Read-Source-Kind
   db: ^DB
+  shared-indexes: ^Shared-DB-Int-Indexes
   sqlite-snapshot: ^SQLite-DB-Snapshot
 })
 
@@ -3633,6 +3637,9 @@
 
 (defn resident-db-read-source [db: ^DB] -> DB-Read-Source
   (DB-Read-Source {kind: .Resident db: db}))
+
+(defn shared-resident-index-db-read-source [db: ^DB, indexes: ^Shared-DB-Int-Indexes] -> DB-Read-Source
+  (DB-Read-Source {kind: .Shared-Resident-Indexes db: db shared-indexes: indexes}))
 
 (defn sqlite-db-read-source [snapshot: ^SQLite-DB-Snapshot] -> DB-Read-Source
   (DB-Read-Source {kind: .SQLite-Snapshot sqlite-snapshot: snapshot}))
@@ -3660,9 +3667,22 @@
                   order: order
                   sqlite-cursor: cursor}))
 
+(defn db-index-view-from-shared-int-index [order: Public-Index-Order, index: ^Shared-Int-Index] -> DB-Index-View
+  (DB-Index-View {kind: .Shared-Int-Index
+                  order: order
+                  shared-index: index}))
+
+(defn shared-db-int-index-view [indexes: ^Shared-DB-Int-Indexes, order: Public-Index-Order] -> DB-Index-View
+  (cond
+    (= order .EAVT) (db-index-view-from-shared-int-index order (addr indexes^.eavt))
+    (= order .AEVT) (db-index-view-from-shared-int-index order (addr indexes^.aevt))
+    (= order .AVET) (db-index-view-from-shared-int-index order (addr indexes^.avet))
+    :else (db-index-view-from-shared-int-index order (addr indexes^.vaet))))
+
 (defn db-read-source-index-view [source: DB-Read-Source, order: Public-Index-Order] -> DB-Index-View
   (case source.kind
     .Resident (db-index-view source.db^ order)
+    .Shared-Resident-Indexes (shared-db-int-index-view source.shared-indexes order)
     .SQLite-Snapshot (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
      (DB-Index-View {})))
 
@@ -3678,15 +3698,20 @@
       (return range-low range-high (> range-high range-low) true ""))))
 
 (defn db-index-view-count [view: DB-Index-View] -> int
-  (if (= view.kind .SQLite-Cursor)
-    (sqlite-index-cursor-count view.sqlite-cursor^)
-    (count view.indexes)))
+  (case view.kind
+    .SQLite-Cursor (sqlite-index-cursor-count view.sqlite-cursor^)
+    .Shared-Int-Index (shared-int-index-count view.shared-index^)
+     (count view.indexes)))
 
 (defn db-index-view-at [view: DB-Index-View, index: int] -> int
-  (if (= view.kind .SQLite-Cursor)
-    (let [[entry ok _] (sqlite-index-cursor-at view.sqlite-cursor index)]
-      (if ok entry 0))
-    view.indexes[index]))
+  (case view.kind
+    .SQLite-Cursor
+      (let [[entry ok _] (sqlite-index-cursor-at view.sqlite-cursor index)]
+        (if ok entry 0))
+    .Shared-Int-Index
+      (let [[entry ok] (shared-int-index-at view.shared-index^ index)]
+        (if ok entry 0))
+     view.indexes[index]))
 
 (defn db-read-source-datom-at-entry [source: DB-Read-Source, entry: int] -> [datom: Datom, ok: bool, error: string]
   (case source.kind
@@ -3695,6 +3720,12 @@
         (when (or (< entry 0)
                   (>= entry (count source.db^.datoms)))
           (return (Datom {}) false "resident datom index out of range"))
+        (return (datom-owned source.db^.datoms[entry]) true ""))
+    .Shared-Resident-Indexes
+      (do
+        (when (or (< entry 0)
+                  (>= entry (count source.db^.datoms)))
+          (return (Datom {}) false "shared resident datom index out of range"))
         (return (datom-owned source.db^.datoms[entry]) true ""))
     .SQLite-Snapshot
       (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
@@ -3707,6 +3738,12 @@
         (when (or (< entry 0)
                   (>= entry (count source.db^.datoms)))
           (return false false "resident datom index out of range"))
+        (return (datom-current-at? source.db^ entry) true ""))
+    .Shared-Resident-Indexes
+      (do
+        (when (or (< entry 0)
+                  (>= entry (count source.db^.datoms)))
+          (return false false "shared resident datom index out of range"))
         (return (datom-current-at? source.db^ entry) true ""))
     .SQLite-Snapshot
       (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
@@ -4522,6 +4559,25 @@
         matched))
     (db-read-source-binding-match-owned! binding term value)))
 
+(defn db-read-source-binding-match-borrowed! [binding: ^Binding, term: Term, value: Value] -> bool
+  (case term.kind
+    .Value (= (index-position-compare value term.value) 0)
+    .Wildcard true
+    .Var
+      (let [[existing exists] (binding-lookup binding^ term.name)]
+        (if exists
+          (predicate-value-equal? existing value)
+          (do
+            (binding-store! binding term.name (value-owned value))
+            true)))
+     false))
+
+(defn db-read-source-binding-match-clause-borrowed! [source: DB-Read-Source, binding: ^Binding, term: Term, value: Value] -> bool
+  (if (= term.kind .LookupRef)
+    (let [[entity entity-ok _] (db-read-source-resolve-lookup-ref source term.lookup-attr term.lookup-value)]
+      (and entity-ok (= (index-position-compare value (value-entity entity)) 0)))
+    (db-read-source-binding-match-borrowed! binding term value)))
+
 (defn db-read-source-clause-index-value-matches? [actual: Value, expected: Value] -> bool
   (= (index-position-compare actual expected) 0))
 
@@ -4548,6 +4604,11 @@
       true)
     (db-read-source-binding-match-owned! binding term value)))
 
+(defn db-read-source-binding-match-optional-borrowed! [binding: ^Binding, term: Term, value: Value] -> bool
+  (if (omitted-term? term)
+    true
+    (db-read-source-binding-match-borrowed! binding term value)))
+
 (defn db-read-source-binding-after-clause-datom [source: DB-Read-Source, binding: Binding, clause-value: Clause, datom: Datom] -> [out-binding: Binding, ok: bool]
   (let [candidate-binding (db-read-source-clone-binding-owned binding)]
     (when (and (= clause-value.a.kind .Value)
@@ -4556,35 +4617,35 @@
       (when (not (= datom.v.kind .Entity))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
-      (when (not (db-read-source-binding-match-clause-owned! source (addr candidate-binding) clause-value.e (value-entity datom.v.entity)))
+      (when (not (db-read-source-binding-match-clause-borrowed! source (addr candidate-binding) clause-value.e (value-entity datom.v.entity)))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
-      (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.a (value-keyword (string-owned clause-value.a.value.text))))
+      (when (not (db-read-source-binding-match-borrowed! (addr candidate-binding) clause-value.a (value-keyword clause-value.a.value.text)))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
-      (when (not (db-read-source-binding-match-clause-owned! source (addr candidate-binding) clause-value.v (value-entity datom.e)))
+      (when (not (db-read-source-binding-match-clause-borrowed! source (addr candidate-binding) clause-value.v (value-entity datom.e)))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
-      (when (not (db-read-source-binding-match-optional-owned! (addr candidate-binding) clause-value.tx-term (datom-tx-value datom)))
+      (when (not (db-read-source-binding-match-optional-borrowed! (addr candidate-binding) clause-value.tx-term (datom-tx-value datom)))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
-      (when (not (db-read-source-binding-match-optional-owned! (addr candidate-binding) clause-value.op-term (datom-op-value datom)))
+      (when (not (db-read-source-binding-match-optional-borrowed! (addr candidate-binding) clause-value.op-term (datom-op-value datom)))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
       (return candidate-binding true))
-    (when (not (db-read-source-binding-match-clause-owned! source (addr candidate-binding) clause-value.e (value-entity datom.e)))
+    (when (not (db-read-source-binding-match-clause-borrowed! source (addr candidate-binding) clause-value.e (value-entity datom.e)))
       (db-read-source-delete-binding-owned candidate-binding)
       (return (Binding {}) false))
-    (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.a (value-keyword (string-owned datom.a))))
+    (when (not (db-read-source-binding-match-borrowed! (addr candidate-binding) clause-value.a (value-keyword datom.a)))
       (db-read-source-delete-binding-owned candidate-binding)
       (return (Binding {}) false))
-    (when (not (db-read-source-binding-match-clause-owned! source (addr candidate-binding) clause-value.v (value-owned datom.v)))
+    (when (not (db-read-source-binding-match-clause-borrowed! source (addr candidate-binding) clause-value.v datom.v))
       (db-read-source-delete-binding-owned candidate-binding)
       (return (Binding {}) false))
-    (when (not (db-read-source-binding-match-optional-owned! (addr candidate-binding) clause-value.tx-term (datom-tx-value datom)))
+    (when (not (db-read-source-binding-match-optional-borrowed! (addr candidate-binding) clause-value.tx-term (datom-tx-value datom)))
       (db-read-source-delete-binding-owned candidate-binding)
       (return (Binding {}) false))
-    (when (not (db-read-source-binding-match-optional-owned! (addr candidate-binding) clause-value.op-term (datom-op-value datom)))
+    (when (not (db-read-source-binding-match-optional-borrowed! (addr candidate-binding) clause-value.op-term (datom-op-value datom)))
       (db-read-source-delete-binding-owned candidate-binding)
       (return (Binding {}) false))
     (return candidate-binding true)))
@@ -17034,6 +17095,7 @@
   entities: [dynamic]u64
   strings: [dynamic]string
   ints: [dynamic]i64
+  owns-strings: bool
 })
 
 (defstruct Entity-Int-Pair-Filter {
@@ -17131,22 +17193,35 @@
                               ints: (make [dynamic]i64)}))
 
 (defn delete-entity-string-int-triples [columns: Entity-String-Int-Triples]
+  (when columns.owns-strings
+    (for [text columns.strings]
+      (delete text)))
   (delete columns.entities)
   (delete columns.strings)
   (delete columns.ints))
 
 (defn reset-entity-string-int-triples-capacity! [columns: ^Entity-String-Int-Triples, capacity: int]
+  (when columns^.owns-strings
+    (for [text columns^.strings]
+      (delete text)))
   (delete columns^.entities)
   (delete columns^.strings)
   (delete columns^.ints)
   (set! columns^.entities (make [dynamic]u64 0 capacity))
   (set! columns^.strings (make [dynamic]string 0 capacity))
-  (set! columns^.ints (make [dynamic]i64 0 capacity)))
+  (set! columns^.ints (make [dynamic]i64 0 capacity))
+  (set! columns^.owns-strings false))
 
 (defn append-entity-string-int-triple! [columns: ^Entity-String-Int-Triples, entity: u64, text: string, value: i64]
   (arr.push! columns^.entities entity)
   (arr.push! columns^.strings text)
   (arr.push! columns^.ints value))
+
+(defn append-owned-entity-string-int-triple! [columns: ^Entity-String-Int-Triples, entity: u64, text: string, value: i64]
+  (arr.push! columns^.entities entity)
+  (arr.push! columns^.strings (string-owned text))
+  (arr.push! columns^.ints value)
+  (set! columns^.owns-strings true))
 
 (defn empty-entity-two-value-plan [] -> Entity-Two-Value-Plan
   (Entity-Two-Value-Plan {filters: (make [dynamic]Entity-Int-Pair-Filter)}))
@@ -18294,29 +18369,33 @@
               (set! best-high high)))
           (set! filter-i (+ filter-i 1))))
         (reset-entity-string-int-triples-capacity! (addr out) (- best-high best-low))
-        (let [i best-low
-              entity-pos 0]
+        (let [db-alias db
+              source (resident-db-read-source (addr db-alias))
+              i best-low]
           (while (< i best-high)
           (let [filter-datom-index (db-index-view-at filter-view i)
                 filter-datom db.datoms[filter-datom-index]]
-            (let [[next-entity-pos entity-pos-ok] (eavt-entity-position-at-or-after db entity-pos filter-datom.e)]
-              (set! entity-pos next-entity-pos)
-            (let [filters-match entity-pos-ok]
+            (let [filters-match true]
               (let [filter-i 0]
                 (while (< filter-i (count plan.filters))
                 (when (not (= filter-i best-filter-index))
                   (let [filter plan.filters[filter-i]]
-                    (when (not (cardinality-one-value-matches-at-entity-position-all-current? db filter-datom.e entity-pos filter.attr filter.value))
-                      (set! filters-match false))))
+                    (let [[matches matches-ok _] (db-read-source-cardinality-one-value-matches-fast-all-current? source filter-datom.e filter.attr filter.value)]
+                      (when (not (and matches-ok matches))
+                        (set! filters-match false)))))
                 (set! filter-i (+ filter-i 1))))
               (when filters-match
-                (let [[first-value first-ok] (cardinality-one-value-at-entity-position-all-current db filter-datom.e entity-pos plan.first-attr)
-                      [second-value second-ok] (cardinality-one-value-at-entity-position-all-current db filter-datom.e entity-pos plan.second-attr)]
+                (let [[first-value first-ok _] (db-read-source-cardinality-one-value-fast-all-current source filter-datom.e plan.first-attr)
+                      [second-value second-ok _] (db-read-source-cardinality-one-value-fast-all-current source filter-datom.e plan.second-attr)]
                   (when (and first-ok
                              second-ok
                              (= first-value.kind .String)
                              (= second-value.kind .Int))
-                    (append-entity-string-int-triple! (addr out) filter-datom.e first-value.text second-value.int-value)))))))
+                    (append-owned-entity-string-int-triple! (addr out) filter-datom.e first-value.text second-value.int-value))
+                  (when first-ok
+                    (delete-owned-value first-value))
+                  (when second-ok
+                    (delete-owned-value second-value))))))
           (set! i (+ i 1))))
         (delete plan.filters)
         (return out true)))))

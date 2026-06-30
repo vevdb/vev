@@ -1,0 +1,126 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev)
+
+(defstruct Shared-Int-Chunk {
+  values: [dynamic]int
+  refs: [dynamic]int
+})
+
+(defstruct Shared-Int-Index {
+  chunks: [dynamic]Shared-Int-Chunk
+  count: int
+  chunk-size: int
+})
+
+(defstruct Shared-DB-Int-Indexes {
+  current: Shared-Int-Index
+  eavt: Shared-Int-Index
+  eavt-entity-starts: Shared-Int-Index
+  aevt: Shared-Int-Index
+  avet: Shared-Int-Index
+  vaet: Shared-Int-Index
+})
+
+(defn shared-int-chunk [values: []int] -> Shared-Int-Chunk
+  (let [refs (make [dynamic]int 0 1)
+        owned (arr.into [dynamic]int values)]
+    (arr.push! refs 1)
+    (Shared-Int-Chunk {values: owned refs: refs})))
+
+(defn retain-shared-int-chunk! [chunk: Shared-Int-Chunk]
+  (set! chunk.refs[0] (+ chunk.refs[0] 1)))
+
+(defn release-shared-int-chunk! [chunk: Shared-Int-Chunk]
+  (set! chunk.refs[0] (- chunk.refs[0] 1))
+  (when (= chunk.refs[0] 0)
+    (delete chunk.values)
+    (delete chunk.refs)))
+
+(defn shared-int-index-empty [chunk-size: int] -> Shared-Int-Index
+  (Shared-Int-Index {chunks: (make [dynamic]Shared-Int-Chunk)
+                     count: 0
+                     chunk-size: (max 1 chunk-size)}))
+
+(defn shared-int-index-from-slice [values: []int, chunk-size: int] -> Shared-Int-Index
+  (let [out (shared-int-index-empty chunk-size)
+        size out.chunk-size
+        start 0]
+    (while (< start (count values))
+      (let [end (min (+ start size) (count values))
+            chunk (shared-int-chunk (slice values start end))]
+        (arr.push! out.chunks chunk)
+        (set! start end)))
+    (set! out.count (count values))
+    out))
+
+(defn retain-shared-int-index [index: Shared-Int-Index] -> Shared-Int-Index
+  (let [chunks (make [dynamic]Shared-Int-Chunk 0 (count index.chunks))]
+    (for [chunk index.chunks]
+      (retain-shared-int-chunk! chunk)
+      (arr.push! chunks chunk))
+    (Shared-Int-Index {chunks: chunks
+                       count: index.count
+                       chunk-size: index.chunk-size})))
+
+(defn delete-shared-int-index [index: Shared-Int-Index]
+  (for [chunk index.chunks]
+    (release-shared-int-chunk! chunk))
+  (delete index.chunks))
+
+(defn shared-int-index-count [index: Shared-Int-Index] -> int
+  index.count)
+
+(defn shared-int-index-at [index: Shared-Int-Index, position: int] -> [value: int, ok: bool]
+  (when (or (< position 0)
+            (>= position index.count))
+    (return 0 false))
+  (let [remaining position]
+    (for [chunk index.chunks]
+      (let [chunk-count (count chunk.values)]
+        (if (< remaining chunk-count)
+          (return chunk.values[remaining] true)
+          (set! remaining (- remaining chunk-count))))))
+  (return 0 false))
+
+(defn shared-int-index-ref-count-at [index: Shared-Int-Index, chunk-index: int] -> [refs: int, ok: bool]
+  (when (or (< chunk-index 0)
+            (>= chunk-index (count index.chunks)))
+    (return 0 false))
+  (return index.chunks[chunk-index].refs[0] true))
+
+(defn shared-int-index-with-appended-slice [base: Shared-Int-Index, values: []int] -> Shared-Int-Index
+  (let [out (retain-shared-int-index base)
+        start 0]
+    (while (< start (count values))
+      (let [end (min (+ start out.chunk-size) (count values))
+            chunk (shared-int-chunk (slice values start end))]
+        (arr.push! out.chunks chunk)
+        (set! start end)))
+    (set! out.count (+ out.count (count values)))
+    out))
+
+(defn shared-db-int-indexes-from-db [db: DB, chunk-size: int] -> Shared-DB-Int-Indexes
+  (Shared-DB-Int-Indexes {current: (shared-int-index-from-slice (slice db.current 0) chunk-size)
+                          eavt: (shared-int-index-from-slice (slice db.eavt 0) chunk-size)
+                          eavt-entity-starts: (shared-int-index-from-slice (slice db.eavt-entity-starts 0) chunk-size)
+                          aevt: (shared-int-index-from-slice (slice db.aevt 0) chunk-size)
+                          avet: (shared-int-index-from-slice (slice db.avet 0) chunk-size)
+                          vaet: (shared-int-index-from-slice (slice db.vaet 0) chunk-size)}))
+
+(defn retain-shared-db-int-indexes [indexes: Shared-DB-Int-Indexes] -> Shared-DB-Int-Indexes
+  (Shared-DB-Int-Indexes {current: (retain-shared-int-index indexes.current)
+                          eavt: (retain-shared-int-index indexes.eavt)
+                          eavt-entity-starts: (retain-shared-int-index indexes.eavt-entity-starts)
+                          aevt: (retain-shared-int-index indexes.aevt)
+                          avet: (retain-shared-int-index indexes.avet)
+                          vaet: (retain-shared-int-index indexes.vaet)}))
+
+(defn delete-shared-db-int-indexes [indexes: Shared-DB-Int-Indexes]
+  (delete-shared-int-index indexes.current)
+  (delete-shared-int-index indexes.eavt)
+  (delete-shared-int-index indexes.eavt-entity-starts)
+  (delete-shared-int-index indexes.aevt)
+  (delete-shared-int-index indexes.avet)
+  (delete-shared-int-index indexes.vaet))

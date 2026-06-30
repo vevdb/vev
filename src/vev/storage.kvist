@@ -1574,6 +1574,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   path: string
   conn: Conn
   handle: rawptr
+  source-only: bool
 })
 
 (defstruct SQLite-Index-Cursor {
@@ -1605,6 +1606,18 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 })
 
 (def Store-Conn SQLite-Conn)
+
+(defenum Store-DB-Kind [
+  Empty
+  Resident
+  SQLite-Snapshot
+])
+
+(defstruct Store-DB {
+  kind: Store-DB-Kind
+  resident: DB
+  sqlite-snapshot: SQLite-DB-Snapshot
+})
 
 (defn insert-sqlite-tx-meta! [handle: rawptr, tx: u64, meta: []Tx-Meta] -> [ok: bool, error: string]
   (for [entry meta]
@@ -1746,6 +1759,21 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (delete-owned-db conn.db)
           (delete conn.listeners)
           (return (SQLite-Conn {path: (string-owned path) conn: (create-conn)}) false handle-error))))))
+
+(defn open-sqlite-source-conn [path: string] -> [store: SQLite-Conn, ok: bool, error: string]
+  (let [[handle handle-ok handle-error] (sqlite-open-live-raw path)]
+    (if handle-ok
+      (return (SQLite-Conn {path: (string-owned path)
+                            conn: (create-conn)
+                            handle: handle
+                            source-only: true})
+              true
+              "")
+      (return (SQLite-Conn {path: (string-owned path)
+                            conn: (create-conn)
+                            source-only: true})
+              false
+              handle-error))))
 
 (defn sqlite-conn-tx-count [store: ^SQLite-Conn] -> [tx-count: u64, ok: bool, error: string]
   (sqlite-tx-count-raw store^.handle))
@@ -2224,6 +2252,50 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn sqlite-conn-open-db-snapshot [store: ^SQLite-Conn, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
   (sqlite-open-db-snapshot-handle store^.handle page-size))
 
+(def sqlite-db-source-default-page-size 128)
+
+(defn q-result-sqlite-conn-text [store: ^SQLite-Conn, text: string] -> Query-Result
+  (let [[snapshot snapshot-ok snapshot-error] (sqlite-conn-open-db-snapshot store sqlite-db-source-default-page-size)]
+    (when (not snapshot-ok)
+      (return (query-result-owned-values (result-set-error snapshot-error))))
+    (let [source (sqlite-db-read-source (addr snapshot))
+          result (q-result-text-db-read-source source text)]
+      (close-sqlite-db-snapshot! (addr snapshot))
+      result)))
+
+(defn q-result-sqlite-conn-prepared [store: ^SQLite-Conn, prepared: Prepared-Query] -> Query-Result
+  (let [[snapshot snapshot-ok snapshot-error] (sqlite-conn-open-db-snapshot store sqlite-db-source-default-page-size)]
+    (when (not snapshot-ok)
+      (return (query-result-owned-values (result-set-error snapshot-error))))
+    (let [source (sqlite-db-read-source (addr snapshot))
+          result (q-result-prepared-db-read-source source prepared)]
+      (close-sqlite-db-snapshot! (addr snapshot))
+      result)))
+
+(defn sqlite-store-db [store: ^SQLite-Conn] -> [snapshot: Store-DB, ok: bool, error: string]
+  (let [[sqlite-snapshot snapshot-ok snapshot-error] (sqlite-conn-open-db-snapshot store sqlite-db-source-default-page-size)]
+    (if snapshot-ok
+      (return (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: sqlite-snapshot}) true "")
+      (return (Store-DB {}) false snapshot-error))))
+
+(defn store-db-read-source [snapshot: ^Store-DB] -> [source: DB-Read-Source, ok: bool, error: string]
+  (case snapshot^.kind
+    .Resident (return (resident-db-read-source (addr snapshot^.resident)) true "")
+    .SQLite-Snapshot (return (sqlite-db-read-source (addr snapshot^.sqlite-snapshot)) true "")
+     (return (DB-Read-Source {}) false "store DB snapshot is not open")))
+
+(defn q-result-store-db-text [snapshot: ^Store-DB, text: string] -> Query-Result
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (if source-ok
+      (q-result-text-db-read-source source text)
+      (query-result-owned-values (result-set-error source-error)))))
+
+(defn q-result-store-db-prepared [snapshot: ^Store-DB, prepared: Prepared-Query] -> Query-Result
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (if source-ok
+      (q-result-prepared-db-read-source source prepared)
+      (query-result-owned-values (result-set-error source-error)))))
+
 (defn sqlite-open-db-snapshot [path: string, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
   (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
     (when (not open-ok)
@@ -2244,6 +2316,17 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (let [owned snapshot]
     (close-sqlite-db-snapshot! (addr owned))))
 
+(defn close-store-db! [snapshot: ^Store-DB]
+  (case snapshot^.kind
+    .Resident (delete-owned-db snapshot^.resident)
+    .SQLite-Snapshot (close-sqlite-db-snapshot! (addr snapshot^.sqlite-snapshot))
+     (do))
+  (set! snapshot^ (Store-DB {})))
+
+(defn close-store-db [snapshot: Store-DB]
+  (let [owned snapshot]
+    (close-store-db! (addr owned))))
+
 (defn close-sqlite-conn [store: SQLite-Conn]
   (sqlite-close-live-raw store.handle)
   (delete store.path)
@@ -2258,6 +2341,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (delete restored.listeners)))
 
 (defn transact-sqlite-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> Tx-Report
+  (when store^.source-only
+    (return (failed-tx-report store^.conn.db "SQLite source connection is read-only; open a writable SQLite connection to transact")))
   (let [report (transact-tx-data (addr store^.conn) tx-data)]
     (when (not report.ok)
       (return report))
@@ -2278,11 +2363,29 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn open-store [uri: string] -> [store: Store-Conn, ok: bool, error: string]
   (open-sqlite-conn uri))
 
+(defn open-store-read-only [uri: string] -> [store: Store-Conn, ok: bool, error: string]
+  (open-sqlite-source-conn uri))
+
 (defn close-store [store: Store-Conn]
   (close-sqlite-conn store))
 
+(defn store-read-only? [store: ^Store-Conn] -> bool
+  store^.source-only)
+
+(defn store-resident-db-available? [store: ^Store-Conn] -> bool
+  (not store^.source-only))
+
+(defn store-db [store: ^Store-Conn] -> [snapshot: Store-DB, ok: bool, error: string]
+  (sqlite-store-db store))
+
 (defn store-tx-count [store: ^Store-Conn] -> [tx-count: u64, ok: bool, error: string]
   (sqlite-conn-tx-count store))
+
+(defn q-result-store-text [store: ^Store-Conn, text: string] -> Query-Result
+  (q-result-sqlite-conn-text store text))
+
+(defn q-result-store-prepared [store: ^Store-Conn, prepared: Prepared-Query] -> Query-Result
+  (q-result-sqlite-conn-prepared store prepared))
 
 (defn transact-store-text [store: ^Store-Conn, text: string] -> Tx-Report
   (transact-sqlite-text store text))

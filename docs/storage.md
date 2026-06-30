@@ -66,7 +66,26 @@ entity by binary-searching persisted EAVT and resolving only that entity's
 datoms, plus attribute and entity+attribute reads by binary-searching persisted
 AEVT/EAVT and resolving matching durable log indexes. The DB snapshot keeps a
 prepared datom-by-log-index statement open for repeated materialization.
-Normal reopen/query access through those cursors is the next storage step.
+Live SQLite connections now have internal text and prepared query wrappers
+(`q-result-sqlite-conn-text` and `q-result-sqlite-conn-prepared`) that open a
+short-lived `SQLite-DB-Snapshot`, query through `DB-Read-Source`, close the
+storage snapshot, and return an owned `Query-Result`. Normal public
+`connect`/`db` access through those cursors is the next storage step. There is
+also an internal source-only SQLite connection opener that skips
+`load-db-sqlite` and keeps only the live SQLite handle plus a small resident
+shell for cleanup/error reporting. That source-only handle can query through
+the persisted snapshot wrappers and rejects transactions explicitly.
+The storage-neutral aliases (`open-store-read-only`, `q-result-store-text`, and
+`q-result-store-prepared`) now expose this mode inside Vev without making
+query-facing code mention SQLite. `store-read-only?` and
+`store-resident-db-available?` make the current compatibility boundary explicit:
+read-only stores can query persisted index chunks, but they do not contain a
+resident rebuilt `DB`.
+`Store-DB` is the internal storage-neutral immutable DB snapshot handle for
+this path. It currently wraps a retained `SQLite-DB-Snapshot`, exposes the
+same `DB-Read-Source` boundary as resident DBs, and can run text/prepared
+queries without rebuilding resident arrays. This is the shape the public
+host-facing `d/db` handles should eventually use.
 
 There are now two write modes:
 
@@ -159,8 +178,33 @@ wrapper when it has the successful transaction report in hand.
 - `persisted-db-snapshot-source-join-query`: parse and execute a multi-clause
   EDN join query against `SQLite-DB-Snapshot` through the source-backed query
   path, without reopening resident arrays
+- live store source queries: internal text/prepared wrappers query the latest
+  persisted snapshot through source-backed reads, then close the snapshot before
+  returning owned result rows
+- read-only store open/query: skips resident datom-log replay and uses the live
+  handle only for short-lived persisted snapshot reads
+- `store-conn-source-prepared-query`: open a normal live durable store and
+  measure the prepared-query wrapper that opens/closes a short-lived persisted
+  snapshot for each read
+- `store-read-only-open`: open a read-only durable store without resident
+  datom-log replay
+- `store-read-only-prepared-query`: query through a read-only durable store,
+  opening short-lived persisted snapshots for each read
+- `store-db-prepared-query`: retain a chunk-backed immutable `Store-DB`
+  snapshot once and run prepared queries against that DB value
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
+
+`bench/sqlite_storage.kvist` accepts `--workload <name>` to run one workload.
+The group names `append`, `durable`, and `source` run related subsets; `all`
+remains the default.
+
+The current `source` subset exercises the persisted source query path, the
+store-level prepared query wrapper, read-only store open/query, and retained
+`Store-DB` DB-value queries without resident datom-log replay. While adding
+this selector, the source-backed clause matcher was tightened to treat scanned
+datom values as borrowed and copy only when a value is stored in an output
+binding. That keeps source snapshot query cleanup valid for larger scans.
 
 The first benchmark pass found and fixed a serializer ownership bug: storage
 callers delete `value-serializable-text` results, so that function must return
@@ -182,12 +226,24 @@ launched without source edits. It also has `--workload pure|mixed|both` and
 `--path`, which allows the Datalevin-style sequence of writing a durable store
 first and then running mixed read/write against the same store. It uses a plain
 long `:item/key`, matching Datalevin's write-bench schema.
+The `snapshot-heavy` workload keeps the same durable write path but calls the
+ordinary DB snapshot API after each commit and retains every old DB value until
+the end of the run. That workload is the current Batch 4 acceptance harness for
+Datomic-style code that passes DB snapshots around while a connection continues
+to transact.
 
 A 10k-row local run on June 26, 2026 shows the current durable shape clearly:
 
 - batch-100 pure write: about 13k writes/second by 10k rows
 - batch-1 pure write: about 544 writes/second by 10k rows
 - mixed read/write over a 10k-row store: about 184 writes/second
+
+An initial `snapshot-heavy --total 500 --batch 1` local run on June 30, 2026
+kept 500 old DB snapshots alive. Commit latency grew from about 0.33 ms near
+100 writes to about 2.07 ms near 500 writes. The explicit post-commit `db`
+clone was still only about 0.003-0.008 ms per snapshot at that scale, so the
+visible problem is the commit/publish path copying and rebuilding resident
+arrays, not the additional retained handle container by itself.
 
 The batch-1 and mixed curves point at the same bottleneck: each successful
 connection transaction produces a new immutable `DB` value by copying the datom
@@ -231,6 +287,21 @@ successful report's `db-before`, and the connection moves to the newly
 published `db-after`. This is not the shared-index representation yet, but it
 keeps all transaction entrypoints on the same publish boundary before the DB
 layout changes.
+
+The first shared-index building block is now present as `Shared-Int-Index`.
+It stores index entries in retained immutable chunks, can append new chunks
+while sharing old chunks, and has tests for releasing old and new handles
+independently. It is not yet wired into `DB.eavt`, `DB.aevt`, `DB.avet`, or
+`DB.vaet`; the next storage step is to add a DB-index wrapper around this
+chunked representation and move resident index publication to that boundary.
+That wrapper now exists as `Shared-DB-Int-Indexes`, and the existing
+`DB-Index-View` abstraction can read from it. The remaining step is changing
+transaction publication to store or retain these shared indexes as part of DB
+snapshots, rather than only materializing owned resident arrays.
+`DB-Read-Source` can also wrap a resident datom log with shared chunked index
+views, and a source-backed query test now runs EDN text over that source. This
+is the first executable query path over the new in-memory shared-index
+representation.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

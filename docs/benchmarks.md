@@ -682,7 +682,8 @@ and then run mixed read/write against that same store:
 
 Options:
 
-- `--workload`: `both` for the local default, `pure`, or `mixed`
+- `--workload`: `both` for the local default, `pure`, `mixed`, or
+  `snapshot-heavy`
 - `--path`: SQLite file for single-workload runs; `both` uses derived temp paths
 - `--total`: pure-write rows to transact and mixed-read/write seed size
 - `--report-every`: row interval for progress samples
@@ -716,6 +717,8 @@ yet a direct apples-to-apples run of the upstream benchmark. It measures:
 
 - pure durable writes at batch sizes 1, 10, 100, and 1000
 - mixed read/write behavior against an existing SQLite-backed Vev store
+- snapshot-heavy writes that retain an ordinary immutable DB snapshot after
+  each successful commit
 - end-to-end `transact-sqlite-*` call latency and commit-path latency
 
 The default dataset is deliberately small so it can run during ordinary
@@ -732,6 +735,14 @@ immutable DB/index copying, not EDN parsing or SQLite binding. The next storage
 performance work should therefore introduce shared immutable DB/index storage
 before chasing smaller loop-level optimizations. After that, wire Vev into
 Datalevin's upstream `write-bench` shape for direct comparison.
+
+The first `snapshot-heavy` run confirms the same architectural target. With 500
+batch-1 durable writes and 500 retained old DB values, commit latency grows from
+about 0.33 ms near 100 writes to about 2.07 ms near 500 writes. The explicit
+post-commit `db` clone measured by the harness remains around 0.003-0.008 ms at
+that scale, so the next fix is not a reportless or host-handle shortcut. The
+engine needs a DB/index representation that can publish immutable snapshots
+without copying and rebuilding full resident arrays on every commit.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured

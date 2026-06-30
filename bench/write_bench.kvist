@@ -214,6 +214,102 @@
     (vev.delete-prepared-query-shallow query)
     (vev.close-sqlite-conn store)))
 
+(defn delete-retained-dbs [dbs: [dynamic]vev.DB]
+  (for [snapshot dbs]
+    (vev.delete-owned-db snapshot))
+  (delete dbs))
+
+(defn print-snapshot-heavy-header [batch-size: int, total: int]
+  (fmt.printf "engine=vev-sqlite workload=snapshot-heavy batch=%d total=%d columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms\n"
+              batch-size
+              total))
+
+(defn print-snapshot-heavy-row [written: int, retained: int, inserted: int, start: time.Time, interval-start: time.Time, call-us: f64, commit-us: f64, snapshot-us: f64, commits: int]
+  (let [elapsed-us (bench.elapsed-us start)
+        interval-us (bench.elapsed-us interval-start)
+        elapsed-s (/ elapsed-us 1000000.0)
+        throughput (if (> elapsed-us 0.0)
+                     (/ (* (f64 inserted) 1000000.0) elapsed-us)
+                     0.0)
+        call-ms (if (> commits 0)
+                  (/ call-us (* (f64 commits) 1000.0))
+                  0.0)
+        commit-ms (if (> commits 0)
+                    (/ commit-us (* (f64 commits) 1000.0))
+                    0.0)
+        snapshot-ms (if (> commits 0)
+                      (/ snapshot-us (* (f64 commits) 1000.0))
+                      0.0)]
+    (discard interval-us)
+    (fmt.printf "%d,%d,%.3f,%.2f,%.3f,%.3f,%.3f\n"
+                written
+                retained
+                elapsed-s
+                throughput
+                call-ms
+                commit-ms
+                snapshot-ms)))
+
+(defn measure-snapshot-heavy-write [path: string, batch-size: int, total: int, report-every: int]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-sqlite-conn path)
+        retained (make [dynamic]vev.DB)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-sqlite workload=snapshot-heavy ok=false error=%s\n" open-error)
+      (delete retained)
+      (return))
+    (when (not (seed-write-schema (addr store)))
+      (delete retained)
+      (vev.close-sqlite-conn store)
+      (return))
+    (print-snapshot-heavy-header batch-size total)
+    (let [start (time.now)
+          interval-start start
+          call-us 0.0
+          commit-us 0.0
+          snapshot-us 0.0
+          commits 0
+          inserted 0
+          written 0]
+      (while (< written total)
+        (let [remaining (- total written)
+              actual-batch (min batch-size remaining)
+              tx (item-batch-tx (+ written 1) actual-batch 0)
+              before (time.now)
+              report (vev.transact-sqlite-tx-data (addr store) (slice tx 0))
+              commit-elapsed (bench.elapsed-us before)]
+          (set! call-us (+ call-us commit-elapsed))
+          (set! commit-us (+ commit-us commit-elapsed))
+          (set! commits (+ commits 1))
+          (when (not report.ok)
+            (fmt.printf "engine=vev-sqlite workload=snapshot-heavy ok=false error=%s\n" report.error)
+            (vev.delete-tx-report-shallow report)
+            (delete tx)
+            (delete-retained-dbs retained)
+            (vev.close-sqlite-conn store)
+            (return))
+          (vev.delete-live-tx-report-shallow report)
+          (delete tx)
+          (let [snapshot-before (time.now)
+                snapshot (vev.db (addr store.conn))
+                snapshot-elapsed (bench.elapsed-us snapshot-before)]
+            (arr.push! retained snapshot)
+            (set! call-us (+ call-us snapshot-elapsed))
+            (set! snapshot-us (+ snapshot-us snapshot-elapsed)))
+          (set! inserted (+ inserted actual-batch))
+          (set! written (+ written actual-batch))
+          (when (or (= written total)
+                    (= (% written report-every) 0))
+            (print-snapshot-heavy-row written (count retained) inserted start interval-start call-us commit-us snapshot-us commits)
+            (set! call-us 0.0)
+            (set! commit-us 0.0)
+            (set! snapshot-us 0.0)
+            (set! commits 0)
+            (set! interval-start (time.now))))))
+    (delete-retained-dbs retained)
+    (vev.close-sqlite-conn store)
+    (remove-sqlite-files path)))
+
 (defn run-pure-workload [path: string, batch-size: int, total: int, report-every: int]
   (measure-pure-write path batch-size total report-every)
   (remove-sqlite-files path))
@@ -242,12 +338,16 @@
         (run-all-pure-workloads path total report-every))
       (if (= workload "mixed")
         (measure-mixed-read-write path total mixed-operations report-every)
-        (if (= workload "both")
-          (let [mixed-path (fmt.tprintf "%s.mixed" path)]
-            (if (> selected-batch 0)
-              (run-pure-workload path selected-batch total report-every)
-              (run-all-pure-workloads path total report-every))
-            (when (seed-pure-write mixed-path total seed-batch)
-              (measure-mixed-read-write mixed-path total mixed-operations report-every))
-            (remove-sqlite-files mixed-path))
-          (fmt.printf "unknown --workload %s; expected pure, mixed, or both\n" workload))))))
+        (if (= workload "snapshot-heavy")
+          (measure-snapshot-heavy-write path (max 1 selected-batch) total report-every)
+          (if (= workload "both")
+            (let [mixed-path (fmt.tprintf "%s.mixed" path)
+                  snapshot-path (fmt.tprintf "%s.snapshot" path)]
+              (if (> selected-batch 0)
+                (run-pure-workload path selected-batch total report-every)
+                (run-all-pure-workloads path total report-every))
+              (when (seed-pure-write mixed-path total seed-batch)
+                (measure-mixed-read-write mixed-path total mixed-operations report-every))
+              (measure-snapshot-heavy-write snapshot-path (max 1 selected-batch) total report-every)
+              (remove-sqlite-files mixed-path))
+            (fmt.printf "unknown --workload %s; expected pure, mixed, snapshot-heavy, or both\n" workload)))))))

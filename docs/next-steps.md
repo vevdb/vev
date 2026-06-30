@@ -101,12 +101,46 @@ Implemented so far:
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
+- `bench/sqlite_storage.kvist` now accepts `--workload <name>`, plus the
+  groups `append`, `durable`, and `source`, so durable source reads can be
+  measured without running the full write/reopen suite. The source connection
+  benchmark labels now use storage-neutral names:
+  `store-conn-source-prepared-query`, `store-read-only-open`, and
+  `store-read-only-prepared-query`, plus `store-db-prepared-query` for the
+  retained immutable snapshot shape. The `source` group has been verified to
+  run cleanly against the storage-neutral wrappers and retained `Store-DB`.
 - source-backed query result rows use owned value copies, and callers now have
   `delete-result-set-owned-values` for the matching cleanup shape.
+- SQLite-backed live connections can now run text and prepared queries through
+  a short-lived `SQLite-DB-Snapshot` plus `DB-Read-Source`, returning the
+  ownership-tagged `Query-Result` shape after closing the storage snapshot.
+  This starts the normal durable read path without forcing callers through
+  `load-db-sqlite`.
+- SQLite also has an internal source-only connection opener that skips
+  `load-db-sqlite` entirely, keeps only the live SQLite handle plus an empty
+  resident connection shell for cleanup/error reporting, and rejects
+  transactions explicitly. Source-only connections can run the same
+  persisted-snapshot text/prepared query wrappers.
+- storage-neutral read-only store wrappers now sit on top of that mode:
+  `open-store-read-only`, `q-result-store-text`, and
+  `q-result-store-prepared`. Tests use these names so the next host-facing API
+  work does not have to expose SQLite-specific query calls.
+- `store-read-only?` and `store-resident-db-available?` make the current
+  boundary explicit: source-only durable stores can query persisted chunks but
+  cannot provide a resident rebuilt `DB` value.
+- `Store-DB` is now an internal storage-neutral immutable DB snapshot handle.
+  It can wrap a retained `SQLite-DB-Snapshot`, expose a `DB-Read-Source`, run
+  text/prepared queries, and close the retained snapshot explicitly. This is
+  the internal shape the C ABI/JVM/Clojure durable `d/db` handle should map to
+  once the ABI callback compile blocker is cleared.
 - source-backed function clauses copy produced values into owned result
   bindings and then shallow-clean temporary function result containers, avoiding
   leaked vector/map wrappers without deleting scalar values that may be borrowed
   from existing bindings.
+- source-backed data-clause matching now treats scanned datom values as
+  borrowed candidates and copies only when a value is stored in an output
+  binding. This fixes cleanup for larger source-backed scans and matches the
+  ownership model of persisted index cursors.
 - prepared query objects can now execute directly against `DB-Read-Source`
   through `q-prepared-db-read-source...` wrappers. This keeps the durable
   snapshot path aligned with the prepared-query API that host bindings will use,
@@ -136,9 +170,10 @@ Implemented so far:
   same source index boundary for resident and persisted SQLite snapshot sources,
   so query-facing code no longer needs to reach for resident `eavt` side tables
   just to answer entity-local reads. Source-level typed integer reads and
-  equality checks now sit on the same boundary, and one typed entity/int
-  projection fallback now uses those helpers instead of resident entity-position
-  side tables.
+  equality checks now sit on the same boundary. Typed entity/int and
+  entity/string/int projection fallbacks now use those helpers instead of
+  resident entity-position side tables, with owned string copies tracked in the
+  typed string/int column container when needed.
 
 Work:
 
@@ -204,12 +239,9 @@ Work:
 2. Replace direct `eavt-entities` / `eavt-entity-starts` reads in query-facing
    code with source methods. The source methods exist, source-level integer and
    equality helpers are covered for resident and persisted snapshots, and the
-   entity/int projection fallback has started using them. The remaining work is
-   migrating the string/int triple column path that still calls the
-   resident-only entity-position helpers. That path stores borrowed strings in
-   typed columns today, while `DB-Read-Source` value helpers return owned values
-   for SQLite snapshots, so it should move together with the typed result-column
-   ownership cleanup instead of being forced through a temporary owned string.
+   entity/int plus string/int projection fallbacks now use them. Runtime
+   string/int typed columns can now mark owned string copies, and the ABI wrapper
+   reads that ownership bit for cleanup.
 3. Keep the resident side table as an implementation detail for resident DBs,
    not as a query-engine assumption.
 
@@ -231,12 +263,23 @@ Work:
 
 1. Add an explicit durable read mode for SQLite-backed connections:
    - compatibility resident mode can remain for debugging/recovery
-   - normal read mode should construct a `SQLite-DB-Snapshot` from latest roots
+   - normal read mode should construct a `SQLite-DB-Snapshot` from latest roots.
+     The first internal text/prepared query wrappers now do this and return
+     owned `Query-Result` values.
+   - an internal source-only SQLite connection opener now skips resident rebuild
+     on open and rejects writes explicitly
+   - storage-neutral read-only store wrappers now expose that path internally
+     without requiring callers to mention SQLite-specific query functions
+   - `Store-DB` now retains a chunk-backed read snapshot and can be passed to
+     query code as an immutable DB value inside Vev
 2. Keep datom-log replay available for recovery, validation, migration, and
    fallback.
 3. Update C ABI/JVM/Clojure connection DB snapshots so the public API can pass
    the durable snapshot as an immutable DB value.
-4. Make errors explicit when a query path still requires resident arrays.
+4. Make errors explicit when a query path still requires resident arrays. The
+   first explicit guard is `store-resident-db-available?`; host-facing snapshot
+   handles still need to turn this into a public error/alternate source-backed
+   DB handle.
 
 Acceptance:
 
@@ -250,15 +293,48 @@ Acceptance:
 
 ## Batch 4: Shared Immutable Index Storage For Commits
 
+Status: started.
+
 Goal:
 
 - stop creating a full copied datom/index array set for every committed DB
   snapshot.
 
+Implemented so far:
+
+- `bench/write_bench.kvist` now has a `snapshot-heavy` workload. It performs
+  normal SQLite-backed transactions, calls the ordinary `db` snapshot API after
+  each commit, and retains every old DB value until the end of the run. This
+  gives Batch 4 a concrete acceptance harness for Datomic-style "DB as value"
+  usage with many old snapshots alive.
+- A local batch-1 baseline with 500 retained DB snapshots shows commit latency
+  growing from about 0.33 ms near 100 writes to about 2.07 ms near 500 writes,
+  while the explicit post-commit `db` clone is still only about 0.003-0.008 ms
+  per retained snapshot at that scale. The immediate problem is therefore the
+  commit/publish path copying and rebuilding resident arrays, not just host DB
+  handle retention.
+- `Shared-Int-Index` is the first in-memory representation building block for
+  shared immutable indexes. It stores int index entries in explicitly retained
+  chunks, supports old snapshot retention plus append-by-new-chunks, and has
+  tests proving older and newer handles can be released independently while
+  surviving snapshots still read correctly. It is not wired into `DB` yet.
+- `Shared-DB-Int-Indexes` now groups the resident int index arrays, and
+  `DB-Index-View` can read from shared chunked indexes in addition to resident
+  slices and SQLite cursors. Tests compare shared-backed `eavt`, `aevt`, `avet`,
+  and `vaet` views against the current resident arrays and verify retained
+  grouped index handles survive after the original handle is released.
+- `DB-Read-Source` now has a shared-resident-index variant. It scans shared
+  chunked index views while still materializing datoms/currentness from the
+  resident datom log. A source-backed EDN query test proves the existing
+  persisted/source query runner can execute over this representation.
+
 Work:
 
 1. Introduce a DB index storage layer with immutable base chunks plus a small
-   transaction delta.
+   transaction delta. The first retained chunk primitive and grouped DB int
+   index wrapper exist; the next step is to move a transaction publish path to
+   build and retain those shared indexes instead of publishing only owned
+   `[]int` arrays.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact.
@@ -266,6 +342,9 @@ Work:
    instead of maintaining it as a separate optimization.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
+6. Re-run `snapshot-heavy`, `pure --batch 1`, and `mixed` write-bench after each
+   representation step so the architecture work is measured against the actual
+   immutable DB-value workload.
 
 Acceptance:
 
