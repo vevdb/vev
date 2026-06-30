@@ -441,6 +441,12 @@ Implemented so far:
   `db-after` remain independently queryable. This is the host-facing DB-value
   lifetime shape needed before the C/JVM handles can stop depending on resident
   DB clones.
+- Transaction reports now carry the transaction engine's append-only and
+  ordered-new-entity publication facts. `Shared-Conn` consumes those fields
+  directly instead of recomputing append eligibility from `tx-data` after the
+  resident transaction has already been applied. This is a small but important
+  step toward making the transaction engine emit a publish plan that shared
+  storage can consume directly.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -466,8 +472,9 @@ Work:
    transaction delta. The first retained chunk primitive, grouped DB int index
    wrapper, retained DB snapshot, and connection-side shared publish wrapper
    exist. The next step is to make transaction publication build shared chunks
-   directly instead of publishing through a resident `DB` and then adapting it
-   into a shared snapshot.
+   directly from the transaction engine's append/publish metadata instead of
+   publishing through a resident `DB` and then adapting it into a shared
+   snapshot.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases, and append-only/new-entity publication
@@ -491,7 +498,9 @@ Work:
    resident DB rendering. The next step is wiring C/JVM DB handles to
    storage-neutral `Store-DB` snapshots instead of resident `DB` clones.
 4. Fold the existing append-only incremental path into this representation
-   instead of maintaining it as a separate optimization.
+   instead of maintaining it as a separate optimization. The first fold is in
+   place: append-only/new-entity decisions are now report metadata owned by the
+   transaction engine, not storage-adapter recomputation.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
 6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`, `pure --batch 1`, and
