@@ -70,20 +70,21 @@ Implemented so far:
   persisted source with cycle guards. Source-backed query APIs also have
   `with-fns` variants so native pull xform callbacks can run against persisted
   snapshots. Named `$source` qualifiers can now resolve to distinct
-  `DB-Read-Source` values for source-backed data clauses and pull finds, with
-  the original single-source functions preserved as wrappers. Both bounded
-  recursion and unbounded `...` recursion have source-backed persisted snapshot
-  coverage.
+  `DB-Read-Source` values for source-backed data clauses, pull finds, and
+  source-taking function forms such as `get-else`/`get-some`, with the original
+  single-source functions preserved as wrappers. Both bounded recursion and
+  unbounded `...` recursion have source-backed persisted snapshot coverage.
   Source-backed text queries also accept scalar `:in` values through direct
   `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
   retraction case. It also checks that primary `$`, same-source named aliases,
-  and a distinct named `DB-Read-Source` work for source-backed data clauses and
-  pull finds, plus predicate filtering with both matching and empty results,
-  scalar and destructuring function output, `ground`, `get-else`,
-  `get-some`, `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
-  wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
+  and a distinct named `DB-Read-Source` work for source-backed data clauses,
+  pull finds, `get-else`, and `get-some`, plus predicate filtering with both
+  matching and empty results, scalar and destructuring function output,
+  `ground`, `get-else`, `get-some`, `missing?`/not-group, `or`, and `or-join`
+  clauses, flat literal pull finds, wildcard pull finds, flat reverse-ref pull
+  finds, nested forward-ref and
   nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
   built-in and callback pull xforms, bounded and unbounded pull recursion,
   scalar inputs, and pull pattern inputs through both direct `Query-Input` and
@@ -119,18 +120,14 @@ Remaining in this batch:
 
 1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
    new source-backed plain-clause query runner.
-2. Broaden `q-text-db-read-source` beyond plain data clauses:
-   - source-aware handling for function forms whose first argument is a source,
-     such as `get-else`/`get-some`; ordinary data clauses, branch data clauses,
-     and pull finds already resolve named `DB-Read-Source` inputs
-3. Extend source-backed pull beyond simple forward scalar/many attrs or
+2. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary. Flat literal
    forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
    and pattern-variable pull finds plus defaults, limits, and built-in xforms
    are now covered; callback xforms and bounded recursion are also covered.
    Unbounded recursion and distinct named-source pull finds have persisted
    snapshot/source-backed coverage too.
-4. Decide the public API shape for source-backed result ownership before this
+3. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
 

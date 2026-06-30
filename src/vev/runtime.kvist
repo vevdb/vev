@@ -23,12 +23,12 @@
       (let [items (make [dynamic]Value 0 (count value.items))]
         (for [item value.items]
           (arr.push! items (value-owned item)))
-        (Value {kind: .Vector items: items}))
+        (value-vector-owned items))
     .Map
       (let [items (make [dynamic]Value 0 (count value.items))]
         (for [item value.items]
           (arr.push! items (value-owned item)))
-        (Value {kind: .Map items: items}))
+        (value-map-owned items))
      value))
 
 (defn datom-owned [datom: Datom] -> Datom
@@ -113,11 +113,15 @@
     out))
 
 (defn get-some-owned [clause: Get-Some] -> Get-Some
-  (let [attrs (arr.into [dynamic]string (slice clause.attrs 0))]
-    (Get-Some {e: clause.e
-               attrs: attrs
-               out-attr: clause.out-attr
-               out-value: clause.out-value})))
+  (let [out (Get-Some {source: clause.source
+                       has-source: clause.has-source
+                       e: clause.e
+                       attrs: (make [dynamic]string 0 (count clause.attrs))
+                       out-attr: clause.out-attr
+                       out-value: clause.out-value})]
+    (for [attr clause.attrs]
+      (arr.push! out.attrs attr))
+    out))
 
 (defn get-some-slice-owned [clauses: []Get-Some] -> [dynamic]Get-Some
   (let [out (make [dynamic]Get-Some 0 (count clauses))]
@@ -4337,16 +4341,27 @@
         (let [[next next-ok] (db-read-source-binding-with-owned-value binding clause.out (value-owned clause.default-value))]
           (return next next-ok ""))))))
 
+(defn db-read-source-for-get-else [source: DB-Read-Source, sources: []DB-Read-Named-Source, get-else: Get-Else] -> [read-source: DB-Read-Source, ok: bool, error: string]
+  (if get-else.has-source
+    (db-read-source-for-name source sources get-else.source)
+    (return source true "")))
+
+(defn db-read-source-bindings-after-get-else-with-sources [source: DB-Read-Source, sources: []DB-Read-Named-Source, input-bindings: []Binding, get-else: Get-Else] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [[read-source read-source-ok read-source-error] (db-read-source-for-get-else source sources get-else)]
+    (when (not read-source-ok)
+      (return (make [dynamic]Binding) false read-source-error))
+    (let [out (make [dynamic]Binding)]
+      (for [binding input-bindings]
+        (let [[next next-ok next-error] (db-read-source-apply-get-else read-source binding get-else)]
+          (when (not (= next-error ""))
+            (db-read-source-delete-bindings-owned out)
+            (return (make [dynamic]Binding) false next-error))
+          (when next-ok
+            (arr.push! out next))))
+      (return out true ""))))
+
 (defn db-read-source-bindings-after-get-else [source: DB-Read-Source, input-bindings: []Binding, get-else: Get-Else] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
-  (let [out (make [dynamic]Binding)]
-    (for [binding input-bindings]
-      (let [[next next-ok next-error] (db-read-source-apply-get-else source binding get-else)]
-        (when (not (= next-error ""))
-          (db-read-source-delete-bindings-owned out)
-          (return (make [dynamic]Binding) false next-error))
-        (when next-ok
-          (arr.push! out next))))
-    (return out true "")))
+  (db-read-source-bindings-after-get-else-with-sources source ([]DB-Read-Named-Source []) input-bindings get-else))
 
 (defn db-read-source-apply-get-some [source: DB-Read-Source, binding: Binding, clause: Get-Some] -> [next: Binding, ok: bool, error: string]
   (let [[entity entity-ok entity-error] (db-read-source-resolve-entity-term source clause.e binding)]
@@ -4366,16 +4381,27 @@
               (delete-owned-value value))))))
     (return (Binding {}) false "")))
 
+(defn db-read-source-for-get-some [source: DB-Read-Source, sources: []DB-Read-Named-Source, get-some: Get-Some] -> [read-source: DB-Read-Source, ok: bool, error: string]
+  (if get-some.has-source
+    (db-read-source-for-name source sources get-some.source)
+    (return source true "")))
+
+(defn db-read-source-bindings-after-get-some-with-sources [source: DB-Read-Source, sources: []DB-Read-Named-Source, input-bindings: []Binding, get-some: Get-Some] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [[read-source read-source-ok read-source-error] (db-read-source-for-get-some source sources get-some)]
+    (when (not read-source-ok)
+      (return (make [dynamic]Binding) false read-source-error))
+    (let [out (make [dynamic]Binding)]
+      (for [binding input-bindings]
+        (let [[next next-ok next-error] (db-read-source-apply-get-some read-source binding get-some)]
+          (when (not (= next-error ""))
+            (db-read-source-delete-bindings-owned out)
+            (return (make [dynamic]Binding) false next-error))
+          (when next-ok
+            (arr.push! out next))))
+      (return out true ""))))
+
 (defn db-read-source-bindings-after-get-some [source: DB-Read-Source, input-bindings: []Binding, get-some: Get-Some] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
-  (let [out (make [dynamic]Binding)]
-    (for [binding input-bindings]
-      (let [[next next-ok next-error] (db-read-source-apply-get-some source binding get-some)]
-        (when (not (= next-error ""))
-          (db-read-source-delete-bindings-owned out)
-          (return (make [dynamic]Binding) false next-error))
-        (when next-ok
-          (arr.push! out next))))
-    (return out true "")))
+  (db-read-source-bindings-after-get-some-with-sources source ([]DB-Read-Named-Source []) input-bindings get-some))
 
 (defn db-read-source-not-group-step-bindings [source: DB-Read-Source, sources: []DB-Read-Named-Source, group: Not-Group, bindings: [dynamic]Binding, step: Query-Step] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
   (cond
@@ -4938,13 +4964,13 @@
               (return (result-set-error next-error)))
             (set! bindings next))
         (= step.kind .GetElse)
-          (let [[next next-ok next-error] (db-read-source-bindings-after-get-else source (slice bindings 0) query-value.get-elses[step.index])]
+          (let [[next next-ok next-error] (db-read-source-bindings-after-get-else-with-sources source sources (slice bindings 0) query-value.get-elses[step.index])]
             (db-read-source-delete-bindings-owned bindings)
             (when (not next-ok)
               (return (result-set-error next-error)))
             (set! bindings next))
         (= step.kind .GetSome)
-          (let [[next next-ok next-error] (db-read-source-bindings-after-get-some source (slice bindings 0) query-value.get-somes[step.index])]
+          (let [[next next-ok next-error] (db-read-source-bindings-after-get-some-with-sources source sources (slice bindings 0) query-value.get-somes[step.index])]
             (db-read-source-delete-bindings-owned bindings)
             (when (not next-ok)
               (return (result-set-error next-error)))
@@ -12706,7 +12732,7 @@
           (while (< index take-count)
             (arr.push! out sorted[index])
             (set! index (+ index 1)))))
-      (Value {kind: .Vector items: out}))))
+      (value-vector-owned out))))
 
 (defn query-attr-top-n-aggregate-plan [query: Query] -> [plan: Attr-Top-N-Aggregate-Plan, ok: bool]
   (let [out (empty-attr-top-n-aggregate-plan)]
@@ -12792,7 +12818,7 @@
                 (set! last-value datom.v)
                 (set! has-last true))))
           (set! i (+ i 1)))))
-    (Value {kind: .Vector items: out})))
+    (value-vector-owned out)))
 
 (defn q-attr-top-n-aggregate-profiled [db: DB, query: Query, plan: Attr-Top-N-Aggregate-Plan, stats: Query-Stats] -> Profiled-Result-Set
   (let [out-stats stats
@@ -12935,7 +12961,7 @@
           (arr.push! out sorted[index])))
       (for [value sorted]
         (arr.push! out value)))
-    (Value {kind: .Vector items: out})))
+    (value-vector-owned out)))
 
 (defn median-int [values: []i64] -> Value
   (when (= (count values) 0)
