@@ -3666,6 +3666,17 @@
     .SQLite-Snapshot (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
      (DB-Index-View {})))
 
+(defn db-read-source-eavt-entity-range [source: DB-Read-Source, entity: u64] -> [low: int, high: int, exists: bool, ok: bool, error: string]
+  (let [view (db-read-source-index-view source .EAVT)
+        values ([]Value [(value-entity entity)])
+        [range-low range-low-ok range-low-error] (db-read-source-lower-bound-values source view values)]
+    (when (not range-low-ok)
+      (return 0 0 false false range-low-error))
+    (let [[range-high range-high-ok range-high-error] (db-read-source-upper-bound-values source view values)]
+      (when (not range-high-ok)
+        (return 0 0 false false range-high-error))
+      (return range-low range-high (> range-high range-low) true ""))))
+
 (defn db-index-view-count [view: DB-Index-View] -> int
   (if (= view.kind .SQLite-Cursor)
     (sqlite-index-cursor-count view.sqlite-cursor^)
@@ -3704,16 +3715,18 @@
         (defer (delete-owned-datom datom))
         (when (not datom.added)
           (return false true ""))
-        (let [[range-low range-high range-ok range-error] (sqlite-db-snapshot-eavt-entity-range source.sqlite-snapshot datom.e)]
+        (let [[range-low range-high range-exists range-ok range-error] (db-read-source-eavt-entity-range source datom.e)]
           (when (not range-ok)
             (return false false range-error))
-          (let [view (sqlite-db-snapshot-index-view source.sqlite-snapshot .EAVT)
+          (when (not range-exists)
+            (return false true ""))
+          (let [view (db-read-source-index-view source .EAVT)
                 latest-tx: u64 0
                 latest-added false
                 found false]
             (for [pos (arr.range range-low range-high)]
               (let [candidate-entry (db-index-view-at view pos)
-                    [candidate candidate-ok candidate-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot candidate-entry)]
+                    [candidate candidate-ok candidate-error] (db-read-source-datom-at-entry source candidate-entry)]
                 (when (not candidate-ok)
                   (return false false candidate-error))
                 (let [matches (and (= candidate.e datom.e)
@@ -3918,13 +3931,72 @@
 
 (defn db-read-source-datoms-by-entity [source: DB-Read-Source, entity: u64] -> [datoms: [dynamic]Datom, ok: bool, error: string]
   (let [out (make [dynamic]Datom)
-        values ([]Value [(value-entity entity)])
-        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .EAVT values)]
-    (if scan-ok
-      (return out true "")
-      (do
-        (delete-owned-datoms out)
-        (return (make [dynamic]Datom) false scan-error)))))
+        [low high exists range-ok range-error] (db-read-source-eavt-entity-range source entity)]
+    (when (not range-ok)
+      (delete-owned-datoms out)
+      (return (make [dynamic]Datom) false range-error))
+    (when (not exists)
+      (return out true ""))
+    (let [view (db-read-source-index-view source .EAVT)]
+      (for [pos (arr.range low high)]
+        (let [entry (db-index-view-at view pos)
+              [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+          (when (not current-ok)
+            (delete-owned-datoms out)
+            (return (make [dynamic]Datom) false current-error))
+          (when current
+            (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+              (when (not datom-ok)
+                (delete-owned-datoms out)
+                (return (make [dynamic]Datom) false datom-error))
+              (arr.push! out datom))))))
+    (return out true "")))
+
+(defn db-read-source-eavt-entity-attr-position [source: DB-Read-Source, entity: u64, attr: string] -> [pos: int, exists: bool, ok: bool, error: string]
+  (let [[low high range-exists range-ok range-error] (db-read-source-eavt-entity-range source entity)]
+    (when (not range-ok)
+      (return 0 false false range-error))
+    (when (not range-exists)
+      (return 0 false true ""))
+    (let [view (db-read-source-index-view source .EAVT)
+          i low]
+      (while (< i high)
+        (let [entry (db-index-view-at view i)
+              [datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+          (when (not datom-ok)
+            (return 0 false false datom-error))
+          (let [compare (strings.compare datom.a attr)]
+            (delete-owned-datom datom)
+            (cond
+              (= compare 0) (return i true true "")
+              (> compare 0) (return 0 false true "")
+              :else (set! i (+ i 1))))))
+      (return 0 false true ""))))
+
+(defn db-read-source-cardinality-one-value-fast-all-current [source: DB-Read-Source, entity: u64, attr: string] -> [value: Value, ok: bool, error: string]
+  (let [[index-pos pos-exists pos-ok pos-error] (db-read-source-eavt-entity-attr-position source entity attr)]
+    (when (not pos-ok)
+      (return (Value {}) false pos-error))
+    (when (not pos-exists)
+      (return (Value {}) false ""))
+    (let [view (db-read-source-index-view source .EAVT)
+          entry (db-index-view-at view index-pos)
+          [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+      (when (not current-ok)
+        (return (Value {}) false current-error))
+      (when (not current)
+        (return (Value {}) false ""))
+      (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+        (when (not datom-ok)
+          (return (Value {}) false datom-error))
+        (if (and (= datom.e entity)
+                 (= datom.a attr))
+          (let [out (value-owned datom.v)]
+            (delete-owned-datom datom)
+            (return out true ""))
+          (do
+            (delete-owned-datom datom)
+            (return (Value {}) false "")))))))
 
 (defn db-read-source-datoms-by-reverse-entity-attr [source: DB-Read-Source, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
   (let [out (make [dynamic]Datom)

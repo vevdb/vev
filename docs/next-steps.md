@@ -131,6 +131,11 @@ Implemented so far:
   adds for the same entity and tuple attr even when the pending ops have an
   empty map group. The persisted source test keeps schema, entity data, tuple
   components, and lookup-ref coverage in one transaction.
+- `DB-Read-Source` now exposes source-neutral `eavt` entity ranges,
+  entity+attr positions, and cardinality-one value reads. These helpers use the
+  same source index boundary for resident and persisted SQLite snapshot sources,
+  so query-facing code no longer needs to reach for resident `eavt` side tables
+  just to answer entity-local reads.
 
 Work:
 
@@ -177,6 +182,8 @@ Acceptance:
 
 ## Batch 2: Entity Position Side Tables
 
+Status: started.
+
 Goal:
 
 - remove the remaining `eavt` resident side-table dependency from query-facing
@@ -185,10 +192,12 @@ Goal:
 Work:
 
 1. Decide the representation for entity ranges over chunked `eavt`:
-   - derive ranges by binary search over persisted `eavt` cursor first
+   - derive ranges by binary search over persisted `eavt` cursor first. This is
+     now implemented at the `DB-Read-Source` helper boundary.
    - add persisted entity range side tables only if benchmarks require it
 2. Replace direct `eavt-entities` / `eavt-entity-starts` reads in query-facing
-   code with source methods.
+   code with source methods. The source methods exist; the remaining work is
+   migrating typed query fast paths that still call the resident-only helpers.
 3. Keep the resident side table as an implementation detail for resident DBs,
    not as a query-engine assumption.
 
