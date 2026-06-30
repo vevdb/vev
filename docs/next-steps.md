@@ -39,7 +39,9 @@ Implemented so far:
 - source-backed data clauses now build a `Clause-Index-Scan` over
   `DB-Read-Source` ranges instead of using a separate ad hoc candidate picker,
   including entity/int comparison at source boundaries, omitted tx/op terms, and
-  reverse attribute data clauses such as `[301 :item/_parent ?child]`.
+  reverse attribute data clauses such as `[301 :item/_parent ?child]`. EDN
+  lookup-ref entity terms such as `[[:user/email "ada@example.com"] :user/name
+  ?name]` now resolve against the same source before binding.
 - source-backed attr and entity+attr datom reads work over persisted SQLite
   index chunks.
 - source-backed reads check currentness by resolving the matching
@@ -55,7 +57,8 @@ Implemented so far:
   `[(count ?name) ?len]` are also supported, including tuple/destructuring
   function outputs over owned source bindings. `ground` clauses such as
   `[(ground 301) ?e]` now bind values before later source-backed data clauses,
-  source-backed reverse data clauses can scan reverse refs through `vaet`, and
+  source-backed reverse data clauses can scan reverse refs through `vaet`,
+  source-backed lookup-ref entity clauses resolve through source indexes, and
   source-backed `get-else`/`get-some` clauses can read current attr values
   directly from the persisted source. Source-backed `missing?` works through the
   same not-group path used for ordinary negated data clauses. Source-backed
@@ -87,7 +90,8 @@ Implemented so far:
   and a distinct named `DB-Read-Source` work for source-backed data clauses,
   pull finds, `get-else`, and `get-some`, plus predicate filtering with both
   matching and empty results, scalar and destructuring function output,
-  `ground`, `get-else`, `get-some`, reverse data clauses,
+  `ground`, `get-else`, `get-some`, reverse data clauses, lookup-ref entity
+  clauses,
   `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
   wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
   nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and

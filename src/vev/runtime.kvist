@@ -3972,6 +3972,12 @@
   (let [[resolved resolved-ok] (db-read-source-term-resolved-value term binding)]
     (when (not resolved-ok)
       (return (Value {}) false ""))
+    (let [[lookup-attr lookup-value lookup-ok] (value-lookup-ref-parts resolved)]
+      (when lookup-ok
+        (let [[entity lookup-found lookup-error] (db-read-source-resolve-lookup-ref source lookup-attr lookup-value)]
+          (if lookup-found
+            (return (value-entity entity) true "")
+            (return (Value {}) false lookup-error)))))
     (cond
       (= resolved.kind .Entity) (return resolved true "")
       (= resolved.kind .Int) (return (value-entity (u64 resolved.int-value)) true "")
@@ -4278,6 +4284,14 @@
         (delete-owned-value value)
         false)))
 
+(defn db-read-source-binding-match-clause-owned! [source: DB-Read-Source, binding: ^Binding, term: Term, value: Value] -> bool
+  (if (= term.kind .LookupRef)
+    (let [[entity entity-ok _] (db-read-source-resolve-lookup-ref source term.lookup-attr term.lookup-value)]
+      (let [matched (and entity-ok (= (index-position-compare value (value-entity entity)) 0))]
+        (delete-owned-value value)
+        matched))
+    (db-read-source-binding-match-owned! binding term value)))
+
 (defn db-read-source-clause-index-value-matches? [actual: Value, expected: Value] -> bool
   (= (index-position-compare actual expected) 0))
 
@@ -4304,7 +4318,7 @@
       true)
     (db-read-source-binding-match-owned! binding term value)))
 
-(defn db-read-source-binding-after-clause-datom [binding: Binding, clause-value: Clause, datom: Datom] -> [out-binding: Binding, ok: bool]
+(defn db-read-source-binding-after-clause-datom [source: DB-Read-Source, binding: Binding, clause-value: Clause, datom: Datom] -> [out-binding: Binding, ok: bool]
   (let [candidate-binding (db-read-source-clone-binding-owned binding)]
     (when (and (= clause-value.a.kind .Value)
                (= clause-value.a.value.kind .Keyword)
@@ -4312,13 +4326,13 @@
       (when (not (= datom.v.kind .Entity))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
-      (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.e (value-entity datom.v.entity)))
+      (when (not (db-read-source-binding-match-clause-owned! source (addr candidate-binding) clause-value.e (value-entity datom.v.entity)))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
       (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.a (value-keyword (string-owned clause-value.a.value.text))))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
-      (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.v (value-entity datom.e)))
+      (when (not (db-read-source-binding-match-clause-owned! source (addr candidate-binding) clause-value.v (value-entity datom.e)))
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
       (when (not (db-read-source-binding-match-optional-owned! (addr candidate-binding) clause-value.tx-term (datom-tx-value datom)))
@@ -4328,13 +4342,13 @@
         (db-read-source-delete-binding-owned candidate-binding)
         (return (Binding {}) false))
       (return candidate-binding true))
-    (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.e (value-entity datom.e)))
+    (when (not (db-read-source-binding-match-clause-owned! source (addr candidate-binding) clause-value.e (value-entity datom.e)))
       (db-read-source-delete-binding-owned candidate-binding)
       (return (Binding {}) false))
     (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.a (value-keyword (string-owned datom.a))))
       (db-read-source-delete-binding-owned candidate-binding)
       (return (Binding {}) false))
-    (when (not (db-read-source-binding-match-owned! (addr candidate-binding) clause-value.v (value-owned datom.v)))
+    (when (not (db-read-source-binding-match-clause-owned! source (addr candidate-binding) clause-value.v (value-owned datom.v)))
       (db-read-source-delete-binding-owned candidate-binding)
       (return (Binding {}) false))
     (when (not (db-read-source-binding-match-optional-owned! (addr candidate-binding) clause-value.tx-term (datom-tx-value datom)))
@@ -4353,7 +4367,7 @@
           (db-read-source-delete-bindings-owned out)
           (return (make [dynamic]Binding) false datoms-error))
         (for [datom datoms]
-          (let [[next next-ok] (db-read-source-binding-after-clause-datom binding clause-value datom)]
+          (let [[next next-ok] (db-read-source-binding-after-clause-datom source binding clause-value datom)]
             (when next-ok
               (arr.push! out next))))
         (delete-owned-datoms datoms)))
