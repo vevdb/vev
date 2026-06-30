@@ -45,10 +45,13 @@ Implemented so far:
   attrs from a persisted snapshot.
 - `q-text-db-read-source` parses EDN query text and executes the first
   source-backed query shapes: plain data clauses with normal `:find` variables
-  over entity, attr, and value positions, including multi-clause joins.
+  over entity, attr, and value positions, including multi-clause joins and
+  primary `$` source-qualified clauses.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
-  retraction case.
+  retraction case. It also checks that primary `$` source-qualified clauses work
+  and named source-qualified clauses fail explicitly until multi-source durable
+  querying is implemented.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
@@ -77,7 +80,7 @@ Remaining in this batch:
 1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
    new source-backed plain-clause query runner.
 2. Broaden `q-text-db-read-source` beyond plain data clauses:
-   - source-qualified clauses
+   - named or multiple source-qualified clauses
    - predicates/functions where inputs are already materialized
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary.

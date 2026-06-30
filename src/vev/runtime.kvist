@@ -4053,6 +4053,13 @@
             (delete pulls)))))
     (result-set-ok rows)))
 
+(defn db-read-source-query-clause [clause-value: Clause] -> [clause: Clause, ok: bool, error: string]
+  (if clause-value.has-source
+    (if (= clause-value.source "$")
+      (return (unsourced-clause clause-value) true "")
+      (return (Clause {}) false "SQLite DB snapshot source currently supports only primary $ source clauses"))
+    (return clause-value true "")))
+
 (defn db-read-source-q-query [source: DB-Read-Source, query-value: Query] -> Result-Set
   (when (not (and (> (count query-value.clauses) 0)
                   (= (count query-value.predicates) 0)
@@ -4069,11 +4076,15 @@
   (let [bindings (make [dynamic]Binding)]
     (arr.push! bindings (Binding {items: (make [dynamic]Var-Binding)}))
     (for [clause-value query-value.clauses]
-      (let [[next next-ok next-error] (db-read-source-bindings-after-clause source (slice bindings 0) clause-value)]
-        (db-read-source-delete-bindings-owned bindings)
-        (when (not next-ok)
-          (return (result-set-error next-error)))
-        (set! bindings next)))
+      (let [[source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
+        (when (not source-clause-ok)
+          (db-read-source-delete-bindings-owned bindings)
+          (return (result-set-error source-clause-error)))
+        (let [[next next-ok next-error] (db-read-source-bindings-after-clause source (slice bindings 0) source-clause)]
+          (db-read-source-delete-bindings-owned bindings)
+          (when (not next-ok)
+            (return (result-set-error next-error)))
+          (set! bindings next))))
     (let [result (db-read-source-result-rows-for-bindings query-value (slice bindings 0))]
       (db-read-source-delete-bindings-owned bindings)
       result)))
