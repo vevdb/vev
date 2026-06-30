@@ -441,12 +441,13 @@ Implemented so far:
   `db-after` remain independently queryable. This is the host-facing DB-value
   lifetime shape needed before the C/JVM handles can stop depending on resident
   DB clones.
-- Transaction reports now carry the transaction engine's append-only and
-  ordered-new-entity publication facts. `Shared-Conn` consumes those fields
-  directly instead of recomputing append eligibility from `tx-data` after the
-  resident transaction has already been applied. This is a small but important
-  step toward making the transaction engine emit a publish plan that shared
-  storage can consume directly.
+- Transaction reports now carry the transaction engine's datom append start
+  index plus append-only and ordered-new-entity publication facts. `Shared-Conn`
+  consumes those fields directly instead of recomputing append position and
+  eligibility from the resident DB and `tx-data` after the resident transaction
+  has already been applied. This is a small but important step toward making
+  the transaction engine emit a publish plan that shared storage can consume
+  directly.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -499,8 +500,9 @@ Work:
    storage-neutral `Store-DB` snapshots instead of resident `DB` clones.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization. The first fold is in
-   place: append-only/new-entity decisions are now report metadata owned by the
-   transaction engine, not storage-adapter recomputation.
+   place: datom append position plus append-only/new-entity decisions are now
+   report metadata owned by the transaction engine, not storage-adapter
+   recomputation.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
 6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`, `pure --batch 1`, and

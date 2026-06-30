@@ -367,12 +367,13 @@ instead of separate resident, SQLite, and shared APIs.
 This lets storage-neutral callers, including the CLI, print parsed query results
 from retained SQLite/shared snapshots without reopening or reaching through a
 resident `DB` field just for value rendering.
-Transaction reports now include the transaction engine's append-only and
-ordered-new-entity publication facts. The shared connection publish path uses
-those fields directly, instead of recomputing eligibility from the emitted
-`tx-data` after the resident transaction completes. This keeps the storage
-adapter aligned with the transaction engine and is the first small boundary
-change toward a real shared publish plan.
+Transaction reports now include the transaction engine's datom append start
+index plus append-only and ordered-new-entity publication facts. The shared
+connection publish path uses those fields directly, instead of recomputing
+append position and eligibility from the resident DB and emitted `tx-data`
+after the resident transaction completes. This keeps the storage adapter
+aligned with the transaction engine and is the first small boundary change
+toward a real shared publish plan.
 The resident entity-range helper now uses the same `DB-Index-View` binary-search
 shape as the source boundary instead of reading the `eavt-entities` /
 `eavt-entity-starts` side table directly. The side table still exists as a
