@@ -353,6 +353,13 @@ Implemented so far:
   the old snapshot plus the post-transaction DB. Tests verify the published
   source is queryable and retains old datom/current/EAVT chunks across a simple
   append commit.
+- `bench/write_bench.kvist` now has a `shared-snapshot-heavy` workload for
+  the new publish path. A local batch-1, 100-write sample with chunk size 64
+  reported about 0.049-0.145 ms shared commit latency versus about
+  0.206-0.481 ms for the SQLite-backed resident `snapshot-heavy` path. This is
+  a useful improvement, but the upward slope remains because `Shared-Conn`
+  still adapts from resident post-commit arrays instead of building shared
+  chunks directly at commit time.
 
 Work:
 
@@ -372,9 +379,9 @@ Work:
    instead of maintaining it as a separate optimization.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
-6. Re-run `snapshot-heavy`, `pure --batch 1`, and `mixed` write-bench after each
-   representation step so the architecture work is measured against the actual
-   immutable DB-value workload.
+6. Re-run `snapshot-heavy`, `shared-snapshot-heavy`, `pure --batch 1`, and
+   `mixed` write-bench after each representation step so the architecture work
+   is measured against the actual immutable DB-value workload.
 
 Acceptance:
 

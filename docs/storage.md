@@ -322,7 +322,11 @@ connection, then publishes a new retained `Shared-DB-Snapshot` from the previous
 snapshot and the post-transaction DB. That is an intermediate architecture
 step, not the final storage model: the next version should build shared chunks
 directly at the commit boundary instead of adapting from resident arrays after
-the fact.
+the fact. `bench/write_bench.kvist --workload shared-snapshot-heavy` measures
+that path separately from SQLite-backed `snapshot-heavy`; a local batch-1,
+100-write sample showed the shared path faster, but still with increasing
+commit latency because merged/reordered indexes are adapted from resident
+arrays.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
@@ -368,9 +372,10 @@ Current implementation status and later order:
    DB log datoms, so chunked imports are independent from per-file input buffer
    lifetimes.
    The benchmark now separates snapshot, resolution, apply, log copy,
-   incremental index build, and SQLite append cost. The next write-performance
-   milestone, when we return to storage, is replacing whole-array DB/index
-   ownership copies with a shared immutable DB/index representation.
+   incremental index build, SQLite append cost, and a shared snapshot-heavy
+   publish path. The next write-performance milestone is replacing the
+   remaining resident-array adaptation in `Shared-Conn` with direct shared
+   chunk publication.
 4. Move selected logical indexes to persisted structures, starting with a single
    read-only chunk writer/cursor and then expanding to the full index set.
 5. Keep extending the new `bench/write_bench.kvist` harness until it can run at
