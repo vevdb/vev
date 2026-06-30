@@ -438,6 +438,70 @@ post-commit resident `DB` into shared publication at all. A local batch-1,
 300-write retained-snapshot run stayed in the same range: about 0.146 ms commit
 latency for the default shared path and 0.145 ms for storage-neutral
 `Store-DB`; direct shared-log comparison remains slower at about 0.267 ms.
+Transaction application now has an explicit `Tx-Apply-Result` boundary.
+`apply-resolved-ops-to-datoms` packages the emitted post-transaction datom
+array, `tx-data`, tx id, append start index, append-only facts, and
+`Tx-Publish-Plan` before the resident `db-after` indexes are built.
+Append-only `Shared-Conn` transactions now resolve and apply tx data directly,
+publish the next shared snapshot from `Tx-Apply-Result`, and only then build
+the resident `db-after` needed for report/listener compatibility. Non-append
+shared transactions still use the resident fallback snapshot adapter. A fresh
+local batch-1, 300-write retained-snapshot run ended near 0.144 ms commit
+latency for the default shared path, 0.140 ms for storage-neutral `Store-DB`,
+and 0.261 ms for direct shared-log comparison.
+`shared-conn-transact-report`, the retained shared report path used by
+host-facing DB-value APIs, now follows the same direct apply-result publish
+path instead of wrapping `shared-conn-transact` and then converting its resident
+`Tx-Report` into a `Shared-Tx-Report`. It still builds the resident connection
+DB after publishing because the current transaction resolver needs a resident
+current DB for later tempid, unique, schema, lookup-ref, and transaction
+function semantics. The remaining architecture work is therefore a
+source-backed write resolver/current-state layer, not just another report
+wrapper. A local rerun put both `shared-snapshot-heavy` and
+`shared-store-db-heavy` near 0.146 ms commit latency, with the benchmark-only
+direct shared-log path around 0.268 ms.
+`Shared-Conn` now names that remaining dependency explicitly as
+`Shared-Write-State`. Today it wraps the resident `Conn`, and shared writes
+advance it through `shared-write-state-*` helpers instead of reaching through a
+generic `.conn.db` field. This is intentionally a boundary refactor rather than
+a performance shortcut: the next implementation can replace
+`Shared-Write-State` internals with source-backed current/schema/unique state
+while leaving shared snapshot publication and host DB handles alone. A local
+batch-1, 300-write retained-snapshot sample stayed in the same range: about
+0.150 ms commit latency for both `shared-snapshot-heavy` and
+`shared-store-db-heavy`, with the benchmark-only direct shared-log path around
+0.274 ms.
+The first write resolver read has moved behind that boundary. Simple direct
+shared tx-data now checks direct eligibility using cached `Shared-Write-State`
+schema facts (`has-tuple-schema` and ref attrs), and only consults
+`DB-Read-Source` when a ref value actually needs source-backed resolution.
+Complex tx shapes still fall back to the existing resident resolver. This is
+deliberately not a full source-backed transaction resolver yet, but it puts the
+hot direct add/retract path on the new write-state API without forcing
+per-commit source schema scans. A local rerun ended near 0.151 ms commit
+latency for `shared-snapshot-heavy`, 0.146 ms for `shared-store-db-heavy`, and
+0.259 ms for the benchmark-only direct shared-log path.
+Source-stable lookup-ref writes also resolve through that boundary now. Simple
+add/retract tx-data can resolve a lookup-ref entity or a ref-valued lookup-ref
+value against `DB-Read-Source`, while intermediate-tx-db cases still fall back
+to the resident resolver if the same transaction creates the lookup target attr.
+Source-stable ident entity writes also use the same path: `:db/ident` entity
+terms resolve through source-backed schema reads, while idents created in the
+same transaction still fall back to the resident intermediate-tx-db resolver.
+Simple `:db/current-tx` value writes resolve from `Shared-Write-State` as well,
+so shared append-only commits can record the current transaction entity and
+still render the expected tempid mapping in transaction reports.
+Ordinary non-upsert tempid entity writes also resolve from `Shared-Write-State`
+now. The shared resolver caches the next entity id, assigns repeated tempid
+names consistently within the transaction, accounts for explicit entity ids in
+the same tx, and falls back for unique attrs so upsert semantics stay on the
+resident resolver until the general overlay exists. Simple value-tempid ref
+writes now share that same assignment state, with current-tx value-tempids and
+missing value-only tempids kept on resident fallback/error paths. The remaining
+work is therefore the general write-state overlay: tempid upserts,
+value-tempid edge cases, tuple maintenance, transaction functions,
+schema-changing validation, and current-state reads should stop requiring a
+rebuilt resident DB.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing
@@ -480,11 +544,13 @@ from `report.tx-data` instead of slicing the resident post-commit datom array.
 The ordered new-entity `eavt` tail now also uses the appended `report.tx-data`
 slice plus the report start index as its datom source, so that path no longer
 needs the resident post-commit datom log for EAVT publication.
-The shared `eavt`, `aevt`, `avet`, and `vaet` merge builders still compare
-through the resident post-commit datom log for O(1) datom access. A direct
-old-shared-vs-new merge was correct but slower with the current chunked datom
-log, so the next structural step is efficient shared datom random access before
-removing that remaining resident comparison source.
+The shared `eavt`, `aevt`, `avet`, and `vaet` merge builders now compare old
+entries through `db-before.datoms` and new entries through `report.tx-data`.
+That removes the post-commit resident datom log as their comparison source, but
+shared publication still starts from a resident transaction report today. The
+next structural step is to publish shared datom/index chunks directly from the
+transaction application result, instead of adapting after a resident `db-after`
+has already been built.
 `Shared-Datom-Log` now carries per-chunk start offsets and uses binary search
 to find the chunk for a datom position. This keeps retained/appended partial
 chunks addressable without scanning through all previous chunks and gives the

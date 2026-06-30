@@ -405,6 +405,198 @@
     (vev.delete-live-tx-report-shallow report2)
     (vev.delete-shared-conn conn)))
 
+(t.deftest shared-conn-resolves-simple-lookup-ref-writes-through-source
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        seed (vev.shared-conn-transact
+               (addr conn)
+               ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":user/email"))
+                                (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/identity"))
+                                (vev.add 101 ":db/ident" (vev.value-keyword ":user/friend"))
+                                (vev.add 101 ":db/valueType" (vev.value-keyword ":db.type/ref"))
+                                (vev.add 1 ":user/email" (vev.value-string "ada@example.com"))
+                                (vev.add 1 ":user/name" (vev.value-string "Ada"))
+                                (vev.add 2 ":user/email" (vev.value-string "grace@example.com"))
+                                (vev.add 2 ":user/name" (vev.value-string "Grace"))]))
+        link (vev.shared-conn-transact
+               (addr conn)
+               ([]vev.Tx-Data [(vev.Tx-Data {op: ":db/add"
+                                              lookup-attr: ":user/email"
+                                              lookup-value: (vev.value-string "ada@example.com")
+                                              has-lookup-ref: true
+                                              a: ":user/friend"
+                                              value-lookup-attr: ":user/email"
+                                              value-lookup-value: (vev.value-string "grace@example.com")
+                                              has-value-lookup-ref: true})]))
+        missing-retract (vev.shared-conn-transact
+                          (addr conn)
+                          ([]vev.Tx-Data [(vev.retract-value-lookup-ref 1 ":user/friend" ":user/email" (vev.value-string "missing@example.com"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?friend-name :where [1 :user/friend ?f] [?f :user/name ?friend-name]]")]
+    (t.is seed.ok)
+    (t.is link.ok)
+    (t.is link.append-only)
+    (t.is (= (count link.tx-data) 1))
+    (t.is missing-retract.ok)
+    (t.is (= (count missing-retract.tx-data) 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .String))
+    (t.is (= result.rows[0].values[0].text "Grace"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow seed)
+    (vev.delete-live-tx-report-shallow link)
+    (vev.delete-live-tx-report-shallow missing-retract)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-simple-ident-writes-through-source
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        seed (vev.shared-conn-transact
+               (addr conn)
+               ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":user/root"))
+                                (vev.add 100 ":user/name" (vev.value-string "Root"))]))
+        update (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add-ident ":user/root" ":user/nickname" (vev.value-string "Rooty"))]))
+        missing-retract (vev.shared-conn-transact
+                          (addr conn)
+                          ([]vev.Tx-Data [(vev.retract-ident ":user/missing" ":user/name" (vev.value-string "Missing"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?nickname :where [100 :user/nickname ?nickname]]")]
+    (t.is seed.ok)
+    (t.is update.ok)
+    (t.is update.append-only)
+    (t.is (= (count update.tx-data) 1))
+    (t.is missing-retract.ok)
+    (t.is (= (count missing-retract.tx-data) 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .String))
+    (t.is (= result.rows[0].values[0].text "Rooty"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow seed)
+    (vev.delete-live-tx-report-shallow update)
+    (vev.delete-live-tx-report-shallow missing-retract)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-current-tx-values-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 1 ":item/tx" (vev.value-keyword ":db/current-tx"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?tx :where [1 :item/tx ?tx]]")]
+    (t.is report.ok)
+    (t.is report.append-only)
+    (t.is (= (count report.tx-data) 1))
+    (t.is (= report.tx-data[0].v.kind .Entity))
+    (t.is (= report.tx-data[0].v.entity report.tx))
+    (t.is (= (count report.tempids) 1))
+    (t.is (= report.tempids[0].tempid ":db/current-tx"))
+    (t.is (= report.tempids[0].e report.tx))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .Entity))
+    (t.is (= result.rows[0].values[0].entity report.tx))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-simple-tempids-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        seed (vev.shared-conn-transact
+               (addr conn)
+               ([]vev.Tx-Data [(vev.add 10 ":item/name" (vev.value-string "explicit"))]))
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add-tempid "a" ":item/name" (vev.value-string "Ada"))
+                                  (vev.add-tempid "a" ":item/age" (vev.value-int 37))
+                                  (vev.add-tempid "b" ":item/name" (vev.value-string "Babbage"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?e ?name :where [?e :item/name ?name]]")
+        [a-e a-ok] (vev.tempid-lookup (slice report.tempids 0) "a")
+        [b-e b-ok] (vev.tempid-lookup (slice report.tempids 0) "b")]
+    (t.is seed.ok)
+    (t.is report.ok)
+    (t.is report.append-only)
+    (t.is (= (count report.tx-data) 3))
+    (t.is a-ok)
+    (t.is b-ok)
+    (t.is (not (= a-e b-e)))
+    (t.is (> a-e 10))
+    (t.is (> b-e 10))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 3))
+    (t.is (result-has-entity-string-row? result 10 "explicit"))
+    (t.is (result-has-entity-string-row? result a-e "Ada"))
+    (t.is (result-has-entity-string-row? result b-e "Babbage"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow seed)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-resolves-simple-value-tempids-through-write-state
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        schema (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":item/friend"))
+                                  (vev.add 100 ":db/valueType" (vev.value-keyword ":db.type/ref"))]))
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add-tempid-value-tempid "a" ":item/friend" "b")
+                                  (vev.add-tempid "a" ":item/name" (vev.value-string "Ada"))
+                                  (vev.add-tempid "b" ":item/name" (vev.value-string "Babbage"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?friend-name :where [?e :item/name \"Ada\"] [?e :item/friend ?friend] [?friend :item/name ?friend-name]]")
+        [a-e a-ok] (vev.tempid-lookup (slice report.tempids 0) "a")
+        [b-e b-ok] (vev.tempid-lookup (slice report.tempids 0) "b")]
+    (t.is schema.ok)
+    (t.is report.ok)
+    (t.is report.append-only)
+    (t.is (= (count report.tx-data) 3))
+    (t.is a-ok)
+    (t.is b-ok)
+    (t.is (not (= a-e b-e)))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .String))
+    (t.is (= result.rows[0].values[0].text "Babbage"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow schema)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-tempid-upsert-stays-on-resident-fallback
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        seed (vev.shared-conn-transact
+               (addr conn)
+               ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":user/email"))
+                                (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/identity"))
+                                (vev.add 1 ":user/email" (vev.value-string "ada@example.com"))]))
+        report (vev.shared-conn-transact
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add-tempid "a" ":user/email" (vev.value-string "ada@example.com"))
+                                  (vev.add-tempid "a" ":user/name" (vev.value-string "Ada"))]))
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?e ?name :where [?e :user/name ?name]]")
+        [a-e a-ok] (vev.tempid-lookup (slice report.tempids 0) "a")]
+    (t.is seed.ok)
+    (t.is report.ok)
+    (t.is a-ok)
+    (t.is (= a-e 1))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (result-has-entity-string-row? result 1 "Ada"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow seed)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
 (t.deftest shared-conn-report-retains-shared-db-values
   (defer (free_all context.allocator))
   (let [conn (vev.create-shared-conn 2)
