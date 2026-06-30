@@ -293,15 +293,37 @@ Acceptance:
 
 ## Batch 4: Shared Immutable Index Storage For Commits
 
+Status: started.
+
 Goal:
 
 - stop creating a full copied datom/index array set for every committed DB
   snapshot.
 
+Implemented so far:
+
+- `bench/write_bench.kvist` now has a `snapshot-heavy` workload. It performs
+  normal SQLite-backed transactions, calls the ordinary `db` snapshot API after
+  each commit, and retains every old DB value until the end of the run. This
+  gives Batch 4 a concrete acceptance harness for Datomic-style "DB as value"
+  usage with many old snapshots alive.
+- A local batch-1 baseline with 500 retained DB snapshots shows commit latency
+  growing from about 0.33 ms near 100 writes to about 2.07 ms near 500 writes,
+  while the explicit post-commit `db` clone is still only about 0.003-0.008 ms
+  per retained snapshot at that scale. The immediate problem is therefore the
+  commit/publish path copying and rebuilding resident arrays, not just host DB
+  handle retention.
+- `Shared-Int-Index` is the first in-memory representation building block for
+  shared immutable indexes. It stores int index entries in explicitly retained
+  chunks, supports old snapshot retention plus append-by-new-chunks, and has
+  tests proving older and newer handles can be released independently while
+  surviving snapshots still read correctly. It is not wired into `DB` yet.
+
 Work:
 
 1. Introduce a DB index storage layer with immutable base chunks plus a small
-   transaction delta.
+   transaction delta. The first retained chunk primitive exists; the next step
+   is a DB-index wrapper that can replace resident `[]int` index publication.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact.
@@ -309,6 +331,9 @@ Work:
    instead of maintaining it as a separate optimization.
 5. Preserve resident-array mode as a useful small/in-memory implementation
    strategy if it remains simpler for tests and tiny databases.
+6. Re-run `snapshot-heavy`, `pure --batch 1`, and `mixed` write-bench after each
+   representation step so the architecture work is measured against the actual
+   immutable DB-value workload.
 
 Acceptance:
 

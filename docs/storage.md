@@ -226,12 +226,24 @@ launched without source edits. It also has `--workload pure|mixed|both` and
 `--path`, which allows the Datalevin-style sequence of writing a durable store
 first and then running mixed read/write against the same store. It uses a plain
 long `:item/key`, matching Datalevin's write-bench schema.
+The `snapshot-heavy` workload keeps the same durable write path but calls the
+ordinary DB snapshot API after each commit and retains every old DB value until
+the end of the run. That workload is the current Batch 4 acceptance harness for
+Datomic-style code that passes DB snapshots around while a connection continues
+to transact.
 
 A 10k-row local run on June 26, 2026 shows the current durable shape clearly:
 
 - batch-100 pure write: about 13k writes/second by 10k rows
 - batch-1 pure write: about 544 writes/second by 10k rows
 - mixed read/write over a 10k-row store: about 184 writes/second
+
+An initial `snapshot-heavy --total 500 --batch 1` local run on June 30, 2026
+kept 500 old DB snapshots alive. Commit latency grew from about 0.33 ms near
+100 writes to about 2.07 ms near 500 writes. The explicit post-commit `db`
+clone was still only about 0.003-0.008 ms per snapshot at that scale, so the
+visible problem is the commit/publish path copying and rebuilding resident
+arrays, not the additional retained handle container by itself.
 
 The batch-1 and mixed curves point at the same bottleneck: each successful
 connection transaction produces a new immutable `DB` value by copying the datom
@@ -275,6 +287,13 @@ successful report's `db-before`, and the connection moves to the newly
 published `db-after`. This is not the shared-index representation yet, but it
 keeps all transaction entrypoints on the same publish boundary before the DB
 layout changes.
+
+The first shared-index building block is now present as `Shared-Int-Index`.
+It stores index entries in retained immutable chunks, can append new chunks
+while sharing old chunks, and has tests for releasing old and new handles
+independently. It is not yet wired into `DB.eavt`, `DB.aevt`, `DB.avet`, or
+`DB.vaet`; the next storage step is to add a DB-index wrapper around this
+chunked representation and move resident index publication to that boundary.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

@@ -1,0 +1,43 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev-tests)
+
+(import t "kvist:test")
+(import vev "../vev")
+
+(defn shared-index-values-match? [index: vev.Shared-Int-Index, expected: []int] -> bool
+  (when (not (= (vev.shared-int-index-count index) (count expected)))
+    (return false))
+  (for [value position expected]
+    (let [[actual ok] (vev.shared-int-index-at index position)]
+      (when (or (not ok)
+                (not (= actual value)))
+        (return false))))
+  true)
+
+(t.deftest shared-int-index-retains-old-chunks
+  (defer (free_all context.allocator))
+  (let [base (vev.shared-int-index-from-slice ([]int [1 3 5 7 9]) 2)
+        retained (vev.retain-shared-int-index base)
+        appended (vev.shared-int-index-with-appended-slice base ([]int [11 13 15]))
+        [base-first-refs base-first-ok] (vev.shared-int-index-ref-count-at base 0)
+        [appended-first-refs appended-first-ok] (vev.shared-int-index-ref-count-at appended 0)
+        [appended-new-refs appended-new-ok] (vev.shared-int-index-ref-count-at appended 3)
+        [_ missing-ok] (vev.shared-int-index-at appended 8)]
+    (t.is (shared-index-values-match? base ([]int [1 3 5 7 9])))
+    (t.is (shared-index-values-match? retained ([]int [1 3 5 7 9])))
+    (t.is (shared-index-values-match? appended ([]int [1 3 5 7 9 11 13 15])))
+    (t.is base-first-ok)
+    (t.is appended-first-ok)
+    (t.is appended-new-ok)
+    (t.is (= base-first-refs 3))
+    (t.is (= appended-first-refs 3))
+    (t.is (= appended-new-refs 1))
+    (t.is (not missing-ok))
+    (vev.delete-shared-int-index base)
+    (t.is (shared-index-values-match? retained ([]int [1 3 5 7 9])))
+    (t.is (shared-index-values-match? appended ([]int [1 3 5 7 9 11 13 15])))
+    (vev.delete-shared-int-index retained)
+    (t.is (shared-index-values-match? appended ([]int [1 3 5 7 9 11 13 15])))
+    (vev.delete-shared-int-index appended)))
