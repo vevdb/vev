@@ -383,6 +383,11 @@ Retractions, schema datoms, repeated facts, and unkeyable values still fall back
 to full DB/index rebuilds. This keeps `db-with-datoms`, `with-datoms`, and
 `transact-datoms` on the same incremental-index path used by ordinary
 append-only transactions without changing their correctness model.
+In the shared publication path, append-only `current` indexes are now extended
+directly from the committed datom range instead of copied from the resident
+post-commit `current` array. This is still an intermediate architecture because
+the transaction engine builds a resident DB first, but it removes one index from
+the resident-index adaptation step.
 
 SQLite rollback cleanup now also follows the live-report ownership rule. When
 an in-memory transaction succeeds but SQLite append fails, the wrapper restores

@@ -406,6 +406,12 @@ Implemented so far:
   time through the pending buffer. This does not remove the resident-index-first
   adaptation yet, but it reduces one source of per-value overhead in the
   append-only shared index path.
+- Append-only shared publication now builds the `current` index tail directly
+  from the committed datom range instead of slicing or prefix-checking the
+  resident post-commit `current` array. This is a small direct-publication step:
+  the shared path still delegates transaction application to the resident
+  engine, but one more shared index no longer depends on resident index
+  materialization.
 - `Shared-Tx-Report` now gives the shared connection path retained
   `db-before` and `db-after` shared snapshots plus shallow report metadata. A
   test transacts through `Shared-Conn`, moves the connection forward with a
