@@ -69,7 +69,8 @@ Implemented so far:
   source-backed pull finds, and bounded pull recursion now walks the same
   persisted source with cycle guards. Source-backed query APIs also have
   `with-fns` variants so native pull xform callbacks can run against persisted
-  snapshots.
+  snapshots. Both bounded recursion and unbounded `...` recursion have
+  source-backed persisted snapshot coverage.
   Source-backed text queries also accept scalar `:in` values through direct
   `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
@@ -81,8 +82,9 @@ Implemented so far:
   `get-some`, `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
   wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
   nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
-  built-in and callback pull xforms, bounded pull recursion, scalar inputs, and
-  pull pattern inputs through both direct `Query-Input` and EDN input text.
+  built-in and callback pull xforms, bounded and unbounded pull recursion,
+  scalar inputs, and pull pattern inputs through both direct `Query-Input` and
+  EDN input text.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
@@ -119,8 +121,8 @@ Remaining in this batch:
    forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
    and pattern-variable pull finds plus defaults, limits, and built-in xforms
    are now covered; callback xforms and bounded recursion are also covered.
-   Remaining pull work is unbounded-recursion stress coverage and
-   source-qualified named pull sources.
+   Unbounded recursion has persisted snapshot coverage too. Remaining pull work
+   is source-qualified named pull sources.
 4. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
