@@ -47,13 +47,15 @@ Implemented so far:
   source-backed query shapes: plain data clauses with normal `:find` variables
   over entity, attr, and value positions, including multi-clause joins and
   primary `$` source-qualified clauses. Ordered predicate filters over already
-  materialized bindings are also supported.
+  materialized bindings and scalar function clauses such as
+  `[(count ?name) ?len]` are also supported.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
   retraction case. It also checks that primary `$` source-qualified clauses work
   and named source-qualified clauses fail explicitly until multi-source durable
   querying is implemented, plus predicate filtering with both matching and empty
-  results.
+  results, scalar function output, and the current explicit rejection of
+  destructuring function outputs.
 - `bench/sqlite_storage.kvist` now reports
   `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
   and from `reopen-rebuild`.
@@ -83,9 +85,8 @@ Remaining in this batch:
    new source-backed plain-clause query runner.
 2. Broaden `q-text-db-read-source` beyond plain data clauses:
    - named or multiple source-qualified clauses
-   - function clauses where inputs are already materialized; predicate filters
-     are now covered, but functions need an owned-value result contract before
-     they should be exposed on the durable source path
+   - destructuring and tuple function outputs; scalar function outputs are now
+     covered by copying the produced value into the source-owned binding
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary.
 4. Decide the public API shape for source-backed result ownership before this
