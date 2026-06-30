@@ -164,9 +164,12 @@ Remaining in this batch:
 2. Carry the ownership-tagged `Query-Result` shape into C ABI/JVM result
    handles. Internal resident and source-backed wrappers now use this shape, but
    the attempted C ABI ownership-tag patch exposed an ABI compile issue around
-   the raw Odin wrapper block, so host handles remain pending rather than
-   partially merged. Raw `Result-Set` cleanup is still available internally, but
-   host-facing code should get a single result handle/free operation.
+   the raw Odin wrapper block. Rechecking `scripts/build_c_abi.sh` still fails
+   during `kvist compile` at the raw Odin transaction-listener callback call
+   (`abi_tx_listener_notify`), before generated Odin is written. Host handles
+   remain pending rather than partially merged. Raw `Result-Set` cleanup is
+   still available internally, but host-facing code should get a single result
+   handle/free operation.
 3. Decide whether Batch 1 should keep pushing host-facing source-backed query
    handles now, or pause that until the raw-Odin ABI compile issue is fixed in
    Kvist/the ABI layer. The source-backed engine path is now ahead of the C ABI
