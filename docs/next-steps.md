@@ -185,6 +185,9 @@ Implemented so far:
   `eavt-entity-attr-position-at-entity-position`, and the cardinality-one
   `...at-entity-position...` wrappers. The remaining cardinality-one fast
   helpers start from entity/attr terms and use the `DB-Index-View` range path.
+- Source-qualified text queries now have profiled wrappers
+  (`q-text-profiled-with-sources...`), so named-source query plans can be
+  measured directly instead of requiring prepared-query plumbing in tests.
 
 Work:
 
@@ -583,10 +586,33 @@ Implemented so far:
   upsert semantics stay exact.
 - Simple value-tempid ref writes now share that same assignment state. The
   shared resolver accepts value-tempids only for ref attrs, requires the value
-  tempid to also appear as an entity tempid in the same transaction, and keeps
-  `:db/current-tx` value-tempids on the resident fallback path. This covers the
-  common `["a" :friend "b"]` plus facts-about-`"b"` shape without weakening
-  exact edge-case behavior.
+  tempid to also appear as an entity tempid in the same transaction unless it
+  is `:db/current-tx`, and resolves current-tx value-tempids through the same
+  report tempid mapping as ordinary current-tx values. This covers the common
+  `["a" :friend "b"]` plus facts-about-`"b"` shape without weakening exact
+  edge-case behavior.
+- Tempid upserts for `:db.unique/identity` attrs now resolve through
+  `Shared-Write-State` as well. The shared resolver caches identity attrs
+  separately from generic unique attrs, preassigns tempids for the whole simple
+  transaction before emitting ops, and uses source-backed lookup-ref reads to
+  choose an existing entity when one exists. Generic `:db.unique/value` attrs
+  still stay out of the upsert path and are left to normal validation.
+- `:db/retractAttr` and `:db/retractEntity` now expand through
+  `Shared-Write-State` using `DB-Read-Source` current-state scans. The shared
+  path reads current entity facts from EAVT, recursively retracts component
+  children, removes incoming VAET refs for retracted entities, and keeps the
+  generated owned retract op values/attrs scoped to the resolved transaction.
+- Literal ref tempids in source-backed shared transactions now follow the same
+  conventions as the resident resolver. A ref-valued attribute can point at a
+  same-transaction tempid using a string value such as `"b"` or a negative int
+  such as `-1`, and the shared resolver maps that value through the transaction
+  tempid table without rebuilding a resident intermediate DB.
+- Explicit-ID schema-only transactions now resolve through the same
+  source-backed shared write-state path. This covers common schema installation
+  commits for `:db/ident`, `:db/valueType`, `:db/cardinality`, `:db/unique`,
+  `:db/index`, and `:db/isComponent` while deliberately leaving tuple schema and
+  mixed "define schema and use it in the same tx" shapes on the resident
+  intermediate-DB path.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -636,13 +662,15 @@ Work:
    resolution where needed, and source-stable lookup-ref writes now resolve
    through the same source boundary. Source-stable ident entity writes are also
    on that boundary now, as are simple `:db/current-tx` value writes,
-   ordinary non-upsert tempid entity writes, and simple value-tempid ref
-   writes. The next step is to move the
-   remaining intermediate-tx-db resolver state behind the same boundary:
-   tempid upserts, value-tempid edge cases, schema-changing validation, tuple
-   maintenance, tx fns, and current-state checks should use a write-state
-   overlay instead of forcing a full resident DB rebuild on every append-only
-   commit.
+   ordinary non-upsert tempid entity writes, simple value-tempid ref writes,
+   current-tx value-tempids, literal string/negative-int ref tempids, identity
+   tempid upserts, source-backed `retractAttr`/`retractEntity` expansion, and
+   explicit-ID schema-only transactions. The next step is to move the remaining
+   intermediate-tx-db resolver state behind the same boundary: tuple
+   maintenance, transaction functions, mixed schema/data transactions, tuple
+   schema changes, and any remaining value-tempid/upsert conflict shapes should
+   use a write-state overlay instead of forcing a full resident DB rebuild on
+   every append-only commit.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases, and append-only/new-entity publication
@@ -692,10 +720,36 @@ Acceptance:
 
 ## Batch 5: Physical Query Operators Over Sources
 
+Status: started.
+
 Goal:
 
 - make the query engine naturally consume resident, chunk-backed, and
   delta-overlay sources through reusable physical operators.
+
+Implemented so far:
+
+- The typed bound entity+attribute operator now has a source-aware wrapper.
+  Named `$source` clauses such as `[$left ?e :name ?name]` can stay on the
+  same specialized EAVT entity+attr operator after an earlier clause has bound
+  `?e`, instead of being rejected by the operator solely because the clause was
+  source-qualified. A focused source test covers this through the new profiled
+  text-with-sources API.
+- `Query-Stats` now exposes the first physical operator counters:
+  `:typed-index-scans`, `:source-index-scans`, and
+  `:binding-materializations`. This makes the physical operator migration
+  visible in ordinary profiled query output, so tests and benchmarks can tell
+  whether a query stayed on typed/source index paths or fell back to binding
+  materialization.
+- Top-level `$rows`/relation-source input clauses now avoid becoming ordinary
+  input bindings in the relation engine. Source inputs remain available to the
+  clause operator, so a query like `[$rows ?e :id 2] [$rows ?e :name ?name]`
+  can start from a typed relation-source scan rather than first materializing
+  `$rows` as a binding value.
+- The typed anti/missing existence operator now resolves named DB sources
+  before checking attr existence. Source-qualified `not`/`missing?` shapes can
+  stay on the typed anti scan while using the correct source DB, instead of
+  accidentally checking the primary DB.
 
 Work:
 
@@ -705,7 +759,6 @@ Work:
    - indexed scan
    - bind join
    - merge/star scan over entity attributes
-   - anti/missing scans
    - projection and aggregate materialization
 3. Keep benchmark wins tied to general operators, not special recognizers for
    named benchmark queries.
@@ -715,7 +768,9 @@ Acceptance:
 - DataScript compatibility tests remain green
 - MusicBrainz matrix remains green
 - Datalevin-style read benchmark comparisons are periodically re-run
-- query profiling can show which physical operators ran
+- query profiling can show which physical operators ran. The first typed/source
+  index counters are in place; later operators should add similarly coarse
+  counters when they become important enough to distinguish in profiles.
 
 ## Batch 6: Benchmarks And Production Readiness Checks
 

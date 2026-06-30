@@ -47,6 +47,25 @@
     (delete-owned-datom datom))
   (delete datoms))
 
+(defn delete-resolved-tx [resolved: Resolved-Tx]
+  (for [op resolved.ops]
+    (when op.owned-attr
+      (delete op.a))
+    (when op.owned-value
+      (delete-owned-value op.v)))
+  (delete resolved.ops)
+  (delete resolved.tx-meta)
+  (delete resolved.tempids))
+
+(defn delete-resolved-tx-after-tempids-moved [resolved: Resolved-Tx]
+  (for [op resolved.ops]
+    (when op.owned-attr
+      (delete op.a))
+    (when op.owned-value
+      (delete-owned-value op.v)))
+  (delete resolved.ops)
+  (delete resolved.tx-meta))
+
 (defn delete-owned-value [value: Value]
   (case value.kind
     .String (delete value.text)
@@ -2320,13 +2339,15 @@
         (= spec.kind .Ignore)
           (discard spec)
         (= spec.kind .Scalar)
-          (let [[value value-ok] (query-input-bound-value db spec.name inputs[index])]
-            (when (or (not value-ok)
-                      (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) spec.name ([]Value [value]))))
-              (delete attrs)
-              (delete attr-sources)
-              (delete-relation-columns columns)
-              (return (query-relation-empty) 0 false)))
+          (if (query-source-input-name? spec.name)
+            (discard spec)
+            (let [[value value-ok] (query-input-bound-value db spec.name inputs[index])]
+              (when (or (not value-ok)
+                        (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) spec.name ([]Value [value]))))
+                (delete attrs)
+                (delete attr-sources)
+                (delete-relation-columns columns)
+                (return (query-relation-empty) 0 false))))
         (= spec.kind .Collection)
           (do
             (when (not (= inputs[index].kind .Collection))
@@ -2368,13 +2389,14 @@
         columns (make [dynamic]Relation-Column)
         row-count 1]
     (for [name index query.inputs]
-      (let [[value value-ok] (query-input-bound-value db name inputs[index])]
-        (when (or (not value-ok)
-                  (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) name ([]Value [value]))))
-          (delete attrs)
-          (delete attr-sources)
-          (delete-relation-columns columns)
-          (return (query-relation-empty) 0 false))))
+      (when (not (query-source-input-name? name))
+        (let [[value value-ok] (query-input-bound-value db name inputs[index])]
+          (when (or (not value-ok)
+                    (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) name ([]Value [value]))))
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns columns)
+            (return (query-relation-empty) 0 false)))))
     (let [collection-offset (count query.inputs)]
       (for [name index query.collection-inputs]
         (let [input-index (+ collection-offset index)]
@@ -8058,13 +8080,10 @@
   (let [before conn^.db
         resolved (resolve-tx-data-for-tx before tx-data conn^.next-tx)]
     (when (not resolved.ok)
-      (delete resolved.ops)
-      (delete resolved.tx-meta)
-      (delete resolved.tempids)
+      (delete-resolved-tx resolved)
       (return (failed-tx-report before resolved.error)))
     (let [report (transact-ops-with-tempids-from-before conn before (slice resolved.ops 0) (slice resolved.tx-meta 0) resolved.tempids)]
-      (delete resolved.ops)
-      (delete resolved.tx-meta)
+      (delete-resolved-tx-after-tempids-moved resolved)
       report)))
 
 (defn with-tx-data [db: DB, tx-data: []Tx-Data] -> Tx-Report
@@ -8205,9 +8224,7 @@
         resolved (resolve-tx-data-for-tx current-db (slice segment^ 0) tx)]
     (delete-owned-db current-db)
     (when (not resolved.ok)
-      (delete resolved.ops)
-      (delete resolved.tx-meta)
-      (delete resolved.tempids)
+      (delete-resolved-tx resolved)
       (return false resolved.error))
     (append-resolved-tx! ops tx-meta tempids resolved)
     (delete resolved.ops)
@@ -8290,13 +8307,10 @@
       (return (failed-tx-report before result.error)))
     (let [resolved (resolve-tx-data-for-tx before (slice result.tx-data 0) conn^.next-tx)]
       (when (not resolved.ok)
-        (delete resolved.ops)
-        (delete resolved.tx-meta)
-        (delete resolved.tempids)
+        (delete-resolved-tx resolved)
         (return (failed-tx-report before resolved.error)))
       (let [report (transact-ops-with-tempids-from-before conn before (slice resolved.ops 0) (slice resolved.tx-meta 0) resolved.tempids)]
-        (delete resolved.ops)
-        (delete resolved.tx-meta)
+        (delete-resolved-tx-after-tempids-moved resolved)
         report))))
 
 (defn transact-fn-string [conn: ^Conn, f: (fn [db: DB, arg: string] -> Tx-Fn-Result), arg: string] -> Tx-Report
@@ -8307,13 +8321,10 @@
       (return (failed-tx-report before result.error)))
     (let [resolved (resolve-tx-data-for-tx before (slice result.tx-data 0) conn^.next-tx)]
       (when (not resolved.ok)
-        (delete resolved.ops)
-        (delete resolved.tx-meta)
-        (delete resolved.tempids)
+        (delete-resolved-tx resolved)
         (return (failed-tx-report before resolved.error)))
       (let [report (transact-ops-with-tempids-from-before conn before (slice resolved.ops 0) (slice resolved.tx-meta 0) resolved.tempids)]
-        (delete resolved.ops)
-        (delete resolved.tx-meta)
+        (delete-resolved-tx-after-tempids-moved resolved)
         report))))
 
 (defn match-entity-term? [db: DB, term: Term, actual: Value, binding: ^Binding] -> bool
@@ -14627,6 +14638,7 @@
 
 (defn query-relation-apply-not-existence-typed [db: DB, rel: Query-Relation, clause-value: Clause] -> [out: Query-Relation, ok: bool]
   (when (not (and rel.has-typed-columns
+                  (not clause-value.has-source)
                   (= clause-value.e.kind .Var)
                   (query-relation-has-attr? rel clause-value.e.name)
                   (= clause-value.a.kind .Value)
@@ -14663,6 +14675,14 @@
                              typed-rows: builder.typed-rows
                              has-typed-columns: builder.typed-ok}) true)))
 
+(defn query-relation-apply-not-existence-typed-with-sources [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause] -> [out: Query-Relation, ok: bool]
+  (if clause-value.has-source
+    (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+      (when (not source-ok)
+        (return (query-relation-empty) false))
+      (query-relation-apply-not-existence-typed source-db rel (unsourced-clause clause-value)))
+    (query-relation-apply-not-existence-typed db rel clause-value)))
+
 (defn query-relation-apply-not-typed [db: DB, query: Query, inputs: []Query-Input, sources: []DB-Source, rel: Query-Relation, group: Not-Group, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
@@ -14672,7 +14692,7 @@
              (= (count group.function-clauses) 0)
              (= (count group.not-groups) 0)
              (not (branch-has-source-input? query group)))
-    (let [[existence existence-ok] (query-relation-apply-not-existence-typed db rel group.clauses[0])]
+    (let [[existence existence-ok] (query-relation-apply-not-existence-typed-with-sources db sources rel group.clauses[0])]
       (when existence-ok
         (return existence true))
       (delete-query-relation existence))
@@ -15229,6 +15249,7 @@
                   (= clause-value.a.value.kind .Keyword)
                   (not (reverse-attr? clause-value.a.value.text))))
     (return (query-relation-empty) false))
+  (set! stats^.typed-index-scans (+ stats^.typed-index-scans 1))
   (let [attr clause-value.a.value.text
         attrs (arr.into [dynamic]string (slice rel.attrs 0))
         attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))]
@@ -15270,6 +15291,17 @@
                                typed-columns: builder.typed-columns
                                typed-rows: builder.typed-rows
                                has-typed-columns: builder.typed-ok}) true))))
+
+(defn query-relation-apply-bound-ea-clause-typed-with-sources [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
+  (if clause-value.has-source
+    (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
+      (when (not source-ok)
+        (return (query-relation-empty) false))
+      (let [[out out-ok] (query-relation-apply-bound-ea-clause-typed source-db rel (unsourced-clause clause-value) stats)]
+        (when out-ok
+          (set! stats^.source-index-scans (+ stats^.source-index-scans 1)))
+        (return out out-ok)))
+    (query-relation-apply-bound-ea-clause-typed db rel clause-value stats)))
 
 (defn append-typed-bound-db-clause-scan-row! [builder: ^Query-Relation-Builder, attrs: []string, db: DB, rel: Query-Relation, row: int, clause-value: Clause, all-current: bool, stats: ^Query-Stats] -> bool
   (let [scan (clause-index-scan-typed-row db rel row clause-value)]
@@ -15314,6 +15346,7 @@
   (when (or (not rel.has-typed-columns)
             clause-value.has-source)
     (return (query-relation-empty) false))
+  (set! stats^.typed-index-scans (+ stats^.typed-index-scans 1))
   (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
         attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))]
     (append-clause-term-var-attr! (addr attrs) (addr attr-sources) clause-value.e "")
@@ -15345,7 +15378,10 @@
     (let [[source-db source-ok] (source-db-lookup db sources clause-value.source)]
       (when (not source-ok)
         (return (query-relation-empty) false))
-      (query-relation-apply-bound-db-clause-typed-scan source-db rel (unsourced-clause clause-value) stats))
+      (let [[out out-ok] (query-relation-apply-bound-db-clause-typed-scan source-db rel (unsourced-clause clause-value) stats)]
+        (when out-ok
+          (set! stats^.source-index-scans (+ stats^.source-index-scans 1)))
+        (return out out-ok)))
     (query-relation-apply-bound-db-clause-typed-scan db rel clause-value stats)))
 
 (defn query-relation-apply-bound-clause-typed-fallback [db: DB, sources: []DB-Source, rel: Query-Relation, clause-value: Clause, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
@@ -15508,7 +15544,7 @@
     (when typed-ok
       (return typed))
     (delete-query-relation typed))
-  (let [[typed typed-ok] (query-relation-apply-bound-ea-clause-typed db rel clause-value stats)]
+  (let [[typed typed-ok] (query-relation-apply-bound-ea-clause-typed-with-sources db sources rel clause-value stats)]
     (when typed-ok
       (return typed))
     (delete-query-relation typed))
@@ -15522,6 +15558,7 @@
     (delete-query-relation typed))
   (let [bindings (make [dynamic]Binding)]
     (let [materialized (query-relation-materialized-bindings rel) :defer]
+      (set! stats^.binding-materializations (+ stats^.binding-materializations (count materialized)))
       (for [tuple materialized]
         (append-bindings-after-clause-with-sources-profiled! (addr bindings) db sources clause-value tuple stats))
     (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
@@ -19103,6 +19140,9 @@
               (value-keyword ":steps") (value-int (i64 stats.steps))
               (value-keyword ":clauses") (value-int (i64 stats.clauses))
               (value-keyword ":clause-candidates") (value-int (i64 stats.clause-candidates))
+              (value-keyword ":typed-index-scans") (value-int (i64 stats.typed-index-scans))
+              (value-keyword ":source-index-scans") (value-int (i64 stats.source-index-scans))
+              (value-keyword ":binding-materializations") (value-int (i64 stats.binding-materializations))
               (value-keyword ":rule-calls") (value-int (i64 stats.rule-calls))
               (value-keyword ":rule-iterations") (value-int (i64 stats.rule-iterations))
               (value-keyword ":max-intermediate-bindings") (value-int (i64 stats.max-intermediate-bindings))

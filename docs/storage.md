@@ -496,12 +496,23 @@ now. The shared resolver caches the next entity id, assigns repeated tempid
 names consistently within the transaction, accounts for explicit entity ids in
 the same tx, and falls back for unique attrs so upsert semantics stay on the
 resident resolver until the general overlay exists. Simple value-tempid ref
-writes now share that same assignment state, with current-tx value-tempids and
-missing value-only tempids kept on resident fallback/error paths. The remaining
-work is therefore the general write-state overlay: tempid upserts,
-value-tempid edge cases, tuple maintenance, transaction functions,
-schema-changing validation, and current-state reads should stop requiring a
-rebuilt resident DB.
+writes now share that same assignment state, with current-tx value-tempids
+resolved through the transaction report tempid mapping. Literal ref tempids
+written as same-transaction string or negative-int ref values also resolve
+through that shared assignment state, while missing value-only tempids stay on
+resident fallback/error paths. Tempid upserts for
+`:db.unique/identity` attrs now resolve through source-backed lookup-ref reads
+before op emission; `:db.unique/value` stays on normal validation rather than
+the upsert path. Source-backed `:db/retractAttr` and `:db/retractEntity`
+expansion now reads current facts through `DB-Read-Source`, including component
+recursion and incoming-ref cleanup, so those current-state reads no longer
+force the resident resolver. Explicit-ID schema-only transactions also resolve
+through the shared write-state path for common non-tuple schema installation;
+mixed schema/data transactions and tuple schema changes still stay on resident
+fallback. The remaining work is therefore the general write-state overlay:
+tuple maintenance, transaction functions, mixed schema validation, and any
+remaining value-tempid/upsert conflict shapes should stop requiring a rebuilt
+resident DB.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing

@@ -62,6 +62,51 @@
     (t.is (source-branch-has-entity? or-result 2))
     (t.is (source-branch-has-entity? or-result 3))))
 
+(t.deftest source-db-bound-entity-attr-clause-stays-profiled
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        _ (vev.transact-text
+            (addr left)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :id 1] [:db/add 2 :name \"Grace\"] [:db/add 2 :id 2] [:db/add 3 :name \"Barbara\"] [:db/add 3 :id 3]]")
+        inputs ([]vev.Query-Input [])
+        sources ([]vev.DB-Source [(vev.db-source "$left" left.db)])
+        profiled (vev.q-text-profiled-with-sources
+                   left.db
+                   "[:find ?name :in $left :where [$left ?e :id 2] [$left ?e :name ?name]]"
+                   inputs
+                   sources)]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (= profiled.result.rows[0].values[0].text "Grace"))
+    (t.is (= profiled.stats.steps 2))
+    (t.is (= profiled.stats.output-rows 1))
+    (t.is (> profiled.stats.typed-index-scans 0))
+    (t.is (> profiled.stats.source-index-scans 0))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (t.is (> profiled.stats.clause-candidates 0))))
+
+(t.deftest source-db-not-existence-uses-clause-source
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        right (vev.create-conn)
+        _ (vev.transact-text
+            (addr left)
+            "[[:db/add 1 :id 1] [:db/add 1 :name \"Ada\"] [:db/add 2 :id 2] [:db/add 2 :name \"Grace\"]]")
+        _ (vev.transact-text
+            (addr right)
+            "[[:db/add 1 :blocked true]]")
+        inputs ([]vev.Query-Input [])
+        sources ([]vev.DB-Source [(vev.db-source "$left" left.db)
+                                  (vev.db-source "$right" right.db)])
+        result (vev.q-text-with-sources
+                 left.db
+                 "[:find ?name :in $left $right :where [$left ?e :name ?name] ($right not [?e :blocked])]"
+                 inputs
+                 sources)]
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].text "Grace"))))
+
 (t.deftest branch-local-predicates-and-functions-from-edn-stay-typed
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -166,6 +211,25 @@
     (t.is (= (count or-join-result.rows) 2))
     (t.is (source-branch-has-int? or-join-result 1))
     (t.is (source-branch-has-int? or-join-result 3))))
+
+(t.deftest top-level-relation-source-input-avoids-input-binding-materialization
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":id") (vev.value-int 1))
+                  (vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ada"))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":id") (vev.value-int 2))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Grace"))]))
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?name :in $rows :where [$rows ?e :id 2] [$rows ?e :name ?name]]"
+                   ([]vev.Query-Input [(vev.query-input-scalar rows)]))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (= profiled.result.rows[0].values[0].text "Grace"))
+    (t.is (= profiled.stats.input-bindings 1))
+    (t.is (= profiled.stats.binding-materializations 0))))
 
 (t.deftest plain-not-join-branch-pipelines-stay-typed
   (defer (free_all context.allocator))
