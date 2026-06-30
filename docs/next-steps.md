@@ -69,16 +69,18 @@ Implemented so far:
   source-backed pull finds, and bounded pull recursion now walks the same
   persisted source with cycle guards. Source-backed query APIs also have
   `with-fns` variants so native pull xform callbacks can run against persisted
-  snapshots. Both bounded recursion and unbounded `...` recursion have
-  source-backed persisted snapshot coverage.
+  snapshots. Named `$source` qualifiers are supported as aliases for the same
+  single persisted snapshot source, including named-source pull finds. Both
+  bounded recursion and unbounded `...` recursion have source-backed persisted
+  snapshot coverage.
   Source-backed text queries also accept scalar `:in` values through direct
   `Query-Input` and EDN input text.
 - `storage_architecture_test` now covers these paths against a
   `SQLite-DB-Snapshot`, including parsed query text, a multi-clause join, and a
-  retraction case. It also checks that primary `$` source-qualified clauses work
-  and named source-qualified clauses fail explicitly until multi-source durable
-  querying is implemented, plus predicate filtering with both matching and empty
-  results, scalar and destructuring function output, `ground`, `get-else`,
+  retraction case. It also checks that primary `$` and named `$source` aliases
+  work over the same snapshot until true multi-source durable querying is
+  implemented, plus predicate filtering with both matching and empty results,
+  scalar and destructuring function output, `ground`, `get-else`,
   `get-some`, `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
   wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
   nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
@@ -113,7 +115,7 @@ Remaining in this batch:
 1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
    new source-backed plain-clause query runner.
 2. Broaden `q-text-db-read-source` beyond plain data clauses:
-   - named or multiple source-qualified clauses
+   - true multiple distinct source-qualified durable snapshots
    - richer function-output ownership cleanup for temporary strings/containers
      produced by shared function evaluators
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
@@ -121,8 +123,8 @@ Remaining in this batch:
    forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
    and pattern-variable pull finds plus defaults, limits, and built-in xforms
    are now covered; callback xforms and bounded recursion are also covered.
-   Unbounded recursion has persisted snapshot coverage too. Remaining pull work
-   is source-qualified named pull sources.
+   Unbounded recursion and named-source aliases have persisted snapshot coverage
+   too. Remaining pull work is true multi-source named pull sources.
 4. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
