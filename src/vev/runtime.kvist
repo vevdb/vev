@@ -4033,6 +4033,13 @@
         (delete-owned-datoms datoms)))
     (return out true "")))
 
+(defn db-read-source-bindings-after-predicate [input-bindings: []Binding, predicate: Predicate] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding input-bindings]
+      (when (predicate-matches? predicate binding)
+        (arr.push! out (db-read-source-clone-binding-owned binding))))
+    out))
+
 (defn db-read-source-result-rows-for-bindings [query-value: Query, bindings: []Binding] -> Result-Set
   (let [rows (make [dynamic]Result-Row)]
     (for [binding bindings]
@@ -4062,7 +4069,6 @@
 
 (defn db-read-source-q-query [source: DB-Read-Source, query-value: Query] -> Result-Set
   (when (not (and (> (count query-value.clauses) 0)
-                  (= (count query-value.predicates) 0)
                   (= (count query-value.function-clauses) 0)
                   (= (count query-value.rule-calls) 0)
                   (= (count query-value.get-elses) 0)
@@ -4072,19 +4078,44 @@
                   (= (count query-value.or-groups) 0)
                   (= (count query-value.aggregates) 0)
                   (= (count query-value.pulls) 0)))
-    (return (result-set-error "SQLite DB snapshot source currently supports plain data clauses only")))
+    (return (result-set-error "SQLite DB snapshot source currently supports data clauses and predicates only")))
+  (for [step query-value.where-steps]
+    (when (not (or (= step.kind .Clause)
+                   (= step.kind .Predicate)))
+      (return (result-set-error "SQLite DB snapshot source currently supports data clauses and predicates only"))))
   (let [bindings (make [dynamic]Binding)]
     (arr.push! bindings (Binding {items: (make [dynamic]Var-Binding)}))
-    (for [clause-value query-value.clauses]
-      (let [[source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
-        (when (not source-clause-ok)
-          (db-read-source-delete-bindings-owned bindings)
-          (return (result-set-error source-clause-error)))
-        (let [[next next-ok next-error] (db-read-source-bindings-after-clause source (slice bindings 0) source-clause)]
-          (db-read-source-delete-bindings-owned bindings)
-          (when (not next-ok)
-            (return (result-set-error next-error)))
-          (set! bindings next))))
+    (for [step query-value.where-steps]
+      (if (= step.kind .Clause)
+        (do
+          (let [clause-value query-value.clauses[step.index]
+                [source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
+            (when (not source-clause-ok)
+              (db-read-source-delete-bindings-owned bindings)
+              (return (result-set-error source-clause-error)))
+            (let [[next next-ok next-error] (db-read-source-bindings-after-clause source (slice bindings 0) source-clause)]
+              (db-read-source-delete-bindings-owned bindings)
+              (when (not next-ok)
+                (return (result-set-error next-error)))
+              (set! bindings next))))
+        (if (= step.kind .Predicate)
+          (let [next (db-read-source-bindings-after-predicate (slice bindings 0) query-value.predicates[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (set! bindings next))
+          (do
+            (db-read-source-delete-bindings-owned bindings)
+            (return (result-set-error "SQLite DB snapshot source currently supports data clauses and predicates only"))))))
+    (when (= (count query-value.where-steps) 0)
+      (for [clause-value query-value.clauses]
+        (let [[source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
+          (when (not source-clause-ok)
+            (db-read-source-delete-bindings-owned bindings)
+            (return (result-set-error source-clause-error)))
+          (let [[next next-ok next-error] (db-read-source-bindings-after-clause source (slice bindings 0) source-clause)]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (result-set-error next-error)))
+            (set! bindings next)))))
     (let [result (db-read-source-result-rows-for-bindings query-value (slice bindings 0))]
       (db-read-source-delete-bindings-owned bindings)
       result)))
