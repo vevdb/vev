@@ -399,6 +399,10 @@ through the resident post-commit datom log for O(1) datom access. A direct
 old-shared-vs-new merge was correct but slower with the current chunked datom
 log, so the next structural step is efficient shared datom random access before
 removing that remaining resident comparison source.
+`Shared-Datom-Log` now carries per-chunk start offsets and uses binary search
+to find the chunk for a datom position. This keeps retained/appended partial
+chunks addressable without scanning through all previous chunks and gives the
+next direct shared-index merge attempt the right lookup primitive.
 
 SQLite rollback cleanup now also follows the live-report ownership rule. When
 an in-memory transaction succeeds but SQLite append fails, the wrapper restores

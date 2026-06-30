@@ -422,6 +422,11 @@ Implemented so far:
   as their O(1) comparison source until shared datom logs have a better random
   access shape; a fully direct old-shared-vs-new merge was correct but slower
   with the current chunk representation.
+- `Shared-Datom-Log` now stores per-chunk start offsets, so datom lookup can
+  find the containing chunk with binary search instead of scanning chunk by
+  chunk. This is the structural prerequisite for making direct shared-index
+  merges compare old shared datoms with new transaction datoms without
+  regressing publish latency.
 - `Shared-Tx-Report` now gives the shared connection path retained
   `db-before` and `db-after` shared snapshots plus shallow report metadata. A
   test transacts through `Shared-Conn`, moves the connection forward with a
@@ -465,10 +470,11 @@ Work:
    index publication now retains full old chunks copied contiguously by the
    merge. Append-only shared publication now consumes `report.tx-data` directly
    for the shared datom log, while merged shared indexes still compare through
-   the resident post-commit datom log for performance. The larger remaining
-   step is making the transaction engine itself publish shared chunks instead
-   of building a resident `DB` first, after shared datom logs have efficient
-   indexed/random access.
+   the resident post-commit datom log for performance. Shared datom logs now
+   keep chunk-start offsets for indexed access; the next step is to retry direct
+   old-shared-vs-new index merging on top of that representation, then make the
+   transaction engine itself publish shared chunks instead of building a
+   resident `DB` first.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact. Shared transaction reports now exist for the
    prototype shared connection path, and `Store-DB` can now wrap shared
