@@ -3571,6 +3571,23 @@
   sqlite-cursor: ^SQLite-Index-Cursor
 })
 
+(defenum DB-Read-Source-Kind [
+  Resident
+  SQLite-Snapshot
+])
+
+(defstruct DB-Read-Source {
+  kind: DB-Read-Source-Kind
+  db: ^DB
+  sqlite-snapshot: ^SQLite-DB-Snapshot
+})
+
+(defn resident-db-read-source [db: ^DB] -> DB-Read-Source
+  (DB-Read-Source {kind: .Resident db: db}))
+
+(defn sqlite-db-read-source [snapshot: ^SQLite-DB-Snapshot] -> DB-Read-Source
+  (DB-Read-Source {kind: .SQLite-Snapshot sqlite-snapshot: snapshot}))
+
 (defn db-index-view [db: DB, order: Public-Index-Order] -> DB-Index-View
   (DB-Index-View {kind: .Resident
                   order: order
@@ -3580,6 +3597,12 @@
   (DB-Index-View {kind: .SQLite-Cursor
                   order: order
                   sqlite-cursor: cursor}))
+
+(defn db-read-source-index-view [source: DB-Read-Source, order: Public-Index-Order] -> DB-Index-View
+  (case source.kind
+    .Resident (db-index-view source.db^ order)
+    .SQLite-Snapshot (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
+    :else (DB-Index-View {})))
 
 (defn db-index-view-count [view: DB-Index-View] -> int
   (if (= view.kind .SQLite-Cursor)
@@ -3591,6 +3614,58 @@
     (let [[entry ok _] (sqlite-index-cursor-at view.sqlite-cursor index)]
       (if ok entry 0))
     view.indexes[index]))
+
+(defn db-read-source-datom-at-entry [source: DB-Read-Source, entry: int] -> [datom: Datom, ok: bool, error: string]
+  (case source.kind
+    .Resident
+      (do
+        (when (or (< entry 0)
+                  (>= entry (count source.db^.datoms)))
+          (return (Datom {}) false "resident datom index out of range"))
+        (return (datom-owned source.db^.datoms[entry]) true ""))
+    .SQLite-Snapshot
+      (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
+    :else (return (Datom {}) false "unknown DB read source")))
+
+(defn db-read-source-datom-current-at-entry? [source: DB-Read-Source, entry: int] -> [current: bool, ok: bool, error: string]
+  (case source.kind
+    .Resident
+      (do
+        (when (or (< entry 0)
+                  (>= entry (count source.db^.datoms)))
+          (return false false "resident datom index out of range"))
+        (return (datom-current-at? source.db^ entry) true ""))
+    .SQLite-Snapshot
+      (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
+        (when (not datom-ok)
+          (return false false datom-error))
+        (defer (delete-owned-datom datom))
+        (when (not datom.added)
+          (return false true ""))
+        (let [[range-low range-high range-ok range-error] (sqlite-db-snapshot-eavt-entity-range source.sqlite-snapshot datom.e)]
+          (when (not range-ok)
+            (return false false range-error))
+          (let [view (sqlite-db-snapshot-index-view source.sqlite-snapshot .EAVT)
+                latest-tx: u64 0
+                latest-added false
+                found false]
+            (for [pos (arr.range range-low range-high)]
+              (let [candidate-entry (db-index-view-at view pos)
+                    [candidate candidate-ok candidate-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot candidate-entry)]
+                (when (not candidate-ok)
+                  (return false false candidate-error))
+                (let [matches (and (= candidate.e datom.e)
+                                   (= candidate.a datom.a)
+                                   (value-equal? candidate.v datom.v))]
+                  (when matches
+                    (when (or (not found)
+                              (> candidate.tx latest-tx))
+                      (set! latest-tx candidate.tx)
+                      (set! latest-added candidate.added)
+                      (set! found true))))
+                (delete-owned-datom candidate)))
+            (return (and found latest-added (= latest-tx datom.tx)) true ""))))
+    :else (return false false "unknown DB read source")))
 
 (defn lower-bound-index-view-values [db: DB, view: DB-Index-View, values: []Value] -> int
   (let [order (public-index-order-text view.order)
@@ -3701,6 +3776,208 @@
       (when (not (= compare 0))
         (return compare))))
   0)
+
+(defn db-read-source-lower-bound-values [source: DB-Read-Source, view: DB-Index-View, values: []Value] -> [position: int, ok: bool, error: string]
+  (let [order (public-index-order-text view.order)
+        low 0
+        high (db-index-view-count view)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            entry (db-index-view-at view mid)
+            [datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+        (when (not datom-ok)
+          (return low false datom-error))
+        (let [compare (datom-index-compare-values datom order values)]
+          (delete-owned-datom datom)
+          (if (< compare 0)
+            (set! low (+ mid 1))
+            (set! high mid)))))
+    (return low true "")))
+
+(defn db-read-source-upper-bound-values [source: DB-Read-Source, view: DB-Index-View, values: []Value] -> [position: int, ok: bool, error: string]
+  (let [order (public-index-order-text view.order)
+        low 0
+        high (db-index-view-count view)]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            entry (db-index-view-at view mid)
+            [datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+        (when (not datom-ok)
+          (return low false datom-error))
+        (let [compare (datom-index-compare-values datom order values)]
+          (delete-owned-datom datom)
+          (if (<= compare 0)
+            (set! low (+ mid 1))
+            (set! high mid)))))
+    (return low true "")))
+
+(defn db-read-source-append-index-datoms! [out: ^[dynamic]Datom, source: DB-Read-Source, order: Public-Index-Order, values: []Value] -> [ok: bool, error: string]
+  (let [view (db-read-source-index-view source order)
+        order-text (public-index-order-text order)
+        [low low-ok low-error] (db-read-source-lower-bound-values source view values)]
+    (when (not low-ok)
+      (return false low-error))
+    (let [[high high-ok high-error] (db-read-source-upper-bound-values source view values)]
+      (when (not high-ok)
+        (return false high-error))
+      (for [pos (arr.range low high)]
+        (let [entry (db-index-view-at view pos)
+              [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+          (when (not current-ok)
+            (return false current-error))
+          (when current
+            (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+              (when (not datom-ok)
+                (return false datom-error))
+              (if (datom-matches-index-values? datom order-text values)
+                (arr.push! out^ datom)
+                (delete-owned-datom datom)))))))
+    (return true "")))
+
+(defn db-read-source-datoms-by-attr [source: DB-Read-Source, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-keyword attr)])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .AEVT values)]
+    (if scan-ok
+      (return out true "")
+      (do
+        (delete-owned-datoms out)
+        (return (make [dynamic]Datom) false scan-error)))))
+
+(defn db-read-source-datoms-by-entity-attr [source: DB-Read-Source, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-entity entity) (value-keyword attr)])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .EAVT values)]
+    (if scan-ok
+      (return out true "")
+      (do
+        (delete-owned-datoms out)
+        (return (make [dynamic]Datom) false scan-error)))))
+
+(defn db-read-source-pull-attrs-value [source: DB-Read-Source, entity: u64, attrs: []string] -> [value: Value, ok: bool, error: string]
+  (let [items (make [dynamic]Value)]
+    (for [attr attrs]
+      (if (= attr ":db/id")
+        (do
+          (arr.push! items (value-keyword (string-owned attr)))
+          (arr.push! items (value-entity entity)))
+        (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity attr)]
+          (when (not datoms-ok)
+            (let [partial (value-map (slice items 0))]
+              (delete items)
+              (delete-owned-value partial))
+            (return (Value {}) false datoms-error))
+          (when (> (count datoms) 0)
+            (arr.push! items (value-keyword (string-owned attr)))
+            (if (= (count datoms) 1)
+              (arr.push! items (value-owned datoms[0].v))
+              (let [values (make [dynamic]Value 0 (count datoms))]
+                (for [datom datoms]
+                  (arr.push! values (value-owned datom.v)))
+                (arr.push! items (value-vector (slice values 0)))
+                (delete values))))
+          (delete-owned-datoms datoms))))
+    (let [out (value-map (slice items 0))]
+      (delete items)
+      (return out true ""))))
+
+(defn db-read-source-term-constant-value [term: Term] -> [value: Value, ok: bool]
+  (if (= term.kind .Value)
+    (return term.value true)
+    (return (Value {}) false)))
+
+(defn db-read-source-clause-candidates [source: DB-Read-Source, clause-value: Clause] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [[e-value e-ok] (db-read-source-term-constant-value clause-value.e)
+        [a-value a-ok] (db-read-source-term-constant-value clause-value.a)
+        [v-value v-ok] (db-read-source-term-constant-value clause-value.v)]
+    (cond
+      (and e-ok a-ok (= e-value.kind .Entity) (= a-value.kind .Keyword))
+        (db-read-source-datoms-by-entity-attr source e-value.entity a-value.text)
+      (and a-ok (= a-value.kind .Keyword) v-ok)
+        (let [out (make [dynamic]Datom)
+              values ([]Value [a-value v-value])
+              [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .AVET values)]
+          (if scan-ok
+            (return out true "")
+            (do
+              (delete-owned-datoms out)
+              (return (make [dynamic]Datom) false scan-error))))
+      (and a-ok (= a-value.kind .Keyword))
+        (db-read-source-datoms-by-attr source a-value.text)
+      (and e-ok (= e-value.kind .Entity))
+        (let [out (make [dynamic]Datom)
+              values ([]Value [e-value])
+              [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .EAVT values)]
+          (if scan-ok
+            (return out true "")
+            (do
+              (delete-owned-datoms out)
+              (return (make [dynamic]Datom) false scan-error))))
+      :else
+        (let [out (make [dynamic]Datom)
+              [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .EAVT ([]Value []))]
+          (if scan-ok
+            (return out true "")
+            (do
+              (delete-owned-datoms out)
+              (return (make [dynamic]Datom) false scan-error)))))))
+
+(defn db-read-source-term-matches-datom-value? [term: Term, value: Value] -> bool
+  (case term.kind
+    .Value (predicate-value-equal? term.value value)
+    .Wildcard true
+    .Var true
+    :else false))
+
+(defn db-read-source-clause-datom-matches? [clause-value: Clause, datom: Datom] -> bool
+  (and (db-read-source-term-matches-datom-value? clause-value.e (value-entity datom.e))
+       (db-read-source-term-matches-datom-value? clause-value.a (value-keyword datom.a))
+       (db-read-source-term-matches-datom-value? clause-value.v datom.v)))
+
+(defn db-read-source-value-for-find-var [clause-value: Clause, datom: Datom, name: string] -> [value: Value, ok: bool]
+  (cond
+    (and (= clause-value.e.kind .Var) (= clause-value.e.name name)) (return (value-entity datom.e) true)
+    (and (= clause-value.a.kind .Var) (= clause-value.a.name name)) (return (value-keyword (string-owned datom.a)) true)
+    (and (= clause-value.v.kind .Var) (= clause-value.v.name name)) (return (value-owned datom.v) true)
+    :else (return (Value {}) false)))
+
+(defn db-read-source-q-query [source: DB-Read-Source, query-value: Query] -> Result-Set
+  (when (not (and (= (count query-value.clauses) 1)
+                  (= (count query-value.predicates) 0)
+                  (= (count query-value.function-clauses) 0)
+                  (= (count query-value.rule-calls) 0)
+                  (= (count query-value.get-elses) 0)
+                  (= (count query-value.get-somes) 0)
+                  (= (count query-value.grounds) 0)
+                  (= (count query-value.not-groups) 0)
+                  (= (count query-value.or-groups) 0)
+                  (= (count query-value.aggregates) 0)
+                  (= (count query-value.pulls) 0)))
+    (return (result-set-error "SQLite DB snapshot source currently supports one plain data clause")))
+  (let [clause-value query-value.clauses[0]
+        [datoms datoms-ok datoms-error] (db-read-source-clause-candidates source clause-value)]
+    (when (not datoms-ok)
+      (return (result-set-error datoms-error)))
+    (defer (delete-owned-datoms datoms))
+    (let [rows (make [dynamic]Result-Row)]
+      (for [datom datoms]
+        (when (db-read-source-clause-datom-matches? clause-value datom)
+          (let [values (make [dynamic]Value 0 (count query-value.find))
+                pulls (make [dynamic]Pull-Result)
+                row-ok true]
+            (for [name query-value.find]
+              (let [[value value-ok] (db-read-source-value-for-find-var clause-value datom name)]
+                (if value-ok
+                  (arr.push! values value)
+                  (set! row-ok false))))
+            (if row-ok
+              (arr.push! rows (Result-Row {values: values pulls: pulls}))
+              (do
+                (for [value values]
+                  (delete-owned-value value))
+                (delete values)
+                (delete pulls))))))
+      (result-set-ok rows))))
 
 (defn public-avet-attr? [db: DB, attr: string] -> bool
   (when (not (db-has-schema? db))

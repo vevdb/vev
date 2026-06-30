@@ -23,20 +23,45 @@ The current gate is:
 
 ## Batch 1: Query-Facing Durable Snapshot
 
+Status: in progress.
+
 Goal:
 
 - make the existing `SQLite-DB-Snapshot` usable as a read-only query source
   through the same logical index boundary as resident `DB` values.
 
+Implemented so far:
+
+- `DB-Read-Source` can represent either a resident `DB` or a
+  `SQLite-DB-Snapshot`.
+- source-backed index scans can ask for `eavt`, `aevt`, `avet`, and `vaet`
+  views without owning resident arrays.
+- source-backed attr and entity+attr datom reads work over persisted SQLite
+  index chunks.
+- source-backed reads check currentness by resolving the matching
+  entity/attr/value history, so retracted facts are filtered out instead of
+  treating every persisted index entry as current.
+- a simple source-backed pull-value helper can render `:db/id` plus forward
+  attrs from a persisted snapshot.
+- `q-text-db-read-source` parses EDN query text and executes the first
+  source-backed query shape: one plain data clause with normal `:find`
+  variables over entity, attr, and value positions.
+- `storage_architecture_test` now covers these paths against a
+  `SQLite-DB-Snapshot`, including parsed query text and a retraction case.
+- `bench/sqlite_storage.kvist` now reports
+  `persisted-db-snapshot-source-query` separately from raw entity/attr helpers
+  and from `reopen-rebuild`.
+
 Work:
 
 1. Introduce or extend a query-facing DB source abstraction so clause scans can
    ask for `eavt`, `aevt`, `avet`, and `vaet` views without assuming resident
-   arrays.
+   arrays. This is started with `DB-Read-Source`.
 2. Move ordinary data-clause scan paths from "resident DB plus
    `DB-Index-View`" to "DB source plus `DB-Index-View`".
 3. Route entity and pull reads that already work over lazy
-   `SQLite-DB-Snapshot` helpers through the same source boundary.
+   `SQLite-DB-Snapshot` helpers through the same source boundary. Basic
+   attr/entity+attr reads and simple pull-value rendering are now source-backed.
 4. Add a small durable query test that opens a persisted snapshot without
    `load-db-sqlite` and answers at least:
    - entity lookup by id
@@ -44,12 +69,26 @@ Work:
    - one bound entity+attribute query
    - one simple pull
 
+Remaining in this batch:
+
+1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
+   new source-backed one-clause query runner.
+2. Broaden `q-text-db-read-source` beyond one plain data clause:
+   - multiple clauses and joins
+   - source-qualified clauses
+   - predicates/functions where inputs are already materialized
+3. Extend source-backed pull beyond simple forward scalar/many attrs or
+   explicitly route full pull through the same source boundary.
+4. Decide ownership cleanup for source-backed result rows. Today the helper
+   returns ordinary `Result-Set` values, but some values are owned because the
+   source does not keep resident datom arrays alive.
+
 Acceptance:
 
 - resident in-memory tests still pass
 - `storage_architecture_test` still passes
-- a new read-only persisted-snapshot query test proves at least one real query
-  executes without rebuilding a full resident `DB`
+- a read-only persisted-snapshot query test proves at least one real parsed
+  query executes without rebuilding a full resident `DB`
 - benchmark output separates lazy snapshot query time from `reopen-rebuild`
 
 ## Batch 2: Entity Position Side Tables
@@ -194,4 +233,3 @@ These are important, but not the current gate:
 - full Maven/Clojars/PyPI/npm/crates.io publication polish
 - optional server/transactor packaging mode
 - replication/sync primitives
-

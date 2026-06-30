@@ -78,7 +78,11 @@ resident datom/index arrays. The snapshot owns a reusable prepared SQLite
 statement for datom-by-log-index resolution so broad materialization does not
 prepare one SQL statement per datom. Normal reopened `DB` values still use
 resident arrays today, but the query-facing boundary can now represent a
-chunk-backed source. The
+chunk-backed source. `DB-Read-Source` can now wrap either a resident `DB` or a
+`SQLite-DB-Snapshot`, expose logical index views, filter retracted facts through
+source-backed currentness checks, run attr/entity+attr datom reads, render a
+simple pull-value map, and execute the first parsed EDN query shape over a
+persisted source: one plain data clause with `:find` variables. The
 public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
 current-value, pull, and entity helper paths now go through a resident
 `DB-Index-View` boundary instead of directly owning the slice logic at each
@@ -100,6 +104,14 @@ This is still a guarded compatibility path: Vev materializes datom rows and
 rebuilds indexes before validation for normal `DB` values. Wiring query/reopen
 to use `SQLite-Index-Snapshot`/chunk-backed DB snapshots instead of resident
 arrays is the next implementation step.
+
+The June 30, 2026 local SQLite storage benchmark now includes
+`persisted-db-snapshot-source-query`, which parses and executes a one-clause
+query against a persisted `SQLite-DB-Snapshot` source. In that run the source
+query median was about 1.0ms for the 2,000-entity fixture, while the
+compatibility `reopen-rebuild` path was about 61ms. This is not the final query
+path, but it proves parsed query execution can begin from persisted Vev index
+chunks without first rebuilding a resident `DB`.
 
 ## Implementation Milestones
 
