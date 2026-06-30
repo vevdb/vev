@@ -347,6 +347,27 @@
                                   (shared-int-index-with-merged-appended-datoms base.vaet (slice after.datoms 0) start-index "vaet")
                                   (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0)))}))
 
+(defn shared-db-int-indexes-with-appended-datom-slice-mode [base: Shared-DB-Int-Indexes, after: DB, appended: []Datom, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
+  (Shared-DB-Int-Indexes {current: (if append-only
+                                     (shared-int-index-with-appended-range base.current start-index (+ start-index (count appended)))
+                                     (shared-int-index-from-base-prefix-or-slice base.current (slice after.current 0)))
+                          eavt: (cond
+                                  new-entities-after-existing
+                                    (shared-int-index-with-appended-sorted-datoms base.eavt (slice after.datoms 0) start-index "eavt")
+                                  append-only
+                                    (shared-int-index-with-merged-appended-datoms base.eavt (slice after.datoms 0) start-index "eavt")
+                                  :else
+                                    (shared-int-index-from-base-prefix-or-slice base.eavt (slice after.eavt 0)))
+                          aevt: (if append-only
+                                  (shared-int-index-with-merged-appended-datoms base.aevt (slice after.datoms 0) start-index "aevt")
+                                  (shared-int-index-from-base-prefix-or-slice base.aevt (slice after.aevt 0)))
+                          avet: (if append-only
+                                  (shared-int-index-with-merged-appended-datoms base.avet (slice after.datoms 0) start-index "avet")
+                                  (shared-int-index-from-base-prefix-or-slice base.avet (slice after.avet 0)))
+                          vaet: (if append-only
+                                  (shared-int-index-with-merged-appended-datoms base.vaet (slice after.datoms 0) start-index "vaet")
+                                  (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0)))}))
+
 (defn retain-shared-db-int-indexes [indexes: Shared-DB-Int-Indexes] -> Shared-DB-Int-Indexes
   (Shared-DB-Int-Indexes {current: (retain-shared-int-index indexes.current)
                           eavt: (retain-shared-int-index indexes.eavt)
@@ -452,6 +473,10 @@
   (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms (slice after.datoms start-index))
                        indexes: (shared-db-int-indexes-with-appended-db-mode base.indexes after start-index append-only new-entities-after-existing)}))
 
+(defn shared-db-snapshot-with-appended-datoms-mode [base: Shared-DB-Snapshot, after: DB, appended: []Datom, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Snapshot
+  (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms appended)
+                       indexes: (shared-db-int-indexes-with-appended-datom-slice-mode base.indexes after appended start-index append-only new-entities-after-existing)}))
+
 (defn retain-shared-db-snapshot [snapshot: Shared-DB-Snapshot] -> Shared-DB-Snapshot
   (Shared-DB-Snapshot {datoms: (retain-shared-datom-log snapshot.datoms)
                        indexes: (retain-shared-db-int-indexes snapshot.indexes)}))
@@ -482,6 +507,15 @@
 (defn shared-conn-read-source [conn: ^Shared-Conn] -> DB-Read-Source
   (shared-db-snapshot-read-source (addr conn^.snapshot)))
 
+(defn appended-entities-after-existing? [before: DB, appended: []Datom] -> bool
+  (when (= (count before.eavt) 0)
+    (return true))
+  (let [max-existing before.datoms[before.eavt[(- (count before.eavt) 1)]].e]
+    (for [datom appended]
+      (when (<= datom.e max-existing)
+        (return false))))
+  true)
+
 (defn shared-conn-transact [conn: ^Shared-Conn, tx-data: []Tx-Data] -> Tx-Report
   (let [start-index (count conn^.conn.db.datoms)
         report (transact-tx-data (addr conn^.conn) tx-data)]
@@ -489,8 +523,8 @@
       (return report))
     (let [append-only (append-only-datoms-eligible? report.db-before (slice report.tx-data 0))
           new-entities-after-existing (and append-only
-                                           (added-entities-after-existing? report.db-before (slice conn^.conn.db.datoms 0) start-index))
-          next-snapshot (shared-db-snapshot-with-appended-db-mode conn^.snapshot conn^.conn.db start-index append-only new-entities-after-existing)]
+                                           (appended-entities-after-existing? report.db-before (slice report.tx-data 0)))
+          next-snapshot (shared-db-snapshot-with-appended-datoms-mode conn^.snapshot conn^.conn.db (slice report.tx-data 0) start-index append-only new-entities-after-existing)]
       (delete-shared-db-snapshot conn^.snapshot)
       (set! conn^.snapshot next-snapshot))
     report))

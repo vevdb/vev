@@ -392,6 +392,13 @@ Ordered new-entity `eavt` publication follows the same direction: it builds the
 appended tail by sorting only the new datom indexes in EAVT order and appending
 that tail to the retained shared base, instead of slicing the resident
 post-commit `eavt` array.
+For general append-only shared publication, the shared datom log is now extended
+from `report.tx-data` instead of slicing the resident post-commit datom array.
+The shared `eavt`, `aevt`, `avet`, and `vaet` merge builders still compare
+through the resident post-commit datom log for O(1) datom access. A direct
+old-shared-vs-new merge was correct but slower with the current chunked datom
+log, so the next structural step is efficient shared datom random access before
+removing that remaining resident comparison source.
 
 SQLite rollback cleanup now also follows the live-report ownership rule. When
 an in-memory transaction succeeds but SQLite append fails, the wrapper restores

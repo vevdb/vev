@@ -416,6 +416,12 @@ Implemented so far:
   tail from the new datoms sorted in EAVT order, rather than slicing the
   resident post-commit `eavt` array. General append-only interleaved `eavt`
   still uses the merge-aware shared builder.
+- Append-only `Shared-Conn` publication now appends the shared datom log from
+  `report.tx-data` instead of slicing the resident post-commit datom array.
+  The shared index merge builders still use the resident post-commit datom log
+  as their O(1) comparison source until shared datom logs have a better random
+  access shape; a fully direct old-shared-vs-new merge was correct but slower
+  with the current chunk representation.
 - `Shared-Tx-Report` now gives the shared connection path retained
   `db-before` and `db-after` shared snapshots plus shallow report metadata. A
   test transacts through `Shared-Conn`, moves the connection forward with a
@@ -457,8 +463,12 @@ Work:
    exists as a tested primitive, but is not yet used blindly on the hot publish
    fallback because it regressed append-heavy commits. Merge-aware append-only
    index publication now retains full old chunks copied contiguously by the
-   merge. The next step is removing the resident-index-first adaptation and
-   continuing to reduce per-value overhead inside the shared merge builder.
+   merge. Append-only shared publication now consumes `report.tx-data` directly
+   for the shared datom log, while merged shared indexes still compare through
+   the resident post-commit datom log for performance. The larger remaining
+   step is making the transaction engine itself publish shared chunks instead
+   of building a resident `DB` first, after shared datom logs have efficient
+   indexed/random access.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact. Shared transaction reports now exist for the
    prototype shared connection path, and `Store-DB` can now wrap shared
