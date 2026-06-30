@@ -362,6 +362,11 @@ instead of separate resident, SQLite, and shared APIs.
 This lets storage-neutral callers, including the CLI, print parsed query results
 from retained SQLite/shared snapshots without reopening or reaching through a
 resident `DB` field just for value rendering.
+The resident entity-range helper now uses the same `DB-Index-View` binary-search
+shape as the source boundary instead of reading the `eavt-entities` /
+`eavt-entity-starts` side table directly. The side table still exists as a
+resident implementation detail and for remaining position-indexed helpers, but
+ordinary entity range/existence checks no longer require it.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

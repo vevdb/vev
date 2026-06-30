@@ -174,6 +174,11 @@ Implemented so far:
   entity/string/int projection fallbacks now use those helpers instead of
   resident entity-position side tables, with owned string copies tracked in the
   typed string/int column container when needed.
+- The legacy resident `eavt-entity-range` helper now uses `DB-Index-View`
+  binary search over `eavt` instead of reading `eavt-entities` /
+  `eavt-entity-starts` directly. Transaction append-eligibility checks still get
+  the same return shape, but the side table is no longer required for ordinary
+  entity range existence checks.
 
 Work:
 
@@ -241,7 +246,10 @@ Work:
    equality helpers are covered for resident and persisted snapshots, and the
    entity/int plus string/int projection fallbacks now use them. Runtime
    string/int typed columns can now mark owned string copies, and the ABI wrapper
-   reads that ownership bit for cleanup.
+   reads that ownership bit for cleanup. The legacy resident entity-range helper
+   now also uses the same `DB-Index-View` binary-search shape instead of the
+   side table. Position-indexed helpers remain resident-only and should either
+   be removed from query-facing code or replaced with source cursor positions.
 3. Keep the resident side table as an implementation detail for resident DBs,
    not as a query-engine assumption.
 
