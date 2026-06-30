@@ -353,13 +353,12 @@ Implemented so far:
   one retained immutable DB-value handle. The query test retains a snapshot,
   releases the original, and queries through the retained handle, matching the
   lifetime shape needed for old DB values in reports and host handles.
-- `shared-db-snapshot-with-appended-db` can now build a new shared snapshot
-  from an old snapshot plus a post-transaction resident DB. It shares the old
-  datom-log chunks and appends only new datom chunks. Shared int indexes now
-  also retain old chunks when the post-transaction index preserves the old index
-  as an exact prefix, with fallback rebuild for merged/reordered indexes. Tests
-  verify the base datom, current, and EAVT chunks are retained and the appended
-  snapshot remains queryable.
+- `shared-db-snapshot-with-tx-report` can now build a new shared snapshot from
+  an old snapshot plus a transaction report. It shares the old datom-log chunks
+  and appends only the report tx-data chunks. Shared int indexes retain old
+  chunks for known append/prefix cases, with fallback rebuild for
+  merged/reordered indexes. Tests verify the base datom, current, and EAVT
+  chunks are retained and the appended snapshot remains queryable.
 - `Shared-Conn` is the first connection-side publish wrapper for this
   representation. It still delegates transaction application to the existing
   resident `Conn`, but successful commits publish a `Shared-DB-Snapshot` from
