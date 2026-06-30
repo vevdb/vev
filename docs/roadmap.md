@@ -530,3 +530,9 @@ open/write/close/reopen/query; that exists. The active gate is:
   performance on both in-memory and durable paths
 
 Storage must preserve established semantics instead of reshaping them.
+
+The concrete implementation order for this gate lives in
+`docs/next-steps.md`. In short: first make `SQLite-DB-Snapshot` a real
+query-facing source, then remove the remaining resident `eavt` side-table
+assumptions, then make normal durable reopen use chunk-backed snapshots, then
+replace per-commit whole-array copies with shared immutable index storage.

@@ -103,6 +103,10 @@ arrays is the next implementation step.
 
 ## Implementation Milestones
 
+The concrete batch plan for the active storage phase is maintained in
+`docs/next-steps.md`. This section records the architectural milestones and
+current status.
+
 1. Schema, metadata, and bounded root writer.
    Add root/chunk tables, architecture marker, inspection functions, and
    bounded logical-index chunk/root publication. This is implemented; no query
