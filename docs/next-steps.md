@@ -412,6 +412,10 @@ Implemented so far:
   the shared path still delegates transaction application to the resident
   engine, but one more shared index no longer depends on resident index
   materialization.
+- Ordered new-entity shared publication now also builds the appended `eavt`
+  tail from the new datoms sorted in EAVT order, rather than slicing the
+  resident post-commit `eavt` array. General append-only interleaved `eavt`
+  still uses the merge-aware shared builder.
 - `Shared-Tx-Report` now gives the shared connection path retained
   `db-before` and `db-after` shared snapshots plus shallow report metadata. A
   test transacts through `Shared-Conn`, moves the connection forward with a

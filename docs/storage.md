@@ -388,6 +388,10 @@ directly from the committed datom range instead of copied from the resident
 post-commit `current` array. This is still an intermediate architecture because
 the transaction engine builds a resident DB first, but it removes one index from
 the resident-index adaptation step.
+Ordered new-entity `eavt` publication follows the same direction: it builds the
+appended tail by sorting only the new datom indexes in EAVT order and appending
+that tail to the retained shared base, instead of slicing the resident
+post-commit `eavt` array.
 
 SQLite rollback cleanup now also follows the live-report ownership rule. When
 an in-memory transaction succeeds but SQLite append fails, the wrapper restores
