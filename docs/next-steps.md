@@ -387,6 +387,13 @@ Implemented so far:
   tail batching. The remaining work is to avoid still building resident indexes
   first and to make the merge builder emit chunk-sized runs with less per-value
   overhead.
+- `Shared-Tx-Report` now gives the shared connection path retained
+  `db-before` and `db-after` shared snapshots plus shallow report metadata. A
+  test transacts through `Shared-Conn`, moves the connection forward with a
+  second transaction, and verifies the first report's shared `db-before` and
+  `db-after` remain independently queryable. This is the host-facing DB-value
+  lifetime shape needed before the C/JVM handles can stop depending on resident
+  DB clones.
 
 Work:
 
@@ -406,7 +413,9 @@ Work:
    merge. The next step is removing the resident-index-first adaptation and
    reducing per-value overhead inside the shared merge builder.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
-   / `db-after` semantics exact.
+   / `db-after` semantics exact. Shared transaction reports now exist for the
+   prototype shared connection path; the next step is wiring host-facing DB
+   handles to that shape instead of resident `DB` clones.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization.
 5. Preserve resident-array mode as a useful small/in-memory implementation

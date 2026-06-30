@@ -45,6 +45,17 @@
   chunk-size: int
 })
 
+(defstruct Shared-Tx-Report {
+  ok: bool
+  error: string
+  db-before: Shared-DB-Snapshot
+  db-after: Shared-DB-Snapshot
+  tx-data: [dynamic]Datom
+  tx: u64
+  tx-meta: [dynamic]Tx-Meta
+  tempids: [dynamic]Tempid
+})
+
 (defn shared-int-chunk [values: []int] -> Shared-Int-Chunk
   (let [refs (make [dynamic]int 0 1)
         owned (arr.into [dynamic]int values)]
@@ -438,6 +449,13 @@
   (delete conn.conn.listeners)
   (delete-owned-db conn.conn.db))
 
+(defn delete-shared-tx-report-shallow [report: Shared-Tx-Report]
+  (delete-shared-db-snapshot report.db-before)
+  (delete-shared-db-snapshot report.db-after)
+  (delete report.tx-data)
+  (delete report.tx-meta)
+  (delete report.tempids))
+
 (defn shared-conn-read-source [conn: ^Shared-Conn] -> DB-Read-Source
   (shared-db-snapshot-read-source (addr conn^.snapshot)))
 
@@ -453,3 +471,34 @@
       (delete-shared-db-snapshot conn^.snapshot)
       (set! conn^.snapshot next-snapshot))
     report))
+
+(defn shared-conn-transact-report [conn: ^Shared-Conn, tx-data: []Tx-Data] -> Shared-Tx-Report
+  (let [before-snapshot (retain-shared-db-snapshot conn^.snapshot)
+        report (shared-conn-transact conn tx-data)]
+    (if report.ok
+      (let [owned-tx-data (arr.into [dynamic]Datom (slice report.tx-data 0))
+            owned-tx-meta (clone-tx-meta (slice report.tx-meta 0))
+            owned-tempids (arr.into [dynamic]Tempid (slice report.tempids 0))
+            shared-report (Shared-Tx-Report {ok: true
+                                             error: ""
+                                             db-before: before-snapshot
+                                             db-after: (retain-shared-db-snapshot conn^.snapshot)
+                                             tx-data: owned-tx-data
+                                             tx: report.tx
+                                             tx-meta: owned-tx-meta
+                                             tempids: owned-tempids})]
+        (delete-live-tx-report-shallow report)
+        shared-report)
+      (let [empty-tx-data (make [dynamic]Datom)
+            empty-tx-meta (make [dynamic]Tx-Meta)
+            empty-tempids (make [dynamic]Tempid)
+            shared-report (Shared-Tx-Report {ok: false
+                                             error: report.error
+                                             db-before: before-snapshot
+                                             db-after: (retain-shared-db-snapshot before-snapshot)
+                                             tx-data: empty-tx-data
+                                             tx: 0
+                                             tx-meta: empty-tx-meta
+                                             tempids: empty-tempids})]
+        (delete-tx-report-shallow report)
+        shared-report))))
