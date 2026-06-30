@@ -340,6 +340,11 @@ Implemented so far:
   one retained immutable DB-value handle. The query test retains a snapshot,
   releases the original, and queries through the retained handle, matching the
   lifetime shape needed for old DB values in reports and host handles.
+- `shared-db-snapshot-with-appended-db` can now build a new shared snapshot
+  from an old snapshot plus a post-transaction resident DB. It shares the old
+  datom-log chunks and appends only new datom chunks, while rebuilding shared
+  index chunks from the post-transaction DB for now. Tests verify the base
+  datom chunk is retained and the appended snapshot remains queryable.
 
 Work:
 
@@ -349,6 +354,8 @@ Work:
    build and retain those shared indexes instead of publishing only owned
    `[]int` arrays.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
+   Datom-log sharing works for appended snapshots; index chunk sharing is still
+   the next step.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact.
 4. Fold the existing append-only incremental path into this representation

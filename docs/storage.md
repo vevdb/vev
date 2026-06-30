@@ -311,6 +311,10 @@ shared chunks, so simple data-clause queries can execute without a resident
 datom and index chunks into one retained immutable DB-value handle; tests retain
 one snapshot, release the original handle, and continue querying through the
 retained value.
+Appended shared snapshots can now share the old datom-log chunks and append
+only new datom chunks. Index chunks are still rebuilt from the post-transaction
+resident DB in that constructor; replacing that with index-page sharing is the
+next Batch 4 implementation step.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
