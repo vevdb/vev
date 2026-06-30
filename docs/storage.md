@@ -330,6 +330,12 @@ uses append-only/new-entity facts from the transaction report to retain
 known prefixes. A local batch-1, 500-write sample with chunk size 64 ended at
 about 0.323 ms commit latency. The remaining increase comes from indexes that
 still rebuild or scan merged/reordered resident arrays.
+`Shared-Int-Index` also has a tested same-offset page-sharing constructor for
+retaining unchanged chunks while replacing changed pages. It is currently a
+building block, not the default publish fallback: comparing every old page in
+the append-heavy workload cost more than exact-prefix-or-rebuild. The durable
+storage direction is therefore merge-aware page publication, where the merge
+knows which pages are unchanged instead of rediscovering it by scanning.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

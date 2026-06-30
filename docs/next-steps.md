@@ -369,6 +369,13 @@ Implemented so far:
   baseline growing past 2 ms near 500 writes. The remaining slope is mainly the
   indexes that still need merge/range chunk sharing (`aevt`, `avet`, `vaet` and
   non-new-entity `eavt` cases).
+- `Shared-Int-Index` now has an explicit page-sharing constructor that can
+  retain unchanged same-offset chunks while rebuilding changed pages. Tests
+  cover old handle release plus retained unchanged pages. This is deliberately
+  not wired into every publish fallback yet: a blind "compare every old page"
+  experiment made the append-heavy benchmark slower than exact-prefix-or-rebuild.
+  The next production version needs merge-aware sharing or a cost model that can
+  predict when page comparison will actually save enough copying.
 
 Work:
 
@@ -381,8 +388,11 @@ Work:
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases, and append-only/new-entity publication
-   can skip prefix proof for the known-prefix indexes. The next step is making
-   merged indexes page/chunk-share unchanged ranges instead of rebuilding.
+   can skip prefix proof for the known-prefix indexes. Same-offset page sharing
+   exists as a tested primitive, but is not yet used blindly on the hot publish
+   fallback because it regressed append-heavy commits. The next step is
+   merge-aware index publication that knows which old pages remain unchanged
+   instead of discovering that by scanning every page after the fact.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact.
 4. Fold the existing append-only incremental path into this representation
