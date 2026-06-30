@@ -400,6 +400,11 @@ Implemented so far:
   tail batching. The remaining work is to avoid still building resident indexes
   first and to make the merge builder emit chunk-sized runs with less per-value
   overhead.
+- The shared merge builder now emits full chunk-sized appended slices directly
+  when the pending buffer is empty, instead of pushing those values one at a
+  time through the pending buffer. This does not remove the resident-index-first
+  adaptation yet, but it reduces one source of per-value overhead in the
+  append-only shared index path.
 - `Shared-Tx-Report` now gives the shared connection path retained
   `db-before` and `db-after` shared snapshots plus shallow report metadata. A
   test transacts through `Shared-Conn`, moves the connection forward with a
@@ -442,7 +447,7 @@ Work:
    fallback because it regressed append-heavy commits. Merge-aware append-only
    index publication now retains full old chunks copied contiguously by the
    merge. The next step is removing the resident-index-first adaptation and
-   reducing per-value overhead inside the shared merge builder.
+   continuing to reduce per-value overhead inside the shared merge builder.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact. Shared transaction reports now exist for the
    prototype shared connection path, and `Store-DB` can now wrap shared

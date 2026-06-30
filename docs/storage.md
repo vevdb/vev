@@ -344,6 +344,9 @@ still builds resident indexes first, and the shared merge builder has per-value
 overhead that should be reduced when publication moves fully to shared chunks.
 The first overhead reduction batches the tail of added indexes instead of
 pushing every remaining added value individually.
+The merge builder also emits full chunk-sized appended slices directly when the
+pending buffer is empty, avoiding per-value pending-buffer pushes for those
+runs.
 `Shared-Tx-Report` now preserves transaction report DB values as retained shared
 snapshots. That lets a report's `db-before` and `db-after` be queried after the
 connection has advanced, without cloning resident DB arrays for those report
