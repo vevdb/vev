@@ -36,6 +36,10 @@ Implemented so far:
   `SQLite-DB-Snapshot`.
 - source-backed index scans can ask for `eavt`, `aevt`, `avet`, and `vaet`
   views without owning resident arrays.
+- source-backed data clauses now build a `Clause-Index-Scan` over
+  `DB-Read-Source` ranges instead of using a separate ad hoc candidate picker,
+  including entity/int comparison at source boundaries, omitted tx/op terms, and
+  reverse attribute data clauses such as `[301 :item/_parent ?child]`.
 - source-backed attr and entity+attr datom reads work over persisted SQLite
   index chunks.
 - source-backed reads check currentness by resolving the matching
@@ -51,7 +55,8 @@ Implemented so far:
   `[(count ?name) ?len]` are also supported, including tuple/destructuring
   function outputs over owned source bindings. `ground` clauses such as
   `[(ground 301) ?e]` now bind values before later source-backed data clauses,
-  and source-backed `get-else`/`get-some` clauses can read current attr values
+  source-backed reverse data clauses can scan reverse refs through `vaet`, and
+  source-backed `get-else`/`get-some` clauses can read current attr values
   directly from the persisted source. Source-backed `missing?` works through the
   same not-group path used for ordinary negated data clauses. Source-backed
   `or` and `or-join` clauses now execute branch groups over the same persisted
@@ -82,9 +87,9 @@ Implemented so far:
   and a distinct named `DB-Read-Source` work for source-backed data clauses,
   pull finds, `get-else`, and `get-some`, plus predicate filtering with both
   matching and empty results, scalar and destructuring function output,
-  `ground`, `get-else`, `get-some`, `missing?`/not-group, `or`, and `or-join`
-  clauses, flat literal pull finds, wildcard pull finds, flat reverse-ref pull
-  finds, nested forward-ref and
+  `ground`, `get-else`, `get-some`, reverse data clauses,
+  `missing?`/not-group, `or`, and `or-join` clauses, flat literal pull finds,
+  wildcard pull finds, flat reverse-ref pull finds, nested forward-ref and
   nested reverse-ref pull finds, pull defaults and limits, scalar inputs, and
   built-in and callback pull xforms, bounded and unbounded pull recursion,
   scalar inputs, and pull pattern inputs through both direct `Query-Input` and
@@ -118,8 +123,10 @@ Work:
 
 Remaining in this batch:
 
-1. Thread `DB-Read-Source` into ordinary data-clause execution, not only the
-   new source-backed plain-clause query runner.
+1. Thread `DB-Read-Source` into ordinary resident query execution beyond the
+   source-backed plain-clause runner. The low-level source-backed clause scan now
+   uses the same `Clause-Index-Scan` shape, but the full resident query engine
+   still has `DB`/`DB-Source` entry points and shallow binding/result ownership.
 2. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary. Flat literal
    forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
