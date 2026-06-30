@@ -3963,7 +3963,42 @@
       (delete items)
       (return out true ""))))
 
+(defn db-read-source-schema-entity-for-attr [source: DB-Read-Source, attr: string] -> [entity: u64, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-keyword ":db/ident") (value-keyword attr)])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .AVET values)]
+    (when (not scan-ok)
+      (delete-owned-datoms out)
+      (return 0 false scan-error))
+    (when (> (count out) 0)
+      (let [entity out[0].e]
+        (delete-owned-datoms out)
+        (return entity true "")))
+    (delete-owned-datoms out)
+    (return 0 false "")))
+
+(defn db-read-source-schema-unique? [source: DB-Read-Source, attr: string] -> [unique: bool, ok: bool, error: string]
+  (let [[schema-e schema-ok schema-error] (db-read-source-schema-entity-for-attr source attr)]
+    (when (not schema-ok)
+      (return false (= schema-error "") schema-error))
+    (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source schema-e ":db/unique")]
+      (when (not datoms-ok)
+        (return false false datoms-error))
+      (for [datom datoms]
+        (when (and (= datom.v.kind .Keyword)
+                   (or (= datom.v.text ":db.unique/identity")
+                       (= datom.v.text ":db.unique/value")))
+          (delete-owned-datoms datoms)
+          (return true true "")))
+      (delete-owned-datoms datoms)
+      (return false true ""))))
+
 (defn db-read-source-resolve-lookup-ref [source: DB-Read-Source, attr: string, value: Value] -> [entity: u64, ok: bool, error: string]
+  (let [[unique unique-ok unique-error] (db-read-source-schema-unique? source attr)]
+    (when (not unique-ok)
+      (return 0 false unique-error))
+    (when (not unique)
+      (return 0 false "lookup ref attribute must be unique")))
   (let [out (make [dynamic]Datom)
         values ([]Value [(value-keyword attr) value])
         [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .AVET values)]

@@ -115,6 +115,11 @@ Implemented so far:
   prepared and text queries. The new wrappers return `Query-Result` and clean up
   with `delete-query-result`, which is the direction host handles should follow
   so callers do not have to know whether row values are shallow or owned copies.
+- source-backed lookup-ref resolution now consults current persisted schema
+  datoms and requires the lookup attr to have `:db/unique` set to either
+  `:db.unique/identity` or `:db.unique/value`, matching the resident resolver's
+  basic guard. The storage architecture test covers both a successful unique
+  lookup ref and a rejected non-unique lookup ref.
 
 Work:
 
@@ -145,11 +150,10 @@ Remaining in this batch:
    issue around the raw Odin wrapper block, so this remains pending rather than
    partially merged. Raw `Result-Set` cleanup is still available internally, but
    host-facing code should get a single result handle/free operation.
-3. Decide whether lookup-ref source resolution must enforce `:db/unique`
-   metadata once persisted schema metadata is queryable without resident DB
-   rebuilds. The current source-backed lookup-ref query path resolves by AVET
-   value, which is useful for persisted snapshots but does not yet consult
-   source-backed schema metadata.
+3. Extend source-backed lookup-ref value resolution to tuple lookup-ref attrs.
+   Basic `:db/unique` enforcement now works from persisted schema datoms, but
+   resident `resolve-lookup-ref` also resolves tuple component values before the
+   AVET lookup.
 
 Acceptance:
 
