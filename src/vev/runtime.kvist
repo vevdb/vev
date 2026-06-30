@@ -4552,8 +4552,11 @@
     (return out true "")))
 
 (defn db-read-source-pull-spec-supported? [spec: Pull-Spec] -> bool
-  (when (or spec.has-xform
-            spec.has-recursion)
+  (when spec.has-recursion
+    (return false))
+  (when (and spec.has-xform
+             (not (or (= spec.xform "vector")
+                      (= spec.xform "name"))))
     (return false))
   (cond
     (= spec.a "*") (= (count spec.pattern) 0)
@@ -4567,6 +4570,13 @@
               v: (value-owned spec.default-value)
               attrs: (make [dynamic]Pull-Attr)}))
 
+(defn db-read-source-pull-missing-attr [spec: Pull-Spec] -> Pull-Attr
+  (if spec.has-default
+    (db-read-source-pull-default-attr spec)
+    (pull-spec-transform-attr
+      spec
+      (pull-attr-from-spec spec (value-nil) (make [dynamic]Pull-Attr)))))
+
 (defn db-read-source-pull-entity [value: Value] -> [entity: u64, ok: bool]
   (cond
     (= value.kind .Entity) (return value.entity true)
@@ -4578,7 +4588,7 @@
     (for [spec pattern]
       (when (not (db-read-source-pull-spec-supported? spec))
         (delete-pull-attrs-owned-values attrs)
-        (return (Pull-Result {}) false "SQLite DB snapshot source currently supports forward, wildcard, reverse, nested, pattern-input, default, and limit pull attrs only"))
+        (return (Pull-Result {}) false "SQLite DB snapshot source currently supports forward, wildcard, reverse, nested, pattern-input, default, limit, and built-in xform pull attrs only"))
       (cond
         (= spec.a "*")
           (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity source entity)]
@@ -4599,10 +4609,12 @@
             (delete-owned-datoms datoms))
         (= spec.a ":db/id")
           (arr.push! attrs
-            (Pull-Attr {a: (pull-output-attr spec)
-                        key-kind: (pull-output-key-kind spec)
-                        v: (value-entity entity)
-                        attrs: (make [dynamic]Pull-Attr)}))
+            (pull-spec-transform-attr
+              spec
+              (Pull-Attr {a: (pull-output-attr spec)
+                          key-kind: (pull-output-key-kind spec)
+                          v: (value-entity entity)
+                          attrs: (make [dynamic]Pull-Attr)})))
         (reverse-attr? spec.a)
           (let [forward-attr (forward-attr-for-reverse spec.a) :defer
                 [datoms datoms-ok datoms-error] (db-read-source-datoms-by-reverse-entity-attr source entity forward-attr)
@@ -4627,13 +4639,15 @@
                     (do
                       (set! seen (+ seen 1))
                       (arr.push! attrs
-                        (Pull-Attr {a: (pull-output-attr spec)
-                                    key-kind: (pull-output-key-kind spec)
-                                    v: (value-entity datom.e)
-                                    attrs: children})))
+                        (pull-spec-transform-attr
+                          spec
+                          (Pull-Attr {a: (pull-output-attr spec)
+                                      key-kind: (pull-output-key-kind spec)
+                                      v: (value-entity datom.e)
+                                      attrs: children}))))
                     (delete-pull-attrs-owned-values children)))))
-            (when (and (= seen 0) spec.has-default)
-              (arr.push! attrs (db-read-source-pull-default-attr spec)))
+            (when (and (= seen 0) (or spec.has-default spec.has-xform))
+              (arr.push! attrs (db-read-source-pull-missing-attr spec)))
             (delete-owned-datoms datoms))
         :else
           (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity spec.a)
@@ -4659,13 +4673,15 @@
                     (do
                       (set! seen (+ seen 1))
                       (arr.push! attrs
-                        (Pull-Attr {a: (pull-output-attr spec)
-                                    key-kind: (pull-output-key-kind spec)
-                                    v: (value-owned datom.v)
-                                    attrs: children})))
+                        (pull-spec-transform-attr
+                          spec
+                          (Pull-Attr {a: (pull-output-attr spec)
+                                      key-kind: (pull-output-key-kind spec)
+                                      v: (value-owned datom.v)
+                                      attrs: children}))))
                     (delete-pull-attrs-owned-values children)))))
-            (when (and (= seen 0) spec.has-default)
-              (arr.push! attrs (db-read-source-pull-default-attr spec)))
+            (when (and (= seen 0) (or spec.has-default spec.has-xform))
+              (arr.push! attrs (db-read-source-pull-missing-attr spec)))
             (delete-owned-datoms datoms))))
     (return (Pull-Result {e: entity attrs: attrs}) true "")))
 
