@@ -304,6 +304,10 @@ is the first executable query path over the new in-memory shared-index
 representation. Currentness for that path now also reads the shared chunked
 `current` index, so add/retract history is filtered without reaching back to
 the resident `DB.current` side table.
+Datoms can now also be stored in `Shared-Datom-Log` retained chunks. The
+source-backed query path has a variant that reads both datoms and indexes from
+shared chunks, so simple data-clause queries can execute without a resident
+`DB` pointer for materialization.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do

@@ -14,6 +14,17 @@
   chunk-size: int
 })
 
+(defstruct Shared-Datom-Chunk {
+  values: [dynamic]Datom
+  refs: [dynamic]int
+})
+
+(defstruct Shared-Datom-Log {
+  chunks: [dynamic]Shared-Datom-Chunk
+  count: int
+  chunk-size: int
+})
+
 (defstruct Shared-DB-Int-Indexes {
   current: Shared-Int-Index
   eavt: Shared-Int-Index
@@ -142,3 +153,65 @@
   (delete-shared-int-index indexes.aevt)
   (delete-shared-int-index indexes.avet)
   (delete-shared-int-index indexes.vaet))
+
+(defn shared-datom-chunk [values: []Datom] -> Shared-Datom-Chunk
+  (let [refs (make [dynamic]int 0 1)
+        owned (make [dynamic]Datom 0 (count values))]
+    (arr.push! refs 1)
+    (for [datom values]
+      (arr.push! owned (datom-owned datom)))
+    (Shared-Datom-Chunk {values: owned refs: refs})))
+
+(defn retain-shared-datom-chunk! [chunk: Shared-Datom-Chunk]
+  (set! chunk.refs[0] (+ chunk.refs[0] 1)))
+
+(defn release-shared-datom-chunk! [chunk: Shared-Datom-Chunk]
+  (set! chunk.refs[0] (- chunk.refs[0] 1))
+  (when (= chunk.refs[0] 0)
+    (for [datom chunk.values]
+      (delete-owned-datom datom))
+    (delete chunk.values)
+    (delete chunk.refs)))
+
+(defn shared-datom-log-empty [chunk-size: int] -> Shared-Datom-Log
+  (Shared-Datom-Log {chunks: (make [dynamic]Shared-Datom-Chunk)
+                     count: 0
+                     chunk-size: (max 1 chunk-size)}))
+
+(defn shared-datom-log-from-slice [values: []Datom, chunk-size: int] -> Shared-Datom-Log
+  (let [out (shared-datom-log-empty chunk-size)
+        size out.chunk-size
+        start 0]
+    (while (< start (count values))
+      (let [end (min (+ start size) (count values))
+            chunk (shared-datom-chunk (slice values start end))]
+        (arr.push! out.chunks chunk)
+        (set! start end)))
+    (set! out.count (count values))
+    out))
+
+(defn retain-shared-datom-log [log: Shared-Datom-Log] -> Shared-Datom-Log
+  (let [chunks (make [dynamic]Shared-Datom-Chunk 0 (count log.chunks))]
+    (for [chunk log.chunks]
+      (retain-shared-datom-chunk! chunk)
+      (arr.push! chunks chunk))
+    (Shared-Datom-Log {chunks: chunks
+                       count: log.count
+                       chunk-size: log.chunk-size})))
+
+(defn delete-shared-datom-log [log: Shared-Datom-Log]
+  (for [chunk log.chunks]
+    (release-shared-datom-chunk! chunk))
+  (delete log.chunks))
+
+(defn shared-datom-log-at [log: Shared-Datom-Log, position: int] -> [datom: Datom, ok: bool]
+  (when (or (< position 0)
+            (>= position log.count))
+    (return (Datom {}) false))
+  (let [remaining position]
+    (for [chunk log.chunks]
+      (let [chunk-count (count chunk.values)]
+        (if (< remaining chunk-count)
+          (return (datom-owned chunk.values[remaining]) true)
+          (set! remaining (- remaining chunk-count))))))
+  (return (Datom {}) false))

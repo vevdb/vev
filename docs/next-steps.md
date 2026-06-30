@@ -331,6 +331,11 @@ Implemented so far:
   index with binary search instead of using the resident `DB.current` array.
   The query test includes an add/retract pair and verifies the retracted fact
   is filtered through the shared current index path.
+- `Shared-Datom-Log` now stores datoms in retained immutable chunks, and
+  `DB-Read-Source` has a shared-datoms-plus-shared-indexes variant. A
+  source-backed query test now runs without a resident `DB` pointer for datom
+  materialization, while still filtering retractions through the shared
+  `current` index.
 
 Work:
 

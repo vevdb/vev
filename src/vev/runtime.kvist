@@ -3620,12 +3620,14 @@
 (defenum DB-Read-Source-Kind [
   Resident
   Shared-Resident-Indexes
+  Shared-Resident-Datoms-And-Indexes
   SQLite-Snapshot
 ])
 
 (defstruct DB-Read-Source {
   kind: DB-Read-Source-Kind
   db: ^DB
+  shared-datoms: ^Shared-Datom-Log
   shared-indexes: ^Shared-DB-Int-Indexes
   sqlite-snapshot: ^SQLite-DB-Snapshot
 })
@@ -3640,6 +3642,9 @@
 
 (defn shared-resident-index-db-read-source [db: ^DB, indexes: ^Shared-DB-Int-Indexes] -> DB-Read-Source
   (DB-Read-Source {kind: .Shared-Resident-Indexes db: db shared-indexes: indexes}))
+
+(defn shared-resident-db-read-source [datoms: ^Shared-Datom-Log, indexes: ^Shared-DB-Int-Indexes] -> DB-Read-Source
+  (DB-Read-Source {kind: .Shared-Resident-Datoms-And-Indexes shared-datoms: datoms shared-indexes: indexes}))
 
 (defn sqlite-db-read-source [snapshot: ^SQLite-DB-Snapshot] -> DB-Read-Source
   (DB-Read-Source {kind: .SQLite-Snapshot sqlite-snapshot: snapshot}))
@@ -3683,6 +3688,7 @@
   (case source.kind
     .Resident (db-index-view source.db^ order)
     .Shared-Resident-Indexes (shared-db-int-index-view source.shared-indexes order)
+    .Shared-Resident-Datoms-And-Indexes (shared-db-int-index-view source.shared-indexes order)
     .SQLite-Snapshot (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
      (DB-Index-View {})))
 
@@ -3727,6 +3733,11 @@
                   (>= entry (count source.db^.datoms)))
           (return (Datom {}) false "shared resident datom index out of range"))
         (return (datom-owned source.db^.datoms[entry]) true ""))
+    .Shared-Resident-Datoms-And-Indexes
+      (let [[datom ok] (shared-datom-log-at source.shared-datoms^ entry)]
+        (if ok
+          (return datom true "")
+          (return (Datom {}) false "shared datom log index out of range")))
     .SQLite-Snapshot
       (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
      (return (Datom {}) false "unknown DB read source")))
@@ -3744,6 +3755,12 @@
         (when (or (< entry 0)
                   (>= entry (count source.db^.datoms)))
           (return false false "shared resident datom index out of range"))
+        (return (shared-int-index-contains? source.shared-indexes^.current entry) true ""))
+    .Shared-Resident-Datoms-And-Indexes
+      (do
+        (when (or (< entry 0)
+                  (>= entry source.shared-datoms^.count))
+          (return false false "shared datom log index out of range"))
         (return (shared-int-index-contains? source.shared-indexes^.current entry) true ""))
     .SQLite-Snapshot
       (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
