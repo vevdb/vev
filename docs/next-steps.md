@@ -376,6 +376,16 @@ Implemented so far:
   experiment made the append-heavy benchmark slower than exact-prefix-or-rebuild.
   The next production version needs merge-aware sharing or a cost model that can
   predict when page comparison will actually save enough copying.
+- Append-only shared publication now has a merge-aware index builder for
+  `eavt`, `aevt`, `avet`, and `vaet`. It merges sorted new datom indexes with
+  old shared chunks and retains any old chunk that the merge copies
+  contiguously. Tests cover an interleaved `aevt` merge retaining old chunks.
+  This reduces retained-snapshot copying pressure, but it is not yet a latency
+  win in the small append-heavy sample: local `shared-snapshot-heavy` at batch 1,
+  500 writes, chunk size 1024 ended around 0.475 ms commit latency, and 1000
+  writes ended around 0.804 ms. The remaining work is to avoid still building
+  resident indexes first and to make the merge builder emit chunk-sized runs
+  with less per-value overhead.
 
 Work:
 
@@ -390,9 +400,10 @@ Work:
    works for exact-prefix append cases, and append-only/new-entity publication
    can skip prefix proof for the known-prefix indexes. Same-offset page sharing
    exists as a tested primitive, but is not yet used blindly on the hot publish
-   fallback because it regressed append-heavy commits. The next step is
-   merge-aware index publication that knows which old pages remain unchanged
-   instead of discovering that by scanning every page after the fact.
+   fallback because it regressed append-heavy commits. Merge-aware append-only
+   index publication now retains full old chunks copied contiguously by the
+   merge. The next step is removing the resident-index-first adaptation and
+   reducing per-value overhead inside the shared merge builder.
 3. Keep transaction reports, listeners, retained host DB handles, and `db-before`
    / `db-after` semantics exact.
 4. Fold the existing append-only incremental path into this representation

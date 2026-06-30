@@ -336,6 +336,12 @@ building block, not the default publish fallback: comparing every old page in
 the append-heavy workload cost more than exact-prefix-or-rebuild. The durable
 storage direction is therefore merge-aware page publication, where the merge
 knows which pages are unchanged instead of rediscovering it by scanning.
+Append-only shared publication now has that first merge-aware path for the
+logical int indexes. It streams sorted new datom indexes together with old
+shared chunks and retains any old chunk copied contiguously by the merge. This
+is a memory/copy architecture step, not a finished latency win: the current path
+still builds resident indexes first, and the shared merge builder has per-value
+overhead that should be reduced when publication moves fully to shared chunks.
 
 The direct datom append paths now also share the transaction engine's guarded
 append-only index builder when the appended datoms are simple additions that do
