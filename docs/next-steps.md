@@ -478,6 +478,13 @@ Implemented so far:
   This keeps the direct path measurable while confirming it should not become
   the hot path until the transaction engine emits better per-index publish
   inputs.
+- Append-only shared publication now goes through a `Shared-Append-Publish-Plan`
+  sidecar. The plan is derived from existing transaction report metadata and
+  owns the ordered appended EAVT/AEVT/AVET/VAET tails consumed by shared index
+  publication. This does not change public transaction report shape yet, but it
+  creates the storage-side boundary that can later be filled directly by the
+  transaction engine. A local batch-1, 300-write sample stayed effectively flat
+  versus the previous default shared path, ending near 0.245 ms commit latency.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
@@ -511,10 +518,10 @@ Work:
 1. Introduce a DB index storage layer with immutable base chunks plus a small
    transaction delta. The first retained chunk primitive, grouped DB int index
    wrapper, retained DB snapshot, and connection-side shared publish wrapper
-   exist. The next step is to make transaction publication build shared chunks
-   directly from the transaction engine's append/publish metadata instead of
-   publishing through a resident `DB` and then adapting it into a shared
-   snapshot.
+   exist. The shared storage layer now also has an explicit append publish-plan
+   sidecar. The next step is to move that plan construction into the
+   transaction engine so publication receives ordered per-index tails directly
+   instead of deriving them from a resident post-commit `DB`.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases, and append-only/new-entity publication
@@ -527,7 +534,7 @@ Work:
    the resident post-commit datom log for performance. Shared datom logs now
    keep chunk-start offsets for indexed access, and the direct shared-vs-new
    merge retry proved that lookup primitive is not enough by itself. The next
-   step is to make the transaction engine publish shared chunks directly,
+   step is to make the transaction engine fill the append publish plan directly,
    avoiding the resident `DB`/resident-index adapter rather than making that
    adapter more elaborate. Ordered new-entity EAVT tail publication is now one
    small direct slice-based path in that direction.

@@ -399,6 +399,14 @@ It also has `shared-snapshot-heavy-direct`, which keeps the direct shared-log
 merge experiment measured. That experiment is still slower than the default
 resident-comparison adapter, so the next storage step remains a real transaction
 publish plan that produces per-index merge/tail inputs directly.
+Append-only shared publication now has the first version of that boundary as a
+storage-side `Shared-Append-Publish-Plan`. It is derived from transaction report
+metadata today and owns the ordered appended EAVT/AEVT/AVET/VAET tails consumed
+by shared index publication. That keeps the current public report shape stable,
+while giving the transaction engine a concrete target for emitting publish
+inputs directly later. A local batch-1, 300-write retained-snapshot run stayed
+effectively flat versus the previous default shared path, ending near 0.245 ms
+commit latency.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing

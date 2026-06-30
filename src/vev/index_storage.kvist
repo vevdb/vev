@@ -59,6 +59,17 @@
   new-entities-after-existing: bool
 })
 
+(defstruct Shared-Append-Publish-Plan {
+  append-only: bool
+  new-entities-after-existing: bool
+  start-index: int
+  appended-count: int
+  eavt: [dynamic]int
+  aevt: [dynamic]int
+  avet: [dynamic]int
+  vaet: [dynamic]int
+})
+
 (defn shared-int-chunk [values: []int] -> Shared-Int-Chunk
   (let [refs (make [dynamic]int 0 1)
         owned (arr.into [dynamic]int values)]
@@ -318,9 +329,12 @@
   (not (shared-datom-index-less? log appended start-index order added-index chunk.values[(- (count chunk.values) 1)])))
 
 (defn shared-int-index-with-merged-appended-datoms [base: Shared-Int-Index, datoms: []Datom, start-index: int, order: string] -> Shared-Int-Index
+  (let [added (sorted-new-datom-indexes datoms start-index order) :defer]
+    (shared-int-index-with-merged-appended-indexes base datoms order (slice added 0))))
+
+(defn shared-int-index-with-merged-appended-indexes [base: Shared-Int-Index, datoms: []Datom, order: string, added: []int] -> Shared-Int-Index
   (let [out (shared-int-index-empty base.chunk-size)
         pending (make [dynamic]int 0 base.chunk-size)
-        added (sorted-new-datom-indexes datoms start-index order) :defer
         chunk-index 0
         chunk-offset 0
         added-index 0]
@@ -464,6 +478,42 @@
                                   (shared-int-index-with-merged-appended-datoms base.vaet (slice after.datoms 0) start-index "vaet")
                                   (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0)))}))
 
+(defn shared-append-publish-plan [report: Tx-Report] -> Shared-Append-Publish-Plan
+  (if report.append-only
+    (Shared-Append-Publish-Plan {append-only: true
+                                 new-entities-after-existing: report.new-entities-after-existing
+                                 start-index: report.datom-start-index
+                                 appended-count: (count report.tx-data)
+                                 eavt: (sorted-appended-datom-slice-indexes (slice report.tx-data 0) report.datom-start-index "eavt")
+                                 aevt: (sorted-appended-datom-slice-indexes (slice report.tx-data 0) report.datom-start-index "aevt")
+                                 avet: (sorted-appended-datom-slice-indexes (slice report.tx-data 0) report.datom-start-index "avet")
+                                 vaet: (sorted-appended-datom-slice-indexes (slice report.tx-data 0) report.datom-start-index "vaet")})
+    (Shared-Append-Publish-Plan {append-only: false
+                                 new-entities-after-existing: false
+                                 start-index: report.datom-start-index
+                                 appended-count: (count report.tx-data)
+                                 eavt: (make [dynamic]int)
+                                 aevt: (make [dynamic]int)
+                                 avet: (make [dynamic]int)
+                                 vaet: (make [dynamic]int)})))
+
+(defn delete-shared-append-publish-plan [plan: Shared-Append-Publish-Plan]
+  (delete plan.eavt)
+  (delete plan.aevt)
+  (delete plan.avet)
+  (delete plan.vaet))
+
+(defn shared-db-int-indexes-with-publish-plan [base: Shared-DB-Int-Indexes, after: DB, plan: Shared-Append-Publish-Plan] -> Shared-DB-Int-Indexes
+  (if plan.append-only
+    (Shared-DB-Int-Indexes {current: (shared-int-index-with-appended-range base.current plan.start-index (+ plan.start-index plan.appended-count))
+                            eavt: (if plan.new-entities-after-existing
+                                    (shared-int-index-with-appended-slice base.eavt (slice plan.eavt 0))
+                                    (shared-int-index-with-merged-appended-indexes base.eavt (slice after.datoms 0) "eavt" (slice plan.eavt 0)))
+                            aevt: (shared-int-index-with-merged-appended-indexes base.aevt (slice after.datoms 0) "aevt" (slice plan.aevt 0))
+                            avet: (shared-int-index-with-merged-appended-indexes base.avet (slice after.datoms 0) "avet" (slice plan.avet 0))
+                            vaet: (shared-int-index-with-merged-appended-indexes base.vaet (slice after.datoms 0) "vaet" (slice plan.vaet 0))})
+    (shared-db-int-indexes-with-appended-datom-slice-mode base after ([]Datom []) plan.start-index false false)))
+
 (defn shared-db-int-indexes-with-appended-datom-slice-direct [base: Shared-DB-Int-Indexes, log: Shared-Datom-Log, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
   (Shared-DB-Int-Indexes {current: (shared-int-index-with-appended-range base.current start-index (+ start-index (count appended)))
                           eavt: (if new-entities-after-existing
@@ -606,12 +656,18 @@
                        indexes: (shared-db-int-indexes-with-appended-datom-slice-direct base.indexes base.datoms appended start-index new-entities-after-existing)}))
 
 (defn shared-db-snapshot-with-tx-report [base: Shared-DB-Snapshot, after: DB, report: Tx-Report] -> Shared-DB-Snapshot
-  (shared-db-snapshot-with-appended-datoms-mode base
-                                                after
-                                                (slice report.tx-data 0)
-                                                report.datom-start-index
-                                                report.append-only
-                                                report.new-entities-after-existing))
+  (if report.append-only
+    (let [plan (shared-append-publish-plan report)]
+      (defer (delete-shared-append-publish-plan plan))
+      (let [indexes (shared-db-int-indexes-with-publish-plan base.indexes after plan)]
+      (Shared-DB-Snapshot {datoms: (shared-datom-log-with-appended-slice base.datoms (slice report.tx-data 0))
+                           indexes: indexes})))
+    (shared-db-snapshot-with-appended-datoms-mode base
+                                                  after
+                                                  (slice report.tx-data 0)
+                                                  report.datom-start-index
+                                                  false
+                                                  false)))
 
 (defn shared-db-snapshot-with-tx-report-direct [base: Shared-DB-Snapshot, after: DB, report: Tx-Report] -> Shared-DB-Snapshot
   (if report.append-only
