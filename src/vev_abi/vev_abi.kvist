@@ -43,7 +43,6 @@ ABI_DB :: struct {
 
 ABI_Result :: struct {
     result: vev__Result_Set,
-    ownership: int,
     pull_values: [dynamic]vev__Value,
     pull_offsets: [dynamic]int,
 }
@@ -81,9 +80,6 @@ ABI_COLUMN_BATCH_ENTITY :: 1
 ABI_COLUMN_BATCH_STRING :: 2
 ABI_COLUMN_BATCH_ENTITY_INT :: 3
 ABI_COLUMN_BATCH_ENTITY_STRING_INT :: 4
-
-ABI_RESULT_OWNERSHIP_SHALLOW :: 0
-ABI_RESULT_OWNERSHIP_OWNED_VALUES :: 1
 
 ABI_Column_Batch :: struct {
     kind: int,
@@ -358,7 +354,6 @@ abi_free_db_storage :: proc(storage: rawptr) {
 
 abi_alloc_result :: proc() -> rawptr {
     wrapper := new(ABI_Result)
-    wrapper.ownership = ABI_RESULT_OWNERSHIP_SHALLOW
     wrapper.pull_values = make([dynamic]vev__Value)
     wrapper.pull_offsets = make([dynamic]int)
     return rawptr(wrapper)
@@ -366,14 +361,6 @@ abi_alloc_result :: proc() -> rawptr {
 
 abi_result_ptr :: proc(result: rawptr) -> ^vev__Result_Set {
     return &((^ABI_Result)(result))^.result
-}
-
-abi_result_set_ownership :: proc(result: rawptr, ownership: int) {
-    ((^ABI_Result)(result))^.ownership = ownership
-}
-
-abi_result_ownership :: proc(result: rawptr) -> int {
-    return ((^ABI_Result)(result))^.ownership
 }
 
 abi_result_pull_values_ptr :: proc(result: rawptr) -> ^[dynamic]vev__Value {
@@ -1258,14 +1245,6 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- result-pull-offsets-ptr [result: Vev-Result] -> ^[dynamic]int
   (abi-result-pull-offsets-ptr (rawptr result)))
 
-(defn- result-ownership-code [ownership: vev.Result-Set-Ownership] -> int
-  (if (= ownership .Owned-Values)
-    1
-    0))
-
-(defn- result-set-ownership! [result: Vev-Result, ownership: vev.Result-Set-Ownership]
-  (abi-result-set-ownership (rawptr result) (result-ownership-code ownership)))
-
 (defn- u64-array-count [array: Vev-U64-Array] -> int
   (abi-u64-array-count (rawptr array)))
 
@@ -1697,19 +1676,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (result-store-pull-values! result db)
   result)
 
-(defn- result-finish-query-result [result: Vev-Result, query-result: vev.Query-Result, db: vev.DB] -> Vev-Result
-  (let [ptr (result-ptr result)]
-    (set! ptr^ query-result.result))
-  (result-set-ownership! result query-result.ownership)
-  (result-finish result db))
-
 (defn- result-delete-owned [result: Vev-Result]
   (let [ptr (result-ptr result)]
     (for [value (deref (result-pull-values-ptr result))]
       (vev.delete-owned-value value))
-    (if (= (abi-result-ownership (rawptr result)) 1)
-      (vev.delete-result-set-owned-values ptr^)
-      (delete-result-shallow ptr^))
+    (delete-result-shallow ptr^)
     (abi-free-result (rawptr result))))
 
 (defn- stmt-clear-error! [stmt: Vev-Stmt]

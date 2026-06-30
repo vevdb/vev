@@ -115,10 +115,6 @@ Implemented so far:
   prepared and text queries. The new wrappers return `Query-Result` and clean up
   with `delete-query-result`, which is the direction host handles should follow
   so callers do not have to know whether row values are shallow or owned copies.
-- C ABI result handles now carry an internal ownership tag. Existing resident
-  query handles still default to shallow cleanup, but the handle/free machinery
-  can now safely hold source-backed `Query-Result` values with owned row values
-  when source-backed ABI entry points are added.
 
 Work:
 
@@ -144,10 +140,11 @@ Remaining in this batch:
    same `Clause-Index-Scan` shape and source-backed prepared queries are
    available, but the full resident query engine still has `DB`/`DB-Source`
    entry points and shallow binding/result ownership.
-2. Add host-facing source-backed query entry points on top of the
-   ownership-aware result handle. Raw `Result-Set` cleanup is still available
-   internally, but host-facing code should get a single result handle/free
-   operation.
+2. Carry the ownership-tagged `Query-Result` shape into C ABI/JVM result
+   handles. The attempted C ABI ownership-tag patch exposed an ABI compile
+   issue around the raw Odin wrapper block, so this remains pending rather than
+   partially merged. Raw `Result-Set` cleanup is still available internally, but
+   host-facing code should get a single result handle/free operation.
 3. Decide whether lookup-ref source resolution must enforce `:db/unique`
    metadata once persisted schema metadata is queryable without resident DB
    rebuilds. The current source-backed lookup-ref query path resolves by AVET
