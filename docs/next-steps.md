@@ -211,18 +211,19 @@ Remaining in this batch:
    available, but the full resident query engine still has `DB`/`DB-Source`
    entry points and shallow binding/result ownership.
 2. Carry the ownership-tagged `Query-Result` shape into C ABI/JVM result
-   handles. Internal resident and source-backed wrappers now use this shape, but
-   the attempted C ABI ownership-tag patch exposed an ABI compile issue around
-   the raw Odin wrapper block. Rechecking `scripts/build_c_abi.sh` still fails
-   during `kvist compile` at the raw Odin transaction-listener callback call
-   (`abi_tx_listener_notify`), before generated Odin is written. Host handles
-   remain pending rather than partially merged. Raw `Result-Set` cleanup is
-   still available internally, but host-facing code should get a single result
-   handle/free operation.
-3. Decide whether Batch 1 should keep pushing host-facing source-backed query
-   handles now, or pause that until the raw-Odin ABI compile issue is fixed in
-   Kvist/the ABI layer. The source-backed engine path is now ahead of the C ABI
-   exposure path.
+   handles. Internal resident and source-backed wrappers now use this shape. The
+   ABI wrapper has been moved in that direction: `vev_db_t` storage now wraps a
+   `Store-DB`, result handles track whether row values are owned or shallow, and
+   the main prepared-query DB-handle path can route through
+   `q-result-store-db-prepared-with-input-text`. This is not yet verified by a
+   C ABI build because `kvist build src/vev_abi/vev_abi.kvist` still stops in
+   the raw Odin transaction-listener callback helper
+   (`abi_tx_listener_notify`) before generated Odin is written.
+3. Fix the raw-Odin ABI callback compile issue or move the listener callback
+   glue out of the raw block. Once that is green, add a C/JVM smoke that proves
+   `vev_connection_db` returns a chunk-backed `Store-DB` snapshot for durable
+   connections and that `vev_query_db_prepared_result_with_inputs` plus
+   `vev_pull_edn` work without resident rebuild.
 
 Acceptance:
 
@@ -518,8 +519,11 @@ Work:
    prototype shared connection path, and `Store-DB` can now wrap shared
    snapshots. `Store-Conn` now has SQLite and shared variants behind the same
    storage-neutral API, and source-backed result rendering lets CLI reads avoid
-   resident DB rendering. The next step is wiring C/JVM DB handles to
-   storage-neutral `Store-DB` snapshots instead of resident `DB` clones.
+   resident DB rendering. The ABI `vev_db_t` wrapper has been changed to store a
+   `Store-DB` internally, with resident-only guards for DB-value transaction
+   operations. The next step is to get the ABI build unblocked and verify that
+   C/JVM DB handles use SQLite/shared snapshots rather than resident `DB`
+   clones.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization. The first fold is in
    place: datom append position plus append-only/new-entity decisions are now

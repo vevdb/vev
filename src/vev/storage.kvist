@@ -2294,6 +2294,15 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (Store-DB {kind: .Shared-Snapshot
              shared-snapshot: (retain-shared-db-snapshot conn^.snapshot)}))
 
+(defn retain-store-db [snapshot: Store-DB] -> Store-DB
+  (case snapshot.kind
+    .Resident (Store-DB {kind: .Resident
+                         resident: (clone-db snapshot.resident)})
+    .SQLite-Snapshot (Store-DB {})
+    .Shared-Snapshot (Store-DB {kind: .Shared-Snapshot
+                                shared-snapshot: (retain-shared-db-snapshot snapshot.shared-snapshot)})
+     (Store-DB {})))
+
 (defn store-db-read-source [snapshot: ^Store-DB] -> [source: DB-Read-Source, ok: bool, error: string]
   (case snapshot^.kind
     .Resident (return (resident-db-read-source (addr snapshot^.resident)) true "")
@@ -2318,6 +2327,20 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (if source-ok
       (q-result-prepared-db-read-source source prepared)
       (query-result-owned-values (result-set-error source-error)))))
+
+(defn q-result-store-db-prepared-with-input-text [snapshot: ^Store-DB, prepared: Prepared-Query, inputs-text: string] -> Query-Result
+  (when (not prepared.ok)
+    (return (query-result-owned-values (result-set-error prepared.error))))
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (when (not source-ok)
+      (return (query-result-owned-values (result-set-error source-error))))
+    (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query prepared.query inputs-text)]
+      (when (not input-ok)
+        (delete inputs)
+        (return (query-result-owned-values (result-set-error input-error))))
+      (let [result (db-read-source-q-query-with-inputs source prepared.query (slice inputs 0))]
+        (delete inputs)
+        (query-result-owned-values result)))))
 
 (defn store-db-result-value [snapshot: ^Store-DB, result: Result-Set] -> [value: Value, ok: bool, error: string]
   (let [[source source-ok source-error] (store-db-read-source snapshot)]

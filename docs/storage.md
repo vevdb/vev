@@ -84,8 +84,11 @@ resident rebuilt `DB`.
 `Store-DB` is the internal storage-neutral immutable DB snapshot handle for
 this path. It currently wraps a retained `SQLite-DB-Snapshot`, exposes the
 same `DB-Read-Source` boundary as resident DBs, and can run text/prepared
-queries without rebuilding resident arrays. This is the shape the public
-host-facing `d/db` handles should eventually use.
+queries without rebuilding resident arrays. It also has a shared-snapshot
+variant for the shared in-memory publish path. The C ABI `vev_db_t` wrapper has
+started moving to this shape internally, but public C/JVM verification is still
+blocked by the raw Odin transaction-listener callback compile issue in
+`src/vev_abi/vev_abi.kvist`.
 
 There are now two write modes:
 
@@ -357,6 +360,10 @@ values.
 SQLite snapshot. That keeps the host-facing immutable DB handle direction
 storage-neutral: the same `q-result-store-db-*` wrappers can query persisted
 snapshots and shared in-memory snapshots through `DB-Read-Source`.
+`q-result-store-db-prepared-with-input-text` is the prepared-query-with-inputs
+variant used by the ABI direction, so durable host DB handles can execute
+ordinary prepared queries without resident DB rebuild once the ABI wrapper
+build is unblocked.
 `Store-Conn` is also now storage-neutral at the connection boundary. The
 default `open-store` functions still create SQLite-backed stores, while
 `create-shared-store` creates the in-memory shared-index publish path. Both use
