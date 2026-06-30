@@ -3923,6 +3923,56 @@
       (delete items)
       (return out true ""))))
 
+(defn db-read-source-resolve-lookup-ref [source: DB-Read-Source, attr: string, value: Value] -> [entity: u64, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-keyword attr) value])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .AVET values)]
+    (when (not scan-ok)
+      (delete-owned-datoms out)
+      (return 0 false scan-error))
+    (when (> (count out) 0)
+      (let [entity out[0].e]
+        (delete-owned-datoms out)
+        (return entity true "")))
+    (delete-owned-datoms out)
+    (return 0 false "")))
+
+(defn db-read-source-resolve-entity-term [source: DB-Read-Source, term: Term, binding: Binding] -> [value: Value, ok: bool, error: string]
+  (when (= term.kind .LookupRef)
+    (let [[entity lookup-ok lookup-error] (db-read-source-resolve-lookup-ref source term.lookup-attr term.lookup-value)]
+      (if lookup-ok
+        (return (value-entity entity) true "")
+        (return (Value {}) false lookup-error))))
+  (let [[resolved resolved-ok] (db-read-source-term-resolved-value term binding)]
+    (when (not resolved-ok)
+      (return (Value {}) false ""))
+    (cond
+      (= resolved.kind .Entity) (return resolved true "")
+      (= resolved.kind .Int) (return (value-entity (u64 resolved.int-value)) true "")
+      :else (return resolved false ""))))
+
+(defn db-read-source-pull-attr-value [source: DB-Read-Source, entity: u64, attr: string] -> [value: Value, ok: bool, error: string]
+  (if (reverse-attr? attr)
+    (let [forward (forward-attr-for-reverse attr) :defer
+          [datoms datoms-ok datoms-error] (db-read-source-datoms-by-reverse-entity-attr source entity forward)]
+      (when (not datoms-ok)
+        (return (Value {}) false datoms-error))
+      (when (> (count datoms) 0)
+        (let [value (value-entity datoms[0].e)]
+          (delete-owned-datoms datoms)
+          (return value true "")))
+      (delete-owned-datoms datoms)
+      (return (Value {}) false ""))
+    (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity attr)]
+      (when (not datoms-ok)
+        (return (Value {}) false datoms-error))
+      (when (> (count datoms) 0)
+        (let [value (value-owned datoms[0].v)]
+          (delete-owned-datoms datoms)
+          (return value true "")))
+      (delete-owned-datoms datoms)
+      (return (Value {}) false ""))))
+
 (defn db-read-source-term-constant-value [term: Term] -> [value: Value, ok: bool]
   (if (= term.kind .Value)
     (return term.value true)
@@ -4230,6 +4280,61 @@
           (delete-owned-value source))))
     (return out true "")))
 
+(defn db-read-source-apply-get-else [source: DB-Read-Source, binding: Binding, clause: Get-Else] -> [next: Binding, ok: bool, error: string]
+  (let [[entity entity-ok entity-error] (db-read-source-resolve-entity-term source clause.e binding)]
+    (when (not entity-ok)
+      (return (Binding {}) false entity-error))
+    (when (not (= entity.kind .Entity))
+      (return (Binding {}) false ""))
+    (let [[value value-ok value-error] (db-read-source-pull-attr-value source entity.entity clause.a)]
+      (when (not (= value-error ""))
+        (return (Binding {}) false value-error))
+      (if value-ok
+        (let [[next next-ok] (db-read-source-binding-with-owned-value binding clause.out value)]
+          (return next next-ok ""))
+        (let [[next next-ok] (db-read-source-binding-with-owned-value binding clause.out (value-owned clause.default-value))]
+          (return next next-ok ""))))))
+
+(defn db-read-source-bindings-after-get-else [source: DB-Read-Source, input-bindings: []Binding, get-else: Get-Else] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [out (make [dynamic]Binding)]
+    (for [binding input-bindings]
+      (let [[next next-ok next-error] (db-read-source-apply-get-else source binding get-else)]
+        (when (not (= next-error ""))
+          (db-read-source-delete-bindings-owned out)
+          (return (make [dynamic]Binding) false next-error))
+        (when next-ok
+          (arr.push! out next))))
+    (return out true "")))
+
+(defn db-read-source-apply-get-some [source: DB-Read-Source, binding: Binding, clause: Get-Some] -> [next: Binding, ok: bool, error: string]
+  (let [[entity entity-ok entity-error] (db-read-source-resolve-entity-term source clause.e binding)]
+    (when (not entity-ok)
+      (return (Binding {}) false entity-error))
+    (when (not (= entity.kind .Entity))
+      (return (Binding {}) false ""))
+    (for [attr clause.attrs]
+      (let [[value value-ok value-error] (db-read-source-pull-attr-value source entity.entity attr)]
+        (when (not (= value-error ""))
+          (return (Binding {}) false value-error))
+        (when value-ok
+          (let [[with-attr attr-ok] (db-read-source-binding-with-owned-value binding clause.out-attr (value-keyword (string-owned attr)))]
+            (if attr-ok
+              (let [[next next-ok] (db-read-source-binding-with-owned-value with-attr clause.out-value value)]
+                (return next next-ok ""))
+              (delete-owned-value value))))))
+    (return (Binding {}) false "")))
+
+(defn db-read-source-bindings-after-get-some [source: DB-Read-Source, input-bindings: []Binding, get-some: Get-Some] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [out (make [dynamic]Binding)]
+    (for [binding input-bindings]
+      (let [[next next-ok next-error] (db-read-source-apply-get-some source binding get-some)]
+        (when (not (= next-error ""))
+          (db-read-source-delete-bindings-owned out)
+          (return (make [dynamic]Binding) false next-error))
+        (when next-ok
+          (arr.push! out next))))
+    (return out true "")))
+
 (defn db-read-source-query-input-specs [query-value: Query] -> [dynamic]Query-Input-Spec
   (let [out (make [dynamic]Query-Input-Spec)]
     (if (> (count query-value.input-specs) 0)
@@ -4481,18 +4586,18 @@
 (defn db-read-source-q-query-with-inputs [source: DB-Read-Source, query-value: Query, inputs: []Query-Input] -> Result-Set
   (when (not (and (> (count query-value.clauses) 0)
                   (= (count query-value.rule-calls) 0)
-                  (= (count query-value.get-elses) 0)
-                  (= (count query-value.get-somes) 0)
                   (= (count query-value.not-groups) 0)
                   (= (count query-value.or-groups) 0)
                   (= (count query-value.aggregates) 0)))
-    (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, and ground clauses only")))
+    (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, and get-some clauses only")))
   (for [step query-value.where-steps]
     (when (not (or (= step.kind .Clause)
                    (= step.kind .Predicate)
                    (= step.kind .Function)
-                   (= step.kind .Ground)))
-      (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, and ground clauses only"))))
+                   (= step.kind .Ground)
+                   (= step.kind .GetElse)
+                   (= step.kind .GetSome)))
+      (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, and get-some clauses only"))))
   (let [[bindings bindings-ok bindings-error] (db-read-source-initial-bindings query-value inputs)]
     (when (not bindings-ok)
       (return (result-set-error bindings-error)))
@@ -4525,10 +4630,22 @@
             (when (not next-ok)
               (return (result-set-error next-error)))
             (set! bindings next))
+        (= step.kind .GetElse)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-get-else source (slice bindings 0) query-value.get-elses[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (result-set-error next-error)))
+            (set! bindings next))
+        (= step.kind .GetSome)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-get-some source (slice bindings 0) query-value.get-somes[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (result-set-error next-error)))
+            (set! bindings next))
         :else
           (do
             (db-read-source-delete-bindings-owned bindings)
-            (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, and ground clauses only")))))
+            (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, and get-some clauses only")))))
     (when (= (count query-value.where-steps) 0)
       (for [clause-value query-value.clauses]
         (let [[source-clause source-clause-ok source-clause-error] (db-read-source-query-clause clause-value)]
