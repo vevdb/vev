@@ -3993,14 +3993,107 @@
       (delete-owned-datoms datoms)
       (return false true ""))))
 
+(defn db-read-source-schema-keyword-property [source: DB-Read-Source, entity: u64, schema-attr: string] -> [value: string, ok: bool, error: string]
+  (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity schema-attr)]
+    (when (not datoms-ok)
+      (return "" false datoms-error))
+    (for [datom datoms]
+      (when (= datom.v.kind .Keyword)
+        (let [out (string-owned datom.v.text)]
+          (delete-owned-datoms datoms)
+          (return out true ""))))
+    (delete-owned-datoms datoms)
+    (return "" false "")))
+
+(defn db-read-source-schema-keyword [source: DB-Read-Source, attr: string, schema-attr: string] -> [value: string, ok: bool, error: string]
+  (let [[schema-e schema-ok schema-error] (db-read-source-schema-entity-for-attr source attr)]
+    (when (not schema-ok)
+      (return "" false schema-error))
+    (db-read-source-schema-keyword-property source schema-e schema-attr)))
+
+(defn db-read-source-schema-ref? [source: DB-Read-Source, attr: string] -> [ref: bool, ok: bool, error: string]
+  (let [[value value-ok value-error] (db-read-source-schema-keyword source attr ":db/valueType")]
+    (when (not value-ok)
+      (when (= value-error "")
+        (return false true ""))
+      (return false false value-error))
+    (let [out (= value ":db.type/ref")]
+      (delete value)
+      (return out true ""))))
+
+(defn db-read-source-schema-tuple-attrs [source: DB-Read-Source, attr: string] -> [attrs: [dynamic]string, ok: bool, error: string]
+  (let [out (make [dynamic]string)
+        [schema-e schema-ok schema-error] (db-read-source-schema-entity-for-attr source attr)]
+    (when (not schema-ok)
+      (return out (= schema-error "") schema-error))
+    (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source schema-e ":db/tupleAttrs")]
+      (when (not datoms-ok)
+        (delete out)
+        (return (make [dynamic]string) false datoms-error))
+      (for [datom datoms]
+        (when (= datom.v.kind .Vector)
+          (for [item datom.v.items]
+            (when (= item.kind .Keyword)
+              (arr.push! out (string-owned item.text))))))
+      (delete-owned-datoms datoms)
+      (return out true ""))))
+
+(defn db-read-source-resolve-ref-component-value [source: DB-Read-Source, value: Value] -> [resolved: Value, ok: bool, error: string]
+  (cond
+    (= value.kind .Entity) (return value true "")
+    (= value.kind .Int) (return (value-entity (u64 value.int-value)) true "")
+    (= value.kind .Keyword)
+      (let [[entity ident-ok ident-error] (db-read-source-schema-entity-for-attr source value.text)]
+        (cond
+          ident-ok (return (value-entity entity) true "")
+          (not (= ident-error "")) (return value false ident-error)
+          :else (return value false "ident not found")))
+    (and (= value.kind .Vector)
+         (= (count value.items) 2)
+         (= value.items[0].kind .Keyword))
+      (let [[entity entity-ok lookup-error] (db-read-source-resolve-lookup-ref source value.items[0].text value.items[1])]
+        (if entity-ok
+          (return (value-entity entity) true "")
+          (return value false lookup-error)))
+    :else (return value true "")))
+
+(defn db-read-source-resolve-tuple-value [source: DB-Read-Source, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
+  (when (not (= value.kind .Vector))
+    (return value true ""))
+  (let [[tuple-attrs tuple-ok tuple-error] (db-read-source-schema-tuple-attrs source attr)]
+    (when (not tuple-ok)
+      (return value false tuple-error))
+    (defer (delete tuple-attrs))
+    (when (= (count tuple-attrs) 0)
+      (return value true ""))
+    (when (not (= (count tuple-attrs) (count value.items)))
+      (return value true ""))
+    (let [items (make [dynamic]Value 0 (count value.items))]
+      (defer (delete items))
+      (for [item index value.items]
+        (let [component-attr tuple-attrs[index]
+              [component-ref component-ref-ok component-ref-error] (db-read-source-schema-ref? source component-attr)]
+          (when (not component-ref-ok)
+            (return value false component-ref-error))
+          (if component-ref
+            (let [[resolved-component resolved-ok resolved-error] (db-read-source-resolve-ref-component-value source item)]
+              (when (not resolved-ok)
+                (return value false resolved-error))
+              (arr.push! items resolved-component))
+            (arr.push! items item))))
+      (return (value-vector (slice items 0)) true ""))))
+
 (defn db-read-source-resolve-lookup-ref [source: DB-Read-Source, attr: string, value: Value] -> [entity: u64, ok: bool, error: string]
   (let [[unique unique-ok unique-error] (db-read-source-schema-unique? source attr)]
     (when (not unique-ok)
       (return 0 false unique-error))
     (when (not unique)
       (return 0 false "lookup ref attribute must be unique")))
+  (let [[lookup-value resolved-ok resolved-error] (db-read-source-resolve-tuple-value source attr value)]
+    (when (not resolved-ok)
+      (return 0 false resolved-error))
   (let [out (make [dynamic]Datom)
-        values ([]Value [(value-keyword attr) value])
+        values ([]Value [(value-keyword attr) lookup-value])
         [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .AVET values)]
     (when (not scan-ok)
       (delete-owned-datoms out)
@@ -4010,7 +4103,7 @@
         (delete-owned-datoms out)
         (return entity true "")))
     (delete-owned-datoms out)
-    (return 0 false "")))
+    (return 0 false ""))))
 
 (defn db-read-source-resolve-entity-term [source: DB-Read-Source, term: Term, binding: Binding] -> [value: Value, ok: bool, error: string]
   (when (= term.kind .LookupRef)

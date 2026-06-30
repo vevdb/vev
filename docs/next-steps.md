@@ -120,6 +120,10 @@ Implemented so far:
   `:db.unique/identity` or `:db.unique/value`, matching the resident resolver's
   basic guard. The storage architecture test covers both a successful unique
   lookup ref and a rejected non-unique lookup ref.
+- source-backed lookup refs now also resolve tuple lookup-ref values before the
+  AVET lookup, including ref-component resolution through entity ids, ints,
+  idents, and nested lookup-ref vector values. The persisted snapshot test
+  covers a unique tuple attr lookup ref.
 
 Work:
 
@@ -150,10 +154,10 @@ Remaining in this batch:
    issue around the raw Odin wrapper block, so this remains pending rather than
    partially merged. Raw `Result-Set` cleanup is still available internally, but
    host-facing code should get a single result handle/free operation.
-3. Extend source-backed lookup-ref value resolution to tuple lookup-ref attrs.
-   Basic `:db/unique` enforcement now works from persisted schema datoms, but
-   resident `resolve-lookup-ref` also resolves tuple component values before the
-   AVET lookup.
+3. Decide whether Batch 1 should keep pushing host-facing source-backed query
+   handles now, or pause that until the raw-Odin ABI compile issue is fixed in
+   Kvist/the ABI layer. The source-backed engine path is now ahead of the C ABI
+   exposure path.
 
 Acceptance:
 
