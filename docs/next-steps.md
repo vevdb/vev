@@ -92,6 +92,10 @@ Implemented so far:
   and from `reopen-rebuild`.
 - source-backed query result rows use owned value copies, and callers now have
   `delete-result-set-owned-values` for the matching cleanup shape.
+- source-backed function clauses copy produced values into owned result
+  bindings and then shallow-clean temporary function result containers, avoiding
+  leaked vector/map wrappers without deleting scalar values that may be borrowed
+  from existing bindings.
 
 Work:
 
@@ -116,8 +120,6 @@ Remaining in this batch:
    new source-backed plain-clause query runner.
 2. Broaden `q-text-db-read-source` beyond plain data clauses:
    - true multiple distinct source-qualified durable snapshots
-   - richer function-output ownership cleanup for temporary strings/containers
-     produced by shared function evaluators
 3. Extend source-backed pull beyond simple forward scalar/many attrs or
    explicitly route full pull through the same source boundary. Flat literal
    forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
