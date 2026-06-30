@@ -131,16 +131,14 @@ Remaining in this batch:
    source-backed plain-clause runner. The low-level source-backed clause scan now
    uses the same `Clause-Index-Scan` shape, but the full resident query engine
    still has `DB`/`DB-Source` entry points and shallow binding/result ownership.
-2. Extend source-backed pull beyond simple forward scalar/many attrs or
-   explicitly route full pull through the same source boundary. Flat literal
-   forward, wildcard, flat reverse-ref, nested forward-ref, nested reverse-ref,
-   and pattern-variable pull finds plus defaults, limits, and built-in xforms
-   are now covered; callback xforms and bounded recursion are also covered.
-   Unbounded recursion and distinct named-source pull finds have persisted
-   snapshot/source-backed coverage too.
-3. Decide the public API shape for source-backed result ownership before this
+2. Decide the public API shape for source-backed result ownership before this
    becomes host-facing. Internally the cleanup path is explicit now, but the C
    ABI/JVM wrappers should not expose an easy-to-misuse ownership split.
+3. Decide whether lookup-ref source resolution must enforce `:db/unique`
+   metadata once persisted schema metadata is queryable without resident DB
+   rebuilds. The current source-backed lookup-ref query path resolves by AVET
+   value, which is useful for persisted snapshots but does not yet consult
+   source-backed schema metadata.
 
 Acceptance:
 
