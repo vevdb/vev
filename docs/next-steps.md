@@ -125,6 +125,10 @@ Implemented so far:
   idents, and nested lookup-ref vector values. The persisted snapshot test
   covers unique tuple attr lookup refs with both scalar components and a
   ref-typed component resolved through a nested lookup ref.
+- same-transaction tuple maintenance now removes stale pending derived tuple
+  adds for the same entity and tuple attr even when the pending ops have an
+  empty map group. The persisted source test keeps schema, entity data, tuple
+  components, and lookup-ref coverage in one transaction.
 
 Work:
 
@@ -159,11 +163,6 @@ Remaining in this batch:
    handles now, or pause that until the raw-Odin ABI compile issue is fixed in
    Kvist/the ABI layer. The source-backed engine path is now ahead of the C ABI
    exposure path.
-4. Audit same-transaction tuple maintenance when schema, data, and tuple
-   component attrs are introduced together. The source-backed tuple lookup-ref
-   coverage now uses a second transaction for the ref component so it tests the
-   persisted source lookup path directly; tuple derivation ordering should be
-   tightened separately.
 
 Acceptance:
 
