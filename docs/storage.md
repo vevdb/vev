@@ -81,6 +81,11 @@ query-facing code mention SQLite. `store-read-only?` and
 `store-resident-db-available?` make the current compatibility boundary explicit:
 read-only stores can query persisted index chunks, but they do not contain a
 resident rebuilt `DB`.
+`Store-DB` is the internal storage-neutral immutable DB snapshot handle for
+this path. It currently wraps a retained `SQLite-DB-Snapshot`, exposes the
+same `DB-Read-Source` boundary as resident DBs, and can run text/prepared
+queries without rebuilding resident arrays. This is the shape the public
+host-facing `d/db` handles should eventually use.
 
 There are now two write modes:
 
@@ -185,6 +190,8 @@ wrapper when it has the successful transaction report in hand.
   datom-log replay
 - `store-read-only-prepared-query`: query through a read-only durable store,
   opening short-lived persisted snapshots for each read
+- `store-db-prepared-query`: retain a chunk-backed immutable `Store-DB`
+  snapshot once and run prepared queries against that DB value
 - `reopen-rebuild`: reopen SQLite datom rows and rebuild in-memory indexes
 - `reopened-query`: run a prepared query against the reopened DB snapshot
 
@@ -193,11 +200,11 @@ The group names `append`, `durable`, and `source` run related subsets; `all`
 remains the default.
 
 The current `source` subset exercises the persisted source query path, the
-store-level prepared query wrapper, and read-only store open/query without
-resident datom-log replay. While adding this selector, the source-backed clause
-matcher was tightened to treat scanned datom values as borrowed and copy only
-when a value is stored in an output binding. That keeps source snapshot query
-cleanup valid for larger scans.
+store-level prepared query wrapper, read-only store open/query, and retained
+`Store-DB` DB-value queries without resident datom-log replay. While adding
+this selector, the source-backed clause matcher was tightened to treat scanned
+datom values as borrowed and copy only when a value is stored in an output
+binding. That keeps source snapshot query cleanup valid for larger scans.
 
 The first benchmark pass found and fixed a serializer ownership bug: storage
 callers delete `value-serializable-text` results, so that function must return

@@ -106,8 +106,9 @@ Implemented so far:
   measured without running the full write/reopen suite. The source connection
   benchmark labels now use storage-neutral names:
   `store-conn-source-prepared-query`, `store-read-only-open`, and
-  `store-read-only-prepared-query`. The `source` group has been verified to
-  run cleanly against the storage-neutral wrappers.
+  `store-read-only-prepared-query`, plus `store-db-prepared-query` for the
+  retained immutable snapshot shape. The `source` group has been verified to
+  run cleanly against the storage-neutral wrappers and retained `Store-DB`.
 - source-backed query result rows use owned value copies, and callers now have
   `delete-result-set-owned-values` for the matching cleanup shape.
 - SQLite-backed live connections can now run text and prepared queries through
@@ -127,6 +128,11 @@ Implemented so far:
 - `store-read-only?` and `store-resident-db-available?` make the current
   boundary explicit: source-only durable stores can query persisted chunks but
   cannot provide a resident rebuilt `DB` value.
+- `Store-DB` is now an internal storage-neutral immutable DB snapshot handle.
+  It can wrap a retained `SQLite-DB-Snapshot`, expose a `DB-Read-Source`, run
+  text/prepared queries, and close the retained snapshot explicitly. This is
+  the internal shape the C ABI/JVM/Clojure durable `d/db` handle should map to
+  once the ABI callback compile blocker is cleared.
 - source-backed function clauses copy produced values into owned result
   bindings and then shallow-clean temporary function result containers, avoiding
   leaked vector/map wrappers without deleting scalar values that may be borrowed
@@ -264,6 +270,8 @@ Work:
      on open and rejects writes explicitly
    - storage-neutral read-only store wrappers now expose that path internally
      without requiring callers to mention SQLite-specific query functions
+   - `Store-DB` now retains a chunk-backed read snapshot and can be passed to
+     query code as an immutable DB value inside Vev
 2. Keep datom-log replay available for recovery, validation, migration, and
    fallback.
 3. Update C ABI/JVM/Clojure connection DB snapshots so the public API can pass
