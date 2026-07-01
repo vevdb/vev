@@ -329,6 +329,18 @@ def main() -> int:
                     if prepared_names != ["Ada", "Grace"]:
                         raise RuntimeError("unexpected prepared pull-many")
 
+            with conn.prepare(
+                "[:find ?name :in $ % :where (named ?e ?name)]"
+            ) as rules_query, conn.db() as rules_db:
+                rules_rows = rules_query.rows_with_rules(
+                    rules_db,
+                    "[[(named ?e ?name) [?e :user/name ?name]]]",
+                )
+                rule_names = sorted(row[0] for row in rules_rows)
+                print(f"snapshot rules rows: {rule_names}")
+                if rule_names != ["Ada", "Grace"]:
+                    raise RuntimeError("unexpected snapshot rules rows")
+
             pull_pattern_query = conn.prepare(
                 """
                 [:find (pull ?e ?pattern)
@@ -494,6 +506,44 @@ def main() -> int:
                 print(f"sqlite-reopened rows: {rows}")
                 if len(rows) != 1:
                     raise RuntimeError("unexpected SQLite reopened row count")
+            with durable.prepare(
+                "[:find ?email :where [?e :user/email ?email]]"
+            ) as email_column_query, durable.db() as db:
+                column_rows = db.query_columns(email_column_query)
+                if column_rows is None or column_rows.rows() != [
+                    ["durable-ada@example.com"]
+                ]:
+                    raise RuntimeError("unexpected SQLite DB column batch rows")
+            with vev.prepare_pull_pattern("[:user/name :user/email]") as pattern:
+                with durable.db() as db:
+                    pulled = db.pull(pattern, vev.Entity(1))
+                    pulled_many = db.pull_many(pattern, [vev.Entity(1)])
+                if (
+                    pulled.get(":user/name") != "Durable Ada"
+                    or pulled.get(":user/email") != "durable-ada@example.com"
+                ):
+                    raise RuntimeError("unexpected SQLite prepared pull")
+                if pulled_many != [pulled]:
+                    raise RuntimeError("unexpected SQLite prepared pull-many")
+            with durable.prepare(
+                "[:find ?email :in $snap :where [$snap 1 :user/email ?email]]",
+                ["$snap"],
+            ) as snapshot_source_query, durable.db() as db:
+                with snapshot_source_query.statement() as stmt:
+                    rows = stmt.bind(vev.DBSource("$snap", db)).rows(db)
+                print(f"sqlite-db-source rows: {rows}")
+                if rows != [["durable-ada@example.com"]]:
+                    raise RuntimeError("unexpected SQLite DB source statement rows")
+            with durable.prepare(
+                "[:find ?name :in $ % :where (named ?e ?name)]"
+            ) as rules_query, durable.db() as db:
+                rows = rules_query.rows_with_rules(
+                    db,
+                    "[[(named ?e ?name) [?e :user/name ?name]]]",
+                )
+                print(f"sqlite-rules rows: {rows}")
+                if rows != [["Durable Ada"]]:
+                    raise RuntimeError("unexpected SQLite rules rows")
     finally:
         remove_sqlite_files(sqlite_path)
 

@@ -887,8 +887,11 @@
     (return false))
   (when (or data.has-nested-map
             data.from-map-collection
-            (tx-data-modifies-validation-schema? data)
-            (reverse-attr? data.a))
+            (tx-data-modifies-validation-schema? data))
+    (return false))
+  (when (and (reverse-attr? data.a)
+             (not (or (= data.op ":db/add")
+                      (= data.op ":db/retract"))))
     (return false))
   (when (and data.has-expected-lookup-ref
              (not (shared-write-state-source-cas-op? data)))
@@ -1895,8 +1898,11 @@
           (if (= lookup-error "")
             (return data.v false false "lookup ref not found")
             (return data.v false false lookup-error))))))
-  (let [[value value-ok value-error] (shared-write-state-resolve-direct-tx-data-value state source data)]
-    (return value value-ok false value-error)))
+  (if (shared-write-state-schema-ref-target-for-tx? state tx-data data.a)
+    (let [[value value-ok value-error] (db-read-source-resolve-ref-component-value source data.v)]
+      (return value value-ok false value-error))
+    (let [[value value-ok value-error] (db-read-source-resolve-tuple-value source data.a data.v)]
+      (return value value-ok false value-error))))
 
 (defn shared-write-state-resolve-source-tx-value [state: ^Shared-Write-State, source: DB-Read-Source, attr: string, value: Value] -> [resolved: Value, ok: bool, error: string]
   (if (shared-write-state-schema-ref-target? state attr)
@@ -2034,6 +2040,13 @@
                                       tx-meta: resolved-meta
                                       tempids: resolved-tempids})))))
           (continue))
+        (when (and (reverse-attr? data.a)
+                   (not (shared-write-state-schema-ref-target-for-tx? state tx-data data.a)))
+          (return (Resolved-Tx {ok: false
+                                error: "reverse attribute requires ref schema"
+                                ops: resolved-ops
+                                tx-meta: resolved-meta
+                                tempids: resolved-tempids})))
         (when (shared-write-state-source-cas-op? data)
           (let [[expected expected-ok expected-error] (shared-write-state-resolve-source-cas-expected state source data)]
             (when (not expected-ok)
@@ -2066,9 +2079,24 @@
           (when skip-value
             (continue))
           (let [start-index (count resolved-ops)]
-            (if (= data.op ":db/retract")
-              (arr.push! resolved-ops (tx-op-with-map-group (tx-retract e data.a value) data.map-group))
-              (arr.push! resolved-ops (tx-op-with-map-group (tx-add e data.a value) data.map-group)))
+            (if (reverse-attr? data.a)
+              (if (= value.kind .Entity)
+                (let [forward-attr (forward-attr-for-reverse data.a)
+                      op (tx-op-with-map-group
+                           (if (= data.op ":db/retract")
+                             (tx-retract value.entity forward-attr (value-entity e))
+                             (tx-add value.entity forward-attr (value-entity e)))
+                           data.map-group)]
+                  (set! op.owned-attr true)
+                  (arr.push! resolved-ops op))
+                (return (Resolved-Tx {ok: false
+                                      error: "reverse ref value must resolve to entity"
+                                      ops: resolved-ops
+                                      tx-meta: resolved-meta
+                                      tempids: resolved-tempids})))
+              (if (= data.op ":db/retract")
+                (arr.push! resolved-ops (tx-op-with-map-group (tx-retract e data.a value) data.map-group))
+                (arr.push! resolved-ops (tx-op-with-map-group (tx-add e data.a value) data.map-group))))
             (let [[tuple-ok tuple-error] (shared-write-state-append-source-tuple-maintenance-for-new-ops! state (addr resolved-ops) source tx-data start-index)]
               (when (not tuple-ok)
                 (return (Resolved-Tx {ok: false
@@ -2129,14 +2157,38 @@
                 tempids: (make [dynamic]Tempid)}))
 
 (defn db-read-source-latest-tx [source: DB-Read-Source] -> [tx: u64, ok: bool, error: string]
+  (when (= source.kind .Tx-Ops-Overlay)
+    (let [[base-tx base-ok base-error] (db-read-source-latest-tx source.overlay-base^)]
+      (when (not base-ok)
+        (return 0 false base-error))
+      (return (if (> source.overlay-tx base-tx) source.overlay-tx base-tx) true "")))
   (let [view (db-read-source-index-view source .EAVT)
         n (db-index-view-count view)]
     (when (= n 0)
+      (when (or (= source.kind .Shared-Datom-Overlay)
+                (= source.kind .SQLite-Datom-Overlay))
+        (let [overlay-latest: u64 0]
+          (for [datom source.overlay-datoms^]
+            (when (> datom.tx overlay-latest)
+              (set! overlay-latest datom.tx)))
+          (return overlay-latest true "")))
+      (when (or (= source.kind .Shared-Tx-Ops-Overlay)
+                (= source.kind .SQLite-Tx-Ops-Overlay))
+        (return source.overlay-tx true ""))
       (return 0 true ""))
     (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source (- n 1))]
       (when (not datom-ok)
         (return 0 false datom-error))
       (let [out datom.tx]
+        (when (or (= source.kind .Shared-Tx-Ops-Overlay)
+                  (= source.kind .SQLite-Tx-Ops-Overlay))
+          (when (> source.overlay-tx out)
+            (set! out source.overlay-tx)))
+        (when (or (= source.kind .Shared-Datom-Overlay)
+                  (= source.kind .SQLite-Datom-Overlay))
+          (for [overlay-datom source.overlay-datoms^]
+            (when (> overlay-datom.tx out)
+              (set! out overlay-datom.tx))))
         (delete-owned-datom datom)
         (return out true "")))))
 
@@ -2408,7 +2460,7 @@
           (return next-snapshot true true ""))))))
 
 (defn tx-fn-source-ok [tx-data: []Tx-Data] -> Tx-Fn-Source-Result
-  (let [out (arr.into [dynamic]Tx-Data tx-data)]
+  (let [out (tx-data-slice-owned tx-data)]
     (Tx-Fn-Source-Result {ok: true
                           error: ""
                           tx-data: out})))

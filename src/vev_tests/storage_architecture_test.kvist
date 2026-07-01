@@ -98,6 +98,16 @@
       (return true)))
   false)
 
+(defn result-has-string-entity-row? [result: vev.Result-Set, text: string, entity: u64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text)
+               (= row.values[1].kind .Entity)
+               (= row.values[1].entity entity))
+      (return true)))
+  false)
+
 (defn native-tag-value [value: vev.Value] -> vev.Native-Query-Function-Result
   (when (not (= value.kind .String))
     (return (vev.native-query-function-none)))
@@ -328,6 +338,40 @@
       (vev.close-store read-store))
     (vev.delete-tx-report-shallow write-report)))
 
+(t.deftest sqlite-store-db-with-chained-overlays-preserves-tx-identity
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.store-db-with-chained-overlays.sqlite")
+  (let [path "tmp.vev.store-db-with-chained-overlays.sqlite"
+        [store opened-ok opened-error] (vev.open-store path)
+        write-report (vev.transact-store-text (addr store) "[{:db/id 1 :user/name \"Ada\"}]")]
+    (defer (remove-sqlite-files path))
+    (t.is opened-ok)
+    (t.is (= opened-error ""))
+    (t.is write-report.ok)
+    (vev.close-store store)
+    (let [[read-store read-opened-ok read-opened-error] (vev.open-store-read-only path)
+          [snapshot snapshot-ok snapshot-error] (vev.store-db (addr read-store))
+          first-overlay (vev.db-with-store-db-text (addr snapshot) "[[:db/add 2 :user/name \"Grace\"]]")
+          second-overlay (vev.db-with-store-db-text (addr first-overlay) "[[:db/add 3 :user/name \"Barbara\"]]")
+          tx-result (vev.q-result-store-db-text (addr second-overlay) "[:find ?name ?tx :where [?e :user/name ?name ?tx]]")]
+      (t.is read-opened-ok)
+      (t.is (= read-opened-error ""))
+      (t.is snapshot-ok)
+      (t.is (= snapshot-error ""))
+      (t.is (= first-overlay.kind .SQLite-Tx-Ops-Overlay))
+      (t.is (= second-overlay.kind .SQLite-Datom-Overlay))
+      (t.is tx-result.result.ok)
+      (t.is (= (count tx-result.result.rows) 3))
+      (t.is (result-has-string-entity-row? tx-result.result "Ada" 1))
+      (t.is (result-has-string-entity-row? tx-result.result "Grace" 2))
+      (t.is (result-has-string-entity-row? tx-result.result "Barbara" 3))
+      (vev.delete-query-result tx-result)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store-db! (addr first-overlay))
+      (vev.close-store-db! (addr second-overlay))
+      (vev.close-store read-store))
+    (vev.delete-tx-report-shallow write-report)))
+
 (t.deftest sqlite-store-db-with-same-tx-cardinality-many-map-collection-keeps-source-overlay
   (defer (free_all context.allocator))
   (remove-sqlite-files "tmp.vev.store-db-with-cardinality-many.sqlite")
@@ -400,6 +444,49 @@
       (t.is (= (count original-result.result.rows) 0))
       (vev.delete-query-result name-result)
       (vev.delete-query-result friend-result)
+      (vev.delete-query-result original-result)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store-db! (addr next-snapshot))
+      (vev.close-store read-store))
+    (vev.delete-tx-report-shallow opened-report)))
+
+(t.deftest sqlite-store-db-with-same-tx-reverse-ref-keeps-source-overlay
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.store-db-with-reverse-ref.sqlite")
+  (let [path "tmp.vev.store-db-with-reverse-ref.sqlite"
+        [store opened-ok opened-error] (vev.open-store path)
+        opened-report (vev.transact-store-text (addr store) "[{:db/id 900 :store/initialized true}]")]
+    (defer (remove-sqlite-files path))
+    (t.is opened-ok)
+    (t.is (= opened-error ""))
+    (t.is opened-report.ok)
+    (vev.close-store store)
+    (let [[read-store read-opened-ok read-opened-error] (vev.open-store-read-only path)
+          [snapshot snapshot-ok snapshot-error] (vev.store-db (addr read-store))
+          next-snapshot (vev.db-with-store-db-text
+                          (addr snapshot)
+                          "[{:db/id 100 :db/ident :user/friend :db/valueType :db.type/ref} [:db/add 2 :_user/friend 1]]")
+          result (vev.q-result-store-db-text (addr next-snapshot) "[:find ?friend :where [1 :user/friend ?friend]]")
+          reverse-result (vev.q-result-store-db-text (addr next-snapshot) "[:find ?source :where [2 :_user/friend ?source]]")
+          original-result (vev.q-result-store-db-text (addr snapshot) "[:find ?friend :where [1 :user/friend ?friend]]")]
+      (t.is read-opened-ok)
+      (t.is (= read-opened-error ""))
+      (t.is snapshot-ok)
+      (t.is (= snapshot-error ""))
+      (t.is (= snapshot.kind .SQLite-Snapshot))
+      (t.is (= next-snapshot.kind .SQLite-Tx-Ops-Overlay))
+      (t.is result.result.ok)
+      (t.is (= (count result.result.rows) 1))
+      (t.is (= result.result.rows[0].values[0].kind .Entity))
+      (t.is (= result.result.rows[0].values[0].entity 2))
+      (t.is reverse-result.result.ok)
+      (t.is (= (count reverse-result.result.rows) 1))
+      (t.is (= reverse-result.result.rows[0].values[0].kind .Entity))
+      (t.is (= reverse-result.result.rows[0].values[0].entity 1))
+      (t.is original-result.result.ok)
+      (t.is (= (count original-result.result.rows) 0))
+      (vev.delete-query-result result)
+      (vev.delete-query-result reverse-result)
       (vev.delete-query-result original-result)
       (vev.close-store-db! (addr snapshot))
       (vev.close-store-db! (addr next-snapshot))

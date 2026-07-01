@@ -93,11 +93,13 @@ Todo:
   collection forms stay source-native, as do same-transaction ref schema plus
   nested map values and same-transaction cardinality-many schema plus map
   collection values. Same-transaction lookup refs and identity tempid upserts
-  stay source-native for shared and SQLite Store-DB overlays. Source transaction
-  functions work for `with` reports and `db-with` on base shared/SQLite
-  Store-DB snapshots. The remaining hard case is chaining source transaction
-  functions on top of an existing overlay DB value without flattening away
-  per-transaction tx identity.
+  stay source-native for shared and SQLite Store-DB overlays. Same-transaction
+  ref schema plus reverse ref add/retract forms stay source-native for shared
+  and SQLite Store-DB overlays. Source transaction functions work for `with`
+  reports and `db-with` on shared/SQLite Store-DB snapshots and overlay DB
+  values. Chained overlays preserve per-transaction tx identity by publishing
+  multi-transaction datom overlays when a `with` is applied to an existing
+  overlay DB value.
 - Reuse the existing source-aware transaction resolver from shared storage:
   `shared-write-state-resolve-tx-data`, `resolve-shared-source-tx-segment!`,
   and `tx-ops-overlay-db-read-source`.
@@ -151,9 +153,32 @@ Todo:
 - Keep datom-log replay available for recovery, validation, migration, and
   fallback.
 - Ensure C ABI, JVM, Clojure, and other host DB snapshot handles use the
-  storage-neutral durable DB value path by default.
+  storage-neutral durable DB value path by default. Prepared statement DB
+  sources now retain `Store-DB` handles and execute through `DB-Read-Source`,
+  including collection, tuple, relation, and map relation `:in` inputs for
+  source-backed snapshots. Prepared DB column batches also execute through
+  `Store-DB` / `DB-Read-Source` for durable snapshots. Prepared direct pull,
+  lookup-ref pull, pull-many, and UUID lookup-ref pull-many now use storage
+  helpers over `Store-DB` / `DB-Read-Source` instead of resident DB pointers.
+  Prepared query profile EDN also executes over `Store-DB` / `DB-Read-Source`.
+  Typed entity, string, entity/int-pair, and entity/string/int-triple prepared
+  C ABI convenience paths now execute over `DB-Read-Source` and convert the
+  result shape at the ABI boundary. Prepared query-with-rules DB snapshot
+  paths now execute over `Store-DB` / `DB-Read-Source`; source-backed rule
+  evaluation currently covers non-recursive rule bodies made from source
+  clauses, predicates, scalar functions, ground, get-else, get-some,
+  not/missing?, and or/or-join.
+- Source-backed DB snapshot `with` reports with C ABI transaction functions now
+  use source-backed `Store-DB` transaction-function resolution, including
+  transaction-local overlay reads and owned callback tx-data returned from the
+  ABI. Resident in-memory DB snapshots keep the existing resident callback
+  path. The callback keeps the existing public `Vev-DB` argument shape; if a
+  source-backed callback queries that temporary DB argument, it is currently
+  materialized for the callback only.
 - Turn any remaining resident-required path into either a source-backed
-  implementation or a clear public error.
+  implementation or a clear public error. The known intentional resident path
+  is `vev_conn_from_db`, which can only create a live mutable in-memory
+  connection from resident DB values.
 
 Acceptance:
 

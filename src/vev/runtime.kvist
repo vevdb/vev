@@ -3772,8 +3772,10 @@
   Shared-Resident-Indexes
   Shared-Resident-Datoms-And-Indexes
   Shared-Tx-Ops-Overlay
+  Shared-Datom-Overlay
   SQLite-Snapshot
   SQLite-Tx-Ops-Overlay
+  SQLite-Datom-Overlay
   Tx-Ops-Overlay
 ])
 
@@ -3785,6 +3787,7 @@
   sqlite-snapshot: ^SQLite-DB-Snapshot
   overlay-base: ^DB-Read-Source
   overlay-ops: ^[dynamic]Tx-Op
+  overlay-datoms: ^[dynamic]Datom
   overlay-tx: u64
 })
 
@@ -3827,9 +3830,22 @@
                    overlay-ops: ops
                    overlay-tx: tx}))
 
+(defn shared-datom-overlay-db-read-source [datoms: ^Shared-Datom-Log, indexes: ^Shared-DB-Int-Indexes, overlay-datoms: ^[dynamic]Datom] -> DB-Read-Source
+  (DB-Read-Source {kind: .Shared-Datom-Overlay
+                   shared-datoms: datoms
+                   shared-indexes: indexes
+                   overlay-datoms: overlay-datoms}))
+
+(defn sqlite-datom-overlay-db-read-source [snapshot: ^SQLite-DB-Snapshot, overlay-datoms: ^[dynamic]Datom] -> DB-Read-Source
+  (DB-Read-Source {kind: .SQLite-Datom-Overlay
+                   sqlite-snapshot: snapshot
+                   overlay-datoms: overlay-datoms}))
+
 (defn db-read-source-has-inline-overlay? [source: DB-Read-Source] -> bool
   (or (= source.kind .Shared-Tx-Ops-Overlay)
-      (= source.kind .SQLite-Tx-Ops-Overlay)))
+      (= source.kind .SQLite-Tx-Ops-Overlay)
+      (= source.kind .Shared-Datom-Overlay)
+      (= source.kind .SQLite-Datom-Overlay)))
 
 (defn db-read-source-has-overlay? [source: DB-Read-Source] -> bool
   (or (= source.kind .Tx-Ops-Overlay)
@@ -3876,8 +3892,10 @@
     .Shared-Resident-Indexes (shared-db-int-index-view source.shared-indexes order)
     .Shared-Resident-Datoms-And-Indexes (shared-db-int-index-view source.shared-indexes order)
     .Shared-Tx-Ops-Overlay (shared-db-int-index-view source.shared-indexes order)
+    .Shared-Datom-Overlay (shared-db-int-index-view source.shared-indexes order)
     .SQLite-Snapshot (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
     .SQLite-Tx-Ops-Overlay (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
+    .SQLite-Datom-Overlay (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
     .Tx-Ops-Overlay (db-read-source-index-view source.overlay-base^ order)
      (DB-Index-View {})))
 
@@ -3932,9 +3950,16 @@
         (if ok
           (return datom true "")
           (return (Datom {}) false "shared overlay datom log index out of range")))
+    .Shared-Datom-Overlay
+      (let [[datom ok] (shared-datom-log-at source.shared-datoms^ entry)]
+        (if ok
+          (return datom true "")
+          (return (Datom {}) false "shared datom overlay log index out of range")))
     .SQLite-Snapshot
       (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
     .SQLite-Tx-Ops-Overlay
+      (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
+    .SQLite-Datom-Overlay
       (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
      (return (Datom {}) false "unknown DB read source")))
 
@@ -3963,6 +3988,12 @@
         (when (or (< entry 0)
                   (>= entry source.shared-datoms^.count))
           (return false false "shared overlay datom log index out of range"))
+        (return (shared-int-index-contains? source.shared-indexes^.current entry) true ""))
+    .Shared-Datom-Overlay
+      (do
+        (when (or (< entry 0)
+                  (>= entry source.shared-datoms^.count))
+          (return false false "shared datom overlay log index out of range"))
         (return (shared-int-index-contains? source.shared-indexes^.current entry) true ""))
     .SQLite-Snapshot
       (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
@@ -3997,6 +4028,38 @@
                 (delete-owned-datom candidate)))
             (return (and found latest-added (= latest-tx datom.tx)) true ""))))
     .SQLite-Tx-Ops-Overlay
+      (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
+        (when (not datom-ok)
+          (return false false datom-error))
+        (defer (delete-owned-datom datom))
+        (when (not datom.added)
+          (return false true ""))
+        (let [[range-low range-high range-exists range-ok range-error] (db-read-source-eavt-entity-range source datom.e)]
+          (when (not range-ok)
+            (return false false range-error))
+          (when (not range-exists)
+            (return false true ""))
+          (let [view (db-read-source-index-view source .EAVT)
+                latest-tx: u64 0
+                latest-added false
+                found false]
+            (for [pos (arr.range range-low range-high)]
+              (let [candidate-entry (db-index-view-at view pos)
+                    [candidate candidate-ok candidate-error] (db-read-source-datom-at-entry source candidate-entry)]
+                (when (not candidate-ok)
+                  (return false false candidate-error))
+                (let [matches (and (= candidate.e datom.e)
+                                   (= candidate.a datom.a)
+                                   (value-equal? candidate.v datom.v))]
+                  (when matches
+                    (when (or (not found)
+                              (> candidate.tx latest-tx))
+                      (set! latest-tx candidate.tx)
+                      (set! latest-added candidate.added)
+                      (set! found true))))
+                (delete-owned-datom candidate)))
+            (return (and found latest-added (= latest-tx datom.tx)) true ""))))
+    .SQLite-Datom-Overlay
       (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
         (when (not datom-ok)
           (return false false datom-error))
@@ -4221,6 +4284,20 @@
       (when (= op.kind .Add)
         (append-owned-datom-from-tx-op! out op source.overlay-tx)))))
 
+(defn db-read-source-apply-overlay-datoms! [out: ^[dynamic]Datom, source: DB-Read-Source, order: Public-Index-Order, values: []Value]
+  (let [order-text (public-index-order-text order)]
+    (for [datom source.overlay-datoms^]
+      (when (datom-matches-index-values? datom order-text values)
+        (remove-datom-fact! out datom.e datom.a datom.v)
+        (when datom.added
+          (arr.push! out^ (datom-owned datom)))))))
+
+(defn db-read-source-apply-inline-overlay! [out: ^[dynamic]Datom, source: DB-Read-Source, order: Public-Index-Order, values: []Value]
+  (case source.kind
+    .Shared-Datom-Overlay (db-read-source-apply-overlay-datoms! out source order values)
+    .SQLite-Datom-Overlay (db-read-source-apply-overlay-datoms! out source order values)
+     (db-read-source-apply-overlay-ops! out source order values)))
+
 (defn db-read-source-append-index-datoms! [out: ^[dynamic]Datom, source: DB-Read-Source, order: Public-Index-Order, values: []Value] -> [ok: bool, error: string]
   (when (= source.kind .Tx-Ops-Overlay)
     (let [[base-ok base-error] (db-read-source-append-index-datoms! out source.overlay-base^ order values)]
@@ -4249,7 +4326,7 @@
                 (arr.push! out^ datom)
                 (delete-owned-datom datom)))))))
     (when (db-read-source-has-inline-overlay? source)
-      (db-read-source-apply-overlay-ops! out source order values))
+      (db-read-source-apply-inline-overlay! out source order values))
     (return true "")))
 
 (defn db-read-source-datoms-by-attr [source: DB-Read-Source, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
@@ -4263,6 +4340,15 @@
         (return (make [dynamic]Datom) false scan-error)))))
 
 (defn db-read-source-materialize-db [source: DB-Read-Source] -> [db: DB, ok: bool, error: string]
+  (when (= source.kind .Tx-Ops-Overlay)
+    (let [[base base-ok base-error] (db-read-source-materialize-db source.overlay-base^)]
+      (when (not base-ok)
+        (return base false base-error))
+      (let [out (clone-datoms base.datoms)]
+        (delete-owned-db base)
+        (for [op source.overlay-ops^]
+          (append-owned-log-datom-from-tx-op! (addr out) op source.overlay-tx))
+        (return (build-db out) true ""))))
   (let [out (make [dynamic]Datom)
         view (db-read-source-index-view source .EAVT)
         n (db-index-view-count view)]
@@ -4273,8 +4359,15 @@
           (return (build-db (make [dynamic]Datom)) false datom-error))
         (arr.push! out datom)))
     (when (db-read-source-has-inline-overlay? source)
-      (for [op source.overlay-ops^]
-        (append-owned-log-datom-from-tx-op! (addr out) op source.overlay-tx)))
+      (case source.kind
+        .Shared-Datom-Overlay
+          (for [datom source.overlay-datoms^]
+            (arr.push! out (datom-owned datom)))
+        .SQLite-Datom-Overlay
+          (for [datom source.overlay-datoms^]
+            (arr.push! out (datom-owned datom)))
+         (for [op source.overlay-ops^]
+           (append-owned-log-datom-from-tx-op! (addr out) op source.overlay-tx))))
     (return (build-db out) true "")))
 
 (defn db-read-source-datoms-by-entity-attr [source: DB-Read-Source, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
@@ -4319,7 +4412,7 @@
                 (arr.push! out datom)))))))
     (when (db-read-source-has-inline-overlay? source)
       (let [values ([]Value [(value-entity entity)])]
-        (db-read-source-apply-overlay-ops! (addr out) source .EAVT values)))
+        (db-read-source-apply-inline-overlay! (addr out) source .EAVT values)))
     (return out true "")))
 
 (defn db-read-source-eavt-entity-attr-position [source: DB-Read-Source, entity: u64, attr: string] -> [pos: int, exists: bool, ok: bool, error: string]
@@ -4891,7 +4984,7 @@
             (delete-owned-datom datom)))
         (set! scan-index (+ scan-index 1)))
       (when (db-read-source-has-inline-overlay? source)
-        (db-read-source-apply-overlay-ops-for-clause-scan! (addr out) source scan))
+        (db-read-source-apply-inline-overlay-for-clause-scan! (addr out) source scan))
       (return out true ""))))
 
 (defn db-read-source-clause-candidates [source: DB-Read-Source, clause-value: Clause] -> [datoms: [dynamic]Datom, ok: bool, error: string]
@@ -5035,6 +5128,19 @@
         (remove-datom-fact! out op.e op.a op.v)
         (when (= op.kind .Add)
           (append-owned-datom-from-tx-op! out op source.overlay-tx))))))
+
+(defn db-read-source-apply-overlay-datoms-for-clause-scan! [out: ^[dynamic]Datom, source: DB-Read-Source, scan: Clause-Index-Scan]
+  (for [datom source.overlay-datoms^]
+    (when (db-read-source-clause-index-scan-candidate? scan datom)
+      (remove-datom-fact! out datom.e datom.a datom.v)
+      (when datom.added
+        (arr.push! out^ (datom-owned datom))))))
+
+(defn db-read-source-apply-inline-overlay-for-clause-scan! [out: ^[dynamic]Datom, source: DB-Read-Source, scan: Clause-Index-Scan]
+  (case source.kind
+    .Shared-Datom-Overlay (db-read-source-apply-overlay-datoms-for-clause-scan! out source scan)
+    .SQLite-Datom-Overlay (db-read-source-apply-overlay-datoms-for-clause-scan! out source scan)
+     (db-read-source-apply-overlay-ops-for-clause-scan! out source scan)))
 
 (defn db-read-source-binding-match-optional-owned! [binding: ^Binding, term: Term, value: Value] -> bool
   (if (omitted-term? term)
@@ -5524,6 +5630,48 @@
     (db-read-source-input-pattern query-value inputs pull-find.pattern-var)
     (return (slice pull-find.pattern 0) true)))
 
+(defn db-read-source-bind-input-row-owned [binding: Binding, names: []string, values: []Value, offset: int, width: int] -> [dynamic]Binding
+  (let [current (make [dynamic]Binding)]
+    (arr.push! current (db-read-source-clone-binding-owned binding))
+    (for [name index names]
+      (let [next-current (make [dynamic]Binding)
+            value-index (+ offset index)]
+        (for [candidate current]
+          (if (or (= name "_")
+                  (>= index width)
+                  (>= value-index (count values)))
+            (arr.push! next-current (db-read-source-clone-binding-owned candidate))
+            (let [[next next-ok] (db-read-source-binding-with-owned-value candidate name (value-owned values[value-index]))]
+              (when next-ok
+                (arr.push! next-current next))))
+          (db-read-source-delete-binding-owned candidate))
+        (delete current)
+        (set! current next-current)))
+    current))
+
+(defn db-read-source-bind-input-values-owned [bindings: []Binding, name: string, values: []Value] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (for [binding bindings]
+      (for [value values]
+        (let [[next next-ok] (db-read-source-binding-with-owned-value binding name (value-owned value))]
+          (when next-ok
+            (arr.push! out next)))))
+    out))
+
+(defn db-read-source-bind-input-rows-owned [bindings: []Binding, names: []string, values: []Value, width: int] -> [dynamic]Binding
+  (let [out (make [dynamic]Binding)]
+    (when (and (> width 0)
+               (= (count names) width))
+      (let [row-count (/ (count values) width)]
+        (for [binding bindings]
+          (for [row (arr.range 0 row-count)]
+            (let [offset (* row width)
+                  row-bindings (db-read-source-bind-input-row-owned binding names values offset width)]
+              (for [row-binding row-bindings]
+                (arr.push! out row-binding))
+              (delete row-bindings))))))
+    out))
+
 (defn db-read-source-initial-bindings [query-value: Query, inputs: []Query-Input] -> [bindings: [dynamic]Binding, ok: bool, error: string]
   (let [out (make [dynamic]Binding)
         initial (Binding {items: (make [dynamic]Var-Binding)})
@@ -5551,10 +5699,54 @@
                     (for [binding-index (arr.range 0 (count out))]
                       (binding-store! (addr out[binding-index]) spec.name (value-owned value)))))))
             (set! input-index (+ input-index 1)))
+        (= spec.kind .Collection)
+          (do
+            (when (or (>= input-index (count inputs))
+                      (not (= inputs[input-index].kind .Collection)))
+              (db-read-source-delete-bindings-owned out)
+              (return (make [dynamic]Binding) false "SQLite DB snapshot source collection query input must be a collection"))
+            (let [next (db-read-source-bind-input-values-owned (slice out 0) spec.name inputs[input-index].values)]
+              (db-read-source-delete-bindings-owned out)
+              (set! out next)
+              (set! input-index (+ input-index 1))))
+        (= spec.kind .Tuple)
+          (do
+            (when (or (>= input-index (count inputs))
+                      (not (= inputs[input-index].kind .Collection))
+                      (not (= (count spec.tuple.vars) (count inputs[input-index].values))))
+              (db-read-source-delete-bindings-owned out)
+              (return (make [dynamic]Binding) false "SQLite DB snapshot source tuple query input must match tuple arity"))
+            (let [next (db-read-source-bind-input-rows-owned (slice out 0) spec.tuple.vars inputs[input-index].values (count spec.tuple.vars))]
+              (db-read-source-delete-bindings-owned out)
+              (set! out next)
+              (set! input-index (+ input-index 1))))
+        (= spec.kind .Relation)
+          (do
+            (when (>= input-index (count inputs))
+              (db-read-source-delete-bindings-owned out)
+              (return (make [dynamic]Binding) false "SQLite DB snapshot source relation query input is missing"))
+            (let [input inputs[input-index]]
+              (cond
+                (and (= input.kind .Relation)
+                     (= input.width (count spec.relation.vars)))
+                  (let [next (db-read-source-bind-input-rows-owned (slice out 0) spec.relation.vars input.values input.width)]
+                    (db-read-source-delete-bindings-owned out)
+                    (set! out next))
+                (and (= input.kind .Scalar)
+                     (= input.value.kind .Map)
+                     (= (count spec.relation.vars) 2))
+                  (let [next (db-read-source-bind-input-rows-owned (slice out 0) spec.relation.vars input.value.items 2)]
+                    (db-read-source-delete-bindings-owned out)
+                    (set! out next))
+                :else
+                  (do
+                    (db-read-source-delete-bindings-owned out)
+                    (return (make [dynamic]Binding) false "SQLite DB snapshot source relation query input must match relation arity"))))
+            (set! input-index (+ input-index 1)))
         :else
           (do
             (db-read-source-delete-bindings-owned out)
-            (return (make [dynamic]Binding) false "SQLite DB snapshot source currently supports scalar query inputs only"))))
+            (return (make [dynamic]Binding) false "SQLite DB snapshot source query input is unsupported"))))
     (return out true "")))
 
 (defn db-read-source-pull-spec-supported? [spec: Pull-Spec, registry: []Native-Query-Fn] -> bool
@@ -6029,6 +6221,131 @@
       (arr.push! rows (Result-Row {values: values pulls: pulls}))
       (result-set-ok rows))))
 
+(defn db-read-source-bind-rule-args [outer: Binding, call: Rule-Call, rule: Rule] -> [binding: Binding, ok: bool]
+  (let [out (Binding {items: (make [dynamic]Var-Binding)})]
+    (when (not (= (count call.args) (count rule.params)))
+      (return out false))
+    (for [param index rule.params]
+      (let [arg call.args[index]]
+        (case arg.kind
+          .Var (let [[value value-ok] (binding-lookup outer arg.name)]
+                 (when (and (< index rule.required-param-count)
+                            (not value-ok))
+                   (return out false))
+                 (when value-ok
+                   (let [[existing exists] (binding-lookup out param)]
+                     (if exists
+                       (when (not (predicate-value-equal? existing value))
+                         (return out false))
+                       (binding-store! (addr out) param (value-owned value))))))
+          .Value (let [[existing exists] (binding-lookup out param)]
+                   (if exists
+                     (when (not (predicate-value-equal? existing arg.value))
+                       (return out false))
+                     (binding-store! (addr out) param (value-owned arg.value))))
+          .Wildcard (do)
+           (return out false))))
+    (return out true)))
+
+(defn db-read-source-merge-rule-output-owned [outer: Binding, call: Rule-Call, rule: Rule, result: Binding] -> [binding: Binding, ok: bool]
+  (let [out (db-read-source-clone-binding-owned outer)]
+    (for [param index rule.params]
+      (let [arg call.args[index]]
+        (when (= arg.kind .Var)
+          (let [[value value-ok] (binding-lookup result param)]
+            (when value-ok
+              (let [[existing exists] (binding-lookup out arg.name)]
+                (if exists
+                  (when (not (predicate-value-equal? existing value))
+                    (db-read-source-delete-binding-owned out)
+                    (return (Binding {}) false))
+                  (binding-store! (addr out) arg.name (value-owned value)))))))))
+    (return out true)))
+
+(defn db-read-source-bindings-after-rule-body-with-sources [source: DB-Read-Source, sources: []DB-Read-Named-Source, rule: Rule, initial: Binding] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [bindings (make [dynamic]Binding)]
+    (arr.push! bindings initial)
+    (for [step rule.body-steps]
+      (cond
+        (= step.kind .Clause)
+          (let [clause-value rule.clauses[step.index]
+                [clause-source source-clause source-clause-ok source-clause-error] (db-read-source-query-clause-source source sources clause-value)]
+            (when (not source-clause-ok)
+              (db-read-source-delete-bindings-owned bindings)
+              (return (make [dynamic]Binding) false source-clause-error))
+            (let [[next next-ok next-error] (db-read-source-bindings-after-clause clause-source (slice bindings 0) source-clause)]
+              (db-read-source-delete-bindings-owned bindings)
+              (when (not next-ok)
+                (return (make [dynamic]Binding) false next-error))
+              (set! bindings next)))
+        (= step.kind .Predicate)
+          (let [next (db-read-source-bindings-after-predicate (slice bindings 0) rule.predicates[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (set! bindings next))
+        (= step.kind .Function)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-function (slice bindings 0) rule.function-clauses[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (make [dynamic]Binding) false next-error))
+            (set! bindings next))
+        (= step.kind .Ground)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-ground (slice bindings 0) rule.grounds[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (make [dynamic]Binding) false next-error))
+            (set! bindings next))
+        (= step.kind .GetElse)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-get-else-with-sources source sources (slice bindings 0) rule.get-elses[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (make [dynamic]Binding) false next-error))
+            (set! bindings next))
+        (= step.kind .GetSome)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-get-some-with-sources source sources (slice bindings 0) rule.get-somes[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (make [dynamic]Binding) false next-error))
+            (set! bindings next))
+        (= step.kind .Not)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-not-group-with-sources source sources (slice bindings 0) rule.not-groups[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (make [dynamic]Binding) false next-error))
+            (set! bindings next))
+        (= step.kind .Or)
+          (let [[next next-ok next-error] (db-read-source-bindings-after-or-group-with-sources source sources (slice bindings 0) rule.or-groups[step.index])]
+            (db-read-source-delete-bindings-owned bindings)
+            (when (not next-ok)
+              (return (make [dynamic]Binding) false next-error))
+            (set! bindings next))
+        :else
+          (do
+            (db-read-source-delete-bindings-owned bindings)
+            (return (make [dynamic]Binding) false "DB snapshot source rules currently support non-recursive rule bodies only"))))
+    (return bindings true "")))
+
+(defn db-read-source-bindings-after-rule-call-with-sources [source: DB-Read-Source, sources: []DB-Read-Named-Source, rules: []Rule, call: Rule-Call, binding: Binding] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [out (make [dynamic]Binding)
+        matched false]
+    (for [rule rules]
+      (when (= rule.name call.name)
+        (set! matched true)
+        (let [[initial initial-ok] (db-read-source-bind-rule-args binding call rule)]
+          (if initial-ok
+            (let [[body-bindings body-ok body-error] (db-read-source-bindings-after-rule-body-with-sources source sources rule initial)]
+              (when (not body-ok)
+                (db-read-source-delete-bindings-owned out)
+                (return (make [dynamic]Binding) false body-error))
+              (for [body-binding body-bindings]
+                (let [[merged merged-ok] (db-read-source-merge-rule-output-owned binding call rule body-binding)]
+                  (when merged-ok
+                    (arr.push! out merged))))
+              (db-read-source-delete-bindings-owned body-bindings))
+            (db-read-source-delete-binding-owned initial)))))
+    (if matched
+      (return out true "")
+      (return out false (fmt.tprintf "Unknown rule: %s" call.name)))))
+
 (defn db-read-source-q-query-with-sources-inputs-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, query-value: Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
   (let [[aggregate-clause aggregate-ok] (db-read-source-single-clause-aggregate-query query-value)]
     (when aggregate-ok
@@ -6037,13 +6354,13 @@
           (return (q-db-read-source-single-clause-aggregates aggregate-source query-value source-clause))
           (return (result-set-error source-error))))))
   (when (not (and (> (count query-value.where-steps) 0)
-                  (= (count query-value.rule-calls) 0)
                   (= (count query-value.aggregates) 0)))
     (return (result-set-error "SQLite DB snapshot source currently supports data clauses, predicates, scalar function clauses, ground, get-else, get-some, not/missing?, and or/or-join clauses only")))
   (for [step query-value.where-steps]
     (when (not (or (= step.kind .Clause)
                    (= step.kind .Predicate)
                    (= step.kind .Function)
+                   (= step.kind .RuleCall)
                    (= step.kind .Ground)
                    (= step.kind .GetElse)
                    (= step.kind .GetSome)
@@ -6278,6 +6595,19 @@
             (db-read-source-delete-bindings-owned bindings)
             (when (not next-ok)
               (return (result-set-error next-error)))
+            (set! bindings next))
+        (= step.kind .RuleCall)
+          (let [next (make [dynamic]Binding)]
+            (for [binding bindings]
+              (let [[rule-bindings rule-ok rule-error] (db-read-source-bindings-after-rule-call-with-sources source sources (slice query-value.rules 0) query-value.rule-calls[step.index] binding)]
+                (when (not rule-ok)
+                  (db-read-source-delete-bindings-owned next)
+                  (db-read-source-delete-bindings-owned bindings)
+                  (return (result-set-error rule-error)))
+                (for [rule-binding rule-bindings]
+                  (arr.push! next rule-binding))
+                (delete rule-bindings)))
+            (db-read-source-delete-bindings-owned bindings)
             (set! bindings next))
         (= step.kind .Ground)
           (let [[next next-ok next-error] (db-read-source-bindings-after-ground (slice bindings 0) query-value.grounds[step.index])]

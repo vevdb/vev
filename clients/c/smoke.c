@@ -167,7 +167,7 @@ static const char *mark_seen_tx_fn(void *user, vev_db_t db, int argc, vev_tx_fn_
     snprintf(
         out,
         sizeof(out),
-        "[:db/add %lld :user/seen-label \"%s\"]",
+        "[[:db/add %lld :user/seen-label \"%s\"]]",
         vev_value_int(entity),
         label_text);
     vev_string_free(label_text);
@@ -221,6 +221,7 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     vev_db_t db = NULL;
     vev_result_t result = NULL;
     vev_tx_report_t report = NULL;
+    vev_tx_fn_registry_t tx_fns = NULL;
     vev_u64_array_t tx_ids = NULL;
 
     durable = vev_connect(path);
@@ -394,6 +395,47 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         fprintf(stderr, "unexpected sqlite final row count\n");
         goto cleanup;
     }
+    vev_result_free(result);
+    result = NULL;
+    vev_db_release(db);
+    db = NULL;
+
+    report = vev_connection_transact_edn_report(
+        durable,
+        "[[:db/add 120 :db/ident :mark-seen]"
+        " [:db/add 121 :db/ident :user/seen-label]]");
+    if (!tx_report_ok_or_error("sqlite-tx-fn-ident", report)) {
+        goto cleanup;
+    }
+    vev_tx_report_free(report);
+    report = NULL;
+
+    tx_fns = vev_tx_fn_registry_create();
+    if (tx_fns == NULL ||
+        !vev_tx_fn_registry_register_edn(tx_fns, ":mark-seen", mark_seen_tx_fn, NULL)) {
+        fprintf(stderr, "failed to register sqlite snapshot transaction callback\n");
+        goto cleanup;
+    }
+    db = vev_connection_db(durable);
+    report = vev_with_edn_report_with_tx_fns(
+        db,
+        "[[:db.fn/call :mark-seen 1 \"from-sqlite-with-c\"]]",
+        tx_fns);
+    const char *sqlite_tx_fn_edn = vev_tx_report_edn(report);
+    printf("sqlite-with-tx-fn-callback: %s\n", sqlite_tx_fn_edn);
+    if (!tx_report_ok_or_error("sqlite-with-tx-fn-callback", report) ||
+        strstr(sqlite_tx_fn_edn, "from-sqlite-with-c") == NULL) {
+        fprintf(stderr, "sqlite snapshot transaction callback did not apply returned tx-data\n");
+        vev_string_free(sqlite_tx_fn_edn);
+        goto cleanup;
+    }
+    vev_string_free(sqlite_tx_fn_edn);
+    vev_tx_report_free(report);
+    report = NULL;
+    vev_db_release(db);
+    db = NULL;
+    vev_tx_fn_registry_free(tx_fns);
+    tx_fns = NULL;
 
     ok = 1;
 
@@ -403,6 +445,9 @@ cleanup:
     }
     if (tx_ids != NULL) {
         vev_u64_array_free(tx_ids);
+    }
+    if (tx_fns != NULL) {
+        vev_tx_fn_registry_free(tx_fns);
     }
     if (result != NULL) {
         vev_result_free(result);
@@ -1638,6 +1683,46 @@ int main(void) {
         return 1;
     }
     vev_tx_report_free(with_report);
+
+    vev_tx_fn_registry_t snapshot_tx_fns = vev_tx_fn_registry_create();
+    if (snapshot_tx_fns == NULL ||
+        !vev_tx_fn_registry_register_edn(snapshot_tx_fns, ":mark-seen", mark_seen_tx_fn, NULL)) {
+        fprintf(stderr, "failed to register snapshot transaction callback\n");
+        if (snapshot_tx_fns != NULL) {
+            vev_tx_fn_registry_free(snapshot_tx_fns);
+        }
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+    vev_tx_report_t snapshot_tx_fn_report =
+        vev_with_edn_report_with_tx_fns(
+            snapshot,
+            "[[:db.fn/call :mark-seen 1 \"from-with-c\"]]",
+            snapshot_tx_fns);
+    const char *snapshot_tx_fn_edn = vev_tx_report_edn(snapshot_tx_fn_report);
+    printf("with-tx-fn-callback: %s\n", snapshot_tx_fn_edn);
+    if (!tx_report_ok_or_error("with-tx-fn-callback", snapshot_tx_fn_report) ||
+        strstr(snapshot_tx_fn_edn, "from-with-c") == NULL) {
+        fprintf(stderr, "snapshot transaction callback did not apply returned tx-data\n");
+        vev_string_free(snapshot_tx_fn_edn);
+        vev_tx_report_free(snapshot_tx_fn_report);
+        vev_tx_fn_registry_free(snapshot_tx_fns);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+    vev_string_free(snapshot_tx_fn_edn);
+    vev_tx_report_free(snapshot_tx_fn_report);
+    vev_tx_fn_registry_free(snapshot_tx_fns);
 
     vev_db_t next_db = vev_db_with_edn(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]");
     if (next_db == NULL) {

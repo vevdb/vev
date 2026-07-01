@@ -459,6 +459,15 @@ class Library:
             ctypes.c_char_p,
         ]
         lib.vev_query_prepared_result_with_inputs.restype = ctypes.c_void_p
+        lib.vev_query_prepared_result_with_rules_text_and_inputs.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_query_prepared_result_with_rules_text_and_inputs.restype = (
+            ctypes.c_void_p
+        )
         lib.vev_query_stmt_result.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         lib.vev_query_stmt_result.restype = ctypes.c_void_p
         lib.vev_query_db_stmt_result.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -487,6 +496,15 @@ class Library:
             ctypes.c_char_p,
         ]
         lib.vev_query_db_prepared_result_with_inputs.restype = ctypes.c_void_p
+        lib.vev_query_db_prepared_result_with_rules_text_and_inputs.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_query_db_prepared_result_with_rules_text_and_inputs.restype = (
+            ctypes.c_void_p
+        )
         lib.vev_query_db_prepared_column_batch_with_inputs.argtypes = [
             ctypes.c_void_p,
             ctypes.c_void_p,
@@ -844,6 +862,15 @@ class Connection:
         )
         return Result(self._library, handle)
 
+    def _query_result_with_rules(
+        self, prepared: "PreparedQuery", rules_edn: str, inputs_edn: str = "[]"
+    ) -> "Result":
+        self._require_open()
+        handle = self._library.lib.vev_query_prepared_result_with_rules_text_and_inputs(
+            self._handle, prepared._handle, _bytes(rules_edn), _bytes(inputs_edn)
+        )
+        return Result(self._library, handle)
+
     def _query_stmt(self, stmt: "Statement") -> "Result":
         self._require_open()
         stmt._require_open()
@@ -1028,6 +1055,17 @@ class DB:
         self._require_open()
         handle = self._library.lib.vev_query_db_prepared_result_with_inputs(
             self._handle, prepared._handle, _bytes(inputs_edn)
+        )
+        return Result(self._library, handle)
+
+    def query_with_rules(
+        self, prepared: "PreparedQuery", rules_edn: str, inputs_edn: str = "[]"
+    ) -> "Result":
+        self._require_open()
+        handle = (
+            self._library.lib.vev_query_db_prepared_result_with_rules_text_and_inputs(
+                self._handle, prepared._handle, _bytes(rules_edn), _bytes(inputs_edn)
+            )
         )
         return Result(self._library, handle)
 
@@ -1274,8 +1312,22 @@ class PreparedQuery:
             return conn._query_result(self, inputs_edn)
         return conn.query(self, inputs_edn)
 
+    def query_with_rules(
+        self, conn: Connection | DB, rules_edn: str, inputs_edn: str = "[]"
+    ) -> "Result":
+        self._require_open()
+        if isinstance(conn, Connection):
+            return conn._query_result_with_rules(self, rules_edn, inputs_edn)
+        return conn.query_with_rules(self, rules_edn, inputs_edn)
+
     def rows(self, conn: Connection | DB, inputs_edn: str = "[]") -> list[list[Any]]:
         with self.query(conn, inputs_edn) as result:
+            return result.rows()
+
+    def rows_with_rules(
+        self, conn: Connection | DB, rules_edn: str, inputs_edn: str = "[]"
+    ) -> list[list[Any]]:
+        with self.query_with_rules(conn, rules_edn, inputs_edn) as result:
             return result.rows()
 
     def scalar(self, conn: Connection | DB, inputs_edn: str = "[]") -> Any:

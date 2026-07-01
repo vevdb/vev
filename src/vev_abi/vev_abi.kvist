@@ -100,6 +100,7 @@ ABI_Tx_Builder :: struct {
 
 ABI_Tx_Fn_Registry :: struct {
     entries: [dynamic]vev__Tx_Fn_String,
+    source_entries: [dynamic]vev__Tx_Fn_Source_String,
     slots: [dynamic]int,
 }
 
@@ -127,7 +128,7 @@ ABI_Stmt :: struct {
     query: rawptr,
     inputs: [dynamic]vev__Query_Input,
     pull_pattern_sources: [dynamic]string,
-    sources: [dynamic]vev__DB_Source,
+    sources: [dynamic]vev__DB_Read_Named_Source,
     source_handles: [dynamic]rawptr,
     last_error: string,
 }
@@ -449,12 +450,17 @@ abi_free_tx_builder :: proc(builder: rawptr) {
 abi_alloc_tx_fn_registry :: proc() -> rawptr {
     wrapper := new(ABI_Tx_Fn_Registry)
     wrapper.entries = make([dynamic]vev__Tx_Fn_String)
+    wrapper.source_entries = make([dynamic]vev__Tx_Fn_Source_String)
     wrapper.slots = make([dynamic]int)
     return rawptr(wrapper)
 }
 
 abi_tx_fn_registry_entries_ptr :: proc(registry: rawptr) -> ^[dynamic]vev__Tx_Fn_String {
     return &((^ABI_Tx_Fn_Registry)(registry))^.entries
+}
+
+abi_tx_fn_registry_source_entries_ptr :: proc(registry: rawptr) -> ^[dynamic]vev__Tx_Fn_Source_String {
+    return &((^ABI_Tx_Fn_Registry)(registry))^.source_entries
 }
 
 abi_tx_fn_registry_slots_ptr :: proc(registry: rawptr) -> ^[dynamic]int {
@@ -505,6 +511,7 @@ abi_free_tx_fn_registry :: proc(registry: rawptr) {
         abi_tx_fn_free_slot(slot)
     }
     delete(wrapper.entries)
+    delete(wrapper.source_entries)
     delete(wrapper.slots)
     free(wrapper)
 }
@@ -1154,7 +1161,7 @@ abi_alloc_stmt :: proc(query: rawptr) -> rawptr {
     wrapper.query = query
     wrapper.inputs = make([dynamic]vev__Query_Input)
     wrapper.pull_pattern_sources = make([dynamic]string)
-    wrapper.sources = make([dynamic]vev__DB_Source)
+    wrapper.sources = make([dynamic]vev__DB_Read_Named_Source)
     wrapper.source_handles = make([dynamic]rawptr)
     return rawptr(wrapper)
 }
@@ -1171,7 +1178,7 @@ abi_stmt_pull_pattern_sources_ptr :: proc(stmt: rawptr) -> ^[dynamic]string {
     return &((^ABI_Stmt)(stmt))^.pull_pattern_sources
 }
 
-abi_stmt_sources_ptr :: proc(stmt: rawptr) -> ^[dynamic]vev__DB_Source {
+abi_stmt_sources_ptr :: proc(stmt: rawptr) -> ^[dynamic]vev__DB_Read_Named_Source {
     return &((^ABI_Stmt)(stmt))^.sources
 }
 
@@ -1187,7 +1194,7 @@ abi_stmt_push_input :: proc(stmt: rawptr, input: vev__Query_Input) {
     append(&((^ABI_Stmt)(stmt))^.inputs, input)
 }
 
-abi_stmt_push_source :: proc(stmt: rawptr, source: vev__DB_Source, handle: rawptr) {
+abi_stmt_push_source :: proc(stmt: rawptr, source: vev__DB_Read_Named_Source, handle: rawptr) {
     append(&((^ABI_Stmt)(stmt))^.sources, source)
     append(&((^ABI_Stmt)(stmt))^.source_handles, handle)
 }
@@ -1443,6 +1450,100 @@ abi_free_stmt :: proc(stmt: rawptr) {
             (vev.delete-entity-string-int-triples triples))))))
   (Vev-Column-Batch nil))
 
+(defn- entity-array-from-result [result: vev.Result-Set] -> Vev-U64-Array
+  (when (not result.ok)
+    (return (Vev-U64-Array nil)))
+  (let [entities (make [dynamic]u64 0 (count result.rows))
+        ok true]
+    (for [row result.rows]
+      (let [entity: u64 0
+            entity-ok false]
+        (when (= (count row.values) 1)
+          (let [[resolved resolved-ok] (column-batch-entity-id row.values[0])]
+            (set! entity resolved)
+            (set! entity-ok resolved-ok)))
+        (if (and entity-ok
+                 (= (count row.pulls) 0))
+          (arr.push! entities entity)
+          (set! ok false))))
+    (if ok
+      (Vev-U64-Array (abi-alloc-u64-array entities))
+      (do
+        (delete entities)
+        (Vev-U64-Array nil)))))
+
+(defn- string-array-from-result [result: vev.Result-Set] -> Vev-String-Array
+  (when (not result.ok)
+    (return (Vev-String-Array nil)))
+  (let [values (make [dynamic]string 0 (count result.rows))
+        ok true]
+    (for [row result.rows]
+      (if (and (= (count row.values) 1)
+               (= (count row.pulls) 0)
+               (or (= row.values[0].kind .String)
+                   (= row.values[0].kind .Keyword)
+                   (= row.values[0].kind .Symbol)
+                   (= row.values[0].kind .Uuid)))
+        (arr.push! values (string-owned row.values[0].text))
+        (set! ok false)))
+    (if ok
+      (Vev-String-Array (abi-alloc-string-array values))
+      (do
+        (for [text values]
+          (delete text))
+        (delete values)
+        (Vev-String-Array nil)))))
+
+(defn- entity-int-pairs-from-result [result: vev.Result-Set] -> Vev-Entity-Int-Pairs
+  (when (not result.ok)
+    (return (Vev-Entity-Int-Pairs nil)))
+  (let [pairs (vev.empty-entity-int-pair-columns)
+        ok true]
+    (for [row result.rows]
+      (let [entity: u64 0
+            entity-ok false]
+        (when (= (count row.values) 2)
+          (let [[resolved resolved-ok] (column-batch-entity-id row.values[0])]
+            (set! entity resolved)
+            (set! entity-ok resolved-ok)))
+        (if (and entity-ok
+                 (= (count row.pulls) 0)
+                 (= row.values[1].kind .Int))
+          (vev.append-entity-int-pair-column! (addr pairs) entity row.values[1].int-value)
+          (set! ok false))))
+    (if ok
+      (Vev-Entity-Int-Pairs (abi-alloc-entity-int-pairs pairs))
+      (do
+        (vev.delete-entity-int-pair-columns pairs)
+        (Vev-Entity-Int-Pairs nil)))))
+
+(defn- entity-string-int-triples-from-result [result: vev.Result-Set] -> Vev-Entity-String-Int-Triples
+  (when (not result.ok)
+    (return (Vev-Entity-String-Int-Triples nil)))
+  (let [triples (vev.empty-entity-string-int-triples)
+        ok true]
+    (for [row result.rows]
+      (let [entity: u64 0
+            entity-ok false]
+        (when (= (count row.values) 3)
+          (let [[resolved resolved-ok] (column-batch-entity-id row.values[0])]
+            (set! entity resolved)
+            (set! entity-ok resolved-ok)))
+        (if (and entity-ok
+                 (= (count row.pulls) 0)
+                 (or (= row.values[1].kind .String)
+                     (= row.values[1].kind .Keyword)
+                     (= row.values[1].kind .Symbol)
+                     (= row.values[1].kind .Uuid))
+                 (= row.values[2].kind .Int))
+          (vev.append-owned-entity-string-int-triple! (addr triples) entity row.values[1].text row.values[2].int-value)
+          (set! ok false))))
+    (if ok
+      (Vev-Entity-String-Int-Triples (abi-alloc-entity-string-int-triples triples))
+      (do
+        (vev.delete-entity-string-int-triples triples)
+        (Vev-Entity-String-Int-Triples nil)))))
+
 (defn- value-ptr [value: Vev-Value] -> ^vev.Value
   (abi-value-ptr (rawptr value)))
 
@@ -1464,6 +1565,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- tx-fn-registry-entries-ptr [registry: Vev-Tx-Fn-Registry] -> ^[dynamic]vev.Tx-Fn-String
   (abi-tx-fn-registry-entries-ptr (rawptr registry)))
 
+(defn- tx-fn-registry-source-entries-ptr [registry: Vev-Tx-Fn-Registry] -> ^[dynamic]vev.Tx-Fn-Source-String
+  (abi-tx-fn-registry-source-entries-ptr (rawptr registry)))
+
 (defn- tx-fn-registry-slots-ptr [registry: Vev-Tx-Fn-Registry] -> ^[dynamic]int
   (abi-tx-fn-registry-slots-ptr (rawptr registry)))
 
@@ -1479,7 +1583,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- stmt-pull-pattern-sources-ptr [stmt: Vev-Stmt] -> ^[dynamic]string
   (abi-stmt-pull-pattern-sources-ptr (rawptr stmt)))
 
-(defn- stmt-sources-ptr [stmt: Vev-Stmt] -> ^[dynamic]vev.DB-Source
+(defn- stmt-sources-ptr [stmt: Vev-Stmt] -> ^[dynamic]vev.DB-Read-Named-Source
   (abi-stmt-sources-ptr (rawptr stmt)))
 
 (defn- stmt-source-handles-ptr [stmt: Vev-Stmt] -> ^[dynamic]rawptr
@@ -1640,8 +1744,8 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (for [handle source-handles^]
       (let [storage (abi-release-db handle)]
         (when (not (= storage nil))
-          (let [ptr (abi-db-storage-ptr storage)]
-            (delete-db-owned ptr^)
+          (let [ptr (abi-store-db-storage-ptr storage)]
+            (vev.close-store-db! ptr)
             (abi-free-db-storage storage)))))
     (resize source-handles 0)
     (stmt-clear-error! stmt)))
@@ -1667,10 +1771,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- stmt-push-db-source! [stmt: Vev-Stmt, name: string, db: Vev-DB] -> bool
   (let [retained (abi-retain-db (rawptr db))
         retained-db (Vev-DB retained)
-        [db-value db-ok] (resident-db-ptr retained-db)]
-    (if db-ok
+        store (store-db-ptr retained-db)
+        [source source-ok _] (vev.store-db-read-source store)]
+    (if source-ok
       (do
-        (abi-stmt-push-source (rawptr stmt) (vev.db-source name db-value^) retained)
+        (abi-stmt-push-source (rawptr stmt) (vev.db-read-named-source name source) retained)
         true)
       (do
         (release-db-handle-owned retained-db)
@@ -1724,6 +1829,44 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- abi-tx-fn-slot-14 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 14 db args))
 (defn- abi-tx-fn-slot-15 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 15 db args))
 
+(defn- abi-tx-fn-source-dispatch [slot: int, source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result
+  (let [[db db-ok db-error] (vev.db-read-source-materialize-db source)]
+    (when (not db-ok)
+      (return (vev.tx-fn-source-error db-error)))
+    (let [db-handle (Vev-DB (abi-alloc-db
+                              (vev.Store-DB {kind: .Resident
+                                             resident: db})))
+          result-c (abi-tx-fn-call slot (rawptr db-handle) (count args) (tx-fn-args-ptr args))]
+      (defer (release-db-handle-owned db-handle))
+      (when (= result-c nil)
+        (return (vev.tx-fn-source-error "transaction callback returned null")))
+      (let [result-text (text-from-c result-c)
+            tx-data (make [dynamic]vev.Tx-Data) :defer
+            [ok error] (vev.parse-tx-text! (addr tx-data) result-text)]
+        (when (not ok)
+          (delete result-text)
+          (return (vev.tx-fn-source-error error)))
+        (let [out (vev.tx-fn-source-ok (slice tx-data 0))]
+          (delete result-text)
+          out)))))
+
+(defn- abi-tx-fn-source-slot-0 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 0 source args))
+(defn- abi-tx-fn-source-slot-1 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 1 source args))
+(defn- abi-tx-fn-source-slot-2 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 2 source args))
+(defn- abi-tx-fn-source-slot-3 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 3 source args))
+(defn- abi-tx-fn-source-slot-4 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 4 source args))
+(defn- abi-tx-fn-source-slot-5 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 5 source args))
+(defn- abi-tx-fn-source-slot-6 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 6 source args))
+(defn- abi-tx-fn-source-slot-7 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 7 source args))
+(defn- abi-tx-fn-source-slot-8 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 8 source args))
+(defn- abi-tx-fn-source-slot-9 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 9 source args))
+(defn- abi-tx-fn-source-slot-10 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 10 source args))
+(defn- abi-tx-fn-source-slot-11 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 11 source args))
+(defn- abi-tx-fn-source-slot-12 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 12 source args))
+(defn- abi-tx-fn-source-slot-13 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 13 source args))
+(defn- abi-tx-fn-source-slot-14 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 14 source args))
+(defn- abi-tx-fn-source-slot-15 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 15 source args))
+
 (defn- tx-fn-slot-entry [ident: string, slot: int] -> vev.Tx-Fn-String
   (cond
     (= slot 0) (vev.tx-fn-values ident abi-tx-fn-slot-0)
@@ -1742,6 +1885,25 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (= slot 13) (vev.tx-fn-values ident abi-tx-fn-slot-13)
     (= slot 14) (vev.tx-fn-values ident abi-tx-fn-slot-14)
     :else (vev.tx-fn-values ident abi-tx-fn-slot-15)))
+
+(defn- tx-fn-source-slot-entry [ident: string, slot: int] -> vev.Tx-Fn-Source-String
+  (cond
+    (= slot 0) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-0)
+    (= slot 1) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-1)
+    (= slot 2) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-2)
+    (= slot 3) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-3)
+    (= slot 4) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-4)
+    (= slot 5) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-5)
+    (= slot 6) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-6)
+    (= slot 7) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-7)
+    (= slot 8) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-8)
+    (= slot 9) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-9)
+    (= slot 10) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-10)
+    (= slot 11) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-11)
+    (= slot 12) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-12)
+    (= slot 13) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-13)
+    (= slot 14) (vev.tx-fn-source-values ident abi-tx-fn-source-slot-14)
+    :else (vev.tx-fn-source-values ident abi-tx-fn-source-slot-15)))
 
 (defn- datom-owned [datom: vev.Datom] -> vev.Datom
   (vev.Datom {e: datom.e
@@ -1808,7 +1970,15 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [ptr (result-ptr result)]
     (set! ptr^ query-result.result)
     (result-set-owns-values! result (vev.query-result-owns-values? query-result))
-    (result-finish-store-db result snapshot)))
+    (if ptr^.ok
+      (result-finish-store-db result snapshot)
+      result)))
+
+(defn- result-finish-query-result [result: Vev-Result, query-result: vev.Query-Result, db: vev.DB] -> Vev-Result
+  (let [ptr (result-ptr result)]
+    (set! ptr^ query-result.result)
+    (result-set-owns-values! result (vev.query-result-owns-values? query-result))
+    (result-finish result db)))
 
 (defn- result-delete-owned [result: Vev-Result]
   (let [ptr (result-ptr result)]
@@ -1832,6 +2002,36 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- result-finish-visit-delete [result: Vev-Result, db: vev.DB, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
   (result-finish result db)
+  (let [ptr (result-ptr result)]
+    (when (not ptr^.ok)
+      (stmt-set-error! stmt ptr^.error)
+      (result-delete-owned result)
+      (return false))
+    (when (not (abi-result-visit (rawptr result) visitor user))
+      (stmt-set-error! stmt "result visitor cancelled")
+      (result-delete-owned result)
+      (return false))
+    (stmt-clear-error! stmt)
+    (result-delete-owned result)
+    true))
+
+(defn- result-finish-query-result-visit-delete [result: Vev-Result, query-result: vev.Query-Result, db: vev.DB, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
+  (result-finish-query-result result query-result db)
+  (let [ptr (result-ptr result)]
+    (when (not ptr^.ok)
+      (stmt-set-error! stmt ptr^.error)
+      (result-delete-owned result)
+      (return false))
+    (when (not (abi-result-visit (rawptr result) visitor user))
+      (stmt-set-error! stmt "result visitor cancelled")
+      (result-delete-owned result)
+      (return false))
+    (stmt-clear-error! stmt)
+    (result-delete-owned result)
+    true))
+
+(defn- result-finish-query-result-store-db-visit-delete [result: Vev-Result, query-result: vev.Query-Result, snapshot: ^vev.Store-DB, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
+  (result-finish-query-result-store-db result query-result snapshot)
   (let [ptr (result-ptr result)]
     (when (not ptr^.ok)
       (stmt-set-error! stmt ptr^.error)
@@ -2165,10 +2365,13 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (odin "context = runtime.default_context()")
   (when (= (rawptr registry) nil)
     (return))
-  (let [entries (tx-fn-registry-entries-ptr registry)]
+  (let [entries (tx-fn-registry-entries-ptr registry)
+        source-entries (tx-fn-registry-source-entries-ptr registry)]
     (for [entry entries^]
-      (delete entry.ident)))
-  (abi-free-tx-fn-registry (rawptr registry)))
+      (delete entry.ident))
+    (for [entry source-entries^]
+      (delete entry.ident))
+    (abi-free-tx-fn-registry (rawptr registry))))
 
 @export
 (defn vev_tx_fn_registry_register_edn :abi "c" [registry: Vev-Tx-Fn-Registry, ident: cstring, callback: rawptr, user: rawptr] -> bool
@@ -2176,17 +2379,22 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr registry) nil) (= ident nil) (= callback nil))
     (return false))
   (let [ident-text (text-from-c ident)
-        entries (tx-fn-registry-entries-ptr registry)]
+        source-ident (text-from-c ident)
+        entries (tx-fn-registry-entries-ptr registry)
+        source-entries (tx-fn-registry-source-entries-ptr registry)]
     (for [entry entries^]
       (when (= entry.ident ident-text)
+        (delete source-ident)
         (delete ident-text)
         (return false)))
     (let [slot (abi-tx-fn-alloc-slot callback user)]
       (when (< slot 0)
+        (delete source-ident)
         (delete ident-text)
         (return false))
       (let [slots (tx-fn-registry-slots-ptr registry)]
       (arr.push! entries^ (tx-fn-slot-entry ident-text slot))
+      (arr.push! source-entries^ (tx-fn-source-slot-entry source-ident slot))
       (arr.push! slots^ slot)
       true))))
 
@@ -2209,12 +2417,20 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= tx-text nil) (= (rawptr registry) nil))
     (return (Vev-Tx-Report nil)))
   (let [tx (text-from-c tx-text)
-        db-ptr-value (db-ptr db)
-        entries (tx-fn-registry-entries-ptr registry)
-        report (vev.with-text-with-string-fns db-ptr-value^ tx (slice entries^ 0))
-        out (tx-report-handle-from-report report)]
-    (delete tx)
-    out))
+        store-ptr-value (store-db-ptr db)
+        [db-ptr-value db-ok] (resident-db-ptr db)]
+    (when db-ok
+      (let [entries (tx-fn-registry-entries-ptr registry)
+            report (vev.with-text-with-string-fns db-ptr-value^ tx (slice entries^ 0))
+            out (tx-report-handle-from-report report)]
+        (delete tx)
+        (return out)))
+    (let [entries (tx-fn-registry-source-entries-ptr registry)
+          report (vev.with-store-db-report-text-with-source-string-fns store-ptr-value tx (slice entries^ 0))
+          out (tx-report-handle-from-store-report report)]
+      (vev.delete-store-tx-report report)
+      (delete tx)
+      out)))
 
 @export
 (defn vev_tx_report_free :abi "c" [report: Vev-Tx-Report]
@@ -2889,24 +3105,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
         sources (stmt-sources-ptr stmt)
-        result (abi-alloc-result)
-        result-ptr-value (result-ptr (Vev-Result result))]
-    (set! result-ptr-value^ (vev.q-prepared-with-sources conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
-    (result-finish (Vev-Result result) conn-ptr-value^.db)))
+        result (abi-alloc-result)]
+    (if (> (count sources^) 0)
+      (let [source (vev.resident-db-read-source (addr conn-ptr-value^.db))
+            query-result (vev.q-result-prepared-db-read-source-with-sources-inputs-and-fns source (slice sources^ 0) query-ptr-value^ (slice inputs^ 0) ([]vev.Native-Query-Fn []))]
+        (result-finish-query-result (Vev-Result result) query-result conn-ptr-value^.db))
+      (let [result-ptr-value (result-ptr (Vev-Result result))]
+        (set! result-ptr-value^ (vev.q-prepared-with-inputs conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0)))
+        (result-finish (Vev-Result result) conn-ptr-value^.db)))))
 
 @export
 (defn vev_query_db_stmt_result :abi "c" [db: Vev-DB, stmt: Vev-Stmt] -> Vev-Result
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= (rawptr stmt) nil))
     (return (Vev-Result nil)))
-  (let [db-ptr-value (db-ptr db)
+  (let [store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
         sources (stmt-sources-ptr stmt)
         result (abi-alloc-result)
-        result-ptr-value (result-ptr (Vev-Result result))]
-    (set! result-ptr-value^ (vev.q-prepared-with-sources db-ptr-value^ query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
-    (result-finish (Vev-Result result) db-ptr-value^)))
+        [source source-ok source-error] (vev.store-db-read-source store-ptr-value)]
+    (if source-ok
+      (let [query-result (vev.q-result-prepared-db-read-source-with-sources-inputs-and-fns source (slice sources^ 0) query-ptr-value^ (slice inputs^ 0) ([]vev.Native-Query-Fn []))]
+        (result-finish-query-result-store-db (Vev-Result result) query-result store-ptr-value))
+      (let [query-result (vev.query-result-owned-values (vev.result-set-error source-error))]
+        (result-finish-query-result-store-db (Vev-Result result) query-result store-ptr-value)))))
 
 @export
 (defn vev_query_stmt_column_batch :abi "c" [conn: Vev-Conn, stmt: Vev-Stmt] -> Vev-Column-Batch
@@ -2920,9 +3143,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (when (not query-ptr-value^.ok)
       (return (Vev-Column-Batch nil)))
     (when (> (count sources^) 0)
-      (let [result (vev.q-prepared-with-sources conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0) (slice sources^ 0))
-            out (column-batch-from-result result)]
-        (vev.delete-result-set-shallow result)
+      (let [source (vev.resident-db-read-source (addr conn-ptr-value^.db))
+            query-result (vev.q-result-prepared-db-read-source-with-sources-inputs-and-fns source (slice sources^ 0) query-ptr-value^ (slice inputs^ 0) ([]vev.Native-Query-Fn []))
+            out (column-batch-from-result query-result.result)]
+        (vev.delete-query-result query-result)
         (return out)))
     (column-batch-from-query-inputs conn-ptr-value^.db query-ptr-value^.query (slice inputs^ 0))))
 
@@ -2931,18 +3155,19 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= (rawptr stmt) nil))
     (return (Vev-Column-Batch nil)))
-  (let [db-ptr-value (db-ptr db)
+  (let [store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
         sources (stmt-sources-ptr stmt)]
     (when (not query-ptr-value^.ok)
       (return (Vev-Column-Batch nil)))
-    (when (> (count sources^) 0)
-      (let [result (vev.q-prepared-with-sources db-ptr-value^ query-ptr-value^ (slice inputs^ 0) (slice sources^ 0))
-            out (column-batch-from-result result)]
-        (vev.delete-result-set-shallow result)
-        (return out)))
-    (column-batch-from-query-inputs db-ptr-value^ query-ptr-value^.query (slice inputs^ 0))))
+    (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
+      (when (not source-ok)
+        (return (Vev-Column-Batch nil)))
+      (let [query-result (vev.q-result-prepared-db-read-source-with-sources-inputs-and-fns source (slice sources^ 0) query-ptr-value^ (slice inputs^ 0) ([]vev.Native-Query-Fn []))
+            out (column-batch-from-result query-result.result)]
+        (vev.delete-query-result query-result)
+        out))))
 
 @export
 (defn vev_query_stmt_visit :abi "c" [conn: Vev-Conn, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
@@ -2953,24 +3178,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
         sources (stmt-sources-ptr stmt)
-        result (abi-alloc-result)
-        result-ptr-value (result-ptr (Vev-Result result))]
-    (set! result-ptr-value^ (vev.q-prepared-with-sources conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
-    (result-finish-visit-delete (Vev-Result result) conn-ptr-value^.db stmt visitor user)))
+        result (abi-alloc-result)]
+    (if (> (count sources^) 0)
+      (let [source (vev.resident-db-read-source (addr conn-ptr-value^.db))
+            query-result (vev.q-result-prepared-db-read-source-with-sources-inputs-and-fns source (slice sources^ 0) query-ptr-value^ (slice inputs^ 0) ([]vev.Native-Query-Fn []))]
+        (result-finish-query-result-visit-delete (Vev-Result result) query-result conn-ptr-value^.db stmt visitor user))
+      (let [result-ptr-value (result-ptr (Vev-Result result))]
+        (set! result-ptr-value^ (vev.q-prepared-with-inputs conn-ptr-value^.db query-ptr-value^ (slice inputs^ 0)))
+        (result-finish-visit-delete (Vev-Result result) conn-ptr-value^.db stmt visitor user)))))
 
 @export
 (defn vev_query_db_stmt_visit :abi "c" [db: Vev-DB, stmt: Vev-Stmt, visitor: rawptr, user: rawptr] -> bool
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= (rawptr stmt) nil) (= visitor nil))
     (return false))
-  (let [db-ptr-value (db-ptr db)
+  (let [store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr (stmt-query stmt))
         inputs (stmt-inputs-ptr stmt)
         sources (stmt-sources-ptr stmt)
         result (abi-alloc-result)
-        result-ptr-value (result-ptr (Vev-Result result))]
-    (set! result-ptr-value^ (vev.q-prepared-with-sources db-ptr-value^ query-ptr-value^ (slice inputs^ 0) (slice sources^ 0)))
-    (result-finish-visit-delete (Vev-Result result) db-ptr-value^ stmt visitor user)))
+        [source source-ok source-error] (vev.store-db-read-source store-ptr-value)]
+    (if source-ok
+      (let [query-result (vev.q-result-prepared-db-read-source-with-sources-inputs-and-fns source (slice sources^ 0) query-ptr-value^ (slice inputs^ 0) ([]vev.Native-Query-Fn []))]
+        (result-finish-query-result-store-db-visit-delete (Vev-Result result) query-result store-ptr-value stmt visitor user))
+      (let [query-result (vev.query-result-owned-values (vev.result-set-error source-error))]
+        (result-finish-query-result-store-db-visit-delete (Vev-Result result) query-result store-ptr-value stmt visitor user)))))
 
 @export
 (defn vev_query_prepared :abi "c" [conn: Vev-Conn, query: Vev-Prepared-Query] -> cstring
@@ -3093,21 +3325,29 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Result nil)))
   (let [rules-text-value (text-from-c rules-text)
         inputs-text-value (text-from-c inputs-text)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr query)
         rules (vev.parse-rules-text rules-text-value)
         result (abi-alloc-result)
-        result-ptr-value (result-ptr (Vev-Result result))]
-    (if query-ptr-value^.ok
-      (let [[inputs input-ok input-error] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
-        (if input-ok
-          (set! result-ptr-value^ (vev.q-prepared-with-rules db-ptr-value^ query-ptr-value^ rules (slice inputs 0)))
-          (set! result-ptr-value^ (vev.result-set-error input-error))))
-      (set! result-ptr-value^ (vev.result-set-error query-ptr-value^.error)))
+        [source source-ok source-error] (vev.store-db-read-source store-ptr-value)]
+    (if source-ok
+      (if query-ptr-value^.ok
+        (let [[inputs input-ok input-error] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+          (if input-ok
+            (let [query-result (vev.q-result-prepared-db-read-source-with-rules source query-ptr-value^ rules (slice inputs 0))]
+              (delete inputs)
+              (result-finish-query-result-store-db (Vev-Result result) query-result store-ptr-value))
+            (let [query-result (vev.query-result-owned-values (vev.result-set-error input-error))]
+              (delete inputs)
+              (result-finish-query-result-store-db (Vev-Result result) query-result store-ptr-value))))
+        (let [query-result (vev.query-result-owned-values (vev.result-set-error query-ptr-value^.error))]
+          (result-finish-query-result-store-db (Vev-Result result) query-result store-ptr-value)))
+      (let [query-result (vev.query-result-owned-values (vev.result-set-error source-error))]
+        (result-finish-query-result-store-db (Vev-Result result) query-result store-ptr-value)))
     (vev.delete-prepared-rules-shallow rules)
     (delete rules-text-value)
     (delete inputs-text-value)
-    (result-finish (Vev-Result result) db-ptr-value^)))
+    (Vev-Result result)))
 
 @export
 (defn vev_query_db_prepared_entity_column_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-U64-Array
@@ -3115,29 +3355,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
     (return (Vev-U64-Array nil)))
   (let [inputs-text-value (text-from-c inputs-text)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr query)]
     (when (not query-ptr-value^.ok)
       (delete inputs-text-value)
       (return (Vev-U64-Array nil)))
-    (when (= inputs-text-value "[]")
-      (delete inputs-text-value)
-      (let [[entities entity-ok] (vev.q-query-entity-column db-ptr-value^ query-ptr-value^.query ([]vev.Query-Input []))]
-        (when (not entity-ok)
-          (delete entities)
-          (return (Vev-U64-Array nil)))
-        (return (Vev-U64-Array (abi-alloc-u64-array entities)))))
-    (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
-      (delete inputs-text-value)
-      (when (not input-ok)
-        (delete inputs)
+    (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
+      (when (not source-ok)
+        (delete inputs-text-value)
         (return (Vev-U64-Array nil)))
-      (let [[entities entity-ok] (vev.q-query-entity-column db-ptr-value^ query-ptr-value^.query (slice inputs 0))]
-        (delete inputs)
-        (when (not entity-ok)
-          (delete entities)
+      (when (= inputs-text-value "[]")
+        (delete inputs-text-value)
+        (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
+              out (entity-array-from-result query-result.result)]
+          (vev.delete-query-result query-result)
+          (return out)))
+      (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+        (delete inputs-text-value)
+        (when (not input-ok)
+          (delete inputs)
           (return (Vev-U64-Array nil)))
-        (Vev-U64-Array (abi-alloc-u64-array entities))))))
+        (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
+              out (entity-array-from-result query-result.result)]
+          (delete inputs)
+          (vev.delete-query-result query-result)
+          out)))))
 
 @export
 (defn vev_query_db_prepared_string_column_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-String-Array
@@ -3145,29 +3387,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
     (return (Vev-String-Array nil)))
   (let [inputs-text-value (text-from-c inputs-text)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr query)]
     (when (not query-ptr-value^.ok)
       (delete inputs-text-value)
       (return (Vev-String-Array nil)))
-    (when (= inputs-text-value "[]")
-      (delete inputs-text-value)
-      (let [[values values-ok] (vev.q-query-string-column db-ptr-value^ query-ptr-value^.query ([]vev.Query-Input []))]
-        (when (not values-ok)
-          (delete values)
-          (return (Vev-String-Array nil)))
-        (return (Vev-String-Array (abi-alloc-string-array values)))))
-    (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
-      (delete inputs-text-value)
-      (when (not input-ok)
-        (delete inputs)
+    (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
+      (when (not source-ok)
+        (delete inputs-text-value)
         (return (Vev-String-Array nil)))
-      (let [[values values-ok] (vev.q-query-string-column db-ptr-value^ query-ptr-value^.query (slice inputs 0))]
-        (delete inputs)
-        (when (not values-ok)
-          (delete values)
+      (when (= inputs-text-value "[]")
+        (delete inputs-text-value)
+        (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
+              out (string-array-from-result query-result.result)]
+          (vev.delete-query-result query-result)
+          (return out)))
+      (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+        (delete inputs-text-value)
+        (when (not input-ok)
+          (delete inputs)
           (return (Vev-String-Array nil)))
-        (Vev-String-Array (abi-alloc-string-array values))))))
+        (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
+              out (string-array-from-result query-result.result)]
+          (delete inputs)
+          (vev.delete-query-result query-result)
+          out)))))
 
 @export
 (defn vev_u64_array_free :abi "c" [array: Vev-U64-Array]
@@ -3219,29 +3463,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
     (return (Vev-Entity-Int-Pairs nil)))
   (let [inputs-text-value (text-from-c inputs-text)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr query)]
     (when (not query-ptr-value^.ok)
       (delete inputs-text-value)
       (return (Vev-Entity-Int-Pairs nil)))
-    (when (= inputs-text-value "[]")
-      (delete inputs-text-value)
-      (let [[columns pair-ok] (vev.q-query-entity-int-pair-columns db-ptr-value^ query-ptr-value^.query ([]vev.Query-Input []))]
-        (when (not pair-ok)
-          (vev.delete-entity-int-pair-columns columns)
-          (return (Vev-Entity-Int-Pairs nil)))
-        (return (Vev-Entity-Int-Pairs (abi-alloc-entity-int-pairs columns)))))
-    (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
-      (delete inputs-text-value)
-      (when (not input-ok)
-        (delete inputs)
+    (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
+      (when (not source-ok)
+        (delete inputs-text-value)
         (return (Vev-Entity-Int-Pairs nil)))
-      (let [[columns pair-ok] (vev.q-query-entity-int-pair-columns db-ptr-value^ query-ptr-value^.query (slice inputs 0))]
-        (delete inputs)
-        (when (not pair-ok)
-          (vev.delete-entity-int-pair-columns columns)
+      (when (= inputs-text-value "[]")
+        (delete inputs-text-value)
+        (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
+              out (entity-int-pairs-from-result query-result.result)]
+          (vev.delete-query-result query-result)
+          (return out)))
+      (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+        (delete inputs-text-value)
+        (when (not input-ok)
+          (delete inputs)
           (return (Vev-Entity-Int-Pairs nil)))
-        (Vev-Entity-Int-Pairs (abi-alloc-entity-int-pairs columns))))))
+        (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
+              out (entity-int-pairs-from-result query-result.result)]
+          (delete inputs)
+          (vev.delete-query-result query-result)
+          out)))))
 
 @export
 (defn vev_query_db_prepared_profile_edn_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> cstring
@@ -3249,14 +3495,14 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
     (return (c-string-owned "[:vev/error \"null db, query, or inputs\"]")))
   (let [inputs-text-value (text-from-c inputs-text)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr query)]
     (when (not query-ptr-value^.ok)
       (delete inputs-text-value)
       (return (c-string-owned query-ptr-value^.error)))
     (when (= inputs-text-value "[]")
       (delete inputs-text-value)
-      (let [profiled (vev.q-prepared-profiled db-ptr-value^ query-ptr-value^)
+      (let [profiled (vev.q-profiled-store-db-prepared store-ptr-value query-ptr-value^)
             value (vev.query-stats-value profiled.stats)
             text (vev.value-serializable-text value)
             out (c-string-owned text)]
@@ -3268,14 +3514,18 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (when (not input-ok)
         (delete inputs)
         (return (c-string-owned error)))
-      (let [profiled (vev.q-prepared-profiled-with-inputs db-ptr-value^ query-ptr-value^ (slice inputs 0))
-            value (vev.query-stats-value profiled.stats)
-            text (vev.value-serializable-text value)
-            out (c-string-owned text)]
-        (delete inputs)
-        (vev.delete-value-containers-shallow value)
-        (vev.delete-profiled-result-set-shallow profiled)
-        out))))
+      (let [[source source-ok source-error] (vev.store-db-read-source store-ptr-value)]
+        (when (not source-ok)
+          (delete inputs)
+          (return (c-string-owned source-error)))
+        (let [profiled (vev.q-prepared-db-read-source-profiled-with-inputs source query-ptr-value^ (slice inputs 0))
+              value (vev.query-stats-value profiled.stats)
+              text (vev.value-serializable-text value)
+              out (c-string-owned text)]
+          (delete inputs)
+          (vev.delete-value-containers-shallow value)
+          (vev.delete-profiled-result-set-shallow profiled)
+          out)))))
 
 @export
 (defn vev_entity_int_pairs_free :abi "c" [array: Vev-Entity-Int-Pairs]
@@ -3313,29 +3563,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
     (return (Vev-Entity-String-Int-Triples nil)))
   (let [inputs-text-value (text-from-c inputs-text)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr query)]
     (when (not query-ptr-value^.ok)
       (delete inputs-text-value)
       (return (Vev-Entity-String-Int-Triples nil)))
-    (when (= inputs-text-value "[]")
-      (delete inputs-text-value)
-      (let [[columns triple-ok] (vev.q-query-entity-string-int-triples db-ptr-value^ query-ptr-value^.query ([]vev.Query-Input []))]
-        (when (not triple-ok)
-          (vev.delete-entity-string-int-triples columns)
-          (return (Vev-Entity-String-Int-Triples nil)))
-        (return (Vev-Entity-String-Int-Triples (abi-alloc-entity-string-int-triples columns)))))
-    (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
-      (delete inputs-text-value)
-      (when (not input-ok)
-        (delete inputs)
+    (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
+      (when (not source-ok)
+        (delete inputs-text-value)
         (return (Vev-Entity-String-Int-Triples nil)))
-      (let [[columns triple-ok] (vev.q-query-entity-string-int-triples db-ptr-value^ query-ptr-value^.query (slice inputs 0))]
-        (delete inputs)
-        (when (not triple-ok)
-          (vev.delete-entity-string-int-triples columns)
+      (when (= inputs-text-value "[]")
+        (delete inputs-text-value)
+        (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
+              out (entity-string-int-triples-from-result query-result.result)]
+          (vev.delete-query-result query-result)
+          (return out)))
+      (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+        (delete inputs-text-value)
+        (when (not input-ok)
+          (delete inputs)
           (return (Vev-Entity-String-Int-Triples nil)))
-        (Vev-Entity-String-Int-Triples (abi-alloc-entity-string-int-triples columns))))))
+        (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
+              out (entity-string-int-triples-from-result query-result.result)]
+          (delete inputs)
+          (vev.delete-query-result query-result)
+          out)))))
 
 @export
 (defn vev_query_db_prepared_column_batch_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-Column-Batch
@@ -3343,22 +3595,31 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))
     (return (Vev-Column-Batch nil)))
   (let [inputs-text-value (text-from-c inputs-text)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         query-ptr-value (prepared-query-ptr query)]
     (when (not query-ptr-value^.ok)
       (delete inputs-text-value)
       (return (Vev-Column-Batch nil)))
-    (when (= inputs-text-value "[]")
-      (delete inputs-text-value)
-      (return (column-batch-from-query-inputs db-ptr-value^ query-ptr-value^.query ([]vev.Query-Input []))))
-    (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
-      (delete inputs-text-value)
-      (when (not input-ok)
-        (delete inputs)
+    (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
+      (when (not source-ok)
+        (delete inputs-text-value)
         (return (Vev-Column-Batch nil)))
-      (let [out (column-batch-from-query-inputs db-ptr-value^ query-ptr-value^.query (slice inputs 0))]
-        (delete inputs)
-        out))))
+      (when (= inputs-text-value "[]")
+        (delete inputs-text-value)
+        (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
+              out (column-batch-from-result query-result.result)]
+          (vev.delete-query-result query-result)
+          (return out)))
+      (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+        (delete inputs-text-value)
+        (when (not input-ok)
+          (delete inputs)
+          (return (Vev-Column-Batch nil)))
+        (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
+              out (column-batch-from-result query-result.result)]
+          (delete inputs)
+          (vev.delete-query-result query-result)
+          out)))))
 
 @export
 (defn vev_column_batch_free :abi "c" [batch: Vev-Column-Batch]
@@ -3499,10 +3760,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= (rawptr pattern) nil))
     (return (Vev-Value-Handle nil)))
-  (let [db-ptr-value (db-ptr db)
+  (let [store-ptr-value (store-db-ptr db)
         pattern-ptr (prepared-pull-pattern-ptr pattern)
-        value (vev.pull-prepared-value db-ptr-value^ pattern-ptr^ entity)]
-    (value-handle-from-value value)))
+        [value value-ok _] (vev.pull-store-db-value-prepared store-ptr-value pattern-ptr^ entity)]
+    (if value-ok
+      (value-handle-from-value value)
+      (Vev-Value-Handle nil))))
 
 @export
 (defn vev_pull_lookup_ref_string_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, value: cstring] -> Vev-Value-Handle
@@ -3512,9 +3775,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [pattern (text-from-c pattern-text)
         attr-text (text-from-c attr)
         value-text (text-from-c value)
-        db-ptr-value (db-ptr db)
-        pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-string value-text))
-        out (value-handle-from-value pulled)]
+        store-ptr-value (store-db-ptr db)
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-text store-ptr-value pattern attr-text (vev.value-string value-text))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete pattern)
     (delete attr-text)
     (delete value-text)
@@ -3527,10 +3792,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Value-Handle nil)))
   (let [attr-text (text-from-c attr)
         value-text (text-from-c value)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         pattern-ptr (prepared-pull-pattern-ptr pattern)
-        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-string value-text))
-        out (value-handle-from-value pulled)]
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-prepared store-ptr-value pattern-ptr^ attr-text (vev.value-string value-text))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete attr-text)
     (delete value-text)
     out))
@@ -3543,9 +3810,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [pattern (text-from-c pattern-text)
         attr-text (text-from-c attr)
         value-text (text-from-c value)
-        db-ptr-value (db-ptr db)
-        pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-keyword value-text))
-        out (value-handle-from-value pulled)]
+        store-ptr-value (store-db-ptr db)
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-text store-ptr-value pattern attr-text (vev.value-keyword value-text))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete pattern)
     (delete attr-text)
     (delete value-text)
@@ -3558,10 +3827,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Value-Handle nil)))
   (let [attr-text (text-from-c attr)
         value-text (text-from-c value)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         pattern-ptr (prepared-pull-pattern-ptr pattern)
-        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-keyword value-text))
-        out (value-handle-from-value pulled)]
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-prepared store-ptr-value pattern-ptr^ attr-text (vev.value-keyword value-text))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete attr-text)
     (delete value-text)
     out))
@@ -3574,9 +3845,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [pattern (text-from-c pattern-text)
         attr-text (text-from-c attr)
         value-text (text-from-c value)
-        db-ptr-value (db-ptr db)
-        pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-uuid value-text))
-        out (value-handle-from-value pulled)]
+        store-ptr-value (store-db-ptr db)
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-text store-ptr-value pattern attr-text (vev.value-uuid value-text))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete pattern)
     (delete attr-text)
     (delete value-text)
@@ -3589,10 +3862,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Value-Handle nil)))
   (let [attr-text (text-from-c attr)
         value-text (text-from-c value)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         pattern-ptr (prepared-pull-pattern-ptr pattern)
-        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-uuid value-text))
-        out (value-handle-from-value pulled)]
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-prepared store-ptr-value pattern-ptr^ attr-text (vev.value-uuid value-text))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete attr-text)
     (delete value-text)
     out))
@@ -3604,9 +3879,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Value-Handle nil)))
   (let [pattern (text-from-c pattern-text)
         attr-text (text-from-c attr)
-        db-ptr-value (db-ptr db)
-        pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-entity value))
-        out (value-handle-from-value pulled)]
+        store-ptr-value (store-db-ptr db)
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-text store-ptr-value pattern attr-text (vev.value-entity value))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete pattern)
     (delete attr-text)
     out))
@@ -3617,10 +3894,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= (rawptr pattern) nil) (= attr nil))
     (return (Vev-Value-Handle nil)))
   (let [attr-text (text-from-c attr)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         pattern-ptr (prepared-pull-pattern-ptr pattern)
-        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-entity value))
-        out (value-handle-from-value pulled)]
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-prepared store-ptr-value pattern-ptr^ attr-text (vev.value-entity value))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete attr-text)
     out))
 
@@ -3631,9 +3910,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Value-Handle nil)))
   (let [pattern (text-from-c pattern-text)
         attr-text (text-from-c attr)
-        db-ptr-value (db-ptr db)
-        pulled (vev.pull-text-lookup-ref-value db-ptr-value^ pattern attr-text (vev.value-int value))
-        out (value-handle-from-value pulled)]
+        store-ptr-value (store-db-ptr db)
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-text store-ptr-value pattern attr-text (vev.value-int value))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete pattern)
     (delete attr-text)
     out))
@@ -3644,10 +3925,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (when (or (= (rawptr db) nil) (= (rawptr pattern) nil) (= attr nil))
     (return (Vev-Value-Handle nil)))
   (let [attr-text (text-from-c attr)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         pattern-ptr (prepared-pull-pattern-ptr pattern)
-        pulled (vev.pull-prepared-lookup-ref-value db-ptr-value^ pattern-ptr^ attr-text (vev.value-int value))
-        out (value-handle-from-value pulled)]
+        [pulled pulled-ok _] (vev.pull-store-db-lookup-ref-value-prepared store-ptr-value pattern-ptr^ attr-text (vev.value-int value))
+        out (if pulled-ok
+              (value-handle-from-value pulled)
+              (Vev-Value-Handle nil))]
     (delete attr-text)
     out))
 
@@ -3661,13 +3944,15 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Value-Handle nil)))
   (let [pattern (text-from-c pattern-text)
         ids (make [dynamic]u64 0 entity-count)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         index 0]
     (while (< index entity-count)
       (arr.push! ids (abi-u64-at entities index))
       (set! index (+ index 1)))
-    (let [pulled (vev.pull-many-text-value db-ptr-value^ pattern (slice ids 0))
-          out (value-handle-from-value pulled)]
+    (let [[pulled pulled-ok _] (vev.pull-many-store-db-value-text store-ptr-value pattern (slice ids 0))
+          out (if pulled-ok
+                (value-handle-from-value pulled)
+                (Vev-Value-Handle nil))]
       (delete pattern)
       (delete ids)
       out)))
@@ -3681,14 +3966,16 @@ abi_free_stmt :: proc(stmt: rawptr) {
             (and (> entity-count 0) (= entities nil)))
     (return (Vev-Value-Handle nil)))
   (let [ids (make [dynamic]u64 0 entity-count)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         pattern-ptr (prepared-pull-pattern-ptr pattern)
         index 0]
     (while (< index entity-count)
       (arr.push! ids (abi-u64-at entities index))
       (set! index (+ index 1)))
-    (let [pulled (vev.pull-many-prepared-value db-ptr-value^ pattern-ptr^ (slice ids 0))
-          out (value-handle-from-value pulled)]
+    (let [[pulled pulled-ok _] (vev.pull-many-store-db-value-prepared store-ptr-value pattern-ptr^ (slice ids 0))
+          out (if pulled-ok
+                (value-handle-from-value pulled)
+                (Vev-Value-Handle nil))]
       (delete ids)
       out)))
 
@@ -3704,7 +3991,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [attr-text (text-from-c attr)
         attrs (make [dynamic]string 0 value-count)
         lookup-values (make [dynamic]vev.Value 0 value-count)
-        db-ptr-value (db-ptr db)
+        store-ptr-value (store-db-ptr db)
         pattern-ptr (prepared-pull-pattern-ptr pattern)
         index 0]
     (while (< index value-count)
@@ -3720,8 +4007,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (arr.push! attrs attr-text)
           (arr.push! lookup-values (vev.value-uuid value-text))))
       (set! index (+ index 1)))
-    (let [pulled (vev.pull-many-prepared-lookup-refs-value db-ptr-value^ pattern-ptr^ (slice attrs 0) (slice lookup-values 0))
-          out (value-handle-from-value pulled)]
+    (let [[pulled pulled-ok _] (vev.pull-many-store-db-lookup-refs-value-prepared store-ptr-value pattern-ptr^ (slice attrs 0) (slice lookup-values 0))
+          out (if pulled-ok
+                (value-handle-from-value pulled)
+                (Vev-Value-Handle nil))]
       (delete attr-text)
       (delete attrs)
       (for [value lookup-values]

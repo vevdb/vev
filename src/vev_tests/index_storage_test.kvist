@@ -1964,6 +1964,37 @@
     (vev.delete-tx-report-shallow report1)
     (vev.close-store store)))
 
+(t.deftest shared-store-db-with-same-tx-reverse-ref-keeps-shared-db
+  (defer (free_all context.allocator))
+  (let [store (vev.create-shared-store 2)
+        [snapshot snapshot-ok snapshot-error] (vev.store-db (addr store))
+        next-snapshot (vev.db-with-store-db-text
+                        (addr snapshot)
+                        "[{:db/id 100 :db/ident :user/friend :db/valueType :db.type/ref} [:db/add 2 :_user/friend 1]]")
+        result (vev.q-result-store-db-text (addr next-snapshot) "[:find ?friend :where [1 :user/friend ?friend]]")
+        reverse-result (vev.q-result-store-db-text (addr next-snapshot) "[:find ?source :where [2 :_user/friend ?source]]")
+        live-result (vev.q-result-store-text (addr store) "[:find ?friend :where [1 :user/friend ?friend]]")]
+    (t.is snapshot-ok)
+    (t.is (= snapshot-error ""))
+    (t.is (= snapshot.kind .Shared-Snapshot))
+    (t.is (= next-snapshot.kind .Shared-Tx-Ops-Overlay))
+    (t.is result.result.ok)
+    (t.is (= (count result.result.rows) 1))
+    (t.is (= result.result.rows[0].values[0].kind .Entity))
+    (t.is (= result.result.rows[0].values[0].entity 2))
+    (t.is reverse-result.result.ok)
+    (t.is (= (count reverse-result.result.rows) 1))
+    (t.is (= reverse-result.result.rows[0].values[0].kind .Entity))
+    (t.is (= reverse-result.result.rows[0].values[0].entity 1))
+    (t.is live-result.result.ok)
+    (t.is (= (count live-result.result.rows) 0))
+    (vev.delete-query-result result)
+    (vev.delete-query-result reverse-result)
+    (vev.delete-query-result live-result)
+    (vev.close-store-db! (addr snapshot))
+    (vev.close-store-db! (addr next-snapshot))
+    (vev.close-store store)))
+
 (t.deftest shared-store-db-with-same-tx-cardinality-many-map-collection-keeps-shared-db
   (defer (free_all context.allocator))
   (let [store (vev.create-shared-store 2)
