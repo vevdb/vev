@@ -2034,6 +2034,41 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (let [[merged merged-ok merged-error] (source-append-merge-index source existing appended start-index order)]
         (return merged false merged-ok merged-error)))))
 
+(defn source-append-index-for-persist-mode [source: DB-Read-Source, existing: []int, appended: []Datom, start-index: int, order: string, append-mode: bool] -> [out: [dynamic]int, ok: bool, error: string]
+  (if append-mode
+    (return (sorted-appended-datom-slice-indexes appended start-index order) true "")
+    (source-append-merge-index source existing appended start-index order)))
+
+(defn source-append-index-mode-for-persist [source: DB-Read-Source, existing: []int, appended: []Datom, start-index: int, order: string, force-append: bool] -> [append-mode: bool, ok: bool, error: string]
+  (when force-append
+    (return true true ""))
+  (let [added (sorted-appended-datom-slice-indexes appended start-index order)]
+    (defer (delete added))
+    (source-append-index-can-append? source existing (slice added 0) appended start-index order)))
+
+(defn source-append-index-modes-for-persist [source: DB-Read-Source, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> [eavt-append-mode: bool, aevt-append-mode: bool, avet-append-mode: bool, vaet-append-mode: bool, ok: bool, error: string]
+  (let [eavt-base (db-index-view-entries (db-read-source-index-view source .EAVT))
+        aevt-base (db-index-view-entries (db-read-source-index-view source .AEVT))
+        avet-base (db-index-view-entries (db-read-source-index-view source .AVET))
+        vaet-base (db-index-view-entries (db-read-source-index-view source .VAET))]
+    (defer (delete eavt-base))
+    (defer (delete aevt-base))
+    (defer (delete avet-base))
+    (defer (delete vaet-base))
+      (let [[eavt-mode-value eavt-ok eavt-error] (source-append-index-mode-for-persist source (slice eavt-base 0) appended start-index "eavt" new-entities-after-existing)]
+      (when (not eavt-ok)
+        (return false false false false false eavt-error))
+      (let [[aevt-mode-value aevt-ok aevt-error] (source-append-index-mode-for-persist source (slice aevt-base 0) appended start-index "aevt" false)]
+        (when (not aevt-ok)
+          (return false false false false false aevt-error))
+        (let [[avet-mode-value avet-ok avet-error] (source-append-index-mode-for-persist source (slice avet-base 0) appended start-index "avet" false)]
+          (when (not avet-ok)
+            (return false false false false false avet-error))
+          (let [[vaet-mode-value vaet-ok vaet-error] (source-append-index-mode-for-persist source (slice vaet-base 0) appended start-index "vaet" false)]
+            (if vaet-ok
+              (return eavt-mode-value aevt-mode-value avet-mode-value vaet-mode-value true "")
+              (return false false false false false vaet-error))))))))
+
 (defn source-append-build-indexes [source: DB-Read-Source, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> [eavt: [dynamic]int, aevt: [dynamic]int, avet: [dynamic]int, vaet: [dynamic]int, ok: bool, error: string]
   (let [eavt-base (db-index-view-entries (db-read-source-index-view source .EAVT))
         aevt-base (db-index-view-entries (db-read-source-index-view source .AEVT))
@@ -2122,6 +2157,51 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (when (not eavt-ok)
         (return (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false false eavt-error))
       (source-append-build-indexes-for-persist-with-eavt source appended start-index eavt-index eavt-appended-only))))
+
+(defn source-append-build-indexes-for-persist-modes [source: DB-Read-Source, appended: []Datom, start-index: int, eavt-append-mode: bool, aevt-append-mode: bool, avet-append-mode: bool, vaet-append-mode: bool] -> [eavt: [dynamic]int, aevt: [dynamic]int, avet: [dynamic]int, vaet: [dynamic]int, ok: bool, error: string]
+  (let [eavt-base (db-index-view-entries (db-read-source-index-view source .EAVT))
+        aevt-base (db-index-view-entries (db-read-source-index-view source .AEVT))
+        avet-base (db-index-view-entries (db-read-source-index-view source .AVET))
+        vaet-base (db-index-view-entries (db-read-source-index-view source .VAET))]
+    (let [[eavt-index eavt-ok eavt-error] (source-append-index-for-persist-mode source (slice eavt-base 0) appended start-index "eavt" eavt-append-mode)]
+      (when (not eavt-ok)
+        (delete eavt-base)
+        (delete aevt-base)
+        (delete avet-base)
+        (delete vaet-base)
+        (return (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) false eavt-error))
+      (let [[aevt-index aevt-ok aevt-error] (source-append-index-for-persist-mode source (slice aevt-base 0) appended start-index "aevt" aevt-append-mode)]
+        (when (not aevt-ok)
+          (delete eavt-index)
+          (delete eavt-base)
+          (delete aevt-base)
+          (delete avet-base)
+          (delete vaet-base)
+          (return (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) false aevt-error))
+        (let [[avet-index avet-ok avet-error] (source-append-index-for-persist-mode source (slice avet-base 0) appended start-index "avet" avet-append-mode)]
+          (when (not avet-ok)
+            (delete eavt-index)
+            (delete aevt-index)
+            (delete eavt-base)
+            (delete aevt-base)
+            (delete avet-base)
+            (delete vaet-base)
+            (return (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) false avet-error))
+          (let [[vaet-index vaet-ok vaet-error] (source-append-index-for-persist-mode source (slice vaet-base 0) appended start-index "vaet" vaet-append-mode)]
+            (when (not vaet-ok)
+              (delete eavt-index)
+              (delete aevt-index)
+              (delete avet-index)
+              (delete eavt-base)
+              (delete aevt-base)
+              (delete avet-base)
+              (delete vaet-base)
+              (return (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) false vaet-error))
+            (delete eavt-base)
+            (delete aevt-base)
+            (delete avet-base)
+            (delete vaet-base)
+            (return eavt-index aevt-index avet-index vaet-index true "")))))))
 
 (defn source-append-datoms-all-new-entities? [next-entity: u64, datoms: []Datom] -> bool
   (for [datom datoms]
@@ -2798,21 +2878,27 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (def sqlite-db-source-default-page-size 128)
 
 (defn q-result-sqlite-conn-text [store: ^SQLite-Conn, text: string] -> Query-Result
-  (let [[snapshot snapshot-ok snapshot-error] (sqlite-conn-open-db-snapshot store sqlite-db-source-default-page-size)]
+  (let [[snapshot snapshot-ok snapshot-error] (sqlite-store-db store)]
     (when (not snapshot-ok)
       (return (query-result-owned-values (result-set-error snapshot-error))))
-    (let [source (sqlite-db-read-source (addr snapshot))
-          result (q-result-text-db-read-source source text)]
-      (close-sqlite-db-snapshot! (addr snapshot))
+    (let [result (q-result-store-db-text (addr snapshot) text)]
+      (close-store-db! (addr snapshot))
+      result)))
+
+(defn q-result-sqlite-conn-text-with-input-text [store: ^SQLite-Conn, text: string, inputs-text: string] -> Query-Result
+  (let [[snapshot snapshot-ok snapshot-error] (sqlite-store-db store)]
+    (when (not snapshot-ok)
+      (return (query-result-owned-values (result-set-error snapshot-error))))
+    (let [result (q-result-store-db-text-with-input-text (addr snapshot) text inputs-text)]
+      (close-store-db! (addr snapshot))
       result)))
 
 (defn q-result-sqlite-conn-prepared [store: ^SQLite-Conn, prepared: Prepared-Query] -> Query-Result
-  (let [[snapshot snapshot-ok snapshot-error] (sqlite-conn-open-db-snapshot store sqlite-db-source-default-page-size)]
+  (let [[snapshot snapshot-ok snapshot-error] (sqlite-store-db store)]
     (when (not snapshot-ok)
       (return (query-result-owned-values (result-set-error snapshot-error))))
-    (let [source (sqlite-db-read-source (addr snapshot))
-          result (q-result-prepared-db-read-source source prepared)]
-      (close-sqlite-db-snapshot! (addr snapshot))
+    (let [result (q-result-store-db-prepared (addr snapshot) prepared)]
+      (close-store-db! (addr snapshot))
       result)))
 
 (defn sqlite-store-db [store: ^SQLite-Conn] -> [snapshot: Store-DB, ok: bool, error: string]
@@ -3326,6 +3412,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   tempids: [dynamic]Tempid
   source-append-metadata-known: bool
   source-new-entities-after-existing: bool
+  source-eavt-append-mode: bool
+  source-aevt-append-mode: bool
+  source-avet-append-mode: bool
+  source-vaet-append-mode: bool
 })
 
 (defn store-tx-report-value [report: Store-Tx-Report] -> Value
@@ -3355,7 +3445,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                       tx-meta: (make [dynamic]Tx-Meta)
                       tempids: (make [dynamic]Tempid)
                       source-append-metadata-known: false
-                      source-new-entities-after-existing: false})))
+                      source-new-entities-after-existing: false
+                      source-eavt-append-mode: false
+                      source-aevt-append-mode: false
+                      source-avet-append-mode: false
+                      source-vaet-append-mode: false})))
 
 (defn failed-owned-store-tx-report [snapshot: Store-DB, error: string] -> Store-Tx-Report
   (let [out (failed-store-tx-report snapshot error)]
@@ -3382,7 +3476,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                       tx-meta: (clone-tx-meta (slice report.tx-meta 0))
                       tempids: tempids
                       source-append-metadata-known: false
-                      source-new-entities-after-existing: false})))
+                      source-new-entities-after-existing: false
+                      source-eavt-append-mode: false
+                      source-aevt-append-mode: false
+                      source-avet-append-mode: false
+                      source-vaet-append-mode: false})))
 
 (defn delete-temp-resident-store-report-source [report: Tx-Report]
   (if report.ok
@@ -3402,7 +3500,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (let [[snapshot snapshot-ok _] (sqlite-store-db store)]
     (if snapshot-ok
       (failed-owned-store-tx-report snapshot error)
-      (store-tx-report-from-temp-resident-report (failed-tx-report store^.conn.db error)))))
+      (failed-store-tx-report (Store-DB {}) error))))
 
 (defn transact-sqlite-store-report-direct-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> [report: Store-Tx-Report, used: bool, ok: bool, error: string]
   (when store^.resident-loaded
@@ -3485,7 +3583,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                                          tx-meta: (clone-tx-meta (slice resolved.tx-meta 0))
                                                          tempids: report-tempids
                                                          source-append-metadata-known: true
-                                                         source-new-entities-after-existing: new-entities-after-existing})]
+                                                         source-new-entities-after-existing: new-entities-after-existing
+                                                         source-eavt-append-mode: eavt-appended-only
+                                                         source-aevt-append-mode: aevt-appended-only
+                                                         source-avet-append-mode: avet-appended-only
+                                                         source-vaet-append-mode: vaet-appended-only})]
                         (delete-owned-datoms appended)
                         (delete-owned-tx-ops overlay-ops)
                         (delete-resolved-tx resolved)
@@ -3518,10 +3620,23 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                         added: (= op.kind .Add)})]
       (arr.push! out^ (datom-owned datom)))))
 
+(defn store-source-append-modes-for-report [snapshot: Store-DB, datoms: []Datom, new-entities-after-existing: bool] -> [known: bool, eavt-mode: bool, aevt-mode: bool, avet-mode: bool, vaet-mode: bool]
+  (let [snapshot-value snapshot
+        [source source-ok _] (store-db-read-source (addr snapshot-value))]
+    (when (not source-ok)
+      (return false false false false false))
+    (let [view (db-read-source-index-view source .EAVT)
+          start-index (db-index-view-count view)
+          [eavt-mode-value aevt-mode-value avet-mode-value vaet-mode-value modes-ok _] (source-append-index-modes-for-persist source datoms start-index new-entities-after-existing)]
+      (if modes-ok
+        (return true eavt-mode-value aevt-mode-value avet-mode-value vaet-mode-value)
+        (return false false false false false)))))
+
 (defn store-tx-report-from-source-overlay-parts [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, tx-meta: []Tx-Meta, tempids: []Tempid, next-entity: u64] -> Store-Tx-Report
   (let [tx-data (source-overlay-datoms-from-ops overlay-ops tx)
         cloned-tempids (store-report-tempids-with-current-tx tempids tx)
-        new-entities-after-existing (source-append-ops-all-new-entities? next-entity overlay-ops)]
+        new-entities-after-existing (source-append-ops-all-new-entities? next-entity overlay-ops)
+        [modes-known eavt-mode aevt-mode avet-mode vaet-mode] (store-source-append-modes-for-report snapshot (slice tx-data 0) new-entities-after-existing)]
     (Store-Tx-Report {ok: true
                       error: ""
                       db-before: (retain-store-db snapshot)
@@ -3530,8 +3645,12 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                       tx: tx
                       tx-meta: (clone-tx-meta tx-meta)
                       tempids: cloned-tempids
-                      source-append-metadata-known: true
-                      source-new-entities-after-existing: new-entities-after-existing})))
+                      source-append-metadata-known: modes-known
+                      source-new-entities-after-existing: new-entities-after-existing
+                      source-eavt-append-mode: (and modes-known eavt-mode)
+                      source-aevt-append-mode: (and modes-known aevt-mode)
+                      source-avet-append-mode: (and modes-known avet-mode)
+                      source-vaet-append-mode: (and modes-known vaet-mode)})))
 
 (defn store-tx-report-from-source-overlay [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, resolved: Resolved-Tx, next-entity: u64] -> Store-Tx-Report
   (store-tx-report-from-source-overlay-parts snapshot overlay-ops tx (slice resolved.tx-meta 0) (slice resolved.tempids 0) next-entity))
@@ -3860,7 +3979,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                  tx-meta: (clone-tx-meta (slice resident-report.tx-meta 0))
                                  tempids: tempids
                                  source-append-metadata-known: false
-                                 source-new-entities-after-existing: false})]
+                                 source-new-entities-after-existing: false
+                                 source-eavt-append-mode: false
+                                 source-aevt-append-mode: false
+                                 source-avet-append-mode: false
+                                 source-vaet-append-mode: false})]
     (delete-store-db-temp-tx-report resident-report)
     report))
 
@@ -3982,6 +4105,30 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (db-with-store-db-tx-data-with-source-string-fns snapshot (slice tx-data 0) registry)
       (retain-store-db snapshot^))))
 
+(defn source-append-build-indexes-for-store-report [source: DB-Read-Source, report: Store-Tx-Report, start-index: int] -> [eavt: [dynamic]int, eavt-append-mode: bool, aevt: [dynamic]int, aevt-append-mode: bool, avet: [dynamic]int, avet-append-mode: bool, vaet: [dynamic]int, vaet-append-mode: bool, ok: bool, error: string]
+  (if report.source-append-metadata-known
+    (let [[eavt aevt avet vaet indexes-ok indexes-error] (source-append-build-indexes-for-persist-modes source
+                                                                                                       (slice report.tx-data 0)
+                                                                                                       start-index
+                                                                                                       report.source-eavt-append-mode
+                                                                                                       report.source-aevt-append-mode
+                                                                                                       report.source-avet-append-mode
+                                                                                                       report.source-vaet-append-mode)]
+      (return eavt
+              report.source-eavt-append-mode
+              aevt
+              report.source-aevt-append-mode
+              avet
+              report.source-avet-append-mode
+              vaet
+              report.source-vaet-append-mode
+              indexes-ok
+              indexes-error))
+    (source-append-build-indexes-for-persist source
+                                             (slice report.tx-data 0)
+                                             start-index
+                                             report.source-new-entities-after-existing)))
+
 (defn sqlite-commit-source-overlay-report [store: ^SQLite-Conn, overlay-report: Store-Tx-Report] -> Store-Tx-Report
   (when (not overlay-report.ok)
     (return overlay-report))
@@ -3992,10 +4139,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (let [before-snapshot overlay-report.db-before.sqlite-snapshot
         source (sqlite-db-read-source (addr before-snapshot))
         start-index before-snapshot.datom-count]
-    (let [new-entities-after-existing (if overlay-report.source-append-metadata-known
-                                        overlay-report.source-new-entities-after-existing
-                                        false)
-          [eavt eavt-appended-only aevt aevt-appended-only avet avet-appended-only vaet vaet-appended-only indexes-ok indexes-error] (source-append-build-indexes-for-persist source (slice overlay-report.tx-data 0) start-index new-entities-after-existing)]
+    (let [[eavt eavt-appended-only aevt aevt-appended-only avet avet-appended-only vaet vaet-appended-only indexes-ok indexes-error] (source-append-build-indexes-for-store-report source overlay-report start-index)]
     (when (not indexes-ok)
       (let [failed (failed-store-tx-report overlay-report.db-before indexes-error)]
         (delete-store-tx-report overlay-report)
@@ -4029,7 +4173,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                       tx-meta: (clone-tx-meta (slice overlay-report.tx-meta 0))
                                       tempids: (store-report-tempids-with-current-tx (slice overlay-report.tempids 0) overlay-report.tx)
                                       source-append-metadata-known: overlay-report.source-append-metadata-known
-                                      source-new-entities-after-existing: overlay-report.source-new-entities-after-existing})]
+                                      source-new-entities-after-existing: overlay-report.source-new-entities-after-existing
+                                      source-eavt-append-mode: overlay-report.source-eavt-append-mode
+                                      source-aevt-append-mode: overlay-report.source-aevt-append-mode
+                                      source-avet-append-mode: overlay-report.source-avet-append-mode
+                                      source-vaet-append-mode: overlay-report.source-vaet-append-mode})]
             (delete-store-tx-report overlay-report)
             out)))))))
 
@@ -4290,7 +4438,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (return (store-tx-report-from-temp-resident-report (transact-sqlite-tx-data store tx-data))))
   (let [[snapshot snapshot-ok snapshot-error] (sqlite-store-db store)]
     (when (not snapshot-ok)
-      (return (store-tx-report-from-temp-resident-report (failed-tx-report store^.conn.db snapshot-error))))
+      (return (failed-sqlite-store-tx-report store snapshot-error)))
     (let [overlay-report (with-store-db-report-tx-data-with-source-string-fns (addr snapshot) tx-data registry)]
       (close-store-db snapshot)
       (sqlite-commit-source-overlay-report store overlay-report))))
@@ -4354,12 +4502,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn q-result-store-text-with-input-text [store: ^Store-Conn, text: string, inputs-text: string] -> Query-Result
   (case store^.kind
     .SQLite
-      (let [[snapshot snapshot-ok snapshot-error] (sqlite-conn-open-db-snapshot (addr store^.sqlite) sqlite-db-source-default-page-size)]
+      (let [[snapshot snapshot-ok snapshot-error] (sqlite-store-db (addr store^.sqlite))]
         (when (not snapshot-ok)
           (return (query-result-owned-values (result-set-error snapshot-error))))
-        (let [source (sqlite-db-read-source (addr snapshot))
-              result (q-result-text-db-read-source-with-input-text source text inputs-text)]
-          (close-sqlite-db-snapshot! (addr snapshot))
+        (let [result (q-result-store-db-text-with-input-text (addr snapshot) text inputs-text)]
+          (close-store-db! (addr snapshot))
           result))
     .Shared (q-result-text-db-read-source-with-input-text (shared-conn-read-source (addr store^.shared)) text inputs-text)
      (query-result-owned-values (result-set-error "store is not open"))))
@@ -4403,7 +4550,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                               tx-meta: (clone-tx-meta (slice report.tx-meta 0))
                               tempids: tempids
                               source-append-metadata-known: false
-                              source-new-entities-after-existing: false}))
+                              source-new-entities-after-existing: false
+                              source-eavt-append-mode: false
+                              source-aevt-append-mode: false
+                              source-avet-append-mode: false
+                              source-vaet-append-mode: false}))
           (Store-Tx-Report {ok: false
                             error: report.error
                             db-before: (Store-DB {kind: .Shared-Snapshot shared-snapshot: report.db-before})
@@ -4413,9 +4564,12 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                             tx-meta: (make [dynamic]Tx-Meta)
                             tempids: (make [dynamic]Tempid)
                             source-append-metadata-known: false
-                            source-new-entities-after-existing: false})))
-     (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
-       (failed-store-tx-report empty "store is not open"))))
+                            source-new-entities-after-existing: false
+                            source-eavt-append-mode: false
+                            source-aevt-append-mode: false
+                            source-avet-append-mode: false
+                            source-vaet-append-mode: false})))
+     (failed-store-tx-report (Store-DB {}) "store is not open")))
 
 (defn delete-shared-store-source-temp-report [report: Tx-Report]
   (if report.ok
@@ -4441,7 +4595,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                   tx-meta: (clone-tx-meta (slice report.tx-meta 0))
                                   tempids: tempids
                                   source-append-metadata-known: false
-                                  source-new-entities-after-existing: false})]
+                                  source-new-entities-after-existing: false
+                                  source-eavt-append-mode: false
+                                  source-aevt-append-mode: false
+                                  source-avet-append-mode: false
+                                  source-vaet-append-mode: false})]
         (delete-shared-store-source-temp-report report)
         out)
       (let [out (Store-Tx-Report {ok: false
@@ -4453,7 +4611,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                   tx-meta: (make [dynamic]Tx-Meta)
                                   tempids: (make [dynamic]Tempid)
                                   source-append-metadata-known: false
-                                  source-new-entities-after-existing: false})]
+                                  source-new-entities-after-existing: false
+                                  source-eavt-append-mode: false
+                                  source-aevt-append-mode: false
+                                  source-avet-append-mode: false
+                                  source-vaet-append-mode: false})]
         (delete-shared-store-source-temp-report report)
         out))))
 
@@ -4461,8 +4623,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (case store^.kind
     .SQLite (transact-sqlite-store-report-tx-data-with-source-string-fns (addr store^.sqlite) tx-data registry)
     .Shared (shared-store-report-tx-data-with-source-string-fns store tx-data registry)
-     (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
-       (failed-store-tx-report empty "store is not open"))))
+     (failed-store-tx-report (Store-DB {}) "store is not open")))
 
 (defn transact-store-report-text [store: ^Store-Conn, text: string] -> Store-Tx-Report
   (case store^.kind
@@ -4473,8 +4634,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (when (not parse-ok)
           (return (failed-store-tx-report (shared-store-db (addr store^.shared)) parse-error)))
         (transact-store-report-tx-data store (slice tx-data 0)))
-     (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
-       (failed-store-tx-report empty "store is not open"))))
+     (failed-store-tx-report (Store-DB {}) "store is not open")))
 
 (defn transact-store-report-text-with-source-string-fns [store: ^Store-Conn, text: string, registry: []Tx-Fn-Source-String] -> Store-Tx-Report
   (case store^.kind
@@ -4485,5 +4645,4 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (when (not parse-ok)
           (return (failed-store-tx-report (shared-store-db (addr store^.shared)) parse-error)))
         (transact-store-report-tx-data-with-source-string-fns store (slice tx-data 0) registry))
-     (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
-       (failed-store-tx-report empty "store is not open"))))
+     (failed-store-tx-report (Store-DB {}) "store is not open")))

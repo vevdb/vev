@@ -41,6 +41,7 @@
 
 (defstruct Shared-Write-State {
   conn: Conn
+  owns-resident-db: bool
   has-tuple-schema: bool
   schema-ref: set[string]
   schema-unique: set[string]
@@ -741,6 +742,7 @@
   (let [conn (create-conn)
         size (max 1 chunk-size)]
     (Shared-Conn {write: (Shared-Write-State {conn: conn
+                                              owns-resident-db: true
                                               has-tuple-schema: (db-has-tuple-schema? conn.db)
                                               schema-ref: (clone-schema-ref conn.db.schema-ref)
                                               schema-unique: (clone-schema-unique conn.db.schema-unique)
@@ -753,11 +755,7 @@
 
 (defn delete-shared-conn [conn: Shared-Conn]
   (delete-shared-db-snapshot conn.snapshot)
-  (delete conn.write.schema-ref)
-  (delete conn.write.schema-unique)
-  (delete conn.write.schema-unique-identity)
-  (delete conn.write.conn.listeners)
-  (delete-owned-db conn.write.conn.db))
+  (delete-shared-write-state-metadata conn.write))
 
 (defn delete-shared-tx-report-shallow [report: Shared-Tx-Report]
   (delete-shared-db-snapshot report.db-before)
@@ -2538,19 +2536,18 @@
             (delete schema-unique)
             (delete schema-unique-identity)
             (return (Shared-Write-State {}) false next-entity-error))
-          (let [empty-db (build-db (make [dynamic]Datom))]
-            (return (Shared-Write-State {conn: (Conn {db: empty-db
-                                                       next-tx: next-tx
-                                                       listeners: (make [dynamic]Tx-Listener)})
-                                        has-tuple-schema: has-tuple
-                                        schema-ref: schema-ref
-                                        schema-unique: schema-unique
-                                        schema-unique-identity: schema-unique-identity
-                                        next-entity-id: next-entity
-                                        source-resolves: 0
-                                        resident-fallbacks: 0})
-                    true
-                    "")))))))
+          (return (Shared-Write-State {conn: (Conn {next-tx: next-tx
+                                                     listeners: (make [dynamic]Tx-Listener)})
+                                      owns-resident-db: false
+                                      has-tuple-schema: has-tuple
+                                      schema-ref: schema-ref
+                                      schema-unique: schema-unique
+                                      schema-unique-identity: schema-unique-identity
+                                      next-entity-id: next-entity
+                                      source-resolves: 0
+                                      resident-fallbacks: 0})
+                  true
+                  ""))))))
 
 (defn shared-write-state-from-shared-snapshot-metadata [snapshot: Shared-DB-Snapshot] -> [state: Shared-Write-State, ok: bool, error: string]
   (let [base snapshot
@@ -2570,7 +2567,11 @@
   (delete state.schema-unique)
   (delete state.schema-unique-identity)
   (delete state.conn.listeners)
-  (delete-owned-db state.conn.db))
+  (when state.owns-resident-db
+    (delete-owned-db state.conn.db)))
+
+(defn shared-write-state-owns-resident-db? [state: Shared-Write-State] -> bool
+  state.owns-resident-db)
 
 (defn source-append-ops-all-new-entities? [next-entity: u64, ops: []Tx-Op] -> bool
   (for [op ops]

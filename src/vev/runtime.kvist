@@ -6643,6 +6643,7 @@
           [indexed indexed-ok] (query-relation-apply-source-input-clause-indexed-typed source-value^ rel source-clause)]
       (when indexed-ok
         (set! stats^.source-index-scans (+ stats^.source-index-scans 1))
+        (query-stats-observe-source-operator! stats)
         (set! stats^.clauses (+ stats^.clauses 1))
         (set! stats^.clause-candidates (+ stats^.clause-candidates (count source-value^.items)))
         (return indexed true))
@@ -6666,6 +6667,7 @@
                   (return (query-relation-empty) false))))
             (set! rel-row (+ rel-row 1)))
           (set! stats^.source-index-scans (+ stats^.source-index-scans 1))
+          (query-stats-observe-source-operator! stats)
           (set! stats^.clauses (+ stats^.clauses 1))
           (set! stats^.clause-candidates (+ stats^.clause-candidates (* rel.typed-rows (count source-value^.items))))
           (return (Query-Relation {attrs: attrs
@@ -11283,7 +11285,11 @@
     (set! stats^.max-intermediate-bindings count-value)))
 
 (defn query-stats-observe-materialization! [stats: ^Query-Stats, count-value: int]
+  (set! stats^.generic-materialization-steps (+ stats^.generic-materialization-steps 1))
   (set! stats^.binding-materializations (+ stats^.binding-materializations count-value)))
+
+(defn query-stats-observe-source-operator! [stats: ^Query-Stats]
+  (set! stats^.source-operators (+ stats^.source-operators 1)))
 
 (defn term-var-name? [term: Term, name: string] -> bool
   (and (= term.kind .Var)
@@ -17058,7 +17064,8 @@
         (return (query-relation-empty) false))
       (let [[out out-ok] (query-relation-apply-bound-ea-clause-typed source-db rel (unsourced-clause clause-value) stats)]
         (when out-ok
-          (set! stats^.source-index-scans (+ stats^.source-index-scans 1)))
+          (set! stats^.source-index-scans (+ stats^.source-index-scans 1))
+          (query-stats-observe-source-operator! stats))
         (return out out-ok)))
     (query-relation-apply-bound-ea-clause-typed db rel clause-value stats)))
 
@@ -17139,7 +17146,8 @@
         (return (query-relation-empty) false))
       (let [[out out-ok] (query-relation-apply-bound-db-clause-typed-scan source-db rel (unsourced-clause clause-value) stats)]
         (when out-ok
-          (set! stats^.source-index-scans (+ stats^.source-index-scans 1)))
+          (set! stats^.source-index-scans (+ stats^.source-index-scans 1))
+          (query-stats-observe-source-operator! stats))
         (return out out-ok)))
     (query-relation-apply-bound-db-clause-typed-scan db rel clause-value stats)))
 
@@ -18459,7 +18467,8 @@
   (if clause-value.has-source
     (when (and (not (query-source-input? query clause-value.source))
                (query-source-db? sources clause-value.source))
-      (set! stats^.source-index-scans (+ stats^.source-index-scans 1)))
+      (set! stats^.source-index-scans (+ stats^.source-index-scans 1))
+      (query-stats-observe-source-operator! stats))
     (set! stats^.typed-index-scans (+ stats^.typed-index-scans 1))))
 
 (defn query-relation-reduce [db: DB, sources: []DB-Source, relations: []Query-Relation] -> Query-Relation
@@ -20940,11 +20949,19 @@
     (set! stats.output-rows (count result.rows))
     (when result.ok
       (if (db-read-source-query-direct-operator? query)
-        (set! stats.source-index-scans (max 1 (count query.clauses)))
+        (do
+          (set! stats.source-index-scans (max 1 (count query.clauses)))
+          (set! stats.source-operators 1))
         (do
           (set! stats.source-index-scans (count query.clauses))
+          (set! stats.generic-materialization-steps 1)
           (set! stats.binding-materializations (count result.rows)))))
     stats))
+
+(defn db-read-source-query-input-binding-count [query: Query, inputs: []Query-Input] -> [count-value: int, ok: bool]
+  (let [[rel binding-count input-ok] (db-read-source-query-relation-initial-from-inputs query inputs)]
+    (delete-query-relation rel)
+    (return binding-count input-ok)))
 
 (defn db-read-source-query-profile-stats-with-source-inputs-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, query: Query, inputs: []Query-Input, result: Result-Set, registry: []Native-Query-Fn] -> Query-Stats
   (let [owned-source-values (make [dynamic]Value 0 (count inputs)) :defer
@@ -20956,6 +20973,10 @@
           (delete-owned-value value))))
     (if input-sources-ok
       (let [stats (db-read-source-query-profile-stats-with-source source (slice augmented-sources 0) query result)]
+        (when (> (count inputs) 0)
+          (let [[input-binding-count input-binding-ok] (db-read-source-query-input-binding-count query inputs)]
+            (when input-binding-ok
+              (set! stats.input-bindings input-binding-count))))
         (when (and result.ok
                    (db-read-source-relation-value-typed-query? (slice augmented-sources 0) query registry))
           (let [[typed-result typed-stats typed-used] (db-read-source-q-query-relation-value-typed-with-sources-inputs-and-fns source (slice augmented-sources 0) query inputs registry)]
@@ -20963,8 +20984,10 @@
             (when typed-used
               (set! stats.input-bindings typed-stats.input-bindings)
               (set! stats.source-index-scans typed-stats.source-index-scans)
+              (set! stats.source-operators typed-stats.source-operators)
               (set! stats.clause-candidates typed-stats.clause-candidates)
               (set! stats.max-intermediate-bindings typed-stats.max-intermediate-bindings)
+              (set! stats.generic-materialization-steps 0)
               (set! stats.binding-materializations 0))))
         stats)
       (db-read-source-query-profile-stats-with-source source sources query result))))
@@ -20979,9 +21002,12 @@
     (set! stats.output-rows (count result.rows))
     (when result.ok
       (if (db-read-source-query-direct-operator-with-source? source sources query)
-        (set! stats.source-index-scans (max 1 (count query.clauses)))
+        (do
+          (set! stats.source-index-scans (max 1 (count query.clauses)))
+          (set! stats.source-operators 1))
         (do
           (set! stats.source-index-scans (count query.clauses))
+          (set! stats.generic-materialization-steps 1)
           (set! stats.binding-materializations (count result.rows)))))
     stats))
 
@@ -23686,7 +23712,9 @@
               (value-keyword ":clause-candidates") (value-int (i64 stats.clause-candidates))
               (value-keyword ":typed-index-scans") (value-int (i64 stats.typed-index-scans))
               (value-keyword ":source-index-scans") (value-int (i64 stats.source-index-scans))
+              (value-keyword ":source-operators") (value-int (i64 stats.source-operators))
               (value-keyword ":binding-materializations") (value-int (i64 stats.binding-materializations))
+              (value-keyword ":generic-materialization-steps") (value-int (i64 stats.generic-materialization-steps))
               (value-keyword ":rule-calls") (value-int (i64 stats.rule-calls))
               (value-keyword ":rule-iterations") (value-int (i64 stats.rule-iterations))
               (value-keyword ":max-intermediate-bindings") (value-int (i64 stats.max-intermediate-bindings))

@@ -33,6 +33,16 @@ roots, and return retained `Store-DB` handles for `db-before` and `db-after`
 without resident materialization. Source-backed report failures also return
 storage-neutral DB handles instead of falling back through resident clones.
 
+Implemented:
+
+- storage-neutral transaction-report APIs return empty `Store-DB` handles for
+  unopened-store failures instead of manufacturing empty resident DBs
+- SQLite `Store-Tx-Report` failures before the first durable index root now
+  also return empty storage handles instead of wrapping an empty resident DB
+- the CLI transaction command now uses `transact-store-report-text` and
+  `Store-Tx-Report` output instead of the older resident `Tx-Report`
+  compatibility path
+
 Remaining work:
 
 - move older public `Tx-Report` compatibility APIs toward the
@@ -64,6 +74,9 @@ Implemented:
 - source-backed transaction reports now carry append-publication metadata
   through to SQLite commit, so source-function commits do not reread write-state
   metadata just to rediscover append-root eligibility
+- source-backed transaction reports now carry per-index append-mode proofs for
+  EAVT, AEVT, AVET, and VAET, and SQLite commit uses those proofs directly
+  instead of rebuilding index eligibility decisions
 - SQLite publication now chooses append-root sharing independently for EAVT,
   AEVT, AVET, and VAET when the appended segment is proven to be after the
   previous root in that index's own key order
@@ -72,14 +85,16 @@ Implemented:
   the whole root for normal paged source scans
 - empty/no-op index chunks have stable metadata bounds, so canceling
   add/retract transactions keep the storage schema valid
+- source-derived shared write-state metadata no longer allocates an empty
+  resident DB just to carry tx/listener metadata; live shared connections still
+  explicitly own their resident DB, while durable/source write helpers stay
+  metadata-only
 
 Remaining work:
 
-- keep transaction validation and write-state metadata incremental, so failed
-  writes and non-schema writes do not clone full datom/index arrays
-- make direct source resolution return full publication metadata, including
-  reusable index-order append proofs, so storage adapters can publish without
-  rebuilding any index eligibility decisions
+- keep transaction validation and write-state metadata incremental beyond the
+  current source-derived metadata path, so failed writes and non-schema writes
+  do not clone full datom/index arrays
 - preserve resident-array publication only as a small-DB/debug compatibility
   strategy
 
@@ -94,16 +109,37 @@ Acceptance:
 
 Status: active.
 
+Implemented:
+
+- live SQLite text, text-with-input, and prepared query wrappers now acquire a
+  `Store-DB` snapshot and use the same `q-result-store-db-*` boundary as
+  retained immutable DB handles, instead of each wrapper manually opening a
+  SQLite snapshot and calling source functions directly
+- reopened read-only durable stores are covered for prepared and text-with-input
+  source-backed queries while remaining non-resident
+- resident `q-result-text*` and `q-result-prepared*` wrappers now enter through
+  `resident-db-read-source` and return owned `Query-Result` values, matching
+  source-backed cleanup semantics while leaving lower-level resident
+  `Result-Set` APIs intact
+- `Query-Stats` now exposes explicit `source-operators` and
+  `generic-materialization-steps` counters, so source-backed physical operator
+  use is visible directly instead of inferred from scan/materialization counts
+- no-input resident `q-text-profiled*` and `q-prepared-profiled*` wrappers now
+  enter through `resident-db-read-source`, so ordinary text/prepared profiling
+  uses the same source/operator boundary as durable `Store-DB` reads
+- source-backed text queries with EDN input strings now compute profiling stats
+  through the input-aware read-source stats helper, so host-facing input-text
+  APIs report input bindings/source operators instead of no-input heuristics
+
 Remaining work:
 
 - collapse the split between older resident `DB` entry points and the
   source-backed query path
 - keep resident-array mode as an implementation strategy, not a query-engine
   assumption
-- move resident result ownership toward the same `Query-Result` shape used by
-  source-backed and host-facing paths
-- keep `Query-Stats` explicit about when a query uses physical source operators
-  versus generic binding materialization
+- keep moving lower-level resident query execution plus input/function/rule/
+  named-source profiling toward the same source boundary where compatibility
+  and operator coverage permit it
 
 Acceptance:
 

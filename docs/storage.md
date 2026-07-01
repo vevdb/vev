@@ -74,10 +74,12 @@ SQLite commits produced by source transaction functions use the same path when
 the expanded transaction appends only new entities. Source-backed transaction
 reports carry this append-publication metadata into SQLite commit, so the commit
 publisher does not reread write-state metadata just to recompute append-root
-eligibility. Publication chooses append-root sharing independently for EAVT,
-AEVT, AVET, and VAET by checking the appended segment against each index's own
-key order; if ranges overlap, that index falls back to a merged root while other
-indexes can still share.
+eligibility. Reports also carry the per-index append-mode proofs for EAVT,
+AEVT, AVET, and VAET. SQLite commit uses those proofs directly when building
+the persisted roots. Publication chooses append-root sharing independently by
+checking the appended segment against each index's own key order; if ranges
+overlap, that index falls back to a merged root while other indexes can still
+share.
 Lazy page reads over recursive roots select only overlapping leaf chunks and
 return the selected leaf base offset to the in-memory windowing layer. Full
 index-entry reads still concatenate the full recursive root for diagnostics and
@@ -443,7 +445,7 @@ build is unblocked.
 `Store-Conn` is also now storage-neutral at the connection boundary. The
 default `open-store` functions still create SQLite-backed stores, while
 `create-shared-store` creates the in-memory shared-index publish path. Both use
-the same `store-db`, `q-result-store-*`, `transact-store-text`, and
+the same `store-db`, `q-result-store-*`, `transact-store-report-text`, and
 `close-store` entry points, so host bindings can move toward one DB-handle shape
 instead of separate resident, SQLite, and shared APIs.
 `Store-DB` can also render query and pull values through `DB-Read-Source`.
