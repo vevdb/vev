@@ -2322,6 +2322,73 @@
     (set! row-count^ (* existing-rows (count values)))
     true))
 
+(defn query-relation-append-initial-input-rows! [attrs: ^[dynamic]string, attr-sources: ^[dynamic]string, columns: ^[dynamic]Relation-Column, row-count: ^int, input-attrs: []string, values: []Value, width: int] -> bool
+  (when (<= width 0)
+    (return false))
+  (when (not (= (% (count values) width) 0))
+    (return false))
+  (let [kept-attrs (make [dynamic]string) :defer]
+    (for [name input-attrs]
+      (when (not (= name ""))
+        (when (or (query-source-input-name? name)
+                  (string-slice-contains? (slice attrs^ 0) name)
+                  (string-slice-contains? (slice kept-attrs 0) name))
+          (return false))
+        (arr.push! kept-attrs name)))
+    (when (= (count kept-attrs) 0)
+      (set! row-count^ (* row-count^ (/ (count values) width)))
+      (return true))
+    (let [old-attrs (arr.into [dynamic]string (slice attrs^ 0)) :defer
+          old-sources (arr.into [dynamic]string (slice attr-sources^ 0)) :defer
+          old-columns (clone-relation-columns (slice columns^ 0)) :defer
+          old-row-count row-count^
+          input-row-count (/ (count values) width)
+          next-attrs (make [dynamic]string 0 (+ (count old-attrs) (count kept-attrs)))
+          next-sources (make [dynamic]string 0 (+ (count old-sources) (count kept-attrs)))
+          next-columns (make [dynamic]Relation-Column 0 (+ (count old-columns) (count kept-attrs)))]
+      (for [name old-attrs]
+        (arr.push! next-attrs name)
+        (arr.push! next-columns (relation-column-empty)))
+      (for [source old-sources]
+        (arr.push! next-sources source))
+      (for [name kept-attrs]
+        (arr.push! next-attrs name)
+        (arr.push! next-sources "")
+        (arr.push! next-columns (relation-column-empty)))
+      (let [old-row 0]
+        (while (< old-row old-row-count)
+          (let [input-row 0]
+            (while (< input-row input-row-count)
+              (let [row-values (make [dynamic]Value 0 (count next-columns)) :defer]
+                (for [column old-columns]
+                  (let [[value value-ok] (typed-relation-column-value column old-row)]
+                    (when (not value-ok)
+                      (delete next-attrs)
+                      (delete next-sources)
+                      (delete-relation-columns next-columns)
+                      (return false))
+                    (arr.push! row-values value)))
+                (let [offset (* input-row width)]
+                  (for [name index input-attrs]
+                    (when (not (= name ""))
+                      (arr.push! row-values values[(+ offset index)]))))
+                (for [value column-index row-values]
+                  (when (not (relation-column-add! (addr next-columns[column-index]) value))
+                    (delete next-attrs)
+                    (delete next-sources)
+                    (delete-relation-columns next-columns)
+                    (return false))))
+            (set! input-row (+ input-row 1))))
+          (set! old-row (+ old-row 1))))
+      (delete attrs^)
+      (delete attr-sources^)
+      (delete-relation-columns columns^)
+      (set! attrs^ next-attrs)
+      (set! attr-sources^ next-sources)
+      (set! columns^ next-columns)
+      (set! row-count^ (* old-row-count input-row-count))
+      true)))
+
 (defn query-relation-from-ordered-simple-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int, ok: bool]
   (when (= (count query.input-specs) 0)
     (return (query-relation-empty) 0 false))
@@ -2360,6 +2427,30 @@
               (delete attr-sources)
               (delete-relation-columns columns)
               (return (query-relation-empty) 0 false)))
+        (= spec.kind .Tuple)
+          (do
+            (when (or (not (= inputs[index].kind .Collection))
+                      (not (= (count spec.tuple.vars) (count inputs[index].values)))
+                      (not (query-relation-append-initial-input-rows! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) spec.tuple.vars inputs[index].values (count spec.tuple.vars))))
+              (delete attrs)
+              (delete attr-sources)
+              (delete-relation-columns columns)
+              (return (query-relation-empty) 0 false)))
+        (= spec.kind .Relation)
+          (do
+            (when (not (cond
+                         (and (= inputs[index].kind .Relation)
+                              (= inputs[index].width (count spec.relation.vars)))
+                           (query-relation-append-initial-input-rows! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) spec.relation.vars inputs[index].values inputs[index].width)
+                         (and (= inputs[index].kind .Scalar)
+                              (= inputs[index].value.kind .Map)
+                              (= (count spec.relation.vars) 2))
+                           (query-relation-append-initial-input-rows! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) spec.relation.vars inputs[index].value.items 2)
+                         :else false))
+              (delete attrs)
+              (delete attr-sources)
+              (delete-relation-columns columns)
+              (return (query-relation-empty) 0 false)))
         :else
           (do
             (delete attrs)
@@ -2375,12 +2466,12 @@
                              has-typed-columns: true}) row-count true)))
 
 (defn query-relation-from-legacy-simple-inputs [db: DB, query: Query, inputs: []Query-Input] -> [rel: Query-Relation, binding-count: int, ok: bool]
-  (when (or (> (count query.input-specs) 0)
-            (> (count query.tuple-inputs) 0)
-            (> (count query.relation-inputs) 0))
+  (when (> (count query.input-specs) 0)
     (return (query-relation-empty) 0 false))
   (when (and (= (count query.inputs) 0)
-             (= (count query.collection-inputs) 0))
+             (= (count query.collection-inputs) 0)
+             (= (count query.tuple-inputs) 0)
+             (= (count query.relation-inputs) 0))
     (return (query-relation-singleton) 1 true))
   (when (< (count inputs) (+ (count query.inputs) (count query.collection-inputs)))
     (return (query-relation-empty) 0 false))
@@ -2406,6 +2497,34 @@
             (delete-relation-columns columns)
             (return (query-relation-empty) 0 false))
           (when (not (query-relation-append-initial-input-values! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) name inputs[input-index].values))
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns columns)
+            (return (query-relation-empty) 0 false)))))
+    (let [tuple-offset (+ (count query.inputs) (count query.collection-inputs))]
+      (for [tuple index query.tuple-inputs]
+        (let [input-index (+ tuple-offset index)]
+          (when (or (>= input-index (count inputs))
+                    (not (= inputs[input-index].kind .Collection))
+                    (not (= (count tuple.vars) (count inputs[input-index].values)))
+                    (not (query-relation-append-initial-input-rows! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) tuple.vars inputs[input-index].values (count tuple.vars))))
+            (delete attrs)
+            (delete attr-sources)
+            (delete-relation-columns columns)
+            (return (query-relation-empty) 0 false)))))
+    (let [relation-offset (+ (count query.inputs) (count query.collection-inputs) (count query.tuple-inputs))]
+      (for [relation index query.relation-inputs]
+        (let [input-index (+ relation-offset index)]
+          (when (or (>= input-index (count inputs))
+                    (not (cond
+                           (and (= inputs[input-index].kind .Relation)
+                                (= inputs[input-index].width (count relation.vars)))
+                             (query-relation-append-initial-input-rows! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) relation.vars inputs[input-index].values inputs[input-index].width)
+                           (and (= inputs[input-index].kind .Scalar)
+                                (= inputs[input-index].value.kind .Map)
+                                (= (count relation.vars) 2))
+                             (query-relation-append-initial-input-rows! (addr attrs) (addr attr-sources) (addr columns) (addr row-count) relation.vars inputs[input-index].value.items 2)
+                           :else false)))
             (delete attrs)
             (delete attr-sources)
             (delete-relation-columns columns)
@@ -3650,6 +3769,7 @@
   Shared-Resident-Indexes
   Shared-Resident-Datoms-And-Indexes
   SQLite-Snapshot
+  Tx-Ops-Overlay
 ])
 
 (defstruct DB-Read-Source {
@@ -3658,6 +3778,9 @@
   shared-datoms: ^Shared-Datom-Log
   shared-indexes: ^Shared-DB-Int-Indexes
   sqlite-snapshot: ^SQLite-DB-Snapshot
+  overlay-base: ^DB-Read-Source
+  overlay-ops: ^[dynamic]Tx-Op
+  overlay-tx: u64
 })
 
 (defstruct DB-Read-Named-Source {
@@ -3679,6 +3802,12 @@
 
 (defn sqlite-db-read-source [snapshot: ^SQLite-DB-Snapshot] -> DB-Read-Source
   (DB-Read-Source {kind: .SQLite-Snapshot sqlite-snapshot: snapshot}))
+
+(defn tx-ops-overlay-db-read-source [base: ^DB-Read-Source, ops: ^[dynamic]Tx-Op, tx: u64] -> DB-Read-Source
+  (DB-Read-Source {kind: .Tx-Ops-Overlay
+                   overlay-base: base
+                   overlay-ops: ops
+                   overlay-tx: tx}))
 
 (defn db-read-named-source [name: string, source: DB-Read-Source] -> DB-Read-Named-Source
   (DB-Read-Named-Source {name: name source: source}))
@@ -3721,6 +3850,7 @@
     .Shared-Resident-Indexes (shared-db-int-index-view source.shared-indexes order)
     .Shared-Resident-Datoms-And-Indexes (shared-db-int-index-view source.shared-indexes order)
     .SQLite-Snapshot (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
+    .Tx-Ops-Overlay (db-read-source-index-view source.overlay-base^ order)
      (DB-Index-View {})))
 
 (defn db-read-source-eavt-entity-range [source: DB-Read-Source, entity: u64] -> [low: int, high: int, exists: bool, ok: bool, error: string]
@@ -3974,7 +4104,49 @@
             (set! high mid)))))
     (return low true "")))
 
+(defn datom-same-fact? [datom: Datom, entity: u64, attr: string, value: Value] -> bool
+  (and (= datom.e entity)
+       (= datom.a attr)
+       (value-equal? datom.v value)))
+
+(defn remove-datom-fact! [datoms: ^[dynamic]Datom, entity: u64, attr: string, value: Value]
+  (let [index (- (count datoms^) 1)]
+    (while (>= index 0)
+      (when (datom-same-fact? datoms^[index] entity attr value)
+        (delete-owned-datom datoms^[index])
+        (arr.remove-ordered-at! datoms^ index))
+      (set! index (- index 1)))))
+
+(defn tx-op-index-values-match? [op: Tx-Op, order: Public-Index-Order, values: []Value] -> bool
+  (let [datom (Datom {e: op.e
+                      a: op.a
+                      v: op.v
+                      tx: 0
+                      added: (= op.kind .Add)})]
+    (datom-matches-index-values? datom (public-index-order-text order) values)))
+
+(defn append-owned-datom-from-tx-op! [out: ^[dynamic]Datom, op: Tx-Op, tx: u64]
+  (let [datom (Datom {e: op.e
+                      a: op.a
+                      v: op.v
+                      tx: tx
+                      added: true})]
+    (arr.push! out^ (datom-owned datom))))
+
+(defn db-read-source-apply-overlay-ops! [out: ^[dynamic]Datom, source: DB-Read-Source, order: Public-Index-Order, values: []Value]
+  (for [op source.overlay-ops^]
+    (when (tx-op-index-values-match? op order values)
+      (remove-datom-fact! out op.e op.a op.v)
+      (when (= op.kind .Add)
+        (append-owned-datom-from-tx-op! out op source.overlay-tx)))))
+
 (defn db-read-source-append-index-datoms! [out: ^[dynamic]Datom, source: DB-Read-Source, order: Public-Index-Order, values: []Value] -> [ok: bool, error: string]
+  (when (= source.kind .Tx-Ops-Overlay)
+    (let [[base-ok base-error] (db-read-source-append-index-datoms! out source.overlay-base^ order values)]
+      (when (not base-ok)
+        (return false base-error))
+      (db-read-source-apply-overlay-ops! out source order values)
+      (return true "")))
   (let [view (db-read-source-index-view source order)
         order-text (public-index-order-text order)
         [low low-ok low-error] (db-read-source-lower-bound-values source view values)]
@@ -4007,6 +4179,18 @@
         (delete-owned-datoms out)
         (return (make [dynamic]Datom) false scan-error)))))
 
+(defn db-read-source-materialize-db [source: DB-Read-Source] -> [db: DB, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        view (db-read-source-index-view source .EAVT)
+        n (db-index-view-count view)]
+    (for [entry (arr.range 0 n)]
+      (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+        (when (not datom-ok)
+          (delete-owned-datoms out)
+          (return (build-db (make [dynamic]Datom)) false datom-error))
+        (arr.push! out datom)))
+    (return (build-db out) true "")))
+
 (defn db-read-source-datoms-by-entity-attr [source: DB-Read-Source, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
   (let [out (make [dynamic]Datom)
         values ([]Value [(value-entity entity) (value-keyword attr)])
@@ -4018,6 +4202,13 @@
         (return (make [dynamic]Datom) false scan-error)))))
 
 (defn db-read-source-datoms-by-entity [source: DB-Read-Source, entity: u64] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (when (= source.kind .Tx-Ops-Overlay)
+    (let [[out base-ok base-error] (db-read-source-datoms-by-entity source.overlay-base^ entity)]
+      (when (not base-ok)
+        (return out false base-error))
+      (let [values ([]Value [(value-entity entity)])]
+        (db-read-source-apply-overlay-ops! (addr out) source .EAVT values))
+      (return out true "")))
   (let [out (make [dynamic]Datom)
         [low high exists range-ok range-error] (db-read-source-eavt-entity-range source entity)]
     (when (not range-ok)
@@ -4062,6 +4253,14 @@
       (return 0 false true ""))))
 
 (defn db-read-source-cardinality-one-value-fast-all-current [source: DB-Read-Source, entity: u64, attr: string] -> [value: Value, ok: bool, error: string]
+  (when (= source.kind .Tx-Ops-Overlay)
+    (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity attr)]
+      (when (not datoms-ok)
+        (return (Value {}) false datoms-error))
+      (defer (delete-owned-datoms datoms))
+      (when (= (count datoms) 0)
+        (return (Value {}) false ""))
+      (return (value-owned datoms[(- (count datoms) 1)].v) true "")))
   (let [[index-pos pos-exists pos-ok pos-error] (db-read-source-eavt-entity-attr-position source entity attr)]
     (when (not pos-ok)
       (return (Value {}) false pos-error))
@@ -14382,6 +14581,19 @@
       (return true)))
   false)
 
+(defn query-simple-inputs-can-start-typed? [query: Query] -> bool
+  (when (> (count query.input-specs) 0)
+    (do
+      (for [spec query.input-specs]
+        (when (not (or (= spec.kind .Scalar)
+                       (= spec.kind .Collection)
+                       (= spec.kind .Tuple)
+                       (= spec.kind .Relation)
+                       (= spec.kind .Ignore)))
+          (return false)))
+      (return true)))
+  true)
+
 (defn query-relation-engine-eligible? [query: Query, sources: []DB-Source] -> bool
   (when (not (query-steps-are-relation-engine-supported? query))
     (return false))
@@ -14392,7 +14604,8 @@
                    (count query.relation-inputs)
                    (count query.input-specs))
                 0)
-             (not (query-uses-source-input-clause? query)))
+             (not (query-uses-source-input-clause? query))
+             (not (query-simple-inputs-can-start-typed? query)))
     (return false))
   (when (and (query-uses-primary-relation-db-source? query)
              (or (> (count query.predicates) 0)
@@ -16746,6 +16959,14 @@
     (return (query-relation-from-db-clause db clause-value "")))
   (query-relation-empty))
 
+(defn query-stats-observe-clause-relation! [stats: ^Query-Stats, query: Query, sources: []DB-Source, clause-value: Clause, rel: Query-Relation]
+  (when (not rel.has-typed-columns)
+    (return))
+  (if clause-value.has-source
+    (when (and (not (query-source-input? query clause-value.source))
+               (query-source-db? sources clause-value.source))
+      (set! stats^.source-index-scans (+ stats^.source-index-scans 1)))
+    (set! stats^.typed-index-scans (+ stats^.typed-index-scans 1))))
 
 (defn query-relation-reduce [db: DB, sources: []DB-Source, relations: []Query-Relation] -> Query-Relation
   (let [current (query-relation-singleton)]
@@ -16777,6 +16998,7 @@
             (query-stats-observe-bindings! stats (query-relation-row-count current)))
           (let [clause-rel (query-relation-from-clause db query inputs sources query.clauses[step.index])
                 next (query-relation-join db sources current clause-rel)]
+            (query-stats-observe-clause-relation! stats query sources query.clauses[step.index] clause-rel)
             (set! stats^.clause-candidates (+ stats^.clause-candidates (query-relation-row-count clause-rel)))
             (delete-query-relation current)
             (delete-query-relation clause-rel)

@@ -84,16 +84,26 @@ resident rebuilt `DB`.
 `Store-DB` is the internal storage-neutral immutable DB snapshot handle for
 this path. It currently wraps a retained `SQLite-DB-Snapshot`, exposes the
 same `DB-Read-Source` boundary as resident DBs, and can run text/prepared
-queries without rebuilding resident arrays. It also has a shared-snapshot
-variant for the shared in-memory publish path. The C ABI `vev_db_t` wrapper has
-started moving to this shape internally. The previous ABI compile blocker is
-gone: `scripts/build_c_abi.sh` now builds `libvev` and passes the C, Python,
-Rust, Go, Node, Java, and Clojure smoke coverage, including in-memory direct
-nested pull through `vev_pull_edn`, storage-neutral DB-handle prepared queries,
-and host-wrapper nested pull traversal. Shared `Store-DB` direct nested pull is
-covered through the source-backed renderer, and the storage architecture test
-now covers the same nested direct pull shape through a retained read-only
-SQLite `Store-DB`.
+queries without rebuilding resident arrays. SQLite-backed retained `Store-DB`
+handles now reopen an independent read snapshot for the same durable path,
+at the original basis tx, and remain queryable after the original read-only
+store/snapshot is closed. SQLite index cursors are basis-pinned, so a durable
+DB value taken at tx N keeps reading the tx N index root even if the writer
+later advances to tx N+1. It also has a shared-snapshot variant for the shared
+in-memory publish path.
+The C ABI `vev_db_t` wrapper now stores this shape internally. The previous ABI
+compile blocker is gone: `scripts/build_c_abi.sh` now builds `libvev` and
+passes the C, Python, Rust, Go, Node, Java, and Clojure smoke coverage,
+including in-memory direct nested pull through `vev_pull_edn`,
+storage-neutral DB-handle prepared queries, and host-wrapper nested pull
+traversal. Shared `Store-DB` direct nested pull is covered through the
+source-backed renderer, and the storage architecture test now covers the same
+nested direct pull shape through a retained read-only SQLite `Store-DB`, plus
+querying a retained durable handle after closing its original store. Immutable
+host `with`/`db-with` also routes through `Store-DB` now. For non-resident
+snapshots this currently materializes the source into a resident compatibility
+DB before applying the existing transaction engine; a source-native write-state
+overlay remains the production architecture.
 
 There are now two write modes:
 
@@ -395,6 +405,13 @@ instead of separate resident, SQLite, and shared APIs.
 This lets storage-neutral callers, including the CLI, print parsed query results
 from retained SQLite/shared snapshots without reopening or reaching through a
 resident `DB` field just for value rendering.
+Retained SQLite `Store-DB` handles also own their reopened snapshot handle, so
+host-facing DB values can be closed independently from the store that produced
+them while still reading the original durable basis.
+`db-with-store-db-text` provides the current immutable transaction bridge for
+storage-neutral DB handles. It returns a resident derived DB value and leaves
+the original durable/shared snapshot untouched; this is useful for host API
+parity while the lower-level write overlay is still being built.
 The write benchmark now has a `shared-store-db-heavy` workload over this same
 storage-neutral connection/snapshot API. It provides the current host-handle
 acceptance check for the shared publish path, and early numbers match the raw
@@ -532,9 +549,16 @@ recursion and incoming-ref cleanup, so those current-state reads no longer
 force the resident resolver. Explicit-ID schema-only transactions also resolve
 through the shared write-state path for common non-tuple schema installation;
 mixed schema/data transactions and tuple schema changes still stay on resident
-fallback. The remaining work is therefore the general write-state overlay:
-transaction functions and mixed schema validation should stop requiring a
-rebuilt resident DB.
+fallback. Registered transaction functions can now transact through a shared
+connection and publish through the shared snapshot path. The DB-callback API is
+kept for compatibility, and a source-callback API now passes `DB-Read-Source`
+to callbacks so they can read transaction-local facts without receiving a
+resident `DB`. This works for typed tx-data plus EDN text and prepared tx-data.
+The source-callback path now uses a transaction-local `DB-Read-Source` overlay
+at callback boundaries, so common current-fact callback reads do not build a
+temporary shared snapshot. The remaining work is the general write-state/source
+overlay for mixed schema validation, remaining upsert-heavy transaction shapes,
+and host-visible immutable `with`/`db-with` over source-backed DB handles.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing

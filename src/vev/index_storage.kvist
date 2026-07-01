@@ -70,6 +70,19 @@
   new-entities-after-existing: bool
 })
 
+(defstruct Tx-Fn-Source-Result {
+  ok: bool
+  error: string
+  tx-data: [dynamic]Tx-Data
+})
+
+(defstruct Tx-Fn-Source-String {
+  ident: string
+  f: fn [source: DB-Read-Source, arg: string] -> Tx-Fn-Source-Result
+  has-values-fn: bool
+  values-f: fn [source: DB-Read-Source, args: []Value] -> Tx-Fn-Source-Result
+})
+
 (defn shared-int-chunk [values: []int] -> Shared-Int-Chunk
   (let [refs (make [dynamic]int 0 1)
         owned (arr.into [dynamic]int values)]
@@ -762,14 +775,18 @@
 (defn shared-write-state-advance! [state: ^Shared-Write-State, after: DB]
   (set! state^.conn.db after)
   (set! state^.conn.next-tx (+ state^.conn.next-tx 1))
-  (delete state^.schema-ref)
-  (set! state^.schema-ref (clone-schema-ref after.schema-ref))
-  (delete state^.schema-unique)
-  (set! state^.schema-unique (clone-schema-unique after.schema-unique))
-  (delete state^.schema-unique-identity)
-  (set! state^.schema-unique-identity (shared-write-state-clone-schema-unique-identity after))
-  (set! state^.has-tuple-schema (db-has-tuple-schema? after))
-  (set! state^.next-entity-id (next-entity-id (slice after.datoms 0))))
+  (shared-write-state-refresh-from-current! state))
+
+(defn shared-write-state-refresh-from-current! [state: ^Shared-Write-State]
+  (let [after state^.conn.db]
+    (delete state^.schema-ref)
+    (set! state^.schema-ref (clone-schema-ref after.schema-ref))
+    (delete state^.schema-unique)
+    (set! state^.schema-unique (clone-schema-unique after.schema-unique))
+    (delete state^.schema-unique-identity)
+    (set! state^.schema-unique-identity (shared-write-state-clone-schema-unique-identity after))
+    (set! state^.has-tuple-schema (db-has-tuple-schema? after))
+    (set! state^.next-entity-id (next-entity-id (slice after.datoms 0)))))
 
 (defn shared-write-state-notify! [state: ^Shared-Write-State, report: Tx-Report]
   (notify-listeners! (addr state^.conn) report))
@@ -1967,6 +1984,87 @@
   (shared-write-state-note-resident-fallback! state)
   (resolve-tx-data-for-tx state^.conn.db tx-data state^.conn.next-tx))
 
+(defn tx-fn-source-ok [tx-data: []Tx-Data] -> Tx-Fn-Source-Result
+  (let [out (arr.into [dynamic]Tx-Data tx-data)]
+    (Tx-Fn-Source-Result {ok: true
+                          error: ""
+                          tx-data: out})))
+
+(defn tx-fn-source-error [error: string] -> Tx-Fn-Source-Result
+  (Tx-Fn-Source-Result {ok: false
+                        error: error
+                        tx-data: (make [dynamic]Tx-Data)}))
+
+(defn tx-fn-source-string [ident: string, f: fn [source: DB-Read-Source, arg: string] -> Tx-Fn-Source-Result] -> Tx-Fn-Source-String
+  (Tx-Fn-Source-String {ident: ident f: f}))
+
+(defn tx-fn-source-values [ident: string, f: fn [source: DB-Read-Source, args: []Value] -> Tx-Fn-Source-Result] -> Tx-Fn-Source-String
+  (Tx-Fn-Source-String {ident: ident has-values-fn: true values-f: f}))
+
+(defn tx-fn-source-string-index [registry: []Tx-Fn-Source-String, ident: string] -> [index: int, ok: bool]
+  (let [i 0]
+    (while (< i (count registry))
+      (when (= registry[i].ident ident)
+        (return i true))
+      (set! i (+ i 1)))
+    (return 0 false)))
+
+(defn tx-fn-source-string-duplicate-ident [registry: []Tx-Fn-Source-String] -> [ident: string, found: bool]
+  (let [i 0]
+    (while (< i (count registry))
+      (let [j (+ i 1)]
+        (while (< j (count registry))
+          (when (= registry[i].ident registry[j].ident)
+            (return registry[i].ident true))
+          (set! j (+ j 1))))
+      (set! i (+ i 1)))
+    (return "" false)))
+
+(defn call-source-registered-tx-fn [entry: Tx-Fn-Source-String, source: DB-Read-Source, data: Tx-Data] -> Tx-Fn-Source-Result
+  (when (= data.v.kind .Vector)
+    (when entry.has-values-fn
+      (return (entry.values-f source (slice data.v.items 0))))
+    (when (and (= (count data.v.items) 1)
+               (= data.v.items[0].kind .String))
+      (return (entry.f source data.v.items[0].text)))
+    (return (tx-fn-source-error "transaction fn expects one string argument")))
+  (when entry.has-values-fn
+    (return (entry.values-f source ([]Value [data.v]))))
+  (when (= data.v.kind .String)
+    (return (entry.f source data.v.text)))
+  (tx-fn-source-error "transaction fn expects one string argument"))
+
+(defn failed-source-registered-tx [before: DB, ops: [dynamic]Tx-Op, tx-meta: [dynamic]Tx-Meta, tempids: [dynamic]Tempid, segment: [dynamic]Tx-Data, error: string] -> Tx-Report
+  (delete ops)
+  (delete tx-meta)
+  (delete tempids)
+  (delete segment)
+  (failed-tx-report before error))
+
+(defn append-source-resolved-tx! [ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, resolved: Resolved-Tx]
+  (for [op resolved.ops]
+    (arr.push! ops^ op))
+  (for [meta resolved.tx-meta]
+    (arr.push! tx-meta^ meta))
+  (for [tempid resolved.tempids]
+    (arr.push! tempids^ tempid)))
+
+(defn resolve-shared-source-tx-segment! [state: ^Shared-Write-State, source: DB-Read-Source, ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, segment: ^[dynamic]Tx-Data] -> [ok: bool, error: string]
+  (when (= (count segment^) 0)
+    (return true ""))
+  (let [resolved (shared-write-state-resolve-tx-data state source (slice segment^ 0))]
+    (when (not resolved.ok)
+      (let [error resolved.error]
+        (delete-resolved-tx resolved)
+        (return false error)))
+    (append-source-resolved-tx! ops tx-meta tempids resolved)
+    (delete resolved.ops)
+    (delete resolved.tx-meta)
+    (delete resolved.tempids)
+    (delete segment^)
+    (set! segment^ (make [dynamic]Tx-Data))
+    (return true "")))
+
 (defn failed-shared-tx-report [before-snapshot: Shared-DB-Snapshot, error: string] -> Shared-Tx-Report
   (Shared-Tx-Report {ok: false
                      error: error
@@ -2022,7 +2120,81 @@
     (let [next-snapshot (shared-db-snapshot-with-tx-report-direct conn^.snapshot conn^.write.conn.db report)]
       (delete-shared-db-snapshot conn^.snapshot)
       (set! conn^.snapshot next-snapshot))
+    (shared-write-state-refresh-from-current! (addr conn^.write))
     report))
+
+(defn shared-conn-transact-with-string-fns [conn: ^Shared-Conn, tx-data: []Tx-Data, registry: []Tx-Fn-String] -> Tx-Report
+  (let [report (transact-tx-data-with-string-fns (addr conn^.write.conn) tx-data registry)]
+    (when (not report.ok)
+      (return report))
+    (let [next-snapshot (shared-db-snapshot-with-tx-report-direct conn^.snapshot conn^.write.conn.db report)]
+      (delete-shared-db-snapshot conn^.snapshot)
+      (set! conn^.snapshot next-snapshot))
+    (shared-write-state-refresh-from-current! (addr conn^.write))
+    report))
+
+(defn shared-conn-transact-with-source-string-fns [conn: ^Shared-Conn, tx-data: []Tx-Data, registry: []Tx-Fn-Source-String] -> Tx-Report
+  (let [before (shared-write-state-before-db (addr conn^.write))
+        tx (shared-write-state-next-tx (addr conn^.write))
+        [duplicate-ident has-duplicate] (tx-fn-source-string-duplicate-ident registry)
+        ops (make [dynamic]Tx-Op)
+        tx-meta (make [dynamic]Tx-Meta)
+        tempids (make [dynamic]Tempid)
+        segment (make [dynamic]Tx-Data)]
+    (when has-duplicate
+      (return (failed-source-registered-tx before ops tx-meta tempids segment (fmt.tprintf "duplicate transaction fn registration: %s" duplicate-ident))))
+    (for [data tx-data]
+      (when (= data.op ":db.fn/call-ident")
+        (let [base-source (shared-conn-read-source conn)
+              [segment-ok segment-error] (resolve-shared-source-tx-segment! (addr conn^.write) base-source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+          (when (not segment-ok)
+            (return (failed-source-registered-tx before ops tx-meta tempids segment segment-error)))
+          (let [current-source (tx-ops-overlay-db-read-source (addr base-source) (addr ops) tx)
+                [fn-index fn-ok] (tx-fn-source-string-index registry data.ident)]
+            (when (not fn-ok)
+              (return (failed-source-registered-tx before ops tx-meta tempids segment "transaction fn not registered")))
+            (let [result (call-source-registered-tx-fn registry[fn-index] current-source data)]
+              (when (not result.ok)
+                (delete result.tx-data)
+                (return (failed-source-registered-tx before ops tx-meta tempids segment result.error)))
+              (let [[result-ok result-error] (resolve-shared-source-tx-segment! (addr conn^.write) current-source (addr ops) (addr tx-meta) (addr tempids) (addr result.tx-data))]
+                (delete result.tx-data)
+                (when (not result-ok)
+                  (return (failed-source-registered-tx before ops tx-meta tempids segment result-error)))))))
+        (continue))
+      (arr.push! segment data))
+    (let [tail-source (shared-conn-read-source conn)
+          [tail-ok tail-error] (resolve-shared-source-tx-segment! (addr conn^.write) tail-source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+      (when (not tail-ok)
+        (return (failed-source-registered-tx before ops tx-meta tempids segment tail-error))))
+    (delete segment)
+    (let [applied (apply-resolved-ops-to-datoms before (slice ops 0) tx)]
+      (when (not applied.ok)
+        (delete ops)
+        (delete tx-meta)
+        (delete tempids)
+        (delete-tx-apply-result applied)
+        (return (failed-tx-report before applied.error)))
+      (let [append-snapshot (if applied.append-only
+                              (shared-db-snapshot-with-append-apply-result conn^.snapshot before applied)
+                              (retain-shared-db-snapshot conn^.snapshot))
+            after (if applied.append-only
+                    (build-db-append-only-with-publish-plan before applied.after-datoms applied.publish-plan)
+                    (build-db applied.after-datoms))
+            report (tx-report-from-apply-result before after applied (slice tx-meta 0) tempids)]
+        (let [next-snapshot (if report.append-only
+                              append-snapshot
+                              (shared-db-snapshot-with-tx-report conn^.snapshot after report))]
+          (delete ops)
+          (delete tx-meta)
+          (when (not report.append-only)
+            (delete-shared-db-snapshot append-snapshot))
+          (shared-write-state-advance! (addr conn^.write) after)
+          (delete-shared-db-snapshot conn^.snapshot)
+          (set! conn^.snapshot next-snapshot)
+          (shared-write-state-notify! (addr conn^.write) report)
+          (return report))))
+    (failed-tx-report (shared-write-state-before-db (addr conn^.write)) "unreachable source transaction function path")))
 
 (defn shared-conn-transact-report [conn: ^Shared-Conn, tx-data: []Tx-Data] -> Shared-Tx-Report
   (let [before-snapshot (retain-shared-db-snapshot conn^.snapshot)

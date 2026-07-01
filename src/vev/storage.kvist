@@ -614,6 +614,47 @@ sqlite_latest_index_chunk_row_count_raw :: proc(handle: rawptr, index_name: stri
     return 0, 0, false, sqlite_error_text(db, \"sqlite latest index chunk read failed\")
 }
 
+sqlite_index_chunk_row_count_at_basis_raw :: proc(handle: rawptr, index_name: string, basis_tx: u64) -> (u64, bool, string) {
+    if handle == nil {
+        return 0, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"\"
+    switch index_name {
+    case \":eavt\":
+        sql = \"SELECT c.row_count FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.eavt_chunk_id WHERE r.basis_tx = ? ORDER BY r.root_id DESC LIMIT 1\"
+    case \":aevt\":
+        sql = \"SELECT c.row_count FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.aevt_chunk_id WHERE r.basis_tx = ? ORDER BY r.root_id DESC LIMIT 1\"
+    case \":avet\":
+        sql = \"SELECT c.row_count FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.avet_chunk_id WHERE r.basis_tx = ? ORDER BY r.root_id DESC LIMIT 1\"
+    case \":vaet\":
+        sql = \"SELECT c.row_count FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.vaet_chunk_id WHERE r.basis_tx = ? ORDER BY r.root_id DESC LIMIT 1\"
+    case:
+        return 0, false, \"unknown Vev index name\"
+    }
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return 0, false, sqlite_error_text(db, \"sqlite prepare basis index chunk failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if sqlite3_bind_int64(stmt, 1, i64(basis_tx)) != SQLITE_OK {
+        return 0, false, sqlite_error_text(db, \"sqlite bind basis index chunk failed\")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        return u64(sqlite3_column_int64(stmt, 0)), true, \"\"
+    }
+    if rc == SQLITE_DONE {
+        return 0, false, \"sqlite DB has no Vev index root for basis\"
+    }
+    return 0, false, sqlite_error_text(db, \"sqlite basis index chunk read failed\")
+}
+
 sqlite_latest_index_entries_text_raw :: proc(handle: rawptr, index_name: string) -> (string, bool, string) {
     if handle == nil {
         return \"\", false, \"sqlite handle was nil\"
@@ -790,6 +831,108 @@ sqlite_latest_index_entries_page_text_raw :: proc(handle: rawptr, index_name: st
     out, err := strings.clone_from_cstring(raw)
     if err != nil {
         return \"\", 0, false, \"failed to clone sqlite child index page\"
+    }
+    return out, base_offset, true, \"\"
+}
+
+sqlite_index_entries_page_text_at_basis_raw :: proc(handle: rawptr, index_name: string, basis_tx: u64, offset: i64, limit: i64) -> (string, i64, bool, string) {
+    if handle == nil {
+        return \"\", 0, false, \"sqlite handle was nil\"
+    }
+    if offset < 0 {
+        return \"\", 0, false, \"sqlite index page offset was negative\"
+    }
+    if limit <= 0 {
+        return \"[]\", offset, true, \"\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"\"
+    switch index_name {
+    case \":eavt\":
+        sql = \"SELECT c.chunk_id, c.level, c.payload_text FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.eavt_chunk_id WHERE r.basis_tx = ? ORDER BY r.root_id DESC LIMIT 1\"
+    case \":aevt\":
+        sql = \"SELECT c.chunk_id, c.level, c.payload_text FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.aevt_chunk_id WHERE r.basis_tx = ? ORDER BY r.root_id DESC LIMIT 1\"
+    case \":avet\":
+        sql = \"SELECT c.chunk_id, c.level, c.payload_text FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.avet_chunk_id WHERE r.basis_tx = ? ORDER BY r.root_id DESC LIMIT 1\"
+    case \":vaet\":
+        sql = \"SELECT c.chunk_id, c.level, c.payload_text FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.vaet_chunk_id WHERE r.basis_tx = ? ORDER BY r.root_id DESC LIMIT 1\"
+    case:
+        return \"\", 0, false, \"unknown Vev index name\"
+    }
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return \"\", 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite prepare basis index page failed\")
+    }
+    if sqlite3_bind_int64(stmt, 1, i64(basis_tx)) != SQLITE_OK {
+        _ = sqlite3_finalize(stmt)
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind basis index page failed\")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_DONE {
+        _ = sqlite3_finalize(stmt)
+        return \"\", 0, false, \"sqlite DB has no Vev index root for basis\"
+    }
+    if rc != SQLITE_ROW {
+        _ = sqlite3_finalize(stmt)
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite basis index page read failed\")
+    }
+    root_id := sqlite3_column_int64(stmt, 0)
+    level := sqlite3_column_int64(stmt, 1)
+    if level == 0 {
+        raw := sqlite3_column_text(stmt, 2)
+        if raw == nil {
+            _ = sqlite3_finalize(stmt)
+            return \"\", 0, false, \"sqlite index chunk payload was null\"
+        }
+        out, err := strings.clone_from_cstring(raw)
+        _ = sqlite3_finalize(stmt)
+        if err != nil {
+            return \"\", 0, false, \"failed to clone sqlite index chunk payload\"
+        }
+        return out, 0, true, \"\"
+    }
+    _ = sqlite3_finalize(stmt)
+
+    leaf_size := i64(128)
+    first_ordinal := offset / leaf_size
+    last_ordinal := (offset + limit - 1) / leaf_size
+    base_offset := first_ordinal * leaf_size
+    child_stmt: ^SQLite3_Stmt
+    child_sql := \"SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']' FROM (SELECT substr(child.payload_text, 2, length(child.payload_text) - 2) AS payload FROM vev_index_chunk_edges edge JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id WHERE edge.parent_chunk_id = ? AND edge.ordinal BETWEEN ? AND ? ORDER BY edge.ordinal)\"
+    child_sql_c, child_sql_c_ok := sqlite_cstring(child_sql)
+    if !child_sql_c_ok {
+        return \"\", 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(child_sql_c)
+    if sqlite3_prepare_v2(db, child_sql_c, -1, &child_stmt, nil) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite prepare child basis index page failed\")
+    }
+    defer _ = sqlite3_finalize(child_stmt)
+    if sqlite3_bind_int64(child_stmt, 1, root_id) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child basis index root failed\")
+    }
+    if sqlite3_bind_int64(child_stmt, 2, first_ordinal) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind first child basis ordinal failed\")
+    }
+    if sqlite3_bind_int64(child_stmt, 3, last_ordinal) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind last child basis ordinal failed\")
+    }
+    child_rc := sqlite3_step(child_stmt)
+    if child_rc != SQLITE_ROW {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite child basis index page read failed\")
+    }
+    raw := sqlite3_column_text(child_stmt, 0)
+    if raw == nil {
+        return \"\", 0, false, \"sqlite child basis index page was null\"
+    }
+    out, err := strings.clone_from_cstring(raw)
+    if err != nil {
+        return \"\", 0, false, \"failed to clone sqlite child basis index page\"
     }
     return out, base_offset, true, \"\"
 }
@@ -1581,6 +1724,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   handle: rawptr
   owns-handle: bool
   index-name: string
+  basis-tx: u64
   page-size: int
   row-count: int
   page: [dynamic]int
@@ -1603,6 +1747,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   datom-stmt: rawptr
   basis-tx: u64
   datom-count: int
+  path: string
 })
 
 (defenum Store-Conn-Kind [
@@ -1958,12 +2103,31 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn sqlite-open-index-cursor-handle [handle: rawptr, index-name: string, page-size: int] -> [out-cursor: SQLite-Index-Cursor, ok: bool, error: string]
   (when (<= page-size 0)
     (return (SQLite-Index-Cursor {}) false "sqlite index page size must be positive"))
-  (let [[_ rows rows-ok rows-error] (sqlite-latest-index-chunk-row-count-raw handle index-name)]
+  (let [[basis rows rows-ok rows-error] (sqlite-latest-index-chunk-row-count-raw handle index-name)]
     (when (not rows-ok)
       (return (SQLite-Index-Cursor {}) false rows-error))
     (return (SQLite-Index-Cursor {handle: handle
                                   owns-handle: false
                                   index-name: (string-owned index-name)
+                                  basis-tx: basis
+                                  page-size: page-size
+                                  row-count: (int rows)
+                                  page: (make [dynamic]int)
+                                  page-start: 0
+                                  page-end: 0})
+            true
+            "")))
+
+(defn sqlite-open-index-cursor-handle-at-basis [handle: rawptr, index-name: string, basis-tx: u64, page-size: int] -> [out-cursor: SQLite-Index-Cursor, ok: bool, error: string]
+  (when (<= page-size 0)
+    (return (SQLite-Index-Cursor {}) false "sqlite index page size must be positive"))
+  (let [[rows rows-ok rows-error] (sqlite-index-chunk-row-count-at-basis-raw handle index-name basis-tx)]
+    (when (not rows-ok)
+      (return (SQLite-Index-Cursor {}) false rows-error))
+    (return (SQLite-Index-Cursor {handle: handle
+                                  owns-handle: false
+                                  index-name: (string-owned index-name)
+                                  basis-tx: basis-tx
                                   page-size: page-size
                                   row-count: (int rows)
                                   page: (make [dynamic]int)
@@ -2002,7 +2166,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
              (< offset cursor^.page-end))
     (return true ""))
   (let [page-start (* (/ offset cursor^.page-size) cursor^.page-size)
-        [text base-offset loaded-ok loaded-error] (sqlite-latest-index-entries-page-text-raw cursor^.handle cursor^.index-name (i64 page-start) (i64 cursor^.page-size))]
+        [text base-offset loaded-ok loaded-error] (sqlite-index-entries-page-text-at-basis-raw cursor^.handle cursor^.index-name cursor^.basis-tx (i64 page-start) (i64 cursor^.page-size))]
     (when (not loaded-ok)
       (return false loaded-error))
     (let [[parsed parsed-ok parsed-error] (parse-index-entries-text text)]
@@ -2064,19 +2228,27 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn sqlite-open-index-snapshot-handle [handle: rawptr, page-size: int] -> [snapshot: SQLite-Index-Snapshot, ok: bool, error: string]
   (when (<= page-size 0)
     (return (SQLite-Index-Snapshot {}) false "sqlite index snapshot page size must be positive"))
-  (let [[eavt eavt-ok eavt-error] (sqlite-open-index-cursor-handle handle ":eavt" page-size)]
+  (let [[basis basis-ok basis-error] (sqlite-latest-index-root-basis-raw handle)]
+    (when (not basis-ok)
+      (return (SQLite-Index-Snapshot {}) false basis-error))
+    (sqlite-open-index-snapshot-handle-at-basis handle basis page-size)))
+
+(defn sqlite-open-index-snapshot-handle-at-basis [handle: rawptr, basis-tx: u64, page-size: int] -> [snapshot: SQLite-Index-Snapshot, ok: bool, error: string]
+  (when (<= page-size 0)
+    (return (SQLite-Index-Snapshot {}) false "sqlite index snapshot page size must be positive"))
+  (let [[eavt eavt-ok eavt-error] (sqlite-open-index-cursor-handle-at-basis handle ":eavt" basis-tx page-size)]
     (when (not eavt-ok)
       (return (SQLite-Index-Snapshot {}) false eavt-error))
-    (let [[aevt aevt-ok aevt-error] (sqlite-open-index-cursor-handle handle ":aevt" page-size)]
+    (let [[aevt aevt-ok aevt-error] (sqlite-open-index-cursor-handle-at-basis handle ":aevt" basis-tx page-size)]
       (when (not aevt-ok)
         (close-sqlite-index-cursor eavt)
         (return (SQLite-Index-Snapshot {}) false aevt-error))
-      (let [[avet avet-ok avet-error] (sqlite-open-index-cursor-handle handle ":avet" page-size)]
+      (let [[avet avet-ok avet-error] (sqlite-open-index-cursor-handle-at-basis handle ":avet" basis-tx page-size)]
         (when (not avet-ok)
           (close-sqlite-index-cursor eavt)
           (close-sqlite-index-cursor aevt)
           (return (SQLite-Index-Snapshot {}) false avet-error))
-        (let [[vaet vaet-ok vaet-error] (sqlite-open-index-cursor-handle handle ":vaet" page-size)]
+        (let [[vaet vaet-ok vaet-error] (sqlite-open-index-cursor-handle-at-basis handle ":vaet" basis-tx page-size)]
           (when (not vaet-ok)
             (close-sqlite-index-cursor eavt)
             (close-sqlite-index-cursor aevt)
@@ -2244,10 +2416,13 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (let [[basis basis-ok basis-error] (sqlite-latest-index-root-basis-raw handle)]
     (when (not basis-ok)
       (return (SQLite-DB-Snapshot {}) false basis-error))
+    (sqlite-open-db-snapshot-handle-at-basis handle basis page-size)))
+
+(defn sqlite-open-db-snapshot-handle-at-basis [handle: rawptr, basis-tx: u64, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
     (let [[datom-count datom-count-ok datom-count-error] (sqlite-datom-count-raw handle)]
       (when (not datom-count-ok)
         (return (SQLite-DB-Snapshot {}) false datom-count-error))
-      (let [[indexes indexes-ok indexes-error] (sqlite-open-index-snapshot-handle handle page-size)]
+      (let [[indexes indexes-ok indexes-error] (sqlite-open-index-snapshot-handle-at-basis handle basis-tx page-size)]
         (when (not indexes-ok)
           (return (SQLite-DB-Snapshot {}) false indexes-error))
         (let [[datom-stmt datom-stmt-ok datom-stmt-error] (sqlite-prepare-datom-by-log-index-raw handle)]
@@ -2256,13 +2431,16 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
             (return (SQLite-DB-Snapshot {}) false datom-stmt-error))
         (return (SQLite-DB-Snapshot {indexes: indexes
                                      datom-stmt: datom-stmt
-                                     basis-tx: basis
+                                     basis-tx: basis-tx
                                      datom-count: (int datom-count)})
                 true
-                  ""))))))
+                  "")))))
 
 (defn sqlite-conn-open-db-snapshot [store: ^SQLite-Conn, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
-  (sqlite-open-db-snapshot-handle store^.handle page-size))
+  (let [[opened-snapshot snapshot-ok snapshot-error] (sqlite-open-db-snapshot-handle store^.handle page-size)]
+    (when snapshot-ok
+      (set! opened-snapshot.path (string-owned store^.path)))
+    (return opened-snapshot snapshot-ok snapshot-error)))
 
 (def sqlite-db-source-default-page-size 128)
 
@@ -2298,7 +2476,15 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (case snapshot.kind
     .Resident (Store-DB {kind: .Resident
                          resident: (clone-db snapshot.resident)})
-    .SQLite-Snapshot (Store-DB {})
+    .SQLite-Snapshot
+      (do
+        (when (= snapshot.sqlite-snapshot.path "")
+          (return (Store-DB {})))
+        (let [[retained retained-ok _] (sqlite-open-db-snapshot-at-basis snapshot.sqlite-snapshot.path snapshot.sqlite-snapshot.basis-tx sqlite-db-source-default-page-size)]
+          (if retained-ok
+            (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: retained})
+            (do
+              (Store-DB {})))))
     .Shared-Snapshot (Store-DB {kind: .Shared-Snapshot
                                 shared-snapshot: (retain-shared-db-snapshot snapshot.shared-snapshot)})
      (Store-DB {})))
@@ -2348,6 +2534,41 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (db-read-source-result-set-value source result)
       (return (Value {}) false source-error))))
 
+(defn store-db-materialize-db [snapshot: ^Store-DB] -> [db: DB, ok: bool, error: string]
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (when (not source-ok)
+      (return (build-db (make [dynamic]Datom)) false source-error))
+    (db-read-source-materialize-db source)))
+
+(defn with-store-db-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> Tx-Report
+  (let [[db db-ok db-error] (store-db-materialize-db snapshot)]
+    (when (not db-ok)
+      (return (failed-tx-report db db-error)))
+    (with-tx-data db tx-data)))
+
+(defn db-with-store-db-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> Store-DB
+  (let [report (with-store-db-tx-data snapshot tx-data)]
+    (if report.ok
+      (Store-DB {kind: .Resident
+                 resident: (clone-db report.db-after)})
+      (Store-DB {kind: .Resident
+                 resident: (clone-db report.db-before)}))))
+
+(defn with-store-db-text [snapshot: ^Store-DB, text: string] -> Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (when (not parse-ok)
+      (let [[db db-ok _] (store-db-materialize-db snapshot)]
+        (return (failed-tx-report db parse-error))))
+    (with-store-db-tx-data snapshot (slice tx-data 0))))
+
+(defn db-with-store-db-text [snapshot: ^Store-DB, text: string] -> Store-DB
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok _] (parse-tx-text! (addr tx-data) text)]
+    (if parse-ok
+      (db-with-store-db-tx-data snapshot (slice tx-data 0))
+      (retain-store-db snapshot^))))
+
 (defn q-store-db-value-text-with-input-text [snapshot: ^Store-DB, text: string, inputs-text: string] -> [value: Value, ok: bool, error: string]
   (let [result (q-result-store-db-text-with-input-text snapshot text inputs-text)]
     (defer (delete-query-result result))
@@ -2387,11 +2608,25 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (sqlite-close-live-raw handle)
         (return opened-snapshot false snapshot-error))
       (set! opened-snapshot.indexes.owns-handle true)
+      (set! opened-snapshot.path (string-owned path))
+      (return opened-snapshot true ""))))
+
+(defn sqlite-open-db-snapshot-at-basis [path: string, basis-tx: u64, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+  (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
+    (when (not open-ok)
+      (return (SQLite-DB-Snapshot {}) false open-error))
+    (let [[opened-snapshot snapshot-ok snapshot-error] (sqlite-open-db-snapshot-handle-at-basis handle basis-tx page-size)]
+      (when (not snapshot-ok)
+        (sqlite-close-live-raw handle)
+        (return opened-snapshot false snapshot-error))
+      (set! opened-snapshot.indexes.owns-handle true)
+      (set! opened-snapshot.path (string-owned path))
       (return opened-snapshot true ""))))
 
 (defn close-sqlite-db-snapshot! [snapshot: ^SQLite-DB-Snapshot]
   (sqlite-finalize-stmt-raw snapshot^.datom-stmt)
   (close-sqlite-index-snapshot! (addr snapshot^.indexes))
+  (delete snapshot^.path)
   (set! snapshot^ (SQLite-DB-Snapshot {})))
 
 (defn close-sqlite-db-snapshot [snapshot: SQLite-DB-Snapshot]

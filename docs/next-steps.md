@@ -130,9 +130,14 @@ Implemented so far:
   cannot provide a resident rebuilt `DB` value.
 - `Store-DB` is now an internal storage-neutral immutable DB snapshot handle.
   It can wrap a retained `SQLite-DB-Snapshot`, expose a `DB-Read-Source`, run
-  text/prepared queries, and close the retained snapshot explicitly. This is
-  the internal shape the C ABI/JVM/Clojure durable `d/db` handle should map to
-  once the ABI callback compile blocker is cleared.
+  text/prepared queries, and close the retained snapshot explicitly. Retaining
+  a SQLite-backed `Store-DB` now reopens an independent read snapshot for the
+  same durable path at the original basis tx, so the retained handle remains
+  queryable after the original read-only store and original snapshot have been
+  closed. SQLite index cursors are basis-pinned too: an old durable `Store-DB`
+  and a retained copy keep reading the original index root even after the
+  writer advances and creates later roots. This is the internal shape the C
+  ABI/JVM/Clojure durable `d/db` handle maps to.
 - source-backed `Store-DB` direct pulls now render owned nested ref maps through
   the same `DB-Read-Source` boundary as source-backed pull finds. The shared
   storage-neutral API test covers retaining a `Store-DB`, querying it, and
@@ -231,10 +236,14 @@ Remaining in this batch:
    direct nested pull through `vev_pull_edn`, storage-neutral DB-snapshot
    prepared query rendering, and host-wrapper nested pull traversal.
 3. Continue moving host-visible DB-value transaction operations off resident
-   guards. Query and pull DB-value paths are storage-neutral now; immutable
-   `with`/transaction-report paths still intentionally guard on resident
-   snapshots until the write-state overlay can produce reports without a
-   resident `DB`.
+   guards. Query and pull DB-value paths are storage-neutral now. Immutable
+   `with`/`db-with` over host DB handles now accepts retained `Store-DB`
+   snapshots by materializing the source snapshot into a resident compatibility
+   DB at the transaction boundary, applying the existing transaction engine,
+   and returning a resident derived DB/report. That makes durable/shared host
+   DB values usable today without mutating the source snapshot. The remaining
+   architecture work is replacing this materializing bridge with a source-native
+   write-state overlay.
 
 Acceptance:
 
@@ -665,15 +674,26 @@ Implemented so far:
   resolves through `Shared-Write-State` for source-stable entity/value shapes,
   including lookup-ref expected values. Failed CAS reports the same
   DataScript-style current-value error string without entering the resident
-  resolver. General registered transaction functions still require a DB value
-  and stay on the resident fallback path until the write-state overlay can
-  expose the needed transaction-local read API.
+  resolver. Registered transaction functions now have two shared-connection
+  APIs: the existing DB-callback shape publishes through the shared snapshot
+  path, and the new source-callback shape passes `DB-Read-Source` to the
+  callback so it can read facts written earlier in the same transaction without
+  receiving a resident `DB`. The source-callback API is available for typed
+  tx-data plus EDN text and prepared tx-data. The source-callback
+  implementation now uses a transaction-local `DB-Read-Source` overlay at each
+  callback boundary, so callbacks can read earlier resolved ops without
+  building a temporary shared snapshot. The overlay currently covers the
+  current-fact reads needed by source callback resolution; the remaining
+  storage work is extending this model to the broader host-visible immutable
+  `with`/`db-with` bridge.
 - `Store-DB`, the storage-neutral immutable DB handle, now has a
   `Shared-Snapshot` variant in addition to the existing `SQLite-Snapshot`
   variant. `shared-store-db` retains a `Shared-Conn` snapshot, and the existing
   `q-result-store-db-*` query wrappers run against it through `DB-Read-Source`.
   A test verifies the retained store DB snapshot remains queryable after the
-  shared connection advances.
+  shared connection advances. The SQLite variant now has the same close-original
+  regression shape for durable read-only stores: retain the `Store-DB`, close
+  the original snapshot/store, and query the retained handle.
 - `Store-Conn` is now a real tagged storage-neutral connection wrapper instead
   of an alias for `SQLite-Conn`. `open-store` and `open-store-read-only` still
   produce SQLite-backed stores, while `create-shared-store` produces the
@@ -752,12 +772,14 @@ Work:
    upsert detection also run through the write-state path for source-backed
    existing entities.
    `Shared-Write-State` now counts source-backed resolver use versus resident
-   fallback use, so this remaining work can be tracked directly. The next step
-   is to move the remaining intermediate-tx-db resolver state behind the same
-   boundary: registered transaction functions and same-tx unique tempid/upsert
-   shapes beyond source-backed identity target resolution should use a
-   write-state overlay instead of forcing a full resident DB rebuild on every
-   append-only commit.
+   fallback use, so this remaining work can be tracked directly. Registered
+   source transaction-function callback reads now use a transaction-local
+   `DB-Read-Source` overlay instead of temporary source materialization. The
+   next step is to move the remaining intermediate-tx-db resolver state behind
+   the same boundary: same-tx unique tempid/upsert shapes beyond source-backed
+   identity target resolution and host-visible immutable `with`/`db-with`
+   should use a write-state/source overlay instead of a full resident DB rebuild
+   on every append-only commit.
 2. Make a new DB snapshot share unchanged chunks with older snapshots.
    Datom-log sharing works for appended snapshots. Index chunk sharing now
    works for exact-prefix append cases, and append-only/new-entity publication
@@ -779,12 +801,16 @@ Work:
    snapshots. `Store-Conn` now has SQLite and shared variants behind the same
    storage-neutral API, and source-backed result rendering lets CLI reads avoid
    resident DB rendering. The ABI `vev_db_t` wrapper has been changed to store a
-   `Store-DB` internally, with resident-only guards for DB-value transaction
-   operations. The ABI build is unblocked and the full host smoke script is
-   green, including nested direct pull through DB handles. Shared and durable
-   SQLite `Store-DB` nested-pull regressions now cover source-backed DB values;
-   the next step is to keep moving DB-value transaction operations off
-   resident-only guards.
+   `Store-DB` internally. The ABI build is unblocked and the full host smoke
+   script is green, including nested direct pull through DB handles. Shared and
+   durable SQLite `Store-DB` nested-pull regressions now cover source-backed DB
+   values; durable retained DB handles can also survive closing their original
+   read-only store when the reopened basis matches, and old durable DB handles
+   stay pinned to their original SQLite index root after a writer advances.
+   Immutable host `with` and `db-with` now route through the storage-neutral
+   `Store-DB` handle too, using a source-materializing compatibility bridge so
+   non-resident DB values are no longer rejected. The next step is to replace
+   that bridge with source-native write-state application.
 4. Fold the existing append-only incremental path into this representation
    instead of maintaining it as a separate optimization. The first fold is in
    place: datom append position plus append-only/new-entity decisions are now
@@ -844,6 +870,25 @@ Implemented so far:
   remove materialization yet, but it makes the remaining typed-to-binding
   boundary visible in profiles instead of hiding it behind an otherwise typed
   operator plan.
+- Simple scalar and collection `:in` inputs can now seed the physical relation
+  engine for clause/predicate queries instead of forcing the older binding
+  path. This keeps qpred-style shapes such as
+  `[:find ?e ?s :in $ ?min :where [?e :salary ?s] [(> ?s ?min)]]` on typed
+  input columns, typed index scans, and typed predicate filtering with zero
+  binding materialization. Unbound typed clause producers are now counted in
+  `:typed-index-scans` / `:source-index-scans` as physical index operators, so
+  profiles no longer under-report work done before a bind join.
+- Simple tuple and relation `:in` inputs now seed the same typed initial
+  relation instead of falling back through `Binding` rows. Tuple inputs such as
+  `:in $ [?target ?min]` and relation inputs such as
+  `:in $ [[?target ?min]]` can feed typed clause scans and predicates directly,
+  including Cartesian products with earlier scalar/collection inputs. Focused
+  tests cover both direct initial-relation construction and profiled query
+  execution with zero binding materialization.
+- Relation `:in` inputs backed by scalar map values now use the same typed
+  path for simple width-2 relation bindings. This keeps host/EDN map inputs for
+  `:in [[?k ?v]]` on typed columns instead of routing through the generic
+  binding expander.
 
 Work:
 

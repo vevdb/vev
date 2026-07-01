@@ -231,6 +231,82 @@
     (t.is (= profiled.stats.input-bindings 1))
     (t.is (= profiled.stats.binding-materializations 0))))
 
+(t.deftest scalar-input-predicate-query-stays-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :salary 40000] [:db/add 2 :salary 60000] [:db/add 3 :salary 80000]]")
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?e ?s :in $ ?min :where [?e :salary ?s] [(> ?s ?min)]]"
+                   ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 50000))]))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (> profiled.stats.typed-index-scans 0))
+    (t.is (= profiled.stats.input-bindings 1))
+    (t.is (= profiled.stats.binding-materializations 0))))
+
+(t.deftest tuple-input-predicate-query-stays-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 41]]")
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?name :in $ [?target ?min] :where [?target :name ?name] [?target :age ?age] [(> ?age ?min)]]"
+                   ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-entity 1) (vev.value-int 30)]))]))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (= profiled.result.rows[0].values[0].text "Ada"))
+    (t.is (> profiled.stats.typed-index-scans 0))
+    (t.is (= profiled.stats.input-bindings 1))
+    (t.is (= profiled.stats.binding-materializations 0))))
+
+(t.deftest relation-input-predicate-query-stays-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 41] [:db/add 3 :name \"Barbara\"] [:db/add 3 :age 24]]")
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?name :in $ [[?target ?min]] :where [?target :name ?name] [?target :age ?age] [(> ?age ?min)]]"
+                   ([]vev.Query-Input [(vev.query-input-relation
+                                         ([]vev.Value [(vev.value-entity 1) (vev.value-int 30)
+                                                       (vev.value-entity 2) (vev.value-int 50)
+                                                       (vev.value-entity 3) (vev.value-int 20)])
+                                         2)]))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (source-branch-has-text? profiled.result "Ada"))
+    (t.is (source-branch-has-text? profiled.result "Barbara"))
+    (t.is (> profiled.stats.typed-index-scans 0))
+    (t.is (= profiled.stats.input-bindings 3))
+    (t.is (= profiled.stats.binding-materializations 0))))
+
+(t.deftest map-relation-input-query-stays-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 2 :name \"Grace\"]]")
+        map-input (vev.value-map
+                    ([]vev.Value [(vev.value-string "Ada") (vev.value-string "primary")
+                                  (vev.value-string "Grace") (vev.value-string "secondary")]))
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?label :in $ [[?name ?label]] :where [?e :name ?name]]"
+                   ([]vev.Query-Input [(vev.query-input-scalar map-input)]))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (source-branch-has-text? profiled.result "primary"))
+    (t.is (source-branch-has-text? profiled.result "secondary"))
+    (t.is (> profiled.stats.typed-index-scans 0))
+    (t.is (= profiled.stats.input-bindings 2))
+    (t.is (= profiled.stats.binding-materializations 0))))
+
 (t.deftest plain-not-join-branch-pipelines-stay-typed
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)

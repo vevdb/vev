@@ -42,6 +42,40 @@
     (and (= datom.e entity)
          (= datom.a attr))))
 
+(defn shared-birthday-by-name [db: vev.DB, name: string] -> vev.Tx-Fn-Result
+  (for [datom-index db.eavt]
+    (let [datom db.datoms[datom-index]]
+      (when (and (vev.datom-current-at? db datom-index)
+                 (= datom.a ":name")
+                 (= datom.v.kind .String)
+                 (= datom.v.text name))
+        (let [age (vev.entity-get (vev.db-entity db datom.e) ":age")]
+          (return
+            (vev.tx-fn-ok
+              ([]vev.Tx-Data
+                [(vev.add datom.e ":age" (vev.value-int (+ age.int-value 1)))
+                 (vev.add datom.e ":had-birthday" (vev.value-bool true))])))))))
+  (vev.tx-fn-error "No entity with name"))
+
+(defn shared-source-birthday-by-name [source: vev.DB-Read-Source, name: string] -> vev.Tx-Fn-Source-Result
+  (let [[datoms datoms-ok datoms-error] (vev.db-read-source-datoms-by-attr source ":name")]
+    (when (not datoms-ok)
+      (return (vev.tx-fn-source-error datoms-error)))
+    (defer (vev.delete-owned-datoms datoms))
+    (for [datom datoms]
+      (when (and (= datom.v.kind .String)
+                 (= datom.v.text name))
+        (let [[age age-ok age-error] (vev.db-read-source-cardinality-one-value-fast-all-current source datom.e ":age")]
+          (when (not age-ok)
+            (return (vev.tx-fn-source-error (if (= age-error "") "No age for entity" age-error))))
+          (defer (vev.delete-owned-value age))
+          (return
+            (vev.tx-fn-source-ok
+              ([]vev.Tx-Data
+                [(vev.add datom.e ":age" (vev.value-int (+ age.int-value 1)))
+                 (vev.add datom.e ":had-source-birthday" (vev.value-bool true))]))))))
+    (vev.tx-fn-source-error "No entity with name")))
+
 (t.deftest shared-int-index-retains-old-chunks
   (defer (free_all context.allocator))
   (let [base (vev.shared-int-index-from-slice ([]int [1 3 5 7 9]) 2)
@@ -783,6 +817,104 @@
     (t.is (= result.rows[0].values[0].text "Ada"))
     (vev.delete-result-set-owned-values result)
     (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-transacts-registered-string-fns-through-shared-snapshot
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        registry ([]vev.Tx-Fn-String [(vev.tx-fn-string ":inc-age" shared-birthday-by-name)])
+        report (vev.shared-conn-transact-with-string-fns
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":inc-age"))
+                                  (vev.add 1 ":name" (vev.value-string "Ada"))
+                                  (vev.add 1 ":age" (vev.value-int 40))
+                                  (vev.call-ident-string ":inc-age" "Ada")
+                                  (vev.add 1 ":label" (vev.value-string "after-call"))])
+                 registry)
+        source (vev.shared-conn-read-source (addr conn))
+        result (vev.q-text-db-read-source source "[:find ?age ?birthday ?label :where [1 :age ?age] [1 :had-birthday ?birthday] [1 :label ?label]]")]
+    (t.is report.ok)
+    (t.is (= report.error ""))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .Int))
+    (t.is (= result.rows[0].values[0].int-value 41))
+    (t.is (= result.rows[0].values[1].kind .Bool))
+    (t.is result.rows[0].values[1].bool-value)
+    (t.is (= result.rows[0].values[2].kind .String))
+    (t.is (= result.rows[0].values[2].text "after-call"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-transacts-source-registered-string-fns-with-tx-local-source
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        registry ([]vev.Tx-Fn-Source-String [(vev.tx-fn-source-string ":inc-age-source" shared-source-birthday-by-name)])
+        report (vev.shared-conn-transact-with-source-string-fns
+                 (addr conn)
+                 ([]vev.Tx-Data [(vev.add 100 ":db/ident" (vev.value-keyword ":inc-age-source"))
+                                  (vev.add 1 ":name" (vev.value-string "Ada"))
+                                  (vev.add 1 ":age" (vev.value-int 40))
+                                  (vev.call-ident-string ":inc-age-source" "Ada")
+                                  (vev.add 1 ":label" (vev.value-string "after-source-call"))])
+                 registry)
+        source (vev.shared-conn-read-source (addr conn))
+        [birthday-datoms birthday-datoms-ok birthday-datoms-error] (vev.db-read-source-datoms-by-attr source ":had-source-birthday")
+        result (vev.q-text-db-read-source source "[:find ?age ?birthday ?label :where [1 :age ?age] [1 :had-source-birthday ?birthday] [1 :label ?label]]")]
+    (t.is report.ok)
+    (t.is (= report.error ""))
+    (t.is birthday-datoms-ok)
+    (t.is (= birthday-datoms-error ""))
+    (t.is (= (count birthday-datoms) 1))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is (> conn.write.source-resolves 0))
+    (t.is result.ok)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .Int))
+    (t.is (= result.rows[0].values[0].int-value 41))
+    (t.is (= result.rows[0].values[1].kind .Bool))
+    (t.is result.rows[0].values[1].bool-value)
+    (t.is (= result.rows[0].values[2].kind .String))
+    (t.is (= result.rows[0].values[2].text "after-source-call"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-owned-datoms birthday-datoms)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-transacts-source-registered-string-fns-from-edn-text
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        registry ([]vev.Tx-Fn-Source-String [(vev.tx-fn-source-string ":inc-age-source" shared-source-birthday-by-name)])
+        text-report (vev.shared-conn-transact-text-with-source-string-fns
+                      (addr conn)
+                      "[[:db/add 100 :db/ident :inc-age-source] [:db/add 2 :name \"Ada\"] [:db/add 2 :age 40] [:db.fn/call :inc-age-source \"Ada\"] [:db/add 2 :label \"after-text-source-call\"]]"
+                      registry)
+        prepared (vev.prepare-tx-text
+                   "[[:db/add 3 :name \"Grace\"] [:db/add 3 :age 50] [:inc-age-source \"Grace\"] [:db/add 3 :label \"after-prepared-source-call\"]]")
+        prepared-report (vev.shared-conn-transact-prepared-with-source-string-fns (addr conn) prepared registry)
+        source (vev.shared-conn-read-source (addr conn))
+        text-result (vev.q-text-db-read-source source "[:find ?age ?label :where [2 :age ?age] [2 :had-source-birthday true] [2 :label ?label]]")
+        prepared-result (vev.q-text-db-read-source source "[:find ?age ?label :where [3 :age ?age] [3 :had-source-birthday true] [3 :label ?label]]")]
+    (t.is text-report.ok)
+    (t.is (= text-report.error ""))
+    (t.is prepared-report.ok)
+    (t.is (= prepared-report.error ""))
+    (t.is (= conn.write.resident-fallbacks 0))
+    (t.is text-result.ok)
+    (t.is (= (count text-result.rows) 1))
+    (t.is (= text-result.rows[0].values[0].int-value 41))
+    (t.is (= text-result.rows[0].values[1].text "after-text-source-call"))
+    (t.is prepared-result.ok)
+    (t.is (= (count prepared-result.rows) 1))
+    (t.is (= prepared-result.rows[0].values[0].int-value 51))
+    (t.is (= prepared-result.rows[0].values[1].text "after-prepared-source-call"))
+    (vev.delete-result-set-owned-values text-result)
+    (vev.delete-result-set-owned-values prepared-result)
+    (vev.delete-live-tx-report-shallow text-report)
+    (vev.delete-live-tx-report-shallow prepared-report)
+    (vev.delete-prepared-tx-data-shallow prepared)
     (vev.delete-shared-conn conn)))
 
 (t.deftest shared-conn-resolves-unique-schema-define-and-use-through-write-state
