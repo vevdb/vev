@@ -1984,6 +1984,304 @@
   (shared-write-state-note-resident-fallback! state)
   (resolve-tx-data-for-tx state^.conn.db tx-data state^.conn.next-tx))
 
+(defn shared-write-state-resolve-tx-data-source-only [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data] -> Resolved-Tx
+  (when (shared-write-state-direct-tx-data? state tx-data)
+    (shared-write-state-note-source-resolve! state)
+    (return (shared-write-state-resolve-direct-tx-data-for-tx state source tx-data)))
+  (when (shared-write-state-source-simple-schema-tx-data? tx-data)
+    (shared-write-state-note-source-resolve! state)
+    (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
+  (when (shared-write-state-source-simple-mixed-schema-tx-data? state tx-data)
+    (shared-write-state-note-source-resolve! state)
+    (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
+  (when (shared-write-state-source-simple-tx-data? state tx-data)
+    (shared-write-state-note-source-resolve! state)
+    (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
+  (Resolved-Tx {ok: false
+                error: "transaction requires resident materialization fallback"
+                ops: (make [dynamic]Tx-Op)
+                tx-meta: (make [dynamic]Tx-Meta)
+                tempids: (make [dynamic]Tempid)}))
+
+(defn db-read-source-latest-tx [source: DB-Read-Source] -> [tx: u64, ok: bool, error: string]
+  (let [view (db-read-source-index-view source .EAVT)
+        n (db-index-view-count view)]
+    (when (= n 0)
+      (return 0 true ""))
+    (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source (- n 1))]
+      (when (not datom-ok)
+        (return 0 false datom-error))
+      (let [out datom.tx]
+        (delete-owned-datom datom)
+        (return out true "")))))
+
+(defn db-read-source-next-tx [source: DB-Read-Source] -> [tx: u64, ok: bool, error: string]
+  (let [[latest latest-ok latest-error] (db-read-source-latest-tx source)]
+    (if latest-ok
+      (return (+ latest 1) true "")
+      (return 0 false latest-error))))
+
+(defn shared-db-snapshot-next-tx [snapshot: Shared-DB-Snapshot] -> [tx: u64, ok: bool, error: string]
+  (when (= snapshot.datoms.count 0)
+    (return 1 true ""))
+  (let [[datom datom-ok] (shared-datom-log-at snapshot.datoms (- snapshot.datoms.count 1))]
+    (when (not datom-ok)
+      (return 0 false "shared snapshot datom log was missing last datom"))
+    (let [out (+ datom.tx 1)]
+      (delete-owned-datom datom)
+      (return out true ""))))
+
+(defn db-read-source-next-entity-id [source: DB-Read-Source] -> [entity: u64, ok: bool, error: string]
+  (let [view (db-read-source-index-view source .EAVT)
+        n (db-index-view-count view)]
+    (when (= n 0)
+      (return 1 true ""))
+    (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source (- n 1))]
+      (when (not datom-ok)
+        (return 0 false datom-error))
+      (let [out (+ datom.e 1)]
+        (delete-owned-datom datom)
+        (return out true "")))))
+
+(defn db-read-source-has-tuple-schema? [source: DB-Read-Source] -> [has-tuple: bool, ok: bool, error: string]
+  (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source ":db/tupleAttrs")]
+    (when (not datoms-ok)
+      (return false false datoms-error))
+    (let [out (> (count datoms) 0)]
+      (delete-owned-datoms datoms)
+      (return out true ""))))
+
+(defn db-read-source-schema-sets [source: DB-Read-Source] -> [refs: set[string], uniques: set[string], unique-identities: set[string], ok: bool, error: string]
+  (let [schema-ref (set.empty string)
+        schema-unique (set.empty string)
+        schema-unique-identity (set.empty string)
+        [idents idents-ok idents-error] (db-read-source-datoms-by-attr source ":db/ident")]
+    (when (not idents-ok)
+      (delete schema-ref)
+      (delete schema-unique)
+      (delete schema-unique-identity)
+      (return (set.empty string) (set.empty string) (set.empty string) false idents-error))
+    (for [ident idents]
+      (when (= ident.v.kind .Keyword)
+        (let [attr-name ident.v.text
+              [ref ref-ok ref-error] (db-read-source-schema-ref? source attr-name)]
+          (when (not ref-ok)
+            (delete-owned-datoms idents)
+            (delete schema-ref)
+            (delete schema-unique)
+            (delete schema-unique-identity)
+            (return (set.empty string) (set.empty string) (set.empty string) false ref-error))
+          (when ref
+            (set.add! schema-ref (string-owned attr-name)))
+          (let [[unique unique-ok unique-error] (db-read-source-schema-unique? source attr-name)]
+            (when (not unique-ok)
+              (delete-owned-datoms idents)
+              (delete schema-ref)
+              (delete schema-unique)
+              (delete schema-unique-identity)
+              (return (set.empty string) (set.empty string) (set.empty string) false unique-error))
+            (when unique
+              (set.add! schema-unique (string-owned attr-name))
+              (let [[unique-kind unique-kind-ok unique-kind-error] (db-read-source-schema-keyword source attr-name ":db/unique")]
+                (when (not unique-kind-ok)
+                  (delete-owned-datoms idents)
+                  (delete schema-ref)
+                  (delete schema-unique)
+                  (delete schema-unique-identity)
+                  (return (set.empty string) (set.empty string) (set.empty string) false unique-kind-error))
+                (when (= unique-kind ":db.unique/identity")
+                  (set.add! schema-unique-identity (string-owned attr-name)))
+                (delete unique-kind)))))))
+    (delete-owned-datoms idents)
+    (return schema-ref schema-unique schema-unique-identity true "")))
+
+(defn shared-write-state-from-source-metadata [source: DB-Read-Source] -> [state: Shared-Write-State, ok: bool, error: string]
+  (let [[schema-ref schema-unique schema-unique-identity schema-ok schema-error] (db-read-source-schema-sets source)]
+    (when (not schema-ok)
+      (return (Shared-Write-State {}) false schema-error))
+    (let [[has-tuple has-tuple-ok has-tuple-error] (db-read-source-has-tuple-schema? source)]
+      (when (not has-tuple-ok)
+        (delete schema-ref)
+        (delete schema-unique)
+        (delete schema-unique-identity)
+        (return (Shared-Write-State {}) false has-tuple-error))
+      (let [[next-tx next-tx-ok next-tx-error] (db-read-source-next-tx source)]
+        (when (not next-tx-ok)
+          (delete schema-ref)
+          (delete schema-unique)
+          (delete schema-unique-identity)
+          (return (Shared-Write-State {}) false next-tx-error))
+        (let [[next-entity next-entity-ok next-entity-error] (db-read-source-next-entity-id source)]
+          (when (not next-entity-ok)
+            (delete schema-ref)
+            (delete schema-unique)
+            (delete schema-unique-identity)
+            (return (Shared-Write-State {}) false next-entity-error))
+          (let [empty-db (build-db (make [dynamic]Datom))]
+            (return (Shared-Write-State {conn: (Conn {db: empty-db
+                                                       next-tx: next-tx
+                                                       listeners: (make [dynamic]Tx-Listener)})
+                                        has-tuple-schema: has-tuple
+                                        schema-ref: schema-ref
+                                        schema-unique: schema-unique
+                                        schema-unique-identity: schema-unique-identity
+                                        next-entity-id: next-entity
+                                        source-resolves: 0
+                                        resident-fallbacks: 0})
+                    true
+                    "")))))))
+
+(defn shared-write-state-from-shared-snapshot-metadata [snapshot: Shared-DB-Snapshot] -> [state: Shared-Write-State, ok: bool, error: string]
+  (let [base snapshot
+        source (shared-db-snapshot-read-source (addr base))
+        [out-state state-ok state-error] (shared-write-state-from-source-metadata source)]
+    (when (not state-ok)
+      (return out-state false state-error))
+    (let [[next-tx next-tx-ok next-tx-error] (shared-db-snapshot-next-tx base)]
+      (when (not next-tx-ok)
+        (delete-shared-write-state-metadata out-state)
+        (return (Shared-Write-State {}) false next-tx-error))
+      (set! out-state.conn.next-tx next-tx)
+      (return out-state true ""))))
+
+(defn delete-shared-write-state-metadata [state: Shared-Write-State]
+  (delete state.schema-ref)
+  (delete state.schema-unique)
+  (delete state.schema-unique-identity)
+  (delete state.conn.listeners)
+  (delete-owned-db state.conn.db))
+
+(defn source-append-ops-all-new-entities? [next-entity: u64, ops: []Tx-Op] -> bool
+  (for [op ops]
+    (when (< op.e next-entity)
+      (return false)))
+  true)
+
+(defn source-append-unique-key [op: Tx-Op] -> [key: string, ok: bool]
+  (let [[value-key value-ok] (primitive-value-dedupe-key op.v)]
+    (when (not value-ok)
+      (return "" false))
+    (return (fmt.tprintf "%d:%s:%d:%s" (count op.a) op.a (count value-key) value-key) true)))
+
+(defn source-append-existing-unique-conflict? [source: DB-Read-Source, op: Tx-Op] -> [conflict: bool, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-keyword op.a) op.v])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .AVET values)]
+    (when (not scan-ok)
+      (delete-owned-datoms out)
+      (return false false scan-error))
+    (let [has-conflict (> (count out) 0)]
+      (delete-owned-datoms out)
+      (return has-conflict true ""))))
+
+(defn source-append-ops-eligible? [source: DB-Read-Source, state: Shared-Write-State, ops: []Tx-Op] -> [eligible: bool, new-entities-after-existing: bool, ok: bool, error: string]
+  (let [all-new-entities (source-append-ops-all-new-entities? state.next-entity-id ops)]
+  (let [current-entity (u64 0)
+        current-attrs (set.empty string)
+        current-facts (set.empty string)
+        unique-values (set.empty string)
+        first true]
+    (defer (delete current-attrs))
+    (defer (delete current-facts))
+    (defer (delete unique-values))
+    (for [op ops]
+      (when (not (= op.kind .Add))
+        (return false false true ""))
+      (when (tx-data-modifies-validation-schema? (Tx-Data {a: op.a}))
+        (return false false true ""))
+      (when (and (not first)
+                 (< op.e current-entity))
+        (return false false true ""))
+      (when (or first
+                (not (= op.e current-entity)))
+        (when (not first)
+          (delete current-attrs)
+          (delete current-facts)
+          (set! current-attrs (set.empty string))
+          (set! current-facts (set.empty string)))
+        (set! current-entity op.e)
+        (set! first false))
+      (let [[fact-key fact-ok] (op-fact-key op)]
+        (when (not fact-ok)
+          (return false false true ""))
+        (when (set.contains? current-facts fact-key)
+          (return false false true ""))
+        (set.add! current-facts fact-key))
+      (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source op.a)]
+        (when (not many-ok)
+          (return false false false many-error))
+        (if many
+          (let [[exists exists-ok exists-error] (shared-write-state-source-current-value-exists? source op.e op.a op.v)]
+            (when (not exists-ok)
+              (return false false false exists-error))
+            (when exists
+              (return false false true "")))
+          (do
+            (when (set.contains? current-attrs op.a)
+              (return false false true ""))
+            (when (not all-new-entities)
+              (let [[exists exists-ok exists-error] (shared-write-state-source-current-attr-exists? source op.e op.a)]
+                (when (not exists-ok)
+                  (return false false false exists-error))
+                (when exists
+                  (return false false true ""))))))
+        (set.add! current-attrs (string-owned op.a)))
+      (when (set.contains? state.schema-unique op.a)
+        (let [[unique-key unique-key-ok] (source-append-unique-key op)]
+          (when (not unique-key-ok)
+            (return false false true ""))
+          (when (set.contains? unique-values unique-key)
+            (return false false true ""))
+          (set.add! unique-values unique-key))
+        (let [[conflict conflict-ok conflict-error] (source-append-existing-unique-conflict? source op)]
+          (when (not conflict-ok)
+            (return false false false conflict-error))
+          (when conflict
+            (return false false true "")))))
+    (return true all-new-entities true ""))))
+
+(defn source-append-datoms-from-ops [ops: []Tx-Op, tx: u64] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom 0 (count ops))]
+    (for [op ops]
+      (let [datom (Datom {e: op.e
+                          a: op.a
+                          v: op.v
+                          tx: tx
+                          added: true})]
+        (arr.push! out (datom-owned datom))))
+    out))
+
+(defn shared-db-snapshot-db-with-source-append-tx-data [snapshot: Shared-DB-Snapshot, tx-data: []Tx-Data] -> [next: Shared-DB-Snapshot, used: bool, ok: bool, error: string]
+  (let [base snapshot
+        source (shared-db-snapshot-read-source (addr base))
+        [state state-ok state-error] (shared-write-state-from-shared-snapshot-metadata base)]
+    (when (not state-ok)
+      (return (Shared-DB-Snapshot {}) false false state-error))
+    (let [resolved (shared-write-state-resolve-tx-data-source-only (addr state) source tx-data)]
+      (when (not resolved.ok)
+        (delete-resolved-tx resolved)
+        (delete-shared-write-state-metadata state)
+        (return (Shared-DB-Snapshot {}) false true ""))
+      (let [compacted (compact-redundant-add-ops (slice resolved.ops 0))
+            [eligible new-entities-after-existing eligible-ok eligible-error] (source-append-ops-eligible? source state (slice compacted 0))]
+        (when (not eligible-ok)
+          (delete compacted)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return (Shared-DB-Snapshot {}) false false eligible-error))
+        (when (not eligible)
+          (delete compacted)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return (Shared-DB-Snapshot {}) false true ""))
+        (let [appended (source-append-datoms-from-ops (slice compacted 0) state.conn.next-tx)
+              next-snapshot (shared-db-snapshot-with-appended-datoms-direct base appended base.datoms.count new-entities-after-existing)]
+          (delete-owned-datoms appended)
+          (delete compacted)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return next-snapshot true true ""))))))
+
 (defn tx-fn-source-ok [tx-data: []Tx-Data] -> Tx-Fn-Source-Result
   (let [out (arr.into [dynamic]Tx-Data tx-data)]
     (Tx-Fn-Source-Result {ok: true

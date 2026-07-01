@@ -53,10 +53,10 @@ Todo:
   relation operators where it matters.
 - Convert the current set of source recognizers into reusable indexed scan,
   bind-join, merge/star, projection, and aggregate operator pieces.
-- Add source-aware operators for remaining common graph traversal and
+- Add source-aware operators for remaining common graph traversal and broader
   multi-clause shapes exposed by MusicBrainz and Datalevin-style benchmarks.
-- Continue predicate pushdown for multi-column predicates and source-aware
-  predicate combinations that cannot be represented as a single AVET range.
+- Continue predicate pushdown for source-aware predicate combinations beyond a
+  single AVET range driver with scalar same-entity projections.
 - Keep benchmark improvements tied to general operators and common query shapes,
   not query-text-specific shortcuts.
 - Keep `Query-Stats` useful enough to show when a query crossed from physical
@@ -71,13 +71,29 @@ Acceptance:
 
 ## 3. Replace Host `with` / `db-with` Materialization Bridge
 
-Status: open.
+Status: in progress.
 
 Todo:
 
-- Replace the current compatibility bridge that materializes non-resident
-  `Store-DB` snapshots into resident DBs before applying `with` / `db-with`.
-- Apply transactions against a source-native write-state overlay instead.
+- Finish replacing `with-store-db-*` / `db-with-store-db-*` in
+  `src/vev/storage.kvist`, which still call `store-db-materialize-db` for
+  transaction shapes outside the current source-native append subset.
+- Keep the current shared `db-with-store-db-*` handle behavior: shared DB
+  values should publish another shared `Store-DB`, not a resident clone.
+- Keep the direct source-native shared `db-with` fast path limited to true
+  append-only changes until current-index invalidation is represented in shared
+  storage.
+- Add a source-native overlay/current-index publication path for non-append
+  transactions: retractions, CAS, same-transaction lookup/upsert cases,
+  cardinality-one replacement, and schema-changing transactions.
+- Reuse the existing source-aware transaction resolver from shared storage:
+  `shared-write-state-resolve-tx-data`, `resolve-shared-source-tx-segment!`,
+  and `tx-ops-overlay-db-read-source`.
+- Apply transactions against a source-native write-state overlay, then publish a
+  `Store-DB` value backed by shared/chunked state instead of a resident clone.
+- Split the public immutable transaction report shape so host APIs can expose
+  Datomic-like `db-before` / `db-after` handles without forcing resident `DB`
+  materialization inside `Tx-Report`.
 - Preserve exact Datomic-like immutable DB semantics for `db-before`,
   `db-after`, transaction reports, tempids, listeners, and retained old DB
   handles.

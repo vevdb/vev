@@ -5977,6 +5977,25 @@
         (if source-ok
           (return (q-db-read-source-attr-range-value-projection projection-source projection))
           (return (result-set-error source-error))))))
+  (let [[projection projection-ok] (db-read-source-query-range-filtered-entity-attr-value-projection query-value)]
+    (when projection-ok
+      (let [clause-value query-value.clauses[0]
+            [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)]
+        (if source-ok
+          (return (q-db-read-source-range-filtered-entity-attr-value-projection projection-source query-value projection))
+          (return (result-set-error source-error))))))
+  (let [[projection projection-ok] (db-read-source-query-range-star-projection query-value)]
+    (when projection-ok
+      (let [clause-value query-value.clauses[0]
+            [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)]
+        (when (not source-ok)
+          (return (result-set-error source-error)))
+        (let [[range-star-ok range-star-error] (db-read-source-range-star-projection-ready? projection-source query-value projection)]
+          (when (not range-star-ok)
+            (when (not (= range-star-error ""))
+              (return (result-set-error range-star-error))))
+          (when range-star-ok
+            (return (q-db-read-source-range-star-projection projection-source query-value projection)))))))
   (let [[projection projection-ok] (db-read-source-query-attr-entity-projection query-value)]
     (when projection-ok
       (let [clause-value query-value.clauses[0]
@@ -6101,6 +6120,24 @@
         (if source-ok
           (return (q-db-read-source-two-attr-entity-projection projection-source query-value projection))
           (return (result-set-error source-error))))))
+  (let [[projection projection-ok] (db-read-source-query-three-attr-entity-projection query-value)]
+    (when projection-ok
+      (let [clause-value query-value.clauses[0]
+            [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)]
+        (if source-ok
+          (return (q-db-read-source-three-attr-entity-projection projection-source query-value projection))
+          (return (result-set-error source-error))))))
+  (when (db-read-source-query-star-attr-entity-projection? query-value)
+    (let [clause-value query-value.clauses[0]
+          [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)]
+      (when (not source-ok)
+        (return (result-set-error source-error)))
+      (let [[star-ok star-error] (db-read-source-star-attr-entity-projection-ready? projection-source query-value)]
+        (when (not star-ok)
+          (when (not (= star-error ""))
+            (return (result-set-error star-error))))
+        (when star-ok
+          (return (q-db-read-source-star-attr-entity-projection projection-source query-value))))))
   (let [[projection projection-ok] (db-read-source-query-entity-attr-value-projection query-value)]
     (when projection-ok
       (let [clause-value query-value.clauses[0]
@@ -17842,6 +17879,25 @@
   value: Value
 })
 
+(defstruct Source-Range-Filtered-Entity-Attr-Value-Projection {
+  entity-var: string
+  filter-attr: string
+  filter-var: string
+  filter-op: string
+  filter-value: Value
+  value-attr: string
+  value-var: string
+})
+
+(defstruct Source-Range-Star-Projection {
+  entity-var: string
+  filter-index: int
+  filter-attr: string
+  filter-var: string
+  filter-op: string
+  filter-value: Value
+})
+
 (defstruct Source-Attr-Entity-Projection {
   entity-var: string
   attr: string
@@ -17911,6 +17967,16 @@
   first-var: string
   second-attr: string
   second-var: string
+})
+
+(defstruct Source-Three-Attr-Entity-Projection {
+  entity-var: string
+  first-attr: string
+  first-var: string
+  second-attr: string
+  second-var: string
+  third-attr: string
+  third-var: string
 })
 
 (defstruct Source-Fixed-Entity-Ref-Attr-Projection {
@@ -18023,6 +18089,12 @@
 (defn empty-source-attr-range-value-projection [] -> Source-Attr-Range-Value-Projection
   (Source-Attr-Range-Value-Projection {}))
 
+(defn empty-source-range-filtered-entity-attr-value-projection [] -> Source-Range-Filtered-Entity-Attr-Value-Projection
+  (Source-Range-Filtered-Entity-Attr-Value-Projection {}))
+
+(defn empty-source-range-star-projection [] -> Source-Range-Star-Projection
+  (Source-Range-Star-Projection {}))
+
 (defn empty-source-attr-entity-projection [] -> Source-Attr-Entity-Projection
   (Source-Attr-Entity-Projection {}))
 
@@ -18052,6 +18124,9 @@
 
 (defn empty-source-fixed-entity-two-attr-projection [] -> Source-Fixed-Entity-Two-Attr-Projection
   (Source-Fixed-Entity-Two-Attr-Projection {}))
+
+(defn empty-source-three-attr-entity-projection [] -> Source-Three-Attr-Entity-Projection
+  (Source-Three-Attr-Entity-Projection {}))
 
 (defn empty-source-fixed-entity-ref-attr-projection [] -> Source-Fixed-Entity-Ref-Attr-Projection
   (Source-Fixed-Entity-Ref-Attr-Projection {}))
@@ -18527,6 +18602,206 @@
                                                  value-var: clause-value.v.name
                                                  op: filter-op
                                                  value: filter-value})
+            true)))
+
+(defn query-find-entity-value-vars? [query: Query, entity-var: string, value-var: string] -> bool
+  (cond
+    (= (count query.find) 1)
+      (= query.find[0] value-var)
+    (= (count query.find) 2)
+      (or (and (= query.find[0] entity-var)
+               (= query.find[1] value-var))
+          (and (= query.find[0] value-var)
+               (= query.find[1] entity-var)))
+    :else false))
+
+(defn db-read-source-query-range-filtered-entity-attr-value-projection [query: Query] -> [projection: Source-Range-Filtered-Entity-Attr-Value-Projection, ok: bool]
+  (when (not (and (or (= (count query.find) 1)
+                       (= (count query.find) 2))
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 1)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 2)
+                  (= (count query.where-steps) 3)))
+    (return (empty-source-range-filtered-entity-attr-value-projection) false))
+  (for [step query.where-steps]
+    (when (not (or (= step.kind .Clause)
+                   (= step.kind .Predicate)))
+      (return (empty-source-range-filtered-entity-attr-value-projection) false)))
+  (let [left query.clauses[0]
+        right query.clauses[1]]
+    (when (or (not (= left.has-source right.has-source))
+              (and left.has-source (not (= left.source right.source)))
+              (not (= left.e.kind .Var))
+              (not (= right.e.kind .Var))
+              (not (= left.e.name right.e.name))
+              (not (= left.a.kind .Value))
+              (not (= right.a.kind .Value))
+              (not (= left.a.value.kind .Keyword))
+              (not (= right.a.value.kind .Keyword))
+              (reverse-attr? left.a.value.text)
+              (reverse-attr? right.a.value.text)
+              (not (= left.v.kind .Var))
+              (not (= right.v.kind .Var))
+              (= left.v.name right.v.name)
+              (not (= left.tx-term.kind .Wildcard))
+              (not (= right.tx-term.kind .Wildcard))
+              (not (= left.op-term.kind .Wildcard))
+              (not (= right.op-term.kind .Wildcard)))
+      (return (empty-source-range-filtered-entity-attr-value-projection) false))
+    (let [[left-op left-value left-ok] (source-var-range-filter query.predicates[0] left.v.name)
+          [right-op right-value right-ok] (source-var-range-filter query.predicates[0] right.v.name)
+          filter-clause left
+          value-clause right
+          filter-op ""
+          filter-value (Value {})
+          filter-ok false]
+      (cond
+        (and left-ok (not right-ok))
+          (do
+            (set! filter-clause left)
+            (set! value-clause right)
+            (set! filter-op left-op)
+            (set! filter-value left-value)
+            (set! filter-ok true))
+        (and right-ok (not left-ok))
+          (do
+            (set! filter-clause right)
+            (set! value-clause left)
+            (set! filter-op right-op)
+            (set! filter-value right-value)
+            (set! filter-ok true))
+        :else (do))
+      (when (or (not filter-ok)
+                (not (query-find-entity-value-vars? query filter-clause.e.name value-clause.v.name)))
+        (return (empty-source-range-filtered-entity-attr-value-projection) false))
+      (return (Source-Range-Filtered-Entity-Attr-Value-Projection {entity-var: filter-clause.e.name
+                                                                   filter-attr: filter-clause.a.value.text
+                                                                   filter-var: filter-clause.v.name
+                                                                   filter-op: filter-op
+                                                                   filter-value: filter-value
+                                                                   value-attr: value-clause.a.value.text
+                                                                   value-var: value-clause.v.name})
+              true))))
+
+(defn query-find-var-known-for-range-star? [query: Query, entity-var: string, find-var: string] -> bool
+  (when (= find-var entity-var)
+    (return true))
+  (for [clause-value query.clauses]
+    (when (and (= clause-value.v.kind .Var)
+               (= clause-value.v.name find-var))
+      (return true)))
+  false)
+
+(defn query-find-vars-unique? [query: Query] -> bool
+  (let [i 0]
+    (while (< i (count query.find))
+      (let [j (+ i 1)]
+        (while (< j (count query.find))
+          (when (= query.find[i] query.find[j])
+            (return false))
+          (set! j (+ j 1))))
+      (set! i (+ i 1)))
+    true))
+
+(defn query-clause-value-var-unique-for-range-star? [query: Query, index: int] -> bool
+  (let [name query.clauses[index].v.name
+        i 0]
+    (while (< i index)
+      (when (and (= query.clauses[i].v.kind .Var)
+                 (= query.clauses[i].v.name name))
+        (return false))
+      (set! i (+ i 1)))
+    true))
+
+(defn db-read-source-query-range-star-projection [query: Query] -> [projection: Source-Range-Star-Projection, ok: bool]
+  (when (not (and (>= (count query.find) 1)
+                  (>= (count query.clauses) 3)
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 1)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.where-steps) (+ (count query.clauses) 1))
+                  (query-find-vars-unique? query)))
+    (return (empty-source-range-star-projection) false))
+  (for [step query.where-steps]
+    (when (not (or (= step.kind .Clause)
+                   (= step.kind .Predicate)))
+    (return (empty-source-range-star-projection) false)))
+  (let [first query.clauses[0]
+        filter-index -1
+        filter-op ""
+        filter-value (Value {})
+        i 0]
+    (when (not (and (= first.e.kind .Var)
+                    (= first.a.kind .Value)
+                    (= first.a.value.kind .Keyword)
+                    (not (reverse-attr? first.a.value.text))
+                    (= first.v.kind .Var)
+                    (= first.tx-term.kind .Wildcard)
+                    (= first.op-term.kind .Wildcard)))
+      (return (empty-source-range-star-projection) false))
+    (while (< i (count query.clauses))
+      (let [clause-value query.clauses[i]
+            [clause-op clause-value-filter clause-filter-ok] (source-var-range-filter query.predicates[0] clause-value.v.name)]
+        (when (or (not (= clause-value.has-source first.has-source))
+                  (and first.has-source
+                       (not (= clause-value.source first.source)))
+                  (not (= clause-value.e.kind .Var))
+                  (not (= clause-value.e.name first.e.name))
+                  (not (= clause-value.a.kind .Value))
+                  (not (= clause-value.a.value.kind .Keyword))
+                  (reverse-attr? clause-value.a.value.text)
+                  (not (= clause-value.v.kind .Var))
+                  (not (query-clause-value-var-unique-for-range-star? query i))
+                  (not (= clause-value.tx-term.kind .Wildcard))
+                  (not (= clause-value.op-term.kind .Wildcard)))
+          (return (empty-source-range-star-projection) false))
+        (when clause-filter-ok
+          (when (not (= filter-index -1))
+            (return (empty-source-range-star-projection) false))
+          (set! filter-index i)
+          (set! filter-op clause-op)
+          (set! filter-value clause-value-filter)))
+      (set! i (+ i 1)))
+    (when (= filter-index -1)
+      (return (empty-source-range-star-projection) false))
+    (for [find-var query.find]
+      (when (not (query-find-var-known-for-range-star? query first.e.name find-var))
+        (return (empty-source-range-star-projection) false)))
+    (return (Source-Range-Star-Projection {entity-var: first.e.name
+                                           filter-index: filter-index
+                                           filter-attr: query.clauses[filter-index].a.value.text
+                                           filter-var: query.clauses[filter-index].v.name
+                                           filter-op: filter-op
+                                           filter-value: filter-value})
             true)))
 
 (defn db-read-source-query-attr-entity-projection [query: Query] -> [projection: Source-Attr-Entity-Projection, ok: bool]
@@ -19167,6 +19442,178 @@
                                                       second-var: second.v.name})
             true)))
 
+(defn query-find-three-vars? [query: Query, first-var: string, second-var: string, third-var: string] -> bool
+  (when (not (= (count query.find) 3))
+    (return false))
+  (let [has-first false
+        has-second false
+        has-third false]
+  (for [find-var query.find]
+    (when (not (or (= find-var first-var)
+                   (= find-var second-var)
+                   (= find-var third-var)))
+      (return false))
+    (when (= find-var first-var)
+      (set! has-first true))
+    (when (= find-var second-var)
+      (set! has-second true))
+    (when (= find-var third-var)
+      (set! has-third true)))
+  (and has-first has-second has-third)))
+
+(defn db-read-source-query-three-attr-entity-projection [query: Query] -> [projection: Source-Three-Attr-Entity-Projection, ok: bool]
+  (when (not (and (= (count query.find) 3)
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 0)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 3)
+                  (= (count query.where-steps) 3)
+                  (= query.where-steps[0].kind .Clause)
+                  (= query.where-steps[1].kind .Clause)
+                  (= query.where-steps[2].kind .Clause)))
+    (return (empty-source-three-attr-entity-projection) false))
+  (let [first query.clauses[0]
+        second query.clauses[1]
+        third query.clauses[2]]
+    (when (or (not (= first.has-source second.has-source))
+              (not (= first.has-source third.has-source))
+              (and first.has-source
+                   (or (not (= first.source second.source))
+                       (not (= first.source third.source))))
+              (not (= first.e.kind .Var))
+              (not (= second.e.kind .Var))
+              (not (= third.e.kind .Var))
+              (not (= first.e.name second.e.name))
+              (not (= first.e.name third.e.name))
+              (not (= first.a.kind .Value))
+              (not (= second.a.kind .Value))
+              (not (= third.a.kind .Value))
+              (not (= first.a.value.kind .Keyword))
+              (not (= second.a.value.kind .Keyword))
+              (not (= third.a.value.kind .Keyword))
+              (reverse-attr? first.a.value.text)
+              (reverse-attr? second.a.value.text)
+              (reverse-attr? third.a.value.text)
+              (not (= first.v.kind .Var))
+              (not (= second.v.kind .Var))
+              (not (= third.v.kind .Var))
+              (= first.v.name second.v.name)
+              (= first.v.name third.v.name)
+              (= second.v.name third.v.name)
+              (not (= first.tx-term.kind .Wildcard))
+              (not (= second.tx-term.kind .Wildcard))
+              (not (= third.tx-term.kind .Wildcard))
+              (not (= first.op-term.kind .Wildcard))
+              (not (= second.op-term.kind .Wildcard))
+              (not (= third.op-term.kind .Wildcard))
+              (not (query-find-three-vars? query first.v.name second.v.name third.v.name)))
+      (return (empty-source-three-attr-entity-projection) false))
+    (return (Source-Three-Attr-Entity-Projection {entity-var: first.e.name
+                                                  first-attr: first.a.value.text
+                                                  first-var: first.v.name
+                                                  second-attr: second.a.value.text
+                                                  second-var: second.v.name
+                                                  third-attr: third.a.value.text
+                                                  third-var: third.v.name})
+            true)))
+
+(defn query-find-vars-match-clause-value-vars? [query: Query] -> bool
+  (when (not (= (count query.find) (count query.clauses)))
+    (return false))
+  (for [find-var query.find]
+    (let [found false]
+      (for [clause-value query.clauses]
+        (when (and (= clause-value.v.kind .Var)
+                   (= clause-value.v.name find-var))
+          (set! found true)))
+      (when (not found)
+        (return false))))
+  (for [clause-value query.clauses]
+    (let [found false]
+      (for [find-var query.find]
+        (when (and (= clause-value.v.kind .Var)
+                   (= clause-value.v.name find-var))
+          (set! found true)))
+      (when (not found)
+        (return false))))
+  true)
+
+(defn query-clause-value-var-unique-before? [query: Query, index: int] -> bool
+  (let [name query.clauses[index].v.name
+        i 0]
+    (while (< i index)
+      (when (and (= query.clauses[i].v.kind .Var)
+                 (= query.clauses[i].v.name name))
+        (return false))
+      (set! i (+ i 1)))
+    true))
+
+(defn db-read-source-query-star-attr-entity-projection? [query: Query] -> bool
+  (when (not (and (>= (count query.find) 4)
+                  (= (count query.find) (count query.clauses))
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 0)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) (count query.where-steps))))
+    (return false))
+  (let [first query.clauses[0]
+        i 0]
+    (when (not (and (= first.e.kind .Var)
+                    (= first.a.kind .Value)
+                    (= first.a.value.kind .Keyword)
+                    (not (reverse-attr? first.a.value.text))
+                    (= first.v.kind .Var)
+                    (= first.tx-term.kind .Wildcard)
+                    (= first.op-term.kind .Wildcard)))
+      (return false))
+    (while (< i (count query.clauses))
+      (let [clause-value query.clauses[i]]
+        (when (or (not (= query.where-steps[i].kind .Clause))
+                  (not (= query.where-steps[i].index i))
+                  (not (= clause-value.has-source first.has-source))
+                  (and first.has-source
+                       (not (= clause-value.source first.source)))
+                  (not (= clause-value.e.kind .Var))
+                  (not (= clause-value.e.name first.e.name))
+                  (not (= clause-value.a.kind .Value))
+                  (not (= clause-value.a.value.kind .Keyword))
+                  (reverse-attr? clause-value.a.value.text)
+                  (not (= clause-value.v.kind .Var))
+                  (not (query-clause-value-var-unique-before? query i))
+                  (not (= clause-value.tx-term.kind .Wildcard))
+                  (not (= clause-value.op-term.kind .Wildcard)))
+          (return false)))
+      (set! i (+ i 1)))
+    (query-find-vars-match-clause-value-vars? query)))
+
 (defn db-read-source-query-fixed-entity-ref-attr-projection [query: Query] -> [projection: Source-Fixed-Entity-Ref-Attr-Projection, ok: bool]
   (when (not (and (= (count query.find) 1)
                   (= (count query.with) 0)
@@ -19294,6 +19741,9 @@
   (let [[_ projection-ok] (db-read-source-query-attr-range-value-projection query)]
     (when projection-ok
       (return true)))
+  (let [[_ projection-ok] (db-read-source-query-range-filtered-entity-attr-value-projection query)]
+    (when projection-ok
+      (return true)))
   (let [[_ projection-ok] (db-read-source-query-attr-entity-projection query)]
     (when projection-ok
       (return true)))
@@ -19342,10 +19792,29 @@
   (let [[_ projection-ok] (db-read-source-query-two-attr-entity-projection query)]
     (when projection-ok
       (return true)))
+  (let [[_ projection-ok] (db-read-source-query-three-attr-entity-projection query)]
+    (when projection-ok
+      (return true)))
   (let [[_ projection-ok] (db-read-source-query-entity-attr-value-projection query)]
     (when projection-ok
       (return true)))
   false)
+
+(defn db-read-source-query-direct-operator-with-source? [source: DB-Read-Source, sources: []DB-Read-Named-Source, query: Query] -> bool
+  (let [[range-projection range-ok] (db-read-source-query-range-star-projection query)]
+    (when range-ok
+      (let [[projection-source _ source-ok _] (db-read-source-query-clause-source source sources query.clauses[0])]
+        (when (not source-ok)
+          (return false))
+        (let [[ready-ok _] (db-read-source-range-star-projection-ready? projection-source query range-projection)]
+          (return ready-ok)))))
+  (when (db-read-source-query-star-attr-entity-projection? query)
+    (let [[projection-source _ source-ok _] (db-read-source-query-clause-source source sources query.clauses[0])]
+      (when (not source-ok)
+        (return false))
+      (let [[ready-ok _] (db-read-source-star-attr-entity-projection-ready? projection-source query)]
+        (return ready-ok))))
+  (db-read-source-query-direct-operator? query))
 
 (defn db-read-source-query-profile-stats [query: Query, result: Result-Set] -> Query-Stats
   (let [stats (query-stats-empty)]
@@ -19354,6 +19823,19 @@
     (set! stats.output-rows (count result.rows))
     (when result.ok
       (if (db-read-source-query-direct-operator? query)
+        (set! stats.source-index-scans (max 1 (count query.clauses)))
+        (do
+          (set! stats.source-index-scans (count query.clauses))
+          (set! stats.binding-materializations (count result.rows)))))
+    stats))
+
+(defn db-read-source-query-profile-stats-with-source [source: DB-Read-Source, sources: []DB-Read-Named-Source, query: Query, result: Result-Set] -> Query-Stats
+  (let [stats (query-stats-empty)]
+    (set! stats.steps (count query.where-steps))
+    (set! stats.clauses (count query.clauses))
+    (set! stats.output-rows (count result.rows))
+    (when result.ok
+      (if (db-read-source-query-direct-operator-with-source? source sources query)
         (set! stats.source-index-scans (max 1 (count query.clauses)))
         (do
           (set! stats.source-index-scans (count query.clauses))
@@ -20324,6 +20806,163 @@
                 (delete-owned-datom datom)))))))
     (result-set-ok rows)))
 
+(defn append-db-read-source-range-filtered-entity-attr-value-row! [rows: ^[dynamic]Result-Row, query: Query, projection: Source-Range-Filtered-Entity-Attr-Value-Projection, entity: u64, source-value: Value]
+  (if (= (count query.find) 1)
+    (when (not (row-values-exist? (slice rows^ 0) ([]Value [source-value])))
+      (append-distinct-single-value-row! rows (value-owned source-value)))
+    (let [entity-value (value-entity entity)
+          first-value (if (= query.find[0] projection.entity-var) entity-value source-value)
+          second-value (if (= query.find[1] projection.value-var) source-value entity-value)
+          dedupe-values ([]Value [first-value second-value])]
+      (when (not (row-values-exist? (slice rows^ 0) dedupe-values))
+        (append-owned-two-value-row! rows first-value second-value)))))
+
+(defn append-db-read-source-range-filtered-projection-values! [rows: ^[dynamic]Result-Row, source: DB-Read-Source, query: Query, projection: Source-Range-Filtered-Entity-Attr-Value-Projection, entity: u64, many: bool] -> [ok: bool, error: string]
+  (if many
+    (let [[projected-datoms projected-ok projected-error] (db-read-source-datoms-by-entity-attr source entity projection.value-attr)]
+      (when (not projected-ok)
+        (return false projected-error))
+      (for [projected-datom projected-datoms]
+        (append-db-read-source-range-filtered-entity-attr-value-row! rows query projection entity projected-datom.v))
+      (delete-owned-datoms projected-datoms)
+      (return true ""))
+    (let [[projected-value projected-ok projected-error] (db-read-source-cardinality-one-value-fast-all-current source entity projection.value-attr)]
+      (when (not (= projected-error ""))
+        (return false projected-error))
+      (when projected-ok
+        (append-db-read-source-range-filtered-entity-attr-value-row! rows query projection entity projected-value)
+        (delete-owned-value projected-value))
+      (return true ""))))
+
+(defn append-db-read-source-range-filtered-projection-from-filter-datom! [rows: ^[dynamic]Result-Row, source: DB-Read-Source, query: Query, projection: Source-Range-Filtered-Entity-Attr-Value-Projection, filter-datom: Datom, many: bool] -> [ok: bool, error: string]
+  (when (not (and (= filter-datom.a projection.filter-attr)
+                  (predicate-pair-matches? projection.filter-op filter-datom.v projection.filter-value)))
+    (return true ""))
+  (append-db-read-source-range-filtered-projection-values! rows source query projection filter-datom.e many))
+
+(defn q-db-read-source-range-filtered-entity-attr-value-projection [source: DB-Read-Source, query: Query, projection: Source-Range-Filtered-Entity-Attr-Value-Projection] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)
+        [many many-ok many-error] (db-read-source-schema-cardinality-many? source projection.value-attr)]
+    (when (not many-ok)
+      (return (result-set-error many-error)))
+    (if (= source.kind .Tx-Ops-Overlay)
+      (let [[filter-datoms filter-ok filter-error] (db-read-source-datoms-by-attr source projection.filter-attr)]
+        (when (not filter-ok)
+          (delete-result-rows-owned-values rows)
+          (return (result-set-error filter-error)))
+        (defer (delete-owned-datoms filter-datoms))
+        (for [filter-datom filter-datoms]
+          (let [[append-ok append-error] (append-db-read-source-range-filtered-projection-from-filter-datom! (addr rows) source query projection filter-datom many)]
+            (when (not append-ok)
+              (delete-result-rows-owned-values rows)
+              (return (result-set-error append-error))))))
+      (let [range-projection (Source-Attr-Range-Value-Projection {attr: projection.filter-attr
+                                                                  value-var: projection.filter-var
+                                                                  op: projection.filter-op
+                                                                  value: projection.filter-value})
+            [view low high range-ok range-error] (db-read-source-attr-range-index-bounds source range-projection)]
+        (when (not range-ok)
+          (delete-result-rows-owned-values rows)
+          (return (result-set-error range-error)))
+        (for [pos (arr.range low high)]
+          (let [entry (db-index-view-at view pos)
+                [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+            (when (not current-ok)
+              (delete-result-rows-owned-values rows)
+              (return (result-set-error current-error)))
+            (when current
+              (let [[filter-datom filter-datom-ok filter-datom-error] (db-read-source-datom-at-entry source entry)]
+                (when (not filter-datom-ok)
+                  (delete-result-rows-owned-values rows)
+                  (return (result-set-error filter-datom-error)))
+                (let [[append-ok append-error] (append-db-read-source-range-filtered-projection-from-filter-datom! (addr rows) source query projection filter-datom many)]
+                  (delete-owned-datom filter-datom)
+                  (when (not append-ok)
+                    (delete-result-rows-owned-values rows)
+                    (return (result-set-error append-error))))))))))
+    (result-set-ok rows)))
+
+(defn db-read-source-range-star-projection-ready? [source: DB-Read-Source, query: Query, projection: Source-Range-Star-Projection] -> [ok: bool, error: string]
+  (when (= source.kind .Tx-Ops-Overlay)
+    (return false ""))
+  (let [i 0]
+    (while (< i (count query.clauses))
+      (when (not (= i projection.filter-index))
+        (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source query.clauses[i].a.value.text)]
+          (when (not many-ok)
+            (return false many-error))
+          (when many
+            (return false ""))))
+      (set! i (+ i 1)))
+    (return true "")))
+
+(defn source-range-star-clause-index-for-var [query: Query, entity-var: string, name: string] -> [index: int, entity?: bool, ok: bool]
+  (when (= name entity-var)
+    (return 0 true true))
+  (let [i 0]
+    (while (< i (count query.clauses))
+      (when (and (= query.clauses[i].v.kind .Var)
+                 (= query.clauses[i].v.name name))
+        (return i false true))
+      (set! i (+ i 1)))
+    (return 0 false false)))
+
+(defn append-db-read-source-range-star-row! [rows: ^[dynamic]Result-Row, source: DB-Read-Source, query: Query, projection: Source-Range-Star-Projection, filter-datom: Datom] -> [ok: bool, error: string]
+  (when (not (and (= filter-datom.a projection.filter-attr)
+                  (predicate-pair-matches? projection.filter-op filter-datom.v projection.filter-value)))
+    (return true ""))
+  (let [values (make [dynamic]Value)]
+    (for [find-var query.find]
+      (let [[clause-index entity? clause-ok] (source-range-star-clause-index-for-var query projection.entity-var find-var)]
+        (when (not clause-ok)
+          (delete-owned-values-array values)
+          (return false "source range projection find var missing from clauses"))
+        (cond
+          entity?
+            (arr.push! values (value-entity filter-datom.e))
+          (= clause-index projection.filter-index)
+            (arr.push! values (value-owned filter-datom.v))
+          :else
+            (let [[owned-value value-ok value-error] (db-read-source-cardinality-one-value-fast-all-current source filter-datom.e query.clauses[clause-index].a.value.text)]
+              (when (not value-ok)
+                (delete-owned-values-array values)
+                (when (not (= value-error ""))
+                  (return false value-error))
+                (return true ""))
+              (arr.push! values owned-value)))))
+    (if (row-values-exist? (slice rows^ 0) (slice values 0))
+      (delete-owned-values-array values)
+      (let [pulls (make [dynamic]Pull-Result)]
+        (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
+    (return true "")))
+
+(defn q-db-read-source-range-star-projection [source: DB-Read-Source, query: Query, projection: Source-Range-Star-Projection] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)
+        range-projection (Source-Attr-Range-Value-Projection {attr: projection.filter-attr
+                                                              value-var: projection.filter-var
+                                                              op: projection.filter-op
+                                                              value: projection.filter-value})
+        [view low high range-ok range-error] (db-read-source-attr-range-index-bounds source range-projection)]
+    (when (not range-ok)
+      (return (result-set-error range-error)))
+    (for [pos (arr.range low high)]
+      (let [entry (db-index-view-at view pos)
+            [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+        (when (not current-ok)
+          (delete-result-rows-owned-values rows)
+          (return (result-set-error current-error)))
+        (when current
+          (let [[filter-datom filter-datom-ok filter-datom-error] (db-read-source-datom-at-entry source entry)]
+            (when (not filter-datom-ok)
+              (delete-result-rows-owned-values rows)
+              (return (result-set-error filter-datom-error)))
+            (let [[append-ok append-error] (append-db-read-source-range-star-row! (addr rows) source query projection filter-datom)]
+              (delete-owned-datom filter-datom)
+              (when (not append-ok)
+                (delete-result-rows-owned-values rows)
+                (return (result-set-error append-error))))))))
+    (result-set-ok rows)))
+
 (defn q-db-read-source-attr-entity-projection [source: DB-Read-Source, projection: Source-Attr-Entity-Projection] -> Result-Set
   (let [rows (make [dynamic]Result-Row)]
     (if (reverse-attr? projection.attr)
@@ -20633,35 +21272,222 @@
           (delete-owned-datoms value-datoms))))
     (result-set-ok rows)))
 
-(defn append-db-read-source-second-attr-projection-values! [rows: ^[dynamic]Result-Row, source: DB-Read-Source, query: Query, projection: Two-Attr-Entity-Projection, first-datom: Datom, many: bool] -> [ok: bool, error: string]
-  (if many
-    (let [[second-datoms second-ok second-error] (db-read-source-datoms-by-entity-attr source first-datom.e projection.second-attr)]
-      (when (not second-ok)
-        (return false second-error))
-      (for [second-datom second-datoms]
-        (append-db-read-source-two-attr-projection-row! rows query projection first-datom.v second-datom.v))
-      (delete-owned-datoms second-datoms)
-      (return true ""))
-    (let [[second-value second-ok second-error] (db-read-source-cardinality-one-value-fast-all-current source first-datom.e projection.second-attr)]
-      (when (not (= second-error ""))
-        (return false second-error))
-      (when second-ok
-        (append-db-read-source-two-attr-projection-row! rows query projection first-datom.v second-value)
-        (delete-owned-value second-value))
-      (return true ""))))
+(defn db-read-source-attr-range-entry-count [source: DB-Read-Source, attr: string] -> [entry-count: int, ok: bool, error: string]
+  (let [values ([]Value [(value-keyword attr)])
+        [_ low high range-ok range-error] (db-read-source-prefix-index-range source .AEVT values)]
+    (if range-ok
+      (return (- high low) true "")
+      (return 0 false range-error))))
+
+(defn db-read-source-two-attr-use-second-driver? [source: DB-Read-Source, projection: Two-Attr-Entity-Projection] -> bool
+  (when (= source.kind .Tx-Ops-Overlay)
+    (return false))
+  (let [[first-count first-ok _] (db-read-source-attr-range-entry-count source projection.first-attr)
+        [second-count second-ok _] (db-read-source-attr-range-entry-count source projection.second-attr)]
+    (and first-ok
+         second-ok
+         (< second-count first-count))))
+
+(defn append-db-read-source-other-attr-projection-values! [rows: ^[dynamic]Result-Row, source: DB-Read-Source, query: Query, projection: Two-Attr-Entity-Projection, driver-datom: Datom, driver-is-first: bool, many: bool] -> [ok: bool, error: string]
+  (let [lookup-attr (if driver-is-first projection.second-attr projection.first-attr)]
+    (if many
+      (let [[lookup-datoms lookup-ok lookup-error] (db-read-source-datoms-by-entity-attr source driver-datom.e lookup-attr)]
+        (when (not lookup-ok)
+          (return false lookup-error))
+        (for [lookup-datom lookup-datoms]
+          (if driver-is-first
+            (append-db-read-source-two-attr-projection-row! rows query projection driver-datom.v lookup-datom.v)
+            (append-db-read-source-two-attr-projection-row! rows query projection lookup-datom.v driver-datom.v)))
+        (delete-owned-datoms lookup-datoms)
+        (return true ""))
+      (let [[lookup-value lookup-ok lookup-error] (db-read-source-cardinality-one-value-fast-all-current source driver-datom.e lookup-attr)]
+        (when (not (= lookup-error ""))
+          (return false lookup-error))
+        (when lookup-ok
+          (if driver-is-first
+            (append-db-read-source-two-attr-projection-row! rows query projection driver-datom.v lookup-value)
+            (append-db-read-source-two-attr-projection-row! rows query projection lookup-value driver-datom.v))
+          (delete-owned-value lookup-value))
+        (return true "")))))
 
 (defn q-db-read-source-two-attr-entity-projection [source: DB-Read-Source, query: Query, projection: Two-Attr-Entity-Projection] -> Result-Set
   (let [rows (make [dynamic]Result-Row)
-        [first-datoms first-ok first-error] (db-read-source-datoms-by-attr source projection.first-attr)
-        [many many-ok many-error] (db-read-source-schema-cardinality-many? source projection.second-attr)]
-    (when (not first-ok)
-      (return (result-set-error first-error)))
+        use-second-driver (db-read-source-two-attr-use-second-driver? source projection)
+        driver-attr (if use-second-driver projection.second-attr projection.first-attr)
+        lookup-attr (if use-second-driver projection.first-attr projection.second-attr)
+        [driver-datoms driver-ok driver-error] (db-read-source-datoms-by-attr source driver-attr)
+        [many many-ok many-error] (db-read-source-schema-cardinality-many? source lookup-attr)]
+    (when (not driver-ok)
+      (return (result-set-error driver-error)))
     (when (not many-ok)
-      (delete-owned-datoms first-datoms)
+      (delete-owned-datoms driver-datoms)
       (return (result-set-error many-error)))
-    (defer (delete-owned-datoms first-datoms))
-    (for [first-datom first-datoms]
-      (let [[append-ok append-error] (append-db-read-source-second-attr-projection-values! (addr rows) source query projection first-datom many)]
+    (defer (delete-owned-datoms driver-datoms))
+    (for [driver-datom driver-datoms]
+      (let [[append-ok append-error] (append-db-read-source-other-attr-projection-values! (addr rows) source query projection driver-datom (not use-second-driver) many)]
+        (when (not append-ok)
+          (delete-result-rows-owned-values rows)
+          (return (result-set-error append-error)))))
+    (result-set-ok rows)))
+
+(defn source-three-attr-projection-attr [projection: Source-Three-Attr-Entity-Projection, index: int] -> string
+  (cond
+    (= index 0) projection.first-attr
+    (= index 1) projection.second-attr
+    :else projection.third-attr))
+
+(defn source-three-attr-projection-var [projection: Source-Three-Attr-Entity-Projection, index: int] -> string
+  (cond
+    (= index 0) projection.first-var
+    (= index 1) projection.second-var
+    :else projection.third-var))
+
+(defn source-three-attr-driver-index [source: DB-Read-Source, projection: Source-Three-Attr-Entity-Projection] -> int
+  (when (= source.kind .Tx-Ops-Overlay)
+    (return 0))
+  (let [[first-count first-ok _] (db-read-source-attr-range-entry-count source projection.first-attr)
+        [second-count second-ok _] (db-read-source-attr-range-entry-count source projection.second-attr)
+        [third-count third-ok _] (db-read-source-attr-range-entry-count source projection.third-attr)
+        best-index 0
+        best-count first-count]
+    (when (not (and first-ok second-ok third-ok))
+      (return 0))
+    (when (< second-count best-count)
+      (set! best-index 1)
+      (set! best-count second-count))
+    (when (< third-count best-count)
+      (set! best-index 2))
+    best-index))
+
+(defn source-three-attr-value-for-var [projection: Source-Three-Attr-Entity-Projection, name: string, first-value: Value, second-value: Value, third-value: Value] -> Value
+  (cond
+    (= name projection.first-var) first-value
+    (= name projection.second-var) second-value
+    :else third-value))
+
+(defn append-db-read-source-three-attr-projection-row! [rows: ^[dynamic]Result-Row, query: Query, projection: Source-Three-Attr-Entity-Projection, first-value: Value, second-value: Value, third-value: Value]
+  (let [out-first (source-three-attr-value-for-var projection query.find[0] first-value second-value third-value)
+        out-second (source-three-attr-value-for-var projection query.find[1] first-value second-value third-value)
+        out-third (source-three-attr-value-for-var projection query.find[2] first-value second-value third-value)
+        dedupe-values ([]Value [out-first out-second out-third])]
+    (when (not (row-values-exist? (slice rows^ 0) dedupe-values))
+      (append-three-value-row! rows (value-owned out-first) (value-owned out-second) (value-owned out-third)))))
+
+(defn append-db-read-source-three-attr-driver-row! [rows: ^[dynamic]Result-Row, source: DB-Read-Source, query: Query, projection: Source-Three-Attr-Entity-Projection, driver-index: int, driver-datom: Datom] -> [ok: bool, error: string]
+  (let [first-lookup-index (if (= driver-index 0) 1 0)
+        second-lookup-index (if (= driver-index 2) 1 2)
+        first-lookup-attr (source-three-attr-projection-attr projection first-lookup-index)
+        second-lookup-attr (source-three-attr-projection-attr projection second-lookup-index)
+        [first-datoms first-ok first-error] (db-read-source-datoms-by-entity-attr source driver-datom.e first-lookup-attr)]
+    (when (not first-ok)
+      (return false first-error))
+    (let [[second-datoms second-ok second-error] (db-read-source-datoms-by-entity-attr source driver-datom.e second-lookup-attr)]
+      (when (not second-ok)
+        (delete-owned-datoms first-datoms)
+        (return false second-error))
+      (for [first-datom first-datoms]
+        (for [second-datom second-datoms]
+          (let [first-value (cond
+                              (= driver-index 0) driver-datom.v
+                              (= first-lookup-index 0) first-datom.v
+                              :else second-datom.v)
+                second-value (cond
+                               (= driver-index 1) driver-datom.v
+                               (= first-lookup-index 1) first-datom.v
+                               :else second-datom.v)
+                third-value (cond
+                              (= driver-index 2) driver-datom.v
+                              (= first-lookup-index 2) first-datom.v
+                              :else second-datom.v)]
+            (append-db-read-source-three-attr-projection-row! rows query projection first-value second-value third-value))))
+      (delete-owned-datoms first-datoms)
+      (delete-owned-datoms second-datoms)
+      (return true ""))))
+
+(defn q-db-read-source-three-attr-entity-projection [source: DB-Read-Source, query: Query, projection: Source-Three-Attr-Entity-Projection] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)
+        driver-index (source-three-attr-driver-index source projection)
+        driver-attr (source-three-attr-projection-attr projection driver-index)
+        [driver-datoms driver-ok driver-error] (db-read-source-datoms-by-attr source driver-attr)]
+    (when (not driver-ok)
+      (return (result-set-error driver-error)))
+    (defer (delete-owned-datoms driver-datoms))
+    (for [driver-datom driver-datoms]
+      (let [[append-ok append-error] (append-db-read-source-three-attr-driver-row! (addr rows) source query projection driver-index driver-datom)]
+        (when (not append-ok)
+          (delete-result-rows-owned-values rows)
+          (return (result-set-error append-error)))))
+    (result-set-ok rows)))
+
+(defn db-read-source-star-attr-entity-projection-ready? [source: DB-Read-Source, query: Query] -> [ok: bool, error: string]
+  (when (= source.kind .Tx-Ops-Overlay)
+    (return false ""))
+  (for [clause-value query.clauses]
+    (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source clause-value.a.value.text)]
+      (when (not many-ok)
+        (return false many-error))
+      (when many
+        (return false ""))))
+  (return true ""))
+
+(defn source-star-attr-driver-index [source: DB-Read-Source, query: Query] -> int
+  (let [best-index 0
+        [first-count first-ok _] (db-read-source-attr-range-entry-count source query.clauses[0].a.value.text)
+        best-count first-count
+        i 1]
+    (when (not first-ok)
+      (return 0))
+    (while (< i (count query.clauses))
+      (let [[entry-count entry-ok _] (db-read-source-attr-range-entry-count source query.clauses[i].a.value.text)]
+        (when (not entry-ok)
+          (return best-index))
+        (when (< entry-count best-count)
+          (set! best-index i)
+          (set! best-count entry-count)))
+      (set! i (+ i 1)))
+    best-index))
+
+(defn source-star-clause-index-for-value-var [query: Query, name: string] -> [index: int, ok: bool]
+  (let [i 0]
+    (while (< i (count query.clauses))
+      (when (and (= query.clauses[i].v.kind .Var)
+                 (= query.clauses[i].v.name name))
+        (return i true))
+      (set! i (+ i 1)))
+    (return 0 false)))
+
+(defn append-db-read-source-star-attr-entity-row! [rows: ^[dynamic]Result-Row, source: DB-Read-Source, query: Query, driver-index: int, driver-datom: Datom] -> [ok: bool, error: string]
+  (let [values (make [dynamic]Value)]
+    (for [find-var query.find]
+      (let [[clause-index clause-ok] (source-star-clause-index-for-value-var query find-var)]
+        (when (not clause-ok)
+          (delete-owned-values-array values)
+          (return false "source star projection find var missing from clauses"))
+        (if (= clause-index driver-index)
+          (arr.push! values (value-owned driver-datom.v))
+          (let [[owned-value value-ok value-error] (db-read-source-cardinality-one-value-fast-all-current source driver-datom.e query.clauses[clause-index].a.value.text)]
+            (when (not value-ok)
+              (delete-owned-values-array values)
+              (when (not (= value-error ""))
+                (return false value-error))
+              (return true ""))
+            (arr.push! values owned-value)))))
+    (if (row-values-exist? (slice rows^ 0) (slice values 0))
+      (delete-owned-values-array values)
+      (let [pulls (make [dynamic]Pull-Result)]
+        (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))
+    (return true "")))
+
+(defn q-db-read-source-star-attr-entity-projection [source: DB-Read-Source, query: Query] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)
+        driver-index (source-star-attr-driver-index source query)
+        driver-attr query.clauses[driver-index].a.value.text
+        [driver-datoms driver-ok driver-error] (db-read-source-datoms-by-attr source driver-attr)]
+    (when (not driver-ok)
+      (return (result-set-error driver-error)))
+    (defer (delete-owned-datoms driver-datoms))
+    (for [driver-datom driver-datoms]
+      (let [[append-ok append-error] (append-db-read-source-star-attr-entity-row! (addr rows) source query driver-index driver-datom)]
         (when (not append-ok)
           (delete-result-rows-owned-values rows)
           (return (result-set-error append-error)))))

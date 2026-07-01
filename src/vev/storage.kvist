@@ -2578,13 +2578,44 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (failed-tx-report db db-error)))
     (with-tx-data db tx-data)))
 
+(defn delete-store-db-temp-tx-report [report: Tx-Report]
+  (if report.ok
+    (delete-tx-report-shallow report)
+    (do
+      (delete-owned-db report.db-before)
+      (delete report.tx-data)
+      (delete report.tx-meta)
+      (delete report.tempids)
+      (delete-tx-publish-plan report.publish-plan))))
+
 (defn db-with-store-db-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> Store-DB
+  (when (= snapshot^.kind .Shared-Snapshot)
+    (let [[source-snapshot source-used source-ok _] (shared-db-snapshot-db-with-source-append-tx-data snapshot^.shared-snapshot tx-data)]
+      (when source-ok
+        (when source-used
+          (return (Store-DB {kind: .Shared-Snapshot
+                             shared-snapshot: source-snapshot}))))))
   (let [report (with-store-db-tx-data snapshot tx-data)]
-    (if report.ok
-      (Store-DB {kind: .Resident
-                 resident: (clone-db report.db-after)})
-      (Store-DB {kind: .Resident
-                 resident: (clone-db report.db-before)}))))
+    (case snapshot^.kind
+      .Shared-Snapshot
+        (if report.ok
+          (let [next-snapshot (shared-db-snapshot-with-tx-report snapshot^.shared-snapshot report.db-after report)
+                out (Store-DB {kind: .Shared-Snapshot
+                               shared-snapshot: next-snapshot})]
+            (delete-store-db-temp-tx-report report)
+            out)
+          (let [out (retain-store-db snapshot^)]
+            (delete-store-db-temp-tx-report report)
+            out))
+      (if report.ok
+        (let [out (Store-DB {kind: .Resident
+                             resident: (clone-db report.db-after)})]
+          (delete-store-db-temp-tx-report report)
+          out)
+        (let [out (Store-DB {kind: .Resident
+                             resident: (clone-db report.db-before)})]
+          (delete-store-db-temp-tx-report report)
+          out)))))
 
 (defn with-store-db-text [snapshot: ^Store-DB, text: string] -> Tx-Report
   (let [tx-data (make [dynamic]Tx-Data) :defer
