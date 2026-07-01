@@ -4617,6 +4617,14 @@
       (delete value)
       (return out true ""))))
 
+(defn db-read-source-schema-value-type [source: DB-Read-Source, attr: string] -> [schema-type: string, has-type: bool, ok: bool, error: string]
+  (let [[value value-ok value-error] (db-read-source-schema-keyword source attr ":db/valueType")]
+    (when (not value-ok)
+      (if (= value-error "")
+        (return "" false true "")
+        (return "" false false value-error)))
+    (return value true true "")))
+
 (defn db-read-source-schema-ident-for-entity [source: DB-Read-Source, entity: u64] -> [attr: string, ok: bool, error: string]
   (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity ":db/ident")]
     (when (not datoms-ok)
@@ -9003,48 +9011,41 @@
         (return "" false))
       (return (fmt.tprintf "%d:%s:%d:%s" (count op.a) op.a (count value-key) value-key) true))))
 
-(defn validate-final-schema [scratch-datoms: []Datom] -> [ok: bool, error: string]
-  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
-        scratch (build-db scratch-owned)
-        [ok error] (validate-tuple-schema scratch)]
+(defn validate-final-schema-db [scratch: DB] -> [ok: bool, error: string]
+  (let [[ok error] (validate-tuple-schema scratch)]
     (when (not ok)
       (return false error)))
-  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
-        scratch (build-db scratch-owned)
-        [ok error] (validate-ident-values scratch)]
+  (let [[ok error] (validate-ident-values scratch)]
     (when (not ok)
       (return false error)))
-  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
-        scratch (build-db scratch-owned)
-        [ok error] (validate-schema-keyword-values scratch ":db/valueType")]
+  (let [[ok error] (validate-schema-keyword-values scratch ":db/valueType")]
     (when (not ok)
       (return false error)))
-  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
-        scratch (build-db scratch-owned)
-        [ok error] (validate-schema-keyword-values scratch ":db/cardinality")]
+  (let [[ok error] (validate-schema-keyword-values scratch ":db/cardinality")]
     (when (not ok)
       (return false error)))
-  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
-        scratch (build-db scratch-owned)
-        [ok error] (validate-schema-keyword-values scratch ":db/unique")]
+  (let [[ok error] (validate-schema-keyword-values scratch ":db/unique")]
     (when (not ok)
       (return false error)))
-  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
-        scratch (build-db scratch-owned)
-        [ok error] (validate-schema-bool-values scratch ":db/index")]
+  (let [[ok error] (validate-unique-schema-values scratch)]
     (when (not ok)
       (return false error)))
-  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
-        scratch (build-db scratch-owned)
-        [ok error] (validate-schema-bool-values scratch ":db/isComponent")]
+  (let [[ok error] (validate-schema-bool-values scratch ":db/index")]
     (when (not ok)
       (return false error)))
-  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
-        scratch (build-db scratch-owned)
-        [ok error] (validate-component-schema scratch)]
+  (let [[ok error] (validate-schema-bool-values scratch ":db/isComponent")]
+    (when (not ok)
+      (return false error)))
+  (let [[ok error] (validate-component-schema scratch)]
     (when (not ok)
       (return false error)))
   (return true ""))
+
+(defn validate-final-schema [scratch-datoms: []Datom] -> [ok: bool, error: string]
+  (let [scratch-owned (arr.into [dynamic]Datom scratch-datoms) :defer
+        scratch (build-db scratch-owned)
+        [final-ok final-error] (validate-final-schema-db scratch)]
+    (return final-ok final-error)))
 
 (defn validate-ops-batch-against-before [before: DB, ops: []Tx-Op] -> [ok: bool, error: string]
   (let [seen-unique (mmap.empty string u64)]
@@ -9167,6 +9168,32 @@
                    (or (not (= datom.v.kind .Keyword))
                        (not (valid-schema-keyword-value? schema-attr datom.v.text))))
           (return false "invalid schema keyword value")))))
+  (return true ""))
+
+(defn validate-unique-schema-values [db: DB] -> [ok: bool, error: string]
+  (for [attr db.schema-unique]
+    (let [seen (mmap.empty string u64)
+          view (db-index-view db .AVET)
+          values ([]Value [(value-keyword attr)])
+          low (lower-bound-index-view-values db view values)
+          high (upper-bound-index-view-values db view values)
+          i low]
+      (defer (delete seen))
+      (while (< i high)
+        (let [datom-index (db-index-view-at view i)
+              datom db.datoms[datom-index]]
+          (when (and (datom-current-at? db datom-index)
+                     (= datom.a attr))
+            (let [op (datom-add-op datom)
+                  [key key-ok] (unique-op-value-key op)]
+              (when (not key-ok)
+                (return false "schema unique value unsupported"))
+              (let [[existing existing-ok] (mmap.get seen key)]
+                (when (and existing-ok (not (= existing datom.e)))
+                  (delete key)
+                  (return false "schema unique conflict")))
+              (mmap.assoc! seen key datom.e))))
+        (set! i (+ i 1)))))
   (return true ""))
 
 (defn validate-component-schema [db: DB] -> [ok: bool, error: string]

@@ -1699,16 +1699,19 @@
     (when data.has-tempid
       (let [[_ existing-ok] (resolved-tempid-lookup tempid-index data.tempid)]
         (when (not existing-ok)
-          (let [[upsert-e upsert-ok upsert-conflict upsert-error] (shared-write-state-source-simple-tempid-upsert-entity state source tx-data data.tempid tempid-index tempids next-e)]
-            (when upsert-conflict
-              (return false "conflicting upsert"))
-            (when (not (= upsert-error ""))
-              (return false upsert-error))
-            (if upsert-ok
-              (push-resolved-tempid! tempids tempid-index data.tempid upsert-e)
-              (let [assigned next-e^]
-                (set! next-e^ (+ next-e^ 1))
-                (push-resolved-tempid! tempids tempid-index data.tempid assigned))))))))
+          (if (current-tx-tempid? data.tempid)
+            (let [tx (shared-write-state-next-tx state)]
+              (push-resolved-tempid! tempids tempid-index data.tempid tx))
+            (let [[upsert-e upsert-ok upsert-conflict upsert-error] (shared-write-state-source-simple-tempid-upsert-entity state source tx-data data.tempid tempid-index tempids next-e)]
+              (when upsert-conflict
+                (return false "conflicting upsert"))
+              (when (not (= upsert-error ""))
+                (return false upsert-error))
+              (if upsert-ok
+                (push-resolved-tempid! tempids tempid-index data.tempid upsert-e)
+                (let [assigned next-e^]
+                  (set! next-e^ (+ next-e^ 1))
+                  (push-resolved-tempid! tempids tempid-index data.tempid assigned)))))))))
   (return true ""))
 
 (defn shared-write-state-latest-op-value [ops: []Tx-Op, entity: u64, attr: string] -> [value: Value, found: bool, retracted: bool]
@@ -2205,6 +2208,10 @@
                                 tempids: resolved-tempids})))
         (when skip-data
           (continue))
+        (when (and data.has-tempid
+                   (current-tx-tempid? data.tempid)
+                   (= data.op ":db/add"))
+          (arr.push! resolved-meta (Tx-Meta {a: data.a v: data.v})))
         (when (= data.op ":db/retractEntity")
           (let [start-index (count resolved-ops)
                 [expanded-ok expanded-error] (shared-write-state-append-retract-entity-ops! (addr resolved-ops) source e)]
@@ -2623,7 +2630,7 @@
                           a: op.a
                           v: op.v
                           tx: tx
-                          added: true})]
+                          added: (= op.kind .Add)})]
         (arr.push! out (datom-owned datom))))
     out))
 

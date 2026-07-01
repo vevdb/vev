@@ -70,17 +70,30 @@ Live SQLite connections now have internal text and prepared query wrappers
 (`q-result-sqlite-conn-text` and `q-result-sqlite-conn-prepared`) that open a
 short-lived `SQLite-DB-Snapshot`, query through `DB-Read-Source`, close the
 storage snapshot, and return an owned `Query-Result`. Normal public
-`connect`/`db` access through those cursors is the next storage step. There is
-also an internal source-only SQLite connection opener that skips
-`load-db-sqlite` and keeps only the live SQLite handle plus a small resident
-shell for cleanup/error reporting. That source-only handle can query through
-the persisted snapshot wrappers and rejects transactions explicitly.
+`connect`/`db` access now uses those cursor-backed `Store-DB` values for reads.
+Writable SQLite connections open lazily: they keep only the live SQLite handle
+plus a small resident shell until the first transaction, so opening a durable
+connection for metadata, `db`, query, or pull no longer rebuilds the resident
+datom log. Storage-neutral transaction reports can publish supported
+source-resolvable writes directly: Vev resolves tx-data against a
+`DB-Read-Source`, publishes the source-overlay add/retract datom log, writes
+new persisted index roots, and returns SQLite-backed `db-before` / `db-after`
+handles without loading a resident `DB`. Covered direct shapes include add,
+cardinality-one replacement, explicit retract, retract-attribute,
+retract-entity, lookup refs, nested maps through ref attrs, tempids in ref
+values, unique-identity upserts, tuple-identity upserts with tempid/lookup
+components, transaction metadata, current-tx aliases, and CAS; broader
+source-overlay transaction shapes are the remaining work. The older
+resident-shaped `Tx-Report` transaction API still upgrades by loading the
+resident connection before running the existing compatibility path. There is
+also an internal source-only SQLite connection opener with the same no-rebuild
+read shape that rejects transactions explicitly.
 The storage-neutral aliases (`open-store-read-only`, `q-result-store-text`, and
 `q-result-store-prepared`) now expose this mode inside Vev without making
 query-facing code mention SQLite. `store-read-only?` and
 `store-resident-db-available?` make the current compatibility boundary explicit:
-read-only stores can query persisted index chunks, but they do not contain a
-resident rebuilt `DB`.
+source-backed stores can query persisted index chunks before a resident rebuilt
+`DB` exists.
 `Store-DB` is the internal storage-neutral immutable DB snapshot handle for
 this path. It currently wraps a retained `SQLite-DB-Snapshot`, exposes the
 same `DB-Read-Source` boundary as resident DBs, and can run text/prepared
@@ -105,6 +118,10 @@ snapshots the report path first resolves transactions through source-backed
 write-state overlays. Supported shapes return retained shared/SQLite overlay DB
 values; unsupported source-backed shapes fail explicitly instead of silently
 rebuilding a resident compatibility DB.
+Durable host transaction reports now use the same storage-neutral report shape:
+the C ABI transact report path returns retained `Store-DB` handles, and for
+supported source-direct SQLite writes those handles are backed directly by the
+new persisted index roots instead of resident clones.
 
 There are now two write modes:
 
@@ -305,9 +322,10 @@ rather than a small local optimization:
    four persisted indexes, and the index-view boundary can wrap those cursors.
    The next step is to make reopened DB snapshots choose those cursor-backed
    views instead of rebuilding resident arrays for normal access.
-5. Replace normal reopen with metadata/root loading plus lazy or bounded chunk
-   loading. Datom-log replay should become recovery/migration behavior, not the
-   large-database startup path.
+5. Broaden direct durable write publication from add/retract/retract-entity/CAS
+   source-overlay commits to the full ordinary source-resolvable transaction
+   surface, appending datom rows and persisted index roots from
+   source/write-state metadata without building a resident post-commit `DB`.
 6. Scale `bench/write_bench.kvist`, MusicBrainz reopen/query, and
    snapshot-heavy loops against this representation.
 

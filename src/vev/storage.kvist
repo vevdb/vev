@@ -1598,6 +1598,22 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (let [[_ root-ok root-error] (sqlite-insert-index-root-raw handle basis-tx eavt-id aevt-id avet-id vaet-id)]
             (return root-ok root-error)))))))
 
+(defn persist-index-root-sqlite-handle-from-indexes [handle: rawptr, basis-tx: u64, eavt: []int, aevt: []int, avet: []int, vaet: []int] -> [ok: bool, error: string]
+  (let [[eavt-id eavt-ok eavt-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":eavt" eavt)]
+    (when (not eavt-ok)
+      (return false eavt-error))
+    (let [[aevt-id aevt-ok aevt-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":aevt" aevt)]
+      (when (not aevt-ok)
+        (return false aevt-error))
+      (let [[avet-id avet-ok avet-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":avet" avet)]
+        (when (not avet-ok)
+          (return false avet-error))
+        (let [[vaet-id vaet-ok vaet-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":vaet" vaet)]
+          (when (not vaet-ok)
+            (return false vaet-error))
+          (let [[_ root-ok root-error] (sqlite-insert-index-root-raw handle basis-tx eavt-id aevt-id avet-id vaet-id)]
+            (return root-ok root-error)))))))
+
 (defn storage-int-slices-equal? [left: []int, right: []int] -> bool
   (when (not (= (count left) (count right)))
     (return false))
@@ -1718,6 +1734,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   conn: Conn
   handle: rawptr
   source-only: bool
+  resident-loaded: bool
 })
 
 (defstruct SQLite-Index-Cursor {
@@ -1846,6 +1863,155 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return false root-error)))
     (sqlite-commit-raw handle)))
 
+(defn db-index-view-entries [view: DB-Index-View] -> [dynamic]int
+  (let [out (make [dynamic]int 0 (db-index-view-count view))
+        index 0]
+    (while (< index (db-index-view-count view))
+      (arr.push! out (db-index-view-at view index))
+      (set! index (+ index 1)))
+    out))
+
+(defn source-appended-datom-at-entry [source: DB-Read-Source, appended: []Datom, start-index: int, entry: int] -> [datom: Datom, ok: bool, error: string]
+  (if (< entry start-index)
+    (db-read-source-datom-at-entry source entry)
+    (let [offset (- entry start-index)]
+      (when (or (< offset 0)
+                (>= offset (count appended)))
+        (return (Datom {}) false "appended datom index out of range"))
+      (return (datom-owned appended[offset]) true ""))))
+
+(defn source-appended-datom-index-less? [source: DB-Read-Source, appended: []Datom, start-index: int, order: string, left: int, right: int] -> [less: bool, ok: bool, error: string]
+  (let [[left-datom left-ok left-error] (source-appended-datom-at-entry source appended start-index left)]
+    (when (not left-ok)
+      (return false false left-error))
+    (let [[right-datom right-ok right-error] (source-appended-datom-at-entry source appended start-index right)]
+      (when (not right-ok)
+        (delete-owned-datom left-datom)
+        (return false false right-error))
+      (let [less-value (datom-less-order? left-datom right-datom order left right)]
+        (delete-owned-datom left-datom)
+        (delete-owned-datom right-datom)
+        (return less-value true "")))))
+
+(defn source-append-merge-index [source: DB-Read-Source, existing: []int, appended: []Datom, start-index: int, order: string] -> [out: [dynamic]int, ok: bool, error: string]
+  (let [added (sorted-appended-datom-slice-indexes appended start-index order)
+        merged (make [dynamic]int 0 (+ (count existing) (count added)))
+        left 0
+        right 0]
+    (while (and (< left (count existing))
+                (< right (count added)))
+      (let [[added-less less-ok less-error] (source-appended-datom-index-less? source appended start-index order added[right] existing[left])]
+        (when (not less-ok)
+          (delete merged)
+          (delete added)
+          (return (make [dynamic]int) false less-error))
+        (if added-less
+          (do
+            (arr.push! merged added[right])
+            (set! right (+ right 1)))
+          (do
+            (arr.push! merged existing[left])
+            (set! left (+ left 1))))))
+    (while (< left (count existing))
+      (arr.push! merged existing[left])
+      (set! left (+ left 1)))
+    (while (< right (count added))
+      (arr.push! merged added[right])
+      (set! right (+ right 1)))
+    (delete added)
+    (return merged true "")))
+
+(defn source-append-eavt-index [source: DB-Read-Source, existing: []int, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> [out: [dynamic]int, ok: bool, error: string]
+  (if new-entities-after-existing
+    (let [added (sorted-appended-datom-slice-indexes appended start-index "eavt")
+          out (arr.into [dynamic]int existing)]
+      (for [entry added]
+        (arr.push! out entry))
+      (delete added)
+      (return out true ""))
+    (source-append-merge-index source existing appended start-index "eavt")))
+
+(defn source-append-build-indexes [source: DB-Read-Source, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> [eavt: [dynamic]int, aevt: [dynamic]int, avet: [dynamic]int, vaet: [dynamic]int, ok: bool, error: string]
+  (let [eavt-base (db-index-view-entries (db-read-source-index-view source .EAVT))
+        aevt-base (db-index-view-entries (db-read-source-index-view source .AEVT))
+        avet-base (db-index-view-entries (db-read-source-index-view source .AVET))
+        vaet-base (db-index-view-entries (db-read-source-index-view source .VAET))
+        [eavt-index eavt-ok eavt-error] (source-append-eavt-index source (slice eavt-base 0) appended start-index new-entities-after-existing)]
+    (when (not eavt-ok)
+      (delete eavt-base)
+      (delete aevt-base)
+      (delete avet-base)
+      (delete vaet-base)
+      (return (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) false eavt-error))
+    (let [[aevt-index aevt-ok aevt-error] (source-append-merge-index source (slice aevt-base 0) appended start-index "aevt")]
+      (when (not aevt-ok)
+        (delete eavt-index)
+        (delete eavt-base)
+        (delete aevt-base)
+        (delete avet-base)
+        (delete vaet-base)
+        (return (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) false aevt-error))
+      (let [[avet-index avet-ok avet-error] (source-append-merge-index source (slice avet-base 0) appended start-index "avet")]
+        (when (not avet-ok)
+          (delete eavt-index)
+          (delete aevt-index)
+          (delete eavt-base)
+          (delete aevt-base)
+          (delete avet-base)
+          (delete vaet-base)
+          (return (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) false avet-error))
+        (let [[vaet-index vaet-ok vaet-error] (source-append-merge-index source (slice vaet-base 0) appended start-index "vaet")]
+          (when (not vaet-ok)
+            (delete eavt-index)
+            (delete aevt-index)
+            (delete avet-index)
+            (delete eavt-base)
+            (delete aevt-base)
+            (delete avet-base)
+            (delete vaet-base)
+            (return (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) (make [dynamic]int) false vaet-error))
+          (delete eavt-base)
+          (delete aevt-base)
+          (delete avet-base)
+          (delete vaet-base)
+          (return eavt-index aevt-index avet-index vaet-index true ""))))))
+
+(defn append-source-direct-sqlite-handle [handle: rawptr, base-count: int, tx: u64, tx-data: []Datom, tx-meta: []Tx-Meta, eavt: []int, aevt: []int, avet: []int, vaet: []int] -> [ok: bool, error: string]
+  (let [[begin-ok begin-error] (sqlite-begin-immediate-raw handle)]
+    (when (not begin-ok)
+      (return false begin-error))
+    (let [[tx-stmt tx-stmt-ok tx-stmt-error] (sqlite-prepare-insert-tx-raw handle)]
+      (when (not tx-stmt-ok)
+        (sqlite-rollback-raw handle)
+        (return false tx-stmt-error))
+      (let [[tx-ok tx-error] (sqlite-step-tx-stmt-raw handle tx-stmt tx)]
+        (sqlite-finalize-stmt-raw tx-stmt)
+        (when (not tx-ok)
+          (sqlite-rollback-raw handle)
+          (return false tx-error))))
+    (let [[datom-stmt datom-stmt-ok datom-stmt-error] (sqlite-prepare-insert-datom-raw handle)]
+      (when (not datom-stmt-ok)
+        (sqlite-rollback-raw handle)
+        (return false datom-stmt-error))
+      (for [datom index tx-data]
+        (let [value-text (value-serializable-text datom.v)
+              [insert-ok insert-error] (sqlite-step-datom-stmt-raw handle datom-stmt (i64 (+ base-count index)) datom.e datom.a value-text datom.tx datom.added)]
+          (delete value-text)
+          (when (not insert-ok)
+            (sqlite-finalize-stmt-raw datom-stmt)
+            (sqlite-rollback-raw handle)
+            (return false insert-error))))
+      (sqlite-finalize-stmt-raw datom-stmt))
+    (let [[meta-ok meta-error] (insert-sqlite-tx-meta! handle tx tx-meta)]
+      (when (not meta-ok)
+        (sqlite-rollback-raw handle)
+        (return false meta-error)))
+    (let [[root-ok root-error] (persist-index-root-sqlite-handle-from-indexes handle tx eavt aevt avet vaet)]
+      (when (not root-ok)
+        (sqlite-rollback-raw handle)
+        (return false root-error)))
+    (sqlite-commit-raw handle)))
+
 (defn append-tx-report-sqlite [path: string, report: Tx-Report] -> [ok: bool, error: string]
   (let [[handle open-ok open-error] (sqlite-open-live-raw path)]
     (when (not open-ok)
@@ -1909,20 +2075,24 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn create-sqlite-conn [path: string] -> SQLite-Conn
   (SQLite-Conn {path: (string-owned path)
-                conn: (create-conn)}))
+                conn: (create-conn)
+                resident-loaded: true}))
 
 (defn open-sqlite-conn [path: string] -> [store: SQLite-Conn, ok: bool, error: string]
-  (let [[conn opened-ok opened-error] (open-conn-sqlite path)]
-    (when (and (not opened-ok)
-               (not (= opened-error "sqlite DB has no Vev datom rows")))
-      (return (SQLite-Conn {path: (string-owned path) conn: conn}) false opened-error))
-    (let [[handle handle-ok handle-error] (sqlite-open-live-raw path)]
-      (if handle-ok
-        (return (SQLite-Conn {path: (string-owned path) conn: conn handle: handle}) true "")
-        (do
-          (delete-owned-db conn.db)
-          (delete conn.listeners)
-          (return (SQLite-Conn {path: (string-owned path) conn: (create-conn)}) false handle-error))))))
+  (let [[handle handle-ok handle-error] (sqlite-open-live-raw path)]
+    (if handle-ok
+      (return (SQLite-Conn {path: (string-owned path)
+                            conn: (create-conn)
+                            handle: handle
+                            source-only: false
+                            resident-loaded: false})
+              true
+              "")
+      (return (SQLite-Conn {path: (string-owned path)
+                            conn: (create-conn)
+                            resident-loaded: true})
+              false
+              handle-error))))
 
 (defn open-sqlite-source-conn [path: string] -> [store: SQLite-Conn, ok: bool, error: string]
   (let [[handle handle-ok handle-error] (sqlite-open-live-raw path)]
@@ -1930,14 +2100,37 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (SQLite-Conn {path: (string-owned path)
                             conn: (create-conn)
                             handle: handle
-                            source-only: true})
+                            source-only: true
+                            resident-loaded: false})
               true
               "")
       (return (SQLite-Conn {path: (string-owned path)
                             conn: (create-conn)
-                            source-only: true})
+                            source-only: true
+                            resident-loaded: false})
               false
               handle-error))))
+
+(defn sqlite-conn-ensure-resident! [store: ^SQLite-Conn] -> [ok: bool, error: string]
+  (when store^.resident-loaded
+    (return true ""))
+  (let [[conn opened-ok opened-error] (open-conn-sqlite store^.path)]
+    (when (and (not opened-ok)
+               (not (= opened-error "sqlite DB has no Vev datom rows")))
+      (delete-owned-db conn.db)
+      (delete conn.listeners)
+      (return false opened-error))
+    (delete-owned-db store^.conn.db)
+    (delete store^.conn.listeners)
+    (set! store^.conn conn)
+    (set! store^.resident-loaded true)
+    (return true "")))
+
+(defn sqlite-conn-basis-t [store: ^SQLite-Conn] -> [basis-t: u64, ok: bool, error: string]
+  (when store^.resident-loaded
+    (let [next-tx store^.conn.next-tx]
+      (return (if (= next-tx 0) 0 (- next-tx 1)) true "")))
+  (sqlite-latest-index-root-basis-raw store^.handle))
 
 (defn sqlite-conn-tx-count [store: ^SQLite-Conn] -> [tx-count: u64, ok: bool, error: string]
   (sqlite-tx-count-raw store^.handle))
@@ -2578,6 +2771,39 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return true))))
   false)
 
+(defn overlay-ops-schema-entity-for-attr [ops: []Tx-Op, attr: string] -> [entity: u64, ok: bool]
+  (for [op ops]
+    (when (and (= op.kind .Add)
+               (= op.a ":db/ident")
+               (= op.v.kind .Keyword)
+               (= op.v.text attr))
+      (return op.e true)))
+  (return 0 false))
+
+(defn overlay-ops-schema-ident-for-entity [ops: []Tx-Op, entity: u64] -> [attr: string, ok: bool]
+  (for [op ops]
+    (when (and (= op.kind .Add)
+               (= op.e entity)
+               (= op.a ":db/ident")
+               (= op.v.kind .Keyword))
+      (return (string-owned op.v.text) true)))
+  (return "" false))
+
+(defn overlay-ops-schema-keyword-property [ops: []Tx-Op, entity: u64, schema-attr: string] -> [value: string, ok: bool]
+  (for [op ops]
+    (when (and (= op.kind .Add)
+               (= op.e entity)
+               (= op.a schema-attr)
+               (= op.v.kind .Keyword))
+      (return (string-owned op.v.text) true)))
+  (return "" false))
+
+(defn overlay-ops-schema-keyword [ops: []Tx-Op, attr: string, schema-attr: string] -> [value: string, ok: bool]
+  (let [[schema-e schema-ok] (overlay-ops-schema-entity-for-attr ops attr)]
+    (when (not schema-ok)
+      (return "" false))
+    (overlay-ops-schema-keyword-property ops schema-e schema-attr)))
+
 (defn shared-store-db-with-overlay [base: Shared-DB-Snapshot, ops: []Tx-Op, tx: u64] -> Store-DB
   (Store-DB {kind: .Shared-Tx-Ops-Overlay
              shared-snapshot: (retain-shared-db-snapshot base)
@@ -2612,8 +2838,176 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
              overlay-ops: (tx-ops-from-datoms-owned (slice report.tx-data 0))
              overlay-tx: report.tx}))
 
+(defn source-overlay-schema-unique-kind [source: DB-Read-Source, ops: []Tx-Op, attr: string] -> [unique-kind: string, unique: bool, ok: bool, error: string]
+  (let [[unique-kind unique-ok unique-error] (db-read-source-schema-keyword source attr ":db/unique")]
+    (when unique-ok
+      (return unique-kind true true ""))
+    (when (not (= unique-error ""))
+      (return "" false false unique-error)))
+  (let [[overlay-kind overlay-ok] (overlay-ops-schema-keyword ops attr ":db/unique")]
+    (if overlay-ok
+      (return overlay-kind true true "")
+      (return "" false true ""))))
+
+(defn source-overlay-schema-unique-identity? [source: DB-Read-Source, ops: []Tx-Op, attr: string] -> [identity: bool, ok: bool, error: string]
+  (let [[unique-kind unique unique-ok unique-error] (source-overlay-schema-unique-kind source ops attr)]
+    (when (not unique-ok)
+      (return false false unique-error))
+    (when (not unique)
+      (return false true ""))
+    (let [is-identity (= unique-kind ":db.unique/identity")]
+      (delete unique-kind)
+      (return is-identity true ""))))
+
+(defn source-overlay-unique-error [source: DB-Read-Source, ops: []Tx-Op, op: Tx-Op] -> [error-text: string, ok: bool]
+  (let [[identity identity-ok identity-error] (source-overlay-schema-unique-identity? source ops op.a)]
+    (when (not identity-ok)
+      (return identity-error false))
+    (if (and identity (not op.tuple-identity))
+      (return "conflicting upsert" true)
+      (return "schema unique conflict" true))))
+
+(defn source-overlay-existing-unique-conflict? [source: DB-Read-Source, op: Tx-Op] -> [conflict: bool, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        values ([]Value [(value-keyword op.a) op.v])
+        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr out) source .AVET values)]
+    (when (not scan-ok)
+      (delete-owned-datoms out)
+      (return false false scan-error))
+    (for [datom out]
+      (when (not (= datom.e op.e))
+        (delete-owned-datoms out)
+        (return true true "")))
+    (delete-owned-datoms out)
+    (return false true "")))
+
+(defn source-overlay-prior-unique-conflict? [ops: []Tx-Op, op: Tx-Op] -> bool
+  (for [prior ops]
+    (when (and (= prior.kind .Add)
+               (= prior.a op.a)
+               (value-equal? prior.v op.v)
+               (not (= prior.e op.e)))
+      (return true)))
+  false)
+
+(defn source-overlay-fact-matches? [fact: Tx-Op, op: Tx-Op] -> bool
+  (and (= fact.e op.e)
+       (= fact.a op.a)
+       (value-equal? fact.v op.v)))
+
+(defn remove-source-overlay-current-fact! [facts: ^[dynamic]Tx-Op, op: Tx-Op]
+  (let [out (make [dynamic]Tx-Op 0 (count facts^))]
+    (for [fact facts^]
+      (if (source-overlay-fact-matches? fact op)
+        (do
+          (when fact.owned-attr
+            (delete fact.a))
+          (when fact.owned-value
+            (delete-owned-value fact.v))
+          (when (not (= fact.map-group ""))
+            (delete fact.map-group)))
+        (arr.push! out fact)))
+    (delete facts^)
+    (set! facts^ out)))
+
+(defn source-overlay-current-attr-facts [source: DB-Read-Source, ops: []Tx-Op, attr: string] -> [facts: [dynamic]Tx-Op, ok: bool, error: string]
+  (let [current-facts (make [dynamic]Tx-Op)
+        [source-datoms source-ok source-error] (db-read-source-datoms-by-attr source attr)]
+    (when (not source-ok)
+      (return current-facts false source-error))
+    (for [datom source-datoms]
+      (arr.push! current-facts (tx-op-from-datom-owned datom)))
+    (delete-owned-datoms source-datoms)
+    (for [op ops]
+      (when (not (= op.a attr))
+        (continue))
+      (if (= op.kind .Retract)
+        (remove-source-overlay-current-fact! (addr current-facts) op)
+        (when (= op.kind .Add)
+          (arr.push! current-facts (tx-op-owned op)))))
+    (return current-facts true "")))
+
+(defn validate-source-overlay-unique-attr [source: DB-Read-Source, ops: []Tx-Op, attr: string] -> [ok: bool, error: string]
+  (let [[facts facts-ok facts-error] (source-overlay-current-attr-facts source ops attr)]
+    (when (not facts-ok)
+      (delete-owned-tx-ops facts)
+      (return false facts-error))
+    (let [seen (mmap.empty string u64)]
+      (defer (delete seen))
+      (for [fact facts]
+        (let [[key key-ok] (unique-op-value-key fact)]
+          (when (not key-ok)
+            (delete-owned-tx-ops facts)
+            (return false "schema unique value unsupported"))
+          (let [[existing existing-ok] (mmap.get seen key)]
+            (when (and existing-ok (not (= existing fact.e)))
+              (delete key)
+              (delete-owned-tx-ops facts)
+              (return false "schema unique conflict")))
+          (mmap.assoc! seen key fact.e))))
+    (delete-owned-tx-ops facts)
+    (return true "")))
+
+(defn validate-source-overlay-new-unique-schemas [source: DB-Read-Source, ops: []Tx-Op] -> [ok: bool, error: string]
+  (let [checked (mmap.empty string bool)]
+    (defer (delete checked))
+    (for [op ops]
+      (when (not (and (= op.kind .Add)
+                      (= op.a ":db/unique")
+                      (= op.v.kind .Keyword)))
+        (continue))
+      (let [[attr attr-ok] (overlay-ops-schema-ident-for-entity ops op.e)]
+        (when (not attr-ok)
+          (let [[source-attr source-attr-ok source-attr-error] (db-read-source-schema-ident-for-entity source op.e)]
+            (when (not source-attr-ok)
+              (when (not (= source-attr-error ""))
+                (return false source-attr-error))
+              (continue))
+            (let [[already _] (mmap.get checked source-attr)]
+              (when already
+                (delete source-attr)
+                (continue))
+                (let [[attr-ok attr-error] (validate-source-overlay-unique-attr source ops source-attr)]
+                  (when (not attr-ok)
+                    (delete source-attr)
+                    (return false attr-error)))
+                (mmap.assoc! checked source-attr true))
+            (continue)))
+        (let [[already _] (mmap.get checked attr)]
+          (when already
+            (delete attr)
+            (continue))
+            (let [[attr-ok attr-error] (validate-source-overlay-unique-attr source ops attr)]
+              (when (not attr-ok)
+                (delete attr)
+                (return false attr-error)))
+            (mmap.assoc! checked attr true)))))
+  (return true ""))
+
 (defn append-source-overlay-op! [out: ^[dynamic]Tx-Op, source: DB-Read-Source, op: Tx-Op] -> [ok: bool, error: string]
   (when (= op.kind .Add)
+    (let [[schema-type has-type type-ok type-error] (db-read-source-schema-value-type source op.a)]
+      (when (not type-ok)
+        (return false type-error))
+      (when has-type
+        (let [matches (value-matches-schema-type? op.v schema-type)]
+          (delete schema-type)
+          (when (not matches)
+            (return false "schema value type mismatch")))))
+    (let [[unique-kind unique unique-ok unique-error] (source-overlay-schema-unique-kind source (slice out^ 0) op.a)]
+      (when (not unique-ok)
+        (return false unique-error))
+      (when unique
+        (delete unique-kind)
+        (when (source-overlay-prior-unique-conflict? (slice out^ 0) op)
+          (let [[error-text error-ok] (source-overlay-unique-error source (slice out^ 0) op)]
+            (return false (if error-ok error-text "schema unique conflict"))))
+        (let [[conflict conflict-ok conflict-error] (source-overlay-existing-unique-conflict? source op)]
+          (when (not conflict-ok)
+            (return false conflict-error))
+          (when conflict
+            (let [[error-text error-ok] (source-overlay-unique-error source (slice out^ 0) op)]
+              (return false (if error-ok error-text "schema unique conflict")))))))
     (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source op.a)]
       (when (not many-ok)
         (return false many-error))
@@ -2636,6 +3030,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (when (not append-ok)
           (delete-owned-tx-ops out)
           (return (make [dynamic]Tx-Op) false append-error))))
+    (let [[unique-ok unique-error] (validate-source-overlay-new-unique-schemas source (slice out 0))]
+      (when (not unique-ok)
+        (delete-owned-tx-ops out)
+        (return (make [dynamic]Tx-Op) false unique-error)))
     (return out true "")))
 
 (defn shared-store-db-with-source-overlay-tx-data [snapshot: Shared-DB-Snapshot, tx-data: []Tx-Data] -> [next: Store-DB, used: bool, ok: bool, error: string]
@@ -2753,6 +3151,111 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                       tx-meta: (make [dynamic]Tx-Meta)
                       tempids: (make [dynamic]Tempid)})))
 
+(defn store-report-tempids-with-current-tx [tempids: []Tempid, tx: u64] -> [dynamic]Tempid
+  (let [out (arr.into [dynamic]Tempid tempids)
+        [_ has-current-tx] (tempid-lookup (slice out 0) ":db/current-tx")]
+    (when (not has-current-tx)
+      (arr.push! out (Tempid {tempid: ":db/current-tx" e: tx})))
+    out))
+
+(defn store-tx-report-from-resident-report [report: Tx-Report] -> Store-Tx-Report
+  (let [before (Store-DB {kind: .Resident resident: (clone-db report.db-before)})
+        after (Store-DB {kind: .Resident resident: (clone-db report.db-after)})
+        tempids (arr.into [dynamic]Tempid (slice report.tempids 0))]
+    (Store-Tx-Report {ok: report.ok
+                      error: report.error
+                      db-before: before
+                      db-after: after
+                      tx-data: (clone-datoms report.tx-data)
+                      tx: report.tx
+                      tx-meta: (clone-tx-meta (slice report.tx-meta 0))
+                      tempids: tempids})))
+
+(defn transact-sqlite-store-report-direct-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> [report: Store-Tx-Report, used: bool, ok: bool, error: string]
+  (when store^.resident-loaded
+    (return (Store-Tx-Report {}) false true ""))
+  (let [[before before-ok before-error] (sqlite-store-db store)]
+    (when (not before-ok)
+      (if (= before-error "sqlite DB has no Vev index roots")
+        (return (Store-Tx-Report {}) false true "")
+        (return (Store-Tx-Report {}) false false before-error)))
+    (let [[source source-ok source-error] (store-db-read-source (addr before))]
+      (when (not source-ok)
+        (close-store-db before)
+        (return (Store-Tx-Report {}) false false source-error))
+      (let [[state state-ok state-error] (shared-write-state-from-source-metadata source)]
+        (when (not state-ok)
+          (close-store-db before)
+          (return (Store-Tx-Report {}) false false state-error))
+        (let [resolved (shared-write-state-resolve-tx-data-source-only (addr state) source tx-data)]
+          (when (not resolved.ok)
+            (delete-resolved-tx resolved)
+            (delete-shared-write-state-metadata state)
+            (close-store-db before)
+            (return (Store-Tx-Report {}) false true ""))
+          (let [[overlay-ops overlay-ok overlay-error] (source-overlay-ops-from-resolved source resolved)]
+            (when (not overlay-ok)
+              (delete-resolved-tx resolved)
+              (delete-shared-write-state-metadata state)
+              (close-store-db before)
+              (return (Store-Tx-Report {}) false false overlay-error))
+            (let [tx state.conn.next-tx
+                  start-index before.sqlite-snapshot.datom-count
+                  new-entities-after-existing (source-append-ops-all-new-entities? state.next-entity-id (slice overlay-ops 0))
+                  appended (source-overlay-datoms-from-ops (slice overlay-ops 0) tx)]
+              (let [[eavt aevt avet vaet indexes-ok indexes-error] (source-append-build-indexes source (slice appended 0) start-index new-entities-after-existing)]
+                (when (not indexes-ok)
+                  (delete-owned-datoms appended)
+                  (delete-owned-tx-ops overlay-ops)
+                  (delete-resolved-tx resolved)
+                  (delete-shared-write-state-metadata state)
+                  (close-store-db before)
+                  (return (Store-Tx-Report {}) false false indexes-error))
+                (close-store-db before)
+                (let [[append-ok append-error] (append-source-direct-sqlite-handle store^.handle start-index tx (slice appended 0) (slice resolved.tx-meta 0) (slice eavt 0) (slice aevt 0) (slice avet 0) (slice vaet 0))]
+                  (delete eavt)
+                  (delete aevt)
+                  (delete avet)
+                  (delete vaet)
+                  (when (not append-ok)
+                    (delete-owned-datoms appended)
+                    (delete-owned-tx-ops overlay-ops)
+                    (delete-resolved-tx resolved)
+                    (delete-shared-write-state-metadata state)
+                    (let [[failed-before failed-before-ok _] (sqlite-store-db store)]
+                      (if failed-before-ok
+                        (return (failed-store-tx-report failed-before append-error) true true "")
+                        (return (Store-Tx-Report {}) false false append-error))))
+                  (let [[report-before report-before-ok report-before-error] (sqlite-open-db-snapshot-at-basis store^.path (- tx 1) sqlite-db-source-default-page-size)]
+                    (when (not report-before-ok)
+                      (delete-owned-datoms appended)
+                      (delete-owned-tx-ops overlay-ops)
+                      (delete-resolved-tx resolved)
+                      (delete-shared-write-state-metadata state)
+                      (return (Store-Tx-Report {}) false false report-before-error))
+                    (let [[report-after report-after-ok report-after-error] (sqlite-open-db-snapshot-at-basis store^.path tx sqlite-db-source-default-page-size)]
+                      (when (not report-after-ok)
+                        (close-sqlite-db-snapshot report-before)
+                        (delete-owned-datoms appended)
+                        (delete-owned-tx-ops overlay-ops)
+                        (delete-resolved-tx resolved)
+                        (delete-shared-write-state-metadata state)
+                        (return (Store-Tx-Report {}) false false report-after-error))
+                      (let [report-tempids (store-report-tempids-with-current-tx (slice resolved.tempids 0) tx)
+                            out-report (Store-Tx-Report {ok: true
+                                                         error: ""
+                                                         db-before: (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: report-before})
+                                                         db-after: (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: report-after})
+                                                         tx-data: (clone-owned-datom-slice (slice appended 0))
+                                                         tx: tx
+                                                         tx-meta: (clone-tx-meta (slice resolved.tx-meta 0))
+                                                         tempids: report-tempids})]
+                        (delete-owned-datoms appended)
+                        (delete-owned-tx-ops overlay-ops)
+                        (delete-resolved-tx resolved)
+                        (delete-shared-write-state-metadata state)
+                        (return out-report true true "")))))))))))))
+
 (defn source-overlay-datoms-from-ops [ops: []Tx-Op, tx: u64] -> [dynamic]Datom
   (let [out (make [dynamic]Datom 0 (count ops))]
     (for [op ops]
@@ -2781,7 +3284,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn store-tx-report-from-source-overlay-parts [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, tx-meta: []Tx-Meta, tempids: []Tempid] -> Store-Tx-Report
   (let [tx-data (source-overlay-datoms-from-ops overlay-ops tx)
-        cloned-tempids (arr.into [dynamic]Tempid tempids)]
+        cloned-tempids (store-report-tempids-with-current-tx tempids tx)]
     (Store-Tx-Report {ok: true
                       error: ""
                       db-before: (retain-store-db snapshot)
@@ -3448,6 +3951,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn transact-sqlite-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> Tx-Report
   (when store^.source-only
     (return (failed-tx-report store^.conn.db "SQLite source connection is read-only; open a writable SQLite connection to transact")))
+  (let [[resident-ok resident-error] (sqlite-conn-ensure-resident! store)]
+    (when (not resident-ok)
+      (return (failed-tx-report store^.conn.db resident-error))))
   (let [report (transact-tx-data (addr store^.conn) tx-data)]
     (when (not report.ok)
       (return report))
@@ -3464,6 +3970,35 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (when (not parse-ok)
       (return (failed-tx-report store^.conn.db parse-error)))
     (transact-sqlite-tx-data store (slice tx-data 0))))
+
+(defn transact-sqlite-store-report-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> Store-Tx-Report
+  (when store^.source-only
+    (let [[snapshot snapshot-ok _] (sqlite-store-db store)]
+      (if snapshot-ok
+        (return (failed-store-tx-report snapshot "SQLite source connection is read-only; open a writable SQLite connection to transact"))
+        (return (store-tx-report-from-resident-report (failed-tx-report store^.conn.db "SQLite source connection is read-only; open a writable SQLite connection to transact"))))))
+  (let [[direct-report direct-used direct-ok direct-error] (transact-sqlite-store-report-direct-tx-data store tx-data)]
+    (when direct-ok
+      (when direct-used
+        (return direct-report)))
+    (when (not direct-ok)
+      (let [[snapshot snapshot-ok _] (sqlite-store-db store)]
+        (if snapshot-ok
+          (return (failed-store-tx-report snapshot direct-error))
+          (return (store-tx-report-from-resident-report (failed-tx-report store^.conn.db direct-error)))))))
+  (let [report (transact-sqlite-tx-data store tx-data)
+        out (store-tx-report-from-resident-report report)]
+    out))
+
+(defn transact-sqlite-store-report-text [store: ^SQLite-Conn, text: string] -> Store-Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (when (not parse-ok)
+      (let [[snapshot snapshot-ok _] (sqlite-store-db store)]
+        (if snapshot-ok
+          (return (failed-store-tx-report snapshot parse-error))
+          (return (store-tx-report-from-resident-report (failed-tx-report store^.conn.db parse-error))))))
+    (transact-sqlite-store-report-tx-data store (slice tx-data 0))))
 
 (defn store-from-sqlite-conn [store: SQLite-Conn] -> Store-Conn
   (Store-Conn {kind: .SQLite sqlite: store}))
@@ -3492,7 +4027,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn store-resident-db-available? [store: ^Store-Conn] -> bool
   (case store^.kind
-    .SQLite (not store^.sqlite.source-only)
+    .SQLite store^.sqlite.resident-loaded
     .Shared true
      false))
 
@@ -3549,3 +4084,41 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (return (failed-tx-report (shared-write-state-before-db (addr store^.shared.write)) parse-error)))
         (shared-conn-transact (addr store^.shared) (slice tx-data 0)))
      (failed-tx-report (build-db (make [dynamic]Datom)) "store is not open")))
+
+(defn transact-store-report-tx-data [store: ^Store-Conn, tx-data: []Tx-Data] -> Store-Tx-Report
+  (case store^.kind
+    .SQLite (transact-sqlite-store-report-tx-data (addr store^.sqlite) tx-data)
+    .Shared
+      (let [report (shared-conn-transact-report (addr store^.shared) tx-data)]
+        (if report.ok
+          (let [tempids (arr.into [dynamic]Tempid (slice report.tempids 0))]
+            (Store-Tx-Report {ok: true
+                              error: ""
+                              db-before: (Store-DB {kind: .Shared-Snapshot shared-snapshot: report.db-before})
+                              db-after: (Store-DB {kind: .Shared-Snapshot shared-snapshot: report.db-after})
+                              tx-data: (clone-owned-datom-slice (slice report.tx-data 0))
+                              tx: report.tx
+                              tx-meta: (clone-tx-meta (slice report.tx-meta 0))
+                              tempids: tempids}))
+          (Store-Tx-Report {ok: false
+                            error: report.error
+                            db-before: (Store-DB {kind: .Shared-Snapshot shared-snapshot: report.db-before})
+                            db-after: (Store-DB {kind: .Shared-Snapshot shared-snapshot: report.db-after})
+                            tx-data: (make [dynamic]Datom)
+                            tx: 0
+                            tx-meta: (make [dynamic]Tx-Meta)
+                            tempids: (make [dynamic]Tempid)})))
+     (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
+       (failed-store-tx-report empty "store is not open"))))
+
+(defn transact-store-report-text [store: ^Store-Conn, text: string] -> Store-Tx-Report
+  (case store^.kind
+    .SQLite (transact-sqlite-store-report-text (addr store^.sqlite) text)
+    .Shared
+      (let [tx-data (make [dynamic]Tx-Data) :defer
+            [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+        (when (not parse-ok)
+          (return (failed-store-tx-report (shared-store-db (addr store^.shared)) parse-error)))
+        (transact-store-report-tx-data store (slice tx-data 0)))
+     (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
+       (failed-store-tx-report empty "store is not open"))))
