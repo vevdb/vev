@@ -83,6 +83,8 @@ public final class Vev {
     private final MethodHandle txReportFree;
     private final MethodHandle txReportValue;
     private final MethodHandle txReportEdn;
+    private final MethodHandle txReportDbBefore;
+    private final MethodHandle txReportDbAfter;
     private final MethodHandle txCreate;
     private final MethodHandle txFree;
     private final MethodHandle txAddString;
@@ -326,6 +328,8 @@ public final class Vev {
         this.txReportFree = downcall("vev_tx_report_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.txReportValue = downcall("vev_tx_report_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.txReportEdn = downcall("vev_tx_report_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txReportDbBefore = downcall("vev_tx_report_db_before", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txReportDbAfter = downcall("vev_tx_report_db_after", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.txCreate = downcall("vev_tx_create", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.txFree = downcall("vev_tx_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.txAddString = downcall("vev_tx_add_string", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -904,6 +908,20 @@ public final class Vev {
         public String edn() throws Throwable {
             requireOpen();
             return ownedString((MemorySegment) txReportEdn.invoke(raw));
+        }
+
+        public DB dbBefore() throws Throwable {
+            requireOpen();
+            MemorySegment db = (MemorySegment) txReportDbBefore.invoke(raw);
+            if (isNull(db)) throw new IllegalStateException("transaction report has no db-before");
+            return new DB(db);
+        }
+
+        public DB dbAfter() throws Throwable {
+            requireOpen();
+            MemorySegment db = (MemorySegment) txReportDbAfter.invoke(raw);
+            if (isNull(db)) throw new IllegalStateException("transaction report has no db-after");
+            return new DB(db);
         }
 
         private void requireOpen() {

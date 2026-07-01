@@ -305,6 +305,20 @@
    (with-open [report (.withReport (:native db) (edn-text tx) (:native tx-fns))]
      (clj-value (.value report)))))
 
+(defn with-report
+  "Apply tx data to an immutable DB and return a transaction report map with
+  owned `:db-before` and `:db-after` DB values."
+  ([^DB db tx]
+   (with-open [report (.withReport (:native db) (edn-text tx))]
+     (assoc (clj-value (.value report))
+            :db-before (->DB (:engine db) (.dbBefore report))
+            :db-after (->DB (:engine db) (.dbAfter report)))))
+  ([^DB db tx tx-fns]
+   (with-open [report (.withReport (:native db) (edn-text tx) (:native tx-fns))]
+     (assoc (clj-value (.value report))
+            :db-before (->DB (:engine db) (.dbBefore report))
+            :db-after (->DB (:engine db) (.dbAfter report))))))
+
 (defn db-with
   "Apply tx data to an immutable DB and return the resulting immutable DB value."
   [^DB db tx]

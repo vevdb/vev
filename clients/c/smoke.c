@@ -1598,6 +1598,45 @@ int main(void) {
         vev_prepared_query_free(query);
         return 1;
     }
+    vev_db_t report_before = vev_tx_report_db_before(with_report);
+    vev_db_t report_after = vev_tx_report_db_after(with_report);
+    if (report_before == NULL || report_after == NULL) {
+        fprintf(stderr, "with report did not expose db-before/db-after\n");
+        if (report_before != NULL) vev_db_release(report_before);
+        if (report_after != NULL) vev_db_release(report_after);
+        vev_tx_report_free(with_report);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
+    vev_result_t report_before_barbara =
+        vev_query_db_prepared_result_with_inputs(report_before, barbara_query, "[]");
+    vev_result_t report_after_barbara =
+        vev_query_db_prepared_result_with_inputs(report_after, barbara_query, "[]");
+    int report_before_rows =
+        result_row_count_or_error("report-before-barbara", report_before_barbara);
+    int report_after_rows =
+        result_row_count_or_error("report-after-barbara", report_after_barbara);
+    vev_result_free(report_before_barbara);
+    vev_result_free(report_after_barbara);
+    vev_db_release(report_before);
+    vev_db_release(report_after);
+    if (report_before_rows != 0 || report_after_rows != 1) {
+        fprintf(stderr, "unexpected with report db-before/db-after rows: before=%d after=%d\n",
+                report_before_rows, report_after_rows);
+        vev_tx_report_free(with_report);
+        vev_prepared_query_free(dorothy_query);
+        vev_prepared_query_free(barbara_query);
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        return 1;
+    }
     vev_tx_report_free(with_report);
 
     vev_db_t next_db = vev_db_with_edn(snapshot, "[{:db/id 4 :user/name \"Barbara\"}]");

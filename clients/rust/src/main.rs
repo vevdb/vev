@@ -77,6 +77,8 @@ unsafe extern "C" {
     fn vev_tx_report_free(report: VevTxReport);
     fn vev_tx_report_value(report: VevTxReport) -> VevValue;
     fn vev_tx_report_edn(report: VevTxReport) -> *const c_char;
+    fn vev_tx_report_db_before(report: VevTxReport) -> VevDb;
+    fn vev_tx_report_db_after(report: VevTxReport) -> VevDb;
     fn vev_query_edn_with_inputs(
         conn: VevConn,
         query_text: *const c_char,
@@ -746,6 +748,24 @@ impl TxReport {
     fn edn(&self) -> String {
         unsafe { Library::owned_string(vev_tx_report_edn(self.raw)) }
     }
+
+    fn db_before(&self) -> Result<Db, String> {
+        let raw = unsafe { vev_tx_report_db_before(self.raw) };
+        if raw.is_null() {
+            Err("transaction report has no db-before".to_string())
+        } else {
+            Ok(Db { raw })
+        }
+    }
+
+    fn db_after(&self) -> Result<Db, String> {
+        let raw = unsafe { vev_tx_report_db_after(self.raw) };
+        if raw.is_null() {
+            Err("transaction report has no db-after".to_string())
+        } else {
+            Ok(Db { raw })
+        }
+    }
 }
 
 impl Drop for TxReport {
@@ -1250,6 +1270,15 @@ fn main() -> Result<(), String> {
     println!("with-db: {}", with_report.edn());
     if with_report.value().map_get(":ok") != Some(&Value::Bool(true)) {
         return Err("unexpected typed with report".to_string());
+    }
+    let report_before = with_report.db_before()?;
+    let report_after = with_report.db_after()?;
+    let report_before_barbara_rows = barbara_query.query_db(&report_before, "[]")?.row_count();
+    let report_after_barbara_rows = barbara_query.query_db(&report_after, "[]")?.row_count();
+    if report_before_barbara_rows != 0 || report_after_barbara_rows != 1 {
+        return Err(format!(
+            "unexpected with report db rows: before={report_before_barbara_rows} after={report_after_barbara_rows}"
+        ));
     }
     let next_db = snapshot.db_with(r#"[{:db/id 4 :user/name "Barbara"}]"#)?;
     let source_barbara_rows = barbara_query.query_db(&snapshot, "[]")?.row_count();

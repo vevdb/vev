@@ -89,6 +89,9 @@ ABI_Column_Batch :: struct {
 
 ABI_Tx_Report :: struct {
     value: vev__Value,
+    has_store_dbs: bool,
+    db_before: vev__Store_DB,
+    db_after: vev__Store_DB,
 }
 
 ABI_Tx_Builder :: struct {
@@ -398,8 +401,29 @@ abi_alloc_tx_report :: proc(value: vev__Value) -> rawptr {
     return rawptr(wrapper)
 }
 
+abi_alloc_tx_report_with_dbs :: proc(value: vev__Value, db_before: vev__Store_DB, db_after: vev__Store_DB) -> rawptr {
+    wrapper := new(ABI_Tx_Report)
+    wrapper.value = value
+    wrapper.has_store_dbs = true
+    wrapper.db_before = db_before
+    wrapper.db_after = db_after
+    return rawptr(wrapper)
+}
+
 abi_tx_report_value_ptr :: proc(report: rawptr) -> ^vev__Value {
     return &((^ABI_Tx_Report)(report))^.value
+}
+
+abi_tx_report_has_store_dbs :: proc(report: rawptr) -> bool {
+    return ((^ABI_Tx_Report)(report))^.has_store_dbs
+}
+
+abi_tx_report_db_before_ptr :: proc(report: rawptr) -> ^vev__Store_DB {
+    return &((^ABI_Tx_Report)(report))^.db_before
+}
+
+abi_tx_report_db_after_ptr :: proc(report: rawptr) -> ^vev__Store_DB {
+    return &((^ABI_Tx_Report)(report))^.db_after
 }
 
 abi_free_tx_report :: proc(report: rawptr) {
@@ -1425,6 +1449,15 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- tx-report-value-ptr [report: Vev-Tx-Report] -> ^vev.Value
   (abi-tx-report-value-ptr (rawptr report)))
 
+(defn- tx-report-has-store-dbs? [report: Vev-Tx-Report] -> bool
+  (abi-tx-report-has-store-dbs (rawptr report)))
+
+(defn- tx-report-db-before-ptr [report: Vev-Tx-Report] -> ^vev.Store-DB
+  (abi-tx-report-db-before-ptr (rawptr report)))
+
+(defn- tx-report-db-after-ptr [report: Vev-Tx-Report] -> ^vev.Store-DB
+  (abi-tx-report-db-after-ptr (rawptr report)))
+
 (defn- tx-builder-data-ptr [builder: Vev-Tx-Builder] -> ^[dynamic]vev.Tx-Data
   (abi-tx-builder-data-ptr (rawptr builder)))
 
@@ -1505,14 +1538,33 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (vev.delete-value-containers-shallow value)
     (Vev-Tx-Report (abi-alloc-tx-report owned))))
 
+(defn- tx-report-handle-from-value-with-dbs [value: vev.Value, before: vev.Store-DB, after: vev.Store-DB] -> Vev-Tx-Report
+  (let [owned (value-owned value)]
+    (vev.delete-value-containers-shallow value)
+    (Vev-Tx-Report (abi-alloc-tx-report-with-dbs owned before after))))
+
 (defn- tx-report-handle-from-report [report: vev.Tx-Report] -> Vev-Tx-Report
-  (tx-report-handle-from-value (vev.tx-report-value report)))
+  (tx-report-handle-from-value-with-dbs
+    (vev.tx-report-value report)
+    (vev.Store-DB {kind: .Resident
+                   resident: (vev.clone-db report.db-before)})
+    (vev.Store-DB {kind: .Resident
+                   resident: (vev.clone-db report.db-after)})))
+
+(defn- tx-report-handle-from-store-report [report: vev.Store-Tx-Report] -> Vev-Tx-Report
+  (tx-report-handle-from-value-with-dbs
+    (vev.store-tx-report-value report)
+    (vev.retain-store-db report.db-before)
+    (vev.retain-store-db report.db-after)))
 
 (defn- tx-report-handle-free [report: Vev-Tx-Report]
   (when (= (rawptr report) nil)
     (return))
   (let [ptr (tx-report-value-ptr report)]
     (vev.delete-owned-value ptr^)
+    (when (tx-report-has-store-dbs? report)
+      (vev.close-store-db! (tx-report-db-before-ptr report))
+      (vev.close-store-db! (tx-report-db-after-ptr report)))
     (abi-free-tx-report (rawptr report))))
 
 (defn- delete-tx-builder-entry-owned [data: vev.Tx-Data]
@@ -2024,9 +2076,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (c-string-owned "[:vev/error \"null db or tx\"]")))
   (let [tx (text-from-c tx-text)
         store-ptr-value (store-db-ptr db)]
-    (let [value (vev.tx-report-value (vev.with-store-db-text store-ptr-value tx))
+    (let [report (vev.with-store-db-report-text store-ptr-value tx)
+          value (vev.store-tx-report-value report)
           text (vev.value-serializable-text value)
           out (c-string-owned text)]
+      (vev.delete-owned-value value)
+      (vev.delete-store-tx-report report)
       (delete tx)
       out)))
 
@@ -2037,8 +2092,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-Tx-Report nil)))
   (let [tx (text-from-c tx-text)
         store-ptr-value (store-db-ptr db)]
-    (let [report (vev.with-store-db-text store-ptr-value tx)
-          out (tx-report-handle-from-report report)]
+    (let [report (vev.with-store-db-report-text store-ptr-value tx)
+          out (tx-report-handle-from-store-report report)]
+      (vev.delete-store-tx-report report)
       (delete tx)
       out)))
 
@@ -2183,6 +2239,22 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (c-string-owned "nil")))
   (let [ptr (tx-report-value-ptr report)]
     (c-string-owned (vev.value-serializable-text ptr^))))
+
+@export
+(defn vev_tx_report_db_before :abi "c" [report: Vev-Tx-Report] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr report) nil) (not (tx-report-has-store-dbs? report)))
+    (return (Vev-DB nil)))
+  (let [before (tx-report-db-before-ptr report)]
+    (Vev-DB (abi-alloc-db (vev.retain-store-db before^)))))
+
+@export
+(defn vev_tx_report_db_after :abi "c" [report: Vev-Tx-Report] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr report) nil) (not (tx-report-has-store-dbs? report)))
+    (return (Vev-DB nil)))
+  (let [after (tx-report-db-after-ptr report)]
+    (Vev-DB (abi-alloc-db (vev.retain-store-db after^)))))
 
 @export
 (defn vev_tx_create :abi "c" [capacity: int] -> Vev-Tx-Builder

@@ -335,6 +335,16 @@ func (db *DB) DBWith(tx string) (*DB, error) {
 	return &DB{raw: raw}, nil
 }
 
+func (db *DB) WithReport(tx string) (*TxReport, error) {
+	txText := cstring(tx)
+	defer C.free(unsafe.Pointer(txText))
+	raw := C.vev_with_edn_report(db.raw, txText)
+	if raw == nil {
+		return nil, fmt.Errorf("failed to transact against DB snapshot")
+	}
+	return &TxReport{raw: raw}, nil
+}
+
 type PreparedQuery struct {
 	raw C.vev_prepared_query_t
 }
@@ -642,6 +652,22 @@ func (r *TxReport) EDN() string {
 
 func (r *TxReport) Value() Value {
 	return valueFromC(C.vev_tx_report_value(r.raw))
+}
+
+func (r *TxReport) DBBefore() (*DB, error) {
+	raw := C.vev_tx_report_db_before(r.raw)
+	if raw == nil {
+		return nil, fmt.Errorf("transaction report has no db-before")
+	}
+	return &DB{raw: raw}, nil
+}
+
+func (r *TxReport) DBAfter() (*DB, error) {
+	raw := C.vev_tx_report_db_after(r.raw)
+	if raw == nil {
+		return nil, fmt.Errorf("transaction report has no db-after")
+	}
+	return &DB{raw: raw}, nil
 }
 
 type ValueHandle struct {
@@ -978,6 +1004,35 @@ func Smoke() {
 	}
 	currentRows.Close()
 	oldRows.Close()
+
+	withReport, err := snapshot.WithReport(`[{:db/id 4 :user/name "Barbara" :user/email "barbara@example.com"}]`)
+	if err != nil {
+		panic(err)
+	}
+	reportBefore, err := withReport.DBBefore()
+	if err != nil {
+		panic(err)
+	}
+	reportAfter, err := withReport.DBAfter()
+	if err != nil {
+		panic(err)
+	}
+	reportBeforeRows, err := reportBefore.QueryRows(query, `["barbara@example.com"]`)
+	if err != nil {
+		panic(err)
+	}
+	reportAfterRows, err := reportAfter.QueryRows(query, `["barbara@example.com"]`)
+	if err != nil {
+		panic(err)
+	}
+	if reportBeforeRows.RowCount() != 0 || reportAfterRows.RowCount() != 1 {
+		panic("unexpected with report DB rows")
+	}
+	reportBeforeRows.Close()
+	reportAfterRows.Close()
+	reportBefore.Close()
+	reportAfter.Close()
+	withReport.Close()
 
 	nextDB, err := snapshot.DBWith(`[{:db/id 4 :user/name "Barbara" :user/email "barbara@example.com"}]`)
 	if err != nil {

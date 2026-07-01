@@ -21,6 +21,7 @@ export class DurableConn {
 export class DB {
   query(query: PreparedQuery, inputs?: string): string;
   rows(query: PreparedQuery, inputs?: string): unknown[][];
+  withReport(tx: string): { edn: string; dbBefore: DB; dbAfter: DB };
   pull(pattern: string, entity: number): unknown;
   pullLookupRefString(pattern: string, attr: string, value: string): unknown;
   pullMany(pattern: string, entities: number[]): unknown[];

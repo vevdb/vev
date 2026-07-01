@@ -3771,6 +3771,7 @@
   Resident
   Shared-Resident-Indexes
   Shared-Resident-Datoms-And-Indexes
+  Shared-Tx-Ops-Overlay
   SQLite-Snapshot
   Tx-Ops-Overlay
 ])
@@ -3812,6 +3813,20 @@
                    overlay-ops: ops
                    overlay-tx: tx}))
 
+(defn shared-tx-ops-overlay-db-read-source [datoms: ^Shared-Datom-Log, indexes: ^Shared-DB-Int-Indexes, ops: ^[dynamic]Tx-Op, tx: u64] -> DB-Read-Source
+  (DB-Read-Source {kind: .Shared-Tx-Ops-Overlay
+                   shared-datoms: datoms
+                   shared-indexes: indexes
+                   overlay-ops: ops
+                   overlay-tx: tx}))
+
+(defn db-read-source-has-inline-overlay? [source: DB-Read-Source] -> bool
+  (= source.kind .Shared-Tx-Ops-Overlay))
+
+(defn db-read-source-has-overlay? [source: DB-Read-Source] -> bool
+  (or (= source.kind .Tx-Ops-Overlay)
+      (db-read-source-has-inline-overlay? source)))
+
 (defn db-read-named-source [name: string, source: DB-Read-Source] -> DB-Read-Named-Source
   (DB-Read-Named-Source {name: name source: source}))
 
@@ -3852,6 +3867,7 @@
     .Resident (db-index-view source.db^ order)
     .Shared-Resident-Indexes (shared-db-int-index-view source.shared-indexes order)
     .Shared-Resident-Datoms-And-Indexes (shared-db-int-index-view source.shared-indexes order)
+    .Shared-Tx-Ops-Overlay (shared-db-int-index-view source.shared-indexes order)
     .SQLite-Snapshot (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
     .Tx-Ops-Overlay (db-read-source-index-view source.overlay-base^ order)
      (DB-Index-View {})))
@@ -3902,6 +3918,11 @@
         (if ok
           (return datom true "")
           (return (Datom {}) false "shared datom log index out of range")))
+    .Shared-Tx-Ops-Overlay
+      (let [[datom ok] (shared-datom-log-at source.shared-datoms^ entry)]
+        (if ok
+          (return datom true "")
+          (return (Datom {}) false "shared overlay datom log index out of range")))
     .SQLite-Snapshot
       (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
      (return (Datom {}) false "unknown DB read source")))
@@ -3925,6 +3946,12 @@
         (when (or (< entry 0)
                   (>= entry source.shared-datoms^.count))
           (return false false "shared datom log index out of range"))
+        (return (shared-int-index-contains? source.shared-indexes^.current entry) true ""))
+    .Shared-Tx-Ops-Overlay
+      (do
+        (when (or (< entry 0)
+                  (>= entry source.shared-datoms^.count))
+          (return false false "shared overlay datom log index out of range"))
         (return (shared-int-index-contains? source.shared-indexes^.current entry) true ""))
     .SQLite-Snapshot
       (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
@@ -4136,6 +4163,14 @@
                       added: true})]
     (arr.push! out^ (datom-owned datom))))
 
+(defn append-owned-log-datom-from-tx-op! [out: ^[dynamic]Datom, op: Tx-Op, tx: u64]
+  (let [datom (Datom {e: op.e
+                      a: op.a
+                      v: op.v
+                      tx: tx
+                      added: (= op.kind .Add)})]
+    (arr.push! out^ (datom-owned datom))))
+
 (defn db-read-source-apply-overlay-ops! [out: ^[dynamic]Datom, source: DB-Read-Source, order: Public-Index-Order, values: []Value]
   (for [op source.overlay-ops^]
     (when (tx-op-index-values-match? op order values)
@@ -4170,6 +4205,8 @@
               (if (datom-matches-index-values? datom order-text values)
                 (arr.push! out^ datom)
                 (delete-owned-datom datom)))))))
+    (when (db-read-source-has-inline-overlay? source)
+      (db-read-source-apply-overlay-ops! out source order values))
     (return true "")))
 
 (defn db-read-source-datoms-by-attr [source: DB-Read-Source, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
@@ -4192,6 +4229,9 @@
           (delete-owned-datoms out)
           (return (build-db (make [dynamic]Datom)) false datom-error))
         (arr.push! out datom)))
+    (when (db-read-source-has-inline-overlay? source)
+      (for [op source.overlay-ops^]
+        (append-owned-log-datom-from-tx-op! (addr out) op source.overlay-tx)))
     (return (build-db out) true "")))
 
 (defn db-read-source-datoms-by-entity-attr [source: DB-Read-Source, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
@@ -4217,21 +4257,26 @@
     (when (not range-ok)
       (delete-owned-datoms out)
       (return (make [dynamic]Datom) false range-error))
-    (when (not exists)
+    (when (and (not exists)
+               (not (db-read-source-has-inline-overlay? source)))
       (return out true ""))
-    (let [view (db-read-source-index-view source .EAVT)]
-      (for [pos (arr.range low high)]
-        (let [entry (db-index-view-at view pos)
-              [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
-          (when (not current-ok)
-            (delete-owned-datoms out)
-            (return (make [dynamic]Datom) false current-error))
-          (when current
-            (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
-              (when (not datom-ok)
-                (delete-owned-datoms out)
-                (return (make [dynamic]Datom) false datom-error))
-              (arr.push! out datom))))))
+    (when exists
+      (let [view (db-read-source-index-view source .EAVT)]
+        (for [pos (arr.range low high)]
+          (let [entry (db-index-view-at view pos)
+                [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+            (when (not current-ok)
+              (delete-owned-datoms out)
+              (return (make [dynamic]Datom) false current-error))
+            (when current
+              (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+                (when (not datom-ok)
+                  (delete-owned-datoms out)
+                  (return (make [dynamic]Datom) false datom-error))
+                (arr.push! out datom)))))))
+    (when (db-read-source-has-inline-overlay? source)
+      (let [values ([]Value [(value-entity entity)])]
+        (db-read-source-apply-overlay-ops! (addr out) source .EAVT values)))
     (return out true "")))
 
 (defn db-read-source-eavt-entity-attr-position [source: DB-Read-Source, entity: u64, attr: string] -> [pos: int, exists: bool, ok: bool, error: string]
@@ -4256,7 +4301,7 @@
       (return 0 false true ""))))
 
 (defn db-read-source-cardinality-one-value-fast-all-current [source: DB-Read-Source, entity: u64, attr: string] -> [value: Value, ok: bool, error: string]
-  (when (= source.kind .Tx-Ops-Overlay)
+  (when (db-read-source-has-overlay? source)
     (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source entity attr)]
       (when (not datoms-ok)
         (return (Value {}) false datoms-error))
@@ -20779,7 +20824,7 @@
 
 (defn q-db-read-source-attr-range-value-projection [source: DB-Read-Source, projection: Source-Attr-Range-Value-Projection] -> Result-Set
   (let [rows (make [dynamic]Result-Row)]
-    (if (= source.kind .Tx-Ops-Overlay)
+    (if (db-read-source-has-overlay? source)
       (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source projection.attr)]
         (when (not datoms-ok)
           (delete-result-rows-owned-values rows)
@@ -20845,7 +20890,7 @@
         [many many-ok many-error] (db-read-source-schema-cardinality-many? source projection.value-attr)]
     (when (not many-ok)
       (return (result-set-error many-error)))
-    (if (= source.kind .Tx-Ops-Overlay)
+    (if (db-read-source-has-overlay? source)
       (let [[filter-datoms filter-ok filter-error] (db-read-source-datoms-by-attr source projection.filter-attr)]
         (when (not filter-ok)
           (delete-result-rows-owned-values rows)
@@ -20883,7 +20928,7 @@
     (result-set-ok rows)))
 
 (defn db-read-source-range-star-projection-ready? [source: DB-Read-Source, query: Query, projection: Source-Range-Star-Projection] -> [ok: bool, error: string]
-  (when (= source.kind .Tx-Ops-Overlay)
+  (when (db-read-source-has-overlay? source)
     (return false ""))
   (let [i 0]
     (while (< i (count query.clauses))
@@ -21280,7 +21325,7 @@
       (return 0 false range-error))))
 
 (defn db-read-source-two-attr-use-second-driver? [source: DB-Read-Source, projection: Two-Attr-Entity-Projection] -> bool
-  (when (= source.kind .Tx-Ops-Overlay)
+  (when (db-read-source-has-overlay? source)
     (return false))
   (let [[first-count first-ok _] (db-read-source-attr-range-entry-count source projection.first-attr)
         [second-count second-ok _] (db-read-source-attr-range-entry-count source projection.second-attr)]
@@ -21343,7 +21388,7 @@
     :else projection.third-var))
 
 (defn source-three-attr-driver-index [source: DB-Read-Source, projection: Source-Three-Attr-Entity-Projection] -> int
-  (when (= source.kind .Tx-Ops-Overlay)
+  (when (db-read-source-has-overlay? source)
     (return 0))
   (let [[first-count first-ok _] (db-read-source-attr-range-entry-count source projection.first-attr)
         [second-count second-ok _] (db-read-source-attr-range-entry-count source projection.second-attr)
@@ -21420,7 +21465,7 @@
     (result-set-ok rows)))
 
 (defn db-read-source-star-attr-entity-projection-ready? [source: DB-Read-Source, query: Query] -> [ok: bool, error: string]
-  (when (= source.kind .Tx-Ops-Overlay)
+  (when (db-read-source-has-overlay? source)
     (return false ""))
   (for [clause-value query.clauses]
     (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source clause-value.a.value.text)]

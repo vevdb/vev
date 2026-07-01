@@ -1767,6 +1767,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   Resident
   SQLite-Snapshot
   Shared-Snapshot
+  Shared-Tx-Ops-Overlay
 ])
 
 (defstruct Store-DB {
@@ -1774,6 +1775,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   resident: DB
   sqlite-snapshot: SQLite-DB-Snapshot
   shared-snapshot: Shared-DB-Snapshot
+  overlay-ops: [dynamic]Tx-Op
+  overlay-tx: u64
 })
 
 (defn insert-sqlite-tx-meta! [handle: rawptr, tx: u64, meta: []Tx-Meta] -> [ok: bool, error: string]
@@ -2472,6 +2475,187 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (Store-DB {kind: .Shared-Snapshot
              shared-snapshot: (retain-shared-db-snapshot conn^.snapshot)}))
 
+(defn tx-op-owned [op: Tx-Op] -> Tx-Op
+  (Tx-Op {kind: op.kind
+          e: op.e
+          a: (string-owned op.a)
+          owned-attr: true
+          v: (value-owned op.v)
+          owned-value: true
+          derived: op.derived
+          tuple-identity: op.tuple-identity
+          map-group: (string-owned op.map-group)}))
+
+(defn tx-op-from-datom-owned [datom: Datom] -> Tx-Op
+  (Tx-Op {kind: (if datom.added .Add .Retract)
+          e: datom.e
+          a: (string-owned datom.a)
+          owned-attr: true
+          v: (value-owned datom.v)
+          owned-value: true}))
+
+(defn tx-ops-from-datoms-owned [datoms: []Datom] -> [dynamic]Tx-Op
+  (let [out (make [dynamic]Tx-Op 0 (count datoms))]
+    (for [datom datoms]
+      (arr.push! out (tx-op-from-datom-owned datom)))
+    out))
+
+(defn clone-tx-ops-owned [ops: []Tx-Op] -> [dynamic]Tx-Op
+  (let [out (make [dynamic]Tx-Op 0 (count ops))]
+    (for [op ops]
+      (arr.push! out (tx-op-owned op)))
+    out))
+
+(defn delete-owned-tx-ops [ops: [dynamic]Tx-Op]
+  (for [op ops]
+    (when op.owned-attr
+      (delete op.a))
+    (when op.owned-value
+      (delete-owned-value op.v))
+    (when (not (= op.map-group ""))
+      (delete op.map-group)))
+  (delete ops))
+
+(defn shared-store-db-with-overlay [base: Shared-DB-Snapshot, ops: []Tx-Op, tx: u64] -> Store-DB
+  (Store-DB {kind: .Shared-Tx-Ops-Overlay
+             shared-snapshot: (retain-shared-db-snapshot base)
+             overlay-ops: (clone-tx-ops-owned ops)
+             overlay-tx: tx}))
+
+(defn shared-store-db-with-report-overlay [base: Shared-DB-Snapshot, report: Tx-Report] -> Store-DB
+  (Store-DB {kind: .Shared-Tx-Ops-Overlay
+             shared-snapshot: (retain-shared-db-snapshot base)
+             overlay-ops: (tx-ops-from-datoms-owned (slice report.tx-data 0))
+             overlay-tx: report.tx}))
+
+(defn append-source-overlay-op! [out: ^[dynamic]Tx-Op, source: DB-Read-Source, op: Tx-Op] -> [ok: bool, error: string]
+  (when (= op.kind .Add)
+    (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source op.a)]
+      (when (not many-ok)
+        (return false many-error))
+      (when (not many)
+        (let [[existing existing-ok existing-error] (db-read-source-datoms-by-entity-attr source op.e op.a)]
+          (when (not existing-ok)
+            (return false existing-error))
+          (for [datom existing]
+            (when (not (value-equal? datom.v op.v))
+              (arr.push! out^ (Tx-Op {kind: .Retract
+                                      e: datom.e
+                                      a: (string-owned datom.a)
+                                      owned-attr: true
+                                      v: (value-owned datom.v)
+                                      owned-value: true}))))
+          (delete-owned-datoms existing)))))
+  (arr.push! out^ (tx-op-owned op))
+  (return true ""))
+
+(defn source-overlay-ops-from-resolved [source: DB-Read-Source, resolved: Resolved-Tx] -> [ops: [dynamic]Tx-Op, ok: bool, error: string]
+  (let [out (make [dynamic]Tx-Op 0 (count resolved.ops))]
+    (for [op resolved.ops]
+      (let [[append-ok append-error] (append-source-overlay-op! (addr out) source op)]
+        (when (not append-ok)
+          (delete-owned-tx-ops out)
+          (return (make [dynamic]Tx-Op) false append-error))))
+    (return out true "")))
+
+(defn shared-store-db-with-source-overlay-tx-data [snapshot: Shared-DB-Snapshot, tx-data: []Tx-Data] -> [next: Store-DB, used: bool, ok: bool, error: string]
+  (let [base snapshot
+        source (shared-db-snapshot-read-source (addr base))
+        [state state-ok state-error] (shared-write-state-from-shared-snapshot-metadata base)]
+    (when (not state-ok)
+      (return (Store-DB {}) false false state-error))
+    (let [resolved (shared-write-state-resolve-tx-data-source-only (addr state) source tx-data)]
+      (when (not resolved.ok)
+        (delete-resolved-tx resolved)
+        (delete-shared-write-state-metadata state)
+        (return (Store-DB {}) false true ""))
+      (let [[overlay-ops overlay-ok overlay-error] (source-overlay-ops-from-resolved source resolved)]
+        (when (not overlay-ok)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return (Store-DB {}) false false overlay-error))
+        (let [out (shared-store-db-with-overlay base (slice overlay-ops 0) state.conn.next-tx)]
+          (delete-owned-tx-ops overlay-ops)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return out true true ""))))))
+
+(defstruct Store-Tx-Report {
+  ok: bool
+  error: string
+  db-before: Store-DB
+  db-after: Store-DB
+  tx-data: [dynamic]Datom
+  tx: u64
+  tx-meta: [dynamic]Tx-Meta
+  tempids: [dynamic]Tempid
+})
+
+(defn store-tx-report-value [report: Store-Tx-Report] -> Value
+  (value-map
+    ([]Value [(value-keyword ":ok") (value-bool report.ok)
+              (value-keyword ":error") (value-string report.error)
+              (value-keyword ":tx") (if report.ok (value-entity report.tx) (value-nil))
+              (value-keyword ":tx-data") (datoms-value (slice report.tx-data 0))
+              (value-keyword ":tempids") (tempids-value (slice report.tempids 0))
+              (value-keyword ":tx-meta") (tx-metas-value (slice report.tx-meta 0))])))
+
+(defn delete-store-tx-report [report: Store-Tx-Report]
+  (close-store-db report.db-before)
+  (close-store-db report.db-after)
+  (delete-owned-datoms report.tx-data)
+  (delete report.tx-meta)
+  (delete report.tempids))
+
+(defn failed-store-tx-report [snapshot: Store-DB, error: string] -> Store-Tx-Report
+  (let [before (retain-store-db snapshot)]
+    (Store-Tx-Report {ok: false
+                      error: error
+                      db-before: before
+                      db-after: (retain-store-db before)
+                      tx-data: (make [dynamic]Datom)
+                      tx: 0
+                      tx-meta: (make [dynamic]Tx-Meta)
+                      tempids: (make [dynamic]Tempid)})))
+
+(defn store-tx-report-from-source-overlay [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, resolved: Resolved-Tx] -> Store-Tx-Report
+  (let [tx-data (source-append-datoms-from-ops overlay-ops tx)
+        tx-meta (clone-tx-meta (slice resolved.tx-meta 0))
+        tempids (arr.into [dynamic]Tempid (slice resolved.tempids 0))]
+    (Store-Tx-Report {ok: true
+                      error: ""
+                      db-before: (retain-store-db snapshot)
+                      db-after: (Store-DB {kind: .Shared-Tx-Ops-Overlay
+                                           shared-snapshot: (retain-shared-db-snapshot snapshot.shared-snapshot)
+                                           overlay-ops: (clone-tx-ops-owned overlay-ops)
+                                           overlay-tx: tx})
+                      tx-data: tx-data
+                      tx: tx
+                      tx-meta: tx-meta
+                      tempids: tempids})))
+
+(defn with-shared-store-db-source-overlay-report-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> [report: Store-Tx-Report, used: bool, ok: bool, error: string]
+  (let [base snapshot^.shared-snapshot
+        source (shared-db-snapshot-read-source (addr base))
+        [state state-ok state-error] (shared-write-state-from-shared-snapshot-metadata base)]
+    (when (not state-ok)
+      (return (Store-Tx-Report {}) false false state-error))
+    (let [resolved (shared-write-state-resolve-tx-data-source-only (addr state) source tx-data)]
+      (when (not resolved.ok)
+        (delete-resolved-tx resolved)
+        (delete-shared-write-state-metadata state)
+        (return (Store-Tx-Report {}) false true ""))
+      (let [[overlay-ops overlay-ok overlay-error] (source-overlay-ops-from-resolved source resolved)]
+        (when (not overlay-ok)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return (Store-Tx-Report {}) false false overlay-error))
+        (let [out-report (store-tx-report-from-source-overlay snapshot^ (slice overlay-ops 0) state.conn.next-tx resolved)]
+          (delete-owned-tx-ops overlay-ops)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return out-report true true ""))))))
+
 (defn retain-store-db [snapshot: Store-DB] -> Store-DB
   (case snapshot.kind
     .Resident (Store-DB {kind: .Resident
@@ -2487,6 +2671,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
               (Store-DB {})))))
     .Shared-Snapshot (Store-DB {kind: .Shared-Snapshot
                                 shared-snapshot: (retain-shared-db-snapshot snapshot.shared-snapshot)})
+    .Shared-Tx-Ops-Overlay (Store-DB {kind: .Shared-Tx-Ops-Overlay
+                                      shared-snapshot: (retain-shared-db-snapshot snapshot.shared-snapshot)
+                                      overlay-ops: (clone-tx-ops-owned (slice snapshot.overlay-ops 0))
+                                      overlay-tx: snapshot.overlay-tx})
      (Store-DB {})))
 
 (defn store-db-read-source [snapshot: ^Store-DB] -> [source: DB-Read-Source, ok: bool, error: string]
@@ -2494,6 +2682,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     .Resident (return (resident-db-read-source (addr snapshot^.resident)) true "")
     .SQLite-Snapshot (return (sqlite-db-read-source (addr snapshot^.sqlite-snapshot)) true "")
     .Shared-Snapshot (return (shared-db-snapshot-read-source (addr snapshot^.shared-snapshot)) true "")
+    .Shared-Tx-Ops-Overlay (return (shared-tx-ops-overlay-db-read-source (addr snapshot^.shared-snapshot.datoms) (addr snapshot^.shared-snapshot.indexes) (addr snapshot^.overlay-ops) snapshot^.overlay-tx) true "")
      (return (DB-Read-Source {}) false "store DB snapshot is not open")))
 
 (defn q-result-store-db-text [snapshot: ^Store-DB, text: string] -> Query-Result
@@ -2578,6 +2767,29 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (failed-tx-report db db-error)))
     (with-tx-data db tx-data)))
 
+(defn with-store-db-report-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> Store-Tx-Report
+  (when (= snapshot^.kind .Shared-Snapshot)
+    (let [[report used ok error] (with-shared-store-db-source-overlay-report-tx-data snapshot tx-data)]
+      (when ok
+        (when used
+          (return report)))
+      (when (not ok)
+        (return (failed-store-tx-report snapshot^ error)))))
+  (let [resident-report (with-store-db-tx-data snapshot tx-data)
+        before (Store-DB {kind: .Resident resident: (clone-db resident-report.db-before)})
+        after (Store-DB {kind: .Resident resident: (clone-db resident-report.db-after)})
+        tempids (arr.into [dynamic]Tempid (slice resident-report.tempids 0))
+        report (Store-Tx-Report {ok: resident-report.ok
+                                 error: resident-report.error
+                                 db-before: before
+                                 db-after: after
+                                 tx-data: (clone-datoms resident-report.tx-data)
+                                 tx: resident-report.tx
+                                 tx-meta: (clone-tx-meta (slice resident-report.tx-meta 0))
+                                 tempids: tempids})]
+    (delete-store-db-temp-tx-report resident-report)
+    report))
+
 (defn delete-store-db-temp-tx-report [report: Tx-Report]
   (if report.ok
     (delete-tx-report-shallow report)
@@ -2594,14 +2806,16 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (when source-ok
         (when source-used
           (return (Store-DB {kind: .Shared-Snapshot
-                             shared-snapshot: source-snapshot}))))))
+                             shared-snapshot: source-snapshot}))))
+      (let [[overlay-snapshot overlay-used overlay-ok _] (shared-store-db-with-source-overlay-tx-data snapshot^.shared-snapshot tx-data)]
+        (when overlay-ok
+          (when overlay-used
+            (return overlay-snapshot))))))
   (let [report (with-store-db-tx-data snapshot tx-data)]
     (case snapshot^.kind
       .Shared-Snapshot
         (if report.ok
-          (let [next-snapshot (shared-db-snapshot-with-tx-report snapshot^.shared-snapshot report.db-after report)
-                out (Store-DB {kind: .Shared-Snapshot
-                               shared-snapshot: next-snapshot})]
+          (let [out (shared-store-db-with-report-overlay snapshot^.shared-snapshot report)]
             (delete-store-db-temp-tx-report report)
             out)
           (let [out (retain-store-db snapshot^)]
@@ -2624,6 +2838,13 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (let [[db db-ok _] (store-db-materialize-db snapshot)]
         (return (failed-tx-report db parse-error))))
     (with-store-db-tx-data snapshot (slice tx-data 0))))
+
+(defn with-store-db-report-text [snapshot: ^Store-DB, text: string] -> Store-Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (if parse-ok
+      (with-store-db-report-tx-data snapshot (slice tx-data 0))
+      (failed-store-tx-report snapshot^ parse-error))))
 
 (defn db-with-store-db-text [snapshot: ^Store-DB, text: string] -> Store-DB
   (let [tx-data (make [dynamic]Tx-Data) :defer
@@ -2701,6 +2922,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     .Resident (delete-owned-db snapshot^.resident)
     .SQLite-Snapshot (close-sqlite-db-snapshot! (addr snapshot^.sqlite-snapshot))
     .Shared-Snapshot (delete-shared-db-snapshot snapshot^.shared-snapshot)
+    .Shared-Tx-Ops-Overlay
+      (do
+        (delete-shared-db-snapshot snapshot^.shared-snapshot)
+        (delete-owned-tx-ops snapshot^.overlay-ops))
      (do))
   (set! snapshot^ (Store-DB {})))
 

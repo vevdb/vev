@@ -83,17 +83,19 @@ Todo:
 - Keep the direct source-native shared `db-with` fast path limited to true
   append-only changes until current-index invalidation is represented in shared
   storage.
-- Add a source-native overlay/current-index publication path for non-append
-  transactions: retractions, CAS, same-transaction lookup/upsert cases,
-  cardinality-one replacement, and schema-changing transactions.
+- Migrate remaining language wrappers to expose C ABI transaction report
+  `db-before` / `db-after` handles ergonomically. Python, Rust, JVM/Clojure,
+  Go, and Node now expose them; Odin still needs wrapper-level methods.
+- Move transaction-function `with` variants off the resident callback path where
+  possible, while preserving callback access to transaction-local DB state.
+- Broaden source-only shared `db-with` resolution for any remaining unsupported
+  transaction shapes, especially complex same-transaction lookup/upsert cases
+  and schema-changing transactions that still need fallback validation.
 - Reuse the existing source-aware transaction resolver from shared storage:
   `shared-write-state-resolve-tx-data`, `resolve-shared-source-tx-segment!`,
   and `tx-ops-overlay-db-read-source`.
 - Apply transactions against a source-native write-state overlay, then publish a
   `Store-DB` value backed by shared/chunked state instead of a resident clone.
-- Split the public immutable transaction report shape so host APIs can expose
-  Datomic-like `db-before` / `db-after` handles without forcing resident `DB`
-  materialization inside `Tx-Report`.
 - Preserve exact Datomic-like immutable DB semantics for `db-before`,
   `db-after`, transaction reports, tempids, listeners, and retained old DB
   handles.

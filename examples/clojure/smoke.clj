@@ -190,6 +190,7 @@
 
         (let [db (vev/db conn)
               immutable-report (vev/with db [{:db/id 4 :user/name "Barbara"}])
+              immutable-report-with-dbs (vev/with-report db [{:db/id 4 :user/name "Barbara"}])
               immutable-next (vev/db-with db [{:db/id 4 :user/name "Barbara"}])]
           (println "with tx:" immutable-report)
           (when-not (and (:ok immutable-report)
@@ -197,6 +198,18 @@
                                        '[:find ?e
                                          :where [?e :user/name "Barbara"]])))
             (throw (ex-info "immutable with mutated source DB" {:report immutable-report})))
+          (try
+            (when-not (and (= #{} (vev/q (:db-before immutable-report-with-dbs)
+                                         '[:find ?e
+                                           :where [?e :user/name "Barbara"]]))
+                           (= #{[4]} (vev/q (:db-after immutable-report-with-dbs)
+                                            '[:find ?e
+                                              :where [?e :user/name "Barbara"]])))
+              (throw (ex-info "with-report db-before/db-after mismatch"
+                              {:report immutable-report-with-dbs})))
+            (finally
+              (.close (:db-before immutable-report-with-dbs))
+              (.close (:db-after immutable-report-with-dbs))))
           (when-not (= #{[4]}
                        (vev/q immutable-next
                               '[:find ?e

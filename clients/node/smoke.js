@@ -117,6 +117,18 @@ if (currentRows.length !== 1 || oldRows.length !== 0) {
   throw new Error("unexpected typed snapshot row counts");
 }
 
+const withReport = snapshot.withReport(
+  `[{:db/id 4 :user/name "Barbara" :user/email "barbara@example.com"}]`,
+);
+if (!withReport.edn.includes(":ok true")) {
+  throw new Error(`unexpected with report: ${withReport.edn}`);
+}
+const reportBeforeRows = withReport.dbBefore.rows(query, `["barbara@example.com"]`);
+const reportAfterRows = withReport.dbAfter.rows(query, `["barbara@example.com"]`);
+if (reportBeforeRows.length !== 0 || reportAfterRows.length !== 1) {
+  throw new Error("unexpected with report DB rows");
+}
+
 const sqlitePath = "tmp.vev.node.sqlite";
 removeSqliteFiles(sqlitePath);
 try {

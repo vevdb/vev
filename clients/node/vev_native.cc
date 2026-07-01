@@ -221,6 +221,20 @@ void finalize_db(napi_env, void *data, void *) {
   }
 }
 
+napi_value wrap_db(napi_env env, vev_db_t raw) {
+  if (!raw) {
+    throw_error(env, "failed to retain DB snapshot");
+    return nullptr;
+  }
+  DB *snapshot = new DB{raw};
+  napi_value out;
+  if (!ok(env, napi_create_external(env, snapshot, finalize_db, nullptr, &out))) {
+    finalize_db(env, snapshot, nullptr);
+    return nullptr;
+  }
+  return out;
+}
+
 void finalize_prepared_query(napi_env, void *data, void *) {
   PreparedQuery *query = static_cast<PreparedQuery *>(data);
   if (query) {
@@ -283,18 +297,7 @@ napi_value db(napi_env env, napi_callback_info info) {
     throw_error(env, "closed connection");
     return nullptr;
   }
-  DB *snapshot = new DB{vev_conn_db(conn->raw)};
-  if (!snapshot->raw) {
-    delete snapshot;
-    throw_error(env, "failed to retain DB snapshot");
-    return nullptr;
-  }
-  napi_value out;
-  if (!ok(env, napi_create_external(env, snapshot, finalize_db, nullptr, &out))) {
-    finalize_db(env, snapshot, nullptr);
-    return nullptr;
-  }
-  return out;
+  return wrap_db(env, vev_conn_db(conn->raw));
 }
 
 napi_value durable_db(napi_env env, napi_callback_info info) {
@@ -303,18 +306,7 @@ napi_value durable_db(napi_env env, napi_callback_info info) {
     throw_error(env, "closed durable connection");
     return nullptr;
   }
-  DB *snapshot = new DB{vev_connection_db(conn->raw)};
-  if (!snapshot->raw) {
-    delete snapshot;
-    throw_error(env, "failed to retain durable DB snapshot");
-    return nullptr;
-  }
-  napi_value out;
-  if (!ok(env, napi_create_external(env, snapshot, finalize_db, nullptr, &out))) {
-    finalize_db(env, snapshot, nullptr);
-    return nullptr;
-  }
-  return out;
+  return wrap_db(env, vev_connection_db(conn->raw));
 }
 
 napi_value transact(napi_env env, napi_callback_info info) {
@@ -557,6 +549,67 @@ napi_value db_query_prepared_rows(napi_env env, napi_callback_info info) {
   return result_rows(env, result);
 }
 
+napi_value db_with_report(napi_env env, napi_callback_info info) {
+  DB *snapshot = external_arg<DB>(env, info, 0);
+  char *tx = string_arg(env, info, 1);
+  if (!snapshot || !snapshot->raw || !tx) {
+    free(tx);
+    throw_error(env, "invalid DB with report arguments");
+    return nullptr;
+  }
+  vev_tx_report_t report = vev_with_edn_report(snapshot->raw, tx);
+  free(tx);
+  if (!report) {
+    throw_error(env, "with report returned null report");
+    return nullptr;
+  }
+  const char *edn_text = vev_tx_report_edn(report);
+  vev_db_t before = vev_tx_report_db_before(report);
+  vev_db_t after = vev_tx_report_db_after(report);
+
+  napi_value out;
+  napi_value edn;
+  napi_value db_before;
+  napi_value db_after;
+  if (!ok(env, napi_create_object(env, &out)) ||
+      !ok(env, napi_create_string_utf8(env, edn_text ? edn_text : "", NAPI_AUTO_LENGTH, &edn))) {
+    if (edn_text) {
+      vev_string_free(edn_text);
+    }
+    if (before) {
+      vev_db_release(before);
+    }
+    if (after) {
+      vev_db_release(after);
+    }
+    vev_tx_report_free(report);
+    return nullptr;
+  }
+  if (edn_text) {
+    vev_string_free(edn_text);
+  }
+
+  db_before = wrap_db(env, before);
+  if (!db_before) {
+    if (after) {
+      vev_db_release(after);
+    }
+    vev_tx_report_free(report);
+    return nullptr;
+  }
+  db_after = wrap_db(env, after);
+  if (!db_after) {
+    vev_tx_report_free(report);
+    return nullptr;
+  }
+  vev_tx_report_free(report);
+
+  ok(env, napi_set_named_property(env, out, "edn", edn));
+  ok(env, napi_set_named_property(env, out, "dbBefore", db_before));
+  ok(env, napi_set_named_property(env, out, "dbAfter", db_after));
+  return out;
+}
+
 napi_value pull(napi_env env, napi_callback_info info) {
   DB *snapshot = external_arg<DB>(env, info, 0);
   char *pattern = string_arg(env, info, 1);
@@ -670,6 +723,7 @@ napi_value init(napi_env env, napi_value exports) {
       {"queryPreparedRows", nullptr, query_prepared_rows, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"dbQueryPrepared", nullptr, db_query_prepared, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"dbQueryPreparedRows", nullptr, db_query_prepared_rows, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"dbWithReport", nullptr, db_with_report, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"pull", nullptr, pull, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"pullLookupRefString", nullptr, pull_lookup_ref_string, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"pullMany", nullptr, pull_many, nullptr, nullptr, nullptr, napi_default, nullptr},

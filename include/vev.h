@@ -133,6 +133,8 @@ vev_tx_report_t vev_with_edn_report_with_tx_fns(
 void vev_tx_report_free(vev_tx_report_t report);
 vev_value_t vev_tx_report_value(vev_tx_report_t report);
 const char *vev_tx_report_edn(vev_tx_report_t report);
+vev_db_t vev_tx_report_db_before(vev_tx_report_t report);
+vev_db_t vev_tx_report_db_after(vev_tx_report_t report);
 vev_tx_builder_t vev_tx_create(int capacity);
 void vev_tx_free(vev_tx_builder_t builder);
 bool vev_tx_add_string(vev_tx_builder_t builder, unsigned long long e, const char *attr, const char *value);

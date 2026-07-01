@@ -258,6 +258,10 @@ class Library:
         lib.vev_tx_report_value.restype = ctypes.c_void_p
         lib.vev_tx_report_edn.argtypes = [ctypes.c_void_p]
         lib.vev_tx_report_edn.restype = ctypes.c_void_p
+        lib.vev_tx_report_db_before.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_db_before.restype = ctypes.c_void_p
+        lib.vev_tx_report_db_after.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_db_after.restype = ctypes.c_void_p
         lib.vev_query_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_query_edn.restype = ctypes.c_void_p
         lib.vev_query_edn_with_inputs.argtypes = [
@@ -1191,6 +1195,20 @@ class TxReport:
         return self._library.owned_text(
             self._library.lib.vev_tx_report_edn(self._handle)
         )
+
+    def db_before(self) -> DB:
+        self._require_open()
+        handle = self._library.lib.vev_tx_report_db_before(self._handle)
+        if not handle:
+            raise VevError("transaction report has no db-before")
+        return DB(self._library, handle)
+
+    def db_after(self) -> DB:
+        self._require_open()
+        handle = self._library.lib.vev_tx_report_db_after(self._handle)
+        if not handle:
+            raise VevError("transaction report has no db-after")
+        return DB(self._library, handle)
 
     def _require_open(self) -> None:
         if not self._handle:

@@ -110,6 +110,15 @@ class DB {
     return native.dbQueryPreparedRows(this._handle, query._handle, String(inputs));
   }
 
+  withReport(tx) {
+    const report = native.dbWithReport(this._handle, String(tx));
+    return {
+      edn: report.edn,
+      dbBefore: new DB(report.dbBefore),
+      dbAfter: new DB(report.dbAfter),
+    };
+  }
+
   pull(pattern, entity) {
     return native.pull(this._handle, String(pattern), Number(entity));
   }

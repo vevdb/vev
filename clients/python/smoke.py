@@ -414,6 +414,11 @@ def main() -> int:
                             print(f"with-db: {report.edn()}")
                             if not report_value.get(":ok"):
                                 raise RuntimeError("unexpected with report")
+                            with report.db_before() as before_db, report.db_after() as after_db:
+                                if len(barbara_query.rows(before_db)) != 0:
+                                    raise RuntimeError("with report db-before contains new fact")
+                                if len(barbara_query.rows(after_db)) != 1:
+                                    raise RuntimeError("with report db-after missing new fact")
                         with snapshot.db_with(
                             '[{:db/id 4 :user/name "Barbara"}]'
                         ) as next_db:
