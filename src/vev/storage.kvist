@@ -614,6 +614,44 @@ sqlite_latest_index_chunk_row_count_raw :: proc(handle: rawptr, index_name: stri
     return 0, 0, false, sqlite_error_text(db, \"sqlite latest index chunk read failed\")
 }
 
+sqlite_latest_index_root_chunk_info_raw :: proc(handle: rawptr, index_name: string) -> (u64, u64, u64, bool, string) {
+    if handle == nil {
+        return 0, 0, 0, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"\"
+    switch index_name {
+    case \":eavt\":
+        sql = \"SELECT r.basis_tx, c.row_count, c.chunk_id FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.eavt_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":aevt\":
+        sql = \"SELECT r.basis_tx, c.row_count, c.chunk_id FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.aevt_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":avet\":
+        sql = \"SELECT r.basis_tx, c.row_count, c.chunk_id FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.avet_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case \":vaet\":
+        sql = \"SELECT r.basis_tx, c.row_count, c.chunk_id FROM vev_index_roots r JOIN vev_index_chunks c ON c.chunk_id = r.vaet_chunk_id ORDER BY r.root_id DESC LIMIT 1\"
+    case:
+        return 0, 0, 0, false, \"unknown Vev index name\"
+    }
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return 0, 0, 0, false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return 0, 0, 0, false, sqlite_error_text(db, \"sqlite prepare latest index root chunk info failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        return u64(sqlite3_column_int64(stmt, 0)), u64(sqlite3_column_int64(stmt, 1)), u64(sqlite3_column_int64(stmt, 2)), true, \"\"
+    }
+    if rc == SQLITE_DONE {
+        return 0, 0, 0, false, \"sqlite DB has no Vev index roots\"
+    }
+    return 0, 0, 0, false, sqlite_error_text(db, \"sqlite latest index root chunk info read failed\")
+}
+
 sqlite_index_chunk_row_count_at_basis_raw :: proc(handle: rawptr, index_name: string, basis_tx: u64) -> (u64, bool, string) {
     if handle == nil {
         return 0, false, \"sqlite handle was nil\"
@@ -709,7 +747,7 @@ sqlite_latest_index_entries_text_raw :: proc(handle: rawptr, index_name: string)
     _ = sqlite3_finalize(stmt)
 
     child_stmt: ^SQLite3_Stmt
-    child_sql := \"SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']' FROM (SELECT substr(child.payload_text, 2, length(child.payload_text) - 2) AS payload FROM vev_index_chunk_edges edge JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id WHERE edge.parent_chunk_id = ? ORDER BY edge.ordinal)\"
+    child_sql := \"WITH RECURSIVE tree(chunk_id, level, path, payload_text) AS (SELECT c.chunk_id, c.level, printf('%012d', 0), c.payload_text FROM vev_index_chunks c WHERE c.chunk_id = ? UNION ALL SELECT child.chunk_id, child.level, tree.path || '.' || printf('%012d', edge.ordinal), child.payload_text FROM tree JOIN vev_index_chunk_edges edge ON edge.parent_chunk_id = tree.chunk_id JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id) SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']' FROM (SELECT substr(payload_text, 2, length(payload_text) - 2) AS payload FROM tree WHERE level = 0 ORDER BY path)\"
     child_sql_c, child_sql_c_ok := sqlite_cstring(child_sql)
     if !child_sql_c_ok {
         return \"\", false, \"failed to allocate sqlite SQL text\"
@@ -796,12 +834,8 @@ sqlite_latest_index_entries_page_text_raw :: proc(handle: rawptr, index_name: st
     }
     _ = sqlite3_finalize(stmt)
 
-    leaf_size := i64(128)
-    first_ordinal := offset / leaf_size
-    last_ordinal := (offset + limit - 1) / leaf_size
-    base_offset := first_ordinal * leaf_size
     child_stmt: ^SQLite3_Stmt
-    child_sql := \"SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']' FROM (SELECT substr(child.payload_text, 2, length(child.payload_text) - 2) AS payload FROM vev_index_chunk_edges edge JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id WHERE edge.parent_chunk_id = ? AND edge.ordinal BETWEEN ? AND ? ORDER BY edge.ordinal)\"
+    child_sql := \"WITH RECURSIVE tree(chunk_id, level, path, payload_text, row_count) AS (SELECT c.chunk_id, c.level, printf('%012d', 0), c.payload_text, c.row_count FROM vev_index_chunks c WHERE c.chunk_id = ? UNION ALL SELECT child.chunk_id, child.level, tree.path || '.' || printf('%012d', edge.ordinal), child.payload_text, child.row_count FROM tree JOIN vev_index_chunk_edges edge ON edge.parent_chunk_id = tree.chunk_id JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id), leaves AS (SELECT path, payload_text, row_count, COALESCE(SUM(row_count) OVER (ORDER BY path ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS base FROM tree WHERE level = 0) SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']', COALESCE(MIN(base), ?) FROM (SELECT base, substr(payload_text, 2, length(payload_text) - 2) AS payload FROM leaves WHERE base + row_count > ? AND base < ? ORDER BY path)\"
     child_sql_c, child_sql_c_ok := sqlite_cstring(child_sql)
     if !child_sql_c_ok {
         return \"\", 0, false, \"failed to allocate sqlite SQL text\"
@@ -814,11 +848,14 @@ sqlite_latest_index_entries_page_text_raw :: proc(handle: rawptr, index_name: st
     if sqlite3_bind_int64(child_stmt, 1, root_id) != SQLITE_OK {
         return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child index root failed\")
     }
-    if sqlite3_bind_int64(child_stmt, 2, first_ordinal) != SQLITE_OK {
-        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind first child ordinal failed\")
+    if sqlite3_bind_int64(child_stmt, 2, offset) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child index page base failed\")
     }
-    if sqlite3_bind_int64(child_stmt, 3, last_ordinal) != SQLITE_OK {
-        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind last child ordinal failed\")
+    if sqlite3_bind_int64(child_stmt, 3, offset) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child index page offset failed\")
+    }
+    if sqlite3_bind_int64(child_stmt, 4, offset + limit) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child index page limit failed\")
     }
     child_rc := sqlite3_step(child_stmt)
     if child_rc != SQLITE_ROW {
@@ -832,7 +869,7 @@ sqlite_latest_index_entries_page_text_raw :: proc(handle: rawptr, index_name: st
     if err != nil {
         return \"\", 0, false, \"failed to clone sqlite child index page\"
     }
-    return out, base_offset, true, \"\"
+    return out, sqlite3_column_int64(child_stmt, 1), true, \"\"
 }
 
 sqlite_index_entries_page_text_at_basis_raw :: proc(handle: rawptr, index_name: string, basis_tx: u64, offset: i64, limit: i64) -> (string, i64, bool, string) {
@@ -898,12 +935,8 @@ sqlite_index_entries_page_text_at_basis_raw :: proc(handle: rawptr, index_name: 
     }
     _ = sqlite3_finalize(stmt)
 
-    leaf_size := i64(128)
-    first_ordinal := offset / leaf_size
-    last_ordinal := (offset + limit - 1) / leaf_size
-    base_offset := first_ordinal * leaf_size
     child_stmt: ^SQLite3_Stmt
-    child_sql := \"SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']' FROM (SELECT substr(child.payload_text, 2, length(child.payload_text) - 2) AS payload FROM vev_index_chunk_edges edge JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id WHERE edge.parent_chunk_id = ? AND edge.ordinal BETWEEN ? AND ? ORDER BY edge.ordinal)\"
+    child_sql := \"WITH RECURSIVE tree(chunk_id, level, path, payload_text, row_count) AS (SELECT c.chunk_id, c.level, printf('%012d', 0), c.payload_text, c.row_count FROM vev_index_chunks c WHERE c.chunk_id = ? UNION ALL SELECT child.chunk_id, child.level, tree.path || '.' || printf('%012d', edge.ordinal), child.payload_text, child.row_count FROM tree JOIN vev_index_chunk_edges edge ON edge.parent_chunk_id = tree.chunk_id JOIN vev_index_chunks child ON child.chunk_id = edge.child_chunk_id), leaves AS (SELECT path, payload_text, row_count, COALESCE(SUM(row_count) OVER (ORDER BY path ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS base FROM tree WHERE level = 0) SELECT '[' || COALESCE(group_concat(payload, ' '), '') || ']', COALESCE(MIN(base), ?) FROM (SELECT base, substr(payload_text, 2, length(payload_text) - 2) AS payload FROM leaves WHERE base + row_count > ? AND base < ? ORDER BY path)\"
     child_sql_c, child_sql_c_ok := sqlite_cstring(child_sql)
     if !child_sql_c_ok {
         return \"\", 0, false, \"failed to allocate sqlite SQL text\"
@@ -916,11 +949,14 @@ sqlite_index_entries_page_text_at_basis_raw :: proc(handle: rawptr, index_name: 
     if sqlite3_bind_int64(child_stmt, 1, root_id) != SQLITE_OK {
         return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child basis index root failed\")
     }
-    if sqlite3_bind_int64(child_stmt, 2, first_ordinal) != SQLITE_OK {
-        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind first child basis ordinal failed\")
+    if sqlite3_bind_int64(child_stmt, 2, offset) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child basis index page base failed\")
     }
-    if sqlite3_bind_int64(child_stmt, 3, last_ordinal) != SQLITE_OK {
-        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind last child basis ordinal failed\")
+    if sqlite3_bind_int64(child_stmt, 3, offset) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child basis index page offset failed\")
+    }
+    if sqlite3_bind_int64(child_stmt, 4, offset + limit) != SQLITE_OK {
+        return \"\", 0, false, sqlite_error_text(db, \"sqlite bind child basis index page limit failed\")
     }
     child_rc := sqlite3_step(child_stmt)
     if child_rc != SQLITE_ROW {
@@ -934,7 +970,7 @@ sqlite_index_entries_page_text_at_basis_raw :: proc(handle: rawptr, index_name: 
     if err != nil {
         return \"\", 0, false, \"failed to clone sqlite child basis index page\"
     }
-    return out, base_offset, true, \"\"
+    return out, sqlite3_column_int64(child_stmt, 1), true, \"\"
 }
 
 sqlite_clear_index_storage_raw :: proc(handle: rawptr) -> (bool, string) {
@@ -1510,7 +1546,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn index-bound-text [items: []int, first?: bool] -> string
   (if (= (count items) 0)
-    (string-owned "")
+    (string-owned ":empty")
     (if first?
       (string-owned (fmt.tprintf "%d" items[0]))
       (string-owned (fmt.tprintf "%d" items[(- (count items) 1)])))))
@@ -1609,6 +1645,47 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (when (not avet-ok)
           (return false avet-error))
         (let [[vaet-id vaet-ok vaet-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx ":vaet" vaet)]
+          (when (not vaet-ok)
+            (return false vaet-error))
+          (let [[_ root-ok root-error] (sqlite-insert-index-root-raw handle basis-tx eavt-id aevt-id avet-id vaet-id)]
+            (return root-ok root-error)))))))
+
+(defn persist-appended-index-root-sqlite-handle [handle: rawptr, basis-tx: u64, index-name: string, appended: []int] -> [chunk-id: u64, ok: bool, error: string]
+  (let [[_ old-count old-root old-ok old-error] (sqlite-latest-index-root-chunk-info-raw handle index-name)]
+    (when (not old-ok)
+      (return 0 false old-error))
+    (let [[added-root added-ok added-error] (persist-bounded-index-chunks-sqlite-handle handle basis-tx index-name appended)]
+      (when (not added-ok)
+        (return 0 false added-error))
+      (let [payload (string-owned "[]")
+            [parent-id parent-ok parent-error] (sqlite-insert-index-chunk-raw handle index-name 1 ":shared-root" ":shared-root" (i64 (+ (int old-count) (count appended))) payload basis-tx)]
+        (delete payload)
+        (when (not parent-ok)
+          (return 0 false parent-error))
+        (let [[old-edge-ok old-edge-error] (sqlite-insert-index-chunk-edge-raw handle parent-id old-root 0)]
+          (when (not old-edge-ok)
+            (return 0 false old-edge-error))
+          (let [[new-edge-ok new-edge-error] (sqlite-insert-index-chunk-edge-raw handle parent-id added-root 1)]
+            (if new-edge-ok
+              (return parent-id true "")
+              (return 0 false new-edge-error))))))))
+
+(defn persist-index-root-sqlite-handle-index-mode [handle: rawptr, basis-tx: u64, index-name: string, indexes: []int, appended-only: bool] -> [chunk-id: u64, ok: bool, error: string]
+  (if appended-only
+    (persist-appended-index-root-sqlite-handle handle basis-tx index-name indexes)
+    (persist-bounded-index-chunks-sqlite-handle handle basis-tx index-name indexes)))
+
+(defn persist-index-root-sqlite-handle-from-indexes-mode [handle: rawptr, basis-tx: u64, eavt: []int, eavt-appended-only: bool, aevt: []int, aevt-appended-only: bool, avet: []int, avet-appended-only: bool, vaet: []int, vaet-appended-only: bool] -> [ok: bool, error: string]
+  (let [[eavt-id eavt-ok eavt-error] (persist-index-root-sqlite-handle-index-mode handle basis-tx ":eavt" eavt eavt-appended-only)]
+    (when (not eavt-ok)
+      (return false eavt-error))
+    (let [[aevt-id aevt-ok aevt-error] (persist-index-root-sqlite-handle-index-mode handle basis-tx ":aevt" aevt aevt-appended-only)]
+      (when (not aevt-ok)
+        (return false aevt-error))
+      (let [[avet-id avet-ok avet-error] (persist-index-root-sqlite-handle-index-mode handle basis-tx ":avet" avet avet-appended-only)]
+        (when (not avet-ok)
+          (return false avet-error))
+        (let [[vaet-id vaet-ok vaet-error] (persist-index-root-sqlite-handle-index-mode handle basis-tx ":vaet" vaet vaet-appended-only)]
           (when (not vaet-ok)
             (return false vaet-error))
           (let [[_ root-ok root-error] (sqlite-insert-index-root-raw handle basis-tx eavt-id aevt-id avet-id vaet-id)]
@@ -1931,6 +2008,32 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return out true ""))
     (source-append-merge-index source existing appended start-index "eavt")))
 
+(defn source-append-index-can-append? [source: DB-Read-Source, existing: []int, added: []int, appended: []Datom, start-index: int, order: string] -> [appendable: bool, ok: bool, error: string]
+  (when (= (count added) 0)
+    (return true true ""))
+  (when (= (count existing) 0)
+    (return true true ""))
+  (let [last-existing existing[(- (count existing) 1)]
+        first-added added[0]
+        [existing-less less-ok less-error] (source-appended-datom-index-less? source appended start-index order last-existing first-added)]
+    (if less-ok
+      (return existing-less true "")
+      (return false false less-error))))
+
+(defn source-append-index-for-persist [source: DB-Read-Source, existing: []int, appended: []Datom, start-index: int, order: string, force-append: bool] -> [out: [dynamic]int, append-mode: bool, ok: bool, error: string]
+  (let [added (sorted-appended-datom-slice-indexes appended start-index order)]
+    (when force-append
+      (return added true true ""))
+    (let [[appendable appendable-ok appendable-error] (source-append-index-can-append? source existing (slice added 0) appended start-index order)]
+      (when (not appendable-ok)
+        (delete added)
+        (return (make [dynamic]int) false false appendable-error))
+      (when appendable
+        (return added true true ""))
+      (delete added)
+      (let [[merged merged-ok merged-error] (source-append-merge-index source existing appended start-index order)]
+        (return merged false merged-ok merged-error)))))
+
 (defn source-append-build-indexes [source: DB-Read-Source, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> [eavt: [dynamic]int, aevt: [dynamic]int, avet: [dynamic]int, vaet: [dynamic]int, ok: bool, error: string]
   (let [eavt-base (db-index-view-entries (db-read-source-index-view source .EAVT))
         aevt-base (db-index-view-entries (db-read-source-index-view source .AEVT))
@@ -1976,7 +2079,57 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (delete vaet-base)
           (return eavt-index aevt-index avet-index vaet-index true ""))))))
 
-(defn append-source-direct-sqlite-handle [handle: rawptr, base-count: int, tx: u64, tx-data: []Datom, tx-meta: []Tx-Meta, eavt: []int, aevt: []int, avet: []int, vaet: []int] -> [ok: bool, error: string]
+(defn source-append-build-indexes-for-persist-with-eavt [source: DB-Read-Source, appended: []Datom, start-index: int, eavt-index: [dynamic]int, eavt-appended-only: bool] -> [eavt: [dynamic]int, eavt-append-mode: bool, aevt: [dynamic]int, aevt-append-mode: bool, avet: [dynamic]int, avet-append-mode: bool, vaet: [dynamic]int, vaet-append-mode: bool, ok: bool, error: string]
+  (let [aevt-base (db-index-view-entries (db-read-source-index-view source .AEVT))
+        avet-base (db-index-view-entries (db-read-source-index-view source .AVET))
+        vaet-base (db-index-view-entries (db-read-source-index-view source .VAET))]
+    (let [[aevt-index aevt-appended-only aevt-ok aevt-error] (source-append-index-for-persist source (slice aevt-base 0) appended start-index "aevt" false)]
+      (when (not aevt-ok)
+        (delete eavt-index)
+        (delete aevt-base)
+        (delete avet-base)
+        (delete vaet-base)
+        (return (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false false aevt-error))
+      (let [[avet-index avet-appended-only avet-ok avet-error] (source-append-index-for-persist source (slice avet-base 0) appended start-index "avet" false)]
+        (when (not avet-ok)
+          (delete eavt-index)
+          (delete aevt-index)
+          (delete aevt-base)
+          (delete avet-base)
+          (delete vaet-base)
+          (return (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false false avet-error))
+        (let [[vaet-index vaet-appended-only vaet-ok vaet-error] (source-append-index-for-persist source (slice vaet-base 0) appended start-index "vaet" false)]
+          (when (not vaet-ok)
+            (delete eavt-index)
+            (delete aevt-index)
+            (delete avet-index)
+            (delete aevt-base)
+            (delete avet-base)
+            (delete vaet-base)
+            (return (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false false vaet-error))
+          (delete aevt-base)
+          (delete avet-base)
+          (delete vaet-base)
+          (return eavt-index eavt-appended-only aevt-index aevt-appended-only avet-index avet-appended-only vaet-index vaet-appended-only true ""))))))
+
+(defn source-append-build-indexes-for-persist [source: DB-Read-Source, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> [eavt: [dynamic]int, eavt-append-mode: bool, aevt: [dynamic]int, aevt-append-mode: bool, avet: [dynamic]int, avet-append-mode: bool, vaet: [dynamic]int, vaet-append-mode: bool, ok: bool, error: string]
+  (if new-entities-after-existing
+    (let [eavt-index (sorted-appended-datom-slice-indexes appended start-index "eavt")]
+      (source-append-build-indexes-for-persist-with-eavt source appended start-index eavt-index true))
+    (let [eavt-base (db-index-view-entries (db-read-source-index-view source .EAVT))
+          [eavt-index eavt-appended-only eavt-ok eavt-error] (source-append-index-for-persist source (slice eavt-base 0) appended start-index "eavt" false)]
+      (delete eavt-base)
+      (when (not eavt-ok)
+        (return (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false (make [dynamic]int) false false eavt-error))
+      (source-append-build-indexes-for-persist-with-eavt source appended start-index eavt-index eavt-appended-only))))
+
+(defn source-append-datoms-all-new-entities? [next-entity: u64, datoms: []Datom] -> bool
+  (for [datom datoms]
+    (when (< datom.e next-entity)
+      (return false)))
+  true)
+
+(defn append-source-direct-sqlite-handle [handle: rawptr, base-count: int, tx: u64, tx-data: []Datom, tx-meta: []Tx-Meta, eavt: []int, eavt-appended-only: bool, aevt: []int, aevt-appended-only: bool, avet: []int, avet-appended-only: bool, vaet: []int, vaet-appended-only: bool] -> [ok: bool, error: string]
   (let [[begin-ok begin-error] (sqlite-begin-immediate-raw handle)]
     (when (not begin-ok)
       (return false begin-error))
@@ -2006,7 +2159,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (when (not meta-ok)
         (sqlite-rollback-raw handle)
         (return false meta-error)))
-    (let [[root-ok root-error] (persist-index-root-sqlite-handle-from-indexes handle tx eavt aevt avet vaet)]
+    (let [[root-ok root-error] (persist-index-root-sqlite-handle-from-indexes-mode handle tx eavt eavt-appended-only aevt aevt-appended-only avet avet-appended-only vaet vaet-appended-only)]
       (when (not root-ok)
         (sqlite-rollback-raw handle)
         (return false root-error)))
@@ -2722,18 +2875,22 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (delete ops))
 
 (defn append-overlay-cardinality-one-retractions! [out: ^[dynamic]Tx-Op, op: Tx-Op]
-  (let [existing-ops (arr.into [dynamic]Tx-Op (slice out^ 0)) :defer]
-    (for [existing existing-ops]
-      (when (and (= existing.kind .Add)
+  (let [index 0]
+    (while (< index (count out^))
+      (let [existing out^[index]]
+        (if (and (= existing.kind .Add)
                  (= existing.e op.e)
                  (= existing.a op.a)
                  (not (value-equal? existing.v op.v)))
-        (arr.push! out^ (Tx-Op {kind: .Retract
-                                e: existing.e
-                                a: (string-owned existing.a)
-                                owned-attr: true
-                                v: (value-owned existing.v)
-                                owned-value: true}))))))
+          (do
+            (when existing.owned-attr
+              (delete existing.a))
+            (when existing.owned-value
+              (delete-owned-value existing.v))
+            (when (not (= existing.map-group ""))
+              (delete existing.map-group))
+            (arr.remove-ordered-at! out^ index))
+          (set! index (+ index 1)))))))
 
 (defn append-source-cardinality-one-retractions! [out: ^[dynamic]Tx-Op, source: DB-Read-Source, op: Tx-Op] -> [ok: bool, error: string]
   (let [[existing existing-ok existing-error] (db-read-source-datoms-by-entity-attr source op.e op.a)]
@@ -2895,6 +3052,41 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
        (= fact.a op.a)
        (value-equal? fact.v op.v)))
 
+(defn source-overlay-prior-fact-state [ops: []Tx-Op, op: Tx-Op] -> [touched: bool, current: bool]
+  (let [index (- (count ops) 1)]
+    (while (>= index 0)
+      (let [prior ops[index]]
+        (when (source-overlay-fact-matches? prior op)
+          (return true (= prior.kind .Add))))
+      (set! index (- index 1))))
+  (return false false))
+
+(defn source-overlay-existing-current-fact? [source: DB-Read-Source, op: Tx-Op] -> [exists: bool, ok: bool, error: string]
+  (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source op.e op.a)]
+    (when (not datoms-ok)
+      (return false false datoms-error))
+    (for [datom datoms]
+      (when (value-equal? datom.v op.v)
+        (delete-owned-datoms datoms)
+        (return true true "")))
+    (delete-owned-datoms datoms)
+    (return false true "")))
+
+(defn remove-source-overlay-prior-fact-retractions! [ops: ^[dynamic]Tx-Op, op: Tx-Op]
+  (let [index (- (count ops^) 1)]
+    (while (>= index 0)
+      (let [prior ops^[index]]
+        (when (and (= prior.kind .Retract)
+                   (source-overlay-fact-matches? prior op))
+          (when prior.owned-attr
+            (delete prior.a))
+          (when prior.owned-value
+            (delete-owned-value prior.v))
+          (when (not (= prior.map-group ""))
+            (delete prior.map-group))
+          (arr.remove-ordered-at! ops^ index)))
+      (set! index (- index 1)))))
+
 (defn remove-source-overlay-current-fact! [facts: ^[dynamic]Tx-Op, op: Tx-Op]
   (let [out (make [dynamic]Tx-Op 0 (count facts^))]
     (for [fact facts^]
@@ -2986,6 +3178,16 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn append-source-overlay-op! [out: ^[dynamic]Tx-Op, source: DB-Read-Source, op: Tx-Op] -> [ok: bool, error: string]
   (when (= op.kind .Add)
+    (let [[touched current] (source-overlay-prior-fact-state (slice out^ 0) op)]
+      (when current
+        (return true ""))
+      (when touched
+        (remove-source-overlay-prior-fact-retractions! out op))
+      (let [[exists exists-ok exists-error] (source-overlay-existing-current-fact? source op)]
+        (when (not exists-ok)
+          (return false exists-error))
+        (when exists
+          (return true ""))))
     (let [[schema-type has-type type-ok type-error] (db-read-source-schema-value-type source op.a)]
       (when (not type-ok)
         (return false type-error))
@@ -3122,6 +3324,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   tx: u64
   tx-meta: [dynamic]Tx-Meta
   tempids: [dynamic]Tempid
+  source-append-metadata-known: bool
+  source-new-entities-after-existing: bool
 })
 
 (defn store-tx-report-value [report: Store-Tx-Report] -> Value
@@ -3149,7 +3353,14 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                       tx-data: (make [dynamic]Datom)
                       tx: 0
                       tx-meta: (make [dynamic]Tx-Meta)
-                      tempids: (make [dynamic]Tempid)})))
+                      tempids: (make [dynamic]Tempid)
+                      source-append-metadata-known: false
+                      source-new-entities-after-existing: false})))
+
+(defn failed-owned-store-tx-report [snapshot: Store-DB, error: string] -> Store-Tx-Report
+  (let [out (failed-store-tx-report snapshot error)]
+    (close-store-db snapshot)
+    out))
 
 (defn store-report-tempids-with-current-tx [tempids: []Tempid, tx: u64] -> [dynamic]Tempid
   (let [out (arr.into [dynamic]Tempid tempids)
@@ -3169,7 +3380,29 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                       tx-data: (clone-datoms report.tx-data)
                       tx: report.tx
                       tx-meta: (clone-tx-meta (slice report.tx-meta 0))
-                      tempids: tempids})))
+                      tempids: tempids
+                      source-append-metadata-known: false
+                      source-new-entities-after-existing: false})))
+
+(defn delete-temp-resident-store-report-source [report: Tx-Report]
+  (if report.ok
+    (delete-live-tx-report-shallow report)
+    (do
+      (delete report.tx-data)
+      (delete report.tx-meta)
+      (delete report.tempids)
+      (delete-tx-publish-plan report.publish-plan))))
+
+(defn store-tx-report-from-temp-resident-report [report: Tx-Report] -> Store-Tx-Report
+  (let [out (store-tx-report-from-resident-report report)]
+    (delete-temp-resident-store-report-source report)
+    out))
+
+(defn failed-sqlite-store-tx-report [store: ^SQLite-Conn, error: string] -> Store-Tx-Report
+  (let [[snapshot snapshot-ok _] (sqlite-store-db store)]
+    (if snapshot-ok
+      (failed-owned-store-tx-report snapshot error)
+      (store-tx-report-from-temp-resident-report (failed-tx-report store^.conn.db error)))))
 
 (defn transact-sqlite-store-report-direct-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> [report: Store-Tx-Report, used: bool, ok: bool, error: string]
   (when store^.resident-loaded
@@ -3189,10 +3422,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (return (Store-Tx-Report {}) false false state-error))
         (let [resolved (shared-write-state-resolve-tx-data-source-only (addr state) source tx-data)]
           (when (not resolved.ok)
-            (delete-resolved-tx resolved)
-            (delete-shared-write-state-metadata state)
-            (close-store-db before)
-            (return (Store-Tx-Report {}) false true ""))
+            (let [failed (failed-store-tx-report before resolved.error)]
+              (delete-resolved-tx resolved)
+              (delete-shared-write-state-metadata state)
+              (close-store-db before)
+              (return failed true true "")))
           (let [[overlay-ops overlay-ok overlay-error] (source-overlay-ops-from-resolved source resolved)]
             (when (not overlay-ok)
               (delete-resolved-tx resolved)
@@ -3203,7 +3437,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                   start-index before.sqlite-snapshot.datom-count
                   new-entities-after-existing (source-append-ops-all-new-entities? state.next-entity-id (slice overlay-ops 0))
                   appended (source-overlay-datoms-from-ops (slice overlay-ops 0) tx)]
-              (let [[eavt aevt avet vaet indexes-ok indexes-error] (source-append-build-indexes source (slice appended 0) start-index new-entities-after-existing)]
+              (let [[eavt eavt-appended-only aevt aevt-appended-only avet avet-appended-only vaet vaet-appended-only indexes-ok indexes-error] (source-append-build-indexes-for-persist source (slice appended 0) start-index new-entities-after-existing)]
                 (when (not indexes-ok)
                   (delete-owned-datoms appended)
                   (delete-owned-tx-ops overlay-ops)
@@ -3212,7 +3446,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                   (close-store-db before)
                   (return (Store-Tx-Report {}) false false indexes-error))
                 (close-store-db before)
-                (let [[append-ok append-error] (append-source-direct-sqlite-handle store^.handle start-index tx (slice appended 0) (slice resolved.tx-meta 0) (slice eavt 0) (slice aevt 0) (slice avet 0) (slice vaet 0))]
+                (let [[append-ok append-error] (append-source-direct-sqlite-handle store^.handle start-index tx (slice appended 0) (slice resolved.tx-meta 0) (slice eavt 0) eavt-appended-only (slice aevt 0) aevt-appended-only (slice avet 0) avet-appended-only (slice vaet 0) vaet-appended-only)]
                   (delete eavt)
                   (delete aevt)
                   (delete avet)
@@ -3249,7 +3483,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                                          tx-data: (clone-owned-datom-slice (slice appended 0))
                                                          tx: tx
                                                          tx-meta: (clone-tx-meta (slice resolved.tx-meta 0))
-                                                         tempids: report-tempids})]
+                                                         tempids: report-tempids
+                                                         source-append-metadata-known: true
+                                                         source-new-entities-after-existing: new-entities-after-existing})]
                         (delete-owned-datoms appended)
                         (delete-owned-tx-ops overlay-ops)
                         (delete-resolved-tx resolved)
@@ -3282,9 +3518,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                         added: (= op.kind .Add)})]
       (arr.push! out^ (datom-owned datom)))))
 
-(defn store-tx-report-from-source-overlay-parts [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, tx-meta: []Tx-Meta, tempids: []Tempid] -> Store-Tx-Report
+(defn store-tx-report-from-source-overlay-parts [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, tx-meta: []Tx-Meta, tempids: []Tempid, next-entity: u64] -> Store-Tx-Report
   (let [tx-data (source-overlay-datoms-from-ops overlay-ops tx)
-        cloned-tempids (store-report-tempids-with-current-tx tempids tx)]
+        cloned-tempids (store-report-tempids-with-current-tx tempids tx)
+        new-entities-after-existing (source-append-ops-all-new-entities? next-entity overlay-ops)]
     (Store-Tx-Report {ok: true
                       error: ""
                       db-before: (retain-store-db snapshot)
@@ -3292,10 +3529,12 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                       tx-data: tx-data
                       tx: tx
                       tx-meta: (clone-tx-meta tx-meta)
-                      tempids: cloned-tempids})))
+                      tempids: cloned-tempids
+                      source-append-metadata-known: true
+                      source-new-entities-after-existing: new-entities-after-existing})))
 
-(defn store-tx-report-from-source-overlay [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, resolved: Resolved-Tx] -> Store-Tx-Report
-  (store-tx-report-from-source-overlay-parts snapshot overlay-ops tx (slice resolved.tx-meta 0) (slice resolved.tempids 0)))
+(defn store-tx-report-from-source-overlay [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, resolved: Resolved-Tx, next-entity: u64] -> Store-Tx-Report
+  (store-tx-report-from-source-overlay-parts snapshot overlay-ops tx (slice resolved.tx-meta 0) (slice resolved.tempids 0) next-entity))
 
 (defn with-shared-store-db-source-overlay-report-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> [report: Store-Tx-Report, used: bool, ok: bool, error: string]
   (let [base snapshot^.shared-snapshot
@@ -3313,7 +3552,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (delete-resolved-tx resolved)
           (delete-shared-write-state-metadata state)
           (return (Store-Tx-Report {}) false false overlay-error))
-        (let [out-report (store-tx-report-from-source-overlay snapshot^ (slice overlay-ops 0) state.conn.next-tx resolved)]
+        (let [out-report (store-tx-report-from-source-overlay snapshot^ (slice overlay-ops 0) state.conn.next-tx resolved state.next-entity-id)]
           (delete-owned-tx-ops overlay-ops)
           (delete-resolved-tx resolved)
           (delete-shared-write-state-metadata state)
@@ -3336,7 +3575,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
             (delete-resolved-tx resolved)
             (delete-shared-write-state-metadata state)
             (return (Store-Tx-Report {}) false false overlay-error))
-          (let [out-report (store-tx-report-from-source-overlay snapshot^ (slice overlay-ops 0) state.conn.next-tx resolved)]
+          (let [out-report (store-tx-report-from-source-overlay snapshot^ (slice overlay-ops 0) state.conn.next-tx resolved state.next-entity-id)]
             (delete-owned-tx-ops overlay-ops)
             (delete-resolved-tx resolved)
             (delete-shared-write-state-metadata state)
@@ -3405,7 +3644,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
             (delete tempids)
             (delete-shared-write-state-metadata state)
             (return (failed-store-tx-report snapshot^ overlay-error)))
-          (let [report (store-tx-report-from-source-overlay-parts snapshot^ (slice overlay-ops 0) tx (slice tx-meta 0) (slice tempids 0))]
+          (let [report (store-tx-report-from-source-overlay-parts snapshot^ (slice overlay-ops 0) tx (slice tx-meta 0) (slice tempids 0) state.next-entity-id)]
             (delete-owned-tx-ops overlay-ops)
             (delete ops)
             (delete tx-meta)
@@ -3619,7 +3858,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                  tx-data: (clone-datoms resident-report.tx-data)
                                  tx: resident-report.tx
                                  tx-meta: (clone-tx-meta (slice resident-report.tx-meta 0))
-                                 tempids: tempids})]
+                                 tempids: tempids
+                                 source-append-metadata-known: false
+                                 source-new-entities-after-existing: false})]
     (delete-store-db-temp-tx-report resident-report)
     report))
 
@@ -3740,6 +3981,57 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (if parse-ok
       (db-with-store-db-tx-data-with-source-string-fns snapshot (slice tx-data 0) registry)
       (retain-store-db snapshot^))))
+
+(defn sqlite-commit-source-overlay-report [store: ^SQLite-Conn, overlay-report: Store-Tx-Report] -> Store-Tx-Report
+  (when (not overlay-report.ok)
+    (return overlay-report))
+  (when (not (= overlay-report.db-before.kind .SQLite-Snapshot))
+    (let [failed (failed-store-tx-report overlay-report.db-before "source transaction functions require a SQLite-backed Store-DB")]
+      (delete-store-tx-report overlay-report)
+      (return failed)))
+  (let [before-snapshot overlay-report.db-before.sqlite-snapshot
+        source (sqlite-db-read-source (addr before-snapshot))
+        start-index before-snapshot.datom-count]
+    (let [new-entities-after-existing (if overlay-report.source-append-metadata-known
+                                        overlay-report.source-new-entities-after-existing
+                                        false)
+          [eavt eavt-appended-only aevt aevt-appended-only avet avet-appended-only vaet vaet-appended-only indexes-ok indexes-error] (source-append-build-indexes-for-persist source (slice overlay-report.tx-data 0) start-index new-entities-after-existing)]
+    (when (not indexes-ok)
+      (let [failed (failed-store-tx-report overlay-report.db-before indexes-error)]
+        (delete-store-tx-report overlay-report)
+        (return failed)))
+    (let [[append-ok append-error] (append-source-direct-sqlite-handle store^.handle start-index overlay-report.tx (slice overlay-report.tx-data 0) (slice overlay-report.tx-meta 0) (slice eavt 0) eavt-appended-only (slice aevt 0) aevt-appended-only (slice avet 0) avet-appended-only (slice vaet 0) vaet-appended-only)]
+      (delete eavt)
+      (delete aevt)
+      (delete avet)
+      (delete vaet)
+      (when (not append-ok)
+        (let [failed (failed-store-tx-report overlay-report.db-before append-error)]
+          (delete-store-tx-report overlay-report)
+          (return failed)))
+      (let [[report-before report-before-ok report-before-error] (sqlite-open-db-snapshot-at-basis store^.path (- overlay-report.tx 1) sqlite-db-source-default-page-size)]
+        (when (not report-before-ok)
+          (let [failed (failed-store-tx-report overlay-report.db-after report-before-error)]
+            (delete-store-tx-report overlay-report)
+            (return failed)))
+        (let [[report-after report-after-ok report-after-error] (sqlite-open-db-snapshot-at-basis store^.path overlay-report.tx sqlite-db-source-default-page-size)]
+          (when (not report-after-ok)
+            (close-sqlite-db-snapshot report-before)
+            (let [failed (failed-store-tx-report overlay-report.db-after report-after-error)]
+              (delete-store-tx-report overlay-report)
+              (return failed)))
+          (let [out (Store-Tx-Report {ok: true
+                                      error: ""
+                                      db-before: (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: report-before})
+                                      db-after: (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: report-after})
+                                      tx-data: (clone-owned-datom-slice (slice overlay-report.tx-data 0))
+                                      tx: overlay-report.tx
+                                      tx-meta: (clone-tx-meta (slice overlay-report.tx-meta 0))
+                                      tempids: (store-report-tempids-with-current-tx (slice overlay-report.tempids 0) overlay-report.tx)
+                                      source-append-metadata-known: overlay-report.source-append-metadata-known
+                                      source-new-entities-after-existing: overlay-report.source-new-entities-after-existing})]
+            (delete-store-tx-report overlay-report)
+            out)))))))
 
 (defn db-with-store-db-text [snapshot: ^Store-DB, text: string] -> Store-DB
   (let [tx-data (make [dynamic]Tx-Data) :defer
@@ -3973,32 +4265,42 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn transact-sqlite-store-report-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> Store-Tx-Report
   (when store^.source-only
-    (let [[snapshot snapshot-ok _] (sqlite-store-db store)]
-      (if snapshot-ok
-        (return (failed-store-tx-report snapshot "SQLite source connection is read-only; open a writable SQLite connection to transact"))
-        (return (store-tx-report-from-resident-report (failed-tx-report store^.conn.db "SQLite source connection is read-only; open a writable SQLite connection to transact"))))))
+    (return (failed-sqlite-store-tx-report store "SQLite source connection is read-only; open a writable SQLite connection to transact")))
   (let [[direct-report direct-used direct-ok direct-error] (transact-sqlite-store-report-direct-tx-data store tx-data)]
     (when direct-ok
       (when direct-used
         (return direct-report)))
     (when (not direct-ok)
-      (let [[snapshot snapshot-ok _] (sqlite-store-db store)]
-        (if snapshot-ok
-          (return (failed-store-tx-report snapshot direct-error))
-          (return (store-tx-report-from-resident-report (failed-tx-report store^.conn.db direct-error)))))))
+      (return (failed-sqlite-store-tx-report store direct-error))))
   (let [report (transact-sqlite-tx-data store tx-data)
-        out (store-tx-report-from-resident-report report)]
+        out (store-tx-report-from-temp-resident-report report)]
     out))
 
 (defn transact-sqlite-store-report-text [store: ^SQLite-Conn, text: string] -> Store-Tx-Report
   (let [tx-data (make [dynamic]Tx-Data) :defer
         [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
     (when (not parse-ok)
-      (let [[snapshot snapshot-ok _] (sqlite-store-db store)]
-        (if snapshot-ok
-          (return (failed-store-tx-report snapshot parse-error))
-          (return (store-tx-report-from-resident-report (failed-tx-report store^.conn.db parse-error))))))
+      (return (failed-sqlite-store-tx-report store parse-error)))
     (transact-sqlite-store-report-tx-data store (slice tx-data 0))))
+
+(defn transact-sqlite-store-report-tx-data-with-source-string-fns [store: ^SQLite-Conn, tx-data: []Tx-Data, registry: []Tx-Fn-Source-String] -> Store-Tx-Report
+  (when store^.source-only
+    (return (failed-sqlite-store-tx-report store "SQLite source connection is read-only; open a writable SQLite connection to transact")))
+  (when store^.resident-loaded
+    (return (store-tx-report-from-temp-resident-report (transact-sqlite-tx-data store tx-data))))
+  (let [[snapshot snapshot-ok snapshot-error] (sqlite-store-db store)]
+    (when (not snapshot-ok)
+      (return (store-tx-report-from-temp-resident-report (failed-tx-report store^.conn.db snapshot-error))))
+    (let [overlay-report (with-store-db-report-tx-data-with-source-string-fns (addr snapshot) tx-data registry)]
+      (close-store-db snapshot)
+      (sqlite-commit-source-overlay-report store overlay-report))))
+
+(defn transact-sqlite-store-report-text-with-source-string-fns [store: ^SQLite-Conn, text: string, registry: []Tx-Fn-Source-String] -> Store-Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (when (not parse-ok)
+      (return (failed-sqlite-store-tx-report store parse-error)))
+    (transact-sqlite-store-report-tx-data-with-source-string-fns store (slice tx-data 0) registry)))
 
 (defn store-from-sqlite-conn [store: SQLite-Conn] -> Store-Conn
   (Store-Conn {kind: .SQLite sqlite: store}))
@@ -4099,7 +4401,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                               tx-data: (clone-owned-datom-slice (slice report.tx-data 0))
                               tx: report.tx
                               tx-meta: (clone-tx-meta (slice report.tx-meta 0))
-                              tempids: tempids}))
+                              tempids: tempids
+                              source-append-metadata-known: false
+                              source-new-entities-after-existing: false}))
           (Store-Tx-Report {ok: false
                             error: report.error
                             db-before: (Store-DB {kind: .Shared-Snapshot shared-snapshot: report.db-before})
@@ -4107,7 +4411,56 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                             tx-data: (make [dynamic]Datom)
                             tx: 0
                             tx-meta: (make [dynamic]Tx-Meta)
-                            tempids: (make [dynamic]Tempid)})))
+                            tempids: (make [dynamic]Tempid)
+                            source-append-metadata-known: false
+                            source-new-entities-after-existing: false})))
+     (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
+       (failed-store-tx-report empty "store is not open"))))
+
+(defn delete-shared-store-source-temp-report [report: Tx-Report]
+  (if report.ok
+    (delete-live-tx-report-shallow report)
+    (do
+      (delete report.tx-data)
+      (delete report.tx-meta)
+      (delete report.tempids)
+      (delete-tx-publish-plan report.publish-plan))))
+
+(defn shared-store-report-tx-data-with-source-string-fns [store: ^Store-Conn, tx-data: []Tx-Data, registry: []Tx-Fn-Source-String] -> Store-Tx-Report
+  (let [before-snapshot (retain-shared-db-snapshot store^.shared.snapshot)
+        report (shared-conn-transact-with-source-string-fns (addr store^.shared) tx-data registry)]
+    (if report.ok
+      (let [after-snapshot (retain-shared-db-snapshot store^.shared.snapshot)
+            tempids (arr.into [dynamic]Tempid (slice report.tempids 0))
+            out (Store-Tx-Report {ok: true
+                                  error: ""
+                                  db-before: (Store-DB {kind: .Shared-Snapshot shared-snapshot: before-snapshot})
+                                  db-after: (Store-DB {kind: .Shared-Snapshot shared-snapshot: after-snapshot})
+                                  tx-data: (clone-owned-datom-slice (slice report.tx-data 0))
+                                  tx: report.tx
+                                  tx-meta: (clone-tx-meta (slice report.tx-meta 0))
+                                  tempids: tempids
+                                  source-append-metadata-known: false
+                                  source-new-entities-after-existing: false})]
+        (delete-shared-store-source-temp-report report)
+        out)
+      (let [out (Store-Tx-Report {ok: false
+                                  error: report.error
+                                  db-before: (Store-DB {kind: .Shared-Snapshot shared-snapshot: before-snapshot})
+                                  db-after: (Store-DB {kind: .Shared-Snapshot shared-snapshot: (retain-shared-db-snapshot before-snapshot)})
+                                  tx-data: (make [dynamic]Datom)
+                                  tx: 0
+                                  tx-meta: (make [dynamic]Tx-Meta)
+                                  tempids: (make [dynamic]Tempid)
+                                  source-append-metadata-known: false
+                                  source-new-entities-after-existing: false})]
+        (delete-shared-store-source-temp-report report)
+        out))))
+
+(defn transact-store-report-tx-data-with-source-string-fns [store: ^Store-Conn, tx-data: []Tx-Data, registry: []Tx-Fn-Source-String] -> Store-Tx-Report
+  (case store^.kind
+    .SQLite (transact-sqlite-store-report-tx-data-with-source-string-fns (addr store^.sqlite) tx-data registry)
+    .Shared (shared-store-report-tx-data-with-source-string-fns store tx-data registry)
      (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
        (failed-store-tx-report empty "store is not open"))))
 
@@ -4120,5 +4473,17 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (when (not parse-ok)
           (return (failed-store-tx-report (shared-store-db (addr store^.shared)) parse-error)))
         (transact-store-report-tx-data store (slice tx-data 0)))
+     (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
+       (failed-store-tx-report empty "store is not open"))))
+
+(defn transact-store-report-text-with-source-string-fns [store: ^Store-Conn, text: string, registry: []Tx-Fn-Source-String] -> Store-Tx-Report
+  (case store^.kind
+    .SQLite (transact-sqlite-store-report-text-with-source-string-fns (addr store^.sqlite) text registry)
+    .Shared
+      (let [tx-data (make [dynamic]Tx-Data) :defer
+            [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+        (when (not parse-ok)
+          (return (failed-store-tx-report (shared-store-db (addr store^.shared)) parse-error)))
+        (transact-store-report-tx-data-with-source-string-fns store (slice tx-data 0) registry))
      (let [empty (Store-DB {kind: .Resident resident: (build-db (make [dynamic]Datom))})]
        (failed-store-tx-report empty "store is not open"))))

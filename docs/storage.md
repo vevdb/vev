@@ -66,6 +66,23 @@ entity by binary-searching persisted EAVT and resolving only that entity's
 datoms, plus attribute and entity+attribute reads by binary-searching persisted
 AEVT/EAVT and resolving matching durable log indexes. The DB snapshot keeps a
 prepared datom-by-log-index statement open for repeated materialization.
+Persisted index roots can now be recursive: direct SQLite append writes for
+new entities publish EAVT as a parent root that references the previous EAVT
+root plus newly appended chunks. This avoids rewriting the full EAVT payload
+for the common append-only entity case and keeps retained basis roots valid.
+SQLite commits produced by source transaction functions use the same path when
+the expanded transaction appends only new entities. Source-backed transaction
+reports carry this append-publication metadata into SQLite commit, so the commit
+publisher does not reread write-state metadata just to recompute append-root
+eligibility. Publication chooses append-root sharing independently for EAVT,
+AEVT, AVET, and VAET by checking the appended segment against each index's own
+key order; if ranges overlap, that index falls back to a merged root while other
+indexes can still share.
+Lazy page reads over recursive roots select only overlapping leaf chunks and
+return the selected leaf base offset to the in-memory windowing layer. Full
+index-entry reads still concatenate the full recursive root for diagnostics and
+tests. AEVT/AVET/VAET still use full merged root publication until their
+ordering cases are split safely.
 Live SQLite connections now have internal text and prepared query wrappers
 (`q-result-sqlite-conn-text` and `q-result-sqlite-conn-prepared`) that open a
 short-lived `SQLite-DB-Snapshot`, query through `DB-Read-Source`, close the
@@ -80,14 +97,23 @@ source-resolvable writes directly: Vev resolves tx-data against a
 new persisted index roots, and returns SQLite-backed `db-before` / `db-after`
 handles without loading a resident `DB`. Covered direct shapes include add,
 cardinality-one replacement, explicit retract, retract-attribute,
-retract-entity, lookup refs, nested maps through ref attrs, tempids in ref
-values, unique-identity upserts, tuple-identity upserts with tempid/lookup
-components, transaction metadata, current-tx aliases, and CAS; broader
-source-overlay transaction shapes are the remaining work. The older
-resident-shaped `Tx-Report` transaction API still upgrades by loading the
-resident connection before running the existing compatibility path. There is
-also an internal source-only SQLite connection opener with the same no-rebuild
-read shape that rejects transactions explicitly.
+retract-entity, same-transaction lookup refs, reverse ref lookup vectors,
+nested maps through ref attrs, tempids in ref values, duplicate add
+suppression, unique-identity upserts, same-transaction identity upsert
+convergence, unique ref-value tempid upserts, tuple-identity upserts with
+tempid/lookup components, transaction metadata, current-tx aliases, registered
+source transaction functions, and CAS. Shared-store source-function transaction
+reports also return retained shared `Store-DB` snapshots for `db-before` and
+`db-after`, including failure reports. SQLite store-report parse failures,
+read-only write failures, and source-direct validation failures return
+SQLite-backed `db-before`/`db-after` handles without loading the resident DB.
+The remaining write-publication work is mostly uncommon transaction-function
+success/report edge cases plus migrating the older resident-shaped
+compatibility report path. The older resident-shaped `Tx-Report` transaction
+API still upgrades by loading the resident connection before running the
+existing compatibility path. There is also an internal source-only SQLite
+connection opener with the same no-rebuild read shape that rejects transactions
+explicitly.
 The storage-neutral aliases (`open-store-read-only`, `q-result-store-text`, and
 `q-result-store-prepared`) now expose this mode inside Vev without making
 query-facing code mention SQLite. `store-read-only?` and

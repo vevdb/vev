@@ -25,25 +25,23 @@ The remaining goal is to make durable DB values production-shaped:
 
 Status: active.
 
-Storage-neutral durable transaction reports now have a SQLite source-direct
-path for source-resolved writes. The direct path resolves tx-data against
-`DB-Read-Source`, appends durable add/retract datoms, writes new persisted index
-roots, and returns SQLite-backed `Store-DB` handles for `db-before` and
-`db-after` without loading the resident DB. Covered shapes include add,
-cardinality-one replacement, explicit retract, retract-attribute,
-retract-entity, lookup refs, nested maps through ref attrs, tempids in ref
-values, unique-identity upserts, tuple-identity upserts with tempid/lookup
-components, transaction metadata, current-tx aliases, and CAS.
+Storage-neutral durable transaction reports now cover the normal SQLite
+source-direct write path, shared-store source-function reports, and SQLite
+parse/read-only/direct-error report failures. Supported writes resolve tx-data
+against `DB-Read-Source`, append durable add/retract datoms, publish new index
+roots, and return retained `Store-DB` handles for `db-before` and `db-after`
+without resident materialization. Source-backed report failures also return
+storage-neutral DB handles instead of falling back through resident clones.
 
 Remaining work:
 
-- broaden the direct path to all ordinary DataScript/Datomic transaction shapes
-  already supported by the source overlay resolver, including remaining
-  multi-step tempid/upsert combinations and source transaction functions
-- make unsupported source-backed durable transaction reports fail with clear
-  public errors instead of falling back through resident materialization
-- move the older resident-shaped `Tx-Report` public compatibility path toward
-  the storage-neutral `Store-Tx-Report` shape
+- move older public `Tx-Report` compatibility APIs toward the
+  storage-neutral `Store-Tx-Report` shape where host-facing code needs
+  immutable DB values; normal SQLite `Store-Tx-Report` writes and source
+  transaction-function writes are already storage-neutral unless the connection
+  has explicitly entered resident compatibility mode
+- reduce remaining resident fallback shapes to explicit unsupported-shape errors
+  or small-DB/debug compatibility, never a hidden path for normal durable writes
 - keep live connection tx metadata, basis, tempids, listeners, and retained old
   DB handles semantically identical to the in-memory engine
 
@@ -57,14 +55,31 @@ Acceptance:
 
 Status: active.
 
+Implemented:
+
+- direct SQLite append writes for new entities can publish EAVT as a recursive
+  parent root that shares the previous EAVT root and only adds new leaf chunks
+- SQLite source-function commits use the same EAVT append-root publication when
+  the function-expanded transaction data only appends new entities
+- source-backed transaction reports now carry append-publication metadata
+  through to SQLite commit, so source-function commits do not reread write-state
+  metadata just to rediscover append-root eligibility
+- SQLite publication now chooses append-root sharing independently for EAVT,
+  AEVT, AVET, and VAET when the appended segment is proven to be after the
+  previous root in that index's own key order
+- recursive persisted roots are readable through both full debug reads and
+  page-bounded lazy index reads, so retained DB handles do not need to flatten
+  the whole root for normal paged source scans
+- empty/no-op index chunks have stable metadata bounds, so canceling
+  add/retract transactions keep the storage schema valid
+
 Remaining work:
 
-- make shared immutable index chunks the normal commit publication path for
-  append-heavy workloads
 - keep transaction validation and write-state metadata incremental, so failed
   writes and non-schema writes do not clone full datom/index arrays
-- make the transaction engine return enough publication metadata that storage
-  adapters do not recompute append/new-entity decisions independently
+- make direct source resolution return full publication metadata, including
+  reusable index-order append proofs, so storage adapters can publish without
+  rebuilding any index eligibility decisions
 - preserve resident-array publication only as a small-DB/debug compatibility
   strategy
 

@@ -1573,6 +1573,35 @@
       (push-resolved-tempid! tempids tempid-index tempid assigned)
       assigned)))
 
+(defn shared-write-state-resolve-source-simple-resolved-tx-data-lookup-ref [tx-data: []Tx-Data, tempid-index: (ptr (map string u64)), attr: string, value: Value] -> [entity: u64, ok: bool, error: string]
+  (let [found: u64 0
+        has-found false]
+    (for [data tx-data]
+      (when (and (= data.op ":db/add")
+                 (not data.has-lookup-ref)
+                 (not data.has-ident)
+                 (= data.a attr)
+                 (value-equal? data.v value))
+        (let [candidate: u64 0
+              candidate-ok false]
+          (if data.has-tempid
+            (let [[tempid-e tempid-ok] (resolved-tempid-lookup tempid-index data.tempid)]
+              (when tempid-ok
+                (set! candidate tempid-e)
+                (set! candidate-ok true)))
+            (do
+              (set! candidate data.e)
+              (set! candidate-ok true)))
+          (when candidate-ok
+            (when (and has-found
+                       (not (= found candidate)))
+              (return 0 false "schema unique conflict"))
+            (set! found candidate)
+            (set! has-found true)))))
+    (if has-found
+      (return found true "")
+      (return 0 false ""))))
+
 (defn shared-write-state-source-simple-tempid-upsert-entity [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data, tempid: string, tempid-index: (ptr (map string u64)), tempids: ^[dynamic]Tempid, next-e: ^u64] -> [e: u64, ok: bool, conflict: bool, error: string]
   (let [found: u64 0
         has-found false]
@@ -1590,6 +1619,15 @@
             (continue))
           (when (not value-ok)
             (return 0 false false value-error))
+          (let [[local-entity local-ok local-error] (shared-write-state-resolve-source-simple-resolved-tx-data-lookup-ref tx-data tempid-index data.a value)]
+            (when (not (= local-error ""))
+              (return 0 false false local-error))
+            (when local-ok
+              (when (and has-found
+                         (not (= found local-entity)))
+                (return found false true ""))
+              (set! found local-entity)
+              (set! has-found true)))
           (let [[entity entity-ok lookup-error] (db-read-source-resolve-lookup-ref source data.a value)]
             (when (not (= lookup-error ""))
               (return 0 false false lookup-error))
@@ -2357,7 +2395,7 @@
         (shared-write-state-note-source-resolve! state)
         (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source (slice expanded 0))))))
   (Resolved-Tx {ok: false
-                error: "transaction requires resident materialization fallback"
+                error: "transaction shape is not supported by source-backed reports yet"
                 ops: (make [dynamic]Tx-Op)
                 tx-meta: (make [dynamic]Tx-Meta)
                 tempids: (make [dynamic]Tempid)}))
