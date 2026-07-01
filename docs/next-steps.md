@@ -911,15 +911,30 @@ Implemented so far:
   operator stays on `DB-Read-Source`, skips reverse attributes so existing
   reverse lookup semantics still use the generic reverse-aware path, and
   returns no rows for retracted entity attrs.
+- Fixed-entity star projections such as `[1 ?a ?v]` now use a direct
+  entity-local source projection. The operator scans current source datoms for
+  the entity, returns attr/value columns in `:find` order, and avoids generic
+  source bindings for simple entity inspection queries.
 - Fixed attr/value entity lookups such as
   `[?e :user/email "ada@example.com"]` now use a direct source AVET projection
-  and return entity rows without creating generic source bindings. The operator
-  also skips reverse attributes so reverse lookup semantics stay on the
-  existing reverse-aware path.
+  and return entity rows without creating generic source bindings.
 - One-column attr scans such as `[?e :user/name ?name]` with `:find ?name`
   now use a direct source attr/value projection, deduping values and avoiding
-  generic source bindings while leaving reverse attributes on the generic
-  reverse-aware path.
+  generic source bindings.
+- Entity-only attr existence scans such as `[?e :user/name ?name]` with
+  `:find ?e` now use a direct source attr/entity projection. The operator
+  dedupes entity rows and filters retracted facts through `DB-Read-Source`.
+- Omitted-value attr existence scans such as `[?e :user/name]` now use the
+  same source attr/entity projection instead of materializing generic source
+  binding rows.
+- Simple source-backed pull queries such as
+  `[:find ?e (pull ?e [:db/id :user/name]) :where [?e :user/name]]` and
+  pull-only variants now scan source indexes and materialize pull rows
+  directly, avoiding the source `Binding` bridge for the common
+  entity-attr-existence pull shape. The same operator now handles pull
+  patterns supplied through `:in` and a simple entity equality predicate such
+  as `[(= ?e 302)]`, so host-supplied pull patterns and focused pull reads can
+  stay source-native too.
 - Single source-backed data clauses feeding `count`, `count-distinct`, and
   bounded top-n `min`/`max` aggregates now run as a direct source aggregate
   operator. The operator scans current source candidates, applies the same
@@ -930,6 +945,27 @@ Implemented so far:
   source-native projection operator. It scans current source candidates,
   returns entity, attr keyword, and value columns in `:find` order, and keeps
   retracted datoms filtered without first creating generic source bindings.
+- `DB-Read-Source` and `Store-DB` query wrappers now have profiled text and
+  prepared-query variants. Source-backed profiles report coarse
+  `:source-index-scans`, `:binding-materializations`, and `:output-rows`, so
+  durable DB-value queries can show whether they stayed on direct source
+  operators or crossed into generic binding materialization.
+- Fixed-target reverse-ref clauses such as `[301 :item/_parent ?child]` now
+  have a source-native VAET projection operator. This keeps common reverse
+  navigation over durable DB values on `DB-Read-Source` indexes instead of
+  materializing generic source bindings.
+- One-clause reverse-ref pair projections such as
+  `[?parent :item/_parent ?child]` now use the same source-native projection
+  layer. The operator scans the forward attr and projects reverse logical
+  entity/value columns directly, instead of accidentally treating the reverse
+  keyword as a stored forward attr.
+- Child-to-parent reverse lookups such as `[?parent :item/_parent 302]` now
+  stay on the source projection path too, scanning the child entity's forward
+  ref attr and projecting the stored parent entity without generic bindings.
+- One-column reverse-ref projections such as
+  `[?parent :item/_parent ?child]` with `:find ?child` or `:find ?parent` now
+  also stay on source-native projection operators, deduping logical children
+  or parents directly from the forward attr scan.
 
 Work:
 

@@ -1952,6 +1952,9 @@
 (defn delete-profiled-result-set-shallow [profiled: Profiled-Result-Set]
   (delete-result-set-shallow profiled.result))
 
+(defn delete-profiled-result-set-owned-values [profiled: Profiled-Result-Set]
+  (delete-result-set-owned-values profiled.result))
+
 (defn lookup-ref-value [attr: string, value: Value] -> Value
   (value-vector2 (value-keyword attr) value))
 
@@ -5953,6 +5956,24 @@
         (if source-ok
           (return (q-db-read-source-attr-value-projection projection-source projection))
           (return (result-set-error source-error))))))
+  (let [[projection projection-ok] (db-read-source-query-attr-entity-projection query-value)]
+    (when projection-ok
+      (let [clause-value query-value.clauses[0]
+            [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)]
+        (if source-ok
+          (return (q-db-read-source-attr-entity-projection projection-source projection))
+          (return (result-set-error source-error))))))
+  (let [[projection projection-ok] (db-read-source-query-entity-pull-projection query-value)]
+    (when projection-ok
+      (let [clause-value query-value.clauses[0]
+            pull-find query-value.pulls[0]
+            [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)
+            [pull-source pull-source-ok pull-source-error] (db-read-source-pull-find-source source sources pull-find)]
+        (when (not source-ok)
+          (return (result-set-error source-error)))
+        (when (not pull-source-ok)
+          (return (result-set-error pull-source-error)))
+        (return (q-db-read-source-entity-pull-projection projection-source pull-source query-value inputs projection pull-find registry)))))
   (let [[projection projection-ok] (db-read-source-query-fixed-entity-attr-projection query-value)]
     (when projection-ok
       (let [clause-value query-value.clauses[0]
@@ -5960,12 +5981,26 @@
         (if source-ok
           (return (q-db-read-source-fixed-entity-attr-projection projection-source projection))
           (return (result-set-error source-error))))))
+  (let [[projection projection-ok] (db-read-source-query-fixed-reverse-entity-attr-projection query-value)]
+    (when projection-ok
+      (let [clause-value query-value.clauses[0]
+            [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)]
+        (if source-ok
+          (return (q-db-read-source-fixed-reverse-entity-attr-projection projection-source projection))
+          (return (result-set-error source-error))))))
   (let [[projection projection-ok] (db-read-source-query-fixed-entity-two-attr-projection query-value)]
     (when projection-ok
       (let [clause-value query-value.clauses[0]
             [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)]
         (if source-ok
           (return (q-db-read-source-fixed-entity-two-attr-projection projection-source query-value projection))
+          (return (result-set-error source-error))))))
+  (let [[projection projection-ok] (db-read-source-query-fixed-entity-attr-value-projection query-value)]
+    (when projection-ok
+      (let [clause-value query-value.clauses[0]
+            [projection-source _ source-ok source-error] (db-read-source-query-clause-source source sources clause-value)]
+        (if source-ok
+          (return (q-db-read-source-fixed-entity-attr-value-projection projection-source query-value projection))
           (return (result-set-error source-error))))))
   (let [[projection projection-ok] (db-read-source-query-entity-attr-value-vars-projection query-value)]
     (when projection-ok
@@ -17710,9 +17745,35 @@
   value-var: string
 })
 
+(defstruct Source-Attr-Entity-Projection {
+  entity-var: string
+  attr: string
+})
+
+(defstruct Source-Entity-Pull-Projection {
+  entity-var: string
+  attr: string
+  value: Value
+  has-value: bool
+  entity-filter: Value
+  has-entity-filter: bool
+})
+
 (defstruct Source-Fixed-Entity-Attr-Projection {
   entity: u64
   attr: string
+  value-var: string
+})
+
+(defstruct Source-Fixed-Reverse-Entity-Attr-Projection {
+  entity: u64
+  attr: string
+  value-var: string
+})
+
+(defstruct Source-Fixed-Entity-Attr-Value-Projection {
+  entity: u64
+  attr-var: string
   value-var: string
 })
 
@@ -17817,8 +17878,20 @@
 (defn empty-source-attr-value-projection [] -> Source-Attr-Value-Projection
   (Source-Attr-Value-Projection {}))
 
+(defn empty-source-attr-entity-projection [] -> Source-Attr-Entity-Projection
+  (Source-Attr-Entity-Projection {}))
+
+(defn empty-source-entity-pull-projection [] -> Source-Entity-Pull-Projection
+  (Source-Entity-Pull-Projection {}))
+
 (defn empty-source-fixed-entity-attr-projection [] -> Source-Fixed-Entity-Attr-Projection
   (Source-Fixed-Entity-Attr-Projection {}))
+
+(defn empty-source-fixed-reverse-entity-attr-projection [] -> Source-Fixed-Reverse-Entity-Attr-Projection
+  (Source-Fixed-Reverse-Entity-Attr-Projection {}))
+
+(defn empty-source-fixed-entity-attr-value-projection [] -> Source-Fixed-Entity-Attr-Value-Projection
+  (Source-Fixed-Entity-Attr-Value-Projection {}))
 
 (defn empty-source-fixed-entity-two-attr-projection [] -> Source-Fixed-Entity-Two-Attr-Projection
   (Source-Fixed-Entity-Two-Attr-Projection {}))
@@ -18066,7 +18139,6 @@
               (not (= query.find[0] clause-value.e.name))
               (not (= clause-value.a.kind .Value))
               (not (= clause-value.a.value.kind .Keyword))
-              (reverse-attr? clause-value.a.value.text)
               (not (= clause-value.v.kind .Value))
               (not (= clause-value.tx-term.kind .Wildcard))
               (not (= clause-value.op-term.kind .Wildcard)))
@@ -18103,7 +18175,6 @@
     (when (or (not (= clause-value.e.kind .Var))
               (not (= clause-value.a.kind .Value))
               (not (= clause-value.a.value.kind .Keyword))
-              (reverse-attr? clause-value.a.value.text)
               (not (= clause-value.v.kind .Var))
               (not (= query.find[0] clause-value.v.name))
               (not (= clause-value.tx-term.kind .Wildcard))
@@ -18112,6 +18183,119 @@
     (return (Source-Attr-Value-Projection {attr: clause-value.a.value.text
                                            value-var: clause-value.v.name})
             true)))
+
+(defn db-read-source-query-attr-entity-projection [query: Query] -> [projection: Source-Attr-Entity-Projection, ok: bool]
+  (when (not (and (= (count query.find) 1)
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 0)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 1)
+                  (= (count query.where-steps) 1)
+                  (= query.where-steps[0].kind .Clause)))
+    (return (empty-source-attr-entity-projection) false))
+  (let [clause-value query.clauses[0]]
+    (when (or (not (= clause-value.e.kind .Var))
+              (not (= query.find[0] clause-value.e.name))
+              (not (= clause-value.a.kind .Value))
+              (not (= clause-value.a.value.kind .Keyword))
+              (not (or (= clause-value.v.kind .Var)
+                       (= clause-value.v.kind .Wildcard)))
+              (not (= clause-value.tx-term.kind .Wildcard))
+              (not (= clause-value.op-term.kind .Wildcard)))
+      (return (empty-source-attr-entity-projection) false))
+    (return (Source-Attr-Entity-Projection {entity-var: clause-value.e.name
+                                            attr: clause-value.a.value.text})
+            true)))
+
+(defn source-entity-pull-equality-filter [predicate: Predicate, entity-var: string] -> [value: Value, ok: bool]
+  (when (not (and (= predicate.op "=")
+                  (= (count predicate.terms) 2)))
+    (return (Value {}) false))
+  (let [left predicate.terms[0]
+        right predicate.terms[1]]
+    (cond
+      (and (= left.kind .Var)
+           (= left.name entity-var)
+           (= right.kind .Value))
+        (return right.value true)
+      (and (= right.kind .Var)
+           (= right.name entity-var)
+           (= left.kind .Value))
+        (return left.value true)
+      :else (return (Value {}) false))))
+
+(defn db-read-source-query-entity-pull-projection [query: Query] -> [projection: Source-Entity-Pull-Projection, ok: bool]
+  (when (not (and (or (= (count query.find) 0)
+                      (= (count query.find) 1))
+                  (= (count query.with) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.pulls) 1)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (or (= (count query.predicates) 0)
+                      (= (count query.predicates) 1))
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 1)
+                  (= (count query.where-steps) (+ 1 (count query.predicates)))
+                  (= query.where-steps[0].kind .Clause)))
+    (return (empty-source-entity-pull-projection) false))
+  (let [clause-value query.clauses[0]
+        pull-find query.pulls[0]]
+    (when (or (and (not pull-find.has-pattern-var)
+                   (not (and (= (count query.inputs) 0)
+                             (= (count query.input-specs) 0))))
+              (not (= clause-value.e.kind .Var))
+              (not (= pull-find.var clause-value.e.name))
+              (and (= (count query.find) 1)
+                   (not (= query.find[0] clause-value.e.name)))
+              (not (= clause-value.a.kind .Value))
+              (not (= clause-value.a.value.kind .Keyword))
+              (reverse-attr? clause-value.a.value.text)
+              (not (or (= clause-value.v.kind .Var)
+                       (= clause-value.v.kind .Wildcard)
+                       (= clause-value.v.kind .Value)))
+              (not (= clause-value.tx-term.kind .Wildcard))
+              (not (= clause-value.op-term.kind .Wildcard)))
+      (return (empty-source-entity-pull-projection) false))
+    (let [entity-filter (Value {})
+          has-entity-filter false]
+      (when (= (count query.predicates) 1)
+        (when (not (= query.where-steps[1].kind .Predicate))
+          (return (empty-source-entity-pull-projection) false))
+        (let [[filter-value filter-ok] (source-entity-pull-equality-filter query.predicates[0] clause-value.e.name)]
+          (when (not filter-ok)
+            (return (empty-source-entity-pull-projection) false))
+          (set! entity-filter filter-value)
+          (set! has-entity-filter true)))
+    (return (Source-Entity-Pull-Projection {entity-var: clause-value.e.name
+                                            attr: clause-value.a.value.text
+                                            value: clause-value.v.value
+                                            has-value: (= clause-value.v.kind .Value)
+                                            entity-filter: entity-filter
+                                            has-entity-filter: has-entity-filter})
+            true))))
 
 (defn db-read-source-query-filtered-entity-attr-value-projection [query: Query] -> [projection: Entity-Attr-Value-Projection, ok: bool]
   (when (not (and (= (count query.find) 2)
@@ -18214,6 +18398,87 @@
     (return (Source-Fixed-Entity-Attr-Projection {entity: entity
                                                   attr: clause-value.a.value.text
                                                   value-var: clause-value.v.name})
+            true)))
+
+(defn db-read-source-query-fixed-reverse-entity-attr-projection [query: Query] -> [projection: Source-Fixed-Reverse-Entity-Attr-Projection, ok: bool]
+  (when (not (and (= (count query.find) 1)
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 0)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 1)
+                  (= (count query.where-steps) 1)
+                  (= query.where-steps[0].kind .Clause)))
+    (return (empty-source-fixed-reverse-entity-attr-projection) false))
+  (let [clause-value query.clauses[0]
+        [entity entity-ok] (query-entity-term-literal clause-value.e)]
+    (when (or (not entity-ok)
+              (not (= clause-value.a.kind .Value))
+              (not (= clause-value.a.value.kind .Keyword))
+              (not (reverse-attr? clause-value.a.value.text))
+              (not (= clause-value.v.kind .Var))
+              (not (= query.find[0] clause-value.v.name))
+              (not (= clause-value.tx-term.kind .Wildcard))
+              (not (= clause-value.op-term.kind .Wildcard)))
+      (return (empty-source-fixed-reverse-entity-attr-projection) false))
+    (return (Source-Fixed-Reverse-Entity-Attr-Projection {entity: entity
+                                                          attr: clause-value.a.value.text
+                                                          value-var: clause-value.v.name})
+            true)))
+
+(defn db-read-source-query-fixed-entity-attr-value-projection [query: Query] -> [projection: Source-Fixed-Entity-Attr-Value-Projection, ok: bool]
+  (when (not (and (= (count query.find) 2)
+                  (= (count query.with) 0)
+                  (= (count query.inputs) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.input-specs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 0)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 1)
+                  (= (count query.where-steps) 1)
+                  (= query.where-steps[0].kind .Clause)))
+    (return (empty-source-fixed-entity-attr-value-projection) false))
+  (let [clause-value query.clauses[0]
+        [entity entity-ok] (query-entity-term-literal clause-value.e)]
+    (when (or (not entity-ok)
+              (not (= clause-value.a.kind .Var))
+              (not (= clause-value.v.kind .Var))
+              (= clause-value.a.name clause-value.v.name)
+              (not (= clause-value.tx-term.kind .Wildcard))
+              (not (= clause-value.op-term.kind .Wildcard)))
+      (return (empty-source-fixed-entity-attr-value-projection) false))
+    (when (not (or (and (= query.find[0] clause-value.a.name)
+                        (= query.find[1] clause-value.v.name))
+                   (and (= query.find[0] clause-value.v.name)
+                        (= query.find[1] clause-value.a.name))))
+      (return (empty-source-fixed-entity-attr-value-projection) false))
+    (return (Source-Fixed-Entity-Attr-Value-Projection {entity: entity
+                                                        attr-var: clause-value.a.name
+                                                        value-var: clause-value.v.name})
             true)))
 
 (defn db-read-source-query-fixed-entity-two-attr-projection [query: Query] -> [projection: Source-Fixed-Entity-Two-Attr-Projection, ok: bool]
@@ -18326,6 +18591,61 @@
                                          second-attr: second.a.value.text
                                          second-var: second.v.name})
             true)))
+
+(defn db-read-source-query-direct-operator? [query: Query] -> bool
+  (let [[_ aggregate-ok] (db-read-source-single-clause-aggregate-query query)]
+    (when aggregate-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-attr-value-entity-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-attr-value-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-attr-entity-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-entity-pull-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-fixed-entity-attr-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-fixed-reverse-entity-attr-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-fixed-entity-two-attr-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-fixed-entity-attr-value-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-entity-attr-value-vars-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-filtered-entity-attr-value-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-two-attr-entity-projection query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-entity-attr-value-projection query)]
+    (when projection-ok
+      (return true)))
+  false)
+
+(defn db-read-source-query-profile-stats [query: Query, result: Result-Set] -> Query-Stats
+  (let [stats (query-stats-empty)]
+    (set! stats.steps (count query.where-steps))
+    (set! stats.clauses (count query.clauses))
+    (set! stats.output-rows (count result.rows))
+    (when result.ok
+      (if (db-read-source-query-direct-operator? query)
+        (set! stats.source-index-scans (max 1 (count query.clauses)))
+        (do
+          (set! stats.source-index-scans (count query.clauses))
+          (set! stats.binding-materializations (count result.rows)))))
+    stats))
 
 (defn query-entity-attr-value-projection [db: DB, query: Query] -> [projection: Entity-Attr-Value-Projection, ok: bool]
   (when (not (and (= (count query.find) 2)
@@ -19081,13 +19401,22 @@
     (result-set-ok rows)))
 
 (defn q-db-read-source-entity-attr-value-projection [source: DB-Read-Source, query: Query, projection: Source-Entity-Value-Projection] -> Result-Set
-  (let [rows (make [dynamic]Result-Row)
-        [datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source projection.attr)]
-    (when (not datoms-ok)
-      (return (result-set-error datoms-error)))
-    (defer (delete-owned-datoms datoms))
-    (for [datom datoms]
-      (append-db-read-source-entity-value-projection-row! (addr rows) query projection datom.e datom.v))
+  (let [rows (make [dynamic]Result-Row)]
+    (if (reverse-attr? projection.attr)
+      (let [forward-attr (forward-attr-for-reverse projection.attr) :defer
+            [datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source forward-attr)]
+        (when (not datoms-ok)
+          (return (result-set-error datoms-error)))
+        (defer (delete-owned-datoms datoms))
+        (for [datom datoms]
+          (when (= datom.v.kind .Entity)
+            (append-db-read-source-entity-value-projection-row! (addr rows) query projection datom.v.entity (value-entity datom.e)))))
+      (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source projection.attr)]
+        (when (not datoms-ok)
+          (return (result-set-error datoms-error)))
+        (defer (delete-owned-datoms datoms))
+        (for [datom datoms]
+          (append-db-read-source-entity-value-projection-row! (addr rows) query projection datom.e datom.v))))
     (result-set-ok rows)))
 
 (defn append-db-read-source-filtered-entity-attr-value-projection-row! [rows: ^[dynamic]Result-Row, query: Query, projection: Entity-Attr-Value-Projection, entity: u64, source-value: Value]
@@ -19136,28 +19465,132 @@
     (result-set-ok rows)))
 
 (defn q-db-read-source-attr-value-entity-projection [source: DB-Read-Source, projection: Source-Attr-Value-Entity-Projection] -> Result-Set
-  (let [rows (make [dynamic]Result-Row)
-        datoms (make [dynamic]Datom)
-        values ([]Value [(value-keyword projection.attr) projection.value])
-        [scan-ok scan-error] (db-read-source-append-index-datoms! (addr datoms) source .AVET values)]
-    (when (not scan-ok)
-      (delete-owned-datoms datoms)
-      (return (result-set-error scan-error)))
-    (defer (delete-owned-datoms datoms))
-    (for [datom datoms]
-      (when (not (row-values-exist? (slice rows 0) ([]Value [(value-entity datom.e)])))
-        (append-entity-row! (addr rows) datom.e)))
+  (let [rows (make [dynamic]Result-Row)]
+    (if (reverse-attr? projection.attr)
+      (let [forward-attr (forward-attr-for-reverse projection.attr) :defer
+            child-entity: u64 0
+            child-ok false]
+        (cond
+          (= projection.value.kind .Entity)
+            (do
+              (set! child-entity projection.value.entity)
+              (set! child-ok true))
+          (= projection.value.kind .Int)
+            (do
+              (set! child-entity (u64 projection.value.int-value))
+              (set! child-ok true))
+          :else (do))
+        (when child-ok
+          (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity-attr source child-entity forward-attr)]
+            (when (not datoms-ok)
+              (return (result-set-error datoms-error)))
+            (defer (delete-owned-datoms datoms))
+            (for [datom datoms]
+              (when (= datom.v.kind .Entity)
+                (when (not (row-values-exist? (slice rows 0) ([]Value [(value-entity datom.v.entity)])))
+                  (append-entity-row! (addr rows) datom.v.entity)))))))
+      (let [datoms (make [dynamic]Datom)
+            values ([]Value [(value-keyword projection.attr) projection.value])
+            [scan-ok scan-error] (db-read-source-append-index-datoms! (addr datoms) source .AVET values)]
+        (when (not scan-ok)
+          (delete-owned-datoms datoms)
+          (return (result-set-error scan-error)))
+        (defer (delete-owned-datoms datoms))
+        (for [datom datoms]
+          (when (not (row-values-exist? (slice rows 0) ([]Value [(value-entity datom.e)])))
+            (append-entity-row! (addr rows) datom.e)))))
     (result-set-ok rows)))
 
 (defn q-db-read-source-attr-value-projection [source: DB-Read-Source, projection: Source-Attr-Value-Projection] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)]
+    (if (reverse-attr? projection.attr)
+      (let [forward-attr (forward-attr-for-reverse projection.attr) :defer
+            [datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source forward-attr)]
+        (when (not datoms-ok)
+          (return (result-set-error datoms-error)))
+        (defer (delete-owned-datoms datoms))
+        (for [datom datoms]
+          (when (= datom.v.kind .Entity)
+            (when (not (row-values-exist? (slice rows 0) ([]Value [(value-entity datom.e)])))
+              (append-entity-row! (addr rows) datom.e)))))
+      (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source projection.attr)]
+        (when (not datoms-ok)
+          (return (result-set-error datoms-error)))
+        (defer (delete-owned-datoms datoms))
+        (for [datom datoms]
+          (when (not (row-values-exist? (slice rows 0) ([]Value [datom.v])))
+            (append-distinct-single-value-row! (addr rows) (value-owned datom.v))))))
+    (result-set-ok rows)))
+
+(defn q-db-read-source-attr-entity-projection [source: DB-Read-Source, projection: Source-Attr-Entity-Projection] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)]
+    (if (reverse-attr? projection.attr)
+      (let [forward-attr (forward-attr-for-reverse projection.attr) :defer
+            [datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source forward-attr)]
+        (when (not datoms-ok)
+          (return (result-set-error datoms-error)))
+        (defer (delete-owned-datoms datoms))
+        (for [datom datoms]
+          (when (= datom.v.kind .Entity)
+            (when (not (row-values-exist? (slice rows 0) ([]Value [(value-entity datom.v.entity)])))
+              (append-entity-row! (addr rows) datom.v.entity)))))
+      (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source projection.attr)]
+        (when (not datoms-ok)
+          (return (result-set-error datoms-error)))
+        (defer (delete-owned-datoms datoms))
+        (for [datom datoms]
+          (when (not (row-values-exist? (slice rows 0) ([]Value [(value-entity datom.e)])))
+            (append-entity-row! (addr rows) datom.e)))))
+    (result-set-ok rows)))
+
+(defn source-entity-pull-datom-matches-filter? [projection: Source-Entity-Pull-Projection, datom: Datom] -> bool
+  (or (not projection.has-entity-filter)
+      (predicate-value-equal? (value-entity datom.e) projection.entity-filter)))
+
+(defn append-db-read-source-entity-pull-rows! [rows: ^[dynamic]Result-Row, seen: ^set[u64], pull-source: DB-Read-Source, query: Query, projection: Source-Entity-Pull-Projection, pattern: []Pull-Spec, datoms: []Datom, registry: []Native-Query-Fn] -> [ok: bool, error: string]
+  (for [datom datoms]
+    (when (and (source-entity-pull-datom-matches-filter? projection datom)
+               (not (set.contains? seen^ datom.e)))
+      (set.add! seen datom.e)
+      (let [[pull pull-ok pull-error] (db-read-source-pull-result-for-pattern-with-fns pull-source datom.e pattern registry)]
+        (when (not pull-ok)
+          (return false pull-error))
+        (let [values (make [dynamic]Value 0 (count query.find))
+              pulls (make [dynamic]Pull-Result 0 1)]
+          (when (= (count query.find) 1)
+            (arr.push! values (value-entity datom.e)))
+          (arr.push! pulls pull)
+          (arr.push! rows^ (Result-Row {values: values pulls: pulls}))))))
+  (return true ""))
+
+(defn q-db-read-source-entity-pull-projection [scan-source: DB-Read-Source, pull-source: DB-Read-Source, query: Query, inputs: []Query-Input, projection: Source-Entity-Pull-Projection, pull-find: Pull-Find, registry: []Native-Query-Fn] -> Result-Set
   (let [rows (make [dynamic]Result-Row)
-        [datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source projection.attr)]
-    (when (not datoms-ok)
-      (return (result-set-error datoms-error)))
-    (defer (delete-owned-datoms datoms))
-    (for [datom datoms]
-      (when (not (row-values-exist? (slice rows 0) ([]Value [datom.v])))
-        (append-distinct-single-value-row! (addr rows) (value-owned datom.v))))
+        seen (set.empty u64)
+        [pattern pattern-ok] (db-read-source-pull-find-pattern query inputs pull-find)]
+    (when (not pattern-ok)
+      (delete seen)
+      (return (result-set-error "pull pattern input must be a pull pattern")))
+    (defer (delete seen))
+    (if projection.has-value
+      (let [datoms (make [dynamic]Datom)
+            values ([]Value [(value-keyword projection.attr) projection.value])
+            [scan-ok scan-error] (db-read-source-append-index-datoms! (addr datoms) scan-source .AVET values)]
+        (when (not scan-ok)
+          (delete-owned-datoms datoms)
+          (return (result-set-error scan-error)))
+        (defer (delete-owned-datoms datoms))
+        (let [[append-ok append-error] (append-db-read-source-entity-pull-rows! (addr rows) (addr seen) pull-source query projection pattern (slice datoms 0) registry)]
+          (when (not append-ok)
+            (delete-result-rows-owned-values rows)
+            (return (result-set-error append-error)))))
+      (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr scan-source projection.attr)]
+        (when (not datoms-ok)
+          (return (result-set-error datoms-error)))
+        (defer (delete-owned-datoms datoms))
+        (let [[append-ok append-error] (append-db-read-source-entity-pull-rows! (addr rows) (addr seen) pull-source query projection pattern (slice datoms 0) registry)]
+          (when (not append-ok)
+            (delete-result-rows-owned-values rows)
+            (return (result-set-error append-error))))))
     (result-set-ok rows)))
 
 (defn q-db-read-source-fixed-entity-attr-projection [source: DB-Read-Source, projection: Source-Fixed-Entity-Attr-Projection] -> Result-Set
@@ -19169,6 +19602,49 @@
     (for [datom datoms]
       (when (not (row-values-exist? (slice rows 0) ([]Value [datom.v])))
         (append-distinct-single-value-row! (addr rows) (value-owned datom.v))))
+    (result-set-ok rows)))
+
+(defn q-db-read-source-fixed-reverse-entity-attr-projection [source: DB-Read-Source, projection: Source-Fixed-Reverse-Entity-Attr-Projection] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)
+        forward-attr (forward-attr-for-reverse projection.attr) :defer
+        [datoms datoms-ok datoms-error] (db-read-source-datoms-by-reverse-entity-attr source projection.entity forward-attr)]
+    (when (not datoms-ok)
+      (return (result-set-error datoms-error)))
+    (defer (delete-owned-datoms datoms))
+    (for [datom datoms]
+      (when (not (row-values-exist? (slice rows 0) ([]Value [(value-entity datom.e)])))
+        (append-entity-row! (addr rows) datom.e)))
+    (result-set-ok rows)))
+
+(defn db-read-source-fixed-entity-attr-value-projection-value [projection: Source-Fixed-Entity-Attr-Value-Projection, datom: Datom, name: string] -> Value
+  (cond
+    (= name projection.attr-var) (value-keyword datom.a)
+    (= name projection.value-var) datom.v
+    :else (Value {})))
+
+(defn db-read-source-fixed-entity-attr-value-projection-owned-value [projection: Source-Fixed-Entity-Attr-Value-Projection, datom: Datom, name: string] -> Value
+  (cond
+    (= name projection.attr-var) (value-keyword (string-owned datom.a))
+    (= name projection.value-var) (value-owned datom.v)
+    :else (Value {})))
+
+(defn append-db-read-source-fixed-entity-attr-value-projection-row! [rows: ^[dynamic]Result-Row, query: Query, projection: Source-Fixed-Entity-Attr-Value-Projection, datom: Datom]
+  (let [first-value (db-read-source-fixed-entity-attr-value-projection-value projection datom query.find[0])
+        second-value (db-read-source-fixed-entity-attr-value-projection-value projection datom query.find[1])
+        dedupe-values ([]Value [first-value second-value])]
+    (when (not (row-values-exist? (slice rows^ 0) dedupe-values))
+      (append-two-value-row! rows
+                             (db-read-source-fixed-entity-attr-value-projection-owned-value projection datom query.find[0])
+                             (db-read-source-fixed-entity-attr-value-projection-owned-value projection datom query.find[1])))))
+
+(defn q-db-read-source-fixed-entity-attr-value-projection [source: DB-Read-Source, query: Query, projection: Source-Fixed-Entity-Attr-Value-Projection] -> Result-Set
+  (let [rows (make [dynamic]Result-Row)
+        [datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity source projection.entity)]
+    (when (not datoms-ok)
+      (return (result-set-error datoms-error)))
+    (defer (delete-owned-datoms datoms))
+    (for [datom datoms]
+      (append-db-read-source-fixed-entity-attr-value-projection-row! (addr rows) query projection datom))
     (result-set-ok rows)))
 
 (defn append-db-read-source-fixed-entity-two-attr-projection-row! [rows: ^[dynamic]Result-Row, query: Query, projection: Source-Fixed-Entity-Two-Attr-Projection, first-value-source: Value, second-value-source: Value]
