@@ -95,11 +95,24 @@ Todo:
   collection values. Same-transaction lookup refs and identity tempid upserts
   stay source-native for shared and SQLite Store-DB overlays. Same-transaction
   ref schema plus reverse ref add/retract forms stay source-native for shared
-  and SQLite Store-DB overlays. Source transaction functions work for `with`
-  reports and `db-with` on shared/SQLite Store-DB snapshots and overlay DB
-  values. Chained overlays preserve per-transaction tx identity by publishing
-  multi-transaction datom overlays when a `with` is applied to an existing
-  overlay DB value.
+  and SQLite Store-DB overlays. Existing-schema reverse refs with lookup-ref
+  and vector values, plus reverse refs with nested map values, stay
+  source-native for shared and SQLite Store-DB overlays. `db-with` over shared
+  and SQLite Store-DB snapshots stays source-native for `:db.fn/retractAttribute`,
+  `:db/retractEntity`, and `:db/cas`. Ref-valued string tempids and negative
+  int tempids stay source-native for shared and SQLite Store-DB overlays,
+  including tempid ref values through ref attrs declared in the same
+  transaction. `:db/current-tx` in value and entity positions stays
+  source-native for shared and SQLite Store-DB overlays. Same-transaction
+  `:db/ident` declarations can be referenced as entity ids and ref values by
+  later tx forms without leaving the source-native path. Unique-identity tempid
+  upserts where the unique value is a ref tempid that resolves through another
+  identity upsert also stay source-native for shared and SQLite Store-DB
+  overlays.
+  Source transaction functions work for `with` reports and `db-with` on
+  shared/SQLite Store-DB snapshots and overlay DB values. Chained overlays
+  preserve per-transaction tx identity by publishing multi-transaction datom
+  overlays when a `with` is applied to an existing overlay DB value.
 - Reuse the existing source-aware transaction resolver from shared storage:
   `shared-write-state-resolve-tx-data`, `resolve-shared-source-tx-segment!`,
   and `tx-ops-overlay-db-read-source`.
@@ -131,6 +144,10 @@ Todo:
   append-heavy workloads.
 - Keep the transaction engine producing the metadata storage needs instead of
   making storage adapters recompute append-only/new-entity decisions.
+- Keep the live shared write-state metadata incremental. Ordinary non-schema
+  commits now advance cached tx/entity counters without cloning/scanning schema
+  metadata from the resident `db-after`; schema-changing commits still refresh
+  from the resident DB until the write-state owns incremental schema updates.
 - Decide which shared chunk/page reuse primitives are broadly useful and which
   should remain benchmark-only experiments.
 - Preserve resident-array publication as a compatibility/small-DB strategy.
