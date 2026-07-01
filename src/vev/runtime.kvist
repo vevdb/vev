@@ -9585,6 +9585,7 @@
       (= datom.a ":db/valueType")
       (= datom.a ":db/cardinality")
       (= datom.a ":db/unique")
+      (= datom.a ":db/tupleAttrs")
       (= datom.a ":db/isComponent")))
 
 (defn datom-add-op [datom: Datom] -> Tx-Op
@@ -9674,7 +9675,6 @@
         ordered-append-only-ok (and (not expanded-schema-changed)
                                     (append-only-ordered-new-entity-ops-eligible? before (slice expanded-ops 0)))
         compacted-ops (compact-redundant-add-ops-with-ordered (slice expanded-ops 0) ordered-append-only-ok)
-        after-datoms (clone-datoms before.datoms)
         tx-data (make [dynamic]Datom 0 (count compacted-ops))
         seen-ea (set.empty string)
         start-index (count before.datoms)
@@ -9687,50 +9687,50 @@
       (when (not valid)
         (delete expanded-ops)
         (delete compacted-ops)
-        (delete after-datoms)
         (delete tx-data)
         (return (failed-tx-apply-result error))))
-    (if append-only-ok
-      (for [op compacted-ops]
-        (let [datom (Datom {e: op.e
-                            a: op.a
-                            v: op.v
-                            tx: tx
-                            added: true})]
-          (arr.push! after-datoms (datom-owned datom))
-          (arr.push! tx-data (datom-owned datom))))
-      (for [op compacted-ops]
-        (let [apply-op (or (= op.kind .Add)
-                           (current-op-value-exists-in-log? (slice after-datoms 0) op))]
-          (when apply-op
-            (if schema-changed
-              (append-cardinality-one-retractions-conservative! before seen-ea (addr after-datoms) (addr tx-data) op tx)
-              (append-cardinality-one-retractions! before seen-ea (addr after-datoms) (addr tx-data) op tx))
-            (let [datom (Datom {e: op.e
-                                a: op.a
-                                v: op.v
-                                tx: tx
-                                added: (= op.kind .Add)})]
-              (arr.push! after-datoms (datom-owned datom))
-              (arr.push! tx-data (datom-owned datom))))
-          (when (= op.kind .Add)
-            (set.add! seen-ea (entity-attr-key op.e op.a))))))
-    (let [new-entities-after-existing (and append-only-ok
-                                           (added-entities-after-existing? before (slice after-datoms 0) start-index))
-          publish-plan (if append-only-ok
-                         (tx-publish-plan-for-append (slice tx-data 0) start-index new-entities-after-existing)
-                         (tx-publish-plan-empty start-index (count tx-data)))]
-      (delete expanded-ops)
-      (delete compacted-ops)
-      (Tx-Apply-Result {ok: true
-                        error: ""
-                        after-datoms: after-datoms
-                        tx-data: tx-data
-                        tx: tx
-                        start-index: start-index
-                        append-only: append-only-ok
-                        new-entities-after-existing: new-entities-after-existing
-                        publish-plan: publish-plan}))))
+    (let [after-datoms (clone-datoms before.datoms)]
+      (if append-only-ok
+        (for [op compacted-ops]
+          (let [datom (Datom {e: op.e
+                              a: op.a
+                              v: op.v
+                              tx: tx
+                              added: true})]
+            (arr.push! after-datoms (datom-owned datom))
+            (arr.push! tx-data (datom-owned datom))))
+        (for [op compacted-ops]
+          (let [apply-op (or (= op.kind .Add)
+                             (current-op-value-exists-in-log? (slice after-datoms 0) op))]
+            (when apply-op
+              (if schema-changed
+                (append-cardinality-one-retractions-conservative! before seen-ea (addr after-datoms) (addr tx-data) op tx)
+                (append-cardinality-one-retractions! before seen-ea (addr after-datoms) (addr tx-data) op tx))
+              (let [datom (Datom {e: op.e
+                                  a: op.a
+                                  v: op.v
+                                  tx: tx
+                                  added: (= op.kind .Add)})]
+                (arr.push! after-datoms (datom-owned datom))
+                (arr.push! tx-data (datom-owned datom))))
+            (when (= op.kind .Add)
+              (set.add! seen-ea (entity-attr-key op.e op.a))))))
+      (let [new-entities-after-existing (and append-only-ok
+                                             (added-entities-after-existing? before (slice after-datoms 0) start-index))
+            publish-plan (if append-only-ok
+                           (tx-publish-plan-for-append (slice tx-data 0) start-index new-entities-after-existing)
+                           (tx-publish-plan-empty start-index (count tx-data)))]
+        (delete expanded-ops)
+        (delete compacted-ops)
+        (Tx-Apply-Result {ok: true
+                          error: ""
+                          after-datoms: after-datoms
+                          tx-data: tx-data
+                          tx: tx
+                          start-index: start-index
+                          append-only: append-only-ok
+                          new-entities-after-existing: new-entities-after-existing
+                          publish-plan: publish-plan})))))
 
 (defn transact-ops-with-tempids-from-before [conn: ^Conn, before: DB, ops: []Tx-Op, tx-meta: []Tx-Meta, tempids: [dynamic]Tempid] -> Tx-Report
   (let [applied (apply-resolved-ops-to-datoms before ops conn^.next-tx)]

@@ -101,9 +101,10 @@ source-backed renderer, and the storage architecture test now covers the same
 nested direct pull shape through a retained read-only SQLite `Store-DB`, plus
 querying a retained durable handle after closing its original store. Immutable
 host `with`/`db-with` also routes through `Store-DB` now. For non-resident
-snapshots this currently materializes the source into a resident compatibility
-DB before applying the existing transaction engine; a source-native write-state
-overlay remains the production architecture.
+snapshots the report path first resolves transactions through source-backed
+write-state overlays. Supported shapes return retained shared/SQLite overlay DB
+values; unsupported source-backed shapes fail explicitly instead of silently
+rebuilding a resident compatibility DB.
 
 There are now two write modes:
 
@@ -412,9 +413,10 @@ them while still reading the original durable basis.
 storage-neutral DB handles. For source-resolvable shared and SQLite snapshots,
 it now returns another source/overlay `Store-DB` value and leaves the original
 durable/shared snapshot untouched. Unsupported or compatibility-only shapes can
-still fall back to resident materialization, but common nested-map,
-cardinality-many, lookup-ref, upsert, and source transaction-function DB-value
-paths stay source-backed.
+return a public failed report or, for the legacy no-error helper, retain the
+original DB value; they do not silently publish a resident clone. Common
+nested-map, cardinality-many, lookup-ref, upsert, CAS, retract, and source
+transaction-function DB-value paths stay source-backed.
 The write benchmark now has a `shared-store-db-heavy` workload over this same
 storage-neutral connection/snapshot API. It provides the current host-handle
 acceptance check for the shared publish path, and early numbers match the raw

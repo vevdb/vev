@@ -3086,6 +3086,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (db-read-source-materialize-db source)))
 
 (defn with-store-db-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> Tx-Report
+  (when (source-backed-store-db? snapshot)
+    (return (failed-tx-report
+              (build-db (make [dynamic]Datom))
+              "with-store-db-tx-data is resident-only; use with-store-db-report-tx-data for source-backed Store-DB values")))
   (let [[db db-ok db-error] (store-db-materialize-db snapshot)]
     (when (not db-ok)
       (return (failed-tx-report db db-error)))
@@ -3099,6 +3103,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (return report)))
       (when (not ok)
         (return (failed-store-tx-report snapshot^ error)))))
+  (when (source-backed-store-db? snapshot)
+    (return (failed-store-tx-report snapshot^ "transaction shape requires resident materialization for source-backed Store-DB")))
   (let [resident-report (with-store-db-tx-data snapshot tx-data)
         before (Store-DB {kind: .Resident resident: (clone-db resident-report.db-before)})
         after (Store-DB {kind: .Resident resident: (clone-db resident-report.db-after)})
@@ -3148,6 +3154,13 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (when overlay-ok
         (when overlay-used
           (return overlay-snapshot)))))
+  (when (source-backed-store-db? snapshot)
+    (let [report (with-store-db-report-tx-data snapshot tx-data)
+          out (if report.ok
+                (retain-store-db report.db-after)
+                (retain-store-db report.db-before))]
+      (delete-store-tx-report report)
+      (return out)))
   (let [report (with-store-db-tx-data snapshot tx-data)]
     (case snapshot^.kind
       .SQLite-Snapshot
@@ -3185,6 +3198,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (= snapshot^.kind .SQLite-Datom-Overlay)))
 
 (defn with-store-db-text [snapshot: ^Store-DB, text: string] -> Tx-Report
+  (when (source-backed-store-db? snapshot)
+    (return (failed-tx-report
+              (build-db (make [dynamic]Datom))
+              "with-store-db-text is resident-only; use with-store-db-report-text for source-backed Store-DB values")))
   (let [tx-data (make [dynamic]Tx-Data) :defer
         [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
     (when (not parse-ok)

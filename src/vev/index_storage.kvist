@@ -790,11 +790,114 @@
       (return true)))
   false)
 
-(defn shared-write-state-advance-with-apply! [state: ^Shared-Write-State, after: DB, applied: Tx-Apply-Result]
+(defn shared-write-state-schema-attr-from-applied-datoms [datoms: []Datom, entity: u64] -> [attr: string, ok: bool]
+  (for [datom datoms]
+    (when (and datom.added
+               (= datom.e entity)
+               (= datom.a ":db/ident")
+               (= datom.v.kind .Keyword))
+      (return datom.v.text true)))
+  (return "" false))
+
+(defn shared-write-state-schema-attr-for-datom [source: DB-Read-Source, datoms: []Datom, entity: u64] -> [attr: string, ok: bool, owned: bool]
+  (let [[local local-ok] (shared-write-state-schema-attr-from-applied-datoms datoms entity)]
+    (when local-ok
+      (return local true false)))
+  (let [[source-attr source-ok source-error] (db-read-source-schema-ident-for-entity source entity)]
+    (when (not source-ok)
+      (when (not (= source-error ""))
+        (delete source-error))
+      (return "" false false))
+    (return source-attr true true)))
+
+(defn shared-write-state-add-schema-ref! [state: ^Shared-Write-State, attr: string]
+  (when (not (set.contains? state^.schema-ref attr))
+    (set.add! state^.schema-ref (string-owned attr))))
+
+(defn shared-write-state-add-schema-unique! [state: ^Shared-Write-State, attr: string, identity: bool]
+  (when (not (set.contains? state^.schema-unique attr))
+    (set.add! state^.schema-unique (string-owned attr)))
+  (when (and identity
+             (not (set.contains? state^.schema-unique-identity attr)))
+    (set.add! state^.schema-unique-identity (string-owned attr))))
+
+(defn shared-write-state-sync-schema-attr-from-after! [state: ^Shared-Write-State, after: DB, attr: string]
+  (if (schema-ref? after attr)
+    (shared-write-state-add-schema-ref! state attr)
+    (set.remove! state^.schema-ref attr))
+  (if (schema-unique? after attr)
+    (shared-write-state-add-schema-unique! state attr (schema-unique-identity? after attr))
+    (do
+      (set.remove! state^.schema-unique attr)
+      (set.remove! state^.schema-unique-identity attr)))
+  (when (and (schema-unique? after attr)
+             (not (schema-unique-identity? after attr)))
+    (set.remove! state^.schema-unique-identity attr)))
+
+(defn shared-write-state-apply-schema-datom-incremental! [state: ^Shared-Write-State, source: DB-Read-Source, after: DB, datoms: []Datom, datom: Datom] -> bool
+  (when (not (datom-modifies-validation-schema? datom))
+    (return true))
+  (when (not datom.added)
+    (let [[attr attr-ok attr-owned] (shared-write-state-schema-attr-for-datom source datoms datom.e)]
+      (when (not attr-ok)
+        (return false))
+      (shared-write-state-sync-schema-attr-from-after! state after attr)
+      (when (or (= datom.a ":db/valueType")
+                (= datom.a ":db/tupleAttrs"))
+        (set! state^.has-tuple-schema (db-has-tuple-schema? after)))
+      (when attr-owned
+        (delete attr))
+      (return true)))
+  (cond
+    (= datom.a ":db/ident")
+      true
+    (= datom.a ":db/valueType")
+      (let [[attr attr-ok attr-owned] (shared-write-state-schema-attr-for-datom source datoms datom.e)]
+        (when (not attr-ok)
+          (return false))
+        (when (= datom.v.kind .Keyword)
+          (when (= datom.v.text ":db.type/ref")
+            (shared-write-state-add-schema-ref! state attr))
+          (when (= datom.v.text ":db.type/tuple")
+            (set! state^.has-tuple-schema true)))
+        (when attr-owned
+          (delete attr))
+        true)
+    (= datom.a ":db/unique")
+      (let [[attr attr-ok attr-owned] (shared-write-state-schema-attr-for-datom source datoms datom.e)]
+        (when (not attr-ok)
+          (return false))
+        (when (and (= datom.v.kind .Keyword)
+                   (or (= datom.v.text ":db.unique/value")
+                       (= datom.v.text ":db.unique/identity")))
+          (shared-write-state-add-schema-unique! state attr (= datom.v.text ":db.unique/identity")))
+        (when attr-owned
+          (delete attr))
+        true)
+    (= datom.a ":db/tupleAttrs")
+      (do
+        (set! state^.has-tuple-schema true)
+        true)
+    (= datom.a ":db/cardinality")
+      true
+    (= datom.a ":db/isComponent")
+      true
+    :else
+      false))
+
+(defn shared-write-state-advance-schema-incremental! [state: ^Shared-Write-State, source: DB-Read-Source, after: DB, datoms: []Datom] -> bool
+  (for [datom datoms]
+    (when (not (shared-write-state-apply-schema-datom-incremental! state source after datoms datom))
+      (return false)))
+  true)
+
+(defn shared-write-state-advance-with-apply! [state: ^Shared-Write-State, source: DB-Read-Source, after: DB, applied: Tx-Apply-Result]
   (set! state^.conn.db after)
   (set! state^.conn.next-tx (+ state^.conn.next-tx 1))
   (if (shared-write-state-datoms-modify-schema? (slice applied.tx-data 0))
-    (shared-write-state-refresh-from-current! state)
+    (if (shared-write-state-advance-schema-incremental! state source after (slice applied.tx-data 0))
+      (shared-write-state-advance-next-entity-from-datoms! state (slice applied.tx-data 0))
+      (shared-write-state-refresh-from-current! state))
     (shared-write-state-advance-next-entity-from-datoms! state (slice applied.tx-data 0))))
 
 (defn shared-write-state-refresh-from-current! [state: ^Shared-Write-State]
@@ -1107,10 +1210,10 @@
       (and data.has-ident
            (shared-write-state-attr-declared-in-tx? declared data.ident))))
 
-(defn shared-write-state-source-simple-mixed-schema-tx-data? [state: ^Shared-Write-State, tx-data: []Tx-Data] -> bool
+(defn shared-write-state-source-simple-mixed-schema-tx-data? [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data] -> bool
   (when (= (count tx-data) 0)
     (return false))
-  (when (shared-write-state-source-simple-has-intermediate-lookup-target? state tx-data)
+  (when (shared-write-state-source-simple-has-intermediate-lookup-target? state source tx-data)
     (return false))
   (when (not (shared-write-state-source-simple-value-tempids-have-entities? tx-data))
     (return false))
@@ -1271,15 +1374,28 @@
            (shared-write-state-schema-fact-before-index? tx-data attr ":db/unique" data-index))
        (shared-write-state-tx-has-local-lookup-add? tx-data attr value)))
 
-(defn shared-write-state-source-simple-has-intermediate-lookup-target? [state: ^Shared-Write-State, tx-data: []Tx-Data] -> bool
+(defn shared-write-state-source-simple-lookup-resolves? [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data, attr: string, value: Value, data-index: int] -> bool
+  (when (shared-write-state-same-tx-lookup-ref-source-simple? state tx-data attr value data-index)
+    (return true))
+  (when (not (or (shared-write-state-schema-unique? state attr)
+                 (shared-write-state-schema-fact-before-index? tx-data attr ":db/unique" data-index)))
+    (return false))
+  (let [[_ lookup-ok lookup-error] (db-read-source-resolve-lookup-ref source attr value)]
+    (and lookup-ok (= lookup-error ""))))
+
+(defn shared-write-state-source-simple-has-intermediate-lookup-target? [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data] -> bool
   (for [data index tx-data]
     (when (and data.has-lookup-ref
                (shared-write-state-tx-adds-attr? tx-data data.lookup-attr)
-               (not (shared-write-state-same-tx-lookup-ref-source-simple? state tx-data data.lookup-attr data.lookup-value index)))
+               (not (shared-write-state-source-simple-lookup-resolves? state source tx-data data.lookup-attr data.lookup-value index)))
       (return true))
     (when (and data.has-value-lookup-ref
                (shared-write-state-tx-adds-attr? tx-data data.value-lookup-attr)
-               (not (shared-write-state-same-tx-lookup-ref-source-simple? state tx-data data.value-lookup-attr data.value-lookup-value index)))
+               (not (shared-write-state-source-simple-lookup-resolves? state source tx-data data.value-lookup-attr data.value-lookup-value index)))
+      (return true))
+    (when (and data.has-expected-lookup-ref
+               (shared-write-state-tx-adds-attr? tx-data data.expected-lookup-attr)
+               (not (shared-write-state-source-simple-lookup-resolves? state source tx-data data.expected-lookup-attr data.expected-lookup-value index)))
       (return true)))
   false)
 
@@ -1436,8 +1552,8 @@
         (set! next (+ data.e 1))))
     next))
 
-(defn shared-write-state-source-simple-tx-data? [state: ^Shared-Write-State, tx-data: []Tx-Data] -> bool
-  (when (shared-write-state-source-simple-has-intermediate-lookup-target? state tx-data)
+(defn shared-write-state-source-simple-tx-data? [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data] -> bool
+  (when (shared-write-state-source-simple-has-intermediate-lookup-target? state source tx-data)
     (return false))
   (when (not (shared-write-state-source-simple-value-tempids-have-entities? tx-data))
     (return false))
@@ -1987,7 +2103,7 @@
 
 (defn shared-write-state-resolve-source-cas-expected [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data, ops: []Tx-Op, data: Tx-Data, tempid-index: (ptr (map string u64)), tempids: ^[dynamic]Tempid, next-e: ^u64] -> [resolved: Value, ok: bool, error: string]
   (when data.has-expected-lookup-ref
-    (when (not (shared-write-state-schema-ref-target? state data.a))
+    (when (not (shared-write-state-schema-ref-target-for-tx? state tx-data data.a))
       (return (value-lookup-ref-vector data.expected-lookup-attr data.expected-lookup-value) true ""))
     (let [[lookup-e lookup-ok lookup-error] (shared-write-state-resolve-lookup-ref-for-tx state source tx-data ops tempid-index tempids next-e data.expected-lookup-attr data.expected-lookup-value)]
       (if lookup-ok
@@ -2014,7 +2130,14 @@
       (delete-owned-datoms datoms)
       (return out true ""))))
 
-(defn shared-write-state-source-cas-expected-matches? [source: DB-Read-Source, entity: u64, attr: string, expected: Value] -> [matches: bool, ok: bool, error: string]
+(defn shared-write-state-source-cas-expected-matches? [source: DB-Read-Source, ops: []Tx-Op, entity: u64, attr: string, expected: Value] -> [matches: bool, ok: bool, error: string]
+  (let [[op-value op-found op-retracted] (shared-write-state-latest-op-value ops entity attr)]
+    (when op-retracted
+      (return (= expected.kind .Nil) true ""))
+    (when op-found
+      (let [matches (value-equal? op-value expected)]
+        (delete-owned-value op-value)
+        (return matches true ""))))
   (if (= expected.kind .Nil)
     (let [[exists exists-ok exists-error] (shared-write-state-source-current-attr-exists? source entity attr)]
       (return (not exists) exists-ok exists-error))
@@ -2131,7 +2254,7 @@
                                     ops: resolved-ops
                                     tx-meta: resolved-meta
                                     tempids: resolved-tempids})))
-            (let [[matches matches-ok matches-error] (shared-write-state-source-cas-expected-matches? source e data.a expected)]
+            (let [[matches matches-ok matches-error] (shared-write-state-source-cas-expected-matches? source (slice resolved-ops 0) e data.a expected)]
               (when (not matches-ok)
                 (return (Resolved-Tx {ok: false
                                       error: matches-error
@@ -2189,10 +2312,10 @@
   (when (shared-write-state-source-simple-schema-tx-data? tx-data)
     (shared-write-state-note-source-resolve! state)
     (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
-  (when (shared-write-state-source-simple-mixed-schema-tx-data? state tx-data)
+  (when (shared-write-state-source-simple-mixed-schema-tx-data? state source tx-data)
     (shared-write-state-note-source-resolve! state)
     (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
-  (when (shared-write-state-source-simple-tx-data? state tx-data)
+  (when (shared-write-state-source-simple-tx-data? state source tx-data)
     (shared-write-state-note-source-resolve! state)
     (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
   (shared-write-state-note-resident-fallback! state)
@@ -2205,10 +2328,10 @@
   (when (shared-write-state-source-simple-schema-tx-data? tx-data)
     (shared-write-state-note-source-resolve! state)
     (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
-  (when (shared-write-state-source-simple-mixed-schema-tx-data? state tx-data)
+  (when (shared-write-state-source-simple-mixed-schema-tx-data? state source tx-data)
     (shared-write-state-note-source-resolve! state)
     (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
-  (when (shared-write-state-source-simple-tx-data? state tx-data)
+  (when (shared-write-state-source-simple-tx-data? state source tx-data)
     (shared-write-state-note-source-resolve! state)
     (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
   (when (shared-write-state-source-tx-data-needs-expansion? tx-data)
@@ -2220,10 +2343,10 @@
                               tx-meta: (make [dynamic]Tx-Meta)
                               tempids: (make [dynamic]Tempid)})))
       (defer (delete expanded))
-      (when (shared-write-state-source-simple-tx-data? state (slice expanded 0))
+      (when (shared-write-state-source-simple-tx-data? state source (slice expanded 0))
         (shared-write-state-note-source-resolve! state)
         (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source (slice expanded 0))))
-      (when (shared-write-state-source-simple-mixed-schema-tx-data? state (slice expanded 0))
+      (when (shared-write-state-source-simple-mixed-schema-tx-data? state source (slice expanded 0))
         (shared-write-state-note-source-resolve! state)
         (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source (slice expanded 0))))))
   (Resolved-Tx {ok: false
@@ -2658,7 +2781,7 @@
           (delete-resolved-tx-after-tempids-moved resolved)
           (when (not report.append-only)
             (delete-shared-db-snapshot append-snapshot))
-          (shared-write-state-advance-with-apply! (addr conn^.write) after applied)
+          (shared-write-state-advance-with-apply! (addr conn^.write) source after applied)
           (delete-shared-db-snapshot conn^.snapshot)
           (set! conn^.snapshot next-snapshot)
           (shared-write-state-notify! (addr conn^.write) report)
@@ -2687,6 +2810,7 @@
 (defn shared-conn-transact-with-source-string-fns [conn: ^Shared-Conn, tx-data: []Tx-Data, registry: []Tx-Fn-Source-String] -> Tx-Report
   (let [before (shared-write-state-before-db (addr conn^.write))
         tx (shared-write-state-next-tx (addr conn^.write))
+        source (shared-conn-read-source conn)
         [duplicate-ident has-duplicate] (tx-fn-source-string-duplicate-ident registry)
         ops (make [dynamic]Tx-Op)
         tx-meta (make [dynamic]Tx-Meta)
@@ -2696,11 +2820,10 @@
       (return (failed-source-registered-tx before ops tx-meta tempids segment (fmt.tprintf "duplicate transaction fn registration: %s" duplicate-ident))))
     (for [data tx-data]
       (when (= data.op ":db.fn/call-ident")
-        (let [base-source (shared-conn-read-source conn)
-              [segment-ok segment-error] (resolve-shared-source-tx-segment! (addr conn^.write) base-source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+        (let [[segment-ok segment-error] (resolve-shared-source-tx-segment! (addr conn^.write) source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
           (when (not segment-ok)
             (return (failed-source-registered-tx before ops tx-meta tempids segment segment-error)))
-          (let [current-source (tx-ops-overlay-db-read-source (addr base-source) (addr ops) tx)
+          (let [current-source (tx-ops-overlay-db-read-source (addr source) (addr ops) tx)
                 [fn-index fn-ok] (tx-fn-source-string-index registry data.ident)]
             (when (not fn-ok)
               (return (failed-source-registered-tx before ops tx-meta tempids segment "transaction fn not registered")))
@@ -2714,8 +2837,7 @@
                   (return (failed-source-registered-tx before ops tx-meta tempids segment result-error)))))))
         (continue))
       (arr.push! segment data))
-    (let [tail-source (shared-conn-read-source conn)
-          [tail-ok tail-error] (resolve-shared-source-tx-segment! (addr conn^.write) tail-source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+    (let [[tail-ok tail-error] (resolve-shared-source-tx-segment! (addr conn^.write) source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
       (when (not tail-ok)
         (return (failed-source-registered-tx before ops tx-meta tempids segment tail-error))))
     (delete segment)
@@ -2740,7 +2862,7 @@
           (delete tx-meta)
           (when (not report.append-only)
             (delete-shared-db-snapshot append-snapshot))
-          (shared-write-state-advance-with-apply! (addr conn^.write) after applied)
+          (shared-write-state-advance-with-apply! (addr conn^.write) source after applied)
           (delete-shared-db-snapshot conn^.snapshot)
           (set! conn^.snapshot next-snapshot)
           (shared-write-state-notify! (addr conn^.write) report)
@@ -2774,7 +2896,7 @@
           (delete-resolved-tx-after-tempids-moved resolved)
           (when (not live-report.append-only)
             (delete-shared-db-snapshot append-snapshot))
-          (shared-write-state-advance-with-apply! (addr conn^.write) after applied)
+          (shared-write-state-advance-with-apply! (addr conn^.write) source after applied)
           (delete-shared-db-snapshot conn^.snapshot)
           (set! conn^.snapshot next-snapshot)
           (shared-write-state-notify! (addr conn^.write) live-report)

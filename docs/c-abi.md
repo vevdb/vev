@@ -699,8 +699,9 @@ vev_conn_t derived = vev_conn_from_db(next_db);
 handles. `vev_tx_report_value` gives a borrowed typed `vev_value_t` map for the
 report; release the handle with `vev_tx_report_free`. The older
 `vev_transact_edn` and `vev_with_edn` string helpers remain useful for quick
-debugging. `vev_db_with_edn` returns a new owned DB handle. The source DB is not
-mutated.
+debugging. `vev_db_with_edn` returns a new owned DB handle for a successful
+immutable transaction and returns null if the transaction fails or cannot be
+published for the source-backed DB value. The source DB is not mutated.
 
 ## Transaction Report Listeners
 

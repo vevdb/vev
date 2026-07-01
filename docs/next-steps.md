@@ -94,9 +94,23 @@ Todo:
 
 - Continue replacing `with-store-db-*` / `db-with-store-db-*` fallback paths
   that still call `store-db-materialize-db` for unsupported transaction shapes.
+  Source-backed `with` reports now fail explicitly instead of silently
+  rebuilding a resident DB when the source resolver cannot publish an overlay;
+  remaining work is to either add source support for those rejected shapes or
+  keep the public error if the shape is intentionally unsupported. The older
+  resident-shaped `with-store-db-text` / `with-store-db-tx-data` helpers now
+  reject source-backed `Store-DB` values directly and point callers at the
+  storage-neutral report helpers instead of materializing a resident `Tx-Report`.
 - Keep current shared and SQLite `db-with-store-db-*` handle behavior: source
   DB values should publish another source/overlay `Store-DB`, not a resident
-  clone.
+  clone. C ABI `vev_db_with_edn` and typed builder `vev_tx_db_with` now derive
+  the returned DB handle from the storage-neutral `with` report path and return
+  null on failed or unsupported source-backed reports instead of using the
+  legacy no-error materializing helper. The legacy no-error `db-with-store-db-*`
+  helper now also routes source-backed snapshots through the checked source
+  report path after the direct append/overlay fast paths; unsupported
+  source-backed shapes retain the original DB value instead of silently
+  materializing a resident clone.
 - Keep direct source-native `db-with` fast paths limited to shapes whose
   current-index effects are represented in the source overlay.
 - Keep source transaction-function `Store-DB` report variants on the
@@ -124,9 +138,13 @@ Todo:
   upserts where the unique value is a ref tempid that resolves through another
   identity upsert also stay source-native for shared and SQLite Store-DB
   overlays. CAS expected lookup refs now resolve through earlier
-  same-transaction source-overlay writes. Overlay publication also preserves
-  cardinality-one replacement semantics inside the overlay while respecting
-  cardinality-many schema declared earlier in the same transaction.
+  same-transaction source-overlay writes, same-transaction ref schema, and
+  source-resolvable lookup refs even when the lookup attr is also written
+  elsewhere in the transaction. CAS validation reads prior resolved overlay ops
+  before falling back to the durable source, matching resident transaction
+  ordering more closely. Overlay publication also preserves cardinality-one
+  replacement semantics inside the overlay while respecting cardinality-many
+  schema declared earlier in the same transaction.
   Source transaction functions work for `with` reports and `db-with` on
   shared/SQLite Store-DB snapshots and overlay DB values. Chained overlays
   preserve per-transaction tx identity by publishing multi-transaction datom
@@ -162,10 +180,21 @@ Todo:
   append-heavy workloads.
 - Keep the transaction engine producing the metadata storage needs instead of
   making storage adapters recompute append-only/new-entity decisions.
+- Keep whole-DB datom copying out of transaction paths that have not yet
+  validated. Transaction application now delays cloning the resident datom log
+  until after operation validation succeeds; failed writes should not pay the
+  publication copy cost.
 - Keep the live shared write-state metadata incremental. Ordinary non-schema
-  commits now advance cached tx/entity counters without cloning/scanning schema
-  metadata from the resident `db-after`; schema-changing commits still refresh
-  from the resident DB until the write-state owns incremental schema updates.
+  commits advance cached tx/entity counters without cloning/scanning schema
+  metadata from the resident `db-after`. Same-transaction schema declaration
+  additions and additions to schema entities that already have `:db/ident` in
+  the source now update cached ref, unique, unique-identity, tuple-schema, tx,
+  and entity metadata incrementally. Schema retractions for identifiable schema
+  attrs now sync only the affected cached ref/unique/unique-identity/tuple flags
+  from the post-transaction DB. Schema facts whose attr identity cannot be
+  resolved from the tx/source still fall back to refreshing from the resident
+  `db-after` until the write-state owns enough metadata to update those cases
+  without a full scan.
 - Decide which shared chunk/page reuse primitives are broadly useful and which
   should remain benchmark-only experiments.
 - Preserve resident-array publication as a compatibility/small-DB strategy.
@@ -210,9 +239,9 @@ Todo:
   for retainable shared, SQLite, and overlay read sources, so host callbacks can
   query the temporary callback DB through the normal storage-neutral
   `DB-Read-Source` path instead of forcing resident materialization. Resident
-  in-memory DB snapshots keep the existing resident callback path, and
-  materialization remains only as a compatibility fallback for non-retainable
-  source shapes.
+  in-memory DB snapshots keep the existing resident callback path. Non-retainable
+  callback sources now fail explicitly instead of materializing a resident DB
+  behind the ABI.
 - Turn any remaining resident-required path into either a source-backed
   implementation or a clear public error. The known intentional resident path
   is `vev_conn_from_db`, which can only create a live mutable in-memory

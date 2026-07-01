@@ -1846,25 +1846,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (let [out (vev.tx-fn-source-ok (slice tx-data 0))]
             (delete result-text)
             (return out))))))
-  (let [[db db-ok db-error] (vev.db-read-source-materialize-db source)]
-    (when (not db-ok)
-      (return (vev.tx-fn-source-error db-error)))
-    (let [db-handle (Vev-DB (abi-alloc-db
-                              (vev.Store-DB {kind: .Resident
-                                             resident: db})))
-          result-c (abi-tx-fn-call slot (rawptr db-handle) (count args) (tx-fn-args-ptr args))]
-      (defer (release-db-handle-owned db-handle))
-      (when (= result-c nil)
-        (return (vev.tx-fn-source-error "transaction callback returned null")))
-      (let [result-text (text-from-c result-c)
-            tx-data (make [dynamic]vev.Tx-Data) :defer
-            [ok error] (vev.parse-tx-text! (addr tx-data) result-text)]
-        (when (not ok)
-          (delete result-text)
-          (return (vev.tx-fn-source-error error)))
-        (let [out (vev.tx-fn-source-ok (slice tx-data 0))]
-          (delete result-text)
-          out)))))
+  (vev.tx-fn-source-error "transaction callback DB source cannot be exposed as a retained Vev DB handle"))
 
 (defn- abi-tx-fn-source-slot-0 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 0 source args))
 (defn- abi-tx-fn-source-slot-1 [source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result (abi-tx-fn-source-dispatch 1 source args))
@@ -2321,11 +2303,16 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-DB nil)))
   (let [tx (text-from-c tx-text)
         store-ptr-value (store-db-ptr db)]
-    (let [next-db (vev.db-with-store-db-text store-ptr-value tx)
-          out (Vev-DB (abi-alloc-db
-                        next-db))]
-      (delete tx)
-      out)))
+    (let [report (vev.with-store-db-report-text store-ptr-value tx)]
+      (when (not report.ok)
+        (vev.delete-store-tx-report report)
+        (delete tx)
+        (return (Vev-DB nil)))
+      (let [next-db (vev.retain-store-db report.db-after)
+            out (Vev-DB (abi-alloc-db next-db))]
+        (vev.delete-store-tx-report report)
+        (delete tx)
+        out))))
 
 @export
 (defn vev_string_free :abi "c" [text: cstring]
@@ -2558,8 +2545,14 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (return (Vev-DB nil)))
   (let [store-ptr-value (store-db-ptr db)
         tx-data (tx-builder-data-ptr builder)
-        next-db (vev.db-with-store-db-tx-data store-ptr-value (slice tx-data^ 0))]
-    (Vev-DB (abi-alloc-db next-db))))
+        report (vev.with-store-db-report-tx-data store-ptr-value (slice tx-data^ 0))]
+    (when (not report.ok)
+      (vev.delete-store-tx-report report)
+      (return (Vev-DB nil)))
+    (let [next-db (vev.retain-store-db report.db-after)
+          out (Vev-DB (abi-alloc-db next-db))]
+      (vev.delete-store-tx-report report)
+      out)))
 
 @export
 (defn vev_tx_fn_arg :abi "c" [args: Vev-Tx-Fn-Args, index: int] -> Vev-Value
