@@ -1766,6 +1766,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   Empty
   Resident
   SQLite-Snapshot
+  SQLite-Tx-Ops-Overlay
   Shared-Snapshot
   Shared-Tx-Ops-Overlay
 ])
@@ -2471,6 +2472,14 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: sqlite-snapshot}) true "")
       (return (Store-DB {}) false snapshot-error))))
 
+(defn retain-sqlite-db-snapshot [snapshot: SQLite-DB-Snapshot] -> SQLite-DB-Snapshot
+  (when (= snapshot.path "")
+    (return (SQLite-DB-Snapshot {})))
+  (let [[retained retained-ok _] (sqlite-open-db-snapshot-at-basis snapshot.path snapshot.basis-tx sqlite-db-source-default-page-size)]
+    (if retained-ok
+      retained
+      (SQLite-DB-Snapshot {}))))
+
 (defn shared-store-db [conn: ^Shared-Conn] -> Store-DB
   (Store-DB {kind: .Shared-Snapshot
              shared-snapshot: (retain-shared-db-snapshot conn^.snapshot)}))
@@ -2522,9 +2531,21 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
              overlay-ops: (clone-tx-ops-owned ops)
              overlay-tx: tx}))
 
+(defn sqlite-store-db-with-overlay [base: SQLite-DB-Snapshot, ops: []Tx-Op, tx: u64] -> Store-DB
+  (Store-DB {kind: .SQLite-Tx-Ops-Overlay
+             sqlite-snapshot: (retain-sqlite-db-snapshot base)
+             overlay-ops: (clone-tx-ops-owned ops)
+             overlay-tx: tx}))
+
 (defn shared-store-db-with-report-overlay [base: Shared-DB-Snapshot, report: Tx-Report] -> Store-DB
   (Store-DB {kind: .Shared-Tx-Ops-Overlay
              shared-snapshot: (retain-shared-db-snapshot base)
+             overlay-ops: (tx-ops-from-datoms-owned (slice report.tx-data 0))
+             overlay-tx: report.tx}))
+
+(defn sqlite-store-db-with-report-overlay [base: SQLite-DB-Snapshot, report: Tx-Report] -> Store-DB
+  (Store-DB {kind: .SQLite-Tx-Ops-Overlay
+             sqlite-snapshot: (retain-sqlite-db-snapshot base)
              overlay-ops: (tx-ops-from-datoms-owned (slice report.tx-data 0))
              overlay-tx: report.tx}))
 
@@ -2550,8 +2571,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (return true ""))
 
 (defn source-overlay-ops-from-resolved [source: DB-Read-Source, resolved: Resolved-Tx] -> [ops: [dynamic]Tx-Op, ok: bool, error: string]
-  (let [out (make [dynamic]Tx-Op 0 (count resolved.ops))]
-    (for [op resolved.ops]
+  (source-overlay-ops-from-ops source (slice resolved.ops 0)))
+
+(defn source-overlay-ops-from-ops [source: DB-Read-Source, ops: []Tx-Op] -> [out-ops: [dynamic]Tx-Op, ok: bool, error: string]
+  (let [out (make [dynamic]Tx-Op 0 (count ops))]
+    (for [op ops]
       (let [[append-ok append-error] (append-source-overlay-op! (addr out) source op)]
         (when (not append-ok)
           (delete-owned-tx-ops out)
@@ -2579,6 +2603,35 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (delete-resolved-tx resolved)
           (delete-shared-write-state-metadata state)
           (return out true true ""))))))
+
+(defn store-db-source-overlay-from-resolved [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64] -> Store-DB
+  (case snapshot.kind
+    .SQLite-Snapshot (sqlite-store-db-with-overlay snapshot.sqlite-snapshot overlay-ops tx)
+    .Shared-Snapshot (shared-store-db-with-overlay snapshot.shared-snapshot overlay-ops tx)
+     (Store-DB {})))
+
+(defn store-db-with-source-overlay-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> [next: Store-DB, used: bool, ok: bool, error: string]
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (when (not source-ok)
+      (return (Store-DB {}) false false source-error))
+    (let [[state state-ok state-error] (shared-write-state-from-source-metadata source)]
+      (when (not state-ok)
+        (return (Store-DB {}) false false state-error))
+      (let [resolved (shared-write-state-resolve-tx-data-source-only (addr state) source tx-data)]
+        (when (not resolved.ok)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return (Store-DB {}) false true ""))
+        (let [[overlay-ops overlay-ok overlay-error] (source-overlay-ops-from-resolved source resolved)]
+          (when (not overlay-ok)
+            (delete-resolved-tx resolved)
+            (delete-shared-write-state-metadata state)
+            (return (Store-DB {}) false false overlay-error))
+          (let [out (store-db-source-overlay-from-resolved snapshot^ (slice overlay-ops 0) state.conn.next-tx)]
+            (delete-owned-tx-ops overlay-ops)
+            (delete-resolved-tx resolved)
+            (delete-shared-write-state-metadata state)
+            (return out true true "")))))))
 
 (defstruct Store-Tx-Report {
   ok: bool
@@ -2618,21 +2671,31 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                       tx-meta: (make [dynamic]Tx-Meta)
                       tempids: (make [dynamic]Tempid)})))
 
-(defn store-tx-report-from-source-overlay [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, resolved: Resolved-Tx] -> Store-Tx-Report
-  (let [tx-data (source-append-datoms-from-ops overlay-ops tx)
-        tx-meta (clone-tx-meta (slice resolved.tx-meta 0))
-        tempids (arr.into [dynamic]Tempid (slice resolved.tempids 0))]
+(defn source-overlay-datoms-from-ops [ops: []Tx-Op, tx: u64] -> [dynamic]Datom
+  (let [out (make [dynamic]Datom 0 (count ops))]
+    (for [op ops]
+      (let [datom (Datom {e: op.e
+                          a: op.a
+                          v: op.v
+                          tx: tx
+                          added: (= op.kind .Add)})]
+        (arr.push! out (datom-owned datom))))
+    out))
+
+(defn store-tx-report-from-source-overlay-parts [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, tx-meta: []Tx-Meta, tempids: []Tempid] -> Store-Tx-Report
+  (let [tx-data (source-overlay-datoms-from-ops overlay-ops tx)
+        cloned-tempids (arr.into [dynamic]Tempid tempids)]
     (Store-Tx-Report {ok: true
                       error: ""
                       db-before: (retain-store-db snapshot)
-                      db-after: (Store-DB {kind: .Shared-Tx-Ops-Overlay
-                                           shared-snapshot: (retain-shared-db-snapshot snapshot.shared-snapshot)
-                                           overlay-ops: (clone-tx-ops-owned overlay-ops)
-                                           overlay-tx: tx})
+                      db-after: (store-db-source-overlay-from-resolved snapshot overlay-ops tx)
                       tx-data: tx-data
                       tx: tx
-                      tx-meta: tx-meta
-                      tempids: tempids})))
+                      tx-meta: (clone-tx-meta tx-meta)
+                      tempids: cloned-tempids})))
+
+(defn store-tx-report-from-source-overlay [snapshot: Store-DB, overlay-ops: []Tx-Op, tx: u64, resolved: Resolved-Tx] -> Store-Tx-Report
+  (store-tx-report-from-source-overlay-parts snapshot overlay-ops tx (slice resolved.tx-meta 0) (slice resolved.tempids 0)))
 
 (defn with-shared-store-db-source-overlay-report-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> [report: Store-Tx-Report, used: bool, ok: bool, error: string]
   (let [base snapshot^.shared-snapshot
@@ -2656,19 +2719,112 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (delete-shared-write-state-metadata state)
           (return out-report true true ""))))))
 
+(defn with-store-db-source-overlay-report-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> [report: Store-Tx-Report, used: bool, ok: bool, error: string]
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (when (not source-ok)
+      (return (Store-Tx-Report {}) false false source-error))
+    (let [[state state-ok state-error] (shared-write-state-from-source-metadata source)]
+      (when (not state-ok)
+        (return (Store-Tx-Report {}) false false state-error))
+      (let [resolved (shared-write-state-resolve-tx-data-source-only (addr state) source tx-data)]
+        (when (not resolved.ok)
+          (delete-resolved-tx resolved)
+          (delete-shared-write-state-metadata state)
+          (return (Store-Tx-Report {}) false true ""))
+        (let [[overlay-ops overlay-ok overlay-error] (source-overlay-ops-from-resolved source resolved)]
+          (when (not overlay-ok)
+            (delete-resolved-tx resolved)
+            (delete-shared-write-state-metadata state)
+            (return (Store-Tx-Report {}) false false overlay-error))
+          (let [out-report (store-tx-report-from-source-overlay snapshot^ (slice overlay-ops 0) state.conn.next-tx resolved)]
+            (delete-owned-tx-ops overlay-ops)
+            (delete-resolved-tx resolved)
+            (delete-shared-write-state-metadata state)
+            (return out-report true true "")))))))
+
+(defn failed-store-source-registered-tx [snapshot: Store-DB, ops: [dynamic]Tx-Op, tx-meta: [dynamic]Tx-Meta, tempids: [dynamic]Tempid, segment: [dynamic]Tx-Data, error: string] -> Store-Tx-Report
+  (delete ops)
+  (delete tx-meta)
+  (delete tempids)
+  (delete segment)
+  (failed-store-tx-report snapshot error))
+
+(defn with-store-db-report-tx-data-with-source-string-fns [snapshot: ^Store-DB, tx-data: []Tx-Data, registry: []Tx-Fn-Source-String] -> Store-Tx-Report
+  (when (not (or (= snapshot^.kind .Shared-Snapshot)
+                 (= snapshot^.kind .SQLite-Snapshot)))
+    (return (failed-store-tx-report snapshot^ "source transaction functions require a source-backed Store-DB")))
+  (let [[base-source source-ok source-error] (store-db-read-source snapshot)]
+    (when (not source-ok)
+      (return (failed-store-tx-report snapshot^ source-error)))
+    (let [[state state-ok state-error] (shared-write-state-from-source-metadata base-source)]
+      (when (not state-ok)
+        (return (failed-store-tx-report snapshot^ state-error)))
+      (let [[duplicate-ident has-duplicate] (tx-fn-source-string-duplicate-ident registry)
+            tx state.conn.next-tx
+            ops (make [dynamic]Tx-Op)
+            tx-meta (make [dynamic]Tx-Meta)
+            tempids (make [dynamic]Tempid)
+            segment (make [dynamic]Tx-Data)]
+        (when has-duplicate
+          (delete-shared-write-state-metadata state)
+          (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment (fmt.tprintf "duplicate transaction fn registration: %s" duplicate-ident))))
+        (for [data tx-data]
+          (when (= data.op ":db.fn/call-ident")
+            (let [current-source (tx-ops-overlay-db-read-source (addr base-source) (addr ops) tx)
+                  [segment-ok segment-error] (resolve-shared-source-tx-segment! (addr state) current-source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+              (when (not segment-ok)
+                (delete-shared-write-state-metadata state)
+                (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment segment-error)))
+              (let [call-source (tx-ops-overlay-db-read-source (addr base-source) (addr ops) tx)
+                    [fn-index fn-ok] (tx-fn-source-string-index registry data.ident)]
+                (when (not fn-ok)
+                  (delete-shared-write-state-metadata state)
+                  (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment "transaction fn not registered")))
+                (let [result (call-source-registered-tx-fn registry[fn-index] call-source data)]
+                  (when (not result.ok)
+                    (delete result.tx-data)
+                    (delete-shared-write-state-metadata state)
+                    (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment result.error)))
+                  (let [result-source (tx-ops-overlay-db-read-source (addr base-source) (addr ops) tx)
+                        [result-ok result-error] (resolve-shared-source-tx-segment! (addr state) result-source (addr ops) (addr tx-meta) (addr tempids) (addr result.tx-data))]
+                    (delete result.tx-data)
+                    (when (not result-ok)
+                      (delete-shared-write-state-metadata state)
+                      (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment result-error)))))))
+            (continue))
+          (arr.push! segment data))
+        (let [tail-source (tx-ops-overlay-db-read-source (addr base-source) (addr ops) tx)
+              [tail-ok tail-error] (resolve-shared-source-tx-segment! (addr state) tail-source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
+          (when (not tail-ok)
+            (delete-shared-write-state-metadata state)
+            (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment tail-error))))
+        (delete segment)
+        (let [[overlay-ops overlay-ok overlay-error] (source-overlay-ops-from-ops base-source (slice ops 0))]
+          (when (not overlay-ok)
+            (delete ops)
+            (delete tx-meta)
+            (delete tempids)
+            (delete-shared-write-state-metadata state)
+            (return (failed-store-tx-report snapshot^ overlay-error)))
+          (let [report (store-tx-report-from-source-overlay-parts snapshot^ (slice overlay-ops 0) tx (slice tx-meta 0) (slice tempids 0))]
+            (delete-owned-tx-ops overlay-ops)
+            (delete ops)
+            (delete tx-meta)
+            (delete tempids)
+            (delete-shared-write-state-metadata state)
+            report))))))
+
 (defn retain-store-db [snapshot: Store-DB] -> Store-DB
   (case snapshot.kind
     .Resident (Store-DB {kind: .Resident
                          resident: (clone-db snapshot.resident)})
-    .SQLite-Snapshot
-      (do
-        (when (= snapshot.sqlite-snapshot.path "")
-          (return (Store-DB {})))
-        (let [[retained retained-ok _] (sqlite-open-db-snapshot-at-basis snapshot.sqlite-snapshot.path snapshot.sqlite-snapshot.basis-tx sqlite-db-source-default-page-size)]
-          (if retained-ok
-            (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: retained})
-            (do
-              (Store-DB {})))))
+    .SQLite-Snapshot (Store-DB {kind: .SQLite-Snapshot
+                                sqlite-snapshot: (retain-sqlite-db-snapshot snapshot.sqlite-snapshot)})
+    .SQLite-Tx-Ops-Overlay
+      (Store-DB {kind: .SQLite-Tx-Ops-Overlay
+                 sqlite-snapshot: (retain-sqlite-db-snapshot snapshot.sqlite-snapshot)
+                 overlay-ops: (clone-tx-ops-owned (slice snapshot.overlay-ops 0))
+                 overlay-tx: snapshot.overlay-tx})
     .Shared-Snapshot (Store-DB {kind: .Shared-Snapshot
                                 shared-snapshot: (retain-shared-db-snapshot snapshot.shared-snapshot)})
     .Shared-Tx-Ops-Overlay (Store-DB {kind: .Shared-Tx-Ops-Overlay
@@ -2681,6 +2837,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (case snapshot^.kind
     .Resident (return (resident-db-read-source (addr snapshot^.resident)) true "")
     .SQLite-Snapshot (return (sqlite-db-read-source (addr snapshot^.sqlite-snapshot)) true "")
+    .SQLite-Tx-Ops-Overlay (return (sqlite-tx-ops-overlay-db-read-source (addr snapshot^.sqlite-snapshot) (addr snapshot^.overlay-ops) snapshot^.overlay-tx) true "")
     .Shared-Snapshot (return (shared-db-snapshot-read-source (addr snapshot^.shared-snapshot)) true "")
     .Shared-Tx-Ops-Overlay (return (shared-tx-ops-overlay-db-read-source (addr snapshot^.shared-snapshot.datoms) (addr snapshot^.shared-snapshot.indexes) (addr snapshot^.overlay-ops) snapshot^.overlay-tx) true "")
      (return (DB-Read-Source {}) false "store DB snapshot is not open")))
@@ -2768,8 +2925,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (with-tx-data db tx-data)))
 
 (defn with-store-db-report-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> Store-Tx-Report
-  (when (= snapshot^.kind .Shared-Snapshot)
-    (let [[report used ok error] (with-shared-store-db-source-overlay-report-tx-data snapshot tx-data)]
+  (when (or (= snapshot^.kind .Shared-Snapshot)
+            (= snapshot^.kind .SQLite-Snapshot))
+    (let [[report used ok error] (with-store-db-source-overlay-report-tx-data snapshot tx-data)]
       (when ok
         (when used
           (return report)))
@@ -2811,8 +2969,21 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (when overlay-ok
           (when overlay-used
             (return overlay-snapshot))))))
+  (when (= snapshot^.kind .SQLite-Snapshot)
+    (let [[overlay-snapshot overlay-used overlay-ok _] (store-db-with-source-overlay-tx-data snapshot tx-data)]
+      (when overlay-ok
+        (when overlay-used
+          (return overlay-snapshot)))))
   (let [report (with-store-db-tx-data snapshot tx-data)]
     (case snapshot^.kind
+      .SQLite-Snapshot
+        (if report.ok
+          (let [out (sqlite-store-db-with-report-overlay snapshot^.sqlite-snapshot report)]
+            (delete-store-db-temp-tx-report report)
+            out)
+          (let [out (retain-store-db snapshot^)]
+            (delete-store-db-temp-tx-report report)
+            out))
       .Shared-Snapshot
         (if report.ok
           (let [out (shared-store-db-with-report-overlay snapshot^.shared-snapshot report)]
@@ -2845,6 +3016,28 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (if parse-ok
       (with-store-db-report-tx-data snapshot (slice tx-data 0))
       (failed-store-tx-report snapshot^ parse-error))))
+
+(defn with-store-db-report-text-with-source-string-fns [snapshot: ^Store-DB, text: string, registry: []Tx-Fn-Source-String] -> Store-Tx-Report
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok parse-error] (parse-tx-text! (addr tx-data) text)]
+    (if parse-ok
+      (with-store-db-report-tx-data-with-source-string-fns snapshot (slice tx-data 0) registry)
+      (failed-store-tx-report snapshot^ parse-error))))
+
+(defn db-with-store-db-tx-data-with-source-string-fns [snapshot: ^Store-DB, tx-data: []Tx-Data, registry: []Tx-Fn-Source-String] -> Store-DB
+  (let [report (with-store-db-report-tx-data-with-source-string-fns snapshot tx-data registry)
+        out (if report.ok
+              (retain-store-db report.db-after)
+              (retain-store-db report.db-before))]
+    (delete-store-tx-report report)
+    out))
+
+(defn db-with-store-db-text-with-source-string-fns [snapshot: ^Store-DB, text: string, registry: []Tx-Fn-Source-String] -> Store-DB
+  (let [tx-data (make [dynamic]Tx-Data) :defer
+        [parse-ok _] (parse-tx-text! (addr tx-data) text)]
+    (if parse-ok
+      (db-with-store-db-tx-data-with-source-string-fns snapshot (slice tx-data 0) registry)
+      (retain-store-db snapshot^))))
 
 (defn db-with-store-db-text [snapshot: ^Store-DB, text: string] -> Store-DB
   (let [tx-data (make [dynamic]Tx-Data) :defer
@@ -2921,6 +3114,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (case snapshot^.kind
     .Resident (delete-owned-db snapshot^.resident)
     .SQLite-Snapshot (close-sqlite-db-snapshot! (addr snapshot^.sqlite-snapshot))
+    .SQLite-Tx-Ops-Overlay
+      (do
+        (close-sqlite-db-snapshot! (addr snapshot^.sqlite-snapshot))
+        (delete-owned-tx-ops snapshot^.overlay-ops))
     .Shared-Snapshot (delete-shared-db-snapshot snapshot^.shared-snapshot)
     .Shared-Tx-Ops-Overlay
       (do

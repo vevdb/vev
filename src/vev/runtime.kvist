@@ -3773,6 +3773,7 @@
   Shared-Resident-Datoms-And-Indexes
   Shared-Tx-Ops-Overlay
   SQLite-Snapshot
+  SQLite-Tx-Ops-Overlay
   Tx-Ops-Overlay
 ])
 
@@ -3820,8 +3821,15 @@
                    overlay-ops: ops
                    overlay-tx: tx}))
 
+(defn sqlite-tx-ops-overlay-db-read-source [snapshot: ^SQLite-DB-Snapshot, ops: ^[dynamic]Tx-Op, tx: u64] -> DB-Read-Source
+  (DB-Read-Source {kind: .SQLite-Tx-Ops-Overlay
+                   sqlite-snapshot: snapshot
+                   overlay-ops: ops
+                   overlay-tx: tx}))
+
 (defn db-read-source-has-inline-overlay? [source: DB-Read-Source] -> bool
-  (= source.kind .Shared-Tx-Ops-Overlay))
+  (or (= source.kind .Shared-Tx-Ops-Overlay)
+      (= source.kind .SQLite-Tx-Ops-Overlay)))
 
 (defn db-read-source-has-overlay? [source: DB-Read-Source] -> bool
   (or (= source.kind .Tx-Ops-Overlay)
@@ -3869,6 +3877,7 @@
     .Shared-Resident-Datoms-And-Indexes (shared-db-int-index-view source.shared-indexes order)
     .Shared-Tx-Ops-Overlay (shared-db-int-index-view source.shared-indexes order)
     .SQLite-Snapshot (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
+    .SQLite-Tx-Ops-Overlay (sqlite-db-snapshot-index-view source.sqlite-snapshot order)
     .Tx-Ops-Overlay (db-read-source-index-view source.overlay-base^ order)
      (DB-Index-View {})))
 
@@ -3925,6 +3934,8 @@
           (return (Datom {}) false "shared overlay datom log index out of range")))
     .SQLite-Snapshot
       (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
+    .SQLite-Tx-Ops-Overlay
+      (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)
      (return (Datom {}) false "unknown DB read source")))
 
 (defn db-read-source-datom-current-at-entry? [source: DB-Read-Source, entry: int] -> [current: bool, ok: bool, error: string]
@@ -3954,6 +3965,38 @@
           (return false false "shared overlay datom log index out of range"))
         (return (shared-int-index-contains? source.shared-indexes^.current entry) true ""))
     .SQLite-Snapshot
+      (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
+        (when (not datom-ok)
+          (return false false datom-error))
+        (defer (delete-owned-datom datom))
+        (when (not datom.added)
+          (return false true ""))
+        (let [[range-low range-high range-exists range-ok range-error] (db-read-source-eavt-entity-range source datom.e)]
+          (when (not range-ok)
+            (return false false range-error))
+          (when (not range-exists)
+            (return false true ""))
+          (let [view (db-read-source-index-view source .EAVT)
+                latest-tx: u64 0
+                latest-added false
+                found false]
+            (for [pos (arr.range range-low range-high)]
+              (let [candidate-entry (db-index-view-at view pos)
+                    [candidate candidate-ok candidate-error] (db-read-source-datom-at-entry source candidate-entry)]
+                (when (not candidate-ok)
+                  (return false false candidate-error))
+                (let [matches (and (= candidate.e datom.e)
+                                   (= candidate.a datom.a)
+                                   (value-equal? candidate.v datom.v))]
+                  (when matches
+                    (when (or (not found)
+                              (> candidate.tx latest-tx))
+                      (set! latest-tx candidate.tx)
+                      (set! latest-added candidate.added)
+                      (set! found true))))
+                (delete-owned-datom candidate)))
+            (return (and found latest-added (= latest-tx datom.tx)) true ""))))
+    .SQLite-Tx-Ops-Overlay
       (let [[datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index source.sqlite-snapshot entry)]
         (when (not datom-ok)
           (return false false datom-error))
@@ -4822,6 +4865,12 @@
       (delete-clause-index-scan scan)
       (return (make [dynamic]Datom) false scan-error))
     (defer (delete-clause-index-scan scan))
+    (when (= source.kind .Tx-Ops-Overlay)
+      (let [[out base-ok base-error] (db-read-source-clause-candidates-for-binding source.overlay-base^ clause-value binding)]
+        (when (not base-ok)
+          (return out false base-error))
+        (db-read-source-apply-overlay-ops-for-clause-scan! (addr out) source scan)
+        (return out true "")))
     (let [out (make [dynamic]Datom)
           scan-index scan.index]
       (while (< scan-index scan.high)
@@ -4841,6 +4890,8 @@
                 (delete-owned-datom datom)))
             (delete-owned-datom datom)))
         (set! scan-index (+ scan-index 1)))
+      (when (db-read-source-has-inline-overlay? source)
+        (db-read-source-apply-overlay-ops-for-clause-scan! (addr out) source scan))
       (return out true ""))))
 
 (defn db-read-source-clause-candidates [source: DB-Read-Source, clause-value: Clause] -> [datoms: [dynamic]Datom, ok: bool, error: string]
@@ -4972,6 +5023,18 @@
         (when (not (db-read-source-clause-index-value-matches? datom.v scan.v-value))
           (return false)))
       true)))
+
+(defn db-read-source-apply-overlay-ops-for-clause-scan! [out: ^[dynamic]Datom, source: DB-Read-Source, scan: Clause-Index-Scan]
+  (for [op source.overlay-ops^]
+    (let [candidate (Datom {e: op.e
+                            a: op.a
+                            v: op.v
+                            tx: source.overlay-tx
+                            added: (= op.kind .Add)})]
+      (when (db-read-source-clause-index-scan-candidate? scan candidate)
+        (remove-datom-fact! out op.e op.a op.v)
+        (when (= op.kind .Add)
+          (append-owned-datom-from-tx-op! out op source.overlay-tx))))))
 
 (defn db-read-source-binding-match-optional-owned! [binding: ^Binding, term: Term, value: Value] -> bool
   (if (omitted-term? term)

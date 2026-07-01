@@ -17,6 +17,8 @@ The remaining goal is to make durable DB values production-shaped:
   full datom-log replay on open
 - immutable DB snapshots should share index storage instead of copying whole
   datom/index arrays on every commit
+- source-resolvable `with` / `db-with` should publish immutable overlay DB
+  values for shared and SQLite snapshots, not materialize resident clones
 - query, pull, entity, rules, `with`, `db-with`, and host APIs must continue to
   expose ordinary immutable Datomic-like DB values
 - SQLite remains the durable log/page store, not the Datalog executor
@@ -75,27 +77,33 @@ Status: in progress.
 
 Todo:
 
-- Finish replacing `with-store-db-*` / `db-with-store-db-*` in
-  `src/vev/storage.kvist`, which still call `store-db-materialize-db` for
-  transaction shapes outside the current source-native append subset.
-- Keep the current shared `db-with-store-db-*` handle behavior: shared DB
-  values should publish another shared `Store-DB`, not a resident clone.
-- Keep the direct source-native shared `db-with` fast path limited to true
-  append-only changes until current-index invalidation is represented in shared
-  storage.
-- Migrate remaining language wrappers to expose C ABI transaction report
-  `db-before` / `db-after` handles ergonomically. Python, Rust, JVM/Clojure,
-  Go, and Node now expose them; Odin still needs wrapper-level methods.
-- Move transaction-function `with` variants off the resident callback path where
-  possible, while preserving callback access to transaction-local DB state.
-- Broaden source-only shared `db-with` resolution for any remaining unsupported
-  transaction shapes, especially complex same-transaction lookup/upsert cases
-  and schema-changing transactions that still need fallback validation.
+- Continue replacing `with-store-db-*` / `db-with-store-db-*` fallback paths
+  that still call `store-db-materialize-db` for unsupported transaction shapes.
+- Keep current shared and SQLite `db-with-store-db-*` handle behavior: source
+  DB values should publish another source/overlay `Store-DB`, not a resident
+  clone.
+- Keep direct source-native `db-with` fast paths limited to shapes whose
+  current-index effects are represented in the source overlay.
+- Keep source transaction-function `Store-DB` report variants on the
+  source-overlay path, with callbacks reading transaction-local `DB-Read-Source`
+  state. Move older resident `DB` callback transaction-function variants off the
+  resident path only where an equivalent source callback shape exists.
+- Broaden source-only `db-with` resolution for remaining unsupported
+  transaction shapes. Existing-schema nested map and cardinality-many map
+  collection forms stay source-native, as do same-transaction ref schema plus
+  nested map values and same-transaction cardinality-many schema plus map
+  collection values. Same-transaction lookup refs and identity tempid upserts
+  stay source-native for shared and SQLite Store-DB overlays. Source transaction
+  functions work for `with` reports and `db-with` on base shared/SQLite
+  Store-DB snapshots. The remaining hard case is chaining source transaction
+  functions on top of an existing overlay DB value without flattening away
+  per-transaction tx identity.
 - Reuse the existing source-aware transaction resolver from shared storage:
   `shared-write-state-resolve-tx-data`, `resolve-shared-source-tx-segment!`,
   and `tx-ops-overlay-db-read-source`.
-- Apply transactions against a source-native write-state overlay, then publish a
-  `Store-DB` value backed by shared/chunked state instead of a resident clone.
+- Apply all supported transaction shapes against a source-native write-state
+  overlay, then publish a `Store-DB` value backed by shared/chunked state
+  instead of a resident clone.
 - Preserve exact Datomic-like immutable DB semantics for `db-before`,
   `db-after`, transaction reports, tempids, listeners, and retained old DB
   handles.

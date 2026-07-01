@@ -14,6 +14,16 @@ Vev_API :: struct {
 	close_conn:    proc "c" (conn: rawptr) `dynlib:"vev_conn_close"`,
 	transact_edn:  proc "c" (conn: rawptr, tx_text: cstring) -> cstring `dynlib:"vev_transact_edn"`,
 	query_edn:     proc "c" (conn: rawptr, query_text: cstring) -> cstring `dynlib:"vev_query_edn"`,
+	db:            proc "c" (conn: rawptr) -> rawptr `dynlib:"vev_conn_db"`,
+	db_release:    proc "c" (db: rawptr) `dynlib:"vev_db_release"`,
+	prepare_query: proc "c" (query_text: cstring) -> rawptr `dynlib:"vev_prepare_query_edn"`,
+	free_query:    proc "c" (query: rawptr) `dynlib:"vev_prepared_query_free"`,
+	query_db:      proc "c" (db: rawptr, query: rawptr, inputs_text: cstring) -> cstring `dynlib:"vev_query_db_prepared_with_inputs"`,
+	with_report:   proc "c" (db: rawptr, tx_text: cstring) -> rawptr `dynlib:"vev_with_edn_report"`,
+	report_edn:    proc "c" (report: rawptr) -> cstring `dynlib:"vev_tx_report_edn"`,
+	report_before: proc "c" (report: rawptr) -> rawptr `dynlib:"vev_tx_report_db_before"`,
+	report_after:  proc "c" (report: rawptr) -> rawptr `dynlib:"vev_tx_report_db_after"`,
+	report_free:   proc "c" (report: rawptr) `dynlib:"vev_tx_report_free"`,
 	string_free:   proc "c" (text: cstring) `dynlib:"vev_string_free"`,
 	__handle:      dynlib.Library,
 }
@@ -58,7 +68,7 @@ main :: proc() {
 	}
 	defer dynlib.unload_library(api.__handle)
 
-	if api.version == nil || api.open_memory == nil || api.close_conn == nil || api.transact_edn == nil || api.query_edn == nil || api.string_free == nil {
+	if api.version == nil || api.open_memory == nil || api.close_conn == nil || api.transact_edn == nil || api.query_edn == nil || api.db == nil || api.db_release == nil || api.prepare_query == nil || api.free_query == nil || api.query_db == nil || api.with_report == nil || api.report_edn == nil || api.report_before == nil || api.report_after == nil || api.report_free == nil || api.string_free == nil {
 		fmt.eprintln("loaded library does not expose the expected Vev ABI")
 		os.exit(1)
 	}
@@ -98,6 +108,75 @@ main :: proc() {
 	fmt.println("query:", result)
 	if !strings.contains(result, `"Ada"`) || !strings.contains(result, `"Grace"`) {
 		fmt.eprintln("unexpected query result:", result)
+		os.exit(1)
+	}
+
+	snapshot := api.db(conn)
+	if snapshot == nil {
+		fmt.eprintln("failed to retain DB snapshot")
+		os.exit(1)
+	}
+	defer api.db_release(snapshot)
+
+	later_tx := to_cstring(`[{:db/id 3 :user/name "Alan" :user/email "alan@example.com"}]`)
+	defer delete(later_tx)
+	later_result := api.transact_edn(conn, later_tx)
+	if later_result == nil {
+		fmt.eprintln("later transaction returned nil")
+		os.exit(1)
+	}
+	defer api.string_free(later_result)
+
+	all_names_query_text := to_cstring(`[:find ?e ?name :where [?e :user/name ?name]]`)
+	defer delete(all_names_query_text)
+	all_names_query := api.prepare_query(all_names_query_text)
+	if all_names_query == nil {
+		fmt.eprintln("failed to prepare DB query")
+		os.exit(1)
+	}
+	defer api.free_query(all_names_query)
+
+	with_tx := to_cstring(`[{:db/id 4 :user/name "Barbara"}]`)
+	defer delete(with_tx)
+	report := api.with_report(snapshot, with_tx)
+	if report == nil {
+		fmt.eprintln("with report returned nil")
+		os.exit(1)
+	}
+	defer api.report_free(report)
+
+	report_text := api.report_edn(report)
+	if report_text == nil {
+		fmt.eprintln("with report EDN returned nil")
+		os.exit(1)
+	}
+	defer api.string_free(report_text)
+	fmt.println("with report:", report_text)
+
+	report_before := api.report_before(report)
+	report_after := api.report_after(report)
+	if report_before == nil || report_after == nil {
+		fmt.eprintln("with report did not expose DB values")
+		os.exit(1)
+	}
+	defer api.db_release(report_before)
+	defer api.db_release(report_after)
+
+	empty_inputs := to_cstring(`[]`)
+	defer delete(empty_inputs)
+	before_result := api.query_db(report_before, all_names_query, empty_inputs)
+	after_result := api.query_db(report_after, all_names_query, empty_inputs)
+	if before_result == nil || after_result == nil {
+		fmt.eprintln("with report DB query returned nil")
+		os.exit(1)
+	}
+	defer api.string_free(before_result)
+	defer api.string_free(after_result)
+
+	before_text := string(before_result)
+	after_text := string(after_result)
+	if strings.contains(before_text, `"Barbara"`) || !strings.contains(after_text, `"Barbara"`) {
+		fmt.eprintln("unexpected with report DB results:", before_text, after_text)
 		os.exit(1)
 	}
 }

@@ -409,9 +409,12 @@ Retained SQLite `Store-DB` handles also own their reopened snapshot handle, so
 host-facing DB values can be closed independently from the store that produced
 them while still reading the original durable basis.
 `db-with-store-db-text` provides the current immutable transaction bridge for
-storage-neutral DB handles. It returns a resident derived DB value and leaves
-the original durable/shared snapshot untouched; this is useful for host API
-parity while the lower-level write overlay is still being built.
+storage-neutral DB handles. For source-resolvable shared and SQLite snapshots,
+it now returns another source/overlay `Store-DB` value and leaves the original
+durable/shared snapshot untouched. Unsupported or compatibility-only shapes can
+still fall back to resident materialization, but common nested-map,
+cardinality-many, lookup-ref, upsert, and source transaction-function DB-value
+paths stay source-backed.
 The write benchmark now has a `shared-store-db-heavy` workload over this same
 storage-neutral connection/snapshot API. It provides the current host-handle
 acceptance check for the shared publish path, and early numbers match the raw
@@ -556,9 +559,10 @@ to callbacks so they can read transaction-local facts without receiving a
 resident `DB`. This works for typed tx-data plus EDN text and prepared tx-data.
 The source-callback path now uses a transaction-local `DB-Read-Source` overlay
 at callback boundaries, so common current-fact callback reads do not build a
-temporary shared snapshot. The remaining work is the general write-state/source
-overlay for mixed schema validation, remaining upsert-heavy transaction shapes,
-and host-visible immutable `with`/`db-with` over source-backed DB handles.
+temporary shared snapshot. Host-visible immutable `with`/`db-with` over base
+source-backed DB handles also publishes overlay DB values for the common
+transaction shapes. The remaining source-callback DB-value work is exact
+overlay-on-overlay chaining without flattening away per-transaction tx identity.
 Transaction reports now include the transaction engine's datom append start
 index plus append-only and ordered-new-entity publication facts. The shared
 connection publish path uses those fields directly, instead of recomputing

@@ -1005,6 +1005,9 @@
 (defn shared-write-state-declared-attr-ref? [tx-data: []Tx-Data, attr: string] -> bool
   (shared-write-state-declared-attr-has-schema-value? tx-data attr ":db/valueType" ":db.type/ref"))
 
+(defn shared-write-state-declared-attr-cardinality-many? [tx-data: []Tx-Data, attr: string] -> bool
+  (shared-write-state-declared-attr-has-schema-value? tx-data attr ":db/cardinality" ":db.cardinality/many"))
+
 (defn shared-write-state-schema-ref-target-for-tx? [state: ^Shared-Write-State, tx-data: []Tx-Data, attr: string] -> bool
   (if (reverse-attr? attr)
     (let [forward (forward-attr-for-reverse attr)]
@@ -1280,6 +1283,113 @@
         (when (not (shared-write-state-source-simple-tx-has-tempid? tx-data value-tempid))
           (return false)))))
   true)
+
+(defn shared-write-state-source-tx-data-needs-expansion? [tx-data: []Tx-Data] -> bool
+  (for [data tx-data]
+    (when (or data.has-nested-map
+              data.from-map-collection)
+      (return true)))
+  false)
+
+(defn shared-write-state-source-attr-has-tuple-schema? [source: DB-Read-Source, attr: string] -> [has-tuple: bool, ok: bool, error: string]
+  (let [[tuple-attrs tuple-ok tuple-error] (db-read-source-schema-tuple-attrs source attr)]
+    (when (not tuple-ok)
+      (return false false tuple-error))
+    (let [out (> (count tuple-attrs) 0)]
+      (delete tuple-attrs)
+      (return out true ""))))
+
+(defn shared-write-state-source-should-split-map-collection? [source: DB-Read-Source, tx-data: []Tx-Data, data: Tx-Data] -> [split: bool, ok: bool, error: string]
+  (when (not (and data.from-map-collection
+                  (= data.op ":db/add")
+                  (= data.v.kind .Vector)))
+    (return false true ""))
+  (when (reverse-attr? data.a)
+    (let [schema-attr (forward-attr-for-reverse data.a)]
+      (defer (delete schema-attr))
+      (let [[has-tuple tuple-ok tuple-error] (shared-write-state-source-attr-has-tuple-schema? source schema-attr)]
+        (when (not tuple-ok)
+          (return false false tuple-error))
+        (when has-tuple
+          (return false true "")))
+      (when (shared-write-state-declared-attr-has-schema-attr? tx-data schema-attr ":db/tupleAttrs")
+        (return false true ""))
+      (when (shared-write-state-declared-attr-cardinality-many? tx-data schema-attr)
+        (return true true ""))
+      (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source schema-attr)]
+        (return many many-ok many-error))))
+  (let [[has-tuple tuple-ok tuple-error] (shared-write-state-source-attr-has-tuple-schema? source data.a)]
+    (when (not tuple-ok)
+      (return false false tuple-error))
+    (when has-tuple
+      (return false true "")))
+  (when (shared-write-state-declared-attr-has-schema-attr? tx-data data.a ":db/tupleAttrs")
+    (return false true ""))
+  (when (shared-write-state-declared-attr-cardinality-many? tx-data data.a)
+    (return true true ""))
+  (db-read-source-schema-cardinality-many? source data.a))
+
+(defn shared-write-state-source-append-map-collection-items! [state: ^Shared-Write-State, tx-data: []Tx-Data, pending: ^[dynamic]Tx-Data, data: Tx-Data]
+  (when (not (= data.v.kind .Vector))
+    (return))
+  (let [entity (tx-entity-ref-from-data data)
+        ref-attr (shared-write-state-schema-ref-target-for-tx? state tx-data data.a)]
+    (for [item index data.v.items]
+      (if (and ref-attr (lookup-ref-vector-value? item))
+        (arr.push! pending^ (tx-data-with-map-group (tx-add-value-lookup-from-entity-data entity data.a item.items[0].text item.items[1]) data.map-group))
+        (if (and ref-attr (= item.kind .Map))
+          (arr.push! pending^ (tx-data-with-map-group (tx-add-nested-map-from-entity-data entity data.a item (fmt.tprintf "vev_tx_map_%d" (+ (count pending^) index))) data.map-group))
+          (arr.push! pending^ (tx-data-with-map-group (tx-add-from-entity-data entity data.a item) data.map-group)))))))
+
+(defn shared-write-state-expand-source-tx-data [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data] -> [expanded: [dynamic]Tx-Data, ok: bool, error: string]
+  (let [pending (arr.into [dynamic]Tx-Data tx-data)
+        out (make [dynamic]Tx-Data 0 (count tx-data))
+        data-index 0]
+    (while (< data-index (count pending))
+      (let [data pending[data-index]]
+        (set! data-index (+ data-index 1))
+        (let [[split split-ok split-error] (shared-write-state-source-should-split-map-collection? source tx-data data)]
+          (when (not split-ok)
+            (delete pending)
+            (delete out)
+            (return (make [dynamic]Tx-Data) false split-error))
+          (when split
+            (shared-write-state-source-append-map-collection-items! state tx-data (addr pending) data)
+            (continue)))
+        (when data.has-nested-map
+          (if (shared-write-state-schema-ref-target-for-tx? state tx-data data.a)
+            (let [[nested-entity nested-ok nested-error] (nested-entity-ref-data data.nested-map data.nested-tempid)]
+              (when (not nested-ok)
+                (delete pending)
+                (delete out)
+                (return (make [dynamic]Tx-Data) false nested-error))
+              (let [[children-ok children-error] (append-nested-map-tx! (addr pending) nested-entity data.nested-map data.nested-tempid)]
+                (when (not children-ok)
+                  (delete pending)
+                  (delete out)
+                  (return (make [dynamic]Tx-Data) false children-error)))
+              (set! data.has-nested-map false)
+              (let [nested-assigned false]
+                (when nested-entity.has-tempid
+                  (set! data.has-value-tempid true)
+                  (set! data.value-tempid nested-entity.tempid)
+                  (set! nested-assigned true))
+                (when (and (not nested-assigned) nested-entity.has-lookup-ref)
+                  (set! data.has-value-lookup-ref true)
+                  (set! data.value-lookup-attr nested-entity.lookup-attr)
+                  (set! data.value-lookup-value nested-entity.lookup-value)
+                  (set! nested-assigned true))
+                (when (and (not nested-assigned) nested-entity.has-ident)
+                  (set! data.v (value-keyword nested-entity.ident))
+                  (set! nested-assigned true))
+                (when (not nested-assigned)
+                  (set! data.v (value-entity nested-entity.e)))))
+            (do
+              (set! data.v data.nested-map)
+              (set! data.has-nested-map false))))
+        (arr.push! out data)))
+    (delete pending)
+    (return out true "")))
 
 (defn shared-write-state-source-simple-next-entity-id [state: ^Shared-Write-State, tx-data: []Tx-Data] -> u64
   (let [next state^.next-entity-id]
@@ -1997,6 +2107,21 @@
   (when (shared-write-state-source-simple-tx-data? state tx-data)
     (shared-write-state-note-source-resolve! state)
     (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source tx-data)))
+  (when (shared-write-state-source-tx-data-needs-expansion? tx-data)
+    (let [[expanded expanded-ok expanded-error] (shared-write-state-expand-source-tx-data state source tx-data)]
+      (when (not expanded-ok)
+        (return (Resolved-Tx {ok: false
+                              error: expanded-error
+                              ops: (make [dynamic]Tx-Op)
+                              tx-meta: (make [dynamic]Tx-Meta)
+                              tempids: (make [dynamic]Tempid)})))
+      (defer (delete expanded))
+      (when (shared-write-state-source-simple-tx-data? state (slice expanded 0))
+        (shared-write-state-note-source-resolve! state)
+        (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source (slice expanded 0))))
+      (when (shared-write-state-source-simple-mixed-schema-tx-data? state (slice expanded 0))
+        (shared-write-state-note-source-resolve! state)
+        (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source (slice expanded 0))))))
   (Resolved-Tx {ok: false
                 error: "transaction requires resident materialization fallback"
                 ops: (make [dynamic]Tx-Op)
