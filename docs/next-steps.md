@@ -33,6 +33,17 @@ Todo:
   source-backed runner.
 - Collapse the split between older `DB` / `DB-Source` entry points and the
   newer source-backed query path.
+- Continue moving relation-source inputs from generic binding execution toward
+  typed/source physical operators. `$rows` / collection / map-relation source
+  inputs are now represented as relation-value `DB-Read-Source` entries.
+  Straight-line source relation clauses, predicates, scalar functions, and
+  `ground` now execute through typed relation operators for source-backed
+  `DB-Read-Source` queries. Source-backed `not` / `not-join` now use the same
+  typed relation-value operators as anti-joins, and source-backed `or` /
+  `or-join` union typed branch outputs over relation-value sources. Aggregate
+  queries over relation-value sources now aggregate directly from typed
+  relation columns for built-in aggregates and named custom/native aggregate
+  functions.
 - Move resident query result ownership toward the same `Query-Result` shape used
   by source-backed and host-facing paths.
 - Keep resident-array mode available as an implementation strategy for tiny DBs,
@@ -52,7 +63,11 @@ Status: in progress.
 Todo:
 
 - Continue replacing generic `Binding` row materialization with typed/source
-  relation operators where it matters.
+  relation operators where it matters. The common source relation input path is
+  now typed for straight-line clauses, source `not` / `not-join` anti-joins,
+  source `or` / `or-join` branches, and aggregate results over typed
+  relation-value source results; the remaining source-input fallback is broader
+  multi-source shapes and more reusable operator composition.
 - Convert the current set of source recognizers into reusable indexed scan,
   bind-join, merge/star, projection, and aggregate operator pieces.
 - Add source-aware operators for remaining common graph traversal and broader
@@ -108,7 +123,10 @@ Todo:
   later tx forms without leaving the source-native path. Unique-identity tempid
   upserts where the unique value is a ref tempid that resolves through another
   identity upsert also stay source-native for shared and SQLite Store-DB
-  overlays.
+  overlays. CAS expected lookup refs now resolve through earlier
+  same-transaction source-overlay writes. Overlay publication also preserves
+  cardinality-one replacement semantics inside the overlay while respecting
+  cardinality-many schema declared earlier in the same transaction.
   Source transaction functions work for `with` reports and `db-with` on
   shared/SQLite Store-DB snapshots and overlay DB values. Chained overlays
   preserve per-transaction tx identity by publishing multi-transaction datom
@@ -188,10 +206,13 @@ Todo:
 - Source-backed DB snapshot `with` reports with C ABI transaction functions now
   use source-backed `Store-DB` transaction-function resolution, including
   transaction-local overlay reads and owned callback tx-data returned from the
-  ABI. Resident in-memory DB snapshots keep the existing resident callback
-  path. The callback keeps the existing public `Vev-DB` argument shape; if a
-  source-backed callback queries that temporary DB argument, it is currently
-  materialized for the callback only.
+  ABI. Source-backed callbacks now expose a retained/cloned `Store-DB` handle
+  for retainable shared, SQLite, and overlay read sources, so host callbacks can
+  query the temporary callback DB through the normal storage-neutral
+  `DB-Read-Source` path instead of forcing resident materialization. Resident
+  in-memory DB snapshots keep the existing resident callback path, and
+  materialization remains only as a compatibility fallback for non-retainable
+  source shapes.
 - Turn any remaining resident-required path into either a source-backed
   implementation or a clear public error. The known intentional resident path
   is `vev_conn_from_db`, which can only create a live mutable in-memory

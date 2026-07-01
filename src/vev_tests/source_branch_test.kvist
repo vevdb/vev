@@ -324,3 +324,113 @@
     (t.is (source-branch-has-entity? adult-result 1))
     (t.is shadow-result.ok shadow-result.error)
     (t.is (= (count shadow-result.rows) 0))))
+
+(t.deftest db-read-source-relation-source-input-branches-work
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        source (vev.resident-db-read-source (addr conn.db))
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":id") (vev.value-int 1))
+                  (vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":name") (vev.value-string "Ivan"))
+                  (vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":age") (vev.value-int 30))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":id") (vev.value-int 2))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":name") (vev.value-string "Petr"))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":age") (vev.value-int 41))
+                  (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":id") (vev.value-int 3))
+                  (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":name") (vev.value-string "Oleg"))
+                  (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":age") (vev.value-int 50))]))
+        inputs ([]vev.Query-Input [(vev.query-input-scalar rows)])
+        scalar-inputs ([]vev.Query-Input [(vev.query-input-scalar rows)
+                                          (vev.query-input-scalar (vev.value-int 40))])
+        aggregate-inputs ([]vev.Query-Input [(vev.query-input-scalar rows)
+                                             (vev.query-input-scalar (vev.value-string "sort-reverse"))])
+        not-result (vev.q-text-db-read-source-with-inputs
+                     source
+                     "[:find ?e :in $rows :where [$rows ?e :id ?id] (not [$rows ?e :name \"Petr\"])]"
+                     inputs)
+        or-join-result (vev.q-text-db-read-source-with-inputs
+                         source
+                         "[:find ?e :in $rows :where [$rows ?e :id ?id] (or-join [?e] (and [$rows ?e :name ?name] [(= ?name \"Ivan\")]) (and [$rows ?e :age ?age] [(> ?age 45)]))]"
+                         inputs)
+        profiled-or-join (vev.q-text-db-read-source-profiled-with-inputs
+                           source
+                           "[:find ?e :in $rows :where [$rows ?e :id ?id] (or-join [?e] (and [$rows ?e :name ?name] [(= ?name \"Ivan\")]) (and [$rows ?e :age ?age] [(> ?age 45)]))]"
+                           inputs)
+        scalar-result (vev.q-text-db-read-source-with-inputs
+                        source
+                        "[:find ?e :in $rows ?min :where [$rows ?e :age ?age] [(> ?age ?min)]]"
+                        scalar-inputs)
+        profiled-aggregate (vev.q-text-db-read-source-profiled-with-inputs
+                             source
+                             "[:find (sum ?age) (count ?age) (max ?age) :in $rows :where [$rows ?e :age ?age]]"
+                             inputs)
+        profiled-grouped-aggregate (vev.q-text-db-read-source-profiled-with-inputs
+                                     source
+                                     "[:find ?name (count ?age) :in $rows :where [$rows ?e :name ?name] [$rows ?e :age ?age]]"
+                                     inputs)
+        profiled-custom-aggregate (vev.q-text-db-read-source-profiled-with-inputs
+                                    source
+                                    "[:find (aggregate ?agg ?age) :in $rows ?agg :where [$rows ?e :age ?age]]"
+                                    aggregate-inputs)
+        profiled-not (vev.q-text-db-read-source-profiled-with-inputs
+                       source
+                       "[:find ?e :in $rows :where [$rows ?e :id ?id] (not [$rows ?e :name \"Petr\"])]"
+                       inputs)
+        profiled-not-join (vev.q-text-db-read-source-profiled-with-inputs
+                            source
+                            "[:find ?e :in $rows :where [$rows ?e :id ?id] (not-join [?e] [$rows ?e :name \"Petr\"])]"
+                            inputs)
+        profiled (vev.q-text-db-read-source-profiled-with-inputs
+                   source
+                   "[:find ?name :in $rows ?min :where [$rows ?e :age ?age] [(> ?age ?min)] [$rows ?e :name ?name]]"
+                   scalar-inputs)]
+    (t.is not-result.ok not-result.error)
+    (t.is (= (count not-result.rows) 2))
+    (t.is (source-branch-has-int? not-result 1))
+    (t.is (source-branch-has-int? not-result 3))
+    (t.is or-join-result.ok or-join-result.error)
+    (t.is (= (count or-join-result.rows) 2))
+    (t.is (source-branch-has-int? or-join-result 1))
+    (t.is (source-branch-has-int? or-join-result 3))
+    (t.is profiled-or-join.result.ok profiled-or-join.result.error)
+    (t.is (= (count profiled-or-join.result.rows) 2))
+    (t.is (source-branch-has-int? profiled-or-join.result 1))
+    (t.is (source-branch-has-int? profiled-or-join.result 3))
+    (t.is (= profiled-or-join.stats.binding-materializations 0))
+    (t.is scalar-result.ok scalar-result.error)
+    (t.is (= (count scalar-result.rows) 2))
+    (t.is (source-branch-has-int? scalar-result 2))
+    (t.is (source-branch-has-int? scalar-result 3))
+    (t.is profiled-aggregate.result.ok profiled-aggregate.result.error)
+    (t.is (= (count profiled-aggregate.result.rows) 1))
+    (t.is (= profiled-aggregate.result.rows[0].values[0].int-value 121))
+    (t.is (= profiled-aggregate.result.rows[0].values[1].int-value 3))
+    (t.is (= profiled-aggregate.result.rows[0].values[2].int-value 50))
+    (t.is (= profiled-aggregate.stats.binding-materializations 0))
+    (t.is profiled-grouped-aggregate.result.ok profiled-grouped-aggregate.result.error)
+    (t.is (= (count profiled-grouped-aggregate.result.rows) 3))
+    (t.is (= profiled-grouped-aggregate.stats.binding-materializations 0))
+    (t.is profiled-custom-aggregate.result.ok profiled-custom-aggregate.result.error)
+    (t.is (= (count profiled-custom-aggregate.result.rows) 1))
+    (t.is (= profiled-custom-aggregate.result.rows[0].values[0].kind .Vector))
+    (t.is (= profiled-custom-aggregate.result.rows[0].values[0].items[0].int-value 50))
+    (t.is (= profiled-custom-aggregate.result.rows[0].values[0].items[2].int-value 30))
+    (t.is (= profiled-custom-aggregate.stats.binding-materializations 0))
+    (t.is profiled-not.result.ok profiled-not.result.error)
+    (t.is (= (count profiled-not.result.rows) 2))
+    (t.is (source-branch-has-int? profiled-not.result 1))
+    (t.is (source-branch-has-int? profiled-not.result 3))
+    (t.is (= profiled-not.stats.binding-materializations 0))
+    (t.is profiled-not-join.result.ok profiled-not-join.result.error)
+    (t.is (= (count profiled-not-join.result.rows) 2))
+    (t.is (source-branch-has-int? profiled-not-join.result 1))
+    (t.is (source-branch-has-int? profiled-not-join.result 3))
+    (t.is (= profiled-not-join.stats.binding-materializations 0))
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (source-branch-has-text? profiled.result "Petr"))
+    (t.is (source-branch-has-text? profiled.result "Oleg"))
+    (t.is (= profiled.stats.input-bindings 1))
+    (t.is (> profiled.stats.source-index-scans 0))
+    (t.is (= profiled.stats.binding-materializations 0))))

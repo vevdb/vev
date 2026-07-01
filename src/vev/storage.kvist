@@ -2528,6 +2528,56 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (delete op.map-group)))
   (delete ops))
 
+(defn append-overlay-cardinality-one-retractions! [out: ^[dynamic]Tx-Op, op: Tx-Op]
+  (let [existing-ops (arr.into [dynamic]Tx-Op (slice out^ 0)) :defer]
+    (for [existing existing-ops]
+      (when (and (= existing.kind .Add)
+                 (= existing.e op.e)
+                 (= existing.a op.a)
+                 (not (value-equal? existing.v op.v)))
+        (arr.push! out^ (Tx-Op {kind: .Retract
+                                e: existing.e
+                                a: (string-owned existing.a)
+                                owned-attr: true
+                                v: (value-owned existing.v)
+                                owned-value: true}))))))
+
+(defn append-source-cardinality-one-retractions! [out: ^[dynamic]Tx-Op, source: DB-Read-Source, op: Tx-Op] -> [ok: bool, error: string]
+  (let [[existing existing-ok existing-error] (db-read-source-datoms-by-entity-attr source op.e op.a)]
+    (when (not existing-ok)
+      (return false existing-error))
+    (for [datom existing]
+      (when (not (value-equal? datom.v op.v))
+        (arr.push! out^ (Tx-Op {kind: .Retract
+                                e: datom.e
+                                a: (string-owned datom.a)
+                                owned-attr: true
+                                v: (value-owned datom.v)
+                                owned-value: true}))))
+    (delete-owned-datoms existing)
+    (return true "")))
+
+(defn overlay-ops-declare-cardinality-many? [ops: []Tx-Op, attr: string] -> bool
+  (let [schema-e: u64 0
+        found-schema false]
+    (for [op ops]
+      (when (and (= op.kind .Add)
+                 (= op.a ":db/ident")
+                 (= op.v.kind .Keyword)
+                 (= op.v.text attr))
+        (set! schema-e op.e)
+        (set! found-schema true)))
+    (when (not found-schema)
+      (return false))
+    (for [op ops]
+      (when (and (= op.kind .Add)
+                 (= op.e schema-e)
+                 (= op.a ":db/cardinality")
+                 (= op.v.kind .Keyword)
+                 (= op.v.text ":db.cardinality/many"))
+        (return true))))
+  false)
+
 (defn shared-store-db-with-overlay [base: Shared-DB-Snapshot, ops: []Tx-Op, tx: u64] -> Store-DB
   (Store-DB {kind: .Shared-Tx-Ops-Overlay
              shared-snapshot: (retain-shared-db-snapshot base)
@@ -2567,19 +2617,12 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source op.a)]
       (when (not many-ok)
         (return false many-error))
-      (when (not many)
-        (let [[existing existing-ok existing-error] (db-read-source-datoms-by-entity-attr source op.e op.a)]
-          (when (not existing-ok)
-            (return false existing-error))
-          (for [datom existing]
-            (when (not (value-equal? datom.v op.v))
-              (arr.push! out^ (Tx-Op {kind: .Retract
-                                      e: datom.e
-                                      a: (string-owned datom.a)
-                                      owned-attr: true
-                                      v: (value-owned datom.v)
-                                      owned-value: true}))))
-          (delete-owned-datoms existing)))))
+      (when (and (not many)
+                 (not (overlay-ops-declare-cardinality-many? (slice out^ 0) op.a)))
+        (let [[source-ok source-error] (append-source-cardinality-one-retractions! out source op)]
+          (when (not source-ok)
+            (return false source-error)))
+        (append-overlay-cardinality-one-retractions! out op))))
   (arr.push! out^ (tx-op-owned op))
   (return true ""))
 
@@ -2892,6 +2935,68 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                      shared-snapshot: (retain-shared-db-snapshot snapshot.shared-snapshot)
                                      overlay-datoms: (clone-owned-datom-slice (slice snapshot.overlay-datoms 0))})
      (Store-DB {})))
+
+(defn store-db-from-read-source [source: DB-Read-Source] -> [snapshot: Store-DB, ok: bool, error: string]
+  (case source.kind
+    .Resident
+      (return (Store-DB {kind: .Resident
+                         resident: (clone-db source.db^)})
+              true
+              "")
+    .Shared-Resident-Indexes
+      (return (Store-DB {kind: .Resident
+                         resident: (clone-db source.db^)})
+              true
+              "")
+    .Shared-Resident-Datoms-And-Indexes
+      (return (Store-DB {kind: .Shared-Snapshot
+                         shared-snapshot: (Shared-DB-Snapshot {datoms: (retain-shared-datom-log source.shared-datoms^)
+                                                               indexes: (retain-shared-db-int-indexes source.shared-indexes^)})})
+              true
+              "")
+    .Shared-Tx-Ops-Overlay
+      (return (Store-DB {kind: .Shared-Tx-Ops-Overlay
+                         shared-snapshot: (Shared-DB-Snapshot {datoms: (retain-shared-datom-log source.shared-datoms^)
+                                                               indexes: (retain-shared-db-int-indexes source.shared-indexes^)})
+                         overlay-ops: (clone-tx-ops-owned (slice source.overlay-ops^ 0))
+                         overlay-tx: source.overlay-tx})
+              true
+              "")
+    .Shared-Datom-Overlay
+      (return (Store-DB {kind: .Shared-Datom-Overlay
+                         shared-snapshot: (Shared-DB-Snapshot {datoms: (retain-shared-datom-log source.shared-datoms^)
+                                                               indexes: (retain-shared-db-int-indexes source.shared-indexes^)})
+                         overlay-datoms: (clone-owned-datom-slice (slice source.overlay-datoms^ 0))})
+              true
+              "")
+    .SQLite-Snapshot
+      (return (Store-DB {kind: .SQLite-Snapshot
+                         sqlite-snapshot: (retain-sqlite-db-snapshot source.sqlite-snapshot^)})
+              true
+              "")
+    .SQLite-Tx-Ops-Overlay
+      (return (Store-DB {kind: .SQLite-Tx-Ops-Overlay
+                         sqlite-snapshot: (retain-sqlite-db-snapshot source.sqlite-snapshot^)
+                         overlay-ops: (clone-tx-ops-owned (slice source.overlay-ops^ 0))
+                         overlay-tx: source.overlay-tx})
+              true
+              "")
+    .SQLite-Datom-Overlay
+      (return (Store-DB {kind: .SQLite-Datom-Overlay
+                         sqlite-snapshot: (retain-sqlite-db-snapshot source.sqlite-snapshot^)
+                         overlay-datoms: (clone-owned-datom-slice (slice source.overlay-datoms^ 0))})
+              true
+              "")
+    .Tx-Ops-Overlay
+      (let [[base base-ok base-error] (store-db-from-read-source source.overlay-base^)]
+        (when (not base-ok)
+          (return (Store-DB {}) false base-error))
+        (let [out (store-db-source-overlay-from-resolved base (slice source.overlay-ops^ 0) source.overlay-tx)]
+          (close-store-db base)
+          (return out true "")))
+    .Relation-Value
+      (return (Store-DB {}) false "relation-value source cannot be exposed as a DB handle")
+     (return (Store-DB {}) false "unsupported read source for DB handle")))
 
 (defn store-db-read-source [snapshot: ^Store-DB] -> [source: DB-Read-Source, ok: bool, error: string]
   (case snapshot^.kind

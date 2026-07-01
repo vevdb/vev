@@ -1,0 +1,74 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev-tests)
+
+(import fmt "core:fmt")
+(import os "core:os")
+(import t "kvist:test")
+(import vev "../vev")
+
+(defn remove-storage-with-sqlite-files [path: string]
+  (os.remove path)
+  (os.remove (fmt.tprintf "%s-wal" path))
+  (os.remove (fmt.tprintf "%s-shm" path)))
+
+(defn seed-cas-lookup-ref-store [path: string] -> [ok: bool, error: string]
+  (let [[store opened-ok opened-error] (vev.open-store path)
+        schema (vev.transact-store-text
+                 (addr store)
+                 "[{:db/id 100 :db/ident :user/email :db/unique :db.unique/identity} {:db/id 101 :db/ident :user/friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]")
+        seed (vev.transact-store-text (addr store) "[{:db/id 1 :user/email \"ada@example.com\"} {:db/id 2 :user/email \"grace@example.com\"}]")]
+    (vev.close-store store)
+    (when (not opened-ok)
+      (vev.delete-tx-report-shallow schema)
+      (vev.delete-tx-report-shallow seed)
+      (return false opened-error))
+    (when (not schema.ok)
+      (let [error schema.error]
+        (vev.delete-tx-report-shallow schema)
+        (vev.delete-tx-report-shallow seed)
+        (return false error)))
+    (when (not seed.ok)
+      (let [error seed.error]
+        (vev.delete-tx-report-shallow schema)
+        (vev.delete-tx-report-shallow seed)
+        (return false error)))
+    (vev.delete-tx-report-shallow schema)
+    (vev.delete-tx-report-shallow seed)
+    (return true "")))
+
+(t.deftest sqlite-store-db-with-cas-expected-lookup-ref-uses-same-tx-overlay
+  (defer (free_all context.allocator))
+  (remove-storage-with-sqlite-files "tmp.vev.store-db-with-cas-expected-lookup-ref.sqlite")
+  (let [path "tmp.vev.store-db-with-cas-expected-lookup-ref.sqlite"]
+    (defer (remove-storage-with-sqlite-files path))
+    (let [[seed-ok seed-error] (seed-cas-lookup-ref-store path)]
+      (t.is seed-ok seed-error))
+    (let [[read-store read-opened-ok read-opened-error] (vev.open-store-read-only path)
+          [snapshot snapshot-ok snapshot-error] (vev.store-db (addr read-store))
+          next-snapshot (vev.db-with-store-db-text
+                          (addr snapshot)
+                          "[{:db/id \"temp\" :user/email \"temp@example.com\"} [:db/add 1 :user/friend \"temp\"] [:db/cas 1 :user/friend [:user/email \"temp@example.com\"] [:user/email \"grace@example.com\"]]]")
+          friend-result (vev.q-result-store-db-text (addr next-snapshot) "[:find ?email :where [1 :user/friend ?friend] [?friend :user/email ?email]]")
+          temp-result (vev.q-result-store-db-text (addr next-snapshot) "[:find ?e :where [?e :user/email \"temp@example.com\"]]")
+          original-result (vev.q-result-store-db-text (addr snapshot) "[:find ?friend :where [1 :user/friend ?friend]]")]
+      (t.is read-opened-ok)
+      (t.is (= read-opened-error ""))
+      (t.is snapshot-ok)
+      (t.is (= snapshot-error ""))
+      (t.is (= snapshot.kind .SQLite-Snapshot))
+      (t.is (= next-snapshot.kind .SQLite-Tx-Ops-Overlay))
+      (t.is friend-result.result.ok friend-result.result.error)
+      (t.is (= (count friend-result.result.rows) 1))
+      (t.is (= friend-result.result.rows[0].values[0].text "grace@example.com"))
+      (t.is temp-result.result.ok temp-result.result.error)
+      (t.is (= (count temp-result.result.rows) 1))
+      (t.is original-result.result.ok)
+      (t.is (= (count original-result.result.rows) 0))
+      (vev.delete-query-result friend-result)
+      (vev.delete-query-result temp-result)
+      (vev.delete-query-result original-result)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store-db! (addr next-snapshot))
+      (vev.close-store read-store))))

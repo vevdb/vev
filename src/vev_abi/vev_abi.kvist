@@ -1830,6 +1830,22 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- abi-tx-fn-slot-15 [db: vev.DB, args: []vev.Value] -> vev.Tx-Fn-Result (abi-tx-fn-dispatch 15 db args))
 
 (defn- abi-tx-fn-source-dispatch [slot: int, source: vev.DB-Read-Source, args: []vev.Value] -> vev.Tx-Fn-Source-Result
+  (let [[snapshot snapshot-ok _] (vev.store-db-from-read-source source)]
+    (when snapshot-ok
+      (let [db-handle (Vev-DB (abi-alloc-db snapshot))
+            result-c (abi-tx-fn-call slot (rawptr db-handle) (count args) (tx-fn-args-ptr args))]
+        (defer (release-db-handle-owned db-handle))
+        (when (= result-c nil)
+          (return (vev.tx-fn-source-error "transaction callback returned null")))
+        (let [result-text (text-from-c result-c)
+              tx-data (make [dynamic]vev.Tx-Data) :defer
+              [ok error] (vev.parse-tx-text! (addr tx-data) result-text)]
+          (when (not ok)
+            (delete result-text)
+            (return (vev.tx-fn-source-error error)))
+          (let [out (vev.tx-fn-source-ok (slice tx-data 0))]
+            (delete result-text)
+            (return out))))))
   (let [[db db-ok db-error] (vev.db-read-source-materialize-db source)]
     (when (not db-ok)
       (return (vev.tx-fn-source-error db-error)))
