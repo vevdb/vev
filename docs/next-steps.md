@@ -889,6 +889,47 @@ Implemented so far:
   path for simple width-2 relation bindings. This keeps host/EDN map inputs for
   `:in [[?k ?v]]` on typed columns instead of routing through the generic
   binding expander.
+- Persisted/source-backed `DB-Read-Source` queries now have a source-native
+  one-clause entity/value projection for simple indexed scans such as
+  `[?e :user/name ?name]`, plus a two-attribute projection for simple entity
+  joins such as `[?e :user/name ?name] [?e :user/age ?age]`. Durable
+  `Store-DB` queries can answer these shapes by scanning source indexes and
+  entity-local values directly instead of first building generic source binding
+  rows.
+- The same source projection layer now covers a simple filtered bind-join:
+  `[?e :user/email "ada@example.com"] [?e :user/name ?name]` scans AVET by the
+  bound attr/value pair and then reads the projected entity attr through
+  `DB-Read-Source`. This keeps the common lookup-then-project shape on source
+  indexes and current-fact checks instead of generic binding rows.
+- Fixed-entity two-attribute projections such as
+  `[1 :user/name ?name] [1 :user/age ?age]` now use an entity-local
+  source-star path over `DB-Read-Source` instead of generic binding rows. This
+  is the first concrete source-native merge/star operator for entity attribute
+  reads.
+- Fixed-entity single-attribute projections such as
+  `[1 :user/name ?name]` now use a direct source entity+attr projection. The
+  operator stays on `DB-Read-Source`, skips reverse attributes so existing
+  reverse lookup semantics still use the generic reverse-aware path, and
+  returns no rows for retracted entity attrs.
+- Fixed attr/value entity lookups such as
+  `[?e :user/email "ada@example.com"]` now use a direct source AVET projection
+  and return entity rows without creating generic source bindings. The operator
+  also skips reverse attributes so reverse lookup semantics stay on the
+  existing reverse-aware path.
+- One-column attr scans such as `[?e :user/name ?name]` with `:find ?name`
+  now use a direct source attr/value projection, deduping values and avoiding
+  generic source bindings while leaving reverse attributes on the generic
+  reverse-aware path.
+- Single source-backed data clauses feeding `count`, `count-distinct`, and
+  bounded top-n `min`/`max` aggregates now run as a direct source aggregate
+  operator. The operator scans current source candidates, applies the same
+  `:with`/aggregate-argument dedupe semantics as the generic aggregate path,
+  and returns the aggregate row without first materializing source `Binding`
+  rows.
+- Single source-backed all-var clauses such as `[?e ?a ?v]` now have a
+  source-native projection operator. It scans current source candidates,
+  returns entity, attr keyword, and value columns in `:find` order, and keeps
+  retracted datoms filtered without first creating generic source bindings.
 
 Work:
 
