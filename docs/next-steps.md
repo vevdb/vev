@@ -1,198 +1,219 @@
 # Next Steps
 
-This is the current todo list for Vev. Keep it focused on remaining work only;
-do not use this file as a historical changelog.
+This is the current Vev execution plan. Keep it short and current; do not use
+this file as a changelog.
 
-## Current Gate
+## Active Gate
 
-Durable storage architecture is the active gate.
+Make Vev good enough to follow the MusicBrainz Datomic workshop in Clojure and
+Kvist against a persistent local Vev store.
 
-Vev has in-memory DataScript/Datomic-shaped semantics, host interop,
-MusicBrainz coverage, source-backed durable reads, storage-neutral `Store-DB`
-handles, and a physical query layer over `DB-Read-Source`.
+The next phase is concrete and user-facing: take the Day of Datomic /
+MusicBrainz tutorial style, run it through Vev from Clojure and Kvist, persist
+the data, reopen it, and compare correctness and performance against local
+Datomic. Work that does not move that scenario forward should wait.
 
-The remaining goal is to make durable DB values production-shaped:
+Do not invent tutorial coverage from memory. Port from the upstream source
+files that are checked out locally under ignored `build/upstream`:
 
-- opening/reopening a durable DB for reads must not rebuild the full resident DB
-- immutable DB values must share persisted/chunked index storage across commits
-- durable transaction reports must publish `db-before` / `db-after` handles
-  without resident materialization for normal transaction shapes
-- query, pull, entity, rules, `with`, `db-with`, and host APIs must expose
-  ordinary immutable Datomic-like DB values
-- SQLite remains the durable log/page store, not the Datalog executor
+- `build/upstream/day-of-datomic-conj/src/music_brainz.clj`
+  at `cf1e260cff0aa582fe2ae17bb1fcfaeebb139f80`
+- `build/upstream/day-of-datomic/tutorial/query.clj`
+  at `daa457f766e16f55243a95513e759573b8827329`
+- `build/upstream/day-of-datomic/tutorial/pull.clj`
+  at `daa457f766e16f55243a95513e759573b8827329`
+- `build/upstream/mbrainz-sample/schema.edn`,
+  `build/upstream/mbrainz-sample/resources/rules.edn`, and
+  `build/upstream/mbrainz-sample/examples/clj/datomic/samples/mbrainz.clj`
+  at `a7c0aab6828cfa09d5ff3c6075579673377b4a43`
 
-## 1. Finish Durable Write Publication Without Resident DBs
+Hard constraints:
 
-Status: active.
+- in-memory mode must stay first-class and must not require SQLite
+- durable mode may require system SQLite, but SQLite details should only appear
+  at database creation/opening and operational setup boundaries
+- public APIs should feel Datomic/DataScript-like unless Vev has a clear reason
+  to differ; Clojure query examples should use the familiar
+  `(d/q query db & inputs)` order
+- non-Kvist consumers are primary: EDN text APIs, native ABI handles, and host
+  wrappers must be treated as product surfaces
+- docs should explain how to use Vev today, not narrate historical
+  implementation work
+- performance work should be driven by the MusicBrainz tutorial/workshop
+  workload and benchmark gates, not cursor micro-optimizations in isolation
 
-Storage-neutral durable transaction reports now cover the normal SQLite
-source-direct write path, shared-store source-function reports, and SQLite
-parse/read-only/direct-error report failures. Supported writes resolve tx-data
-against `DB-Read-Source`, append durable add/retract datoms, publish new index
-roots, and return retained `Store-DB` handles for `db-before` and `db-after`
-without resident materialization. Source-backed report failures also return
-storage-neutral DB handles instead of falling back through resident clones.
+## Current Status
 
-Implemented:
+Vev has enough foundation to attempt the MusicBrainz workshop path:
 
-- storage-neutral transaction-report APIs return empty `Store-DB` handles for
-  unopened-store failures instead of manufacturing empty resident DBs
-- SQLite `Store-Tx-Report` failures before the first durable index root now
-  also return empty storage handles instead of wrapping an empty resident DB
-- the CLI transaction command now uses `transact-store-report-text` and
-  `Store-Tx-Report` output instead of the older resident `Tx-Report`
-  compatibility path
+- in-memory connections support schema/data transactions, Datalog queries, pull,
+  rules, aggregates, inputs, lookup refs, `with`, and DB values
+- durable SQLite-backed stores support normal `connect/open -> transact -> db ->
+  q/pull/entity -> close/reopen -> q/pull/entity` workflows
+- retained `Store-DB` snapshots are immutable values and can be passed around
+- C, Java, Clojure, Python, and Rust clients/smokes exist over the native ABI
+- Clojure has a Datomic-like API shape and the full MusicBrainz wrapper matrix
+  verifies the non-Kvist EDN path
+- the real MusicBrainz query matrix matches Datomic by row count and portable
+  fingerprint across the current listed workloads
+- the README and getting-started docs now lead with the actual Vev workflow
+  instead of smoke-script setup
+- Clojure examples are in `(comment ...)` tutorial style and use
+  Datomic/DataScript query-first `q`
+- Java, Python, Rust, Go, Node, and Odin docs now show the same
+  DB-value-centered transaction, query, and pull workflow where their wrappers
+  support it
+- Python, Go, and Node now have one-shot query helpers over the existing
+  prepared-query paths; Node also has explicit close methods for connection,
+  DB, and prepared-query handles
+- Rust now has the same app-facing `q` convenience for connections and DB
+  values, plus durable `transact` over the report path
+- Rust now has a real `lib.rs` crate surface plus a smoke binary, and the
+  focused package smoke validates a temporary external Cargo project with a
+  path dependency on `clients/rust`
+- Python now has a small contact-book example that runs the same workflow in
+  in-memory and durable modes
+- the next important user-facing gap is a Clojure and Kvist MusicBrainz
+  tutorial path, not more generic wrapper polish
+- the first Clojure tutorial slice now ports the opening/query-stats prompt and
+  binding examples from `day-of-datomic-conj/src/music_brainz.clj`
+- the Clojure tutorial path now ports from the file top through the pre-1970
+  release clause-order query-stats examples in the same upstream file
 
-Remaining work:
+Important performance signal:
 
-- move older public `Tx-Report` compatibility APIs toward the
-  storage-neutral `Store-Tx-Report` shape where host-facing code needs
-  immutable DB values; normal SQLite `Store-Tx-Report` writes and source
-  transaction-function writes are already storage-neutral unless the connection
-  has explicitly entered resident compatibility mode
-- reduce remaining resident fallback shapes to explicit unsupported-shape errors
-  or small-DB/debug compatibility, never a hidden path for normal durable writes
-- keep live connection tx metadata, basis, tempids, listeners, and retained old
-  DB handles semantically identical to the in-memory engine
+- in-memory/native Vev performance is strong and often well ahead of
+  DataScript in the current query/rule benchmarks
+- MusicBrainz vs Datomic is broadly healthy; most representative rows are
+  faster in Vev, with a small number of known slower rows
+- durable/source-backed storage has remaining internal bottlenecks, especially
+  persisted cursor scans and result/page materialization, but this should now be
+  addressed only when the MusicBrainz tutorial path exposes it
 
-Acceptance:
+## Exit Criteria
 
-- normal durable writes do not require `store-resident-db-available?`
-- retained `db-before` and `db-after` remain queryable after later commits
-- DataScript transaction compatibility tests remain green over durable handles
+This gate is done when the MusicBrainz workshop path works without reading Vev
+internals:
 
-## 2. Reduce Commit-Time Copying
+- a user can load or generate the MusicBrainz sample/subset into persistent Vev
+- a user can follow representative Day of Datomic / MusicBrainz tutorial
+  queries from Clojure using `vev.core` with Datomic-like API shape
+- a user can follow the same tutorial path from Kvist using Vev's native package
+  and literal/query conveniences
+- the persistent store can be closed, reopened, queried, and pulled from both
+  Clojure and Kvist without SQLite details leaking into normal app code
+- row counts and portable result fingerprints match local Datomic for the
+  covered tutorial/workshop queries
+- performance is as good as or better than local Datomic for the covered local
+  persistent workload, or any slower row has a documented concrete bottleneck
+  and next fix
+- setup docs clearly state native library and system SQLite requirements
 
-Status: active.
+## Remaining Work
 
-Implemented:
+1. **Clojure MusicBrainz tutorial path**
 
-- direct SQLite append writes for new entities can publish EAVT as a recursive
-  parent root that shares the previous EAVT root and only adds new leaf chunks
-- SQLite source-function commits use the same EAVT append-root publication when
-  the function-expanded transaction data only appends new entities
-- source-backed transaction reports now carry append-publication metadata
-  through to SQLite commit, so source-function commits do not reread write-state
-  metadata just to rediscover append-root eligibility
-- source-backed transaction reports now carry per-index append-mode proofs for
-  EAVT, AEVT, AVET, and VAET, and SQLite commit uses those proofs directly
-  instead of rebuilding index eligibility decisions
-- SQLite publication now chooses append-root sharing independently for EAVT,
-  AEVT, AVET, and VAET when the appended segment is proven to be after the
-  previous root in that index's own key order
-- recursive persisted roots are readable through both full debug reads and
-  page-bounded lazy index reads, so retained DB handles do not need to flatten
-  the whole root for normal paged source scans
-- empty/no-op index chunks have stable metadata bounds, so canceling
-  add/retract transactions keep the storage schema valid
-- source-derived shared write-state metadata no longer allocates an empty
-  resident DB just to carry tx/listener metadata; live shared connections still
-  explicitly own their resident DB, while durable/source write helpers stay
-  metadata-only
+   Status: active. `examples/clojure/musicbrainz_workshop.clj` starts from the
+   upstream `day-of-datomic-conj/src/music_brainz.clj` top section and now
+   covers through the pre-1970 release clause-order query-stats examples. The
+   exact upstream "Statistics" and custom aggregate forms are present in the
+   tutorial file but remain pending. `scripts/musicbrainz_workshop_clojure.sh`
+   validates the covered slices against a persistent Vev MusicBrainz store.
 
-Remaining work:
+   Covered:
 
-- keep transaction validation and write-state metadata incremental beyond the
-  current source-derived metadata path, so failed writes and non-schema writes
-  do not clone full datom/index arrays
-- preserve resident-array publication only as a small-DB/debug compatibility
-  strategy
+   - use the durable Vev store path, not an in-memory-only demo
+   - keep examples in `(comment ...)` form for editor-driven evaluation
+   - opening John Lennon pull query from the query-stats prompt
+   - tuple binding for `["John Lennon" "Mind Games"]`
+   - request-map `d/query` shape for Elis Regina release pulls
+   - collection binding for Paul McCartney / George Harrison
+   - relation find spec with explicit `$`
+   - collection, tuple, and scalar find specs with Datomic-like Clojure result
+     shapes
+   - return maps with `:keys`, including key destructuring
+   - built-in function expression `(quot ?millis 60000) ?minutes`
+   - built-in expression join for Janis Joplin artist type/gender
+   - basic aggregations: `min`, scalar `sum`, and `count` /
+     `count-distinct`
+   - first deeper `d/query` request-map form with `:io-context`, returning
+     John Lennon track titles
+   - `d/query` request-map forms with `:query-stats true` for the two
+     pre-1970 John Lennon release-name clause-order examples
 
-Acceptance:
+   Current blockers exposed by the upstream port:
 
-- snapshot-heavy and retained-DB-handle benchmarks are not dominated by
-  whole-array copies
-- batch-1 and mixed write benchmarks improve without reportless shortcuts
-- old DB handles remain valid and cheap to retain
+   - relation binding with vector-of-tuples is ported but pending for the
+     durable Clojure wrapper; the native/Python layers have typed relation
+     helpers, but Java/Clojure do not yet expose the needed relation binding
+     path for this source-backed query shape
+   - the upstream missing-`$` teaching query returns no rows in Vev instead of
+     Datomic's helpful "missing data source" error
+   - return-map rows support key destructuring but not Datomic's positional
+     destructuring, because Vev currently returns ordinary Clojure maps rather
+     than indexed map rows
+   - arbitrary host Clojure predicate calls such as `(user/teste ?year)` are
+     parsed but not executed by the native query engine
+   - the upstream track-name statistics query using `median`, `avg`, `stddev`,
+     and string length currently runs too slowly against the persistent
+     tutorial store for the smoke path
+   - custom Clojure aggregate functions such as `(user/mode ?track-count)` are
+     not executed by the native query engine
 
-## 3. Finish Query Execution Around `DB-Read-Source`
+2. **Kvist MusicBrainz tutorial path**
 
-Status: active.
+   Build the same tutorial/workshop path from Kvist.
 
-Implemented:
+   Required:
 
-- live SQLite text, text-with-input, and prepared query wrappers now acquire a
-  `Store-DB` snapshot and use the same `q-result-store-db-*` boundary as
-  retained immutable DB handles, instead of each wrapper manually opening a
-  SQLite snapshot and calling source functions directly
-- reopened read-only durable stores are covered for prepared and text-with-input
-  source-backed queries while remaining non-resident
-- resident `q-result-text*` and `q-result-prepared*` wrappers now enter through
-  `resident-db-read-source` and return owned `Query-Result` values, matching
-  source-backed cleanup semantics while leaving lower-level resident
-  `Result-Set` APIs intact
-- `Query-Stats` now exposes explicit `source-operators` and
-  `generic-materialization-steps` counters, so source-backed physical operator
-  use is visible directly instead of inferred from scan/materialization counts
-- no-input resident `q-text-profiled*` and `q-prepared-profiled*` wrappers now
-  enter through `resident-db-read-source`, so ordinary text/prepared profiling
-  uses the same source/operator boundary as durable `Store-DB` reads
-- source-backed text queries with EDN input strings now compute profiling stats
-  through the input-aware read-source stats helper, so host-facing input-text
-  APIs report input bindings/source operators instead of no-input heuristics
+   - use the Vev Kvist package directly
+   - use Kvist-native query/tx/pull literals where they improve the experience
+   - use the same persistent MusicBrainz Vev store as the Clojure path where
+     practical
+   - cover the same query set as the Clojure tutorial path
+   - produce comparable timing/fingerprint output
 
-Remaining work:
+3. **MusicBrainz import and fixture setup**
 
-- collapse the split between older resident `DB` entry points and the
-  source-backed query path
-- keep resident-array mode as an implementation strategy, not a query-engine
-  assumption
-- keep moving lower-level resident query execution plus input/function/rule/
-  named-source profiling toward the same source boundary where compatibility
-  and operator coverage permit it
+   Current MusicBrainz tests exist, but the tutorial path needs a clear fixture
+   story.
 
-Acceptance:
+   Required:
 
-- resident and source-backed query entry points share the same logical operator
-  boundary
-- result cleanup semantics are explicit and host-safe
-- DataScript compatibility tests remain green
+   - document which MusicBrainz dataset/subset is used
+   - provide one command to create or refresh the persistent Vev store
+   - provide one command to run Clojure tutorial validation
+   - provide one command to run Kvist tutorial validation
+   - keep the generated store out of git
 
-## 4. Grow Physical Query Operators
+4. **Datomic comparison harness**
 
-Status: active.
+   Required:
 
-Remaining work:
+   - run the same query definitions against local Datomic and Vev
+   - report row count, stable fingerprint, Vev time, Datomic time, and ratio
+   - keep timing methodology simple and visible enough to trust
+   - separate correctness failures from performance regressions
 
-- turn current source recognizers into reusable indexed scan, bind-join,
-  merge/star, projection, and aggregate operators
-- add source-aware operators for remaining common graph traversal and
-  multi-clause shapes exposed by MusicBrainz and Datalevin-style benchmarks
-- continue predicate/range pushdown beyond single AVET range drivers
-- keep improvements attached to general operators and common query shapes, not
-  query-text-specific shortcuts
+5. **Only fix engine/storage issues exposed by this path**
 
-Acceptance:
+   Do not return to broad optimization work yet. Fix issues only when they
+   block or materially slow the MusicBrainz persistent tutorial scenario:
 
-- important source-backed query shapes report zero binding materialization
-- MusicBrainz query matrix stays green
-- Datalevin-style read benchmark regressions are explainable by operator gaps
-
-## 5. Benchmark And Regression Matrix
-
-Status: ongoing.
-
-Remaining work:
-
-- keep benchmark output as ratios against relevant baselines
-- run MusicBrainz open/query/reopen after storage changes
-- run write-bench variants after shared index/write-state changes:
-  `snapshot-heavy`, `shared-snapshot-heavy`, `shared-snapshot-heavy-direct`,
-  `shared-store-db-heavy`, `pure --batch 1`, and `mixed`
-- run DataScript/Datalevin read benchmarks periodically as regression checks
-
-Acceptance:
-
-- benchmark docs show current ratios and known bottlenecks
-- no benchmark requires a public API shape different from the Datomic-like API
-- performance work remains attached to correctness and architecture goals
+   - missing query/pull/rule syntax used by the tutorial
+   - wrapper API friction that makes tutorial code unlike Datomic/DataScript
+   - persistent store reopen/query behavior that makes the workflow clumsy
+   - specific MusicBrainz query rows slower than local Datomic
 
 ## Later
 
-Important, but not the current gate:
+Important, but not the active gate:
 
+- broader host wrapper polish outside Clojure/Kvist
+- full package publication polish: Maven/Clojars/PyPI/crates/packages
+- persisted cursor/page traversal optimization
+- shared/chunked durable index storage beyond the current architecture
+- lower-allocation result/page materialization
 - exact parser diagnostic/object parity
 - generic SCC-local semi-naive recursive rule fallback
-- full Maven/Clojars/PyPI/npm/crates.io publication polish
 - optional server/transactor packaging mode
-- replication/sync primitives

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Copyright (c) Andreas Flakstad and Vev contributors
+# SPDX-License-Identifier: EPL-2.0
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+JAVA_OUT="$ROOT/build/examples/java"
+STORE="$ROOT/build/musicbrainz/vev-mbrainz-tutorial.sqlite"
+
+if [[ ! -f "$STORE" ]]; then
+  echo "missing persistent MusicBrainz Vev store: $STORE" >&2
+  echo "build it with bench/musicbrainz_import_subset.kvist and --sqlite-output" >&2
+  exit 1
+fi
+
+if [[ ! -f "$JAVA_OUT/dev/vevdb/vev/Vev.class" || "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java" -nt "$JAVA_OUT/dev/vevdb/vev/Vev.class" ]]; then
+  javac \
+    --enable-preview \
+    --release 21 \
+    -d "$JAVA_OUT" \
+    "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java"
+fi
+
+clojure \
+  -J--enable-preview \
+  -J--enable-native-access=ALL-UNNAMED \
+  -Sdeps "{:paths [\"$JAVA_OUT\" \"$ROOT/clients/clojure/src\" \"$ROOT/examples/clojure\"]}" \
+  -M -e "(require '[musicbrainz-workshop :as workshop]) (println (workshop/validate-opening-bindings!)) (println (workshop/validate-find-specifications!)) (println (workshop/validate-basic-aggregations!)) (println (workshop/validate-deeper-query-intro!)) (println (workshop/validate-pre-1970-release-stats!))"

@@ -44,6 +44,12 @@ const collection = conn.queryText(`
 console.log("input-collection:", collection);
 mustContain("collection query", collection, `"Ada"`, `"Grace"`);
 
+const oneShotRows = conn.q('[:find ?name :where [?e :user/name ?name]]');
+const oneShotNames = oneShotRows.map((row) => row[0]).sort();
+if (JSON.stringify(oneShotNames) !== JSON.stringify(["Ada", "Grace"])) {
+  throw new Error(`unexpected one-shot query rows: ${JSON.stringify(oneShotRows)}`);
+}
+
 const query = conn.prepare(`
   [:find ?e ?email
    :in ?needle
@@ -83,6 +89,7 @@ console.log("pull:", pulled);
 if (pulled[":user/name"] !== "Ada" || pulled[":user/friend"][":user/name"] !== "Grace") {
   throw new Error(`unexpected pull: ${JSON.stringify(pulled)}`);
 }
+pullQuery.close();
 
 const snapshot = conn.db();
 const directPull = snapshot.pull("[:user/name {:user/friend [:user/name]}]", 1);
@@ -128,6 +135,9 @@ const reportAfterRows = withReport.dbAfter.rows(query, `["barbara@example.com"]`
 if (reportBeforeRows.length !== 0 || reportAfterRows.length !== 1) {
   throw new Error("unexpected with report DB rows");
 }
+withReport.dbBefore.close();
+withReport.dbAfter.close();
+snapshot.close();
 
 const sqlitePath = "tmp.vev.node.sqlite";
 removeSqliteFiles(sqlitePath);
@@ -146,10 +156,17 @@ try {
     throw new Error("unexpected durable metadata after transact");
   }
   const durableQuery = conn.prepare(`[:find ?e ?email :in ?needle :where [?e :user/email ?email] [(= ?email ?needle)]]`);
-  const durableRows = durable.db().rows(durableQuery, `["durable-ada@example.com"]`);
+  const durableDb = durable.db();
+  const durableRows = durableDb.rows(durableQuery, `["durable-ada@example.com"]`);
   if (durableRows.length !== 1 || durableRows[0][0].id !== 1) {
     throw new Error(`unexpected durable rows: ${JSON.stringify(durableRows)}`);
   }
+  durableDb.close();
+  durableQuery.close();
+  durable.close();
 } finally {
   removeSqliteFiles(sqlitePath);
 }
+
+query.close();
+conn.close();

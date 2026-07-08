@@ -77,6 +77,153 @@ There are two useful read-benchmark views:
   slowdown belongs to the query engine or to C ABI / Java / Clojure result
   materialization.
 
+For durable write/read storage work, `bench/write_bench.kvist` also has
+storage-specific workloads. The most important current row is:
+
+```sh
+build/write-bench --workload manifest-chain-read --batch 1 --total 1000 --read-samples 3
+```
+
+For durable group-commit work, use:
+
+```sh
+build/write-bench --workload sqlite-store-db-heavy-group-commit --batch 10 --total 1000
+```
+
+This workload is intentionally different from `sqlite-store-db-heavy --batch
+10`. The ordinary `sqlite-store-db-heavy` batch mode creates one logical
+transaction with more tx-data. `sqlite-store-db-heavy-group-commit` creates
+several logical transactions, keeps their distinct tx ids/reports/retained
+`db-after` handles, and commits them through one SQLite transaction. It should
+be used to validate that group commit improves durable ingest without weakening
+Datomic-like transaction semantics.
+
+Latest local group-commit comparison on July 5, 2026, with `--total 1000`,
+retaining every `db-after` handle:
+
+| Workload | Group | Durability | Throughput | Commit/call latency | Commit fsync/profile cost | Main remaining cost |
+|---|---:|---|---:|---:|---:|---|
+| `sqlite-store-db-heavy --batch 1` | 1 | `:normal` | 1714 writes/s | 0.579ms/write | 0.383ms/write | one SQLite commit per logical tx |
+| `sqlite-store-db-heavy-group-commit --batch 10` | 10 | `:normal` | 4226 writes/s | 2.368ms/group | 0.038ms/write | per-logical root append/persist setup |
+| `sqlite-store-db-heavy-group-commit --batch 50` | 50 | `:normal` | 5185 writes/s | 10.505ms/group | 0.014ms/write | per-logical root append/persist setup |
+
+The important result is architectural: logical group commit reduces durable
+commit cost while preserving distinct tx ids/reports and retained `db-after`
+values. It is not done. The group loop now carries the current basis forward
+with same-handle SQLite snapshots, so later logical transactions in the same
+SQLite transaction do not reopen the source-backed view through a second
+connection. On the local batch-50 gate, `open_before_ms` dropped from about
+`0.069ms/write` to about `0.002ms/write`; on batch 10 it is about
+`0.008ms/write`. The loop also skips opening a carried source snapshot after
+the final logical transaction. The next storage engine target is group-local
+root/write-state publication: avoid redoing per-index root append/persist setup
+for each logical transaction while still publishing one durable basis and report
+per logical tx.
+
+This writes batch-1 source-backed commits that publish chained manifest roots,
+measures open/query before compaction, runs explicit index compaction, and
+measures open/query again. On July 3, 2026, after resumable merge/manifest
+cursor state, the 1000-row run without automatic maintenance showed:
+
+| Row | Median |
+|---|---:|
+| uncompacted broad source query | 1.18s |
+| explicit compaction | 0.79s |
+| compacted broad source query | 66.2ms |
+
+The same run with bounded automatic manifest maintenance:
+
+```sh
+build/write-bench --workload manifest-chain-read --batch 1 --total 1000 --read-samples 3 --auto-maintain-steps 8 --auto-maintain-trigger 5
+```
+
+showed:
+
+| Row | Median |
+|---|---:|
+| write latency | 2.88ms/write |
+| max visible merge/manifest runs | 5 |
+| bounded-manifest broad source query | 8.1ms |
+| bounded-manifest selective source query | 3.3ms |
+| explicit compaction after bounded maintenance | 0.15s |
+| compacted broad source query | 11.8ms |
+| compacted selective source query | 5.1ms |
+
+The lesson is storage-architecture, not a query shortcut: manifest publication
+keeps tiny commits cheap, compacted persisted roots can be queried through
+`DB-Read-Source` without resident rebuild, and automatic bounded manifest
+maintenance now prevents unchecked run-chain growth. Broad prefix source scans
+over manifest roots now scan child runs directly instead of binary-searching
+random positions in a merged cursor. Resumable merge/manifest cursor state
+removed the worst repeated-page replay cost in sequential scans, the SQLite DB
+snapshot read cursor now uses a larger page window than the write leaf chunk
+size, append-only SQLite snapshots skip redundant currentness materialization,
+and merge/manifest pages retain datoms that were already loaded for k-way
+ordering. A sampled 5000-write run with the same automatic maintenance policy
+shows bounded broad queries around 36ms before explicit compaction and 55ms
+after compaction. The old bounded selective gap is closed beyond the
+1000-row gate: AEVT/AVET run manifests carry attr-segment value bounds and
+first/last segment ordinals derived from direct runs and compacted child roots,
+and the source planner drives literal attr/value joins through the filtered
+entity+attr operator instead of the broad two-attr scan. Lazy manifest
+run-range streams avoid materializing an intermediate datom array and skip
+redundant prefix checks for exact bounds. Single-column source projections now
+dedupe through a keyed set instead of linearly scanning already-emitted rows,
+removing an O(n^2) result-construction cost from broad queries. Non-manifest
+merge roots now also use lazy run ranges instead of building an owned datom
+array before streaming results. On July 3, 2026, a 5000-row run with
+`--auto-maintain-steps 8 --auto-maintain-trigger 5` measured:
+
+| Row | Median |
+|---|---:|
+| open | 1.97ms |
+| bounded-manifest broad source query | 36.0ms |
+| bounded-manifest broad `Store-DB` query | 35.9ms |
+| bounded-manifest selective source query | 11.5ms |
+| bounded-manifest selective `Store-DB` query | 10.3ms |
+| explicit compaction after bounded maintenance | 2.17s |
+| compacted broad source query | 54.8ms |
+| compacted broad `Store-DB` query | 55.1ms |
+| compacted selective source query | 16.7ms |
+| compacted selective `Store-DB` query | 17.0ms |
+
+On July 7, 2026, the manifest-chain read benchmark gained retained `Store-DB`
+rows. Each retained row warms one root-backed immutable DB value, then queries a
+retained copy that shares the same SQLite index page cache. The mutable
+`Store-Conn` read path also keeps a current-root cache, so repeated read-only
+store queries reuse the same root-backed page cache until the store writes or
+republishes roots. A 1000-row run with `--auto-maintain-steps 8
+--auto-maintain-trigger 5 --read-samples 3` measured:
+
+| Row | Median | Cache After Warm |
+|---|---:|---:|
+| bounded-manifest broad source query | 8.8ms | n/a |
+| bounded-manifest broad `Store-DB` query | 5.4ms | n/a |
+| bounded-manifest broad retained `Store-DB` query | 7.4ms | 3 |
+| bounded-manifest selective source query | 3.4ms | n/a |
+| bounded-manifest selective `Store-DB` query | 2.4ms | n/a |
+| bounded-manifest selective retained `Store-DB` query | 2.4ms | 2 |
+| compacted broad source query | 8.5ms | n/a |
+| compacted broad `Store-DB` query | 7.6ms | n/a |
+| compacted broad retained `Store-DB` query | 7.9ms | 3 |
+| compacted selective source query | 5.8ms | n/a |
+| compacted selective `Store-DB` query | 4.9ms | n/a |
+| compacted selective retained `Store-DB` query | 5.1ms | 8 |
+
+The retained rows validate that root-backed DB values share loaded page state
+across retains, including manifest/merge output pages. The current-root cache
+also closes the previous large mutable `Store-Conn` read gap. The remaining
+measured gap is now narrower: mutable store reads still pay a small wrapper
+cost over direct immutable `Store-DB` reads, and broad result materialization
+dominates once page/cache reuse is working.
+
+The next benchmark target is reducing per-returned-value materialization and
+compacted broad-root read cost with typed/column result batches. The manifest
+run stream still triggers a Kvist ownership warning for owned arrays
+transferred into the returned stream struct; runtime cleanup is handled by
+`delete-source-index-datom-stream`, but the warning remains a compiler
+ergonomics issue.
+
 Latest local public Clojure comparison after borrowed typed relation
 product/hash-join operators:
 
@@ -682,14 +829,36 @@ and then run mixed read/write against that same store:
 
 Options:
 
-- `--workload`: `both` for the local default, `pure`, `mixed`, or
-  `snapshot-heavy`
+- `--workload`: `both` for the local default, `pure`, `pure-store-report`,
+  `pure-store-report-deferred`, `manifest-chain-read`,
+  `sqlite-store-db-heavy`, `mixed`, `snapshot-heavy`,
+  `shared-snapshot-heavy`, `shared-snapshot-heavy-direct`, or
+  `shared-store-db-heavy`
 - `--path`: SQLite file for single-workload runs; `both` uses derived temp paths
 - `--total`: pure-write rows to transact and mixed-read/write seed size
 - `--report-every`: row interval for progress samples
 - `--mixed-operations`: total alternating read/write operations
 - `--batch`: run a single pure-write batch size; omit to run 1, 10, 100, 1000
 - `--seed-batch`: mixed-workload seed import batch size
+- `--compact-every`: for `pure-store-report`, run explicit index compaction
+  every N writes and report it as maintenance latency
+- `--maintain-every`: for `pure-store-report`, run one bounded incremental
+  index-maintenance step every N writes and report it as maintenance latency
+- `--maintain-steps`: for `pure-store-report`, run up to N queued/index
+  maintenance work units at each `--maintain-every` interval; default is 1
+- `--maintain-target`: for `pure-store-report`, drain queued maintenance until
+  the pending queue is at or below this size, bounded by `--maintain-steps`.
+  The default `-1` keeps the older blind fixed-budget behavior.
+- `--auto-maintain-steps`: for `pure-store-report`, configure the store itself
+  to run up to N maintenance units after each successful durable commit.
+- `--auto-maintain-target`: pending-queue target for automatic store
+  maintenance; default is 0.
+- `--auto-maintain-trigger`: pending-queue depth that triggers automatic store
+  maintenance. If omitted, automatic maintenance runs whenever pending work is
+  above the target, preserving the eager policy.
+- `--deferred-maintain-steps`: for `pure-store-report-deferred`, run normal
+  `Store-Tx-Report` writes with foreground auto-maintenance disabled, then
+  reopen the store and drain queued maintenance in batches of this size.
 
 Current sample output on June 26, 2026:
 
@@ -716,6 +885,10 @@ This is a first Vev-native harness for the Datalevin `write-bench` family, not
 yet a direct apples-to-apples run of the upstream benchmark. It measures:
 
 - pure durable writes at batch sizes 1, 10, 100, and 1000
+- pure durable writes through the current storage-neutral
+  `Store-Tx-Report` API via `--workload pure-store-report`
+- durable SQLite-backed writes that retain a public `Store-DB` value from each
+  `Store-Tx-Report` via `--workload sqlite-store-db-heavy`
 - mixed read/write behavior against an existing SQLite-backed Vev store
 - snapshot-heavy writes that retain an ordinary immutable DB snapshot after
   each successful commit
@@ -736,13 +909,284 @@ performance work should therefore introduce shared immutable DB/index storage
 before chasing smaller loop-level optimizations. After that, wire Vev into
 Datalevin's upstream `write-bench` shape for direct comparison.
 
-The first `snapshot-heavy` run confirms the same architectural target. With 500
+The first legacy `snapshot-heavy` run confirms the same architectural target.
+It uses the resident `open-sqlite-conn` compatibility path and ordinary `DB`
+snapshots, so it is now a comparison harness rather than the active durable
+DB-value gate. With 500
 batch-1 durable writes and 500 retained old DB values, commit latency grows from
 about 0.33 ms near 100 writes to about 2.07 ms near 500 writes. The explicit
 post-commit `db` clone measured by the harness remains around 0.003-0.008 ms at
 that scale, so the next fix is not a reportless or host-handle shortcut. The
 engine needs a DB/index representation that can publish immutable snapshots
 without copying and rebuilding full resident arrays on every commit.
+
+The `sqlite-store-db-heavy` workload is the active retained durable DB-value
+smoke. It writes through `open-store` / `transact-store-report`, retains a
+`Store-DB` from each report, deletes the report itself, and closes all retained
+DB handles at the end. A tiny July 5, 2026 smoke run:
+
+```text
+engine=vev-store workload=sqlite-store-db-heavy batch=1 total=20 columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms
+10,10,0.010,1032.63,0.960,0.959,0.001
+20,20,0.013,1487.43,0.372,0.372,0.000
+```
+
+This is not a meaningful performance result, but it verifies the harness and
+shows that retaining the public durable handle is measured separately from the
+transaction report lifetime.
+
+The same workload now reports direct-write phase timings. A July 5, 2026
+batch-1, 5000-write run shows the retained handle itself is not the bottleneck:
+
+```text
+engine=vev-store workload=sqlite-store-db-heavy batch=1 total=5000 columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms,direct_call_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,report_open_ms,append_roots_ms,append_root_build_ms,append_root_persist_ms,append_root_publish_ms,append_commit_ms
+1000,1000,0.661,1513.63,0.656,0.656,0.001,0.648,0.130,0.000,0.001,0.001,0.508,0.001,0.180,0.168,0.154,0.011,0.310
+2000,2000,1.362,1468.83,0.697,0.697,0.001,0.689,0.207,0.000,0.001,0.001,0.473,0.001,0.188,0.176,0.162,0.011,0.265
+3000,3000,2.100,1428.25,0.733,0.733,0.001,0.726,0.277,0.000,0.001,0.001,0.439,0.001,0.190,0.178,0.165,0.011,0.228
+4000,4000,2.946,1357.89,0.842,0.842,0.001,0.834,0.354,0.000,0.001,0.001,0.470,0.001,0.210,0.197,0.183,0.012,0.237
+5000,5000,3.854,1297.42,0.901,0.901,0.001,0.894,0.409,0.000,0.001,0.001,0.475,0.001,0.219,0.207,0.193,0.012,0.233
+```
+
+`snapshot_latency_ms` stays around `0.001ms`, so retained durable DB values are
+already cheap at this scale. The next durable-write bottleneck is
+`open_before_ms`: every direct write still opens the current SQLite-backed
+snapshot/root metadata before append, and that grows from about `0.13ms/write`
+to about `0.41ms/write`. The next storage fix should introduce a safe
+current-source/root metadata cache for direct writes. A naive reused snapshot is
+not correct, because the next transaction must see the previous committed
+datoms for uniqueness, cardinality, lookup refs, and transaction functions.
+
+The first safe cache slice now keeps SQLite durable-log metadata on the live
+connection: datom count and whether any persisted retractions exist. This avoids
+re-counting the whole durable log and re-scanning for retractions before every
+direct write, while still advancing the cache after successful appends and
+invalidating it on rollback/legacy paths. A July 5, 2026 batch-1, 5000-write
+run after that change:
+
+```text
+engine=vev-store workload=sqlite-store-db-heavy batch=1 total=5000 columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms,direct_call_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,report_open_ms,append_roots_ms,append_root_build_ms,append_root_persist_ms,append_root_publish_ms,append_commit_ms
+1000,1000,0.606,1649.07,0.602,0.602,0.001,0.595,0.083,0.000,0.001,0.001,0.501,0.001,0.178,0.167,0.153,0.011,0.304
+2000,2000,1.187,1684.63,0.577,0.577,0.001,0.570,0.080,0.000,0.001,0.001,0.481,0.001,0.180,0.169,0.156,0.011,0.282
+3000,3000,1.722,1741.90,0.530,0.529,0.001,0.522,0.080,0.000,0.001,0.001,0.433,0.001,0.185,0.174,0.161,0.010,0.228
+4000,4000,2.268,1763.54,0.543,0.543,0.001,0.536,0.083,0.000,0.001,0.001,0.445,0.001,0.198,0.186,0.173,0.011,0.225
+5000,5000,2.837,1762.28,0.563,0.562,0.001,0.555,0.084,0.000,0.001,0.001,0.463,0.001,0.212,0.200,0.187,0.012,0.228
+```
+
+This turns the visible `open_before_ms` growth into a flat cost around
+`0.08ms/write` and improves total throughput from about `1297/s` to about
+`1762/s` on this local run. The next small root-publication cleanup moved the
+`vev_index_roots` insert into the same prepared-statement bundle as chunk and
+edge writes. A follow-up run measured `append_root_publish_ms` around
+`0.007-0.008ms/write`, down from about `0.011-0.012ms/write`; total throughput
+was about `1748/s`, essentially within local run noise. The remaining
+durable-write target is therefore root build/persist work, especially
+`append_root_persist_ms`, not retained handle creation or root-row publication.
+
+The next storage slice moved run-manifest publication onto prepared statements
+and builds manifest attr ranges directly from the just-appended datoms when the
+commit already has those datoms in memory. A July 5, 2026 batch-1, 5000-write
+run after that change:
+
+```text
+engine=vev-store workload=sqlite-store-db-heavy batch=1 total=5000 columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms,direct_call_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,report_open_ms,append_roots_ms,append_root_build_ms,append_root_persist_ms,append_root_publish_ms,append_commit_ms
+1000,1000,0.548,1823.66,0.545,0.544,0.001,0.538,0.078,0.000,0.001,0.001,0.450,0.001,0.118,0.109,0.077,0.007,0.315
+2000,2000,1.099,1820.26,0.547,0.546,0.000,0.540,0.079,0.000,0.001,0.001,0.452,0.001,0.128,0.118,0.087,0.008,0.306
+3000,3000,1.583,1895.57,0.478,0.478,0.001,0.471,0.079,0.000,0.001,0.001,0.384,0.001,0.133,0.123,0.092,0.007,0.231
+4000,4000,2.087,1916.78,0.501,0.501,0.001,0.494,0.082,0.000,0.001,0.001,0.403,0.001,0.147,0.137,0.105,0.008,0.236
+5000,5000,2.605,1919.04,0.512,0.511,0.001,0.505,0.082,0.000,0.001,0.001,0.414,0.001,0.158,0.147,0.116,0.009,0.235
+```
+
+Compared with the prepared-root-only run, `append_root_persist_ms` moved from
+about `0.188ms/write` to about `0.116ms/write` at 5000 writes, and local
+throughput moved from about `1748/s` to about `1919/s`. This is general storage
+work: it removes per-commit SQLite prepare/finalize churn and avoids reloading
+datoms that the commit path already owns. Empty per-index appended segments now
+also return the existing persisted root directly, which is architectural
+groundwork for future per-index delta pruning. It is intentionally not claimed
+as a measured win for this workload, because the current workload still appends
+datoms to all indexes.
+
+After empty-delta root-set publication was routed through the same helper in
+both source append paths, the retained durable DB-value workload remains in the
+same range. A local 5000-write run measured about `1952 writes/s`,
+`open_before_ms=0.080ms/write`, `append_root_persist_ms=0.096ms/write`, and
+`snapshot_latency_ms=0.001ms/write`. The important conclusion is unchanged:
+retained DB handles are cheap; the next real storage target is the
+append/root-build and persisted-delta representation for ordinary small writes.
+
+Routing append-mode SQLite-cursor writes through the same run-manifest delta
+publication shape makes the ordinary source-backed small-write representation
+consistent: old root plus small persisted run. A local 5000-write retained
+durable DB-value run measured about `2167 writes/s`,
+`open_before_ms=0.081ms/write`, `append_root_persist_ms=0.067ms/write`, and
+`snapshot_latency_ms=0.001ms/write`. This is general storage work, not a
+benchmark-specific fast path: append-mode and non-append source-backed writes
+now publish through the same manifest/delta boundary.
+
+After moving both append root publication paths to build the four ordered
+appended delta views once at the root-set boundary, the same 5000-write run
+measured about `2203 writes/s`, `open_before_ms=0.080ms/write`,
+`append_root_build_ms=0.098ms/write`,
+`append_root_persist_ms=0.067ms/write`, and
+`snapshot_latency_ms=0.001ms/write`. The value of this slice is structural:
+the small-write path now has one explicit ordered-delta handoff into per-index
+publication, which is the right boundary for the next persisted segment/root
+work.
+
+After making small append-manifest delta runs entry-backed leaf chunks, the
+same gate remains essentially flat while the representation becomes more
+production-shaped:
+
+```text
+engine=vev-store workload=sqlite-store-db-heavy batch=1 total=5000 columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms,direct_call_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,report_open_ms,append_roots_ms,append_root_build_ms,append_root_persist_ms,append_root_publish_ms,append_commit_ms
+5000,5000,2.276,2196.59,0.451,0.450,0.001,0.444,0.080,0.000,0.001,0.001,0.355,0.001,0.100,0.097,0.066,0.002,0.236
+```
+
+The important point is not the small throughput difference. Small manifest
+deltas now persist ordered log indexes in `vev_index_chunk_entries` behind a
+leaf `:entries` marker, while existing payload chunks still read normally.
+That gives the storage layer a real first-class small-delta segment shape to
+reuse for multi-leaf entry-backed trees and future page-level storage.
+
+After extending the same representation to multi-leaf deltas, larger delta
+runs build ordinary parent chunks over entry-backed leaves and the page readers
+handle mixed old payload leaves and new entry-backed leaves:
+
+```text
+engine=vev-store workload=sqlite-store-db-heavy batch=1 total=5000 columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms,direct_call_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,report_open_ms,append_roots_ms,append_root_build_ms,append_root_persist_ms,append_root_publish_ms,append_commit_ms
+5000,5000,2.342,2135.15,0.464,0.463,0.001,0.457,0.080,0.000,0.001,0.001,0.368,0.001,0.101,0.097,0.067,0.002,0.247
+```
+
+The slight throughput movement is within the current storage-work noise. The
+structural improvement is that entry-backed deltas are no longer limited to a
+single leaf, which keeps the same persisted segment shape for both tiny and
+moderate commits.
+
+The `pure-store-report` row is the active public durable API measurement. A
+small July 2, 2026 batch-1 run shows it is semantically on the source-backed
+path and no longer rewrites old logical index chunks for common repeated-attr
+writes. Normal writes share old ordered roots, publish bounded merge roots, and
+compact recent merge runs incrementally. Merge-root compaction now uses
+page-cached foreground merging and a small tiered scheduler: four equal-sized
+trailing runs are compacted together, while uneven roots are allowed only one
+extra direct run before falling back to compaction. Leaf chunks now keep their
+entries in the chunk payload and parent page reads select overlapping leaf
+payloads directly, so normal writes no longer duplicate every leaf entry into
+`vev_index_chunk_entries`. The report output now includes:
+
+- `pending_maintenance`: persisted SQLite maintenance queue depth
+- `max_merge_runs`: largest latest-root merge-run count across EAVT/AEVT/AVET/VAET
+- `eavt_root_level`, `eavt_root_children`, `eavt_tree_nodes`, and
+  `eavt_tree_leaves`: the latest EAVT persisted-tree shape
+- direct-write phase timings: `open_before_ms`, `read_source_ms`,
+  `resolve_ms`, `overlay_ms`, `append_ms`, `append_begin_ms`,
+  `append_tx_ms`, `append_datoms_ms`, `append_meta_ms`,
+  `append_roots_ms`, `append_root_build_ms`, `append_root_publish_ms`,
+  `append_commit_ms`, and `report_open_ms`
+- outer write timings: `direct_call_ms`, `direct_inner_unaccounted_ms`,
+  `auto_maintenance_ms`, `listener_ms`, and `outer_unaccounted_ms`
+
+Current batch-1 smoke after SQLite write-state metadata caching, direct
+attr-schema caching, payload-backed packed leaf chunks, lazy
+`Store-Tx-Report` DB handles, cursor-root metadata reuse, prepared chunk/edge
+insert statements, persisted chunk `child_count` metadata, bulk edge-copy
+statements, and right-spine segmented append roots for ordinary non-schema
+new-entity writes:
+
+```text
+auto_maintain_steps=32 auto_maintain_target=0 auto_maintain_trigger=16
+columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,maintenance_latency_ms,maintenance_runs,pending_maintenance,max_merge_runs,eavt_root_level,eavt_root_children,eavt_tree_nodes,eavt_tree_leaves,outer_unaccounted_ms,direct_call_ms,direct_inner_unaccounted_ms,auto_maintenance_ms,listener_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,append_begin_ms,append_tx_ms,append_datoms_ms,append_meta_ms,append_roots_ms,append_root_build_ms,append_root_publish_ms,append_commit_ms,report_open_ms
+250,0.370,675.68,1.476,1.476,0.000,0,13,5,1,4,5,4,0.000,0.949,0.006,0.527,0.000,0.072,0.000,0.005,0.005,0.860,0.002,0.002,0.012,0.000,0.706,0.632,0.073,0.137,0.001
+500,0.875,571.29,2.017,2.017,0.000,0,0,3,1,8,9,8,0.000,0.985,0.006,1.032,0.000,0.074,0.000,0.001,0.001,0.902,0.002,0.002,0.014,0.000,0.720,0.647,0.072,0.164,0.001
+750,1.450,517.26,2.295,2.295,0.000,0,2,4,1,12,13,12,0.000,0.941,0.006,1.353,0.000,0.076,0.000,0.001,0.001,0.856,0.003,0.002,0.014,0.000,0.733,0.659,0.073,0.104,0.001
+1000,2.129,469.74,2.712,2.712,0.000,0,4,5,1,16,17,16,0.000,0.931,0.007,1.780,0.000,0.077,0.000,0.001,0.001,0.845,0.002,0.003,0.014,0.000,0.741,0.668,0.072,0.084,0.001
+```
+
+For context, immediately before the direct attr-schema cache, the same
+auto-maintained 200-write run was about `103.539ms` per commit and the phase
+profile showed `overlay_ms=100.786`. After the cache, the 200-write
+auto-maintained row is about `2.750ms` per commit with `overlay_ms=0.001`.
+The remaining visible costs are now more specific. Report snapshot opening has
+moved off the commit path: report handles are lazy durable DB values and
+`report_open_ms` is effectively zero until a caller actually reads one of
+those DB values. Source-root publication now reuses cursor root metadata, and
+the direct durable root build reuses prepared chunk/edge insert statements
+across all four index roots. New index chunk rows also persist `child_count`,
+so append-root flattening can use root metadata directly and older migrated
+parent rows fall back to edge counting only when needed. Small appends now
+fill the rightmost leaf chunk up to the configured leaf chunk size before
+appending a new leaf. After a leaf is full, Vev appends into the right-spine
+segmented tree and increases the root level only when the whole root is full.
+Storage architecture tests assert this path crosses fanout while staying
+query-correct. A 5000-write run validates the shape:
+
+```text
+1000,1.921,520.58,1.918,1.918,0.000,0,4,5,1,16,17,16,0.000,0.720,0.006,1.198,0.000,0.072,0.000,0.002,0.002,0.638,0.002,0.002,0.013,0.000,0.500,0.475,0.023,0.121,0.001
+2000,5.649,354.04,3.725,3.725,0.000,0,12,6,1,32,33,32,0.000,1.517,0.006,2.208,0.000,0.083,0.000,0.001,0.001,1.425,0.002,0.003,0.015,0.000,1.311,1.280,0.030,0.094,0.001
+3000,11.093,270.45,5.440,5.440,0.000,0,6,9,1,47,48,47,0.000,1.541,0.006,3.899,0.000,0.088,0.000,0.001,0.001,1.443,0.002,0.003,0.018,0.000,1.322,1.288,0.034,0.097,0.001
+4000,17.195,232.63,6.098,6.098,0.000,0,0,10,1,63,64,63,0.000,1.374,0.006,4.724,0.000,0.091,0.000,0.001,0.001,1.273,0.002,0.003,0.019,0.000,1.150,1.113,0.036,0.099,0.001
+5000,21.977,227.51,4.937,4.937,0.000,0,12,12,2,2,82,79,0.000,1.923,0.006,3.013,0.000,0.094,0.000,0.001,0.001,1.820,0.002,0.003,0.019,0.000,1.689,1.651,0.037,0.106,0.001
+```
+
+Index root work inside append remains the dominant cost. In the 1000-write
+run, `append_roots_ms` is about `0.76ms/write`, with most of that in
+root/chunk construction (`append_root_build_ms`, about `0.69ms/write`), not
+latest-root publication or maintenance enqueue (`append_root_publish_ms`, about
+`0.07ms/write`). SQLite commit is about `0.09ms/write` at the 1000-write row.
+The 5000-write smoke now splits the previous unaccounted time. The packed-leaf
+tree shape is good, `outer_unaccounted_ms` is effectively zero, and
+`listener_ms` / `report_open_ms` are negligible. Automatic post-commit
+maintenance now uses a bounded foreground row budget. Non-inline merge
+publication now nests the previous merge root plus the new run instead of
+flattening and republishing every retained run on each write. Merge roots also
+persist flattened run-count metadata in the chunk checksum field during parent
+chunk insertion, so normal compaction scheduling and non-inline publication can
+decide from local metadata without an extra metadata update or recursive
+flattening of retained merge roots. Together those changes lower the
+5000-write row from the earlier `10.936ms/write` to `4.937ms/write`, with
+`auto_maintenance_ms` at `3.013ms/write` and direct root/chunk construction at
+`1.923ms/write`. The tradeoff is explicit: retained merge runs remain visible
+(`max_merge_runs=12`), and actual inline compaction still has to flatten run
+roots because the merge needs the child roots. The next storage batch should
+move repeated tiny commits toward a page-delta/LSM representation with less
+root/chunk publication work rather than chasing report wrapper overhead.
+
+The `pure-store-report-deferred` workload separates commit-path cost from
+background maintenance. It writes through the same public `Store-Tx-Report`
+path, disables automatic foreground maintenance, then reopens the store and
+drains the maintenance queue explicitly. A July 3, 2026 5000-write batch-1 run
+after chained non-append run manifests shows the current split:
+
+```text
+engine=vev-store workload=pure-store-report batch=1 total=5000 compact_every=0 maintain_every=0 maintain_steps=1 maintain_target=-1 auto_maintain_steps=0 auto_maintain_target=0 auto_maintain_trigger=-1 columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,maintenance_latency_ms,maintenance_runs,pending_maintenance,max_merge_runs,eavt_root_level,eavt_root_children,eavt_tree_nodes,eavt_tree_leaves,outer_unaccounted_ms,direct_call_ms,direct_inner_unaccounted_ms,auto_maintenance_ms,listener_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,append_begin_ms,append_tx_ms,append_datoms_ms,append_meta_ms,append_roots_ms,append_root_build_ms,append_root_sort_ms,append_root_check_ms,append_root_persist_ms,append_eavt_root_build_ms,append_aevt_root_build_ms,append_avet_root_build_ms,append_vaet_root_build_ms,append_root_publish_ms,append_commit_ms,report_open_ms
+1000,0.482,2073.41,0.480,0.480,0.000,0,0,0,1,16,17,16,0.000,0.475,0.004,0.005,0.000,0.075,0.000,0.002,0.002,0.393,0.002,0.002,0.011,0.000,0.086,0.077,0.001,0.000,0.065,0.029,0.014,0.012,0.012,0.009,0.291,0.000
+2000,0.974,2053.39,0.489,0.489,0.000,0,0,0,1,32,33,32,0.000,0.484,0.004,0.005,0.000,0.079,0.000,0.001,0.001,0.399,0.002,0.002,0.011,0.000,0.095,0.085,0.001,0.000,0.073,0.036,0.014,0.013,0.012,0.009,0.289,0.001
+3000,1.397,2147.12,0.421,0.421,0.000,0,0,0,1,47,48,47,0.000,0.416,0.004,0.005,0.000,0.083,0.000,0.001,0.001,0.327,0.002,0.002,0.013,0.000,0.101,0.091,0.001,0.000,0.079,0.042,0.014,0.013,0.012,0.009,0.208,0.000
+4000,1.841,2172.72,0.441,0.441,0.000,0,0,0,1,63,64,63,0.000,0.436,0.004,0.005,0.000,0.089,0.000,0.001,0.001,0.342,0.002,0.002,0.014,0.000,0.111,0.101,0.001,0.000,0.089,0.050,0.015,0.013,0.012,0.009,0.212,0.000
+5000,2.296,2177.32,0.453,0.453,0.000,0,0,0,2,2,82,79,0.000,0.448,0.004,0.005,0.000,0.093,0.000,0.001,0.001,0.349,0.002,0.002,0.015,0.000,0.125,0.114,0.001,0.000,0.102,0.061,0.016,0.014,0.013,0.009,0.205,0.001
+engine=vev-store workload=pure-store-report-deferred-maintenance batch=1 total=5000 maintain_steps=128 columns=pending_before,pending_after,passes,steps,elapsed_ms
+0,0,0,0,0.003
+```
+
+This is the first accepted non-append storage representation slice. Before
+chained manifests, the same workload was about `3.08ms/write`, with
+`append_roots_ms` about `2.78ms/write`, `append_root_persist_ms` about
+`2.683ms/write`, three queued maintenance tasks, and about `1.2s` of explicit
+deferred drain work. With chained manifests, the 5000-write row is about
+`0.453ms/write`, `append_roots_ms` is about `0.125ms/write`,
+`append_root_persist_ms` is about `0.102ms/write`, and the deferred queue is
+empty. Appendability checking is no longer on the hot publication path
+(`append_root_check_ms=0.000`), because direct source-backed commits publish
+known non-append indexes as manifest runs immediately.
+
+The next benchmark question is read-side behavior after bounded compaction.
+Chained manifests make tiny commits cheap, and automatic maintenance now keeps
+the visible run count bounded. Source cursors now resume sequential
+merge/manifest scans instead of replaying from zero for every page, and broad
+prefix scans over manifest roots walk child runs directly. In the 1000-row
+benchmark, bounded manifest broad reads are now roughly equal to compacted-root
+broad reads. Before calling this production-shaped, Vev needs range-aware
+child-run scans for selective prefixes plus 5k/20k query/reopen measurements.
 
 Both harnesses report repeated execution samples. Vev currently uses 10 warmup
 runs and 25 measured samples; DataScript uses 100 warmup runs and 100 measured

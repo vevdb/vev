@@ -51,6 +51,8 @@ func OpenMemory() (*Conn, error) {
 }
 
 func ConnFromDB(db *DB) (*Conn, error) {
+	// Resident/in-memory compatibility only. Durable DB handles are immutable
+	// values and should be queried directly.
 	raw := C.vev_conn_from_db(db.raw)
 	if raw == nil {
 		return nil, fmt.Errorf("failed to create connection from DB snapshot")
@@ -77,6 +79,15 @@ func (c *Conn) QueryText(query string, inputs string) string {
 	defer C.free(unsafe.Pointer(queryText))
 	defer C.free(unsafe.Pointer(inputsText))
 	return ownedString(C.vev_query_edn_with_inputs(c.raw, queryText, inputsText))
+}
+
+func (c *Conn) Q(queryText string, inputs string) (*ResultSet, error) {
+	db, err := c.DB()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return db.Q(queryText, inputs)
 }
 
 func (c *Conn) DB() (*DB, error) {
@@ -143,12 +154,186 @@ func (c *DurableConn) Transact(tx string) (*TxReport, error) {
 	return &TxReport{raw: raw}, nil
 }
 
+func (c *DurableConn) TransactBulk(builders []*TxBuilder) (*TxReport, error) {
+	if len(builders) == 0 {
+		return nil, fmt.Errorf("transact bulk requires at least one builder")
+	}
+	raw, freeRaw, err := rawTxBuilderArray(builders, false)
+	if err != nil {
+		return nil, err
+	}
+	defer freeRaw()
+	report := C.vev_connection_tx_commit_many_report(c.raw, raw, C.int(len(builders)))
+	if report == nil {
+		return nil, fmt.Errorf("failed to transact bulk tx builders")
+	}
+	return &TxReport{raw: report}, nil
+}
+
+func (c *DurableConn) TransactLogicalBulk(builders []*TxBuilder) (*TxReportArray, error) {
+	raw, freeRaw, err := rawTxBuilderArray(builders, true)
+	if err != nil {
+		return nil, err
+	}
+	defer freeRaw()
+	reports := C.vev_connection_tx_commit_logical_many_reports(c.raw, raw, C.int(len(builders)))
+	if reports == nil {
+		return nil, fmt.Errorf("failed to logical-group transact tx builders")
+	}
+	return &TxReportArray{raw: reports}, nil
+}
+
+func (c *DurableConn) TransactLogical(txTexts []string) (*TxReportArray, error) {
+	raw, freeRaw, err := rawCStringArray(txTexts)
+	if err != nil {
+		return nil, err
+	}
+	defer freeRaw()
+	reports := C.vev_connection_transact_many_edn_reports(c.raw, raw, C.int(len(txTexts)))
+	if reports == nil {
+		return nil, fmt.Errorf("failed to logical-group transact EDN tx data")
+	}
+	return &TxReportArray{raw: reports}, nil
+}
+
 func (c *DurableConn) DB() (*DB, error) {
 	raw := C.vev_connection_db(c.raw)
 	if raw == nil {
 		return nil, fmt.Errorf("failed to retain durable DB snapshot")
 	}
 	return &DB{raw: raw}, nil
+}
+
+func (c *DurableConn) Q(queryText string, inputs string) (*ResultSet, error) {
+	db, err := c.DB()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return db.Q(queryText, inputs)
+}
+
+type TxBuilder struct {
+	raw C.vev_tx_builder_t
+}
+
+func NewTxBuilder(capacity int) (*TxBuilder, error) {
+	raw := C.vev_tx_create(C.int(capacity))
+	if raw == nil {
+		return nil, fmt.Errorf("failed to create transaction builder")
+	}
+	return &TxBuilder{raw: raw}, nil
+}
+
+func (b *TxBuilder) Close() {
+	if b.raw != nil {
+		C.vev_tx_free(b.raw)
+		b.raw = nil
+	}
+}
+
+func (b *TxBuilder) AddString(entity uint64, attr string, value string) error {
+	attrText := cstring(attr)
+	valueText := cstring(value)
+	defer C.free(unsafe.Pointer(attrText))
+	defer C.free(unsafe.Pointer(valueText))
+	if !bool(C.vev_tx_add_string(b.raw, C.ulonglong(entity), attrText, valueText)) {
+		return fmt.Errorf("failed to add string datom to transaction builder")
+	}
+	return nil
+}
+
+func (b *TxBuilder) AddKeyword(entity uint64, attr string, value string) error {
+	attrText := cstring(attr)
+	valueText := cstring(value)
+	defer C.free(unsafe.Pointer(attrText))
+	defer C.free(unsafe.Pointer(valueText))
+	if !bool(C.vev_tx_add_keyword(b.raw, C.ulonglong(entity), attrText, valueText)) {
+		return fmt.Errorf("failed to add keyword datom to transaction builder")
+	}
+	return nil
+}
+
+func (b *TxBuilder) AddSymbol(entity uint64, attr string, value string) error {
+	attrText := cstring(attr)
+	valueText := cstring(value)
+	defer C.free(unsafe.Pointer(attrText))
+	defer C.free(unsafe.Pointer(valueText))
+	if !bool(C.vev_tx_add_symbol(b.raw, C.ulonglong(entity), attrText, valueText)) {
+		return fmt.Errorf("failed to add symbol datom to transaction builder")
+	}
+	return nil
+}
+
+func (b *TxBuilder) AddEntity(entity uint64, attr string, value uint64) error {
+	attrText := cstring(attr)
+	defer C.free(unsafe.Pointer(attrText))
+	if !bool(C.vev_tx_add_entity(b.raw, C.ulonglong(entity), attrText, C.ulonglong(value))) {
+		return fmt.Errorf("failed to add entity datom to transaction builder")
+	}
+	return nil
+}
+
+func (b *TxBuilder) AddInt(entity uint64, attr string, value int64) error {
+	attrText := cstring(attr)
+	defer C.free(unsafe.Pointer(attrText))
+	if !bool(C.vev_tx_add_int(b.raw, C.ulonglong(entity), attrText, C.longlong(value))) {
+		return fmt.Errorf("failed to add int datom to transaction builder")
+	}
+	return nil
+}
+
+func (b *TxBuilder) AddBool(entity uint64, attr string, value bool) error {
+	attrText := cstring(attr)
+	defer C.free(unsafe.Pointer(attrText))
+	if !bool(C.vev_tx_add_bool(b.raw, C.ulonglong(entity), attrText, C.bool(value))) {
+		return fmt.Errorf("failed to add bool datom to transaction builder")
+	}
+	return nil
+}
+
+func rawTxBuilderArray(builders []*TxBuilder, allowEmpty bool) (*C.vev_tx_builder_t, func(), error) {
+	if len(builders) == 0 {
+		if allowEmpty {
+			return nil, func() {}, nil
+		}
+		return nil, func() {}, fmt.Errorf("transaction builder array cannot be empty")
+	}
+	bytes := C.size_t(len(builders)) * C.size_t(unsafe.Sizeof(C.vev_tx_builder_t(nil)))
+	raw := C.malloc(bytes)
+	if raw == nil {
+		return nil, func() {}, fmt.Errorf("failed to allocate transaction builder array")
+	}
+	values := unsafe.Slice((*C.vev_tx_builder_t)(raw), len(builders))
+	for index, builder := range builders {
+		if builder == nil || builder.raw == nil {
+			C.free(raw)
+			return nil, func() {}, fmt.Errorf("transaction builder %d is nil or closed", index)
+		}
+		values[index] = builder.raw
+	}
+	return (*C.vev_tx_builder_t)(raw), func() { C.free(raw) }, nil
+}
+
+func rawCStringArray(texts []string) (**C.char, func(), error) {
+	if len(texts) == 0 {
+		return nil, func() {}, nil
+	}
+	bytes := C.size_t(len(texts)) * C.size_t(unsafe.Sizeof((*C.char)(nil)))
+	raw := C.malloc(bytes)
+	if raw == nil {
+		return nil, func() {}, fmt.Errorf("failed to allocate C string array")
+	}
+	values := unsafe.Slice((**C.char)(raw), len(texts))
+	for index, text := range texts {
+		values[index] = cstring(text)
+	}
+	return (**C.char)(raw), func() {
+		for _, value := range values {
+			C.free(unsafe.Pointer(value))
+		}
+		C.free(raw)
+	}, nil
 }
 
 type DB struct {
@@ -177,11 +362,50 @@ func (db *DB) QueryText(queryText string, inputs string) (string, error) {
 	return db.QueryPrepared(query, inputs), nil
 }
 
+func (db *DB) Q(queryText string, inputs string) (*ResultSet, error) {
+	query, err := Prepare(queryText)
+	if err != nil {
+		return nil, err
+	}
+	defer query.Close()
+	return db.QueryRows(query, inputs)
+}
+
 func (db *DB) QueryRows(query *PreparedQuery, inputs string) (*ResultSet, error) {
 	inputsText := cstring(inputs)
 	defer C.free(unsafe.Pointer(inputsText))
 	raw := C.vev_query_db_prepared_result_with_inputs(db.raw, query.raw, inputsText)
 	return newResultSet(raw)
+}
+
+func (db *DB) Entity(entity uint64) (*EntityView, error) {
+	raw := C.vev_db_entity(db.raw, C.ulonglong(entity))
+	if raw == nil {
+		return nil, fmt.Errorf("failed to create entity view")
+	}
+	return &EntityView{raw: raw}, nil
+}
+
+func (db *DB) EntityLookupRefString(attr string, value string) (*EntityView, error) {
+	attrText := cstring(attr)
+	valueText := cstring(value)
+	defer C.free(unsafe.Pointer(attrText))
+	defer C.free(unsafe.Pointer(valueText))
+	raw := C.vev_db_entity_lookup_ref_string(db.raw, attrText, valueText)
+	if raw == nil {
+		return nil, fmt.Errorf("failed to create lookup-ref entity view")
+	}
+	return &EntityView{raw: raw}, nil
+}
+
+func (db *DB) EntityIdent(ident string) (*EntityView, error) {
+	identText := cstring(ident)
+	defer C.free(unsafe.Pointer(identText))
+	raw := C.vev_db_entity_ident(db.raw, identText)
+	if raw == nil {
+		return nil, fmt.Errorf("failed to create ident entity view")
+	}
+	return &EntityView{raw: raw}, nil
 }
 
 func (db *DB) QueryColumns(query *PreparedQuery, inputs string) (*ColumnResult, error) {
@@ -221,6 +445,12 @@ func columnResultFromRaw(raw C.vev_column_batch_t) (*ColumnResult, error) {
 			Kinds:   []int{ColumnString},
 			Columns: []any{stringColumn(raw, count)},
 		}, nil
+	case C.VEV_COLUMN_BATCH_INT:
+		return &ColumnResult{
+			Count:   count,
+			Kinds:   []int{ColumnInt},
+			Columns: []any{intColumn(C.vev_column_batch_ints_data(raw), count)},
+		}, nil
 	case C.VEV_COLUMN_BATCH_ENTITY_INT:
 		return &ColumnResult{
 			Count: count,
@@ -228,6 +458,33 @@ func columnResultFromRaw(raw C.vev_column_batch_t) (*ColumnResult, error) {
 			Columns: []any{
 				entityColumn(C.vev_column_batch_entities_data(raw), count),
 				intColumn(C.vev_column_batch_ints_data(raw), count),
+			},
+		}, nil
+	case C.VEV_COLUMN_BATCH_ENTITY_STRING:
+		return &ColumnResult{
+			Count: count,
+			Kinds: []int{ColumnEntity, ColumnString},
+			Columns: []any{
+				entityColumn(C.vev_column_batch_entities_data(raw), count),
+				stringColumn(raw, count),
+			},
+		}, nil
+	case C.VEV_COLUMN_BATCH_STRING_INT:
+		return &ColumnResult{
+			Count: count,
+			Kinds: []int{ColumnString, ColumnInt},
+			Columns: []any{
+				stringColumn(raw, count),
+				intColumn(C.vev_column_batch_ints_data(raw), count),
+			},
+		}, nil
+	case C.VEV_COLUMN_BATCH_STRING_STRING:
+		return &ColumnResult{
+			Count: count,
+			Kinds: []int{ColumnString, ColumnString},
+			Columns: []any{
+				stringColumn(raw, count),
+				secondStringColumn(raw, count),
 			},
 		}, nil
 	case C.VEV_COLUMN_BATCH_ENTITY_STRING_INT:
@@ -546,6 +803,21 @@ func stringColumn(batch C.vev_column_batch_t, count int) []string {
 	return out
 }
 
+func secondStringColumn(batch C.vev_column_batch_t, count int) []string {
+	stringData := C.vev_column_batch_second_string_data_array(batch)
+	stringLengths := C.vev_column_batch_second_string_lengths_data(batch)
+	if stringData == nil || stringLengths == nil {
+		return []string{}
+	}
+	data := unsafe.Slice(stringData, count)
+	lengths := unsafe.Slice(stringLengths, count)
+	out := make([]string, count)
+	for i := range count {
+		out[i] = C.GoStringN((*C.char)(data[i]), C.int(lengths[i]))
+	}
+	return out
+}
+
 func (r *ColumnResult) Rows() [][]Value {
 	rows := make([][]Value, 0, r.Count)
 	for row := 0; row < r.Count; row++ {
@@ -670,6 +942,116 @@ func (r *TxReport) DBAfter() (*DB, error) {
 	return &DB{raw: raw}, nil
 }
 
+type TxReportArray struct {
+	raw C.vev_tx_report_array_t
+}
+
+func (a *TxReportArray) Close() {
+	if a.raw != nil {
+		C.vev_tx_report_array_free(a.raw)
+		a.raw = nil
+	}
+}
+
+func (a *TxReportArray) Values() []Value {
+	if a.raw == nil {
+		return nil
+	}
+	count := int(C.vev_tx_report_array_count(a.raw))
+	out := make([]Value, 0, count)
+	for index := 0; index < count; index++ {
+		report := C.vev_tx_report_array_get(a.raw, C.int(index))
+		out = append(out, valueFromC(C.vev_tx_report_value(report)))
+	}
+	return out
+}
+
+type EntityView struct {
+	raw C.vev_entity_t
+}
+
+func (e *EntityView) Close() {
+	if e.raw != nil {
+		C.vev_entity_free(e.raw)
+		e.raw = nil
+	}
+}
+
+func (e *EntityView) Found() bool {
+	return bool(C.vev_entity_found(e.raw))
+}
+
+func (e *EntityView) ID() uint64 {
+	return uint64(C.vev_entity_id(e.raw))
+}
+
+func (e *EntityView) Contains(attr string) bool {
+	attrText := cstring(attr)
+	defer C.free(unsafe.Pointer(attrText))
+	return bool(C.vev_entity_contains(e.raw, attrText))
+}
+
+func (e *EntityView) Get(attr string) (Value, error) {
+	attrText := cstring(attr)
+	defer C.free(unsafe.Pointer(attrText))
+	handle, err := newValueHandle(C.vev_entity_get(e.raw, attrText))
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+	return handle.Value(), nil
+}
+
+func (e *EntityView) Values(attr string) ([]Value, error) {
+	attrText := cstring(attr)
+	defer C.free(unsafe.Pointer(attrText))
+	handle, err := newValueHandle(C.vev_entity_values(e.raw, attrText))
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+	values, ok := handle.Value().([]Value)
+	if !ok {
+		return nil, fmt.Errorf("expected entity values vector")
+	}
+	return values, nil
+}
+
+func (e *EntityView) Ref(attr string) (*EntityView, error) {
+	attrText := cstring(attr)
+	defer C.free(unsafe.Pointer(attrText))
+	raw := C.vev_entity_ref(e.raw, attrText)
+	if raw == nil {
+		return nil, fmt.Errorf("failed to create referenced entity view")
+	}
+	return &EntityView{raw: raw}, nil
+}
+
+func (e *EntityView) Refs(attr string) []Entity {
+	attrText := cstring(attr)
+	defer C.free(unsafe.Pointer(attrText))
+	raw := C.vev_entity_refs(e.raw, attrText)
+	if raw == nil {
+		return nil
+	}
+	defer C.vev_u64_array_free(raw)
+	count := int(C.vev_u64_array_count(raw))
+	out := make([]Entity, 0, count)
+	for index := 0; index < count; index++ {
+		out = append(out, Entity(C.vev_u64_array_value(raw, C.int(index))))
+	}
+	return out
+}
+
+func (e *EntityView) Touch() (Value, error) {
+	handle, err := newValueHandle(C.vev_entity_touch(e.raw))
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+	return handle.Value(), nil
+}
+
 type ValueHandle struct {
 	raw C.vev_value_handle_t
 }
@@ -789,6 +1171,18 @@ func Smoke() {
 	fmt.Println("input-collection:", result)
 	mustContain("collection query", result, `"Ada"`, `"Grace"`)
 
+	oneShotRows, err := conn.Q(`[:find ?name :where [?e :user/name ?name]]`, "[]")
+	if err != nil {
+		panic(err)
+	}
+	oneShotNames := []string{}
+	for _, row := range oneShotRows.Rows() {
+		oneShotNames = append(oneShotNames, row[0].(string))
+	}
+	sort.Strings(oneShotNames)
+	mustEqual("one-shot query rows", oneShotNames, []string{"Ada", "Grace"})
+	oneShotRows.Close()
+
 	query, err := Prepare(`
 		[:find ?e ?email
 		 :in ?needle
@@ -899,6 +1293,61 @@ func Smoke() {
 	}
 	sort.Strings(manyNames)
 	mustEqual("pull many", manyNames, []string{"Ada", "Grace"})
+
+	adaEntity, err := snapshot.Entity(1)
+	if err != nil {
+		panic(err)
+	}
+	defer adaEntity.Close()
+	friendEntity, err := adaEntity.Ref(":user/friend")
+	if err != nil {
+		panic(err)
+	}
+	defer friendEntity.Close()
+	lookupEntity, err := snapshot.EntityLookupRefString(":user/email", "ada@example.com")
+	if err != nil {
+		panic(err)
+	}
+	defer lookupEntity.Close()
+	identEntity, err := snapshot.EntityIdent(":user/email")
+	if err != nil {
+		panic(err)
+	}
+	defer identEntity.Close()
+	entityName, err := adaEntity.Get(":user/name")
+	if err != nil {
+		panic(err)
+	}
+	entityNames, err := adaEntity.Values(":user/name")
+	if err != nil {
+		panic(err)
+	}
+	friendNameValue, err := friendEntity.Get(":user/name")
+	if err != nil {
+		panic(err)
+	}
+	lookupNameValue, err := lookupEntity.Get(":user/name")
+	if err != nil {
+		panic(err)
+	}
+	touchedEntity, err := adaEntity.Touch()
+	if err != nil {
+		panic(err)
+	}
+	touchedName, _ := mapGet(touchedEntity, ":user/name")
+	fmt.Println("entity view:", touchedEntity)
+	mustEqual("entity found", adaEntity.Found(), true)
+	mustEqual("entity id", adaEntity.ID(), uint64(1))
+	mustEqual("entity contains", adaEntity.Contains(":user/name"), true)
+	mustEqual("entity get", entityName, "Ada")
+	mustEqual("entity values", entityNames, []Value{"Ada"})
+	mustEqual("entity ref", friendEntity.ID(), uint64(2))
+	mustEqual("entity ref name", friendNameValue, "Grace")
+	mustEqual("entity refs", adaEntity.Refs(":user/friend"), []Entity{Entity(2)})
+	mustEqual("entity lookup", lookupEntity.ID(), uint64(1))
+	mustEqual("entity lookup name", lookupNameValue, "Ada")
+	mustEqual("entity ident", identEntity.ID(), uint64(90))
+	mustEqual("entity touch", touchedName, "Ada")
 
 	preparedPattern, err := PreparePullPattern("[:user/name]")
 	if err != nil {
@@ -1065,6 +1514,99 @@ func Smoke() {
 	if durable.BasisT() != 1 || durable.TxCount() != 1 {
 		panic("unexpected durable metadata after transact")
 	}
+	bulkA, err := NewTxBuilder(3)
+	if err != nil {
+		panic(err)
+	}
+	defer bulkA.Close()
+	bulkB, err := NewTxBuilder(1)
+	if err != nil {
+		panic(err)
+	}
+	defer bulkB.Close()
+	if err := bulkA.AddString(2, ":user/name", "Durable Grace"); err != nil {
+		panic(err)
+	}
+	if err := bulkA.AddInt(2, ":user/age", 37); err != nil {
+		panic(err)
+	}
+	if err := bulkA.AddBool(2, ":user/active", true); err != nil {
+		panic(err)
+	}
+	if err := bulkB.AddString(3, ":user/name", "Durable Hedy"); err != nil {
+		panic(err)
+	}
+	bulkReport, err := durable.TransactBulk([]*TxBuilder{bulkA, bulkB})
+	if err != nil {
+		panic(err)
+	}
+	bulkValue := bulkReport.Value()
+	bulkReport.Close()
+	bulkOK, _ := mapGet(bulkValue, ":ok")
+	mustEqual("durable bulk ok", bulkOK, true)
+	if durable.BasisT() != 2 || durable.TxCount() != 2 {
+		panic("unexpected durable metadata after bulk transact")
+	}
+	logicalA, err := NewTxBuilder(2)
+	if err != nil {
+		panic(err)
+	}
+	defer logicalA.Close()
+	logicalB, err := NewTxBuilder(2)
+	if err != nil {
+		panic(err)
+	}
+	defer logicalB.Close()
+	if err := logicalA.AddString(4, ":user/name", "Durable Ada"); err != nil {
+		panic(err)
+	}
+	if err := logicalA.AddKeyword(4, ":user/role", ":role/admin"); err != nil {
+		panic(err)
+	}
+	if err := logicalB.AddString(5, ":user/name", "Durable Dorothy"); err != nil {
+		panic(err)
+	}
+	if err := logicalB.AddSymbol(5, ":user/source", "source/import"); err != nil {
+		panic(err)
+	}
+	logicalReports, err := durable.TransactLogicalBulk([]*TxBuilder{logicalA, logicalB})
+	if err != nil {
+		panic(err)
+	}
+	logicalValues := logicalReports.Values()
+	logicalReports.Close()
+	if len(logicalValues) != 2 {
+		panic("unexpected logical group report count")
+	}
+	for _, value := range logicalValues {
+		ok, _ := mapGet(value, ":ok")
+		mustEqual("logical group ok", ok, true)
+	}
+	emptyLogicalReports, err := durable.TransactLogicalBulk(nil)
+	if err != nil {
+		panic(err)
+	}
+	mustEqual("empty logical group", len(emptyLogicalReports.Values()), 0)
+	emptyLogicalReports.Close()
+	ednReports, err := durable.TransactLogical([]string{
+		`[{:db/id 6 :user/name "Durable Katherine"}]`,
+		`[{:db/id 7 :user/name "Durable Mary"}]`,
+	})
+	if err != nil {
+		panic(err)
+	}
+	ednValues := ednReports.Values()
+	ednReports.Close()
+	if len(ednValues) != 2 {
+		panic("unexpected EDN logical group report count")
+	}
+	for _, value := range ednValues {
+		ok, _ := mapGet(value, ":ok")
+		mustEqual("EDN logical group ok", ok, true)
+	}
+	if durable.BasisT() != 6 || durable.TxCount() != 6 {
+		panic("unexpected durable metadata after logical transact")
+	}
 	durableDB, err := durable.DB()
 	if err != nil {
 		panic(err)
@@ -1075,6 +1617,9 @@ func Smoke() {
 		panic(err)
 	}
 	defer reopened.Close()
+	if reopened.BasisT() != 6 || reopened.TxCount() != 6 {
+		panic("unexpected reopened durable metadata")
+	}
 	reopenedDB, err := reopened.DB()
 	if err != nil {
 		panic(err)
@@ -1088,6 +1633,21 @@ func Smoke() {
 		panic("unexpected reopened durable rows")
 	}
 	durableRows.Close()
+	durableEntity, err := reopenedDB.Entity(1)
+	if err != nil {
+		panic(err)
+	}
+	defer durableEntity.Close()
+	durableEntityName, err := durableEntity.Get(":user/name")
+	if err != nil {
+		panic(err)
+	}
+	durableEntityEmail, err := durableEntity.Get(":user/email")
+	if err != nil {
+		panic(err)
+	}
+	mustEqual("durable entity name", durableEntityName, "Durable Ada")
+	mustEqual("durable entity email", durableEntityEmail, "durable-ada@example.com")
 	durableDB.Close()
 
 }

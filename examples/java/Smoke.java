@@ -173,6 +173,21 @@ public final class Smoke {
                             throw new IllegalStateException("unexpected pull result");
                         }
                     }
+                    try (Vev.DB snapshot = conn.db()) {
+                        Vev.ColumnResult pullColumns = snapshot.queryColumns(pullQuery, "[]");
+                        if (pullColumns == null
+                                || pullColumns.rowCount() != 1
+                                || !Arrays.equals(pullColumns.kinds(), new int[] { Vev.COLUMN_VALUE })) {
+                            throw new IllegalStateException("unexpected pull column batch shape");
+                        }
+                        Object[] pulledValues = (Object[]) pullColumns.columns()[0];
+                        if (!(pulledValues[0] instanceof Vev.MapValue pulled)
+                                || !"Ada".equals(pulled.get(":user/name"))
+                                || !(pulled.get(":user/friend") instanceof Vev.MapValue friendMap)
+                                || !"Grace".equals(friendMap.get(":user/name"))) {
+                            throw new IllegalStateException("unexpected pull column batch");
+                        }
+                    }
                 }
 
                 try (Vev.DB pullDb = conn.db()) {
@@ -219,6 +234,20 @@ public final class Smoke {
                     System.out.println("pull many: " + manyPull);
                     if (!pullNames.equals(List.of("Ada", "Grace"))) {
                         throw new IllegalStateException("unexpected pull-many");
+                    }
+
+                    @SuppressWarnings("unchecked")
+                    List<Object> manyLookupPull = (List<Object>) pullDb.pullManyLookupRefString(
+                        "[:user/name]",
+                        ":user/email",
+                        "ada@example.com",
+                        "missing@example.com",
+                        "grace@example.com");
+                    if (manyLookupPull.size() != 3
+                        || !"Ada".equals(((Vev.MapValue) manyLookupPull.get(0)).get(":user/name"))
+                        || manyLookupPull.get(1) != null
+                        || !"Grace".equals(((Vev.MapValue) manyLookupPull.get(2)).get(":user/name"))) {
+                        throw new IllegalStateException("unexpected pull-many lookup-ref");
                     }
                 }
 
@@ -312,6 +341,74 @@ public final class Smoke {
                     if (!Arrays.equals(durable.txIds(), new long[]{1})) {
                         throw new IllegalStateException("unexpected durable tx ids after first tx");
                     }
+                    try (Vev.TxBuilder bulkA = vev.txBuilder(1);
+                         Vev.TxBuilder bulkB = vev.txBuilder(1)) {
+                        bulkA.addString(2, ":user/name", "Durable Grace");
+                        bulkB.addString(3, ":user/name", "Durable Hedy");
+                        try (Vev.TxReport report = durable.transactReport(List.of(bulkA, bulkB))) {
+                            Vev.MapValue reportValue = (Vev.MapValue) report.value();
+                            if (!Boolean.TRUE.equals(reportValue.get(":ok"))) {
+                                throw new IllegalStateException("unexpected durable bulk builder report");
+                            }
+                        }
+                    }
+                    if (durable.basisT() != 2) {
+                        throw new IllegalStateException("unexpected durable basis after bulk builder tx");
+                    }
+                    if (durable.txCount() != 2) {
+                        throw new IllegalStateException("unexpected durable tx count after bulk builder tx");
+                    }
+                    if (!Arrays.equals(durable.txIds(), new long[]{1, 2})) {
+                        throw new IllegalStateException("unexpected durable tx ids after bulk builder tx");
+                    }
+                    try (Vev.TxBuilder logicalA = vev.txBuilder(1);
+                         Vev.TxBuilder logicalB = vev.txBuilder(1)) {
+                        logicalA.addString(4, ":user/name", "Durable Ada");
+                        logicalB.addString(5, ":user/name", "Durable Dorothy");
+                        try (Vev.TxReportArray reports = durable.transactLogicalReports(List.of(logicalA, logicalB))) {
+                            List<Object> values = reports.values();
+                            if (values.size() != 2) {
+                                throw new IllegalStateException("unexpected logical group report count");
+                            }
+                            for (Object value : values) {
+                                Vev.MapValue reportValue = (Vev.MapValue) value;
+                                if (!Boolean.TRUE.equals(reportValue.get(":ok"))) {
+                                    throw new IllegalStateException("unexpected durable logical group report");
+                                }
+                            }
+                        }
+                    }
+                    try (Vev.TxReportArray reports = durable.transactLogicalReports(List.of())) {
+                        if (!reports.values().isEmpty()) {
+                            throw new IllegalStateException("unexpected empty logical group reports");
+                        }
+                    }
+                    try (Vev.TxReportArray reports = durable.transactLogicalEdnReports(List.of(
+                            "[{:db/id 6 :user/name \"Durable Katherine\"}]",
+                            "[{:db/id 7 :user/name \"Durable Mary\"}]"))) {
+                        List<Object> values = reports.values();
+                        if (values.size() != 2) {
+                            throw new IllegalStateException("unexpected logical EDN group report count");
+                        }
+                        for (Object value : values) {
+                            Vev.MapValue reportValue = (Vev.MapValue) value;
+                            if (!Boolean.TRUE.equals(reportValue.get(":ok"))) {
+                                throw new IllegalStateException("unexpected durable logical EDN group report");
+                            }
+                        }
+                    }
+                    if (durable.basisT() != 6) {
+                        throw new IllegalStateException("unexpected durable basis after logical group tx");
+                    }
+                    if (durable.txCount() != 6) {
+                        throw new IllegalStateException("unexpected durable tx count after logical group tx");
+                    }
+                    if (!Arrays.equals(durable.txIds(), new long[]{1, 2, 3, 4, 5, 6})) {
+                        throw new IllegalStateException("unexpected durable tx ids after logical group tx");
+                    }
+                    if (!durable.compactIndexes()) {
+                        throw new IllegalStateException("durable index compaction failed");
+                    }
                     try (Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                          Vev.DB durableDb = durable.db();
                          Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {
@@ -326,13 +423,13 @@ public final class Smoke {
                      Vev.PreparedQuery durableQuery = vev.prepare("[:find ?e ?email :where [?e :user/email ?email]]");
                      Vev.DB durableDb = durable.db();
                      Vev.ResultSet rows = durableDb.query(durableQuery, "[]")) {
-                    if (durable.basisT() != 1) {
+                    if (durable.basisT() != 6) {
                         throw new IllegalStateException("unexpected reopened durable basis");
                     }
-                    if (durable.txCount() != 1) {
+                    if (durable.txCount() != 6) {
                         throw new IllegalStateException("unexpected reopened durable tx count");
                     }
-                    if (!Arrays.equals(durable.txIds(), new long[]{1})) {
+                    if (!Arrays.equals(durable.txIds(), new long[]{1, 2, 3, 4, 5, 6})) {
                         throw new IllegalStateException("unexpected reopened durable tx ids");
                     }
                     System.out.println("sqlite-reopened rows: " + rows.rowCount());

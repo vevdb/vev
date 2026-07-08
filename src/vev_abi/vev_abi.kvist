@@ -5,6 +5,7 @@
 
 (import arr "kvist:arr")
 (import runtime "base:runtime")
+(import set "kvist:set")
 (import strings "core:strings")
 (import vev "../vev")
 
@@ -20,6 +21,7 @@ ABI_SQLite_Conn :: struct {
     ok: bool,
     error: string,
     tx_sources: [dynamic]string,
+    listeners: [dynamic]ABI_Tx_Listener,
 }
 
 ABI_Prepared_Query :: struct {
@@ -41,6 +43,10 @@ ABI_DB :: struct {
     storage: ^ABI_DB_Storage,
 }
 
+ABI_Entity :: struct {
+    entity: vev__Store_Entity,
+}
+
 ABI_Result :: struct {
     result: vev__Result_Set,
     owns_values: bool,
@@ -56,6 +62,10 @@ ABI_String_Array :: struct {
     values: [dynamic]string,
     data: [dynamic]rawptr,
     lengths: [dynamic]i32,
+}
+
+ABI_I64_Array :: struct {
+    values: [dynamic]i64,
 }
 
 ABI_Entity_Int_Pairs :: struct {
@@ -76,15 +86,58 @@ ABI_Entity_String_Int_Triples :: struct {
     string_indices: [dynamic]i32,
 }
 
+ABI_String_String_Pairs :: struct {
+    first: [dynamic]string,
+    second: [dynamic]string,
+    owns_strings: bool,
+    first_data: [dynamic]rawptr,
+    first_lengths: [dynamic]i32,
+    second_data: [dynamic]rawptr,
+    second_lengths: [dynamic]i32,
+}
+
+ABI_Generic_Column :: struct {
+    kind: int,
+    value_kinds: [dynamic]i32,
+    entities: [dynamic]u64,
+    ints: [dynamic]i64,
+    floats: [dynamic]f64,
+    bools: [dynamic]bool,
+    strings: [dynamic]string,
+    string_data: [dynamic]rawptr,
+    string_lengths: [dynamic]i32,
+    values: [dynamic]vev__Value,
+    value_ptrs: [dynamic]rawptr,
+}
+
+ABI_Generic_Column_Batch :: struct {
+    rows: int,
+    columns: [dynamic]ABI_Generic_Column,
+}
+
 ABI_COLUMN_BATCH_NONE :: 0
 ABI_COLUMN_BATCH_ENTITY :: 1
 ABI_COLUMN_BATCH_STRING :: 2
 ABI_COLUMN_BATCH_ENTITY_INT :: 3
 ABI_COLUMN_BATCH_ENTITY_STRING_INT :: 4
+ABI_COLUMN_BATCH_INT :: 5
+ABI_COLUMN_BATCH_ENTITY_STRING :: 6
+ABI_COLUMN_BATCH_STRING_INT :: 7
+ABI_COLUMN_BATCH_STRING_STRING :: 8
+
+ABI_COLUMN_KIND_NONE :: 0
+ABI_COLUMN_KIND_ENTITY :: 1
+ABI_COLUMN_KIND_STRING :: 2
+ABI_COLUMN_KIND_INT :: 3
+ABI_COLUMN_KIND_MIXED :: 4
+ABI_COLUMN_KIND_BOOL :: 5
+ABI_COLUMN_KIND_FLOAT :: 6
+ABI_COLUMN_KIND_VALUE :: 7
 
 ABI_Column_Batch :: struct {
     kind: int,
     handle: rawptr,
+    generic: bool,
 }
 
 ABI_Tx_Report :: struct {
@@ -92,6 +145,10 @@ ABI_Tx_Report :: struct {
     has_store_dbs: bool,
     db_before: vev__Store_DB,
     db_after: vev__Store_DB,
+}
+
+ABI_Tx_Report_Array :: struct {
+    reports: [dynamic]rawptr,
 }
 
 ABI_Tx_Builder :: struct {
@@ -223,6 +280,7 @@ abi_alloc_sqlite_conn :: proc(store: vev__SQLite_Conn, ok: bool, error: string) 
     wrapper.ok = ok
     wrapper.error = error
     wrapper.tx_sources = make([dynamic]string)
+    wrapper.listeners = make([dynamic]ABI_Tx_Listener)
     return rawptr(wrapper)
 }
 
@@ -266,6 +324,47 @@ abi_sqlite_conn_store_tx_source :: proc(conn: rawptr, source: string) {
     append(&((^ABI_SQLite_Conn)(conn))^.tx_sources, source)
 }
 
+abi_sqlite_conn_add_tx_listener :: proc(conn: rawptr, name: string, callback: rawptr, user: rawptr) -> bool {
+    if conn == nil || callback == nil {
+        return false
+    }
+    wrapper := (^ABI_SQLite_Conn)(conn)
+    for &listener in wrapper.listeners {
+        if listener.name == name {
+            delete(listener.name)
+            listener = abi_tx_listener_entry(name, callback, user)
+            return true
+        }
+    }
+    append(&wrapper.listeners, abi_tx_listener_entry(name, callback, user))
+    return true
+}
+
+abi_sqlite_conn_remove_tx_listener :: proc(conn: rawptr, name: string) -> bool {
+    if conn == nil {
+        return false
+    }
+    wrapper := (^ABI_SQLite_Conn)(conn)
+    for listener, index in wrapper.listeners {
+        if listener.name == name {
+            delete(wrapper.listeners[index].name)
+            ordered_remove(&wrapper.listeners, index)
+            return true
+        }
+    }
+    return false
+}
+
+abi_sqlite_conn_notify_tx_listeners :: proc(conn: rawptr, report: rawptr) {
+    if conn == nil || report == nil {
+        return
+    }
+    wrapper := (^ABI_SQLite_Conn)(conn)
+    for listener in wrapper.listeners {
+        abi_tx_listener_notify(listener, report)
+    }
+}
+
 abi_free_sqlite_conn :: proc(conn: rawptr) {
     wrapper := (^ABI_SQLite_Conn)(conn)
     if len(wrapper.error) > 0 {
@@ -274,7 +373,11 @@ abi_free_sqlite_conn :: proc(conn: rawptr) {
     for source in wrapper.tx_sources {
         delete(source)
     }
+    for listener in wrapper.listeners {
+        delete(listener.name)
+    }
     delete(wrapper.tx_sources)
+    delete(wrapper.listeners)
     free(wrapper)
 }
 
@@ -431,6 +534,40 @@ abi_free_tx_report :: proc(report: rawptr) {
     free((^ABI_Tx_Report)(report))
 }
 
+abi_alloc_tx_report_array :: proc(capacity: int) -> rawptr {
+    wrapper := new(ABI_Tx_Report_Array)
+    wrapper.reports = make([dynamic]rawptr, 0, capacity)
+    return rawptr(wrapper)
+}
+
+abi_tx_report_array_reports_ptr :: proc(array: rawptr) -> ^[dynamic]rawptr {
+    return &((^ABI_Tx_Report_Array)(array))^.reports
+}
+
+abi_tx_report_array_count :: proc(array: rawptr) -> int {
+    if array == nil {
+        return 0
+    }
+    return len(((^ABI_Tx_Report_Array)(array))^.reports)
+}
+
+abi_tx_report_array_value :: proc(array: rawptr, index: int) -> rawptr {
+    if array == nil {
+        return nil
+    }
+    wrapper := (^ABI_Tx_Report_Array)(array)
+    if index < 0 || index >= len(wrapper.reports) {
+        return nil
+    }
+    return wrapper.reports[index]
+}
+
+abi_free_tx_report_array :: proc(array: rawptr) {
+    wrapper := (^ABI_Tx_Report_Array)(array)
+    delete(wrapper.reports)
+    free(wrapper)
+}
+
 abi_alloc_tx_builder :: proc(capacity: int) -> rawptr {
     wrapper := new(ABI_Tx_Builder)
     wrapper.tx_data = make([dynamic]vev__Tx_Data, 0, capacity)
@@ -530,6 +667,20 @@ abi_free_value_handle :: proc(handle: rawptr) {
     free((^ABI_Value_Handle)(handle))
 }
 
+abi_alloc_entity :: proc(entity: vev__Store_Entity) -> rawptr {
+    wrapper := new(ABI_Entity)
+    wrapper.entity = entity
+    return rawptr(wrapper)
+}
+
+abi_entity_ptr :: proc(entity: rawptr) -> ^vev__Store_Entity {
+    return &((^ABI_Entity)(entity))^.entity
+}
+
+abi_free_entity :: proc(entity: rawptr) {
+    free((^ABI_Entity)(entity))
+}
+
 abi_free_result :: proc(result: rawptr) {
     wrapper := (^ABI_Result)(result)
     delete(wrapper.pull_values)
@@ -627,6 +778,37 @@ abi_free_string_array :: proc(array: rawptr) {
     delete(wrapper.values)
     delete(wrapper.data)
     delete(wrapper.lengths)
+    free(wrapper)
+}
+
+abi_alloc_i64_array :: proc(values: [dynamic]i64) -> rawptr {
+    wrapper := new(ABI_I64_Array)
+    wrapper.values = values
+    return rawptr(wrapper)
+}
+
+abi_i64_array_count :: proc(array: rawptr) -> int {
+    wrapper := (^ABI_I64_Array)(array)
+    if wrapper == nil {
+        return 0
+    }
+    return len(wrapper.values)
+}
+
+abi_i64_array_data :: proc(array: rawptr) -> rawptr {
+    wrapper := (^ABI_I64_Array)(array)
+    if wrapper == nil || len(wrapper.values) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.values[0])
+}
+
+abi_free_i64_array :: proc(array: rawptr) {
+    wrapper := (^ABI_I64_Array)(array)
+    if wrapper == nil {
+        return
+    }
+    delete(wrapper.values)
     free(wrapper)
 }
 
@@ -748,6 +930,76 @@ abi_alloc_entity_string_int_triples_with_ownership :: proc(columns: vev__Entity_
 
 abi_alloc_entity_string_int_triples :: proc(columns: vev__Entity_String_Int_Triples) -> rawptr {
     return abi_alloc_entity_string_int_triples_with_ownership(columns, columns.owns_strings)
+}
+
+abi_alloc_entity_string_pairs :: proc(columns: vev__Entity_String_Pair_Columns) -> rawptr {
+    triples := vev__Entity_String_Int_Triples{
+        entities = columns.entities,
+        strings = columns.strings,
+        ints = make([dynamic]i64),
+        owns_strings = columns.owns_strings,
+    }
+    return abi_alloc_entity_string_int_triples(triples)
+}
+
+abi_alloc_string_string_pairs :: proc(columns: vev__String_String_Pair_Columns) -> rawptr {
+    wrapper := new(ABI_String_String_Pairs)
+    wrapper.first = columns.first
+    wrapper.second = columns.second
+    wrapper.owns_strings = columns.owns_strings
+    wrapper.first_data = make([dynamic]rawptr, 0, len(columns.first))
+    wrapper.first_lengths = make([dynamic]i32, 0, len(columns.first))
+    wrapper.second_data = make([dynamic]rawptr, 0, len(columns.second))
+    wrapper.second_lengths = make([dynamic]i32, 0, len(columns.second))
+    for text in columns.first {
+        append(&wrapper.first_data, raw_data(text))
+        append(&wrapper.first_lengths, i32(len(text)))
+    }
+    for text in columns.second {
+        append(&wrapper.second_data, raw_data(text))
+        append(&wrapper.second_lengths, i32(len(text)))
+    }
+    return rawptr(wrapper)
+}
+
+abi_string_string_pairs_count :: proc(array: rawptr) -> int {
+    wrapper := (^ABI_String_String_Pairs)(array)
+    if wrapper == nil {
+        return 0
+    }
+    return len(wrapper.first)
+}
+
+abi_string_string_pairs_first_data_array :: proc(array: rawptr) -> rawptr {
+    wrapper := (^ABI_String_String_Pairs)(array)
+    if wrapper == nil || len(wrapper.first_data) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.first_data[0])
+}
+
+abi_string_string_pairs_first_lengths_data :: proc(array: rawptr) -> rawptr {
+    wrapper := (^ABI_String_String_Pairs)(array)
+    if wrapper == nil || len(wrapper.first_lengths) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.first_lengths[0])
+}
+
+abi_string_string_pairs_second_data_array :: proc(array: rawptr) -> rawptr {
+    wrapper := (^ABI_String_String_Pairs)(array)
+    if wrapper == nil || len(wrapper.second_data) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.second_data[0])
+}
+
+abi_string_string_pairs_second_lengths_data :: proc(array: rawptr) -> rawptr {
+    wrapper := (^ABI_String_String_Pairs)(array)
+    if wrapper == nil || len(wrapper.second_lengths) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.second_lengths[0])
 }
 
 abi_entity_string_int_triples_count :: proc(array: rawptr) -> int {
@@ -872,6 +1124,365 @@ abi_free_entity_string_int_triples :: proc(array: rawptr) {
     free(wrapper)
 }
 
+abi_free_string_string_pairs :: proc(array: rawptr) {
+    wrapper := (^ABI_String_String_Pairs)(array)
+    if wrapper == nil {
+        return
+    }
+    if wrapper.owns_strings {
+        for text in wrapper.first {
+            delete(text)
+        }
+        for text in wrapper.second {
+            delete(text)
+        }
+    }
+    delete(wrapper.first)
+    delete(wrapper.second)
+    delete(wrapper.first_data)
+    delete(wrapper.first_lengths)
+    delete(wrapper.second_data)
+    delete(wrapper.second_lengths)
+    free(wrapper)
+}
+
+abi_generic_column_empty :: proc(kind: int, capacity: int) -> ABI_Generic_Column {
+    column: ABI_Generic_Column
+    column.kind = kind
+    if kind == ABI_COLUMN_KIND_ENTITY {
+        column.entities = make([dynamic]u64, 0, capacity)
+    } else if kind == ABI_COLUMN_KIND_INT {
+        column.ints = make([dynamic]i64, 0, capacity)
+    } else if kind == ABI_COLUMN_KIND_BOOL {
+        column.bools = make([dynamic]bool, 0, capacity)
+    } else if kind == ABI_COLUMN_KIND_FLOAT {
+        column.floats = make([dynamic]f64, 0, capacity)
+    } else if kind == ABI_COLUMN_KIND_STRING {
+        column.strings = make([dynamic]string, 0, capacity)
+        column.string_data = make([dynamic]rawptr, 0, capacity)
+        column.string_lengths = make([dynamic]i32, 0, capacity)
+    } else if kind == ABI_COLUMN_KIND_MIXED {
+        column.value_kinds = make([dynamic]i32, 0, capacity)
+        column.entities = make([dynamic]u64, 0, capacity)
+        column.ints = make([dynamic]i64, 0, capacity)
+        column.floats = make([dynamic]f64, 0, capacity)
+        column.bools = make([dynamic]bool, 0, capacity)
+        column.strings = make([dynamic]string, 0, capacity)
+        column.string_data = make([dynamic]rawptr, 0, capacity)
+        column.string_lengths = make([dynamic]i32, 0, capacity)
+    } else if kind == ABI_COLUMN_KIND_VALUE {
+        column.values = make([dynamic]vev__Value, 0, capacity)
+        column.value_ptrs = make([dynamic]rawptr, 0, capacity)
+    }
+    return column
+}
+
+abi_generic_column_delete :: proc(column: ^ABI_Generic_Column) {
+    delete(column.value_kinds)
+    delete(column.entities)
+    delete(column.ints)
+    delete(column.floats)
+    delete(column.bools)
+    for text in column.strings {
+        if len(text) > 0 {
+            delete(text)
+        }
+    }
+    delete(column.strings)
+    delete(column.string_data)
+    delete(column.string_lengths)
+    for value in column.values {
+        vev__delete_owned_value(value)
+    }
+    delete(column.values)
+    delete(column.value_ptrs)
+}
+
+abi_alloc_generic_column_batch :: proc(kinds: [dynamic]int, rows: int) -> rawptr {
+    wrapper := new(ABI_Generic_Column_Batch)
+    wrapper.rows = rows
+    wrapper.columns = make([dynamic]ABI_Generic_Column, 0, len(kinds))
+    for kind in kinds {
+        append(&wrapper.columns, abi_generic_column_empty(kind, rows))
+    }
+    return rawptr(wrapper)
+}
+
+abi_generic_column_batch_set_count :: proc(batch: rawptr, rows: int) {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil {
+        return
+    }
+    wrapper.rows = rows
+}
+
+abi_generic_column_batch_column_count :: proc(batch: rawptr) -> int {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil {
+        return 0
+    }
+    return len(wrapper.columns)
+}
+
+abi_generic_column_batch_count :: proc(batch: rawptr) -> int {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil {
+        return 0
+    }
+    return wrapper.rows
+}
+
+abi_generic_column_batch_column_kind :: proc(batch: rawptr, column: int) -> int {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) {
+        return ABI_COLUMN_KIND_NONE
+    }
+    return wrapper.columns[column].kind
+}
+
+abi_generic_column_batch_append_entity :: proc(batch: rawptr, column: int, value: u64) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_ENTITY {
+        return false
+    }
+    append(&wrapper.columns[column].entities, value)
+    return true
+}
+
+abi_generic_column_batch_append_int :: proc(batch: rawptr, column: int, value: i64) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_INT {
+        return false
+    }
+    append(&wrapper.columns[column].ints, value)
+    return true
+}
+
+abi_generic_column_batch_append_bool :: proc(batch: rawptr, column: int, value: bool) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_BOOL {
+        return false
+    }
+    append(&wrapper.columns[column].bools, value)
+    return true
+}
+
+abi_generic_column_batch_append_float :: proc(batch: rawptr, column: int, value: f64) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_FLOAT {
+        return false
+    }
+    append(&wrapper.columns[column].floats, value)
+    return true
+}
+
+abi_generic_column_batch_append_string_owned :: proc(batch: rawptr, column: int, value: string) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_STRING {
+        delete(value)
+        return false
+    }
+    append(&wrapper.columns[column].strings, value)
+    if len(value) == 0 {
+        append(&wrapper.columns[column].string_data, nil)
+    } else {
+        append(&wrapper.columns[column].string_data, raw_data(value))
+    }
+    append(&wrapper.columns[column].string_lengths, i32(len(value)))
+    return true
+}
+
+abi_generic_column_batch_append_mixed_nil :: proc(batch: rawptr, column: int) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_MIXED {
+        return false
+    }
+    append(&wrapper.columns[column].value_kinds, 0)
+    append(&wrapper.columns[column].entities, 0)
+    append(&wrapper.columns[column].ints, 0)
+    append(&wrapper.columns[column].floats, 0)
+    append(&wrapper.columns[column].bools, false)
+    append(&wrapper.columns[column].strings, \"\")
+    append(&wrapper.columns[column].string_data, nil)
+    append(&wrapper.columns[column].string_lengths, 0)
+    return true
+}
+
+abi_generic_column_batch_append_mixed_entity :: proc(batch: rawptr, column: int, value: u64) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_MIXED {
+        return false
+    }
+    append(&wrapper.columns[column].value_kinds, 1)
+    append(&wrapper.columns[column].entities, value)
+    append(&wrapper.columns[column].ints, 0)
+    append(&wrapper.columns[column].floats, 0)
+    append(&wrapper.columns[column].bools, false)
+    append(&wrapper.columns[column].strings, \"\")
+    append(&wrapper.columns[column].string_data, nil)
+    append(&wrapper.columns[column].string_lengths, 0)
+    return true
+}
+
+abi_generic_column_batch_append_mixed_int :: proc(batch: rawptr, column: int, value: i64) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_MIXED {
+        return false
+    }
+    append(&wrapper.columns[column].value_kinds, 3)
+    append(&wrapper.columns[column].entities, 0)
+    append(&wrapper.columns[column].ints, value)
+    append(&wrapper.columns[column].floats, 0)
+    append(&wrapper.columns[column].bools, false)
+    append(&wrapper.columns[column].strings, \"\")
+    append(&wrapper.columns[column].string_data, nil)
+    append(&wrapper.columns[column].string_lengths, 0)
+    return true
+}
+
+abi_generic_column_batch_append_mixed_float :: proc(batch: rawptr, column: int, value: f64) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_MIXED {
+        return false
+    }
+    append(&wrapper.columns[column].value_kinds, 4)
+    append(&wrapper.columns[column].entities, 0)
+    append(&wrapper.columns[column].ints, 0)
+    append(&wrapper.columns[column].floats, value)
+    append(&wrapper.columns[column].bools, false)
+    append(&wrapper.columns[column].strings, \"\")
+    append(&wrapper.columns[column].string_data, nil)
+    append(&wrapper.columns[column].string_lengths, 0)
+    return true
+}
+
+abi_generic_column_batch_append_mixed_bool :: proc(batch: rawptr, column: int, value: bool) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_MIXED {
+        return false
+    }
+    append(&wrapper.columns[column].value_kinds, 5)
+    append(&wrapper.columns[column].entities, 0)
+    append(&wrapper.columns[column].ints, 0)
+    append(&wrapper.columns[column].floats, 0)
+    append(&wrapper.columns[column].bools, value)
+    append(&wrapper.columns[column].strings, \"\")
+    append(&wrapper.columns[column].string_data, nil)
+    append(&wrapper.columns[column].string_lengths, 0)
+    return true
+}
+
+abi_generic_column_batch_append_mixed_string_owned :: proc(batch: rawptr, column: int, kind: i32, value: string) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_MIXED {
+        delete(value)
+        return false
+    }
+    append(&wrapper.columns[column].value_kinds, kind)
+    append(&wrapper.columns[column].entities, 0)
+    append(&wrapper.columns[column].ints, 0)
+    append(&wrapper.columns[column].floats, 0)
+    append(&wrapper.columns[column].bools, false)
+    append(&wrapper.columns[column].strings, value)
+    if len(value) == 0 {
+        append(&wrapper.columns[column].string_data, nil)
+    } else {
+        append(&wrapper.columns[column].string_data, raw_data(value))
+    }
+    append(&wrapper.columns[column].string_lengths, i32(len(value)))
+    return true
+}
+
+abi_generic_column_batch_append_value_owned :: proc(batch: rawptr, column: int, value: vev__Value) -> bool {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_VALUE {
+        vev__delete_owned_value(value)
+        return false
+    }
+    append(&wrapper.columns[column].values, value)
+    return true
+}
+
+abi_generic_column_batch_entities_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || len(wrapper.columns[column].entities) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.columns[column].entities[0])
+}
+
+abi_generic_column_batch_ints_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || len(wrapper.columns[column].ints) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.columns[column].ints[0])
+}
+
+abi_generic_column_batch_floats_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || len(wrapper.columns[column].floats) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.columns[column].floats[0])
+}
+
+abi_generic_column_batch_bools_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || len(wrapper.columns[column].bools) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.columns[column].bools[0])
+}
+
+abi_generic_column_batch_value_kinds_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || len(wrapper.columns[column].value_kinds) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.columns[column].value_kinds[0])
+}
+
+abi_generic_column_batch_values_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || wrapper.columns[column].kind != ABI_COLUMN_KIND_VALUE || len(wrapper.columns[column].values) == 0 {
+        return nil
+    }
+    clear(&wrapper.columns[column].value_ptrs)
+    for index in 0..<len(wrapper.columns[column].values) {
+        append(&wrapper.columns[column].value_ptrs, rawptr(&wrapper.columns[column].values[index]))
+    }
+    return rawptr(&wrapper.columns[column].value_ptrs[0])
+}
+
+abi_generic_column_batch_string_data_array :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || len(wrapper.columns[column].string_data) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.columns[column].string_data[0])
+}
+
+abi_generic_column_batch_string_lengths_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil || column < 0 || column >= len(wrapper.columns) || len(wrapper.columns[column].string_lengths) == 0 {
+        return nil
+    }
+    return rawptr(&wrapper.columns[column].string_lengths[0])
+}
+
+abi_free_generic_column_batch :: proc(batch: rawptr) {
+    wrapper := (^ABI_Generic_Column_Batch)(batch)
+    if wrapper == nil {
+        return
+    }
+    for &column in wrapper.columns {
+        abi_generic_column_delete(&column)
+    }
+    delete(wrapper.columns)
+    free(wrapper)
+}
+
 abi_alloc_column_batch :: proc(kind: int, handle: rawptr) -> rawptr {
     if handle == nil {
         return nil
@@ -879,6 +1490,18 @@ abi_alloc_column_batch :: proc(kind: int, handle: rawptr) -> rawptr {
     wrapper := new(ABI_Column_Batch)
     wrapper.kind = kind
     wrapper.handle = handle
+    wrapper.generic = false
+    return rawptr(wrapper)
+}
+
+abi_alloc_column_batch_generic :: proc(kind: int, handle: rawptr) -> rawptr {
+    if handle == nil {
+        return nil
+    }
+    wrapper := new(ABI_Column_Batch)
+    wrapper.kind = kind
+    wrapper.handle = handle
+    wrapper.generic = true
     return rawptr(wrapper)
 }
 
@@ -895,23 +1518,90 @@ abi_column_batch_count :: proc(batch: rawptr) -> int {
     if wrapper == nil {
         return 0
     }
+    if wrapper.generic {
+        return abi_generic_column_batch_count(wrapper.handle)
+    }
     switch wrapper.kind {
     case ABI_COLUMN_BATCH_ENTITY:
         return abi_u64_array_count(wrapper.handle)
     case ABI_COLUMN_BATCH_STRING:
         return abi_string_array_count(wrapper.handle)
+    case ABI_COLUMN_BATCH_INT:
+        return abi_i64_array_count(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_INT:
         return abi_entity_int_pairs_count(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
         return abi_entity_string_int_triples_count(wrapper.handle)
+    case ABI_COLUMN_BATCH_ENTITY_STRING:
+        return abi_entity_string_int_triples_count(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_INT:
+        return abi_entity_string_int_triples_count(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_STRING:
+        return abi_string_string_pairs_count(wrapper.handle)
     }
     return 0
+}
+
+abi_column_batch_column_count :: proc(batch: rawptr) -> int {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return 0
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_column_count(wrapper.handle)
+    }
+    switch wrapper.kind {
+    case ABI_COLUMN_BATCH_ENTITY, ABI_COLUMN_BATCH_STRING, ABI_COLUMN_BATCH_INT:
+        return 1
+    case ABI_COLUMN_BATCH_ENTITY_INT, ABI_COLUMN_BATCH_ENTITY_STRING, ABI_COLUMN_BATCH_STRING_INT, ABI_COLUMN_BATCH_STRING_STRING:
+        return 2
+    case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
+        return 3
+    }
+    return 0
+}
+
+abi_column_batch_column_kind :: proc(batch: rawptr, column: int) -> int {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil || column < 0 {
+        return ABI_COLUMN_KIND_NONE
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_column_kind(wrapper.handle, column)
+    }
+    switch wrapper.kind {
+    case ABI_COLUMN_BATCH_ENTITY:
+        if column == 0 { return ABI_COLUMN_KIND_ENTITY }
+    case ABI_COLUMN_BATCH_STRING:
+        if column == 0 { return ABI_COLUMN_KIND_STRING }
+    case ABI_COLUMN_BATCH_INT:
+        if column == 0 { return ABI_COLUMN_KIND_INT }
+    case ABI_COLUMN_BATCH_ENTITY_INT:
+        if column == 0 { return ABI_COLUMN_KIND_ENTITY }
+        if column == 1 { return ABI_COLUMN_KIND_INT }
+    case ABI_COLUMN_BATCH_ENTITY_STRING:
+        if column == 0 { return ABI_COLUMN_KIND_ENTITY }
+        if column == 1 { return ABI_COLUMN_KIND_STRING }
+    case ABI_COLUMN_BATCH_STRING_INT:
+        if column == 0 { return ABI_COLUMN_KIND_STRING }
+        if column == 1 { return ABI_COLUMN_KIND_INT }
+    case ABI_COLUMN_BATCH_STRING_STRING:
+        if column == 0 || column == 1 { return ABI_COLUMN_KIND_STRING }
+    case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
+        if column == 0 { return ABI_COLUMN_KIND_ENTITY }
+        if column == 1 { return ABI_COLUMN_KIND_STRING }
+        if column == 2 { return ABI_COLUMN_KIND_INT }
+    }
+    return ABI_COLUMN_KIND_NONE
 }
 
 abi_column_batch_entities_data :: proc(batch: rawptr) -> rawptr {
     wrapper := (^ABI_Column_Batch)(batch)
     if wrapper == nil {
         return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_entities_data(wrapper.handle, 0)
     }
     switch wrapper.kind {
     case ABI_COLUMN_BATCH_ENTITY:
@@ -920,6 +1610,25 @@ abi_column_batch_entities_data :: proc(batch: rawptr) -> rawptr {
         return abi_entity_int_pairs_entities_data(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
         return abi_entity_string_int_triples_entities_data(wrapper.handle)
+    case ABI_COLUMN_BATCH_ENTITY_STRING:
+        return abi_entity_string_int_triples_entities_data(wrapper.handle)
+    }
+    return nil
+}
+
+abi_column_batch_column_entities_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_entities_data(wrapper.handle, column)
+    }
+    switch wrapper.kind {
+    case ABI_COLUMN_BATCH_ENTITY:
+        if column == 0 { return abi_u64_array_data(wrapper.handle) }
+    case ABI_COLUMN_BATCH_ENTITY_INT, ABI_COLUMN_BATCH_ENTITY_STRING, ABI_COLUMN_BATCH_ENTITY_STRING_INT:
+        if column == 0 { return abi_column_batch_entities_data(batch) }
     }
     return nil
 }
@@ -929,11 +1638,88 @@ abi_column_batch_ints_data :: proc(batch: rawptr) -> rawptr {
     if wrapper == nil {
         return nil
     }
+    if wrapper.generic {
+        for column in 0..<abi_generic_column_batch_column_count(wrapper.handle) {
+            if abi_generic_column_batch_column_kind(wrapper.handle, column) == ABI_COLUMN_KIND_INT {
+                return abi_generic_column_batch_ints_data(wrapper.handle, column)
+            }
+        }
+        return nil
+    }
     switch wrapper.kind {
+    case ABI_COLUMN_BATCH_INT:
+        return abi_i64_array_data(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_INT:
         return abi_entity_int_pairs_values_data(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
         return abi_entity_string_int_triples_ints_data(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_INT:
+        return abi_entity_string_int_triples_ints_data(wrapper.handle)
+    }
+    return nil
+}
+
+abi_column_batch_column_ints_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_ints_data(wrapper.handle, column)
+    }
+    switch wrapper.kind {
+    case ABI_COLUMN_BATCH_INT:
+        if column == 0 { return abi_i64_array_data(wrapper.handle) }
+    case ABI_COLUMN_BATCH_ENTITY_INT:
+        if column == 1 { return abi_entity_int_pairs_values_data(wrapper.handle) }
+    case ABI_COLUMN_BATCH_STRING_INT:
+        if column == 1 { return abi_entity_string_int_triples_ints_data(wrapper.handle) }
+    case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
+        if column == 2 { return abi_entity_string_int_triples_ints_data(wrapper.handle) }
+    }
+    return nil
+}
+
+abi_column_batch_column_floats_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_floats_data(wrapper.handle, column)
+    }
+    return nil
+}
+
+abi_column_batch_column_bools_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_bools_data(wrapper.handle, column)
+    }
+    return nil
+}
+
+abi_column_batch_column_value_kinds_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_value_kinds_data(wrapper.handle, column)
+    }
+    return nil
+}
+
+abi_column_batch_column_values_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_values_data(wrapper.handle, column)
     }
     return nil
 }
@@ -943,11 +1729,49 @@ abi_column_batch_string_data_array :: proc(batch: rawptr) -> rawptr {
     if wrapper == nil {
         return nil
     }
+    if wrapper.generic {
+        for column in 0..<abi_generic_column_batch_column_count(wrapper.handle) {
+            if abi_generic_column_batch_column_kind(wrapper.handle, column) == ABI_COLUMN_KIND_STRING {
+                return abi_generic_column_batch_string_data_array(wrapper.handle, column)
+            }
+        }
+        return nil
+    }
     switch wrapper.kind {
     case ABI_COLUMN_BATCH_STRING:
         return abi_string_array_data_array(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
         return abi_entity_string_int_triples_string_data_array(wrapper.handle)
+    case ABI_COLUMN_BATCH_ENTITY_STRING:
+        return abi_entity_string_int_triples_string_data_array(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_INT:
+        return abi_entity_string_int_triples_string_data_array(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_STRING:
+        return abi_string_string_pairs_first_data_array(wrapper.handle)
+    }
+    return nil
+}
+
+abi_column_batch_column_string_data_array :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_string_data_array(wrapper.handle, column)
+    }
+    switch wrapper.kind {
+    case ABI_COLUMN_BATCH_STRING:
+        if column == 0 { return abi_string_array_data_array(wrapper.handle) }
+    case ABI_COLUMN_BATCH_ENTITY_STRING:
+        if column == 1 { return abi_entity_string_int_triples_string_data_array(wrapper.handle) }
+    case ABI_COLUMN_BATCH_STRING_INT:
+        if column == 0 { return abi_entity_string_int_triples_string_data_array(wrapper.handle) }
+    case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
+        if column == 1 { return abi_entity_string_int_triples_string_data_array(wrapper.handle) }
+    case ABI_COLUMN_BATCH_STRING_STRING:
+        if column == 0 { return abi_string_string_pairs_first_data_array(wrapper.handle) }
+        if column == 1 { return abi_string_string_pairs_second_data_array(wrapper.handle) }
     }
     return nil
 }
@@ -957,18 +1781,99 @@ abi_column_batch_string_lengths_data :: proc(batch: rawptr) -> rawptr {
     if wrapper == nil {
         return nil
     }
+    if wrapper.generic {
+        for column in 0..<abi_generic_column_batch_column_count(wrapper.handle) {
+            if abi_generic_column_batch_column_kind(wrapper.handle, column) == ABI_COLUMN_KIND_STRING {
+                return abi_generic_column_batch_string_lengths_data(wrapper.handle, column)
+            }
+        }
+        return nil
+    }
     switch wrapper.kind {
     case ABI_COLUMN_BATCH_STRING:
         return abi_string_array_lengths_data(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
         return abi_entity_string_int_triples_string_lengths_data(wrapper.handle)
+    case ABI_COLUMN_BATCH_ENTITY_STRING:
+        return abi_entity_string_int_triples_string_lengths_data(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_INT:
+        return abi_entity_string_int_triples_string_lengths_data(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_STRING:
+        return abi_string_string_pairs_first_lengths_data(wrapper.handle)
     }
     return nil
 }
 
+abi_column_batch_column_string_lengths_data :: proc(batch: rawptr, column: int) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper == nil {
+        return nil
+    }
+    if wrapper.generic {
+        return abi_generic_column_batch_string_lengths_data(wrapper.handle, column)
+    }
+    switch wrapper.kind {
+    case ABI_COLUMN_BATCH_STRING:
+        if column == 0 { return abi_string_array_lengths_data(wrapper.handle) }
+    case ABI_COLUMN_BATCH_ENTITY_STRING:
+        if column == 1 { return abi_entity_string_int_triples_string_lengths_data(wrapper.handle) }
+    case ABI_COLUMN_BATCH_STRING_INT:
+        if column == 0 { return abi_entity_string_int_triples_string_lengths_data(wrapper.handle) }
+    case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
+        if column == 1 { return abi_entity_string_int_triples_string_lengths_data(wrapper.handle) }
+    case ABI_COLUMN_BATCH_STRING_STRING:
+        if column == 0 { return abi_string_string_pairs_first_lengths_data(wrapper.handle) }
+        if column == 1 { return abi_string_string_pairs_second_lengths_data(wrapper.handle) }
+    }
+    return nil
+}
+
+abi_column_batch_second_string_data_array :: proc(batch: rawptr) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper != nil && wrapper.generic {
+        string_column := 0
+        for column in 0..<abi_generic_column_batch_column_count(wrapper.handle) {
+            if abi_generic_column_batch_column_kind(wrapper.handle, column) == ABI_COLUMN_KIND_STRING {
+                if string_column == 1 {
+                    return abi_generic_column_batch_string_data_array(wrapper.handle, column)
+                }
+                string_column += 1
+            }
+        }
+        return nil
+    }
+    if wrapper == nil || wrapper.kind != ABI_COLUMN_BATCH_STRING_STRING {
+        return nil
+    }
+    return abi_string_string_pairs_second_data_array(wrapper.handle)
+}
+
+abi_column_batch_second_string_lengths_data :: proc(batch: rawptr) -> rawptr {
+    wrapper := (^ABI_Column_Batch)(batch)
+    if wrapper != nil && wrapper.generic {
+        string_column := 0
+        for column in 0..<abi_generic_column_batch_column_count(wrapper.handle) {
+            if abi_generic_column_batch_column_kind(wrapper.handle, column) == ABI_COLUMN_KIND_STRING {
+                if string_column == 1 {
+                    return abi_generic_column_batch_string_lengths_data(wrapper.handle, column)
+                }
+                string_column += 1
+            }
+        }
+        return nil
+    }
+    if wrapper == nil || wrapper.kind != ABI_COLUMN_BATCH_STRING_STRING {
+        return nil
+    }
+    return abi_string_string_pairs_second_lengths_data(wrapper.handle)
+}
+
 abi_column_batch_string_dictionary_count :: proc(batch: rawptr) -> int {
     wrapper := (^ABI_Column_Batch)(batch)
-    if wrapper == nil || wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING_INT {
+    if wrapper != nil && wrapper.generic {
+        return 0
+    }
+    if wrapper == nil || (wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING_INT && wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING && wrapper.kind != ABI_COLUMN_BATCH_STRING_INT) {
         return 0
     }
     return abi_entity_string_int_triples_string_dictionary_count(wrapper.handle)
@@ -976,7 +1881,10 @@ abi_column_batch_string_dictionary_count :: proc(batch: rawptr) -> int {
 
 abi_column_batch_string_dictionary_data_array :: proc(batch: rawptr) -> rawptr {
     wrapper := (^ABI_Column_Batch)(batch)
-    if wrapper == nil || wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING_INT {
+    if wrapper != nil && wrapper.generic {
+        return nil
+    }
+    if wrapper == nil || (wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING_INT && wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING && wrapper.kind != ABI_COLUMN_BATCH_STRING_INT) {
         return nil
     }
     return abi_entity_string_int_triples_string_dictionary_data_array(wrapper.handle)
@@ -984,7 +1892,10 @@ abi_column_batch_string_dictionary_data_array :: proc(batch: rawptr) -> rawptr {
 
 abi_column_batch_string_dictionary_lengths_data :: proc(batch: rawptr) -> rawptr {
     wrapper := (^ABI_Column_Batch)(batch)
-    if wrapper == nil || wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING_INT {
+    if wrapper != nil && wrapper.generic {
+        return nil
+    }
+    if wrapper == nil || (wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING_INT && wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING && wrapper.kind != ABI_COLUMN_BATCH_STRING_INT) {
         return nil
     }
     return abi_entity_string_int_triples_string_dictionary_lengths_data(wrapper.handle)
@@ -992,7 +1903,10 @@ abi_column_batch_string_dictionary_lengths_data :: proc(batch: rawptr) -> rawptr
 
 abi_column_batch_string_indices_data :: proc(batch: rawptr) -> rawptr {
     wrapper := (^ABI_Column_Batch)(batch)
-    if wrapper == nil || wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING_INT {
+    if wrapper != nil && wrapper.generic {
+        return nil
+    }
+    if wrapper == nil || (wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING_INT && wrapper.kind != ABI_COLUMN_BATCH_ENTITY_STRING && wrapper.kind != ABI_COLUMN_BATCH_STRING_INT) {
         return nil
     }
     return abi_entity_string_int_triples_string_indices_data(wrapper.handle)
@@ -1003,17 +1917,142 @@ abi_free_column_batch :: proc(batch: rawptr) {
     if wrapper == nil {
         return
     }
+    if wrapper.generic {
+        abi_free_generic_column_batch(wrapper.handle)
+        free(wrapper)
+        return
+    }
     switch wrapper.kind {
     case ABI_COLUMN_BATCH_ENTITY:
         abi_free_u64_array(wrapper.handle)
     case ABI_COLUMN_BATCH_STRING:
         abi_free_string_array(wrapper.handle)
+    case ABI_COLUMN_BATCH_INT:
+        abi_free_i64_array(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_INT:
         abi_free_entity_int_pairs(wrapper.handle)
     case ABI_COLUMN_BATCH_ENTITY_STRING_INT:
         abi_free_entity_string_int_triples(wrapper.handle)
+    case ABI_COLUMN_BATCH_ENTITY_STRING:
+        abi_free_entity_string_int_triples(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_INT:
+        abi_free_entity_string_int_triples(wrapper.handle)
+    case ABI_COLUMN_BATCH_STRING_STRING:
+        abi_free_string_string_pairs(wrapper.handle)
     }
     free(wrapper)
+}
+
+abi_column_batch_copy_u64_array :: proc(batch: rawptr, column: int) -> rawptr {
+    count := abi_column_batch_count(batch)
+    if column < 0 || column >= abi_column_batch_column_count(batch) || abi_column_batch_column_kind(batch, column) != ABI_COLUMN_KIND_ENTITY {
+        return nil
+    }
+    data := abi_column_batch_column_entities_data(batch, column)
+    if count > 0 && data == nil {
+        return nil
+    }
+    values := make([dynamic]u64, 0, count)
+    raw := ([^]u64)(data)
+    for i in 0..<count {
+        append(&values, raw[i])
+    }
+    return abi_alloc_u64_array(values)
+}
+
+abi_column_batch_copy_string_array :: proc(batch: rawptr, column: int) -> rawptr {
+    count := abi_column_batch_count(batch)
+    if column < 0 || column >= abi_column_batch_column_count(batch) || abi_column_batch_column_kind(batch, column) != ABI_COLUMN_KIND_STRING {
+        return nil
+    }
+    data := abi_column_batch_column_string_data_array(batch, column)
+    lengths := abi_column_batch_column_string_lengths_data(batch, column)
+    if count > 0 && (data == nil || lengths == nil) {
+        return nil
+    }
+    values := make([dynamic]string, 0, count)
+    raw_data_values := ([^]rawptr)(data)
+    raw_lengths := ([^]i32)(lengths)
+    for i in 0..<count {
+        owned, err := strings.clone_from_ptr((^byte)(raw_data_values[i]), int(raw_lengths[i]))
+        if err != nil {
+            for value in values {
+                delete(value)
+            }
+            delete(values)
+            return nil
+        }
+        append(&values, owned)
+    }
+    return abi_alloc_string_array(values)
+}
+
+abi_column_batch_copy_entity_int_pairs :: proc(batch: rawptr) -> rawptr {
+    count := abi_column_batch_count(batch)
+    if abi_column_batch_column_count(batch) != 2 ||
+       abi_column_batch_column_kind(batch, 0) != ABI_COLUMN_KIND_ENTITY ||
+       abi_column_batch_column_kind(batch, 1) != ABI_COLUMN_KIND_INT {
+        return nil
+    }
+    entity_data := abi_column_batch_column_entities_data(batch, 0)
+    int_data := abi_column_batch_column_ints_data(batch, 1)
+    if count > 0 && (entity_data == nil || int_data == nil) {
+        return nil
+    }
+    columns := vev__Entity_Int_Pair_Columns{
+        entities = make([dynamic]u64, 0, count),
+        values = make([dynamic]i64, 0, count),
+    }
+    raw_entities := ([^]u64)(entity_data)
+    raw_ints := ([^]i64)(int_data)
+    for i in 0..<count {
+        append(&columns.entities, raw_entities[i])
+        append(&columns.values, raw_ints[i])
+    }
+    return abi_alloc_entity_int_pairs(columns)
+}
+
+abi_column_batch_copy_entity_string_int_triples :: proc(batch: rawptr) -> rawptr {
+    count := abi_column_batch_count(batch)
+    if abi_column_batch_column_count(batch) != 3 ||
+       abi_column_batch_column_kind(batch, 0) != ABI_COLUMN_KIND_ENTITY ||
+       abi_column_batch_column_kind(batch, 1) != ABI_COLUMN_KIND_STRING ||
+       abi_column_batch_column_kind(batch, 2) != ABI_COLUMN_KIND_INT {
+        return nil
+    }
+    entity_data := abi_column_batch_column_entities_data(batch, 0)
+    string_data := abi_column_batch_column_string_data_array(batch, 1)
+    string_lengths := abi_column_batch_column_string_lengths_data(batch, 1)
+    int_data := abi_column_batch_column_ints_data(batch, 2)
+    if count > 0 && (entity_data == nil || string_data == nil || string_lengths == nil || int_data == nil) {
+        return nil
+    }
+    columns := vev__Entity_String_Int_Triples{
+        entities = make([dynamic]u64, 0, count),
+        strings = make([dynamic]string, 0, count),
+        ints = make([dynamic]i64, 0, count),
+        owns_strings = true,
+    }
+    raw_entities := ([^]u64)(entity_data)
+    raw_string_data := ([^]rawptr)(string_data)
+    raw_string_lengths := ([^]i32)(string_lengths)
+    raw_ints := ([^]i64)(int_data)
+    for i in 0..<count {
+        owned, err := strings.clone_from_ptr((^byte)(raw_string_data[i]), int(raw_string_lengths[i]))
+        if err != nil {
+            for value in columns.strings {
+                delete(value)
+            }
+            delete(columns.entities)
+            delete(columns.strings)
+            delete(columns.ints)
+            return nil
+        }
+        append(&columns.entities, raw_entities[i])
+        append(&columns.strings, owned)
+        append(&columns.ints, raw_ints[i])
+    }
+    return abi_alloc_entity_string_int_triples(columns)
 }
 
 abi_result_value_ptr :: proc(result: rawptr, row: int, column: int) -> rawptr {
@@ -1215,6 +2254,10 @@ abi_bool_at :: proc(values: rawptr, index: int) -> bool {
     return ([^]bool)(values)[index]
 }
 
+abi_rawptr_at :: proc(values: rawptr, index: int) -> rawptr {
+    return ([^]rawptr)(values)[index]
+}
+
 abi_free_stmt :: proc(stmt: rawptr) {
     wrapper := (^ABI_Stmt)(stmt)
     delete(wrapper.inputs)
@@ -1232,6 +2275,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (def Vev-Connection (distinct rawptr))
 (def Vev-SQLite-Conn (distinct rawptr))
 (def Vev-DB (distinct rawptr))
+(def Vev-Entity (distinct rawptr))
 (def Vev-Prepared-Query (distinct rawptr))
 (def Vev-Prepared-Pull-Pattern (distinct rawptr))
 (def Vev-Result (distinct rawptr))
@@ -1242,6 +2286,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (def Vev-Column-Batch (distinct rawptr))
 (def Vev-Stmt (distinct rawptr))
 (def Vev-Tx-Report (distinct rawptr))
+(def Vev-Tx-Report-Array (distinct rawptr))
 (def Vev-Tx-Builder (distinct rawptr))
 (def Vev-Tx-Fn-Registry (distinct rawptr))
 (def Vev-Tx-Fn-Args (distinct rawptr))
@@ -1286,6 +2331,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- store-db-ptr [db: Vev-DB] -> ^vev.Store-DB
   (abi-store-db-ptr (rawptr db)))
+
+(defn- entity-ptr [entity: Vev-Entity] -> ^vev.Store-Entity
+  (abi-entity-ptr (rawptr entity)))
 
 (defn- db-resident? [db: Vev-DB] -> bool
   (when (= (rawptr db) nil)
@@ -1337,7 +2385,307 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- entity-int-pairs-values-data [array: Vev-Entity-Int-Pairs] -> rawptr
   (abi-entity-int-pairs-values-data (rawptr array)))
 
+(defn- u64-array-from-column-batch [batch: Vev-Column-Batch, column: int] -> Vev-U64-Array
+  (Vev-U64-Array (abi-column-batch-copy-u64-array (rawptr batch) column)))
+
+(defn- string-array-from-column-batch [batch: Vev-Column-Batch, column: int] -> Vev-String-Array
+  (Vev-String-Array (abi-column-batch-copy-string-array (rawptr batch) column)))
+
+(defn- entity-int-pairs-from-column-batch [batch: Vev-Column-Batch] -> Vev-Entity-Int-Pairs
+  (Vev-Entity-Int-Pairs (abi-column-batch-copy-entity-int-pairs (rawptr batch))))
+
+(defn- entity-string-int-triples-from-column-batch [batch: Vev-Column-Batch] -> Vev-Entity-String-Int-Triples
+  (Vev-Entity-String-Int-Triples (abi-column-batch-copy-entity-string-int-triples (rawptr batch))))
+
+(defn- column-batch-text-like-value? [value: vev.Value] -> bool
+  (or (= value.kind .String)
+      (= value.kind .Keyword)
+      (= value.kind .Symbol)
+      (= value.kind .Uuid)))
+
+(defn- column-kind-for-relation-column-kind [kind: vev.Relation-Column-Kind] -> int
+  (case kind
+    .Entity 1
+    .Int 3
+    .Bool 5
+    .Float 6
+    .String 2
+    .Keyword 2
+    .Symbol 2
+    .Uuid 2
+    .Mixed 4
+    0))
+
+(defn- column-batch-legacy-kind-for-column-kinds [kinds: []int] -> int
+  (case (count kinds)
+    1
+      (case kinds[0]
+        1 1
+        2 2
+        3 5
+        0)
+    2
+      (cond
+        (and (= kinds[0] 1) (= kinds[1] 3)) 3
+        (and (= kinds[0] 1) (= kinds[1] 2)) 6
+        (and (= kinds[0] 2) (= kinds[1] 3)) 7
+        (and (= kinds[0] 2) (= kinds[1] 2)) 8
+        :else 0)
+    3
+      (if (and (= kinds[0] 1) (= kinds[1] 2) (= kinds[2] 3))
+        4
+        0)
+    0))
+
+(defn- column-batch-append-generic-value! [handle: rawptr, column: int, kind: int, value: vev.Value] -> bool
+  (case kind
+    1
+      (if (= value.kind .Entity)
+        (abi-generic-column-batch-append-entity handle column value.entity)
+        false)
+    3
+      (if (= value.kind .Int)
+        (abi-generic-column-batch-append-int handle column value.int-value)
+        false)
+    5
+      (if (= value.kind .Bool)
+        (abi-generic-column-batch-append-bool handle column value.bool-value)
+        false)
+    6
+      (if (= value.kind .Float)
+        (abi-generic-column-batch-append-float handle column value.float-value)
+        false)
+    2
+      (if (column-batch-text-like-value? value)
+        (abi-generic-column-batch-append-string-owned handle column (vev.string-owned value.text))
+        false)
+    4
+      (case value.kind
+        .Nil (abi-generic-column-batch-append-mixed-nil handle column)
+        .Entity (abi-generic-column-batch-append-mixed-entity handle column value.entity)
+        .Int (abi-generic-column-batch-append-mixed-int handle column value.int-value)
+        .Float (abi-generic-column-batch-append-mixed-float handle column value.float-value)
+        .Bool (abi-generic-column-batch-append-mixed-bool handle column value.bool-value)
+        .String (abi-generic-column-batch-append-mixed-string-owned handle column 2 (vev.string-owned value.text))
+        .Keyword (abi-generic-column-batch-append-mixed-string-owned handle column 6 (vev.string-owned value.text))
+        .Symbol (abi-generic-column-batch-append-mixed-string-owned handle column 7 (vev.string-owned value.text))
+        .Uuid (abi-generic-column-batch-append-mixed-string-owned handle column 10 (vev.string-owned value.text))
+        false)
+    7
+      (abi-generic-column-batch-append-value-owned handle column (vev.value-owned value))
+    false))
+
+(defn- column-batch-append-generic-relation-cell! [handle: rawptr, out-column: int, kind: int, relation-column: vev.Relation-Column, row: int] -> bool
+  (case kind
+    1
+      (if (= relation-column.kind .Entity)
+        (abi-generic-column-batch-append-entity handle out-column relation-column.entities[row])
+        false)
+    3
+      (if (= relation-column.kind .Int)
+        (abi-generic-column-batch-append-int handle out-column relation-column.ints[row])
+        false)
+    5
+      (if (= relation-column.kind .Bool)
+        (abi-generic-column-batch-append-bool handle out-column relation-column.bools[row])
+        false)
+    6
+      (if (= relation-column.kind .Float)
+        (abi-generic-column-batch-append-float handle out-column relation-column.floats[row])
+        false)
+    2
+      (case relation-column.kind
+        .String (abi-generic-column-batch-append-string-owned handle out-column (vev.string-owned relation-column.texts[row]))
+        .Keyword (abi-generic-column-batch-append-string-owned handle out-column (vev.string-owned relation-column.texts[row]))
+        .Symbol (abi-generic-column-batch-append-string-owned handle out-column (vev.string-owned relation-column.texts[row]))
+        .Uuid (abi-generic-column-batch-append-string-owned handle out-column (vev.string-owned relation-column.texts[row]))
+        false)
+    4
+      (let [[value value-ok] (vev.typed-relation-column-value relation-column row)]
+        (and value-ok (column-batch-append-generic-value! handle out-column kind value)))
+    7
+      (let [[value value-ok] (vev.typed-relation-column-value relation-column row)]
+        (and value-ok (column-batch-append-generic-value! handle out-column kind value)))
+    false))
+
+(defn- column-batch-from-typed-materialized-batch [batch: vev.Typed-Materialized-Batch] -> Vev-Column-Batch
+  (let [column-count (count batch.columns)
+        column-kinds (make [dynamic]int 0 column-count)]
+    (when (not batch.ok)
+      (delete column-kinds)
+      (return (Vev-Column-Batch nil)))
+    (for [output-column (arr.range 0 column-count)]
+      (let [column batch.columns[output-column]
+            column-kind (if batch.value-columns[output-column]
+                          7
+                          (if column.has-kind (column-kind-for-relation-column-kind column.kind) 0))]
+        (when (= column-kind 0)
+          (delete column-kinds)
+          (return (Vev-Column-Batch nil)))
+        (arr.push! column-kinds column-kind)))
+    (let [legacy-kind (column-batch-legacy-kind-for-column-kinds (slice column-kinds 0))
+          handle (abi-alloc-generic-column-batch column-kinds batch.rows)]
+      (delete column-kinds)
+      (when (= handle nil)
+        (return (Vev-Column-Batch nil)))
+      (for [row (arr.range 0 batch.rows)]
+        (for [output-column (arr.range 0 column-count)]
+          (let [column-kind (abi-generic-column-batch-column-kind handle output-column)]
+            (when (not (column-batch-append-generic-relation-cell! handle output-column column-kind batch.columns[output-column] row))
+              (abi-free-generic-column-batch handle)
+              (return (Vev-Column-Batch nil))))))
+      (Vev-Column-Batch (abi-alloc-column-batch-generic legacy-kind handle)))))
+
+(defn- column-batch-kind-for-typed-flat-column-kind [kind: vev.Relation-Column-Kind] -> int
+  (if (= kind .Mixed)
+    7
+    (column-kind-for-relation-column-kind kind)))
+
+(defn- column-batch-from-typed-relation-generic [query: vev.Query, rel: vev.Query-Relation, resolved: vev.Resolved-Typed-Flat-Materialization] -> Vev-Column-Batch
+  (discard query)
+  (when (not resolved.ok)
+    (return (Vev-Column-Batch nil)))
+  (let [column-count (vev.resolved-typed-flat-materialization-column-count resolved)
+        column-kinds (make [dynamic]int 0 column-count)]
+    (for [output-column (arr.range 0 column-count)]
+      (let [[kind kind-ok] (vev.resolved-typed-flat-materialization-output-column-kind rel resolved output-column)
+            column-kind (if kind-ok (column-batch-kind-for-typed-flat-column-kind kind) 0)]
+        (when (= column-kind 0)
+          (delete column-kinds)
+          (return (Vev-Column-Batch nil)))
+        (arr.push! column-kinds column-kind)))
+    (let [legacy-kind (column-batch-legacy-kind-for-column-kinds (slice column-kinds 0))
+          capacity (vev.resolved-typed-flat-materialization-row-count resolved)
+          handle (abi-alloc-generic-column-batch column-kinds capacity)
+          cursor (vev.typed-flat-materialization-cursor resolved)
+          rows 0]
+      (delete column-kinds)
+      (when (= handle nil)
+        (vev.delete-typed-flat-materialization-cursor cursor)
+        (return (Vev-Column-Batch nil)))
+      (while true
+        (let [[row found row-ok] (vev.typed-flat-materialization-cursor-next! (addr cursor) rel resolved)]
+          (when (not row-ok)
+            (vev.delete-typed-flat-materialization-cursor cursor)
+            (abi-free-generic-column-batch handle)
+            (return (Vev-Column-Batch nil)))
+          (when (not found)
+            (break))
+          (for [output-column (arr.range 0 column-count)]
+            (let [[source-column source-column-ok] (vev.resolved-typed-flat-materialization-output-column-index resolved output-column)]
+              (when (or (not source-column-ok)
+                        (not (column-batch-append-generic-relation-cell! handle output-column (abi-generic-column-batch-column-kind handle output-column) rel.typed-columns[source-column] row)))
+                (vev.delete-typed-flat-materialization-cursor cursor)
+                (abi-free-generic-column-batch handle)
+                (return (Vev-Column-Batch nil)))))
+          (set! rows (+ rows 1))))
+      (vev.delete-typed-flat-materialization-cursor cursor)
+      (abi-generic-column-batch-set-count handle rows)
+      (Vev-Column-Batch (abi-alloc-column-batch-generic legacy-kind handle)))))
+
+(defn- column-batch-from-typed-relation-with-materialization [query: vev.Query, rel: vev.Query-Relation, materialization: vev.Physical-Materialization-Plan] -> Vev-Column-Batch
+  (let [resolved (vev.resolve-typed-flat-materialization rel materialization)]
+    (when (not resolved.ok)
+      (vev.delete-resolved-typed-flat-materialization resolved)
+      (return (Vev-Column-Batch nil)))
+    (defer (vev.delete-resolved-typed-flat-materialization resolved))
+    (column-batch-from-typed-relation-generic query rel resolved)))
+
+(defn- column-batch-from-typed-relation [query: vev.Query, rel: vev.Query-Relation] -> Vev-Column-Batch
+  (let [materialization (vev.physical-materialization-plan-from-query query)]
+    (defer (vev.delete-physical-materialization-plan materialization))
+    (column-batch-from-typed-relation-with-materialization query rel materialization)))
+
+(defn- column-batch-from-typed-aggregate-relation [query: vev.Query, rel: vev.Query-Relation] -> Vev-Column-Batch
+  (when (= (count query.aggregates) 0)
+    (return (Vev-Column-Batch nil)))
+  (let [[aggregate-rel aggregate-ok] (vev.aggregate-query-relation-for-typed-relation query rel)]
+    (when (not aggregate-ok)
+      (vev.delete-query-relation aggregate-rel)
+      (return (Vev-Column-Batch nil)))
+    (let [plan (vev.typed-flat-result-plan-for-output-relation aggregate-rel)]
+      (when (not plan.ok)
+        (vev.delete-typed-flat-result-plan plan)
+        (vev.delete-query-relation aggregate-rel)
+        (return (Vev-Column-Batch nil)))
+      (let [resolved (vev.Resolved-Typed-Flat-Materialization {ok: true
+                                                               plan: plan
+                                                               trust-unique-bindings: true})
+            out (column-batch-from-typed-relation-generic query aggregate-rel resolved)]
+        (vev.delete-resolved-typed-flat-materialization resolved)
+        (vev.delete-query-relation aggregate-rel)
+        out))))
+
+(defn- column-batch-from-typed-aggregate-value-rows [query: vev.Query, rel: vev.Query-Relation] -> Vev-Column-Batch
+  (when (= (count query.aggregates) 0)
+    (return (Vev-Column-Batch nil)))
+  (let [batch (vev.materialize-typed-aggregate-value-batch query rel)]
+    (when (not batch.ok)
+      (vev.delete-typed-materialized-batch batch)
+      (return (Vev-Column-Batch nil)))
+    (defer (vev.delete-typed-materialized-batch batch))
+    (column-batch-from-typed-materialized-batch batch)))
+
+(defn- column-batch-from-source-physical-materialize-op [source: vev.DB-Read-Source, sources: []vev.DB-Read-Named-Source, query: vev.Query, inputs: []vev.Query-Input, rel: vev.Query-Relation] -> Vev-Column-Batch
+  (let [plan (vev.physical-plan-from-query query)]
+    (defer (vev.delete-physical-plan plan))
+    (when (not plan.has-materialize)
+      (return (Vev-Column-Batch nil)))
+    (let [[batch batch-ok _] (vev.db-read-source-apply-physical-materialize-op source sources query inputs rel plan.materialize-op plan.materialization ([]vev.Native-Query-Fn []))]
+      (when (not batch-ok)
+        (vev.delete-typed-materialized-batch batch)
+        (return (Vev-Column-Batch nil)))
+      (defer (vev.delete-typed-materialized-batch batch))
+      (column-batch-from-typed-materialized-batch batch))))
+
+(defn- column-batch-from-relation-engine [db: vev.DB, query: vev.Query, inputs: []vev.Query-Input] -> Vev-Column-Batch
+  (when (not (vev.query-relation-engine-eligible? query ([]vev.DB-Source [])))
+    (return (Vev-Column-Batch nil)))
+  (let [stats (vev.query-stats-empty)
+        rel (vev.relation-engine-relation-profiled db query inputs ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr stats))
+        db-alias db
+        source (vev.resident-db-read-source (addr db-alias))
+        materialize-out (column-batch-from-source-physical-materialize-op source ([]vev.DB-Read-Named-Source []) query inputs rel)]
+    (when (not (= (rawptr materialize-out) nil))
+      (vev.delete-query-relation rel)
+      (return materialize-out))
+    (let [aggregate-out (column-batch-from-typed-aggregate-relation query rel)]
+      (when (not (= (rawptr aggregate-out) nil))
+        (vev.delete-query-relation rel)
+        (return aggregate-out))
+      (let [aggregate-value-out (column-batch-from-typed-aggregate-value-rows query rel)]
+        (when (not (= (rawptr aggregate-value-out) nil))
+          (vev.delete-query-relation rel)
+          (return aggregate-value-out)))
+      (let [out (column-batch-from-typed-relation query rel)]
+        (vev.delete-query-relation rel)
+        out))))
+
+(defn- column-batch-from-source-relation-engine [source: vev.DB-Read-Source, sources: []vev.DB-Read-Named-Source, query: vev.Query, inputs: []vev.Query-Input] -> Vev-Column-Batch
+  (let [[rel _ used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns source sources query inputs ([]vev.Native-Query-Fn []))]
+    (when (not used)
+      (vev.delete-query-relation rel)
+      (return (Vev-Column-Batch nil)))
+    (let [materialize-out (column-batch-from-source-physical-materialize-op source sources query inputs rel)]
+      (when (not (= (rawptr materialize-out) nil))
+        (vev.delete-query-relation rel)
+        (return materialize-out)))
+    (let [aggregate-out (column-batch-from-typed-aggregate-relation query rel)]
+      (when (not (= (rawptr aggregate-out) nil))
+        (vev.delete-query-relation rel)
+        (return aggregate-out))
+      (let [aggregate-value-out (column-batch-from-typed-aggregate-value-rows query rel)]
+        (when (not (= (rawptr aggregate-value-out) nil))
+          (vev.delete-query-relation rel)
+          (return aggregate-value-out)))
+      (let [out (column-batch-from-typed-relation query rel)]
+        (vev.delete-query-relation rel)
+        out))))
+
 (defn- column-batch-from-query-inputs [db: vev.DB, query: vev.Query, inputs: []vev.Query-Input] -> Vev-Column-Batch
+  (let [relation-out (column-batch-from-relation-engine db query inputs)]
+    (when (not (= (rawptr relation-out) nil))
+      (return relation-out)))
   (let [[triples triple-ok] (vev.q-query-entity-string-int-triples db query inputs)]
     (if triple-ok
       (return (Vev-Column-Batch (abi-alloc-column-batch 4 (abi-alloc-entity-string-int-triples triples))))
@@ -1354,6 +2702,54 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (if string-ok
       (return (Vev-Column-Batch (abi-alloc-column-batch 2 (abi-alloc-string-array strings))))
       (delete strings)))
+  (let [db-alias db
+        source (vev.resident-db-read-source (addr db-alias))
+        result (vev.db-read-source-q-query-with-inputs source query inputs)
+        out (column-batch-from-result result)]
+    (vev.delete-result-set-shallow result)
+    out))
+
+(defn- column-batch-from-source-query-inputs [source: vev.DB-Read-Source, sources: []vev.DB-Read-Named-Source, query: vev.Query, inputs: []vev.Query-Input] -> Vev-Column-Batch
+  (let [relation-out (column-batch-from-source-relation-engine source sources query inputs)]
+    (when (not (= (rawptr relation-out) nil))
+      (return relation-out)))
+  (when (= (count sources) 0)
+    (let [[triples triple-ok _] (vev.q-db-read-source-entity-string-int-triples source query inputs)]
+      (if triple-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 4 (abi-alloc-entity-string-int-triples triples))))
+        (vev.delete-entity-string-int-triples triples)))
+    (let [[string-int-pairs string-int-ok _] (vev.q-db-read-source-string-int-pair-columns source query inputs)]
+      (if string-int-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 7 (abi-alloc-entity-string-int-triples string-int-pairs))))
+        (vev.delete-entity-string-int-triples string-int-pairs)))
+    (let [[string-string-pairs string-string-ok _] (vev.q-db-read-source-string-string-pair-columns source query inputs)]
+      (if string-string-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 8 (abi-alloc-string-string-pairs string-string-pairs))))
+        (vev.delete-string-string-pair-columns string-string-pairs)))
+    (let [[range-pairs range-pair-ok _] (vev.q-db-read-source-entity-int-range-pair-columns source query inputs)]
+      (if range-pair-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 3 (abi-alloc-entity-int-pairs range-pairs))))
+        (vev.delete-entity-int-pair-columns range-pairs)))
+    (let [[string-pairs string-pair-ok _] (vev.q-db-read-source-entity-string-pair-columns source query inputs)]
+      (if string-pair-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 6 (abi-alloc-entity-string-pairs string-pairs))))
+        (vev.delete-entity-string-pair-columns string-pairs)))
+    (let [[pairs pair-ok _] (vev.q-db-read-source-entity-int-pair-columns source query inputs)]
+      (if pair-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 3 (abi-alloc-entity-int-pairs pairs))))
+        (vev.delete-entity-int-pair-columns pairs)))
+    (let [[entities entity-ok _] (vev.q-db-read-source-entity-column source query inputs)]
+      (if entity-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 1 (abi-alloc-u64-array entities))))
+        (delete entities)))
+    (let [[ints int-ok _] (vev.q-db-read-source-int-column source query inputs)]
+      (if int-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 5 (abi-alloc-i64-array ints))))
+        (delete ints)))
+    (let [[strings string-ok _] (vev.q-db-read-source-string-column source query inputs)]
+      (if string-ok
+        (return (Vev-Column-Batch (abi-alloc-column-batch 2 (abi-alloc-string-array strings))))
+        (delete strings))))
   (Vev-Column-Batch nil))
 
 (defn- column-batch-entity-id [value: vev.Value] -> [entity: u64, ok: bool]
@@ -1365,6 +2761,75 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (return (u64 value.int-value) true)
         (return 0 false))
     (return 0 false)))
+
+(defn- column-kind-for-result-value [value: vev.Value] -> int
+  (case value.kind
+    .Entity 1
+    .Int 3
+    .Bool 5
+    .Float 6
+    .String 2
+    .Keyword 2
+    .Symbol 2
+    .Uuid 2
+    .Vector 7
+    .Map 7
+    0))
+
+(defn- column-kind-merge-result-value [current: int, value: vev.Value] -> int
+  (let [next (column-kind-for-result-value value)]
+    (when (= next 0)
+      (if (= value.kind .Nil)
+        (if (= current 0)
+          (return 4)
+          (return current))
+        (return 0)))
+    (when (= current 0)
+      (return next))
+    (when (= current next)
+      (return current))
+    (when (or (= current 7) (= next 7))
+      (return 7))
+    (return 4)))
+
+(defn- column-kinds-for-result-rows [rows: []vev.Result-Row, width: int] -> [kinds: [dynamic]int, ok: bool]
+  (let [column-kinds (make [dynamic]int 0 width)]
+    (for [_ (arr.range 0 width)]
+      (arr.push! column-kinds 0))
+    (for [row rows]
+      (when (or (not (= (count row.values) width))
+                (> (count row.pulls) 0))
+        (delete column-kinds)
+        (return (make [dynamic]int) false))
+      (for [value column row.values]
+        (let [merged (column-kind-merge-result-value column-kinds[column] value)]
+          (when (= merged 0)
+            (delete column-kinds)
+            (return (make [dynamic]int) false))
+          (set! column-kinds[column] merged))))
+    (for [kind index column-kinds]
+      (when (= kind 0)
+        (set! column-kinds[index] 4)))
+    (return column-kinds true)))
+
+(defn- column-batch-from-result-generic [result: vev.Result-Set, width: int] -> Vev-Column-Batch
+  (when (<= width 0)
+    (return (Vev-Column-Batch nil)))
+  (let [[column-kinds kinds-ok] (column-kinds-for-result-rows (slice result.rows 0) width)]
+    (when (not kinds-ok)
+      (delete column-kinds)
+      (return (Vev-Column-Batch nil)))
+    (let [handle (abi-alloc-generic-column-batch column-kinds (count result.rows))]
+      (delete column-kinds)
+      (when (= handle nil)
+        (return (Vev-Column-Batch nil)))
+      (for [row result.rows]
+        (for [value column row.values]
+          (let [kind (abi-generic-column-batch-column-kind handle column)]
+            (when (not (column-batch-append-generic-value! handle column kind value))
+              (abi-free-generic-column-batch handle)
+              (return (Vev-Column-Batch nil))))))
+      (Vev-Column-Batch (abi-alloc-column-batch-generic 0 handle)))))
 
 (defn- column-batch-from-result [result: vev.Result-Set] -> Vev-Column-Batch
   (when (not result.ok)
@@ -1406,6 +2871,41 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (delete text))
         (delete string-values)))
     (when (= width 2)
+      (let [string-int-pairs (vev.empty-entity-string-int-triples)
+            string-int-ok true]
+        (for [row result.rows]
+          (if (and (= (count row.values) 2)
+                   (= (count row.pulls) 0)
+                   (or (= row.values[0].kind .String)
+                       (= row.values[0].kind .Keyword)
+                       (= row.values[0].kind .Symbol)
+                       (= row.values[0].kind .Uuid))
+                   (= row.values[1].kind .Int))
+            (vev.append-owned-entity-string-int-triple! (addr string-int-pairs) 0 row.values[0].text row.values[1].int-value)
+            (set! string-int-ok false)))
+        (if string-int-ok
+          (return (Vev-Column-Batch (abi-alloc-column-batch 7 (abi-alloc-entity-string-int-triples string-int-pairs))))
+          (vev.delete-entity-string-int-triples string-int-pairs))))
+    (when (= width 2)
+      (let [string-string-pairs (vev.empty-string-string-pair-columns)
+            string-string-ok true]
+        (for [row result.rows]
+          (if (and (= (count row.values) 2)
+                   (= (count row.pulls) 0)
+                   (or (= row.values[0].kind .String)
+                       (= row.values[0].kind .Keyword)
+                       (= row.values[0].kind .Symbol)
+                       (= row.values[0].kind .Uuid))
+                   (or (= row.values[1].kind .String)
+                       (= row.values[1].kind .Keyword)
+                       (= row.values[1].kind .Symbol)
+                       (= row.values[1].kind .Uuid)))
+            (vev.append-owned-string-string-pair-column! (addr string-string-pairs) row.values[0].text row.values[1].text)
+            (set! string-string-ok false)))
+        (if string-string-ok
+          (return (Vev-Column-Batch (abi-alloc-column-batch 8 (abi-alloc-string-string-pairs string-string-pairs))))
+          (vev.delete-string-string-pair-columns string-string-pairs))))
+    (when (= width 2)
       (let [pairs (vev.empty-entity-int-pair-columns)
             pair-ok true]
         (for [row result.rows]
@@ -1423,6 +2923,27 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (if pair-ok
           (return (Vev-Column-Batch (abi-alloc-column-batch 3 (abi-alloc-entity-int-pairs pairs))))
           (vev.delete-entity-int-pair-columns pairs))))
+    (when (= width 2)
+      (let [pairs (vev.empty-entity-string-pair-columns)
+            pair-ok true]
+        (for [row result.rows]
+          (let [entity: u64 0
+                entity-ok false]
+            (when (= (count row.values) 2)
+              (let [[resolved resolved-ok] (column-batch-entity-id row.values[0])]
+                (set! entity resolved)
+                (set! entity-ok resolved-ok)))
+            (if (and entity-ok
+                     (= (count row.pulls) 0)
+                     (or (= row.values[1].kind .String)
+                         (= row.values[1].kind .Keyword)
+                         (= row.values[1].kind .Symbol)
+                         (= row.values[1].kind .Uuid)))
+              (vev.append-owned-entity-string-pair-column! (addr pairs) entity row.values[1].text)
+              (set! pair-ok false))))
+        (if pair-ok
+          (return (Vev-Column-Batch (abi-alloc-column-batch 6 (abi-alloc-entity-string-pairs pairs))))
+          (vev.delete-entity-string-pair-columns pairs))))
     (when (= width 3)
       (let [triples (vev.empty-entity-string-int-triples)
             triple-ok true]
@@ -1447,7 +2968,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (do
             (for [text triples.strings]
               (delete text))
-            (vev.delete-entity-string-int-triples triples))))))
+            (vev.delete-entity-string-int-triples triples)))))
+    (let [generic-out (column-batch-from-result-generic result width)]
+      (when (not (= (rawptr generic-out) nil))
+        (return generic-out))))
   (Vev-Column-Batch nil))
 
 (defn- entity-array-from-result [result: vev.Result-Set] -> Vev-U64-Array
@@ -1562,6 +3086,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn- tx-builder-data-ptr [builder: Vev-Tx-Builder] -> ^[dynamic]vev.Tx-Data
   (abi-tx-builder-data-ptr (rawptr builder)))
 
+(defn- rawptr-at [values: rawptr, index: int] -> rawptr
+  (abi-rawptr-at values index))
+
 (defn- tx-fn-registry-entries-ptr [registry: Vev-Tx-Fn-Registry] -> ^[dynamic]vev.Tx-Fn-String
   (abi-tx-fn-registry-entries-ptr (rawptr registry)))
 
@@ -1638,14 +3165,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (delete spec.pattern)))
 
 (defn- tx-report-handle-from-value [value: vev.Value] -> Vev-Tx-Report
-  (let [owned (value-owned value)]
-    (vev.delete-value-containers-shallow value)
-    (Vev-Tx-Report (abi-alloc-tx-report owned))))
+  (Vev-Tx-Report (abi-alloc-tx-report value)))
 
 (defn- tx-report-handle-from-value-with-dbs [value: vev.Value, before: vev.Store-DB, after: vev.Store-DB] -> Vev-Tx-Report
-  (let [owned (value-owned value)]
-    (vev.delete-value-containers-shallow value)
-    (Vev-Tx-Report (abi-alloc-tx-report-with-dbs owned before after))))
+  (Vev-Tx-Report (abi-alloc-tx-report-with-dbs value before after)))
 
 (defn- tx-report-handle-from-report [report: vev.Tx-Report] -> Vev-Tx-Report
   (tx-report-handle-from-value-with-dbs
@@ -1671,6 +3194,37 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (vev.close-store-db! (tx-report-db-after-ptr report)))
     (abi-free-tx-report (rawptr report))))
 
+(defn- tx-report-array-reports-ptr [array: Vev-Tx-Report-Array] -> ^[dynamic]rawptr
+  (abi-tx-report-array-reports-ptr (rawptr array)))
+
+(defn- tx-report-array-handle-from-store-reports [reports: []vev.Store-Tx-Report] -> Vev-Tx-Report-Array
+  (let [out (Vev-Tx-Report-Array (abi-alloc-tx-report-array (len reports)))
+        handles (tx-report-array-reports-ptr out)]
+    (for [report reports]
+      (arr.push! handles^ (rawptr (tx-report-handle-from-store-report report))))
+    out))
+
+(defn- tx-report-array-handle-from-store-report [report: vev.Store-Tx-Report] -> Vev-Tx-Report-Array
+  (let [out (Vev-Tx-Report-Array (abi-alloc-tx-report-array 1))
+        handles (tx-report-array-reports-ptr out)]
+    (arr.push! handles^ (rawptr (tx-report-handle-from-store-report report)))
+    out))
+
+(defn- tx-report-array-handle-free [array: Vev-Tx-Report-Array]
+  (when (= (rawptr array) nil)
+    (return))
+  (let [count (abi-tx-report-array-count (rawptr array))]
+    (for [index (arr.range 0 count)]
+      (tx-report-handle-free (Vev-Tx-Report (abi-tx-report-array-value (rawptr array) index)))))
+  (abi-free-tx-report-array (rawptr array)))
+
+(defn- notify-abi-sqlite-tx-listeners! [conn: Vev-SQLite-Conn, report: vev.Store-Tx-Report]
+  (when (not report.ok)
+    (return))
+  (let [handle (tx-report-handle-from-store-report report)]
+    (abi-sqlite-conn-notify-tx-listeners (rawptr conn) (rawptr handle))
+    (tx-report-handle-free handle)))
+
 (defn- delete-tx-builder-entry-owned [data: vev.Tx-Data]
   (delete data.a)
   (vev.delete-owned-value data.v))
@@ -1683,6 +3237,45 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (delete-tx-builder-entry-owned data))
     (abi-free-tx-builder (rawptr builder))))
 
+(defn- delete-store-tx-data-groups [groups: [dynamic]vev.Store-Tx-Data-Group]
+  (for [group groups]
+    (vev.delete-store-tx-data-group group))
+  (delete groups))
+
+(defn- store-tx-data-groups-from-builders [builders: rawptr, builder-count: int] -> [groups: [dynamic]vev.Store-Tx-Data-Group, ok: bool, error: string]
+  (when (or (= builders nil) (< builder-count 0))
+    (return (make [dynamic]vev.Store-Tx-Data-Group) false "transaction builder array was null or count was negative"))
+  (let [out (make [dynamic]vev.Store-Tx-Data-Group 0 builder-count)]
+    (for [index (arr.range 0 builder-count)]
+      (let [builder (Vev-Tx-Builder (rawptr-at builders index))]
+        (when (= (rawptr builder) nil)
+          (delete-store-tx-data-groups out)
+          (return (make [dynamic]vev.Store-Tx-Data-Group) false "transaction builder array contained a null builder"))
+        (let [tx-data (tx-builder-data-ptr builder)]
+          (arr.push! out (vev.store-tx-data-group (slice tx-data^ 0))))))
+    (return out true "")))
+
+(defn- delete-string-array [items: [dynamic]string]
+  (for [item items]
+    (delete item))
+  (delete items))
+
+(defn- strings-from-c-array [items: rawptr, item-count: int] -> [texts: [dynamic]string, ok: bool, error: string]
+  (when (< item-count 0)
+    (return (make [dynamic]string) false "string array count was negative"))
+  (when (= item-count 0)
+    (return (make [dynamic]string) true ""))
+  (when (= items nil)
+    (return (make [dynamic]string) false "string array was null"))
+  (let [out (make [dynamic]string 0 item-count)]
+    (for [index (arr.range 0 item-count)]
+      (let [item (abi-cstring-at items index)]
+        (when (= item nil)
+          (delete-string-array out)
+          (return (make [dynamic]string) false "string array contained a null string"))
+        (arr.push! out (text-from-c item))))
+    (return out true "")))
+
 (defn- notify-abi-tx-listeners! [conn: Vev-Conn, report: vev.Tx-Report]
   (when (or (= (rawptr conn) nil) (not report.ok))
     (return))
@@ -1694,6 +3287,15 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [owned (value-owned value)]
     (vev.delete-value-containers-shallow value)
     (Vev-Value-Handle (abi-alloc-value-handle owned))))
+
+(defn- value-handle-from-owned-value [value: vev.Value] -> Vev-Value-Handle
+  (Vev-Value-Handle (abi-alloc-value-handle value)))
+
+(defn- entity-handle-from-owned-entity [entity: vev.Store-Entity] -> Vev-Entity
+  (Vev-Entity (abi-alloc-entity entity)))
+
+(defn- entity-handle-null [] -> Vev-Entity
+  (Vev-Entity nil))
 
 (defn- delete-query-input-owned [input: vev.Query-Input]
   (case input.kind
@@ -1966,8 +3568,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
 
 (defn- result-finish-query-result-store-db [result: Vev-Result, query-result: vev.Query-Result, snapshot: ^vev.Store-DB] -> Vev-Result
   (let [ptr (result-ptr result)]
-    (set! ptr^ query-result.result)
-    (result-set-owns-values! result (vev.query-result-owns-values? query-result))
+    (set! ptr^ (vev.result-set-owned query-result.result))
+    (vev.delete-query-result query-result)
+    (result-set-owns-values! result true)
     (if ptr^.ok
       (result-finish-store-db result snapshot)
       result)))
@@ -2154,6 +3757,41 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (vev_sqlite_conn_transact_edn_report (connection-as-sqlite conn) tx-text))
 
 @export
+(defn vev_connection_tx_commit_report :abi "c" [conn: Vev-Connection, builder: Vev-Tx-Builder] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_tx_commit_report (connection-as-sqlite conn) builder))
+
+@export
+(defn vev_connection_tx_commit_many_report :abi "c" [conn: Vev-Connection, builders: rawptr, builder-count: int] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_tx_commit_many_report (connection-as-sqlite conn) builders builder-count))
+
+@export
+(defn vev_connection_tx_commit_logical_many_reports :abi "c" [conn: Vev-Connection, builders: rawptr, builder-count: int] -> Vev-Tx-Report-Array
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_tx_commit_logical_many_reports (connection-as-sqlite conn) builders builder-count))
+
+@export
+(defn vev_connection_transact_many_edn_reports :abi "c" [conn: Vev-Connection, tx-texts: rawptr, tx-count: int] -> Vev-Tx-Report-Array
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_transact_many_edn_reports (connection-as-sqlite conn) tx-texts tx-count))
+
+@export
+(defn vev_connection_compact_indexes :abi "c" [conn: Vev-Connection] -> bool
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_compact_indexes (connection-as-sqlite conn)))
+
+@export
+(defn vev_connection_listen_tx_report :abi "c" [conn: Vev-Connection, name: cstring, callback: rawptr, user: rawptr] -> bool
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_listen_tx_report (connection-as-sqlite conn) name callback user))
+
+@export
+(defn vev_connection_unlisten_tx_report :abi "c" [conn: Vev-Connection, name: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_unlisten_tx_report (connection-as-sqlite conn) name))
+
+@export
 (defn vev_sqlite_conn_open :abi "c" [path: cstring] -> Vev-SQLite-Conn
   (odin "context = runtime.default_context()")
   (when (= path nil)
@@ -2194,6 +3832,27 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (if snapshot-ok
         (Vev-DB (abi-alloc-db snapshot))
         (Vev-DB nil)))))
+
+@export
+(defn vev_sqlite_conn_listen_tx_report :abi "c" [conn: Vev-SQLite-Conn, name: cstring, callback: rawptr, user: rawptr] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= name nil) (= callback nil) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return false))
+  (let [name-text (text-from-c name)
+        ok (abi-sqlite-conn-add-tx-listener (rawptr conn) name-text callback user)]
+    (when (not ok)
+      (delete name-text))
+    ok))
+
+@export
+(defn vev_sqlite_conn_unlisten_tx_report :abi "c" [conn: Vev-SQLite-Conn, name: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= name nil))
+    (return false))
+  (let [name-text (text-from-c name)
+        ok (abi-sqlite-conn-remove-tx-listener (rawptr conn) name-text)]
+    (delete name-text)
+    ok))
 
 @export
 (defn vev_conn_close :abi "c" [conn: Vev-Conn]
@@ -2315,6 +3974,144 @@ abi_free_stmt :: proc(stmt: rawptr) {
         out))))
 
 @export
+(defn vev_db_entity :abi "c" [db: Vev-DB, entity-id: u64] -> Vev-Entity
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return (entity-handle-null)))
+  (let [store-ptr-value (store-db-ptr db)
+        [entity entity-ok _] (vev.store-db-entity store-ptr-value entity-id)]
+    (if entity-ok
+      (entity-handle-from-owned-entity entity)
+      (entity-handle-null))))
+
+@export
+(defn vev_db_entity_lookup_ref_string :abi "c" [db: Vev-DB, attr: cstring, value: cstring] -> Vev-Entity
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= attr nil) (= value nil))
+    (return (entity-handle-null)))
+  (let [attr-text (text-from-c attr)
+        value-text (text-from-c value)
+        lookup-value (vev.value-string value-text)
+        store-ptr-value (store-db-ptr db)
+        [entity entity-ok _] (vev.store-db-entity-lookup-ref store-ptr-value attr-text lookup-value)]
+    (delete attr-text)
+    (vev.delete-owned-value lookup-value)
+    (if entity-ok
+      (entity-handle-from-owned-entity entity)
+      (entity-handle-null))))
+
+@export
+(defn vev_db_entity_ident :abi "c" [db: Vev-DB, ident: cstring] -> Vev-Entity
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= ident nil))
+    (return (entity-handle-null)))
+  (let [ident-text (text-from-c ident)
+        store-ptr-value (store-db-ptr db)
+        [entity entity-ok _] (vev.store-db-entity-ident store-ptr-value ident-text)]
+    (delete ident-text)
+    (if entity-ok
+      (entity-handle-from-owned-entity entity)
+      (entity-handle-null))))
+
+@export
+(defn vev_entity_free :abi "c" [entity: Vev-Entity]
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr entity) nil)
+    (return))
+  (let [ptr (entity-ptr entity)]
+    (vev.close-store-entity! ptr)
+    (abi-free-entity (rawptr entity))))
+
+@export
+(defn vev_entity_found :abi "c" [entity: Vev-Entity] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr entity) nil)
+    (return false))
+  (let [ptr (entity-ptr entity)]
+    ptr^.found))
+
+@export
+(defn vev_entity_id :abi "c" [entity: Vev-Entity] -> u64
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr entity) nil)
+    (return 0))
+  (let [ptr (entity-ptr entity)]
+    ptr^.e))
+
+@export
+(defn vev_entity_contains :abi "c" [entity: Vev-Entity, attr: cstring] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr entity) nil) (= attr nil))
+    (return false))
+  (let [attr-text (text-from-c attr)
+        out (vev.store-entity-contains? (entity-ptr entity) attr-text)]
+    (delete attr-text)
+    out))
+
+@export
+(defn vev_entity_get :abi "c" [entity: Vev-Entity, attr: cstring] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr entity) nil) (= attr nil))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        value (vev.store-entity-get (entity-ptr entity) attr-text)]
+    (delete attr-text)
+    (value-handle-from-owned-value value)))
+
+@export
+(defn vev_entity_values :abi "c" [entity: Vev-Entity, attr: cstring] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr entity) nil) (= attr nil))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        [values values-ok _] (vev.store-entity-values (entity-ptr entity) attr-text)]
+    (delete attr-text)
+    (if values-ok
+      (value-handle-from-owned-value (vev.value-vector-owned values))
+      (do
+        (vev.delete-owned-values-array values)
+        (Vev-Value-Handle nil)))))
+
+@export
+(defn vev_entity_ref :abi "c" [entity: Vev-Entity, attr: cstring] -> Vev-Entity
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr entity) nil) (= attr nil))
+    (return (entity-handle-null)))
+  (let [attr-text (text-from-c attr)
+        [ref ref-ok _] (vev.store-entity-ref (entity-ptr entity) attr-text)]
+    (delete attr-text)
+    (if ref-ok
+      (entity-handle-from-owned-entity ref)
+      (entity-handle-null))))
+
+@export
+(defn vev_entity_refs :abi "c" [entity: Vev-Entity, attr: cstring] -> Vev-U64-Array
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr entity) nil) (= attr nil))
+    (return (Vev-U64-Array nil)))
+  (let [attr-text (text-from-c attr)
+        [refs refs-ok _] (vev.store-entity-refs (entity-ptr entity) attr-text)]
+    (delete attr-text)
+    (when (not refs-ok)
+      (vev.close-store-entities refs)
+      (return (Vev-U64-Array nil)))
+    (let [ids (make [dynamic]u64 0 (count refs))]
+      (for [ref refs]
+        (arr.push! ids (vev.store-entity-id ref)))
+      (vev.close-store-entities refs)
+      (Vev-U64-Array (abi-alloc-u64-array ids)))))
+
+@export
+(defn vev_entity_touch :abi "c" [entity: Vev-Entity] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr entity) nil)
+    (return (Vev-Value-Handle nil)))
+  (let [[value value-ok _] (vev.touch-store-entity (entity-ptr entity))]
+    (if value-ok
+      (value-handle-from-owned-value value)
+      (Vev-Value-Handle nil))))
+
+@export
 (defn vev_string_free :abi "c" [text: cstring]
   (odin "context = runtime.default_context()")
   (when (= text nil)
@@ -2332,6 +4129,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (let [value (vev.tx-report-value report)
           text (vev.value-serializable-text value)
           out (c-string-owned text)]
+      (vev.delete-owned-value value)
       (abi-conn-store-tx-source (rawptr conn) tx)
       out)))
 
@@ -2355,9 +4153,125 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (let [tx (text-from-c tx-text)
         report (vev.transact-sqlite-store-report-text (sqlite-conn-ptr conn) tx)
         out (tx-report-handle-from-store-report report)]
+    (notify-abi-sqlite-tx-listeners! conn report)
+    (delete tx)
+    (vev.delete-store-tx-report report)
+    out))
+
+@export
+(defn vev_connection_transact_edn_report_with_tx_fns :abi "c" [conn: Vev-Connection, tx-text: cstring, registry: Vev-Tx-Fn-Registry] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_transact_edn_report_with_tx_fns (connection-as-sqlite conn) tx-text registry))
+
+@export
+(defn vev_sqlite_conn_transact_edn_report_with_tx_fns :abi "c" [conn: Vev-SQLite-Conn, tx-text: cstring, registry: Vev-Tx-Fn-Registry] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= tx-text nil) (= (rawptr registry) nil) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-Tx-Report nil)))
+  (let [tx (text-from-c tx-text)
+        entries (tx-fn-registry-source-entries-ptr registry)
+        report (vev.transact-sqlite-store-report-text-with-source-string-fns (sqlite-conn-ptr conn) tx (slice entries^ 0))
+        out (tx-report-handle-from-store-report report)]
+    (notify-abi-sqlite-tx-listeners! conn report)
     (abi-sqlite-conn-store-tx-source (rawptr conn) tx)
     (vev.delete-store-tx-report report)
     out))
+
+@export
+(defn vev_sqlite_conn_tx_commit_report :abi "c" [conn: Vev-SQLite-Conn, builder: Vev-Tx-Builder] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= (rawptr builder) nil) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-Tx-Report nil)))
+  (let [tx-data (tx-builder-data-ptr builder)
+        report (vev.transact-sqlite-store-report-tx-data (sqlite-conn-ptr conn) (slice tx-data^ 0))
+        out (tx-report-handle-from-store-report report)]
+    (notify-abi-sqlite-tx-listeners! conn report)
+    (vev.delete-store-tx-report report)
+    out))
+
+@export
+(defn vev_sqlite_conn_tx_commit_many_report :abi "c" [conn: Vev-SQLite-Conn, builders: rawptr, builder-count: int] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= builders nil) (<= builder-count 0) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-Tx-Report nil)))
+  (let [[groups groups-ok groups-error] (store-tx-data-groups-from-builders builders builder-count)]
+    (when (not groups-ok)
+      (delete groups)
+      (let [failed (vev.failed-store-tx-report (vev.Store-DB {}) groups-error)
+            out (tx-report-handle-from-store-report failed)]
+        (vev.delete-store-tx-report failed)
+        (return out)))
+    (let [report (vev.transact-sqlite-store-report-tx-data-groups (sqlite-conn-ptr conn) (slice groups 0))
+          out (tx-report-handle-from-store-report report)]
+      (notify-abi-sqlite-tx-listeners! conn report)
+      (vev.delete-store-tx-report report)
+      (delete-store-tx-data-groups groups)
+      out)))
+
+@export
+(defn vev_sqlite_conn_tx_commit_logical_many_reports :abi "c" [conn: Vev-SQLite-Conn, builders: rawptr, builder-count: int] -> Vev-Tx-Report-Array
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (< builder-count 0) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-Tx-Report-Array nil)))
+  (when (= builder-count 0)
+    (return (Vev-Tx-Report-Array (abi-alloc-tx-report-array 0))))
+  (let [[groups groups-ok groups-error] (store-tx-data-groups-from-builders builders builder-count)]
+    (when (not groups-ok)
+      (delete groups)
+      (let [failed (vev.failed-store-tx-report (vev.Store-DB {}) groups-error)
+            out (tx-report-array-handle-from-store-report failed)]
+        (vev.delete-store-tx-report failed)
+        (return out)))
+    (let [[reports reports-ok reports-error] (vev.transact-sqlite-store-report-logical-tx-data-groups (sqlite-conn-ptr conn) (slice groups 0))]
+      (when (not reports-ok)
+        (vev.delete-store-tx-reports reports)
+        (delete-store-tx-data-groups groups)
+        (let [failed (vev.failed-sqlite-store-tx-report (sqlite-conn-ptr conn) reports-error)
+              out (tx-report-array-handle-from-store-report failed)]
+          (vev.delete-store-tx-report failed)
+          (return out)))
+      (let [out (tx-report-array-handle-from-store-reports (slice reports 0))]
+        (for [report reports]
+          (notify-abi-sqlite-tx-listeners! conn report))
+        (vev.delete-store-tx-reports reports)
+        (delete-store-tx-data-groups groups)
+        out))))
+
+@export
+(defn vev_sqlite_conn_transact_many_edn_reports :abi "c" [conn: Vev-SQLite-Conn, tx-texts: rawptr, tx-count: int] -> Vev-Tx-Report-Array
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (< tx-count 0) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-Tx-Report-Array nil)))
+  (when (= tx-count 0)
+    (return (Vev-Tx-Report-Array (abi-alloc-tx-report-array 0))))
+  (let [[texts texts-ok texts-error] (strings-from-c-array tx-texts tx-count)]
+    (when (not texts-ok)
+      (delete texts)
+      (let [failed (vev.failed-store-tx-report (vev.Store-DB {}) texts-error)
+            out (tx-report-array-handle-from-store-report failed)]
+        (vev.delete-store-tx-report failed)
+        (return out)))
+    (let [[reports reports-ok reports-error] (vev.transact-sqlite-store-report-logical-text-groups (sqlite-conn-ptr conn) (slice texts 0))]
+      (delete-string-array texts)
+      (when (not reports-ok)
+        (vev.delete-store-tx-reports reports)
+        (let [failed (vev.failed-sqlite-store-tx-report (sqlite-conn-ptr conn) reports-error)
+              out (tx-report-array-handle-from-store-report failed)]
+          (vev.delete-store-tx-report failed)
+          (return out)))
+      (let [out (tx-report-array-handle-from-store-reports (slice reports 0))]
+        (for [report reports]
+          (notify-abi-sqlite-tx-listeners! conn report))
+        (vev.delete-store-tx-reports reports)
+        out))))
+
+@export
+(defn vev_sqlite_conn_compact_indexes :abi "c" [conn: Vev-SQLite-Conn] -> bool
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return false))
+  (let [[_ compact-ok _] (vev.sqlite-conn-compact-indexes! (sqlite-conn-ptr conn))]
+    compact-ok))
 
 @export
 (defn vev_tx_fn_registry_create :abi "c" [] -> Vev-Tx-Fn-Registry
@@ -2441,9 +4355,22 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (odin "context = runtime.default_context()")
   (when (= (rawptr report) nil)
     (return))
-  (let [ptr (tx-report-value-ptr report)]
-    (vev.delete-owned-value ptr^)
-    (abi-free-tx-report (rawptr report))))
+  (tx-report-handle-free report))
+
+@export
+(defn vev_tx_report_array_free :abi "c" [array: Vev-Tx-Report-Array]
+  (odin "context = runtime.default_context()")
+  (tx-report-array-handle-free array))
+
+@export
+(defn vev_tx_report_array_count :abi "c" [array: Vev-Tx-Report-Array] -> int
+  (odin "context = runtime.default_context()")
+  (abi-tx-report-array-count (rawptr array)))
+
+@export
+(defn vev_tx_report_array_get :abi "c" [array: Vev-Tx-Report-Array, index: int] -> Vev-Tx-Report
+  (odin "context = runtime.default_context()")
+  (Vev-Tx-Report (abi-tx-report-array-value (rawptr array) index)))
 
 @export
 (defn vev_tx_report_value :abi "c" [report: Vev-Tx-Report] -> Vev-Value
@@ -3154,11 +5081,52 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (return (Vev-Column-Batch nil)))
     (when (> (count sources^) 0)
       (let [source (vev.resident-db-read-source (addr conn-ptr-value^.db))
+            typed-out (column-batch-from-source-query-inputs source (slice sources^ 0) query-ptr-value^.query (slice inputs^ 0))]
+        (when (not (= (rawptr typed-out) nil))
+          (return typed-out)))
+      (let [source (vev.resident-db-read-source (addr conn-ptr-value^.db))
             query-result (vev.q-result-prepared-db-read-source-with-sources-inputs-and-fns source (slice sources^ 0) query-ptr-value^ (slice inputs^ 0) ([]vev.Native-Query-Fn []))
             out (column-batch-from-result query-result.result)]
         (vev.delete-query-result query-result)
         (return out)))
     (column-batch-from-query-inputs conn-ptr-value^.db query-ptr-value^.query (slice inputs^ 0))))
+
+@export
+(defn vev_query_prepared_column_batch_with_inputs :abi "c" [conn: Vev-Conn, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-Column-Batch
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= (rawptr query) nil) (= inputs-text nil))
+    (return (Vev-Column-Batch nil)))
+  (let [inputs-text-value (text-from-c inputs-text)
+        conn-ptr-value (conn-ptr conn)
+        query-ptr-value (prepared-query-ptr query)]
+    (when (not query-ptr-value^.ok)
+      (delete inputs-text-value)
+      (return (Vev-Column-Batch nil)))
+    (when (= inputs-text-value "[]")
+      (delete inputs-text-value)
+      (let [typed-out (column-batch-from-query-inputs conn-ptr-value^.db query-ptr-value^.query ([]vev.Query-Input []))]
+        (when (not (= (rawptr typed-out) nil))
+          (return typed-out)))
+      (let [source (vev.resident-db-read-source (addr conn-ptr-value^.db))
+            query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
+            out (column-batch-from-result query-result.result)]
+        (vev.delete-query-result query-result)
+        (return out)))
+    (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+      (delete inputs-text-value)
+      (when (not input-ok)
+        (delete inputs)
+        (return (Vev-Column-Batch nil)))
+      (let [typed-out (column-batch-from-query-inputs conn-ptr-value^.db query-ptr-value^.query (slice inputs 0))]
+        (when (not (= (rawptr typed-out) nil))
+          (delete inputs)
+          (return typed-out)))
+      (let [source (vev.resident-db-read-source (addr conn-ptr-value^.db))
+            query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
+            out (column-batch-from-result query-result.result)]
+        (delete inputs)
+        (vev.delete-query-result query-result)
+        out))))
 
 @export
 (defn vev_query_db_stmt_column_batch :abi "c" [db: Vev-DB, stmt: Vev-Stmt] -> Vev-Column-Batch
@@ -3174,6 +5142,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
       (when (not source-ok)
         (return (Vev-Column-Batch nil)))
+      (let [typed-out (column-batch-from-source-query-inputs source (slice sources^ 0) query-ptr-value^.query (slice inputs^ 0))]
+        (when (not (= (rawptr typed-out) nil))
+          (return typed-out)))
       (let [query-result (vev.q-result-prepared-db-read-source-with-sources-inputs-and-fns source (slice sources^ 0) query-ptr-value^ (slice inputs^ 0) ([]vev.Native-Query-Fn []))
             out (column-batch-from-result query-result.result)]
         (vev.delete-query-result query-result)
@@ -3290,10 +5261,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (if query-result.result.ok
       (let [[value value-ok value-error] (vev.store-db-result-value store-ptr-value query-result.result)]
         (if value-ok
-          (let [text (vev.value-serializable-text value)
+          (let [owned-value (vev.value-owned value)
+                text (vev.value-serializable-text owned-value)
                 out (c-string-owned text)]
             (delete text)
-            (vev.delete-owned-value value)
+            (vev.delete-owned-value owned-value)
             (vev.delete-query-result query-result)
             out)
           (let [error-value (vev.value-map
@@ -3376,6 +5348,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (return (Vev-U64-Array nil)))
       (when (= inputs-text-value "[]")
         (delete inputs-text-value)
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query ([]vev.Query-Input []))
+              out (u64-array-from-column-batch typed-out 0)]
+          (abi-free-column-batch (rawptr typed-out))
+          (when (not (= (rawptr out) nil))
+            (return out)))
         (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
               out (entity-array-from-result query-result.result)]
           (vev.delete-query-result query-result)
@@ -3385,6 +5362,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (when (not input-ok)
           (delete inputs)
           (return (Vev-U64-Array nil)))
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query (slice inputs 0))
+              out (u64-array-from-column-batch typed-out 0)]
+          (abi-free-column-batch (rawptr typed-out))
+          (when (not (= (rawptr out) nil))
+            (delete inputs)
+            (return out)))
         (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
               out (entity-array-from-result query-result.result)]
           (delete inputs)
@@ -3408,6 +5391,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (return (Vev-String-Array nil)))
       (when (= inputs-text-value "[]")
         (delete inputs-text-value)
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query ([]vev.Query-Input []))
+              out (string-array-from-column-batch typed-out 0)]
+          (abi-free-column-batch (rawptr typed-out))
+          (when (not (= (rawptr out) nil))
+            (return out)))
         (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
               out (string-array-from-result query-result.result)]
           (vev.delete-query-result query-result)
@@ -3417,6 +5405,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (when (not input-ok)
           (delete inputs)
           (return (Vev-String-Array nil)))
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query (slice inputs 0))
+              out (string-array-from-column-batch typed-out 0)]
+          (abi-free-column-batch (rawptr typed-out))
+          (when (not (= (rawptr out) nil))
+            (delete inputs)
+            (return out)))
         (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
               out (string-array-from-result query-result.result)]
           (delete inputs)
@@ -3484,6 +5478,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (return (Vev-Entity-Int-Pairs nil)))
       (when (= inputs-text-value "[]")
         (delete inputs-text-value)
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query ([]vev.Query-Input []))
+              out (entity-int-pairs-from-column-batch typed-out)]
+          (abi-free-column-batch (rawptr typed-out))
+          (when (not (= (rawptr out) nil))
+            (return out)))
         (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
               out (entity-int-pairs-from-result query-result.result)]
           (vev.delete-query-result query-result)
@@ -3493,6 +5492,12 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (when (not input-ok)
           (delete inputs)
           (return (Vev-Entity-Int-Pairs nil)))
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query (slice inputs 0))
+              out (entity-int-pairs-from-column-batch typed-out)]
+          (abi-free-column-batch (rawptr typed-out))
+          (when (not (= (rawptr out) nil))
+            (delete inputs)
+            (return out)))
         (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
               out (entity-int-pairs-from-result query-result.result)]
           (delete inputs)
@@ -3584,6 +5589,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (return (Vev-Entity-String-Int-Triples nil)))
       (when (= inputs-text-value "[]")
         (delete inputs-text-value)
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query ([]vev.Query-Input []))
+              out (entity-string-int-triples-from-column-batch typed-out)]
+          (abi-free-column-batch (rawptr typed-out))
+          (when (not (= (rawptr out) nil))
+            (return out)))
         (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
               out (entity-string-int-triples-from-result query-result.result)]
           (vev.delete-query-result query-result)
@@ -3593,11 +5603,49 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (when (not input-ok)
           (delete inputs)
           (return (Vev-Entity-String-Int-Triples nil)))
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query (slice inputs 0))
+              out (entity-string-int-triples-from-column-batch typed-out)]
+          (abi-free-column-batch (rawptr typed-out))
+          (when (not (= (rawptr out) nil))
+            (delete inputs)
+            (return out)))
         (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
               out (entity-string-int-triples-from-result query-result.result)]
+      (delete inputs)
+      (vev.delete-query-result query-result)
+      out)))))
+
+(defn- column-batch-from-store-db-query-inputs-text-owned [store-ptr-value: ^vev.Store-DB, query-ptr-value: ^vev.Prepared-Query, inputs-text-value: string] -> Vev-Column-Batch
+  (when (not query-ptr-value^.ok)
+    (delete inputs-text-value)
+    (return (Vev-Column-Batch nil)))
+  (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
+    (when (not source-ok)
+      (delete inputs-text-value)
+      (return (Vev-Column-Batch nil)))
+    (when (= inputs-text-value "[]")
+      (delete inputs-text-value)
+      (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query ([]vev.Query-Input []))]
+        (when (not (= (rawptr typed-out) nil))
+          (return typed-out)))
+      (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
+            out (column-batch-from-result query-result.result)]
+        (vev.delete-query-result query-result)
+        (return out)))
+    (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+      (delete inputs-text-value)
+      (when (not input-ok)
+        (delete inputs)
+        (return (Vev-Column-Batch nil)))
+      (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query (slice inputs 0))]
+        (when (not (= (rawptr typed-out) nil))
           (delete inputs)
-          (vev.delete-query-result query-result)
-          out)))))
+          (return typed-out)))
+      (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
+            out (column-batch-from-result query-result.result)]
+        (delete inputs)
+        (vev.delete-query-result query-result)
+        out))))
 
 @export
 (defn vev_query_db_prepared_column_batch_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-Column-Batch
@@ -3616,6 +5664,9 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (return (Vev-Column-Batch nil)))
       (when (= inputs-text-value "[]")
         (delete inputs-text-value)
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query ([]vev.Query-Input []))]
+          (when (not (= (rawptr typed-out) nil))
+            (return typed-out)))
         (let [query-result (vev.q-result-prepared-db-read-source source query-ptr-value^)
               out (column-batch-from-result query-result.result)]
           (vev.delete-query-result query-result)
@@ -3625,11 +5676,36 @@ abi_free_stmt :: proc(stmt: rawptr) {
         (when (not input-ok)
           (delete inputs)
           (return (Vev-Column-Batch nil)))
+        (let [typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-ptr-value^.query (slice inputs 0))]
+          (when (not (= (rawptr typed-out) nil))
+            (delete inputs)
+            (return typed-out)))
         (let [query-result (vev.q-result-prepared-db-read-source-with-inputs source query-ptr-value^ (slice inputs 0))
               out (column-batch-from-result query-result.result)]
           (delete inputs)
           (vev.delete-query-result query-result)
           out)))))
+
+@export
+(defn vev_sqlite_conn_prepared_column_batch_with_inputs :abi "c" [conn: Vev-SQLite-Conn, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-Column-Batch
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (= (rawptr query) nil) (= inputs-text nil) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-Column-Batch nil)))
+  (let [inputs-text-value (text-from-c inputs-text)
+        query-ptr-value (prepared-query-ptr query)
+        store (sqlite-conn-ptr conn)
+        [snapshot snapshot-ok _] (vev.sqlite-store-db-current-root-cached store)]
+    (when (not snapshot-ok)
+      (delete inputs-text-value)
+      (return (Vev-Column-Batch nil)))
+    (let [out (column-batch-from-store-db-query-inputs-text-owned (addr snapshot) query-ptr-value inputs-text-value)]
+      (vev.close-store-db! (addr snapshot))
+      out)))
+
+@export
+(defn vev_connection_prepared_column_batch_with_inputs :abi "c" [conn: Vev-Connection, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-Column-Batch
+  (odin "context = runtime.default_context()")
+  (vev_sqlite_conn_prepared_column_batch_with_inputs (connection-as-sqlite conn) query inputs-text))
 
 @export
 (defn vev_column_batch_free :abi "c" [batch: Vev-Column-Batch]
@@ -3645,6 +5721,16 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn vev_column_batch_count :abi "c" [batch: Vev-Column-Batch] -> int
   (odin "context = runtime.default_context()")
   (abi-column-batch-count (rawptr batch)))
+
+@export
+(defn vev_column_batch_column_count :abi "c" [batch: Vev-Column-Batch] -> int
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-count (rawptr batch)))
+
+@export
+(defn vev_column_batch_column_kind :abi "c" [batch: Vev-Column-Batch, column: int] -> int
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-kind (rawptr batch) column))
 
 @export
 (defn vev_column_batch_entities_data :abi "c" [batch: Vev-Column-Batch] -> rawptr
@@ -3665,6 +5751,56 @@ abi_free_stmt :: proc(stmt: rawptr) {
 (defn vev_column_batch_string_lengths_data :abi "c" [batch: Vev-Column-Batch] -> rawptr
   (odin "context = runtime.default_context()")
   (abi-column-batch-string-lengths-data (rawptr batch)))
+
+@export
+(defn vev_column_batch_second_string_data_array :abi "c" [batch: Vev-Column-Batch] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-second-string-data-array (rawptr batch)))
+
+@export
+(defn vev_column_batch_second_string_lengths_data :abi "c" [batch: Vev-Column-Batch] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-second-string-lengths-data (rawptr batch)))
+
+@export
+(defn vev_column_batch_column_entities_data :abi "c" [batch: Vev-Column-Batch, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-entities-data (rawptr batch) column))
+
+@export
+(defn vev_column_batch_column_ints_data :abi "c" [batch: Vev-Column-Batch, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-ints-data (rawptr batch) column))
+
+@export
+(defn vev_column_batch_column_floats_data :abi "c" [batch: Vev-Column-Batch, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-floats-data (rawptr batch) column))
+
+@export
+(defn vev_column_batch_column_bools_data :abi "c" [batch: Vev-Column-Batch, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-bools-data (rawptr batch) column))
+
+@export
+(defn vev_column_batch_column_value_kinds_data :abi "c" [batch: Vev-Column-Batch, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-value-kinds-data (rawptr batch) column))
+
+@export
+(defn vev_column_batch_column_values_data :abi "c" [batch: Vev-Column-Batch, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-values-data (rawptr batch) column))
+
+@export
+(defn vev_column_batch_column_string_data_array :abi "c" [batch: Vev-Column-Batch, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-string-data-array (rawptr batch) column))
+
+@export
+(defn vev_column_batch_column_string_lengths_data :abi "c" [batch: Vev-Column-Batch, column: int] -> rawptr
+  (odin "context = runtime.default_context()")
+  (abi-column-batch-column-string-lengths-data (rawptr batch) column))
 
 @export
 (defn vev_column_batch_string_dictionary_count :abi "c" [batch: Vev-Column-Batch] -> int
@@ -3987,6 +6123,127 @@ abi_free_stmt :: proc(stmt: rawptr) {
                 (value-handle-from-value pulled)
                 (Vev-Value-Handle nil))]
       (delete ids)
+      out)))
+
+@export
+(defn vev_pull_many_lookup_ref_string_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, values: rawptr, value-count: int] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil)
+            (= pattern-text nil)
+            (= attr nil)
+            (< value-count 0)
+            (and (> value-count 0) (= values nil)))
+    (return (Vev-Value-Handle nil)))
+  (let [pattern (text-from-c pattern-text)
+        attr-text (text-from-c attr)
+        attrs (make [dynamic]string 0 value-count)
+        lookup-values (make [dynamic]vev.Value 0 value-count)
+        store-ptr-value (store-db-ptr db)
+        index 0]
+    (while (< index value-count)
+      (let [value-c (abi-cstring-at values index)]
+        (when (= value-c nil)
+          (delete pattern)
+          (delete attr-text)
+          (delete attrs)
+          (for [value lookup-values]
+            (vev.delete-owned-value value))
+          (delete lookup-values)
+          (return (Vev-Value-Handle nil)))
+        (let [value-text (text-from-c value-c)]
+          (arr.push! attrs attr-text)
+          (arr.push! lookup-values (vev.value-string value-text))))
+      (set! index (+ index 1)))
+    (let [[pulled pulled-ok _] (vev.pull-many-store-db-lookup-refs-value-text store-ptr-value pattern (slice attrs 0) (slice lookup-values 0))
+          out (if pulled-ok
+                (value-handle-from-value pulled)
+                (Vev-Value-Handle nil))]
+      (delete pattern)
+      (delete attr-text)
+      (delete attrs)
+      (for [value lookup-values]
+        (vev.delete-owned-value value))
+      (delete lookup-values)
+      out)))
+
+@export
+(defn vev_pull_many_lookup_ref_string_prepared :abi "c" [db: Vev-DB, pattern: Vev-Prepared-Pull-Pattern, attr: cstring, values: rawptr, value-count: int] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil)
+            (= (rawptr pattern) nil)
+            (= attr nil)
+            (< value-count 0)
+            (and (> value-count 0) (= values nil)))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        attrs (make [dynamic]string 0 value-count)
+        lookup-values (make [dynamic]vev.Value 0 value-count)
+        store-ptr-value (store-db-ptr db)
+        pattern-ptr (prepared-pull-pattern-ptr pattern)
+        index 0]
+    (while (< index value-count)
+      (let [value-c (abi-cstring-at values index)]
+        (when (= value-c nil)
+          (delete attr-text)
+          (delete attrs)
+          (for [value lookup-values]
+            (vev.delete-owned-value value))
+          (delete lookup-values)
+          (return (Vev-Value-Handle nil)))
+        (let [value-text (text-from-c value-c)]
+          (arr.push! attrs attr-text)
+          (arr.push! lookup-values (vev.value-string value-text))))
+      (set! index (+ index 1)))
+    (let [[pulled pulled-ok _] (vev.pull-many-store-db-lookup-refs-value-prepared store-ptr-value pattern-ptr^ (slice attrs 0) (slice lookup-values 0))
+          out (if pulled-ok
+                (value-handle-from-value pulled)
+                (Vev-Value-Handle nil))]
+      (delete attr-text)
+      (delete attrs)
+      (for [value lookup-values]
+        (vev.delete-owned-value value))
+      (delete lookup-values)
+      out)))
+
+@export
+(defn vev_pull_many_lookup_ref_uuid_edn :abi "c" [db: Vev-DB, pattern-text: cstring, attr: cstring, values: rawptr, value-count: int] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil)
+            (= pattern-text nil)
+            (= attr nil)
+            (< value-count 0)
+            (and (> value-count 0) (= values nil)))
+    (return (Vev-Value-Handle nil)))
+  (let [pattern (text-from-c pattern-text)
+        attr-text (text-from-c attr)
+        attrs (make [dynamic]string 0 value-count)
+        lookup-values (make [dynamic]vev.Value 0 value-count)
+        store-ptr-value (store-db-ptr db)
+        index 0]
+    (while (< index value-count)
+      (let [value-c (abi-cstring-at values index)]
+        (when (= value-c nil)
+          (delete pattern)
+          (delete attr-text)
+          (delete attrs)
+          (for [value lookup-values]
+            (vev.delete-owned-value value))
+          (delete lookup-values)
+          (return (Vev-Value-Handle nil)))
+        (let [value-text (text-from-c value-c)]
+          (arr.push! attrs attr-text)
+          (arr.push! lookup-values (vev.value-uuid value-text))))
+      (set! index (+ index 1)))
+    (let [[pulled pulled-ok _] (vev.pull-many-store-db-lookup-refs-value-text store-ptr-value pattern (slice attrs 0) (slice lookup-values 0))
+          out (if pulled-ok
+                (value-handle-from-value pulled)
+                (Vev-Value-Handle nil))]
+      (delete pattern)
+      (delete attr-text)
+      (delete attrs)
+      (for [value lookup-values]
+        (vev.delete-owned-value value))
+      (delete lookup-values)
       out)))
 
 @export

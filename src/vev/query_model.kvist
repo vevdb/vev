@@ -163,8 +163,8 @@
       (append-query-step-kind! (addr steps) (addr counters) kind))
     steps))
 
-(defn not-group-default-steps [clause-count: int, predicate-count: int, function-count: int, not-count: int] -> [dynamic]Query-Step
-  (let [steps (make [dynamic]Query-Step 0 (+ clause-count predicate-count function-count not-count))
+(defn not-group-default-steps [clause-count: int, predicate-count: int, function-count: int, get-else-count: int, get-some-count: int, ground-count: int, rule-call-count: int, not-count: int] -> [dynamic]Query-Step
+  (let [steps (make [dynamic]Query-Step 0 (+ clause-count predicate-count function-count get-else-count get-some-count ground-count rule-call-count not-count))
         counters (Query-Step-Counters {})]
     (for [_ (arr.range 0 clause-count)]
       (append-query-step-kind! (addr steps) (addr counters) .Clause))
@@ -172,29 +172,72 @@
       (append-query-step-kind! (addr steps) (addr counters) .Predicate))
     (for [_ (arr.range 0 function-count)]
       (append-query-step-kind! (addr steps) (addr counters) .Function))
+    (for [_ (arr.range 0 get-else-count)]
+      (append-query-step-kind! (addr steps) (addr counters) .GetElse))
+    (for [_ (arr.range 0 get-some-count)]
+      (append-query-step-kind! (addr steps) (addr counters) .GetSome))
+    (for [_ (arr.range 0 ground-count)]
+      (append-query-step-kind! (addr steps) (addr counters) .Ground))
+    (for [_ (arr.range 0 rule-call-count)]
+      (append-query-step-kind! (addr steps) (addr counters) .RuleCall))
     (for [_ (arr.range 0 not-count)]
       (append-query-step-kind! (addr steps) (addr counters) .Not))
     steps))
 
-(defn not-group-full [join-vars: []string, has-join: bool, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+(defn not-group-full-with-operators-grounds-and-rules [join-vars: []string, has-join: bool, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
   (let [owned-clauses (arr.into [dynamic]Clause clauses)
         owned-predicates (arr.into [dynamic]Predicate predicates)
         owned-functions (arr.into [dynamic]Function-Clause function-clauses)
+        owned-get-elses (arr.into [dynamic]Get-Else get-elses)
+        owned-get-somes (get-some-slice-owned get-somes)
+        owned-grounds (arr.into [dynamic]Ground grounds)
+        owned-rule-calls (arr.into [dynamic]Rule-Call rule-calls)
         owned-not-groups (arr.into [dynamic]Not-Group not-groups)
         owned-join-vars (arr.into [dynamic]string join-vars)
         owned-steps (if (> (count step-kinds) 0)
                       (steps-from-kinds step-kinds)
-                      (not-group-default-steps (count clauses) (count predicates) (count function-clauses) (count not-groups)))]
+                      (not-group-default-steps (count clauses) (count predicates) (count function-clauses) (count get-elses) (count get-somes) (count grounds) (count rule-calls) (count not-groups)))]
     (Not-Group {clauses: owned-clauses
                 predicates: owned-predicates
                 function-clauses: owned-functions
+                get-elses: owned-get-elses
+                get-somes: owned-get-somes
+                grounds: owned-grounds
+                rule-calls: owned-rule-calls
                 not-groups: owned-not-groups
                 steps: owned-steps
                 has-join: has-join
                 join-vars: owned-join-vars})))
 
+(defn not-group-full-with-operators-and-grounds [join-vars: []string, has-join: bool, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators-grounds-and-rules join-vars has-join clauses predicates function-clauses get-elses get-somes grounds ([]Rule-Call []) not-groups step-kinds))
+
+(defn not-group-full-with-operators [join-vars: []string, has-join: bool, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators-and-grounds join-vars has-join clauses predicates function-clauses get-elses get-somes ([]Ground []) not-groups step-kinds))
+
+(defn not-group-full [join-vars: []string, has-join: bool, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators join-vars has-join clauses predicates function-clauses ([]Get-Else []) ([]Get-Some []) not-groups step-kinds))
+
+(defn not-group-program-with-operators [clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators ([]string []) false clauses predicates function-clauses get-elses get-somes not-groups step-kinds))
+
+(defn not-group-program-with-operators-and-grounds [clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators-and-grounds ([]string []) false clauses predicates function-clauses get-elses get-somes grounds not-groups step-kinds))
+
+(defn not-group-program-with-operators-grounds-and-rules [clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators-grounds-and-rules ([]string []) false clauses predicates function-clauses get-elses get-somes grounds rule-calls not-groups step-kinds))
+
 (defn not-group-program [clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
   (not-group-full ([]string []) false clauses predicates function-clauses not-groups step-kinds))
+
+(defn not-join-group-program-with-operators [join-vars: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators join-vars true clauses predicates function-clauses get-elses get-somes not-groups step-kinds))
+
+(defn not-join-group-program-with-operators-and-grounds [join-vars: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators-and-grounds join-vars true clauses predicates function-clauses get-elses get-somes grounds not-groups step-kinds))
+
+(defn not-join-group-program-with-operators-grounds-and-rules [join-vars: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, get-elses: []Get-Else, get-somes: []Get-Some, grounds: []Ground, rule-calls: []Rule-Call, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
+  (not-group-full-with-operators-grounds-and-rules join-vars true clauses predicates function-clauses get-elses get-somes grounds rule-calls not-groups step-kinds))
 
 (defn not-join-group-program [join-vars: []string, clauses: []Clause, predicates: []Predicate, function-clauses: []Function-Clause, not-groups: []Not-Group, step-kinds: []Query-Step-Kind] -> Not-Group
   (not-group-full join-vars true clauses predicates function-clauses not-groups step-kinds))

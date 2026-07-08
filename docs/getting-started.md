@@ -1,55 +1,22 @@
 # Getting Started
 
-Vev is currently easiest to try through the native library and host clients.
+Vev is an embedded Datalog database for immutable DB values. The normal workflow
+is:
 
-Build the native library and run the available client smoke tests:
+1. create an in-memory connection or connect to a durable Vev store
+2. transact schema and data
+3. take an immutable DB value with `db`
+4. query, pull, or inspect entities from that DB value
+5. use `with` / `db-with` when you want a hypothetical DB without changing the
+   connection
 
-```sh
-scripts/smoke_clients.sh
-scripts/smoke_cli.sh
-scripts/smoke_packages.sh
-scripts/stage_jvm_native.sh
-scripts/package_jvm.sh
-```
-
-For focused package checks, the aggregate package smoke runs:
-
-```sh
-scripts/smoke_c_package.sh
-scripts/smoke_jvm_package.sh
-scripts/smoke_python_package.sh
-scripts/smoke_node_package.sh
-scripts/smoke_go_package.sh
-scripts/smoke_odin_package.sh
-```
-
-Together, these build:
-
-- the platform native library under `build/lib`
-- JVM native-resource staging under `build/jvm-native`
-- local JVM proof jars under `build/jvm`
-- a local JVM Maven-style repository under `build/m2`
-- `build/lib/pkgconfig/vev.pc`
-- `build/vev`
-- Java classes under `build/examples/java`
-- native smoke artifacts under `build/examples/*`
-
-`scripts/smoke_clients.sh` runs the available C, Python, Rust, Go,
-Node/TypeScript, Java, Clojure, and Odin smoke clients. `scripts/smoke_cli.sh`
-verifies the CLI against a temporary durable Vev store. `scripts/smoke_packages.sh`
-then verifies the current local C SDK, JVM, Python, Node, Go, and Odin package
-shapes from temporary projects/directories.
-
-The current durable backend uses SQLite internally and the native library links
-to the platform SQLite runtime. Application code still uses Vev APIs and Vev
-store paths such as `app.vev`; no SQLite schema setup is required. See
-[runtime-dependencies.md](runtime-dependencies.md) for the per-client setup
-story.
+Durable stores are opened with Vev paths such as `app.vev`. Vev currently uses
+SQLite internally for durability, but application code does not create SQLite
+tables or issue SQL.
 
 ## CLI
 
-The first CLI is a thin tool over the same native engine and durable connection
-API:
+The CLI is the shortest way to try durable Vev from a shell:
 
 ```sh
 build/vev transact app.vev '[{:db/id 1 :user/name "Ada"}]'
@@ -63,7 +30,8 @@ Query, transaction, and pull arguments can also be loaded from files with
 
 ## Clojure
 
-The Clojure API is the most Datomic-shaped public wrapper today:
+The Clojure API is the most polished public wrapper today. It accepts ordinary
+Clojure data and follows the same connection -> DB value -> query shape:
 
 ```clojure
 (require '[vev.core :as d])
@@ -109,10 +77,16 @@ Successful transaction reports can be observed with listeners:
 (d/unlisten conn listener)
 ```
 
-Durability is a separate step:
+Durability is a separate connection choice:
 
 ```clojure
 (def durable (d/connect "app.vev"))
+
+(d/transact durable [{:db/id 1 :artist/name "Durable Ada"}])
+(d/q
+  '[:find ?name
+    :where [?e :artist/name ?name]]
+  (d/db durable))
 ```
 
 For local development from this repo:
@@ -122,10 +96,11 @@ clojure -M:clj-dev
 ```
 
 Then open `examples/clojure/getting_started.clj` in an editor and evaluate the
-forms inside its `(comment ...)` block one at a time. This local alias uses the
-Java loader, which looks for the platform library under `build/lib`. The
-intended published Clojure experience is a normal deps.edn dependency that
-pulls in and loads the platform native library itself:
+forms inside its `(comment ...)` block one at a time.
+
+This local alias uses the Java loader, which looks for the platform library
+under `build/lib`. The intended published Clojure experience is a normal
+deps.edn dependency that pulls in and loads the platform native library itself:
 
 ```clojure
 {:deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
@@ -142,6 +117,11 @@ The same shape can be tested locally after `scripts/package_jvm.sh`:
 temporary projects. It verifies that `dev.vevdb/vev-clj` is enough for Clojure,
 and that `dev.vevdb:vev-java` is enough for Java.
 
+DB snapshots are passable immutable values. The JVM wrapper has cleanup
+fallbacks, so examples use normal Clojure binding style. Long-running services
+or tight loops that create many connections, prepared queries, or DB snapshots
+can still call `.close` explicitly.
+
 ## Python
 
 The Python client is a pure `ctypes` wrapper today:
@@ -151,10 +131,21 @@ import vev
 
 with vev.create_conn() as conn:
     conn.transact('[{:db/id 1 :user/name "Ada"}]')
-    print(conn.query_text('[:find ?name :where [?e :user/name ?name]]'))
+    with conn.db() as db:
+        print(vev.q('[:find ?name :where [?e :user/name ?name]]', db))
+        print(db.pull('[:user/name]', vev.Entity(1)))
 
 with vev.connect("app.vev") as conn:
     conn.transact('[{:db/id 1 :user/name "Durable Ada"}]')
+    print(vev.q('[:find ?name :where [?e :user/name ?name]]', conn))
+```
+
+`examples/python/contact_book.py` is a small app-style smoke that uses the same
+API in both modes: in-memory for test-style immutable DB values, durable for
+close/reopen persisted state.
+
+```sh
+scripts/smoke_real_app.sh
 ```
 
 `scripts/smoke_python_package.sh` validates the package metadata and simulates
@@ -168,8 +159,18 @@ The Node wrapper loads a native N-API addon and exposes a small CommonJS API:
 ```js
 const vev = require("@vevdb/vev");
 const conn = vev.createConn();
-conn.transact('[{:db/id 1 :user/name "Ada"}]');
-console.log(conn.queryText('[:find ?name :where [?e :user/name ?name]]'));
+try {
+  conn.transact('[{:db/id 1 :user/name "Ada"}]');
+  const db = conn.db();
+  try {
+    console.log(vev.q('[:find ?name :where [?e :user/name ?name]]', db));
+    console.log(db.pull('[:user/name]', 1));
+  } finally {
+    db.close();
+  }
+} finally {
+  conn.close();
+}
 ```
 
 `scripts/smoke_node_package.sh` simulates a future npm package by loading
@@ -184,16 +185,42 @@ The Go wrapper is importable at the planned module path:
 import vev "github.com/vevdb/vev/clients/go"
 
 conn, err := vev.CreateConn()
+defer conn.Close()
+
+conn.Transact(`[{:db/id 1 :user/name "Ada"}]`)
+db, err := conn.DB()
+defer db.Close()
+
+rows, err := db.Q(`[:find ?name :where [?e :user/name ?name]]`, "[]")
+defer rows.Close()
+
+pulled, err := db.Pull("[:user/name]", 1)
+
 durable, err := vev.Connect("app.vev")
+defer durable.Close()
 ```
 
 `scripts/smoke_go_package.sh` verifies that shape from a temporary Go module
 using a local `replace` to this checkout.
 
-DB snapshots are passable immutable values. The wrapper has JVM cleanup
-fallbacks, so examples use normal Clojure binding style. Long-running services
-or tight loops that create many connections, prepared queries, or DB snapshots
-can still call `.close` explicitly.
+## Rust
+
+The Rust wrapper is a local crate over the C ABI and follows the intended RAII
+shape:
+
+```rust
+let conn = Conn::open_memory()?;
+
+conn.transact(r#"[{:db/id 1 :user/name "Ada"}]"#);
+
+let db = conn.db()?;
+let rows = db.q("[:find ?name :where [?e :user/name ?name]]", "[]")?;
+let pulled = db.pull("[:user/name]", 1)?;
+
+let durable = DurableConn::open("app.vev")?;
+durable.transact(r#"[{:db/id 1 :user/name "Durable Ada"}]"#)?;
+let durable_rows = durable.q("[:find ?name :where [?e :user/name ?name]]", "[]")?;
+```
 
 ## Java
 
@@ -209,6 +236,7 @@ Vev.DB db = conn.db();
 System.out.println(vev.queryRows(java.util.Map.of(
     "query", "[:find ?name :where [?e :user/name ?name]]",
     "args", java.util.List.of(db))));
+System.out.println(db.pull("[:user/name]", 1));
 ```
 
 Local Java runs need Java 21 preview FFM flags:
@@ -258,4 +286,29 @@ stabilize.
   immutable/chunked index storage rather than whole DB/index copying.
 - The C ABI is the portability boundary; higher-level clients are still being
   shaped around it.
-- Exact parser diagnostic compatibility is still Vev-shaped in some cases.
+
+## Local Repository Checks
+
+From this repository, the broad smoke suite is:
+
+```sh
+scripts/smoke_clients.sh
+scripts/smoke_cli.sh
+scripts/smoke_packages.sh
+```
+
+For focused package checks:
+
+```sh
+scripts/smoke_c_package.sh
+scripts/smoke_jvm_package.sh
+scripts/smoke_python_package.sh
+scripts/smoke_node_package.sh
+scripts/smoke_go_package.sh
+scripts/smoke_rust_package.sh
+scripts/smoke_odin_package.sh
+```
+
+These build the native library under `build/lib`, local JVM proof artifacts
+under `build/jvm` and `build/m2`, `build/lib/pkgconfig/vev.pc`, `build/vev`,
+and temporary smoke artifacts or projects for the host wrappers.

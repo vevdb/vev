@@ -132,142 +132,156 @@
       (return true)))
   false)
 
-(defn mb-mini-queries-ok? [db: vev.DB] -> bool
-  (let [artist-country (vev.q-text
-                         db
+(defn mb-source-q-prepared-with-input-text [source: vev.DB-Read-Source, prepared: vev.Prepared-Query, inputs-text: string] -> vev.Result-Set
+  (when (not prepared.ok)
+    (return (vev.result-set-error prepared.error)))
+  (let [[inputs input-ok input-error] (vev.parse-query-inputs-text-for-query prepared.query inputs-text)]
+    (when (not input-ok)
+      (delete inputs)
+      (return (vev.result-set-error input-error)))
+    (let [result (vev.q-prepared-db-read-source-with-inputs source prepared (slice inputs 0))]
+      (delete inputs)
+      result)))
+
+(defn mb-source-q-text-scalar [source: vev.DB-Read-Source, text: string] -> [value: vev.Value, ok: bool]
+  (vev.result-scalar (vev.q-text-db-read-source source text)))
+
+(defn mb-source-q-text-tuple [source: vev.DB-Read-Source, text: string] -> [dynamic]vev.Value
+  (vev.result-tuple (vev.q-text-db-read-source source text)))
+
+(defn mb-source-q-text-collection [source: vev.DB-Read-Source, text: string] -> [dynamic]vev.Value
+  (vev.result-collection (vev.q-text-db-read-source source text)))
+
+(defn mb-source-q-text-with-rules [source: vev.DB-Read-Source, text: string, rules-text: string, inputs: []vev.Query-Input] -> vev.Result-Set
+  (let [prepared (vev.prepare-query-text-with-rules text rules-text)]
+    (vev.q-prepared-db-read-source-with-inputs source prepared inputs)))
+
+(defn mb-source-q-text-keys [source: vev.DB-Read-Source, text: string] -> [dynamic]vev.Keyed-Row
+  (let [keys (vev.query-text-return-keys text ":keys") :defer]
+    (vev.result-keys (vev.q-text-db-read-source source text) .Keyword (slice keys 0))))
+
+(defn mb-source-pull-text [source: vev.DB-Read-Source, text: string, entity: u64] -> vev.Pull-Result
+  (let [[pattern pattern-ok _] (vev.parse-pull-pattern-text text)]
+    (when (not pattern-ok)
+      (delete pattern)
+      (return (vev.Pull-Result {})))
+    (let [[result result-ok _] (vev.db-read-source-pull-result-for-pattern source entity (slice pattern 0))]
+      (delete pattern)
+      (if result-ok
+        result
+        (vev.Pull-Result {})))))
+
+(defn mb-mini-source-queries-ok? [source: vev.DB-Read-Source] -> bool
+  (let [artist-country (vev.q-text-db-read-source source
                          "[:find ?artist-name ?country-name :where [?artist :artist/name ?artist-name] [?artist :artist/country ?country] [?country :country/name ?country-name]]")
-        beatles-releases (vev.q-text
-                           db
+        beatles-releases (vev.q-text-db-read-source source
                            "[:find ?release-name :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
-        miles-reverse (vev.q-text
-                        db
+        miles-reverse (vev.q-text-db-read-source source
                         "[:find ?release-name :where [?artist :artist/name \"Miles Davis\"] [?artist :release/_artists ?release] [?release :release/name ?release-name]]")
-        long-tracks (vev.q-text
-                      db
+        long-tracks (vev.q-text-db-read-source source
                       "[:find ?track-name ?duration :where [?track :track/name ?track-name] [?track :track/duration ?duration] [(> ?duration 300000)]]")
-        track-count (vev.q-text
-                      db
+        track-count (vev.q-text-db-read-source source
                       "[:find (count ?track) :where [?track :track/name]]")
         prepared (vev.prepare-query-text
                    "[:find ?release-name :in ?artist-name :where [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
-        prepared-result (vev.q-prepared-with-input-text db prepared "[\"Miles Davis\"]")
-        collection-binding (vev.q-text-with-inputs
-                             db
+        prepared-result (mb-source-q-prepared-with-input-text source prepared "[\"Miles Davis\"]")
+        collection-binding (vev.q-text-db-read-source-with-inputs source
                              "[:find ?artist-name ?release-name :in [?artist-name ...] :where [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]"
                              ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Miles Davis")]))]))
-        tuple-binding (vev.q-text-with-inputs
-                        db
+        tuple-binding (vev.q-text-db-read-source-with-inputs source
                         "[:find ?track-name ?minutes :in [?artist-name ?release-name] :where [?artist :artist/name ?artist-name] [?release :release/name ?release-name] [?release :release/artists ?artist] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/name ?track-name] [?track :track/duration ?millis] [(quot ?millis 60000) ?minutes]]"
                         ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Abbey Road")]))]))
-        relation-binding (vev.q-text-with-inputs
-                           db
+        relation-binding (vev.q-text-db-read-source-with-inputs source
                            "[:find ?artist-name ?release-name :in [[?artist-name ?release-name]] :where [?artist :artist/name ?artist-name] [?release :release/name ?release-name] [?release :release/artists ?artist]]"
                            ([]vev.Query-Input [(vev.query-input-relation ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Abbey Road") (vev.value-string "Miles Davis") (vev.value-string "Kind of Blue")]) 2)]))
-        [scalar-start scalar-start-ok] (vev.q-text-scalar
-                                         db
+        [scalar-start scalar-start-ok] (mb-source-q-text-scalar
+                                         source
                                          "[:find ?year . :where [?artist :artist/name \"The Beatles\"] [?artist :artist/startYear ?year]]")
-        tuple-start (vev.q-text-tuple
-                      db
+        tuple-start (mb-source-q-text-tuple
+                      source
                       "[:find [?year ?month ?day] :where [?artist :artist/name \"The Beatles\"] [?artist :artist/startYear ?year] [?artist :artist/startMonth ?month] [?artist :artist/startDay ?day]]")
-        collection-find (vev.q-text-collection
-                          db
+        collection-find (mb-source-q-text-collection
+                          source
                           "[:find [?track-name ...] :where [?track :track/name ?track-name] [?track :track/duration ?duration] [(< ?duration 300000)]]")
-        rule-track-info (vev.q-text-with-rules
-                          db
+        rule-track-info (mb-source-q-text-with-rules
+                          source
                           "[:find ?track-name ?artist-name ?album ?year :in $ % :where (track-info ?track ?track-name ?artist-name ?album ?year)]"
                           musicbrainz-mini-rules
                           ([]vev.Query-Input []))
-        rule-short-track (vev.q-text-with-rules
-                           db
+        rule-short-track (mb-source-q-text-with-rules
+                           source
                            "[:find ?track-name ?len :in $ % ?max :where [?artist :artist/name \"The Beatles\"] (short-track ?artist ?track ?len ?max) [?track :track/name ?track-name]]"
                            musicbrainz-mini-rules
                            ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 200000))]))
-        return-map (vev.q-text-keys
-                     db
+        return-map (mb-source-q-text-keys
+                     source
                      "[:find ?artist-name ?release-name :keys artist release :where [?artist :artist/name \"The Beatles\"] [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
-        enum-id (vev.q-text-with-inputs
-                  db
+        enum-id (vev.q-text-db-read-source-with-inputs source
                   "[:find ?id ?type ?gender :in $ ?name :where [?e :artist/name ?name] [?e :artist/gid ?id] [?e :artist/type ?teid] [?teid :db/ident ?type] [?e :artist/gender ?geid] [?geid :db/ident ?gender]]"
                   ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Miles Davis"))]))
-        fallback-years (vev.q-text-with-inputs
-                         db
+        fallback-years (vev.q-text-db-read-source-with-inputs source
                          "[:find ?artist-name ?month :in $ [?artist-name ...] :where [?artist :artist/name ?artist-name] [(get-else $ ?artist :artist/startMonth \"N/A\") ?month]]"
                          ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Miles Davis")]))]))
-        min-max-duration (vev.q-text
-                           db
+        min-max-duration (vev.q-text-db-read-source source
                            "[:find [(min ?dur) (max ?dur)] :where [?track :track/duration ?dur]]")
-        [track-count-scalar track-count-scalar-ok] (vev.q-text-scalar
-                                                     db
+        [track-count-scalar track-count-scalar-ok] (mb-source-q-text-scalar
+                                                     source
                                                      "[:find (sum ?count) . :with ?medium :where [?medium :medium/trackCount ?count]]")
-        distinct-artists (vev.q-text
-                           db
+        distinct-artists (vev.q-text-db-read-source source
                            "[:find (count ?name) (count-distinct ?name) :with ?artist :where [?artist :artist/name ?name]]")
-        title-stats (vev.q-text
-                      db
+        title-stats (vev.q-text-db-read-source source
                       "[:find ?year (median ?namelen) (avg ?namelen) (stddev ?namelen) :with ?track :where [?track :track/name ?name] [(count ?name) ?namelen] [?medium :medium/tracks ?track] [?release :release/media ?medium] [?release :release/year ?year]]")
-        wildcard-pull (vev.pull-text db "[*]" 401)
-        map-query (vev.q-text
-                    db
+        wildcard-pull (mb-source-pull-text source "[*]" 401)
+        map-query (vev.q-text-db-read-source source
                     "{:find [?artist-name ?release-name] :where [[?artist :artist/name \"The Beatles\"] [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]}")
-        composed-rules (vev.q-text-with-rules
-                         db
+        composed-rules (mb-source-q-text-with-rules
+                         source
                          "[:find ?track-name ?artist-name ?release-name ?release-year :in $ % ?track-name :where [?t :track/name ?track-name] (track-info-composed ?t ?artist-name ?release-name ?release-year)]"
                          musicbrainz-composed-rules
                          ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Come Together"))]))
-        not-query (vev.q-text
-                    db
+        not-query (vev.q-text-db-read-source source
                     "[:find ?artist-name :where [?artist :artist/name ?artist-name] (not [?artist :artist/gender :artist.gender/male])]")
-        not-join-query (vev.q-text
-                         db
+        not-join-query (vev.q-text-db-read-source source
                          "[:find ?release-name :where [?release :release/name ?release-name] (not-join [?release] [?release :release/artists ?artist] [?artist :artist/name \"Miles Davis\"])]")
-        or-query (vev.q-text
-                   db
+        or-query (vev.q-text-db-read-source source
                    "[:find ?artist-name :where (or [?artist :artist/type :artist.type/group] [?artist :artist/gender :artist.gender/male]) [?artist :artist/name ?artist-name]]")
-        or-join-query (vev.q-text
-                        db
+        or-join-query (vev.q-text-db-read-source source
                         "[:find ?release-name :where [?release :release/name ?release-name] (or-join [?release] (and [?release :release/artists ?artist] [?artist :artist/name \"The Beatles\"]) [?release :release/year 1959])]")
-        get-some-query (vev.q-text
-                         db
+        get-some-query (vev.q-text-db-read-source source
                          "[:find ?e ?attr-ident ?name :where [?e :country/name \"United Kingdom\"] [(get-some $ ?e :country/name :artist/name) [?attr ?name]] [?attr :db/ident ?attr-ident]]")
-        missing-start-year (vev.q-text
-                             db
+        missing-start-year (vev.q-text-db-read-source source
                              "[:find ?artist-name :where [?artist :artist/name ?artist-name] [(missing? $ ?artist :artist/startYear)]]")
-        dynamic-pull-release (vev.q-text-with-inputs
-                               db
+        dynamic-pull-release (vev.q-text-db-read-source-with-inputs source
                                "[:find (pull ?release pattern) :in $ ?artist-name pattern :where [?artist :artist/name ?artist-name] [?release :release/artists ?artist]]"
                                ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))
                                                    (vev.query-input-pull-pattern ([]vev.Pull-Spec [(vev.pull-spec ":release/name" ([]vev.Pull-Spec []))]))]))
-        [lookup-country lookup-country-ok] (vev.q-text-scalar
-                                             db
+        [lookup-country lookup-country-ok] (mb-source-q-text-scalar
+                                             source
                                              "[:find ?name . :where [[:country/name \"United Kingdom\"] :country/name ?name]]")
-        dynamic-attr (vev.q-text-with-inputs
-                       db
+        dynamic-attr (vev.q-text-db-read-source-with-inputs source
                        "[:find ?artist-name :in $ ?country [?reference ...] :where [?artist :artist/name ?artist-name] [?artist ?reference ?country]]"
                        ([]vev.Query-Input [(vev.query-input-lookup-ref ":country/name" (vev.value-string "United Kingdom"))
                                            (vev.query-input-collection ([]vev.Value [(vev.value-keyword ":artist/country")]))]))
-        top-duration (vev.q-text
-                       db
+        top-duration (vev.q-text-db-read-source source
                        "[:find [(min 2 ?millis) (max 2 ?millis)] :where [?track :track/duration ?millis]]")
-        profile-release-first (vev.q-text-profiled-with-inputs
-                                db
+        profile-artist-release-fields (vev.q-text-db-read-source-profiled source
+                                        "[:find ?release-name ?credit ?year :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/name ?release-name] [?release :release/artistCredit ?credit] [?release :release/year ?year]]")
+        profile-release-first (vev.q-text-db-read-source-profiled-with-inputs source
                                 "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t] [?t :track/name ?title]]"
                                 ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))]))
-        tutorial-pre-1970-tracks (vev.q-text-profiled-with-inputs
-                                   db
+        tutorial-pre-1970-tracks (vev.q-text-db-read-source-profiled-with-inputs source
                                    "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?r :release/artists ?a] [?r :release/year ?year] [?r :release/name ?album] [(< ?year 1970)] [?r :release/media ?m] [?m :medium/tracks ?t] [?t :track/name ?title]]"
                                    ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))]))
-        profile-track-first (vev.q-text-profiled-with-inputs
-                              db
+        profile-track-first (vev.q-text-db-read-source-profiled-with-inputs source
                               "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?title] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t]]"
                               ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))]))
         prepared-release-first (vev.prepare-query-text
                                  "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t] [?t :track/name ?title]]")
-        profile-prepared (vev.q-prepared-profiled-with-inputs
-                           db
+        profile-prepared (vev.q-prepared-db-read-source-profiled-with-inputs source
                            prepared-release-first
                            ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))]))
-        pulled (vev.pull-text db "[:artist/name {:release/_artists [:release/name :release/year]}]" 301)
-        release-pulled (vev.pull-text db "[:release/name :release/artistCredit {:release/media [:medium/trackCount {:medium/tracks [:track/name :track/duration]}]}]" 401)
+        pulled (mb-source-pull-text source "[:artist/name {:release/_artists [:release/name :release/year]}]" 301)
+        release-pulled (mb-source-pull-text source "[:release/name :release/artistCredit {:release/media [:medium/trackCount {:medium/tracks [:track/name :track/duration]}]}]" 401)
         [name-index name-ok] (mb-pull-attr-index (slice pulled.attrs 0) ":artist/name")
         [releases-index releases-ok] (mb-pull-attr-index (slice pulled.attrs 0) ":release/_artists")
         [media-index media-ok] (mb-pull-attr-index (slice release-pulled.attrs 0) ":release/media")]
@@ -387,25 +401,43 @@
          (= top-duration.rows[0].values[0].items[1].int-value 259000)
          (= top-duration.rows[0].values[1].items[0].int-value 545000)
          (= top-duration.rows[0].values[1].items[1].int-value 259000)
+         profile-artist-release-fields.result.ok
+         (= (count profile-artist-release-fields.result.rows) 1)
+         (mb-result-has-text-text-int? profile-artist-release-fields.result "Abbey Road" "The Beatles" 1969)
+         (or (> profile-artist-release-fields.stats.source-operators 0)
+             (> profile-artist-release-fields.stats.typed-index-scans 0))
+         (= profile-artist-release-fields.stats.binding-materializations 0)
+         (= profile-artist-release-fields.stats.generic-materialization-steps 0)
          profile-release-first.result.ok
          (= (count profile-release-first.result.rows) 2)
          (= profile-release-first.stats.output-rows 2)
-         (> profile-release-first.stats.clause-candidates 0)
-         (> profile-release-first.stats.max-intermediate-bindings 0)
+         (or (> profile-release-first.stats.source-operators 0)
+             (> profile-release-first.stats.typed-index-scans 0))
+         (= profile-release-first.stats.binding-materializations 0)
+         (= profile-release-first.stats.generic-materialization-steps 0)
          tutorial-pre-1970-tracks.result.ok
          (= (count tutorial-pre-1970-tracks.result.rows) 2)
          (= tutorial-pre-1970-tracks.stats.output-rows 2)
+         (or (> tutorial-pre-1970-tracks.stats.source-operators 0)
+             (> tutorial-pre-1970-tracks.stats.typed-index-scans 0))
+         (= tutorial-pre-1970-tracks.stats.binding-materializations 0)
+         (= tutorial-pre-1970-tracks.stats.generic-materialization-steps 0)
          (mb-result-has-text-text-int? tutorial-pre-1970-tracks.result "Come Together" "Abbey Road" 1969)
          (mb-result-has-text-text-int? tutorial-pre-1970-tracks.result "Something" "Abbey Road" 1969)
          profile-track-first.result.ok
          (= (count profile-track-first.result.rows) 2)
          (= profile-track-first.stats.output-rows 2)
-         (> profile-track-first.stats.clause-candidates 0)
-         (> profile-track-first.stats.max-intermediate-bindings 0)
+         (or (> profile-track-first.stats.source-operators 0)
+             (> profile-track-first.stats.typed-index-scans 0))
+         (= profile-track-first.stats.binding-materializations 0)
+         (= profile-track-first.stats.generic-materialization-steps 0)
          profile-prepared.result.ok
          (= (count profile-prepared.result.rows) 2)
          (= profile-prepared.stats.output-rows 2)
-         (> profile-prepared.stats.clause-candidates 0)
+         (or (> profile-prepared.stats.source-operators 0)
+             (> profile-prepared.stats.typed-index-scans 0))
+         (= profile-prepared.stats.binding-materializations 0)
+         (= profile-prepared.stats.generic-materialization-steps 0)
          name-ok
          (= pulled.attrs[name-index].v.text "The Beatles")
          releases-ok
@@ -414,6 +446,11 @@
          (= (count release-pulled.attrs[media-index].attrs) 3)
          (mb-pull-tree-has-text? (slice release-pulled.attrs 0) ":track/name" "Come Together")
          (mb-pull-tree-has-text? (slice release-pulled.attrs 0) ":track/name" "Something"))))
+
+(defn mb-mini-queries-ok? [db: vev.DB] -> bool
+  (let [db-alias db
+        source (vev.resident-db-read-source (addr db-alias))]
+    (mb-mini-source-queries-ok? source)))
 
 (t.deftest musicbrainz-mini-edn-tutorial-queries
   (defer (free_all context.allocator))
@@ -433,14 +470,52 @@
     (t.is open-ok)
     (t.is (= open-error ""))
     (when open-ok
-      (let [report (vev.transact-sqlite-text (addr store) musicbrainz-mini-tx)]
+      (let [report (vev.transact-sqlite-store-report-text (addr store) musicbrainz-mini-tx)]
         (t.is report.ok)
-        (vev.delete-live-tx-report-shallow report)
+        (vev.delete-store-tx-report report)
         (vev.close-sqlite-conn store))
       (let [[reopened reopened-ok reopened-error] (vev.open-sqlite-conn path)]
         (t.is reopened-ok)
         (t.is (= reopened-error ""))
         (when reopened-ok
-          (t.is (mb-mini-queries-ok? reopened.conn.db))
+          (let [[snapshot snapshot-ok snapshot-error] (vev.sqlite-store-db (addr reopened))]
+            (t.is snapshot-ok)
+            (t.is (= snapshot-error ""))
+            (when snapshot-ok
+              (let [[source source-ok source-error] (vev.store-db-read-source (addr snapshot))]
+                (t.is source-ok)
+                (t.is (= source-error ""))
+                (when source-ok
+                  (t.is (mb-mini-source-queries-ok? source))
+                  (let [release-first (vev.q-text-db-read-source-profiled-with-inputs
+                                        source
+                                        "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t] [?t :track/name ?title]]"
+                                        ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))]))
+                        track-first (vev.q-text-db-read-source-profiled-with-inputs
+                                      source
+                                      "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?title] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t]]"
+                                      ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))]))
+                        prepared (vev.prepare-query-text
+                                   "[:find ?title ?album ?year :in $ ?artist-name :where [?a :artist/name ?artist-name] [?r :release/artists ?a] [?r :release/year ?year] [(< ?year 1970)] [?r :release/name ?album] [?r :release/media ?m] [?m :medium/tracks ?t] [?t :track/name ?title]]")
+                        prepared-result (vev.q-prepared-db-read-source-profiled-with-inputs
+                                          source
+                                          prepared
+                                          ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "The Beatles"))]))]
+                    (t.is release-first.result.ok release-first.result.error)
+                    (t.is (= release-first.stats.output-rows 2))
+                    (t.is (> release-first.stats.source-operators 0))
+                    (t.is (= release-first.stats.binding-materializations 0))
+                    (t.is (= release-first.stats.generic-materialization-steps 0))
+                    (t.is track-first.result.ok track-first.result.error)
+                    (t.is (= track-first.stats.output-rows 2))
+                    (t.is (> track-first.stats.source-operators 0))
+                    (t.is (= track-first.stats.binding-materializations 0))
+                    (t.is (= track-first.stats.generic-materialization-steps 0))
+                    (t.is prepared-result.result.ok prepared-result.result.error)
+                    (t.is (= prepared-result.stats.output-rows 2))
+                    (t.is (> prepared-result.stats.source-operators 0))
+                    (t.is (= prepared-result.stats.binding-materializations 0))
+                    (t.is (= prepared-result.stats.generic-materialization-steps 0)))))
+              (vev.close-store-db! (addr snapshot))))
           (vev.close-sqlite-conn reopened))))
     (mb-remove-sqlite-files path)))

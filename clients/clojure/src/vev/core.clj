@@ -4,7 +4,7 @@
 (ns vev.core
   (:require [clojure.edn :as edn])
   (:import [java.nio.file Path]
-           [dev.vevdb.vev Vev Vev$ColumnResult Vev$Entity Vev$MapValue Vev$PreparedPullPattern Vev$TxFunction Vev$TxReportListener]))
+           [dev.vevdb.vev Vev Vev$ColumnResult Vev$DB Vev$Entity Vev$EntityView Vev$MapValue Vev$PreparedPullPattern Vev$TxFunction Vev$TxReportListener]))
 
 (defn- path [value]
   (cond
@@ -79,6 +79,19 @@
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
+
+(declare entity-get)
+
+(deftype EntityView [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native))
+  clojure.lang.ILookup
+  (valAt [this key]
+    (entity-get this key))
+  (valAt [this key not-found]
+    (let [value (entity-get this key)]
+      (if (nil? value) not-found value))))
 
 (defn retain-db
   "Return another owned handle to the same immutable DB value."
@@ -193,15 +206,91 @@
     :else
     (throw (ex-info "expected Vev durable connection" {:source conn}))))
 
+(defn compact-indexes!
+  "Compact durable index roots as an explicit maintenance operation."
+  [conn]
+  (cond
+    (or (instance? DurableConn conn)
+        (instance? SQLiteConn conn))
+    (.compactIndexes (:native conn))
+
+    :else
+    (throw (ex-info "expected Vev durable connection" {:source conn}))))
+
 (defn conn-from-db
-  "Create a mutable connection initialized from an immutable DB value."
+  "Create a mutable connection initialized from a resident/in-memory DB value.
+
+  Durable DB handles are immutable values; query/pull/with them directly
+  instead of converting them back into connections."
   [^DB db]
   (->Conn (:engine db) (.connFromDb (:engine db) (:native db))))
 
 (defn entity
-  "Create an explicit entity value for typed native APIs."
-  [id]
-  (Vev$Entity. (long id)))
+  "Create an entity id value, or a DB-backed entity view.
+
+  `(entity id)` returns an explicit entity id value for typed native APIs.
+  `(entity db id)` returns a Datomic-style entity view over an immutable DB
+  value. The view can be used with keyword lookup and closed explicitly when a
+  caller wants prompt native release."
+  ([id]
+   (Vev$Entity. (long id)))
+  ([^DB db eid]
+   (let [native (cond
+                  (integer? eid)
+                  (.entity ^Vev$DB (:native db) (long eid))
+
+                  (keyword? eid)
+                  (.entityIdent ^Vev$DB (:native db) (edn-text eid))
+
+                  (and (vector? eid)
+                       (= 2 (count eid))
+                       (keyword? (first eid))
+                       (string? (second eid)))
+                  (.entityLookupRefString ^Vev$DB (:native db)
+                                          (edn-text (first eid))
+                                          (second eid))
+
+                  :else
+                  (throw (ex-info "unsupported entity id"
+                                  {:eid eid
+                                   :supported #{:integer :ident-keyword :string-lookup-ref}})))]
+     (EntityView. (:engine db) native))))
+
+(defn entity-found?
+  "Return true when a DB-backed entity view resolved to an entity."
+  [^EntityView entity-view]
+  (.found ^Vev$EntityView (.-native entity-view)))
+
+(defn entity-id
+  "Return the entity id for a DB-backed entity view."
+  [^EntityView entity-view]
+  (.id ^Vev$EntityView (.-native entity-view)))
+
+(defn entity-get
+  "Read the first value for attr from a DB-backed entity view."
+  [^EntityView entity-view attr]
+  (clj-value (.get ^Vev$EntityView (.-native entity-view) (edn-text attr))))
+
+(defn entity-values
+  "Read all values for attr from a DB-backed entity view."
+  [^EntityView entity-view attr]
+  (vec (clj-value (.values ^Vev$EntityView (.-native entity-view) (edn-text attr)))))
+
+(defn entity-ref
+  "Read the first ref attr as another DB-backed entity view."
+  [^EntityView entity-view attr]
+  (EntityView. (.-engine entity-view)
+               (.ref ^Vev$EntityView (.-native entity-view) (edn-text attr))))
+
+(defn entity-refs
+  "Read all ref attr values as entity ids."
+  [^EntityView entity-view attr]
+  (vec (.refs ^Vev$EntityView (.-native entity-view) (edn-text attr))))
+
+(defn touch
+  "Return a realized map for a DB-backed entity view."
+  [^EntityView entity-view]
+  (clj-value (.touch ^Vev$EntityView (.-native entity-view))))
 
 (defn- source-engine [source]
   (or (:engine source)
@@ -228,8 +317,9 @@
    (when (instance? TxBuilder tx)
      (throw (ex-info "transaction function registries apply to EDN tx data, not TxBuilder values"
                      {:tx tx})))
-   (when-not (instance? Conn conn)
-     (throw (ex-info "transaction function registries currently require an in-memory connection"
+   (when-not (or (instance? Conn conn)
+                 (instance? DurableConn conn))
+     (throw (ex-info "transaction function registries require a Vev connection"
                      {:conn conn})))
    (with-open [report (.transactReport (:native conn)
                                        (edn-text tx)
@@ -237,6 +327,64 @@
      (clj-value (.value report)))))
 
 (def transact! transact)
+
+(defn transact-bulk
+  "Commit several native TxBuilder values as one durable transaction.
+
+  This is explicit bulk ingestion: Vev flattens the builders into one ordinary
+  transaction report, so the result has one tx id. Use ordinary `transact` when
+  each input must remain its own transaction."
+  [conn tx-builders]
+  (when-not (instance? DurableConn conn)
+    (throw (ex-info "transact-bulk requires a durable Vev connection"
+                    {:conn conn})))
+  (let [builders (vec tx-builders)]
+    (when (empty? builders)
+      (throw (ex-info "transact-bulk requires at least one TxBuilder" {})))
+    (doseq [builder builders]
+      (when-not (instance? TxBuilder builder)
+        (throw (ex-info "transact-bulk expects TxBuilder values"
+                        {:builder builder}))))
+    (with-open [report (.transactReport (:native conn)
+                                        (java.util.ArrayList.
+                                         (mapv :native builders)))]
+      (clj-value (.value report)))))
+
+(defn transact-logical-bulk
+  "Commit several native TxBuilder values as several logical transactions under
+  one durable commit.
+
+  Unlike `transact-bulk`, this preserves one tx id and one transaction report
+  per input builder."
+  [conn tx-builders]
+  (when-not (instance? DurableConn conn)
+    (throw (ex-info "transact-logical-bulk requires a durable Vev connection"
+                    {:conn conn})))
+  (let [builders (vec tx-builders)]
+    (doseq [builder builders]
+      (when-not (instance? TxBuilder builder)
+        (throw (ex-info "transact-logical-bulk expects TxBuilder values"
+                        {:builder builder}))))
+    (with-open [reports (.transactLogicalReports (:native conn)
+                                                 (java.util.ArrayList.
+                                                  (mapv :native builders)))]
+      (mapv clj-value (.values reports)))))
+
+(defn transact-logical
+  "Commit several Clojure tx-data values or EDN tx strings as several logical
+  transactions under one durable commit.
+
+  This is the Datomic-style host-facing group shape: each input remains its own
+  tx id and report, while Vev shares the durable SQLite commit."
+  [conn txs]
+  (when-not (instance? DurableConn conn)
+    (throw (ex-info "transact-logical requires a durable Vev connection"
+                    {:conn conn})))
+  (let [texts (mapv edn-text txs)]
+    (with-open [reports (.transactLogicalEdnReports (:native conn)
+                                                    (java.util.ArrayList.
+                                                     texts))]
+      (mapv clj-value (.values reports)))))
 
 (defn- listener-name [key]
   (cond
@@ -247,20 +395,27 @@
                           {:key key}))))
 
 (defn listen
-  "Register a transaction listener on an in-memory connection.
+  "Register a transaction listener on a connection.
 
   The callback receives a Clojure transaction report map after successful
   commits. The returned registration is AutoCloseable; `unlisten` can also
   remove by key."
   [conn key f]
-  (when-not (instance? Conn conn)
-    (throw (ex-info "transaction listeners currently require an in-memory connection"
-                    {:conn conn})))
   (let [callback (reify Vev$TxReportListener
                    (accept [_ report]
                      (f (clj-value report))))]
-    (->TxListenerRegistration
-     (.listen (:native conn) (listener-name key) callback))))
+    (cond
+      (instance? Conn conn)
+      (->TxListenerRegistration
+       (.listen (:native conn) (listener-name key) callback))
+
+      (instance? DurableConn conn)
+      (->TxListenerRegistration
+       (.listen (:native conn) (listener-name key) callback))
+
+      :else
+      (throw (ex-info "transaction listeners require a Vev connection"
+                      {:conn conn})))))
 
 (def listen! listen)
 
@@ -273,11 +428,12 @@
       (.close ^java.lang.AutoCloseable key-or-registration)
       true)
 
-    (instance? Conn conn)
+    (or (instance? Conn conn)
+        (instance? DurableConn conn))
     (.unlisten (:native conn) (listener-name key-or-registration))
 
     :else
-    (throw (ex-info "transaction listeners currently require an in-memory connection"
+    (throw (ex-info "transaction listeners require a Vev connection"
                     {:conn conn}))))
 
 (def unlisten! unlisten)
@@ -474,6 +630,57 @@
 
     :else
     nil))
+
+(defn- query-find-forms [query]
+  (cond
+    (map? query)
+    (:find query)
+
+    (vector? query)
+    (let [tail (drop-while #(not= :find %) query)]
+      (when (seq tail)
+        (take-while #(not (#{:where :with :in :keys :strs :syms} %)) (rest tail))))
+
+    (string? query)
+    (try
+      (query-find-forms (edn/read-string query))
+      (catch Exception _ nil))
+
+    :else
+    nil))
+
+(defn- query-find-shape [query]
+  (let [find-forms (vec (or (query-find-forms query) []))
+        first-form (first find-forms)]
+    (cond
+      (and (= 2 (count find-forms))
+           (= '. (second find-forms)))
+      :scalar
+
+      (and (= 1 (count find-forms))
+           (vector? first-form)
+           (= 2 (count first-form))
+           (symbol? (first first-form))
+           (= '... (second first-form)))
+      :collection
+
+      (and (= 1 (count find-forms))
+           (vector? first-form)
+           (every? symbol? first-form))
+      :tuple
+
+      :else
+      :relation)))
+
+(defn- first-row-value [rows]
+  (some-> rows first first))
+
+(defn- apply-find-shape [query rows]
+  (case (query-find-shape query)
+    :scalar (first-row-value rows)
+    :collection (set (map first rows))
+    :tuple (first rows)
+    :relation (set rows)))
 
 (defn- marker-key [marker value]
   (case marker
@@ -708,16 +915,13 @@
       (.queryColumns (:native source) (:native prepared) input-edn)
 
       (instance? Conn source)
-      (with-open [snapshot (db source)]
-        (.queryColumns (:native snapshot) (:native prepared) input-edn))
+      (.queryColumns (:native source) (:native prepared) input-edn)
 
       (instance? DurableConn source)
-      (with-open [snapshot (db source)]
-        (.queryColumns (:native snapshot) (:native prepared) input-edn))
+      (.queryColumns (:native source) (:native prepared) input-edn)
 
       (instance? SQLiteConn source)
-      (with-open [snapshot (db source)]
-        (.queryColumns (:native snapshot) (:native prepared) input-edn))
+      (.queryColumns (:native source) (:native prepared) input-edn)
 
       :else
       nil)))
@@ -727,7 +931,10 @@
     (= kind Vev/COLUMN_ENTITY) :entity
     (= kind Vev/COLUMN_STRING) :string
     (= kind Vev/COLUMN_INT) :int
+    (= kind Vev/COLUMN_MIXED) :mixed
     (= kind Vev/COLUMN_BOOL) :bool
+    (= kind Vev/COLUMN_FLOAT) :float
+    (= kind Vev/COLUMN_VALUE) :value
     :else :unknown))
 
 (defn- column-result->map [^Vev$ColumnResult result]
@@ -736,11 +943,11 @@
         width (alength kinds)]
     {:row-count (.rowCount result)
      :kinds (mapv #(column-kind (aget kinds %)) (range width))
-     :columns (mapv #(vec (aget columns %)) (range width))}))
+     :columns (mapv #(mapv clj-value (aget columns %)) (range width))}))
 
 (defn column-batch
-  "Run a query and return Vev's native column batch when the query shape has a
-  specialized typed result path.
+  "Run a query and return Vev's native column batch when the result can be
+  represented as flat primitive columns.
 
   Returns nil when the query needs the general row/result representation. This
   is the low-overhead host API for callers that want column-oriented data."
@@ -759,7 +966,7 @@
   `{:row-count n :kinds [:entity :string ...] :columns [[...]
   [...]]}`.
 
-  Returns nil when the query does not have a specialized typed column path."
+  Returns nil when the query needs the general row/result representation."
   [query source & inputs]
   (when-let [result (apply column-batch query source inputs)]
     (column-result->map result)))
@@ -828,6 +1035,78 @@
                (conj! out [(long (aget entities index)) (long (aget values index))]))
         (persistent! out)))))
 
+(defn- entity-string-pair-rows [columns]
+  (let [^objects columns columns
+        ^longs entities (aget columns 0)
+        ^objects values (aget columns 1)
+        n (alength entities)]
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget entities index)) (aget values index)]))
+        (persistent! out)))))
+
+(defn- entity-string-pair-set [columns]
+  (let [^objects columns columns
+        ^longs entities (aget columns 0)
+        ^objects values (aget columns 1)
+        n (alength entities)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(long (aget entities index)) (aget values index)]))
+        (persistent! out)))))
+
+(defn- string-int-pair-rows [columns]
+  (let [^objects columns columns
+        ^objects strings (aget columns 0)
+        ^longs values (aget columns 1)
+        n (alength strings)]
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget strings index) (long (aget values index))]))
+        (persistent! out)))))
+
+(defn- string-int-pair-set [columns]
+  (let [^objects columns columns
+        ^objects strings (aget columns 0)
+        ^longs values (aget columns 1)
+        n (alength strings)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget strings index) (long (aget values index))]))
+        (persistent! out)))))
+
+(defn- string-string-pair-rows [columns]
+  (let [^objects columns columns
+        ^objects first-values (aget columns 0)
+        ^objects second-values (aget columns 1)
+        n (alength first-values)]
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget first-values index) (aget second-values index)]))
+        (persistent! out)))))
+
+(defn- string-string-pair-set [columns]
+  (let [^objects columns columns
+        ^objects first-values (aget columns 0)
+        ^objects second-values (aget columns 1)
+        n (alength first-values)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget first-values index) (aget second-values index)]))
+        (persistent! out)))))
+
 (defn- entity-string-int-triple-rows [columns]
   (let [^objects columns columns
         ^longs entities (aget columns 0)
@@ -858,7 +1137,7 @@
                            (long (aget values index))]))
         (persistent! out)))))
 
-(defn- optimized-query-output [source prepared inputs entity-fn string-fn pair-fn triple-fn]
+(defn- optimized-query-output [source prepared inputs entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
   (if-let [columns (column-result source prepared inputs)]
     (let [^Vev$ColumnResult columns columns
           ^ints kinds (.kinds columns)
@@ -877,6 +1156,21 @@
              (= (aget kinds 1) Vev/COLUMN_INT))
         (pair-fn values)
 
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY)
+             (= (aget kinds 1) Vev/COLUMN_STRING))
+        (string-pair-fn values)
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_STRING)
+             (= (aget kinds 1) Vev/COLUMN_INT))
+        (string-int-fn values)
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_STRING)
+             (= (aget kinds 1) Vev/COLUMN_STRING))
+        (string-string-fn values)
+
         (and (= (alength kinds) 3)
              (= (aget kinds 0) Vev/COLUMN_ENTITY)
              (= (aget kinds 1) Vev/COLUMN_STRING)
@@ -894,8 +1188,8 @@
           (when-let [columns (entity-string-int-triples source prepared inputs)]
             (triple-fn columns)))))))
 
-(defn- prepared-query-output [source prepared inputs result-fn entity-fn string-fn pair-fn triple-fn]
-  (or (optimized-query-output source prepared inputs entity-fn string-fn pair-fn triple-fn)
+(defn- prepared-query-output [source prepared inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+  (or (optimized-query-output source prepared inputs entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn)
       (with-open [result (apply query-result source prepared inputs)]
         (result-fn result))))
 
@@ -904,11 +1198,11 @@
   [^PreparedQuery prepared ^DB db & inputs]
   (edn/read-string (.profileEdn (:native db) (:native prepared) (inputs-text inputs))))
 
-(defn- query-output [source prepared rules inputs result-fn entity-fn string-fn pair-fn triple-fn]
+(defn- query-output [source prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
   (if rules
     (with-open [result (apply query-result-with-rules source prepared rules inputs)]
       (result-fn result))
-    (prepared-query-output source prepared inputs result-fn entity-fn string-fn pair-fn triple-fn)))
+    (prepared-query-output source prepared inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn)))
 
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
@@ -922,6 +1216,9 @@
                              entity-column-rows
                              string-column-rows
                              entity-int-pair-rows
+                             entity-string-pair-rows
+                             string-int-pair-rows
+                             string-string-pair-rows
                              entity-string-int-triple-rows)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
@@ -930,13 +1227,16 @@
                                      entity-column-rows
                                      string-column-rows
                                      entity-int-pair-rows
+                                     entity-string-pair-rows
+                                     string-int-pair-rows
+                                     string-string-pair-rows
                                      entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
               (keyed-rows return-map result)
               result)))))))
 
 (defn q
-  "Run a query and return a set of row vectors, or maps for :keys/:strs/:syms queries."
+  "Run a query and return Datomic-style results for the query find spec."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
     (if (instance? PreparedQuery query)
@@ -945,6 +1245,9 @@
                              entity-column-set
                              string-column-set
                              entity-int-pair-set
+                             entity-string-pair-set
+                             string-int-pair-set
+                             string-string-pair-set
                              entity-string-int-triple-set)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
@@ -953,16 +1256,20 @@
                                      entity-column-rows
                                      string-column-rows
                                      entity-int-pair-rows
+                                     entity-string-pair-rows
+                                     string-int-pair-rows
+                                     string-string-pair-rows
                                      entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
               (keyed-set return-map result)
-              (set result))))))))
+              (apply-find-shape query result))))))))
 
 (defn query
   "Run a Datomic-style query.
 
   With one argument, accepts a map shaped like `{:query q :args [db ...]}` and
-  returns the same set-of-row-vectors shape as `q`."
+  returns the same result shape as `q`. With `:query-stats true`, returns a map
+  containing `:ret` and `:query-stats`."
   ([request]
    (when-not (map? request)
      (throw (ex-info "expected query request map" {:request request})))
@@ -971,7 +1278,16 @@
        (throw (ex-info "query request requires :query" {:request request})))
      (when-not (vector? args)
        (throw (ex-info "query request requires vector :args" {:request request})))
-     (apply q query args)))
+     (let [ret (apply q query args)]
+       (if (:query-stats request)
+         (let [[source & inputs] args]
+           (when-not (instance? DB source)
+             (throw (ex-info "query-stats request requires a DB value as first arg"
+                             {:source source})))
+           (with-open [prepared (prepare source query)]
+             {:ret ret
+              :query-stats (apply profile prepared source inputs)}))
+         ret))))
   ([query source & inputs]
    (apply q query source inputs)))
 
@@ -1068,6 +1384,18 @@
         {:attr attr
          :values (mapv second eids)}))))
 
+(defn- same-string-lookup-refs [eids]
+  (when (seq eids)
+    (let [attr (ffirst eids)]
+      (when (and (keyword? attr)
+                 (every? #(and (vector? %)
+                               (= 2 (count %))
+                               (= attr (first %))
+                               (string? (second %)))
+                         eids))
+        {:attr attr
+         :values (mapv second eids)}))))
+
 (defn pull-many
   "Pull several entities, preserving input order."
   [source pattern eids]
@@ -1083,17 +1411,35 @@
            (.pullMany (:native db)
                       (edn-text pattern)
                       (long-array eids))))))
-    (if-let [{:keys [attr values]} (and (instance? PreparedPullPattern pattern)
-                                        (same-uuid-lookup-refs eids))]
+    (if-let [{:keys [attr values]} (same-string-lookup-refs eids)]
       (with-db-source
         source
         (fn [db]
           (clj-value
-           (.pullManyLookupRefUuid (:native db)
-                                   ^Vev$PreparedPullPattern (:native pattern)
-                                   (edn-text attr)
-                                   (into-array java.util.UUID values)))))
-      (mapv #(pull source pattern %) eids))))
+           (if (instance? PreparedPullPattern pattern)
+             (.pullManyLookupRefString (:native db)
+                                       ^Vev$PreparedPullPattern (:native pattern)
+                                       (edn-text attr)
+                                       (into-array String values))
+             (.pullManyLookupRefString (:native db)
+                                       (edn-text pattern)
+                                       (edn-text attr)
+                                       (into-array String values))))))
+      (if-let [{:keys [attr values]} (same-uuid-lookup-refs eids)]
+        (with-db-source
+          source
+          (fn [db]
+            (clj-value
+             (if (instance? PreparedPullPattern pattern)
+               (.pullManyLookupRefUuid (:native db)
+                                       ^Vev$PreparedPullPattern (:native pattern)
+                                       (edn-text attr)
+                                       (into-array java.util.UUID values))
+               (.pullManyLookupRefUuid (:native db)
+                                       (edn-text pattern)
+                                       (edn-text attr)
+                                       (into-array java.util.UUID values))))))
+        (mapv #(pull source pattern %) eids)))))
 
 (defn rows-legacy
   "Deprecated connection-first row helper kept for early examples."

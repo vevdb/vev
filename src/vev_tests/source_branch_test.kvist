@@ -14,12 +14,30 @@
       (return true)))
   false)
 
+(defn source-branch-has-entity-pair? [result: vev.Result-Set, left: u64, right: u64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 2)
+               (= row.values[0].kind .Entity)
+               (= row.values[0].entity left)
+               (= row.values[1].kind .Entity)
+               (= row.values[1].entity right))
+      (return true)))
+  false)
+
 (defn source-branch-has-text? [result: vev.Result-Set, text: string] -> bool
   (for [row result.rows]
     (when (and (= (count row.values) 1)
                (= row.values[0].kind .String)
                (= row.values[0].text text))
       (return true)))
+  false)
+
+(defn source-branch-has-text-any-column? [result: vev.Result-Set, text: string] -> bool
+  (for [row result.rows]
+    (for [value row.values]
+      (when (and (= value.kind .String)
+                 (= value.text text))
+        (return true))))
   false)
 
 (defn source-branch-has-int? [result: vev.Result-Set, value: i64] -> bool
@@ -29,6 +47,27 @@
                (= row.values[0].int-value value))
       (return true)))
   false)
+
+(defn source-branch-mixed-composite-relation [] -> vev.Query-Relation
+  (let [attrs (arr.into [dynamic]string ([]string ["?v"]))
+        sources (arr.into [dynamic]string ([]string [""]))
+        column (vev.relation-column-empty)
+        columns (make [dynamic]vev.Relation-Column 0 1)]
+    (set! column.kind .Mixed)
+    (set! column.has-kind true)
+    (arr.push! column.values (vev.value-vector ([]vev.Value [(vev.value-int 1) (vev.value-int 2)])))
+    (arr.push! column.values (vev.value-vector ([]vev.Value [(vev.value-keyword ":a") (vev.value-keyword ":b")])))
+    (arr.push! columns column)
+    (vev.Query-Relation {attrs: attrs
+                         attr-sources: sources
+                         attr-index: (vev.query-relation-attr-index (slice attrs 0))
+                         tuples: (make [dynamic]vev.Binding)
+                         typed-columns: columns
+                         typed-rows: 2
+                         has-typed-columns: true})))
+
+(defn delete-source-branch-mixed-composite-relation [rel: vev.Query-Relation]
+  (vev.delete-query-relation rel))
 
 (t.deftest source-db-multi-clause-not-or-branches-stay-typed
   (defer (free_all context.allocator))
@@ -81,11 +120,155 @@
     (t.is (= profiled.stats.steps 2))
     (t.is (= profiled.stats.output-rows 1))
     (t.is (> profiled.stats.typed-index-scans 0))
-    (t.is (> profiled.stats.source-index-scans 0))
+    (t.is (or (> profiled.stats.source-index-scans 0)
+              (> profiled.stats.typed-index-scans 0)))
     (t.is (> profiled.stats.source-operators 0))
     (t.is (= profiled.stats.binding-materializations 0))
     (t.is (= profiled.stats.generic-materialization-steps 0))
     (t.is (> profiled.stats.clause-candidates 0))))
+
+(t.deftest named-db-read-source-clauses-use-typed-operator
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        right (vev.create-conn)
+        _ (vev.transact-text
+            (addr left)
+            "[[:db/add 10 :name \"left-only\"]]")
+        _ (vev.transact-text
+            (addr right)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :id 1] [:db/add 2 :name \"Grace\"] [:db/add 2 :id 2]]")
+        prepared (vev.prepare-query-text "[:find ?name :where [$right ?e :id 2] [$right ?e :name ?name]]")
+        left-source (vev.resident-db-read-source (addr left.db))
+        right-source (vev.resident-db-read-source (addr right.db))
+        named-sources ([]vev.DB-Read-Named-Source [(vev.db-read-named-source "$right" right-source)])
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             left-source
+                                             named-sources
+                                             prepared.query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))
+        profiled (vev.q-prepared-db-read-source-profiled-with-sources-inputs-and-fns
+                   left-source
+                   named-sources
+                   prepared
+                   ([]vev.Query-Input [])
+                   ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 1))
+    (t.is (= typed-rel.typed-columns[0].kind .Entity))
+    (t.is (= typed-rel.typed-columns[0].entities[0] 2))
+    (t.is (= typed-rel.typed-columns[1].kind .String))
+    (t.is (= typed-rel.typed-columns[1].texts[0] "Grace"))
+    (t.is (> typed-stats.source-index-scans 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (= profiled.result.rows[0].values[0].text "Grace"))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (t.is (= profiled.stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-profiled-result-set-owned-values profiled)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest named-db-read-source-get-else-get-some-use-typed-operator
+  (defer (free_all context.allocator))
+  (let [left (vev.create-conn)
+        right (vev.create-conn)
+        _ (vev.transact-text
+            (addr left)
+            "[[:db/add 10 :name \"left-only\"]]")
+        _ (vev.transact-text
+            (addr right)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :id 1] [:db/add 2 :name \"Grace\"] [:db/add 2 :id 2] [:db/add 2 :height 180]]")
+        get-else-prepared (vev.prepare-query-text "[:find ?name :where [(ground 2) ?e] [(get-else $right ?e :name \"fallback\") ?name]]")
+        get-some-prepared (vev.prepare-query-text "[:find ?attr ?value :where [(ground 2) ?e] [(get-some $right ?e :height :name) [?attr ?value]]]")
+        left-source (vev.resident-db-read-source (addr left.db))
+        right-source (vev.resident-db-read-source (addr right.db))
+        named-sources ([]vev.DB-Read-Named-Source [(vev.db-read-named-source "$right" right-source)])
+        [get-else-rel get-else-stats get-else-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                                       left-source
+                                                       named-sources
+                                                       get-else-prepared.query
+                                                       ([]vev.Query-Input [])
+                                                       ([]vev.Native-Query-Fn []))
+        [get-some-rel get-some-stats get-some-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                                       left-source
+                                                       named-sources
+                                                       get-some-prepared.query
+                                                       ([]vev.Query-Input [])
+                                                       ([]vev.Native-Query-Fn []))
+        get-else-profiled (vev.q-prepared-db-read-source-profiled-with-sources-inputs-and-fns
+                            left-source
+                            named-sources
+                            get-else-prepared
+                            ([]vev.Query-Input [])
+                            ([]vev.Native-Query-Fn []))
+        get-some-profiled (vev.q-prepared-db-read-source-profiled-with-sources-inputs-and-fns
+                            left-source
+                            named-sources
+                            get-some-prepared
+                            ([]vev.Query-Input [])
+                            ([]vev.Native-Query-Fn []))]
+    (t.is get-else-prepared.ok get-else-prepared.error)
+    (t.is get-else-used)
+    (t.is get-else-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count get-else-rel) 1))
+    (t.is (= get-else-rel.typed-columns[1].kind .String))
+    (t.is (= get-else-rel.typed-columns[1].texts[0] "Grace"))
+    (t.is (> get-else-stats.source-index-scans 0))
+    (t.is (= get-else-stats.binding-materializations 0))
+    (t.is (= get-else-stats.generic-materialization-steps 0))
+    (t.is get-some-prepared.ok get-some-prepared.error)
+    (t.is get-some-used)
+    (t.is get-some-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count get-some-rel) 1))
+    (t.is (= get-some-rel.typed-columns[1].kind .Keyword))
+    (t.is (= get-some-rel.typed-columns[1].texts[0] ":height"))
+    (t.is (= get-some-rel.typed-columns[2].kind .Int))
+    (t.is (= get-some-rel.typed-columns[2].ints[0] 180))
+    (t.is (> get-some-stats.source-index-scans 0))
+    (t.is (= get-some-stats.binding-materializations 0))
+    (t.is (= get-some-stats.generic-materialization-steps 0))
+    (t.is get-else-profiled.result.ok get-else-profiled.result.error)
+    (t.is (= (count get-else-profiled.result.rows) 1))
+    (t.is (= get-else-profiled.result.rows[0].values[0].text "Grace"))
+    (t.is (= get-else-profiled.stats.binding-materializations 0))
+    (t.is (= get-else-profiled.stats.generic-materialization-steps 0))
+    (t.is get-some-profiled.result.ok get-some-profiled.result.error)
+    (t.is (= (count get-some-profiled.result.rows) 1))
+    (t.is (= get-some-profiled.result.rows[0].values[0].text ":height"))
+    (t.is (= get-some-profiled.result.rows[0].values[1].int-value 180))
+    (t.is (= get-some-profiled.stats.binding-materializations 0))
+    (t.is (= get-some-profiled.stats.generic-materialization-steps 0))
+    (vev.delete-query-relation get-else-rel)
+    (vev.delete-query-relation get-some-rel)
+    (vev.delete-profiled-result-set-owned-values get-else-profiled)
+    (vev.delete-profiled-result-set-owned-values get-some-profiled)
+    (vev.delete-prepared-query-shallow get-else-prepared)
+    (vev.delete-prepared-query-shallow get-some-prepared)))
+
+(t.deftest source-query-result-ownership-is-query-shape-aware
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 41]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        plain (vev.q-result-text-db-read-source source "[:find ?name :where [?e :name ?name]]")
+        aggregate (vev.q-result-text-db-read-source source "[:find (count ?e) :where [?e :name ?name]]")
+        function-result (vev.q-result-text-db-read-source source "[:find ?label :where [?e :name ?name] [(str ?name \"!\") ?label]]")]
+    (t.is plain.result.ok plain.result.error)
+    (t.is (not (vev.query-result-owns-values? plain)))
+    (t.is aggregate.result.ok aggregate.result.error)
+    (t.is (vev.query-result-owns-values? aggregate))
+    (t.is function-result.result.ok function-result.result.error)
+    (t.is (vev.query-result-owns-values? function-result))
+    (vev.delete-query-result plain)
+    (vev.delete-query-result aggregate)
+    (vev.delete-query-result function-result)))
 
 (t.deftest source-db-not-existence-uses-clause-source
   (defer (free_all context.allocator))
@@ -100,14 +283,22 @@
         inputs ([]vev.Query-Input [])
         sources ([]vev.DB-Source [(vev.db-source "$left" left.db)
                                   (vev.db-source "$right" right.db)])
+        prepared (vev.prepare-query-text-with-sources
+                   "[:find ?name :in $left $right :where [$left ?e :name ?name] ($right not [?e :blocked])]"
+                   sources)
         result (vev.q-text-with-sources
                  left.db
                  "[:find ?name :in $left $right :where [$left ?e :name ?name] ($right not [?e :blocked])]"
                  inputs
-                 sources)]
+                 sources)
+        prepared-result (vev.q-prepared-with-sources left.db prepared inputs sources)]
     (t.is result.ok result.error)
     (t.is (= (count result.rows) 1))
-    (t.is (= result.rows[0].values[0].text "Grace"))))
+    (t.is (= result.rows[0].values[0].text "Grace"))
+    (t.is prepared-result.ok prepared-result.error)
+    (t.is (= (count prepared-result.rows) 1))
+    (t.is (= prepared-result.rows[0].values[0].text "Grace"))
+    (vev.delete-query-shallow prepared.query)))
 
 (t.deftest branch-local-predicates-and-functions-from-edn-stay-typed
   (defer (free_all context.allocator))
@@ -141,6 +332,815 @@
     (t.is (= (count literal-result.rows) 2))
     (t.is (source-branch-has-text? literal-result "Ivan!"))
     (t.is (source-branch-has-text? literal-result "Petr?"))))
+
+(t.deftest source-backed-branch-local-get-else-and-get-some-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :id 1] [:db/add 2 :name \"Grace\"] [:db/add 2 :id 2] [:db/add 2 :height 180] [:db/add 3 :name \"Barbara\"] [:db/add 3 :id 3]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        not-profiled (vev.q-text-db-read-source-profiled
+                       source
+                       "[:find ?e :where [?e :id] (not [(get-else $ ?e :height 0) ?height] [(= ?height 0)])]")
+        or-profiled (vev.q-text-db-read-source-profiled
+                      source
+                      "[:find ?value :where [?e :id] (or (and [?e :id 1] [(get-some $ ?e :height :name) [?attr ?value]]) (and [?e :id 2] [(get-some $ ?e :height :name) [?attr ?value]]))]")]
+    (t.is not-profiled.result.ok not-profiled.result.error)
+    (t.is (= (count not-profiled.result.rows) 1))
+    (t.is (source-branch-has-entity? not-profiled.result 2))
+    (t.is (> not-profiled.stats.typed-index-scans 0))
+    (t.is (= not-profiled.stats.binding-materializations 0))
+    (t.is (= not-profiled.stats.generic-materialization-steps 0))
+    (t.is or-profiled.result.ok or-profiled.result.error)
+    (t.is (= (count or-profiled.result.rows) 2))
+    (t.is (source-branch-has-text? or-profiled.result "Ada"))
+    (t.is (source-branch-has-int? or-profiled.result 180))
+    (t.is (> or-profiled.stats.typed-index-scans 0))
+    (t.is (= or-profiled.stats.binding-materializations 0))
+    (t.is (= or-profiled.stats.generic-materialization-steps 0))
+    (vev.delete-profiled-result-set-owned-values not-profiled)
+    (vev.delete-profiled-result-set-owned-values or-profiled)))
+
+(t.deftest branch-local-ground-stays-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ivan\"] [:db/add 1 :id 1] [:db/add 2 :name \"Petr\"] [:db/add 2 :id 2] [:db/add 3 :name \"Oleg\"] [:db/add 3 :id 3]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        resident-not (vev.q-text-profiled
+                       conn.db
+                       "[:find ?e :where [?e :id] (not [(ground \"Petr\") ?blocked] [?e :name ?blocked])]")
+        resident-or (vev.q-text-profiled
+                      conn.db
+                      "[:find ?e :where [?e :id] (or (and [(ground \"Ivan\") ?target] [?e :name ?target]) (and [(ground \"Oleg\") ?target] [?e :name ?target]))]")
+        source-not (vev.q-text-db-read-source-profiled
+                     source
+                     "[:find ?e :where [?e :id] (not [(ground \"Petr\") ?blocked] [?e :name ?blocked])]")
+        source-or (vev.q-text-db-read-source-profiled
+                    source
+                    "[:find ?e :where [?e :id] (or (and [(ground \"Ivan\") ?target] [?e :name ?target]) (and [(ground \"Oleg\") ?target] [?e :name ?target]))]")]
+    (t.is resident-not.result.ok resident-not.result.error)
+    (t.is (= (count resident-not.result.rows) 2))
+    (t.is (source-branch-has-entity? resident-not.result 1))
+    (t.is (source-branch-has-entity? resident-not.result 3))
+    (t.is (= resident-not.stats.binding-materializations 0))
+    (t.is resident-or.result.ok resident-or.result.error)
+    (t.is (= (count resident-or.result.rows) 2))
+    (t.is (source-branch-has-entity? resident-or.result 1))
+    (t.is (source-branch-has-entity? resident-or.result 3))
+    (t.is (= resident-or.stats.binding-materializations 0))
+    (t.is source-not.result.ok source-not.result.error)
+    (t.is (= (count source-not.result.rows) 2))
+    (t.is (source-branch-has-entity? source-not.result 1))
+    (t.is (source-branch-has-entity? source-not.result 3))
+    (t.is (= source-not.stats.binding-materializations 0))
+    (t.is (= source-not.stats.generic-materialization-steps 0))
+    (t.is source-or.result.ok source-or.result.error)
+    (t.is (= (count source-or.result.rows) 2))
+    (t.is (source-branch-has-entity? source-or.result 1))
+    (t.is (source-branch-has-entity? source-or.result 3))
+    (t.is (= source-or.stats.binding-materializations 0))
+    (t.is (= source-or.stats.generic-materialization-steps 0))
+    (vev.delete-profiled-result-set-owned-values resident-not)
+    (vev.delete-profiled-result-set-owned-values resident-or)
+    (vev.delete-profiled-result-set-owned-values source-not)
+    (vev.delete-profiled-result-set-owned-values source-or)))
+
+(t.deftest source-backed-ground-composite-values-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        source (vev.resident-db-read-source (addr conn.db))
+        text "[:find ?tags :where [(ground [1 2]) ?tags]]"
+        prepared (vev.prepare-query-text text)
+        plan (vev.physical-plan-from-query prepared.query)
+        profiled (vev.q-text-db-read-source-profiled source text)
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             prepared.query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))
+        [batch batch-ok batch-error] (vev.db-read-source-apply-physical-materialize-op
+                                       source
+                                       ([]vev.DB-Read-Named-Source [])
+                                       prepared.query
+                                       ([]vev.Query-Input [])
+                                       typed-rel
+                                       plan.materialize-op
+                                       plan.materialization
+                                       ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (= profiled.result.rows[0].values[0].kind .Vector))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= typed-rel.typed-rows 1))
+    (t.is (= (count typed-rel.typed-columns) 1))
+    (t.is (= typed-rel.typed-columns[0].kind .Mixed))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (t.is batch-ok batch-error)
+    (t.is batch.ok)
+    (t.is batch.owns-values)
+    (t.is (= batch.rows 1))
+    (t.is (= (count batch.value-columns) 1))
+    (t.is batch.value-columns[0])
+    (let [[cell cell-ok] (vev.typed-materialized-batch-cell-value batch 0 0)]
+      (t.is cell-ok)
+      (t.is (= cell.kind .Vector))
+      (t.is (= (count cell.items) 2))
+      (t.is (= cell.items[0].int-value 1))
+      (t.is (= cell.items[1].int-value 2)))
+    (vev.delete-typed-materialized-batch batch)
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-profiled-result-set-owned-values profiled)
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest source-backed-function-composite-values-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        text "[:find ?pair :where [?e :name ?name] [?e :age ?age] [(vector ?name ?age) ?pair]]"
+        prepared (vev.prepare-query-text text)
+        plan (vev.physical-plan-from-query prepared.query)
+        profiled (vev.q-text-db-read-source-profiled source text)
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             prepared.query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))
+        [batch batch-ok batch-error] (vev.db-read-source-apply-physical-materialize-op
+                                       source
+                                       ([]vev.DB-Read-Named-Source [])
+                                       prepared.query
+                                       ([]vev.Query-Input [])
+                                       typed-rel
+                                       plan.materialize-op
+                                       plan.materialization
+                                       ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (= profiled.result.rows[0].values[0].kind .Vector))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= typed-rel.typed-rows 1))
+    (let [[pair-index pair-index-ok] (vev.query-relation-attr-index-lookup typed-rel "?pair")]
+      (t.is pair-index-ok)
+      (t.is (= typed-rel.typed-columns[pair-index].kind .Mixed)))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (t.is batch-ok batch-error)
+    (t.is batch.ok)
+    (t.is batch.owns-values)
+    (let [[cell cell-ok] (vev.typed-materialized-batch-cell-value batch 0 0)]
+      (t.is cell-ok)
+      (t.is (= cell.kind .Vector))
+      (t.is (= cell.items[0].text "Ada"))
+      (t.is (= cell.items[1].int-value 37)))
+    (vev.delete-typed-materialized-batch batch)
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-profiled-result-set-owned-values profiled)
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest source-backed-function-composite-relation-copy-owns-values
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?pair :where [?e :name ?name] [?e :age ?age] [(vector ?name ?age) ?pair]]")
+        [typed-rel _ typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                   source
+                                   ([]vev.DB-Read-Named-Source [])
+                                   prepared.query
+                                   ([]vev.Query-Input [])
+                                   ([]vev.Native-Query-Fn []))
+        copied (vev.query-relation-copy typed-rel)]
+    (t.is prepared.ok prepared.error)
+    (t.is typed-used)
+    (vev.delete-query-relation typed-rel)
+    (let [[value value-ok] (vev.query-relation-typed-row-value copied 0 "?pair")]
+      (t.is value-ok)
+      (t.is (= value.kind .Vector))
+      (t.is (= (count value.items) 2))
+      (t.is (= value.items[0].text "Ada"))
+      (t.is (= value.items[1].int-value 37)))
+    (vev.delete-query-relation copied)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest branch-local-rule-calls-use-rule-engine
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :active true] [:db/add 2 :name \"Grace\"] [:db/add 2 :active false] [:db/add 3 :name \"Oleg\"]]")
+        rules "[[(active ?e) [?e :active true]] [(named ?e ?name) [?e :name ?name]]]"
+        not-result (vev.q-text-profiled-with-rules
+                     conn.db
+                     "[:find ?e :in $ % :where [?e :name] (not (active ?e))]"
+                     rules
+                     ([]vev.Query-Input []))
+        or-result (vev.q-text-profiled-with-rules
+                    conn.db
+                    "[:find ?e :in $ % :where (or (and (active ?e)) (and (named ?e \"Oleg\")))]"
+                    rules
+                    ([]vev.Query-Input []))]
+    (t.is not-result.result.ok not-result.result.error)
+    (t.is (= (count not-result.result.rows) 2))
+    (t.is (source-branch-has-entity? not-result.result 2))
+    (t.is (source-branch-has-entity? not-result.result 3))
+    (t.is or-result.result.ok or-result.result.error)
+    (t.is (= (count or-result.result.rows) 2))
+    (t.is (source-branch-has-entity? or-result.result 1))
+    (t.is (source-branch-has-entity? or-result.result 3))
+    (vev.delete-profiled-result-set-owned-values not-result)
+    (vev.delete-profiled-result-set-owned-values or-result)))
+
+(t.deftest source-backed-rules-plan-pure-clause-bodies
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 42] [:db/add 3 :name \"Barbara\"] [:db/add 3 :age 42]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?name :in $ % :where (selected ?e ?name)]")
+        prepared-rules (vev.parse-rules-text "[[(selected ?e ?name) [?e :name ?name] [?e :age 42]]]")
+        result (vev.q-prepared-db-read-source-with-rules
+                 source
+                 prepared
+                 prepared-rules
+                 ([]vev.Query-Input []))
+        typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             typed-query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 2))
+    (t.is (source-branch-has-text? result "Grace"))
+    (t.is (source-branch-has-text? result "Barbara"))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 2))
+    (t.is (> typed-stats.rule-calls 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-query-shallow typed-query)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-rules-plan-clause-predicate-bodies
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 42] [:db/add 3 :name \"Barbara\"] [:db/add 3 :age 49]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?name :in $ % :where (older ?e ?name)]")
+        prepared-rules (vev.parse-rules-text "[[(older ?e ?name) [?e :name ?name] [?e :age ?age] [(> ?age 40)]]]")
+        result (vev.q-prepared-db-read-source-with-rules
+                 source
+                 prepared
+                 prepared-rules
+                 ([]vev.Query-Input []))
+        typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             typed-query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 2))
+    (t.is (source-branch-has-text? result "Grace"))
+    (t.is (source-branch-has-text? result "Barbara"))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 2))
+    (t.is (> typed-stats.rule-calls 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-query-shallow typed-query)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-recursive-rules-use-typed-fixpoint
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :follow (vev.value-entity 2)]
+             [:db/add 2 :follow (vev.value-entity 3)]
+             [:db/add 3 :follow (vev.value-entity 4)]
+             [:db/add 4 :follow (vev.value-entity 5)]])
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?e1 ?e2 :in $ % :where (follow ?e1 ?e2)]")
+        prepared-rules (vev.parse-rules-text "[[(follow ?e1 ?e2) [?e1 :follow ?e2]] [(follow ?e1 ?e2) [?e1 :follow ?t] (follow ?t ?e2)]]")
+        result (vev.q-prepared-db-read-source-with-rules
+                 source
+                 prepared
+                 prepared-rules
+                 ([]vev.Query-Input []))
+        typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             typed-query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 10))
+    (t.is (source-branch-has-entity-pair? result 1 2))
+    (t.is (source-branch-has-entity-pair? result 1 5))
+    (t.is (source-branch-has-entity-pair? result 3 5))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 10))
+    (t.is (> typed-stats.rule-calls 0))
+    (t.is (> typed-stats.rule-iterations 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-query-shallow typed-query)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-recursive-rules-support-positive-expression-steps
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :follow (vev.value-entity 2)]
+             [:db/add 2 :follow (vev.value-entity 3)]
+             [:db/add 3 :follow (vev.value-entity 4)]
+             [:db/add 4 :follow (vev.value-entity 5)]
+             [:db/add 1 :rank 1]
+             [:db/add 2 :rank 2]
+             [:db/add 3 :rank 3]
+             [:db/add 4 :rank 4]
+             [:db/add 5 :rank 5]])
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?e1 ?e2 :in $ % :where (follow-over ?e1 ?e2)]")
+        prepared-rules (vev.parse-rules-text "[[(follow-over ?e1 ?e2) [?e1 :follow ?e2] [?e2 :rank ?rank] [(> ?rank 2)]] [(follow-over ?e1 ?e2) [?e1 :follow ?t] [?t :rank ?rank] [(> ?rank 2)] (follow-over ?t ?e2)]]")
+        result (vev.q-prepared-db-read-source-with-rules
+                 source
+                 prepared
+                 prepared-rules
+                 ([]vev.Query-Input []))
+        typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             typed-query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 6))
+    (t.is (source-branch-has-entity-pair? result 2 3))
+    (t.is (source-branch-has-entity-pair? result 2 5))
+    (t.is (source-branch-has-entity-pair? result 3 5))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 6))
+    (t.is (> typed-stats.rule-calls 0))
+    (t.is (> typed-stats.rule-iterations 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-query-shallow typed-query)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-recursive-rules-support-positive-or-steps
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :follow (vev.value-entity 2)]
+             [:db/add 1 :alt (vev.value-entity 3)]
+             [:db/add 2 :follow (vev.value-entity 4)]
+             [:db/add 3 :alt (vev.value-entity 4)]])
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?e1 ?e2 :in $ % :where (route ?e1 ?e2)]")
+        prepared-rules (vev.parse-rules-text "[[(route ?e1 ?e2) (or [?e1 :follow ?e2] [?e1 :alt ?e2])] [(route ?e1 ?e2) (or [?e1 :follow ?t] [?e1 :alt ?t]) (route ?t ?e2)]]")
+        result (vev.q-prepared-db-read-source-with-rules
+                 source
+                 prepared
+                 prepared-rules
+                 ([]vev.Query-Input []))
+        typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             typed-query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 5))
+    (t.is (source-branch-has-entity-pair? result 1 2))
+    (t.is (source-branch-has-entity-pair? result 1 3))
+    (t.is (source-branch-has-entity-pair? result 1 4))
+    (t.is (source-branch-has-entity-pair? result 2 4))
+    (t.is (source-branch-has-entity-pair? result 3 4))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 5))
+    (t.is (> typed-stats.rule-calls 0))
+    (t.is (> typed-stats.rule-iterations 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-query-shallow typed-query)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-recursive-rules-support-negative-data-filters
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :follow (vev.value-entity 2)]
+             [:db/add 2 :follow (vev.value-entity 3)]
+             [:db/add 3 :follow (vev.value-entity 4)]
+             [:db/add 3 :blocked true]])
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?e1 ?e2 :in $ % :where (route ?e1 ?e2)]")
+        prepared-rules (vev.parse-rules-text "[[(route ?e1 ?e2) [?e1 :follow ?e2] (not [?e1 :blocked true])] [(route ?e1 ?e2) [?e1 :follow ?t] (not [?e1 :blocked true]) (route ?t ?e2)]]")
+        result (vev.q-prepared-db-read-source-with-rules
+                 source
+                 prepared
+                 prepared-rules
+                 ([]vev.Query-Input []))
+        typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             typed-query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 3))
+    (t.is (source-branch-has-entity-pair? result 1 2))
+    (t.is (source-branch-has-entity-pair? result 1 3))
+    (t.is (source-branch-has-entity-pair? result 2 3))
+    (t.is (not (source-branch-has-entity-pair? result 3 4)))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 3))
+    (t.is (> typed-stats.rule-calls 0))
+    (t.is (> typed-stats.rule-iterations 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-query-shallow typed-query)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-recursive-rules-reject-recursive-calls-inside-negation
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        source (vev.resident-db-read-source (addr conn.db))
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":follow") (vev.value-int 2))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":follow") (vev.value-int 3))]))
+        row-source (vev.relation-value-db-read-source (addr rows))
+        named-sources ([]vev.DB-Read-Named-Source [(vev.db-read-named-source "$rows" row-source)])
+        prepared (vev.prepare-query-text "[:find ?e1 ?e2 :in $rows % :where ($rows route ?e1 ?e2)]")
+        prepared-rules (vev.parse-rules-text "[[(route ?e1 ?e2) [?e1 :follow ?e2]] [(route ?e1 ?e2) [?e1 :follow ?t] (not (route ?t ?e2))]]")
+        query-value (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        result (vev.db-read-source-q-query-with-sources-inputs-and-fns
+                 source
+                 named-sources
+                 query-value
+                 ([]vev.Query-Input [])
+                 ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is (not result.ok))
+    (t.is (= result.error "source-backed recursive negation is not supported; recursive rule calls inside not/not-join require stratified semantics"))
+    (vev.delete-query-shallow query-value)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-rules-plan-expression-bodies
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 42] [:db/add 2 :height 180] [:db/add 3 :name \"Barbara\"] [:db/add 3 :age 49]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        function-prepared (vev.prepare-query-text "[:find ?label :in $ % :where (name-label ?e ?label)]")
+        function-rules (vev.parse-rules-text "[[(name-label ?e ?label) [?e :name ?name] [(str ?name \"!\") ?label]]]")
+        get-else-prepared (vev.prepare-query-text "[:find ?name ?height :in $ % :where (height-or-zero ?e ?name ?height)]")
+        get-else-rules (vev.parse-rules-text "[[(height-or-zero ?e ?name ?height) [?e :name ?name] [(get-else $ ?e :height 0) ?height]]]")
+        get-some-prepared (vev.prepare-query-text "[:find ?name ?attr ?value :in $ % :where (first-present ?e ?name ?attr ?value)]")
+        get-some-rules (vev.parse-rules-text "[[(first-present ?e ?name ?attr ?value) [?e :name ?name] [(get-some $ ?e :height :age) [?attr ?value]]]]")
+        ground-prepared (vev.prepare-query-text "[:find ?name :in $ % :where (target-name ?e ?name)]")
+        ground-rules (vev.parse-rules-text "[[(target-name ?e ?name) [(ground \"Grace\") ?target] [?e :name ?target] [?e :name ?name]]]")
+        not-prepared (vev.prepare-query-text "[:find ?name :in $ % :where (without-height ?e ?name)]")
+        not-rules (vev.parse-rules-text "[[(without-height ?e ?name) [?e :name ?name] (not [?e :height])]]")
+        or-prepared (vev.prepare-query-text "[:find ?name :in $ % :where (selected-name ?e ?name)]")
+        or-rules (vev.parse-rules-text "[[(selected-name ?e ?name) [?e :name ?name] (or [?e :age 37] [?e :height 180])]]")
+        function-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules function-prepared.query (slice function-rules.rules 0)))
+        get-else-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules get-else-prepared.query (slice get-else-rules.rules 0)))
+        get-some-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules get-some-prepared.query (slice get-some-rules.rules 0)))
+        ground-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules ground-prepared.query (slice ground-rules.rules 0)))
+        not-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules not-prepared.query (slice not-rules.rules 0)))
+        or-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules or-prepared.query (slice or-rules.rules 0)))
+        [function-rel function-stats function-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                                       source
+                                                       ([]vev.DB-Read-Named-Source [])
+                                                       function-query
+                                                       ([]vev.Query-Input [])
+                                                       ([]vev.Native-Query-Fn []))
+        [get-else-rel get-else-stats get-else-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                                       source
+                                                       ([]vev.DB-Read-Named-Source [])
+                                                       get-else-query
+                                                       ([]vev.Query-Input [])
+                                                       ([]vev.Native-Query-Fn []))
+        [get-some-rel get-some-stats get-some-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                                       source
+                                                       ([]vev.DB-Read-Named-Source [])
+                                                       get-some-query
+                                                       ([]vev.Query-Input [])
+                                                       ([]vev.Native-Query-Fn []))
+        [ground-rel ground-stats ground-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                                source
+                                                ([]vev.DB-Read-Named-Source [])
+                                                ground-query
+                                                ([]vev.Query-Input [])
+                                                ([]vev.Native-Query-Fn []))
+        [not-rel not-stats not-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                       source
+                                       ([]vev.DB-Read-Named-Source [])
+                                       not-query
+                                       ([]vev.Query-Input [])
+                                       ([]vev.Native-Query-Fn []))
+        [or-rel or-stats or-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                    source
+                                    ([]vev.DB-Read-Named-Source [])
+                                    or-query
+                                    ([]vev.Query-Input [])
+                                    ([]vev.Native-Query-Fn []))
+        function-result (vev.q-prepared-db-read-source-with-rules
+                          source
+                          function-prepared
+                          function-rules
+                          ([]vev.Query-Input []))
+        get-else-result (vev.q-prepared-db-read-source-with-rules
+                          source
+                          get-else-prepared
+                          get-else-rules
+                          ([]vev.Query-Input []))
+        get-some-result (vev.q-prepared-db-read-source-with-rules
+                          source
+                          get-some-prepared
+                          get-some-rules
+                          ([]vev.Query-Input []))
+        ground-result (vev.q-prepared-db-read-source-with-rules
+                        source
+                        ground-prepared
+                        ground-rules
+                        ([]vev.Query-Input []))
+        not-result (vev.q-prepared-db-read-source-with-rules
+                     source
+                     not-prepared
+                     not-rules
+                     ([]vev.Query-Input []))
+        or-result (vev.q-prepared-db-read-source-with-rules
+                    source
+                    or-prepared
+                    or-rules
+                    ([]vev.Query-Input []))]
+    (t.is function-prepared.ok function-prepared.error)
+    (t.is function-rules.ok function-rules.error)
+    (t.is function-used)
+    (t.is function-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count function-rel) 3))
+    (t.is (> function-stats.rule-calls 0))
+    (t.is (= function-stats.binding-materializations 0))
+    (t.is function-result.ok function-result.error)
+    (t.is (source-branch-has-text? function-result "Ada!"))
+    (t.is (source-branch-has-text? function-result "Grace!"))
+    (t.is (source-branch-has-text? function-result "Barbara!"))
+    (t.is get-else-prepared.ok get-else-prepared.error)
+    (t.is get-else-rules.ok get-else-rules.error)
+    (t.is get-else-used)
+    (t.is get-else-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count get-else-rel) 3))
+    (t.is (> get-else-stats.rule-calls 0))
+    (t.is (= get-else-stats.binding-materializations 0))
+    (t.is get-else-result.ok get-else-result.error)
+    (t.is (= (count get-else-result.rows) 3))
+    (t.is get-some-prepared.ok get-some-prepared.error)
+    (t.is get-some-rules.ok get-some-rules.error)
+    (t.is get-some-used)
+    (t.is get-some-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count get-some-rel) 3))
+    (t.is (> get-some-stats.rule-calls 0))
+    (t.is (= get-some-stats.binding-materializations 0))
+    (t.is get-some-result.ok get-some-result.error)
+    (t.is (= (count get-some-result.rows) 3))
+    (t.is ground-prepared.ok ground-prepared.error)
+    (t.is ground-rules.ok ground-rules.error)
+    (t.is ground-used)
+    (t.is ground-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count ground-rel) 1))
+    (t.is (> ground-stats.rule-calls 0))
+    (t.is (= ground-stats.binding-materializations 0))
+    (t.is ground-result.ok ground-result.error)
+    (t.is (= (count ground-result.rows) 1))
+    (t.is (source-branch-has-text? ground-result "Grace"))
+    (t.is not-prepared.ok not-prepared.error)
+    (t.is not-rules.ok not-rules.error)
+    (t.is not-used)
+    (t.is not-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count not-rel) 2))
+    (t.is (> not-stats.rule-calls 0))
+    (t.is (= not-stats.binding-materializations 0))
+    (t.is not-result.ok not-result.error)
+    (t.is (= (count not-result.rows) 2))
+    (t.is (source-branch-has-text? not-result "Ada"))
+    (t.is (source-branch-has-text? not-result "Barbara"))
+    (t.is or-prepared.ok or-prepared.error)
+    (t.is or-rules.ok or-rules.error)
+    (t.is or-used)
+    (t.is or-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count or-rel) 2))
+    (t.is (> or-stats.rule-calls 0))
+    (t.is (= or-stats.binding-materializations 0))
+    (t.is or-result.ok or-result.error)
+    (t.is (= (count or-result.rows) 2))
+    (t.is (source-branch-has-text? or-result "Ada"))
+    (t.is (source-branch-has-text? or-result "Grace"))
+    (vev.delete-query-relation function-rel)
+    (vev.delete-query-relation get-else-rel)
+    (vev.delete-query-relation get-some-rel)
+    (vev.delete-query-relation ground-rel)
+    (vev.delete-query-relation not-rel)
+    (vev.delete-query-relation or-rel)
+    (vev.delete-query-shallow function-query)
+    (vev.delete-query-shallow get-else-query)
+    (vev.delete-query-shallow get-some-query)
+    (vev.delete-query-shallow ground-query)
+    (vev.delete-query-shallow not-query)
+    (vev.delete-query-shallow or-query)
+    (vev.delete-result-set-owned-values function-result)
+    (vev.delete-result-set-owned-values get-else-result)
+    (vev.delete-result-set-owned-values get-some-result)
+    (vev.delete-result-set-owned-values ground-result)
+    (vev.delete-result-set-owned-values not-result)
+    (vev.delete-result-set-owned-values or-result)
+    (vev.delete-prepared-query-shallow function-prepared)
+    (vev.delete-prepared-query-shallow get-else-prepared)
+    (vev.delete-prepared-query-shallow get-some-prepared)
+    (vev.delete-prepared-query-shallow ground-prepared)
+    (vev.delete-prepared-query-shallow not-prepared)
+    (vev.delete-prepared-query-shallow or-prepared)
+    (vev.delete-prepared-rules-shallow function-rules)
+    (vev.delete-prepared-rules-shallow get-else-rules)
+    (vev.delete-prepared-rules-shallow get-some-rules)
+    (vev.delete-prepared-rules-shallow ground-rules)
+    (vev.delete-prepared-rules-shallow not-rules)
+    (vev.delete-prepared-rules-shallow or-rules)))
+
+(t.deftest source-backed-branch-rule-calls-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :active true] [:db/add 2 :name \"Grace\"] [:db/add 2 :active false] [:db/add 3 :name \"Oleg\"]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?e :in $ % :where [?e :name] (not (active ?e))]")
+        prepared-rules (vev.parse-rules-text "[[(active ?e) [?e :active true]] [(named ?e ?name) [?e :name ?name]]]")
+        result (vev.q-prepared-db-read-source-with-rules
+                 source
+                 prepared
+                 prepared-rules
+                 ([]vev.Query-Input []))
+        typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             typed-query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 2))
+    (t.is (source-branch-has-entity? result 2))
+    (t.is (source-branch-has-entity? result 3))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 2))
+    (t.is (> typed-stats.rule-calls 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-query-shallow typed-query)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-pull-results-render-from-typed-relation
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :friend 2] [:db/add 2 :name \"Grace\"]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?e (pull ?e [:name]) :where [?e :name \"Ada\"]]")
+        prepared-pull-only (vev.prepare-query-text "[:find (pull ?e [:name]) :where [?e :name \"Ada\"]]")
+        prepared-pull-aggregate (vev.prepare-query-text "[:find ?e (pull ?e [:name]) (count ?a) :where [?e :name \"Ada\"] [?e :friend ?a]]")
+        [typed-result typed-stats typed-used] (vev.db-read-source-q-query-relation-value-typed-with-sources-inputs-and-fns
+                                                source
+                                                ([]vev.DB-Read-Named-Source [])
+                                                prepared.query
+                                                ([]vev.Query-Input [])
+                                                ([]vev.Native-Query-Fn []))
+        [typed-pull-only typed-pull-only-stats typed-pull-only-used] (vev.db-read-source-q-query-relation-value-typed-with-sources-inputs-and-fns
+                                                                       source
+                                                                       ([]vev.DB-Read-Named-Source [])
+                                                                       prepared-pull-only.query
+                                                                       ([]vev.Query-Input [])
+                                                                       ([]vev.Native-Query-Fn []))
+        [typed-pull-aggregate typed-pull-aggregate-stats typed-pull-aggregate-used] (vev.db-read-source-q-query-relation-value-typed-with-sources-inputs-and-fns
+                                                                                      source
+                                                                                      ([]vev.DB-Read-Named-Source [])
+                                                                                      prepared-pull-aggregate.query
+                                                                                      ([]vev.Query-Input [])
+                                                                       ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-pull-only.ok prepared-pull-only.error)
+    (t.is prepared-pull-aggregate.ok prepared-pull-aggregate.error)
+    (t.is typed-used)
+    (t.is typed-result.ok typed-result.error)
+    (t.is (= (count typed-result.rows) 1))
+    (t.is (= (count typed-result.rows[0].values) 1))
+    (t.is (= typed-result.rows[0].values[0].kind .Entity))
+    (t.is (= typed-result.rows[0].values[0].entity 1))
+    (t.is (= (count typed-result.rows[0].pulls) 1))
+    (t.is (= typed-result.rows[0].pulls[0].e 1))
+    (t.is (= (count typed-result.rows[0].pulls[0].attrs) 1))
+    (t.is (= typed-result.rows[0].pulls[0].attrs[0].a ":name"))
+    (t.is (= typed-result.rows[0].pulls[0].attrs[0].v.text "Ada"))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is typed-pull-only-used)
+    (t.is typed-pull-only.ok typed-pull-only.error)
+    (t.is (= (count typed-pull-only.rows) 1))
+    (t.is (= (count typed-pull-only.rows[0].values) 0))
+    (t.is (= (count typed-pull-only.rows[0].pulls) 1))
+    (t.is (= typed-pull-only.rows[0].pulls[0].e 1))
+    (t.is (= typed-pull-only-stats.binding-materializations 0))
+    (t.is typed-pull-aggregate-used)
+    (t.is typed-pull-aggregate.ok typed-pull-aggregate.error)
+    (t.is (= (count typed-pull-aggregate.rows) 1))
+    (t.is (= (count typed-pull-aggregate.rows[0].values) 2))
+    (t.is (= typed-pull-aggregate.rows[0].values[0].entity 1))
+    (t.is (= typed-pull-aggregate.rows[0].values[1].int-value 1))
+    (t.is (= (count typed-pull-aggregate.rows[0].pulls) 1))
+    (t.is (= typed-pull-aggregate.rows[0].pulls[0].attrs[0].v.text "Ada"))
+    (t.is (= typed-pull-aggregate-stats.binding-materializations 0))
+    (vev.delete-result-set-owned-values typed-result)
+    (vev.delete-result-set-owned-values typed-pull-only)
+    (vev.delete-result-set-owned-values typed-pull-aggregate)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-query-shallow prepared-pull-only)
+    (vev.delete-prepared-query-shallow prepared-pull-aggregate)))
 
 (t.deftest nested-branch-local-not-from-edn-stays-typed
   (defer (free_all context.allocator))
@@ -214,6 +1214,80 @@
     (t.is (source-branch-has-int? or-join-result 1))
     (t.is (source-branch-has-int? or-join-result 3))))
 
+(t.deftest source-backed-named-source-recursive-rule-calls-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        source (vev.resident-db-read-source (addr conn.db))
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-int 1) (vev.value-keyword ":next") (vev.value-int 2))
+                  (vev.value-vector3 (vev.value-int 2) (vev.value-keyword ":next") (vev.value-int 3))
+                  (vev.value-vector3 (vev.value-int 3) (vev.value-keyword ":next") (vev.value-int 4))]))
+        row-source (vev.relation-value-db-read-source (addr rows))
+        named-sources ([]vev.DB-Read-Named-Source [(vev.db-read-named-source "$rows" row-source)])
+        direct-query (vev.prepare-query-text "[:find ?x ?y :in $rows :where [$rows ?x :next ?y]]")
+        [direct-rel direct-stats direct-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                                source
+                                                named-sources
+                                                direct-query.query
+                                                ([]vev.Query-Input [])
+                                                ([]vev.Native-Query-Fn []))
+        prepared (vev.prepare-query-text "[:find ?x ?y :in $ % :where ($rows route ?x ?y)]")
+        prepared-rules (vev.parse-rules-text "[[(route ?x ?y) [?x :next ?y]] [(route ?x ?y) [?x :next ?z] (route ?z ?y)]]")
+        base-query (vev.prepare-query-text "[:find ?x ?y :in $ % :where ($rows edge ?x ?y)]")
+        base-rules (vev.parse-rules-text "[[(edge ?x ?y) [?x :next ?y]]]")
+        base-typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules base-query.query (slice base-rules.rules 0)))
+        body-stats (vev.query-stats-empty)
+        [body-rel body-ok] (vev.db-read-source-query-relation-from-rule-body-typed-depth
+                             row-source
+                             ([]vev.DB-Read-Named-Source [])
+                             (slice base-rules.rules 0)
+                             base-rules.rules[0]
+                             ([]vev.Native-Query-Fn [])
+                             (addr body-stats)
+                             20)
+        [base-rel base-stats base-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                          source
+                                          named-sources
+                                          base-typed-query
+                                          ([]vev.Query-Input [])
+                                          ([]vev.Native-Query-Fn []))
+        typed-query (vev.query-with-rule-call-plans (vev.query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             named-sources
+                                             typed-query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is direct-query.ok direct-query.error)
+    (t.is direct-used)
+    (t.is (= (vev.query-relation-row-count direct-rel) 3))
+    (t.is body-ok)
+    (t.is (= (vev.query-relation-row-count body-rel) 3))
+    (t.is base-query.ok base-query.error)
+    (t.is base-rules.ok base-rules.error)
+    (t.is base-used)
+    (t.is (= (vev.query-relation-row-count base-rel) 3))
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 6))
+    (t.is (> typed-stats.rule-calls 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (vev.delete-query-relation direct-rel)
+    (vev.delete-prepared-query-shallow direct-query)
+    (vev.delete-query-relation body-rel)
+    (vev.delete-query-relation base-rel)
+    (vev.delete-query-shallow base-typed-query)
+    (vev.delete-prepared-query-shallow base-query)
+    (vev.delete-prepared-rules-shallow base-rules)
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-query-shallow typed-query)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
 (t.deftest top-level-relation-source-input-avoids-input-binding-materialization
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -233,6 +1307,137 @@
     (t.is (= profiled.stats.input-bindings 1))
     (t.is (= profiled.stats.binding-materializations 0))))
 
+(t.deftest relation-source-input-repeated-vars-stay-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector2 (vev.value-int 1) (vev.value-int 1))
+                  (vev.value-vector2 (vev.value-int 1) (vev.value-int 2))
+                  (vev.value-vector2 (vev.value-string "Ada") (vev.value-string "Ada"))]))
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?x :in $rows :where [$rows ?x ?x]]"
+                   ([]vev.Query-Input [(vev.query-input-scalar rows)]))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (source-branch-has-int? profiled.result 1))
+    (t.is (source-branch-has-text? profiled.result "Ada"))
+    (t.is (= profiled.stats.binding-materializations 0))))
+
+(t.deftest relation-source-scan-uses-literal-predicate-pushdown
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-entity 1) (vev.value-keyword ":salary") (vev.value-int 40000))
+                  (vev.value-vector3 (vev.value-entity 2) (vev.value-keyword ":salary") (vev.value-int 60000))
+                  (vev.value-vector3 (vev.value-entity 3) (vev.value-keyword ":salary") (vev.value-int 80000))]))
+        prepared (vev.prepare-query-text "[:find ?e ?s :in $rows :where [$rows ?e :salary ?s] [(> ?s 50000)]]")
+        plan (vev.physical-plan-from-query prepared.query)
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?e ?s :in $rows :where [$rows ?e :salary ?s] [(> ?s 50000)]]"
+                   ([]vev.Query-Input [(vev.query-input-scalar rows)]))]
+    (t.is prepared.ok prepared.error)
+    (t.is plan.ops[0].has-pushdown-scalar)
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.kind .VarValueCompare))
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (= profiled.stats.clause-candidates 3))
+    (t.is (= profiled.stats.max-intermediate-bindings 2))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest relation-source-constant-filter-cross-join-stays-source-operator
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-entity 1) (vev.value-keyword ":name") (vev.value-string "Ada"))
+                  (vev.value-vector3 (vev.value-entity 1) (vev.value-keyword ":age") (vev.value-int 37))
+                  (vev.value-vector3 (vev.value-entity 2) (vev.value-keyword ":name") (vev.value-string "Grace"))
+                  (vev.value-vector3 (vev.value-entity 2) (vev.value-keyword ":age") (vev.value-int 41))
+                  (vev.value-vector3 (vev.value-entity 3) (vev.value-keyword ":name") (vev.value-string "Barbara"))]))
+        seeds (vev.value-vector
+                ([]vev.Value [(vev.value-int 10)
+                              (vev.value-int 20)
+                              (vev.value-int 30)]))
+        text "[:find ?seed ?name :in $rows [?seed ...] :where [$rows ?e :name ?name]]"
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   text
+                   ([]vev.Query-Input [(vev.query-input-scalar rows)
+                                        (vev.query-input-collection (slice seeds.items 0))]))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 9))
+    (t.is (source-branch-has-text-any-column? profiled.result "Ada"))
+    (t.is (source-branch-has-text-any-column? profiled.result "Grace"))
+    (t.is (source-branch-has-text-any-column? profiled.result "Barbara"))
+    (t.is (= profiled.stats.input-bindings 3))
+    (t.is (< profiled.stats.clause-candidates 15))
+    (t.is (> profiled.stats.source-index-scans 0))
+    (t.is (> profiled.stats.source-operators 0))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (t.is (= profiled.stats.generic-materialization-steps 0))))
+
+(t.deftest relation-source-scan-uses-input-bound-predicate-pushdown
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-entity 1) (vev.value-keyword ":salary") (vev.value-int 40000))
+                  (vev.value-vector3 (vev.value-entity 2) (vev.value-keyword ":salary") (vev.value-int 60000))
+                  (vev.value-vector3 (vev.value-entity 3) (vev.value-keyword ":salary") (vev.value-int 80000))]))
+        prepared (vev.prepare-query-text "[:find ?e ?s :in $rows ?min :where [$rows ?e :salary ?s] [(> ?s ?min)]]")
+        plan (vev.physical-plan-from-query prepared.query)
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?e ?s :in $rows ?min :where [$rows ?e :salary ?s] [(> ?s ?min)]]"
+                   ([]vev.Query-Input [(vev.query-input-scalar rows)
+                                        (vev.query-input-scalar (vev.value-int 50000))]))]
+    (t.is prepared.ok prepared.error)
+    (t.is plan.ops[0].has-pushdown-scalar)
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.kind .VarVarCompare))
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.var-name "?s"))
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.other-var "?min"))
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (= profiled.stats.clause-candidates 3))
+    (t.is (= profiled.stats.max-intermediate-bindings 2))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest bound-relation-source-join-uses-predicate-pushdown
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 2 :name \"Grace\"] [:db/add 3 :name \"Barbara\"]]")
+        rows (vev.value-vector
+               ([]vev.Value
+                 [(vev.value-vector3 (vev.value-entity 1) (vev.value-keyword ":salary") (vev.value-int 40000))
+                  (vev.value-vector3 (vev.value-entity 2) (vev.value-keyword ":salary") (vev.value-int 60000))
+                  (vev.value-vector3 (vev.value-entity 3) (vev.value-keyword ":salary") (vev.value-int 80000))]))
+        text "[:find ?name :in $ $rows :where [?e :name ?name] [$rows ?e :salary ?s] [(> ?s 50000)]]"
+        prepared (vev.prepare-query-text text)
+        plan (vev.physical-plan-from-query prepared.query)
+        profiled (vev.q-text-profiled-with-inputs
+                   conn.db
+                   text
+                   ([]vev.Query-Input [(vev.query-input-scalar rows)]))]
+    (t.is prepared.ok prepared.error)
+    (t.is (= (vev.physical-plan-step-count plan) 3))
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (source-branch-has-text? profiled.result "Grace"))
+    (t.is (source-branch-has-text? profiled.result "Barbara"))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
 (t.deftest scalar-input-predicate-query-stays-typed
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -248,6 +1453,182 @@
     (t.is (> profiled.stats.typed-index-scans 0))
     (t.is (= profiled.stats.input-bindings 1))
     (t.is (= profiled.stats.binding-materializations 0))))
+
+(t.deftest bound-ea-clause-carries-predicate-pushdown
+  (defer (free_all context.allocator))
+  (let [text "[:find ?name :where [?e :name ?name] [?e :age ?age] [(> ?age 40)]]"
+        prepared (vev.prepare-query-text text)
+        plan (vev.physical-plan-from-query prepared.query)
+        conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 41]]")
+        profiled (vev.q-text-profiled conn.db text)]
+    (t.is prepared.ok prepared.error)
+    (t.is (= (vev.physical-plan-step-count plan) 3))
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (source-branch-has-text? profiled.result "Grace"))
+    (t.is (<= profiled.stats.clause-candidates 3))
+    (t.is (> profiled.stats.typed-index-scans 0))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest source-backed-bound-ea-clause-tightens-value-range
+  (defer (free_all context.allocator))
+  (let [text "[:find ?name :where [?e :name ?name] [?e :age ?age] [(> ?age 40)]]"
+        prepared (vev.prepare-query-text text)
+        plan (vev.physical-plan-from-query prepared.query)
+        conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 41]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        profiled (vev.q-text-db-read-source-profiled source text)]
+    (t.is prepared.ok prepared.error)
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (source-branch-has-text? profiled.result "Grace"))
+    (t.is (<= profiled.stats.clause-candidates 3))
+    (t.is (or (> profiled.stats.source-index-scans 0)
+              (> profiled.stats.typed-index-scans 0)))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (vev.delete-profiled-result-set-owned-values profiled)
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest source-backed-bound-value-ref-join-stays-typed
+  (defer (free_all context.allocator))
+  (let [text "[:find ?e :where [?friend :name \"Grace\"] [?e :friend ?friend]]"
+        prepared (vev.prepare-query-text text)
+        plan (vev.physical-plan-from-query prepared.query)
+        conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[{:db/id 100 :db/ident :friend :db/valueType :db.type/ref} [:db/add 1 :name \"Ada\"] [:db/add 2 :name \"Grace\"] [:db/add 3 :name \"Barbara\"] [:db/add 1 :friend 2] [:db/add 3 :friend 2] [:db/add 4 :friend 1]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        profiled (vev.q-text-db-read-source-profiled source text)
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             prepared.query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is (= plan.ops[1].kind .BindJoinScan))
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (source-branch-has-entity? profiled.result 1))
+    (t.is (source-branch-has-entity? profiled.result 3))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 2))
+    (t.is (> typed-stats.source-operators 0))
+    (t.is (> typed-stats.source-index-scans 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (t.is (= profiled.stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-profiled-result-set-owned-values profiled)
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest source-backed-value-ref-star-produces-typed-relation
+  (defer (free_all context.allocator))
+  (let [text "[:find ?e ?age ?role :in $ ?target :where [?anchor :name ?target] [?e :friend ?anchor] [?e :age ?age] [?e :role ?role]]"
+        prepared (vev.prepare-query-text text)
+        conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[{:db/id 100 :db/ident :friend :db/valueType :db.type/ref} {:db/id 101 :db/ident :role :db/cardinality :db.cardinality/many} [:db/add 1 :name \"Ada\"] [:db/add 2 :name \"Grace\"] [:db/add 3 :name \"Barbara\"] [:db/add 1 :friend 2] [:db/add 3 :friend 2] [:db/add 4 :friend 1] [:db/add 1 :age 37] [:db/add 3 :age 41] [:db/add 4 :age 50] [:db/add 1 :role \"admin\"] [:db/add 1 :role \"lead\"] [:db/add 3 :role \"user\"]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Grace"))])
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             prepared.query
+                                             inputs
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 3))
+    (t.is (= (count typed-rel.typed-columns) 3))
+    (t.is (= typed-rel.typed-columns[0].kind .Entity))
+    (t.is (= typed-rel.typed-columns[1].kind .Int))
+    (t.is (= typed-rel.typed-columns[2].kind .String))
+    (t.is (> typed-stats.source-operators 0))
+    (t.is (> typed-stats.source-index-scans 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest source-backed-value-ref-attr-produces-typed-relation
+  (defer (free_all context.allocator))
+  (let [text "[:find ?name :in $ ?target :where [?anchor :name ?target] [?e :friend ?anchor] [?e :name ?name]]"
+        prepared (vev.prepare-query-text text)
+        conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[{:db/id 100 :db/ident :friend :db/valueType :db.type/ref} [:db/add 1 :name \"Ada\"] [:db/add 2 :name \"Grace\"] [:db/add 3 :name \"Barbara\"] [:db/add 1 :friend 2] [:db/add 3 :friend 2] [:db/add 4 :friend 1]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "Grace"))])
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             prepared.query
+                                             inputs
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 2))
+    (t.is (= (count typed-rel.typed-columns) 1))
+    (t.is (= typed-rel.typed-columns[0].kind .String))
+    (t.is (> typed-stats.source-operators 0))
+    (t.is (> typed-stats.source-index-scans 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest source-backed-mixed-cardinality-star-produces-typed-relation
+  (defer (free_all context.allocator))
+  (let [text "[:find ?name ?age ?role ?code :where [?e :name ?name] [?e :age ?age] [?e :role ?role] [?e :code ?code]]"
+        prepared (vev.prepare-query-text text)
+        plan (vev.physical-plan-from-query prepared.query)
+        conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[{:db/id 100 :db/ident :role :db/cardinality :db.cardinality/many} [:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 1 :code 10] [:db/add 1 :role \"admin\"] [:db/add 1 :role \"lead\"] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 41] [:db/add 2 :code 20] [:db/add 2 :role \"user\"]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        [typed-rel typed-stats typed-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns
+                                             source
+                                             ([]vev.DB-Read-Named-Source [])
+                                             prepared.query
+                                             ([]vev.Query-Input [])
+                                             ([]vev.Native-Query-Fn []))]
+    (t.is prepared.ok prepared.error)
+    (t.is (= (vev.physical-plan-step-count plan) 1))
+    (t.is (= plan.ops[0].kind .StarJoin))
+    (t.is typed-used)
+    (t.is typed-rel.has-typed-columns)
+    (t.is (= (vev.query-relation-row-count typed-rel) 3))
+    (t.is (= (count typed-rel.typed-columns) 4))
+    (t.is (= typed-rel.typed-columns[0].kind .String))
+    (t.is (= typed-rel.typed-columns[1].kind .Int))
+    (t.is (= typed-rel.typed-columns[2].kind .String))
+    (t.is (= typed-rel.typed-columns[3].kind .Int))
+    (t.is (> typed-stats.source-operators 0))
+    (t.is (> typed-stats.source-index-scans 0))
+    (t.is (= typed-stats.binding-materializations 0))
+    (t.is (= typed-stats.generic-materialization-steps 0))
+    (vev.delete-query-relation typed-rel)
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
 
 (t.deftest tuple-input-predicate-query-stays-typed
   (defer (free_all context.allocator))
@@ -265,6 +1646,30 @@
     (t.is (> profiled.stats.typed-index-scans 0))
     (t.is (= profiled.stats.input-bindings 1))
     (t.is (= profiled.stats.binding-materializations 0))))
+
+(t.deftest source-backed-collection-lookup-ref-input-stays-typed
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[{:db/id 100 :db/ident :user/email :db/unique :db.unique/identity} {:db/id 1 :user/email \"ada@example.com\" :user/name \"Ada\"} {:db/id 2 :user/email \"grace@example.com\" :user/name \"Grace\"}]")
+        source (vev.resident-db-read-source (addr conn.db))
+        input (vev.query-input-collection-lookup-refs
+                ([]string [":user/email" ":user/email" ":user/email"])
+                ([]vev.Value [(vev.value-string "ada@example.com")
+                              (vev.value-string "missing@example.com")
+                              (vev.value-string "grace@example.com")]))
+        profiled (vev.q-text-db-read-source-profiled-with-inputs
+                   source
+                   "[:find ?name :in $ [?e ...] :where [?e :user/name ?name]]"
+                   ([]vev.Query-Input [input]))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 2))
+    (t.is (source-branch-has-text? profiled.result "Ada"))
+    (t.is (source-branch-has-text? profiled.result "Grace"))
+    (t.is (= profiled.stats.input-bindings 2))
+    (t.is (= profiled.stats.binding-materializations 0))
+    (vev.delete-profiled-result-set-owned-values profiled)))
 
 (t.deftest relation-input-predicate-query-stays-typed
   (defer (free_all context.allocator))
@@ -287,6 +1692,481 @@
     (t.is (> profiled.stats.typed-index-scans 0))
     (t.is (= profiled.stats.input-bindings 3))
     (t.is (= profiled.stats.binding-materializations 0))))
+
+(t.deftest physical-scan-ops-carry-literal-predicate-pushdown
+  (defer (free_all context.allocator))
+  (let [prepared (vev.prepare-query-text "[:find ?e :where [?e :age ?age] [(> ?age 40)]]")
+        plan (vev.physical-plan-from-query prepared.query)]
+    (t.is prepared.ok prepared.error)
+    (t.is (= (vev.physical-plan-step-count plan) 2))
+    (t.is plan.ops[0].has-pushdown-scalar)
+    (t.is (= plan.ops[0].pushdown-predicate-index 0))
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.kind .VarValueCompare))
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.var-name "?age"))
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.op ">"))
+    (t.is (not plan.ops[1].has-pushdown-scalar))
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)))
+
+(t.deftest physical-plan-records-result-shape
+  (defer (free_all context.allocator))
+  (let [flat-prepared (vev.prepare-query-text "[:find ?e ?name :where [?e :name ?name]]")
+        flat-plan (vev.physical-plan-from-query flat-prepared.query)
+        pull-prepared (vev.prepare-query-text "[:find (pull ?e [:name]) :where [?e :name]]")
+        pull-plan (vev.physical-plan-from-query pull-prepared.query)
+        aggregate-prepared (vev.prepare-query-text "[:find (count ?e) :where [?e :name]]")
+        aggregate-plan (vev.physical-plan-from-query aggregate-prepared.query)
+        top-aggregate-prepared (vev.prepare-query-text "[:find (max 1 ?age) :where [?e :age ?age]]")
+        top-aggregate-plan (vev.physical-plan-from-query top-aggregate-prepared.query)
+        grouped-top-aggregate-prepared (vev.prepare-query-text "[:find ?e (max 1 ?age) :where [?e :age ?age]]")
+        pull-aggregate-prepared (vev.prepare-query-text "[:find (pull ?e [:name]) (count ?a) :where [?e :name] [?e :age ?a]]")
+        pull-aggregate-plan (vev.physical-plan-from-query pull-aggregate-prepared.query)
+        pull-aggregate-grouped-prepared (vev.prepare-query-text "[:find ?e (pull ?e [:name]) (count ?a) :where [?e :name] [?e :age ?a]]")
+        pull-aggregate-pattern-prepared (vev.prepare-query-text "[:find ?e (pull ?e ?pattern) (count ?a) :in $ ?pattern :where [?e :name] [?e :age ?a]]")
+        with-prepared (vev.prepare-query-text "[:find ?name :with ?e :where [?e :name ?name]]")
+        with-plan (vev.physical-plan-from-query with-prepared.query)
+        conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :name \"Ada\"] [:db/add 1 :age 37] [:db/add 2 :name \"Grace\"] [:db/add 2 :age 41]]")
+        stats (vev.query-stats-empty)
+        rel (vev.relation-engine-relation-profiled conn.db flat-prepared.query ([]vev.Query-Input []) ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr stats))
+        pull-stats (vev.query-stats-empty)
+        pull-rel (vev.relation-engine-relation-profiled conn.db pull-prepared.query ([]vev.Query-Input []) ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr pull-stats))
+        top-aggregate-stats (vev.query-stats-empty)
+        top-aggregate-rel (vev.relation-engine-relation-profiled conn.db top-aggregate-prepared.query ([]vev.Query-Input []) ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr top-aggregate-stats))
+        grouped-top-aggregate-stats (vev.query-stats-empty)
+        grouped-top-aggregate-rel (vev.relation-engine-relation-profiled conn.db grouped-top-aggregate-prepared.query ([]vev.Query-Input []) ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr grouped-top-aggregate-stats))
+        pull-aggregate-stats (vev.query-stats-empty)
+        pull-aggregate-rel (vev.relation-engine-relation-profiled conn.db pull-aggregate-prepared.query ([]vev.Query-Input []) ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr pull-aggregate-stats))
+        pull-aggregate-grouped-stats (vev.query-stats-empty)
+        pull-aggregate-grouped-rel (vev.relation-engine-relation-profiled conn.db pull-aggregate-grouped-prepared.query ([]vev.Query-Input []) ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr pull-aggregate-grouped-stats))
+        pattern-input (vev.query-input-pull-pattern ([]vev.Pull-Spec [(vev.pull-spec ":name" ([]vev.Pull-Spec []))]))
+        pattern-inputs ([]vev.Query-Input [pattern-input])
+        pull-aggregate-pattern-stats (vev.query-stats-empty)
+        pull-aggregate-pattern-rel (vev.relation-engine-relation-profiled conn.db pull-aggregate-pattern-prepared.query pattern-inputs ([]vev.DB-Source []) ([]vev.Native-Query-Fn []) (addr pull-aggregate-pattern-stats))
+        typed-plan (vev.query-typed-flat-result-plan-from-physical-plan flat-prepared.query rel flat-plan)
+        resolved (vev.resolve-typed-flat-materialization rel flat-plan.materialization)
+        source (vev.resident-db-read-source (addr conn.db))
+        [projected-rel projected-ok] (vev.query-relation-apply-physical-project-op rel flat-plan.project-op flat-plan.materialization)
+        [projected-rows projected-rows-ok] (vev.result-rows-for-typed-flat-relation-with-materialization flat-prepared.query projected-rel flat-plan.materialization)
+        [with-projected-rel with-projected-ok] (vev.query-relation-apply-physical-project-op rel with-plan.project-op with-plan.materialization)
+        [flat-materialize-batch flat-materialize-ok flat-materialize-error] (vev.db-read-source-apply-physical-materialize-op source ([]vev.DB-Read-Named-Source []) flat-prepared.query ([]vev.Query-Input []) rel flat-plan.materialize-op flat-plan.materialization ([]vev.Native-Query-Fn []))
+        [pull-materialize-batch pull-materialize-ok pull-materialize-error] (vev.db-read-source-apply-physical-materialize-op source ([]vev.DB-Read-Named-Source []) pull-prepared.query ([]vev.Query-Input []) pull-rel pull-plan.materialize-op pull-plan.materialization ([]vev.Native-Query-Fn []))
+        [aggregate-materialize-batch aggregate-materialize-ok aggregate-materialize-error] (vev.db-read-source-apply-physical-materialize-op source ([]vev.DB-Read-Named-Source []) top-aggregate-prepared.query ([]vev.Query-Input []) top-aggregate-rel top-aggregate-plan.materialize-op top-aggregate-plan.materialization ([]vev.Native-Query-Fn []))
+        [pull-aggregate-materialize-batch pull-aggregate-materialize-ok pull-aggregate-materialize-error] (vev.db-read-source-apply-physical-materialize-op source ([]vev.DB-Read-Named-Source []) pull-aggregate-prepared.query ([]vev.Query-Input []) pull-aggregate-rel pull-aggregate-plan.materialize-op pull-aggregate-plan.materialization ([]vev.Native-Query-Fn []))
+        [pull-aggregate-pattern-batch pull-aggregate-pattern-ok pull-aggregate-pattern-error] (vev.materialize-source-typed-pull-aggregate-batch source ([]vev.DB-Read-Named-Source []) pull-aggregate-pattern-prepared.query pattern-inputs pull-aggregate-pattern-rel ([]vev.Native-Query-Fn []))
+        [materialized-rows materialized-ok] (vev.result-rows-for-typed-flat-relation-with-materialization flat-prepared.query rel flat-plan.materialization)]
+    (t.is flat-prepared.ok flat-prepared.error)
+    (t.is pull-prepared.ok pull-prepared.error)
+    (t.is aggregate-prepared.ok aggregate-prepared.error)
+    (t.is top-aggregate-prepared.ok top-aggregate-prepared.error)
+    (t.is grouped-top-aggregate-prepared.ok grouped-top-aggregate-prepared.error)
+    (t.is pull-aggregate-prepared.ok pull-aggregate-prepared.error)
+    (t.is pull-aggregate-grouped-prepared.ok pull-aggregate-grouped-prepared.error)
+    (t.is pull-aggregate-pattern-prepared.ok pull-aggregate-pattern-prepared.error)
+    (t.is with-prepared.ok with-prepared.error)
+    (t.is (= flat-plan.materialization.shape.kind .FlatPrimitiveResult))
+    (t.is (= flat-plan.materialization.shape.value-column-count 2))
+    (t.is (= flat-plan.materialization.shape.pull-count 0))
+    (t.is (= flat-plan.materialization.shape.aggregate-count 0))
+    (t.is flat-plan.materialization.shape.has-distinct)
+    (t.is (not flat-plan.materialization.trust-unique-bindings))
+    (t.is flat-plan.has-project)
+    (t.is (= flat-plan.project-op.kind .Project))
+    (t.is (= (count flat-plan.project-op.output-vars) 2))
+    (t.is (= flat-plan.project-op.output-vars[0] "?e"))
+    (t.is (= flat-plan.project-op.output-vars[1] "?name"))
+    (t.is flat-plan.has-materialize)
+    (t.is (= flat-plan.materialize-op.kind .Materialize))
+    (t.is (= (count flat-plan.materialize-op.output-vars) 2))
+    (t.is (not pull-plan.has-project))
+    (t.is pull-plan.has-materialize)
+    (t.is (not aggregate-plan.has-project))
+    (t.is aggregate-plan.has-materialize)
+    (t.is top-aggregate-plan.has-materialize)
+    (t.is pull-aggregate-plan.has-materialize)
+    (t.is (= pull-plan.materialization.shape.kind .PullResult))
+    (t.is (= pull-plan.materialization.shape.value-column-count 0))
+    (t.is (= pull-plan.materialization.shape.pull-count 1))
+    (t.is (= aggregate-plan.materialization.shape.kind .AggregateResult))
+    (t.is (= aggregate-plan.materialization.shape.value-column-count 1))
+    (t.is (= aggregate-plan.materialization.shape.aggregate-count 1))
+    (t.is (= pull-aggregate-plan.materialization.shape.kind .PullAggregateResult))
+    (t.is (= pull-aggregate-plan.materialization.shape.pull-count 1))
+    (t.is (= pull-aggregate-plan.materialization.shape.aggregate-count 1))
+    (t.is (= (count flat-plan.materialization.columns) 2))
+    (t.is (= flat-plan.materialization.columns[0].kind .ValueResultColumn))
+    (t.is (= flat-plan.materialization.columns[0].var-name "?e"))
+    (t.is (= flat-plan.materialization.columns[0].source-index 0))
+    (t.is (= flat-plan.materialization.columns[0].output-index 0))
+    (t.is (= flat-plan.materialization.columns[1].kind .ValueResultColumn))
+    (t.is (= flat-plan.materialization.columns[1].var-name "?name"))
+    (t.is (= flat-plan.materialization.columns[1].source-index 1))
+    (t.is (= flat-plan.materialization.columns[1].output-index 1))
+    (t.is typed-plan.ok)
+    (t.is (= (count typed-plan.find-indexes) 2))
+    (t.is (= rel.attrs[typed-plan.find-indexes[0]] "?e"))
+    (t.is (= rel.attrs[typed-plan.find-indexes[1]] "?name"))
+    (t.is (= (count typed-plan.column-kinds) 2))
+    (t.is resolved.ok)
+    (t.is (= (vev.resolved-typed-flat-materialization-row-count resolved) 2))
+    (t.is (= (vev.resolved-typed-flat-materialization-column-count resolved) 2))
+    (t.is (= (count resolved.plan.find-indexes) 2))
+    (t.is (= resolved.trust-unique-bindings flat-plan.materialization.trust-unique-bindings))
+    (t.is projected-ok)
+    (t.is (= (count projected-rel.attrs) 2))
+    (t.is (= projected-rel.attrs[0] "?e"))
+    (t.is (= projected-rel.attrs[1] "?name"))
+    (t.is (= projected-rel.typed-rows 2))
+    (t.is projected-rows-ok)
+    (t.is (= (count projected-rows) 2))
+    (t.is (= (count projected-rows[0].values) 2))
+    (t.is flat-materialize-ok flat-materialize-error)
+    (t.is flat-materialize-batch.ok)
+    (t.is (= flat-materialize-batch.rows 2))
+    (t.is (= (count flat-materialize-batch.columns) 2))
+    (t.is (not flat-materialize-batch.owns-values))
+    (t.is pull-materialize-ok pull-materialize-error)
+    (t.is pull-materialize-batch.ok)
+    (t.is (= pull-materialize-batch.rows 2))
+    (t.is (= (count pull-materialize-batch.columns) 1))
+    (t.is pull-materialize-batch.owns-values)
+    (t.is aggregate-materialize-ok aggregate-materialize-error)
+    (t.is aggregate-materialize-batch.ok)
+    (t.is (= aggregate-materialize-batch.rows 1))
+    (t.is (= (count aggregate-materialize-batch.columns) 1))
+    (t.is aggregate-materialize-batch.owns-values)
+    (t.is pull-aggregate-materialize-ok pull-aggregate-materialize-error)
+    (t.is pull-aggregate-materialize-batch.ok)
+    (t.is (= pull-aggregate-materialize-batch.rows 2))
+    (t.is (= (count pull-aggregate-materialize-batch.columns) 2))
+    (t.is pull-aggregate-materialize-batch.owns-values)
+    (t.is pull-aggregate-pattern-ok pull-aggregate-pattern-error)
+    (t.is pull-aggregate-pattern-batch.ok)
+    (t.is (= pull-aggregate-pattern-batch.rows 2))
+    (t.is (= (count pull-aggregate-pattern-batch.columns) 3))
+    (t.is (not pull-aggregate-pattern-batch.value-columns[0]))
+    (t.is pull-aggregate-pattern-batch.value-columns[1])
+    (t.is (not pull-aggregate-pattern-batch.value-columns[2]))
+    (let [[pattern-pull-cell pattern-pull-cell-ok] (vev.typed-materialized-batch-cell-value pull-aggregate-pattern-batch 0 1)]
+      (t.is pattern-pull-cell-ok)
+      (t.is (= pattern-pull-cell.kind .Map)))
+    (let [[first-output-index first-output-index-ok] (vev.resolved-typed-flat-materialization-output-column-index resolved 0)
+          [second-output-kind second-output-kind-ok] (vev.resolved-typed-flat-materialization-output-column-kind rel resolved 1)
+          [second-cell second-cell-ok] (vev.resolved-typed-flat-materialization-output-cell-value rel resolved 0 1)]
+      (t.is first-output-index-ok)
+      (t.is (= rel.attrs[first-output-index] "?e"))
+      (t.is second-output-kind-ok)
+      (t.is (= second-output-kind .String))
+      (t.is second-cell-ok)
+      (t.is (= second-cell.kind .String)))
+    (let [cursor (vev.typed-flat-materialization-cursor resolved)]
+      (let [[first-row first-found first-ok] (vev.typed-flat-materialization-cursor-next! (addr cursor) rel resolved)
+            [second-row second-found second-ok] (vev.typed-flat-materialization-cursor-next! (addr cursor) rel resolved)
+            [_ done-found done-ok] (vev.typed-flat-materialization-cursor-next! (addr cursor) rel resolved)]
+        (t.is first-ok)
+        (t.is first-found)
+        (t.is (= first-row 0))
+        (t.is second-ok)
+        (t.is second-found)
+        (t.is (= second-row 1))
+        (t.is done-ok)
+        (t.is (not done-found)))
+      (vev.delete-typed-flat-materialization-cursor cursor))
+    (let [batch (vev.materialize-typed-flat-batch rel resolved)]
+      (t.is batch.ok)
+      (t.is (= batch.rows 2))
+      (t.is (= (count batch.names) 2))
+      (t.is (= batch.names[0] "?e"))
+      (t.is (= batch.names[1] "?name"))
+      (t.is (= (count batch.sources) 2))
+      (t.is (= (count batch.columns) 2))
+      (t.is (= (count batch.value-columns) 2))
+      (t.is (not batch.value-columns[0]))
+      (t.is (= batch.columns[1].kind .String))
+      (let [[batch-cell batch-cell-ok] (vev.typed-materialized-batch-cell-value batch 0 1)]
+        (t.is batch-cell-ok)
+        (t.is (= batch-cell.kind .String)))
+      (vev.delete-typed-materialized-batch batch))
+    (let [mixed-prepared (vev.prepare-query-text "[:find ?v :where [(ground 1) ?v]]")
+          mixed-plan (vev.physical-plan-from-query mixed-prepared.query)
+          mixed-rel (source-branch-mixed-composite-relation)
+          mixed-resolved (vev.resolve-typed-flat-materialization mixed-rel mixed-plan.materialization)
+          mixed-batch (vev.materialize-typed-flat-batch mixed-rel mixed-resolved)]
+      (t.is mixed-prepared.ok mixed-prepared.error)
+      (t.is mixed-resolved.ok)
+      (t.is mixed-batch.ok)
+      (t.is mixed-batch.owns-values)
+      (t.is (= mixed-batch.rows 2))
+      (t.is (= (count mixed-batch.value-columns) 1))
+      (t.is mixed-batch.value-columns[0])
+      (let [[first-mixed-cell first-mixed-cell-ok] (vev.typed-materialized-batch-cell-value mixed-batch 0 0)
+            [second-mixed-cell second-mixed-cell-ok] (vev.typed-materialized-batch-cell-value mixed-batch 1 0)]
+        (t.is first-mixed-cell-ok)
+        (t.is (= first-mixed-cell.kind .Vector))
+        (t.is (= (count first-mixed-cell.items) 2))
+        (t.is (= first-mixed-cell.items[0].int-value 1))
+        (t.is second-mixed-cell-ok)
+        (t.is (= second-mixed-cell.kind .Vector))
+        (t.is (= (count second-mixed-cell.items) 2))
+        (t.is (= second-mixed-cell.items[0].text ":a")))
+      (vev.delete-typed-materialized-batch mixed-batch)
+      (vev.delete-resolved-typed-flat-materialization mixed-resolved)
+      (delete-source-branch-mixed-composite-relation mixed-rel)
+      (vev.delete-physical-plan mixed-plan)
+      (vev.delete-prepared-query-shallow mixed-prepared))
+    (let [source (vev.resident-db-read-source (addr conn.db))
+          [pull-batch pull-batch-ok pull-batch-error] (vev.materialize-source-typed-pull-batch source ([]vev.DB-Read-Named-Source []) pull-prepared.query ([]vev.Query-Input []) rel ([]vev.Native-Query-Fn []))]
+      (t.is pull-batch-ok pull-batch-error)
+      (t.is pull-batch.ok)
+      (t.is pull-batch.owns-values)
+      (t.is (= pull-batch.rows 2))
+      (t.is (= (count pull-batch.columns) 1))
+      (t.is (= (count pull-batch.value-columns) 1))
+      (t.is pull-batch.value-columns[0])
+      (let [[pull-cell pull-cell-ok] (vev.typed-materialized-batch-cell-value pull-batch 0 0)]
+        (t.is pull-cell-ok)
+        (t.is (= pull-cell.kind .Map)))
+      (vev.delete-typed-materialized-batch pull-batch))
+    (let [source (vev.resident-db-read-source (addr conn.db))
+          [pull-only-batch pull-only-batch-ok pull-only-batch-error] (vev.materialize-source-typed-pull-batch source ([]vev.DB-Read-Named-Source []) pull-prepared.query ([]vev.Query-Input []) pull-rel ([]vev.Native-Query-Fn []))]
+      (t.is pull-only-batch-ok pull-only-batch-error)
+      (t.is pull-only-batch.ok)
+      (t.is (= pull-only-batch.rows 2))
+      (t.is (= (count pull-only-batch.columns) 1))
+      (t.is (= (count pull-only-batch.value-columns) 1))
+      (t.is pull-only-batch.value-columns[0])
+      (let [[pull-only-cell pull-only-cell-ok] (vev.typed-materialized-batch-cell-value pull-only-batch 0 0)]
+        (t.is pull-only-cell-ok)
+        (t.is (= pull-only-cell.kind .Map)))
+      (vev.delete-typed-materialized-batch pull-only-batch))
+    (let [aggregate-value-batch (vev.materialize-typed-aggregate-value-batch top-aggregate-prepared.query top-aggregate-rel)]
+      (t.is aggregate-value-batch.ok)
+      (t.is aggregate-value-batch.owns-values)
+      (t.is (= aggregate-value-batch.rows 1))
+      (t.is (= (count aggregate-value-batch.columns) 1))
+      (t.is (= (count aggregate-value-batch.value-columns) 1))
+      (t.is aggregate-value-batch.value-columns[0])
+      (let [[top-cell top-cell-ok] (vev.typed-materialized-batch-cell-value aggregate-value-batch 0 0)]
+        (t.is top-cell-ok)
+        (t.is (= top-cell.kind .Vector))
+        (t.is (= (count top-cell.items) 1))
+        (t.is (= top-cell.items[0].kind .Int))
+        (t.is (= top-cell.items[0].int-value 41)))
+      (vev.delete-typed-materialized-batch aggregate-value-batch))
+    (let [grouped-aggregate-value-batch (vev.materialize-typed-aggregate-value-batch grouped-top-aggregate-prepared.query grouped-top-aggregate-rel)]
+      (t.is grouped-aggregate-value-batch.ok)
+      (t.is grouped-aggregate-value-batch.owns-values)
+      (t.is (= grouped-aggregate-value-batch.rows 2))
+      (t.is (= (count grouped-aggregate-value-batch.columns) 2))
+      (t.is (= (count grouped-aggregate-value-batch.value-columns) 2))
+      (t.is (not grouped-aggregate-value-batch.value-columns[0]))
+      (t.is grouped-aggregate-value-batch.value-columns[1])
+      (let [[entity-cell entity-cell-ok] (vev.typed-materialized-batch-cell-value grouped-aggregate-value-batch 0 0)
+            [top-cell top-cell-ok] (vev.typed-materialized-batch-cell-value grouped-aggregate-value-batch 0 1)]
+        (t.is entity-cell-ok)
+        (t.is (= entity-cell.kind .Entity))
+        (t.is top-cell-ok)
+        (t.is (= top-cell.kind .Vector))
+        (t.is (= (count top-cell.items) 1))
+        (t.is (= top-cell.items[0].kind .Int)))
+      (vev.delete-typed-materialized-batch grouped-aggregate-value-batch))
+    (let [source (vev.resident-db-read-source (addr conn.db))
+          [implicit-pull-aggregate-batch implicit-pull-aggregate-batch-ok implicit-pull-aggregate-batch-error] (vev.materialize-source-typed-pull-aggregate-batch source ([]vev.DB-Read-Named-Source []) pull-aggregate-prepared.query ([]vev.Query-Input []) pull-aggregate-rel ([]vev.Native-Query-Fn []))]
+      (t.is implicit-pull-aggregate-batch-ok implicit-pull-aggregate-batch-error)
+      (t.is implicit-pull-aggregate-batch.ok)
+      (t.is implicit-pull-aggregate-batch.owns-values)
+      (t.is (= implicit-pull-aggregate-batch.rows 2))
+      (t.is (= (count implicit-pull-aggregate-batch.columns) 2))
+      (t.is (= (count implicit-pull-aggregate-batch.value-columns) 2))
+      (t.is implicit-pull-aggregate-batch.value-columns[0])
+      (t.is (not implicit-pull-aggregate-batch.value-columns[1]))
+      (let [[pull-cell pull-cell-ok] (vev.typed-materialized-batch-cell-value implicit-pull-aggregate-batch 0 0)
+            [aggregate-cell aggregate-cell-ok] (vev.typed-materialized-batch-cell-value implicit-pull-aggregate-batch 0 1)]
+        (t.is pull-cell-ok)
+        (t.is (= pull-cell.kind .Map))
+        (t.is aggregate-cell-ok)
+        (t.is (= aggregate-cell.kind .Int))
+        (t.is (= aggregate-cell.int-value 1)))
+      (vev.delete-typed-materialized-batch implicit-pull-aggregate-batch))
+    (let [source (vev.resident-db-read-source (addr conn.db))
+          [pull-aggregate-batch pull-aggregate-batch-ok pull-aggregate-batch-error] (vev.materialize-source-typed-pull-aggregate-batch source ([]vev.DB-Read-Named-Source []) pull-aggregate-grouped-prepared.query ([]vev.Query-Input []) pull-aggregate-grouped-rel ([]vev.Native-Query-Fn []))]
+      (t.is pull-aggregate-batch-ok pull-aggregate-batch-error)
+      (t.is pull-aggregate-batch.ok)
+      (t.is pull-aggregate-batch.owns-values)
+      (t.is (= pull-aggregate-batch.rows 2))
+      (t.is (= (count pull-aggregate-batch.columns) 3))
+      (t.is (= (count pull-aggregate-batch.value-columns) 3))
+      (t.is (not pull-aggregate-batch.value-columns[0]))
+      (t.is pull-aggregate-batch.value-columns[1])
+      (t.is (not pull-aggregate-batch.value-columns[2]))
+      (let [[entity-cell entity-cell-ok] (vev.typed-materialized-batch-cell-value pull-aggregate-batch 0 0)
+            [pull-cell pull-cell-ok] (vev.typed-materialized-batch-cell-value pull-aggregate-batch 0 1)
+            [aggregate-cell aggregate-cell-ok] (vev.typed-materialized-batch-cell-value pull-aggregate-batch 0 2)]
+        (t.is entity-cell-ok)
+        (t.is (= entity-cell.kind .Entity))
+        (t.is pull-cell-ok)
+        (t.is (= pull-cell.kind .Map))
+        (t.is aggregate-cell-ok)
+        (t.is (= aggregate-cell.kind .Int))
+        (t.is (= aggregate-cell.int-value 1)))
+      (vev.delete-typed-materialized-batch pull-aggregate-batch))
+    (let [store-db (vev.Store-DB {kind: .Resident
+                                  resident: (vev.clone-db conn.db)})
+          [store-source store-source-ok store-source-error] (vev.store-db-read-source (addr store-db))
+          [store-pull-rel _ store-pull-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns store-source ([]vev.DB-Read-Named-Source []) pull-prepared.query ([]vev.Query-Input []) ([]vev.Native-Query-Fn []))
+          [store-pull-batch store-pull-batch-ok store-pull-batch-error] (vev.materialize-source-typed-pull-batch store-source ([]vev.DB-Read-Named-Source []) pull-prepared.query ([]vev.Query-Input []) store-pull-rel ([]vev.Native-Query-Fn []))
+          [store-pull-aggregate-rel _ store-pull-aggregate-used] (vev.db-read-source-query-relation-value-typed-with-sources-inputs-and-fns store-source ([]vev.DB-Read-Named-Source []) pull-aggregate-grouped-prepared.query ([]vev.Query-Input []) ([]vev.Native-Query-Fn []))
+          [store-pull-aggregate-batch store-pull-aggregate-batch-ok store-pull-aggregate-batch-error] (vev.materialize-source-typed-pull-aggregate-batch store-source ([]vev.DB-Read-Named-Source []) pull-aggregate-grouped-prepared.query ([]vev.Query-Input []) store-pull-aggregate-rel ([]vev.Native-Query-Fn []))]
+      (t.is store-source-ok store-source-error)
+      (t.is store-pull-used)
+      (t.is store-pull-batch-ok store-pull-batch-error)
+      (t.is store-pull-batch.ok)
+      (t.is (= store-pull-batch.rows 2))
+      (t.is (= (count store-pull-batch.columns) 1))
+      (t.is store-pull-batch.value-columns[0])
+      (t.is store-pull-aggregate-used)
+      (t.is store-pull-aggregate-batch-ok store-pull-aggregate-batch-error)
+      (t.is store-pull-aggregate-batch.ok)
+      (t.is (= store-pull-aggregate-batch.rows 2))
+      (t.is (= (count store-pull-aggregate-batch.columns) 3))
+      (t.is (not store-pull-aggregate-batch.value-columns[0]))
+      (t.is store-pull-aggregate-batch.value-columns[1])
+      (t.is (not store-pull-aggregate-batch.value-columns[2]))
+      (vev.delete-typed-materialized-batch store-pull-aggregate-batch)
+      (vev.delete-query-relation store-pull-aggregate-rel)
+      (vev.delete-typed-materialized-batch store-pull-batch)
+      (vev.delete-query-relation store-pull-rel)
+      (vev.close-store-db! (addr store-db)))
+    (t.is materialized-ok)
+    (t.is (= (count materialized-rows) 2))
+    (t.is (= (count materialized-rows[0].values) 2))
+    (t.is (= (count pull-plan.materialization.columns) 1))
+    (t.is (= pull-plan.materialization.columns[0].kind .PullResultColumn))
+    (t.is (= pull-plan.materialization.columns[0].var-name "?e"))
+    (t.is (= pull-plan.materialization.columns[0].source-index 0))
+    (t.is (= pull-plan.materialization.columns[0].output-index 0))
+    (t.is (= (count aggregate-plan.materialization.columns) 1))
+    (t.is (= aggregate-plan.materialization.columns[0].kind .AggregateResultColumn))
+    (t.is (= aggregate-plan.materialization.columns[0].var-name "?e"))
+    (t.is (= aggregate-plan.materialization.columns[0].source-index 0))
+    (t.is (= aggregate-plan.materialization.columns[0].output-index 0))
+    (t.is (= (count pull-aggregate-plan.materialization.columns) 2))
+    (t.is (= pull-aggregate-plan.materialization.columns[0].kind .PullResultColumn))
+    (t.is (= pull-aggregate-plan.materialization.columns[0].var-name "?e"))
+    (t.is (= pull-aggregate-plan.materialization.columns[1].kind .AggregateResultColumn))
+    (t.is (= pull-aggregate-plan.materialization.columns[1].var-name "?a"))
+    (t.is (= pull-aggregate-plan.materialization.columns[1].output-index 1))
+    (t.is (= with-plan.materialization.shape.kind .FlatPrimitiveResult))
+    (t.is (= with-plan.materialization.shape.with-count 1))
+    (t.is (not with-plan.materialization.shape.has-distinct))
+    (t.is with-plan.has-project)
+    (t.is with-projected-ok)
+    (t.is (= (count with-projected-rel.attrs) 2))
+    (t.is (= with-projected-rel.attrs[0] "?name"))
+    (t.is (= with-projected-rel.attrs[1] "?e"))
+    (t.is (= (count with-plan.materialization.columns) 2))
+    (t.is (= with-plan.materialization.columns[0].kind .ValueResultColumn))
+    (t.is (= with-plan.materialization.columns[0].var-name "?name"))
+    (t.is (= with-plan.materialization.columns[0].output-index 0))
+    (t.is (= with-plan.materialization.columns[1].kind .WithDedupeColumn))
+    (t.is (= with-plan.materialization.columns[1].var-name "?e"))
+    (t.is (= with-plan.materialization.columns[1].source-index 0))
+    (t.is (= with-plan.materialization.columns[1].output-index -1))
+    (vev.delete-typed-materialized-batch pull-aggregate-pattern-batch)
+    (vev.delete-typed-materialized-batch pull-aggregate-materialize-batch)
+    (vev.delete-typed-materialized-batch aggregate-materialize-batch)
+    (vev.delete-typed-materialized-batch pull-materialize-batch)
+    (vev.delete-typed-materialized-batch flat-materialize-batch)
+    (vev.delete-result-rows-shallow projected-rows)
+    (vev.delete-query-relation with-projected-rel)
+    (vev.delete-query-relation projected-rel)
+    (vev.delete-result-rows-shallow materialized-rows)
+    (vev.delete-resolved-typed-flat-materialization resolved)
+    (vev.delete-typed-flat-result-plan typed-plan)
+    (vev.delete-query-relation pull-aggregate-grouped-rel)
+    (vev.delete-query-relation pull-aggregate-pattern-rel)
+    (vev.delete-query-relation pull-aggregate-rel)
+    (vev.delete-query-relation grouped-top-aggregate-rel)
+    (vev.delete-query-relation top-aggregate-rel)
+    (vev.delete-query-relation pull-rel)
+    (vev.delete-query-relation rel)
+    (vev.delete-physical-plan with-plan)
+    (vev.delete-prepared-query-shallow with-prepared)
+    (vev.delete-physical-plan pull-aggregate-plan)
+    (vev.delete-prepared-query-shallow pull-aggregate-prepared)
+    (vev.delete-prepared-query-shallow pull-aggregate-grouped-prepared)
+    (vev.delete-prepared-query-shallow pull-aggregate-pattern-prepared)
+    (vev.delete-physical-plan aggregate-plan)
+    (vev.delete-prepared-query-shallow aggregate-prepared)
+    (vev.delete-prepared-query-shallow grouped-top-aggregate-prepared)
+    (vev.delete-prepared-query-shallow top-aggregate-prepared)
+    (vev.delete-physical-plan top-aggregate-plan)
+    (vev.delete-physical-plan pull-plan)
+    (vev.delete-prepared-query-shallow pull-prepared)
+    (vev.delete-physical-plan flat-plan)
+    (vev.delete-prepared-query-shallow flat-prepared)))
+
+(t.deftest literal-range-predicate-tightens-resident-and-source-scans
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :salary 40000] [:db/add 2 :salary 60000] [:db/add 3 :salary 80000]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        resident (vev.q-text-profiled
+                   conn.db
+                   "[:find ?e ?s :where [?e :salary ?s] [(> ?s 50000)]]")
+        source-result (vev.q-text-db-read-source-profiled
+                        source
+                        "[:find ?e ?s :where [?e :salary ?s] [(> ?s 50000)]]")]
+    (t.is resident.result.ok resident.result.error)
+    (t.is (= (count resident.result.rows) 2))
+    (t.is (= resident.stats.clause-candidates 2))
+    (t.is (= resident.stats.binding-materializations 0))
+    (t.is source-result.result.ok source-result.result.error)
+    (t.is (= (count source-result.result.rows) 2))
+    (t.is (= source-result.stats.clause-candidates 2))
+    (t.is (= source-result.stats.binding-materializations 0))
+    (vev.delete-profiled-result-set-owned-values resident)
+    (vev.delete-profiled-result-set-owned-values source-result)))
+
+(t.deftest input-bound-range-predicate-tightens-resident-and-source-scans
+  (defer (free_all context.allocator))
+  (let [prepared (vev.prepare-query-text "[:find ?e ?s :in $ ?min :where [?e :salary ?s] [(> ?s ?min)]]")
+        plan (vev.physical-plan-from-query prepared.query)
+        conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 1 :salary 40000] [:db/add 2 :salary 60000] [:db/add 3 :salary 80000]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 50000))])
+        resident (vev.q-text-profiled-with-inputs
+                   conn.db
+                   "[:find ?e ?s :in $ ?min :where [?e :salary ?s] [(> ?s ?min)]]"
+                   inputs)
+        source-result (vev.q-text-db-read-source-profiled-with-inputs
+                        source
+                        "[:find ?e ?s :in $ ?min :where [?e :salary ?s] [(> ?s ?min)]]"
+                        inputs)]
+    (t.is prepared.ok prepared.error)
+    (t.is plan.ops[0].has-pushdown-scalar)
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.kind .VarVarCompare))
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.var-name "?s"))
+    (t.is (= plan.ops[0].pushdown-scalar-requirement.other-var "?min"))
+    (t.is resident.result.ok resident.result.error)
+    (t.is (= (count resident.result.rows) 2))
+    (t.is (= resident.stats.clause-candidates 2))
+    (t.is (= resident.stats.binding-materializations 0))
+    (t.is source-result.result.ok source-result.result.error)
+    (t.is (= (count source-result.result.rows) 2))
+    (t.is (= source-result.stats.clause-candidates 2))
+    (t.is (= source-result.stats.binding-materializations 0))
+    (vev.delete-physical-plan plan)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-profiled-result-set-owned-values resident)
+    (vev.delete-profiled-result-set-owned-values source-result)))
 
 (t.deftest map-relation-input-query-stays-typed
   (defer (free_all context.allocator))
@@ -375,6 +2255,10 @@
                                     source
                                     "[:find (aggregate ?agg ?age) :in $rows ?agg :where [$rows ?e :age ?age]]"
                                     aggregate-inputs)
+        profiled-top-aggregate (vev.q-text-db-read-source-profiled-with-inputs
+                                 source
+                                 "[:find [(min 2 ?age) (max 2 ?age)] :in $rows :where [$rows ?e :age ?age]]"
+                                 inputs)
         profiled-not (vev.q-text-db-read-source-profiled-with-inputs
                        source
                        "[:find ?e :in $rows :where [$rows ?e :id ?id] (not [$rows ?e :name \"Petr\"])]"
@@ -419,6 +2303,18 @@
     (t.is (= profiled-custom-aggregate.result.rows[0].values[0].items[0].int-value 50))
     (t.is (= profiled-custom-aggregate.result.rows[0].values[0].items[2].int-value 30))
     (t.is (= profiled-custom-aggregate.stats.binding-materializations 0))
+    (t.is profiled-top-aggregate.result.ok profiled-top-aggregate.result.error)
+    (t.is (= (count profiled-top-aggregate.result.rows) 1))
+    (t.is (= (count profiled-top-aggregate.result.rows[0].values) 2))
+    (t.is (= profiled-top-aggregate.result.rows[0].values[0].kind .Vector))
+    (t.is (= (count profiled-top-aggregate.result.rows[0].values[0].items) 2))
+    (t.is (= profiled-top-aggregate.result.rows[0].values[0].items[0].int-value 30))
+    (t.is (= profiled-top-aggregate.result.rows[0].values[0].items[1].int-value 41))
+    (t.is (= profiled-top-aggregate.result.rows[0].values[1].kind .Vector))
+    (t.is (= (count profiled-top-aggregate.result.rows[0].values[1].items) 2))
+    (t.is (= profiled-top-aggregate.result.rows[0].values[1].items[0].int-value 50))
+    (t.is (= profiled-top-aggregate.result.rows[0].values[1].items[1].int-value 41))
+    (t.is (= profiled-top-aggregate.stats.binding-materializations 0))
     (t.is profiled-not.result.ok profiled-not.result.error)
     (t.is (= (count profiled-not.result.rows) 2))
     (t.is (source-branch-has-int? profiled-not.result 1))
@@ -435,4 +2331,5 @@
     (t.is (source-branch-has-text? profiled.result "Oleg"))
     (t.is (= profiled.stats.input-bindings 1))
     (t.is (> profiled.stats.source-index-scans 0))
+    (t.is (= profiled.stats.max-intermediate-bindings 2))
     (t.is (= profiled.stats.binding-materializations 0))))

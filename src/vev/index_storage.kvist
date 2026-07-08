@@ -1440,6 +1440,12 @@
       (return true)))
   false)
 
+(defn shared-write-state-source-tx-data-has-unregistered-fn-call? [tx-data: []Tx-Data] -> bool
+  (for [data tx-data]
+    (when (= data.op ":db.fn/call-ident")
+      (return true)))
+  false)
+
 (defn shared-write-state-source-attr-has-tuple-schema? [source: DB-Read-Source, attr: string] -> [has-tuple: bool, ok: bool, error: string]
   (let [[tuple-attrs tuple-ok tuple-error] (db-read-source-schema-tuple-attrs source attr)]
     (when (not tuple-ok)
@@ -2393,7 +2399,9 @@
         (shared-write-state-note-source-resolve! state)
         (return (shared-write-state-resolve-source-simple-tx-data-for-tx state source (slice expanded 0))))))
   (Resolved-Tx {ok: false
-                error: "transaction shape is not supported by source-backed reports yet"
+                error: (if (shared-write-state-source-tx-data-has-unregistered-fn-call? tx-data)
+                         "transaction fn not registered"
+                         "transaction shape is not supported by source-backed reports yet")
                 ops: (make [dynamic]Tx-Op)
                 tx-meta: (make [dynamic]Tx-Meta)
                 tempids: (make [dynamic]Tempid)}))
@@ -2414,6 +2422,16 @@
             (when (> datom.tx overlay-latest)
               (set! overlay-latest datom.tx)))
           (return overlay-latest true "")))
+      (when (or (= source.kind .Shared-Datom-Log-Overlay)
+                (= source.kind .SQLite-Datom-Log-Overlay))
+        (let [overlay-latest: u64 0]
+          (for [index (arr.range 0 source.overlay-log^.count)]
+            (let [[datom datom-ok] (shared-datom-log-at source.overlay-log^ index)]
+              (when datom-ok
+                (when (> datom.tx overlay-latest)
+                  (set! overlay-latest datom.tx))
+                (delete-owned-datom datom))))
+          (return overlay-latest true "")))
       (when (or (= source.kind .Shared-Tx-Ops-Overlay)
                 (= source.kind .SQLite-Tx-Ops-Overlay))
         (return source.overlay-tx true ""))
@@ -2431,6 +2449,14 @@
           (for [overlay-datom source.overlay-datoms^]
             (when (> overlay-datom.tx out)
               (set! out overlay-datom.tx))))
+        (when (or (= source.kind .Shared-Datom-Log-Overlay)
+                  (= source.kind .SQLite-Datom-Log-Overlay))
+          (for [index (arr.range 0 source.overlay-log^.count)]
+            (let [[overlay-datom overlay-datom-ok] (shared-datom-log-at source.overlay-log^ index)]
+              (when overlay-datom-ok
+                (when (> overlay-datom.tx out)
+                  (set! out overlay-datom.tx))
+                (delete-owned-datom overlay-datom)))))
         (delete-owned-datom datom)
         (return out true "")))))
 
@@ -2598,37 +2624,24 @@
 
 (defn source-append-ops-eligible? [source: DB-Read-Source, state: Shared-Write-State, ops: []Tx-Op] -> [eligible: bool, new-entities-after-existing: bool, ok: bool, error: string]
   (let [all-new-entities (source-append-ops-all-new-entities? state.next-entity-id ops)]
-  (let [current-entity (u64 0)
-        current-attrs (set.empty string)
-        current-facts (set.empty string)
-        unique-values (set.empty string)
-        first true]
-    (defer (delete current-attrs))
-    (defer (delete current-facts))
+  (let [seen-cardinality-one-attrs (set.empty string)
+        seen-facts (set.empty string)
+        unique-values (set.empty string)]
+    (defer (delete seen-cardinality-one-attrs))
+    (defer (delete seen-facts))
     (defer (delete unique-values))
     (for [op ops]
       (when (not (= op.kind .Add))
         (return false false true ""))
       (when (tx-data-modifies-validation-schema? (Tx-Data {a: op.a}))
         (return false false true ""))
-      (when (and (not first)
-                 (< op.e current-entity))
-        (return false false true ""))
-      (when (or first
-                (not (= op.e current-entity)))
-        (when (not first)
-          (delete current-attrs)
-          (delete current-facts)
-          (set! current-attrs (set.empty string))
-          (set! current-facts (set.empty string)))
-        (set! current-entity op.e)
-        (set! first false))
       (let [[fact-key fact-ok] (op-fact-key op)]
         (when (not fact-ok)
           (return false false true ""))
-        (when (set.contains? current-facts fact-key)
+        (when (set.contains? seen-facts fact-key)
+          (delete fact-key)
           (return false false true ""))
-        (set.add! current-facts fact-key))
+        (set.add! seen-facts fact-key))
       (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source op.a)]
         (when (not many-ok)
           (return false false false many-error))
@@ -2639,20 +2652,23 @@
             (when exists
               (return false false true "")))
           (do
-            (when (set.contains? current-attrs op.a)
-              (return false false true ""))
+            (let [entity-attr (entity-attr-key op.e op.a)]
+              (when (set.contains? seen-cardinality-one-attrs entity-attr)
+                (delete entity-attr)
+                (return false false true ""))
+              (set.add! seen-cardinality-one-attrs entity-attr))
             (when (not all-new-entities)
               (let [[exists exists-ok exists-error] (shared-write-state-source-current-attr-exists? source op.e op.a)]
                 (when (not exists-ok)
                   (return false false false exists-error))
                 (when exists
-                  (return false false true ""))))))
-        (set.add! current-attrs (string-owned op.a)))
+                  (return false false true "")))))))
       (when (set.contains? state.schema-unique op.a)
         (let [[unique-key unique-key-ok] (source-append-unique-key op)]
           (when (not unique-key-ok)
             (return false false true ""))
           (when (set.contains? unique-values unique-key)
+            (delete unique-key)
             (return false false true ""))
           (set.add! unique-values unique-key))
         (let [[conflict conflict-ok conflict-error] (source-append-existing-unique-conflict? source op)]
@@ -2773,6 +2789,22 @@
   (when (= (count segment^) 0)
     (return true ""))
   (let [resolved (shared-write-state-resolve-tx-data state source (slice segment^ 0))]
+    (when (not resolved.ok)
+      (let [error resolved.error]
+        (delete-resolved-tx resolved)
+        (return false error)))
+    (append-source-resolved-tx! ops tx-meta tempids resolved)
+    (delete resolved.ops)
+    (delete resolved.tx-meta)
+    (delete resolved.tempids)
+    (delete segment^)
+    (set! segment^ (make [dynamic]Tx-Data))
+    (return true "")))
+
+(defn resolve-shared-source-tx-segment-source-only! [state: ^Shared-Write-State, source: DB-Read-Source, ops: ^[dynamic]Tx-Op, tx-meta: ^[dynamic]Tx-Meta, tempids: ^[dynamic]Tempid, segment: ^[dynamic]Tx-Data] -> [ok: bool, error: string]
+  (when (= (count segment^) 0)
+    (return true ""))
+  (let [resolved (shared-write-state-resolve-tx-data-source-only state source (slice segment^ 0))]
     (when (not resolved.ok)
       (let [error resolved.error]
         (delete-resolved-tx resolved)

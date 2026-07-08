@@ -11,6 +11,12 @@
 (import time "core:time")
 (import vev "../src/vev")
 
+(defn flag-present? [args: []string, name: string] -> bool
+  (for [arg args]
+    (when (= arg name)
+      (return true)))
+  false)
+
 (defn remove-sqlite-files [path: string]
   (os.remove path)
   (os.remove (fmt.tprintf "%s-wal" path))
@@ -29,6 +35,21 @@
         (vev.delete-tx-report-shallow report)
         (return false))
       (vev.delete-live-tx-report-shallow report)
+      true)))
+
+(defn seed-write-schema-store [store: ^vev.Store-Conn] -> bool
+  (let [tx (make [dynamic]vev.Tx-Data 0 4) :defer]
+    ;; Match Datalevin write-bench: :item/key is a plain long, not unique identity.
+    (arr.push! tx (vev.add 201 ":db/ident" (vev.value-keyword ":item/key")))
+    (arr.push! tx (vev.add 201 ":db/valueType" (vev.value-keyword ":db.type/long")))
+    (arr.push! tx (vev.add 202 ":db/ident" (vev.value-keyword ":item/value")))
+    (arr.push! tx (vev.add 202 ":db/valueType" (vev.value-keyword ":db.type/string")))
+    (let [report (vev.transact-store-report-tx-data store (slice tx 0))]
+      (when (not report.ok)
+        (fmt.printf "engine=vev-store workload=write-schema ok=false error=%s\n" report.error)
+        (vev.delete-store-tx-report report)
+        (return false))
+      (vev.delete-store-tx-report report)
       true)))
 
 (defn seed-write-schema-shared [conn: ^vev.Shared-Conn] -> bool
@@ -64,6 +85,21 @@
         (append-item-tx! (addr tx) (item-entity write-index) key revision)))
     tx))
 
+(defn item-single-tx-group [write-index: int, revision: i64] -> vev.Store-Tx-Data-Group
+  (let [tx (item-batch-tx write-index 1 revision)]
+    (vev.Store-Tx-Data-Group {tx-data: tx})))
+
+(defn item-logical-tx-groups [start-index: int, group-size: int, revision: i64] -> [dynamic]vev.Store-Tx-Data-Group
+  (let [groups (make [dynamic]vev.Store-Tx-Data-Group 0 group-size)]
+    (for [offset (arr.range 0 group-size)]
+      (arr.push! groups (item-single-tx-group (+ start-index offset) revision)))
+    groups))
+
+(defn delete-store-tx-data-groups [groups: [dynamic]vev.Store-Tx-Data-Group]
+  (for [group groups]
+    (vev.delete-store-tx-data-group group))
+  (delete groups))
+
 (defn print-write-header [workload: string, batch-size: int, total: int]
   (fmt.printf "engine=vev-sqlite workload=%s batch=%d total=%d columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms\n"
               workload
@@ -90,6 +126,128 @@
                 throughput
                 call-ms
                 commit-ms)))
+
+(defn profile-avg-ms [value-us: f64, writes: u64] -> f64
+  (if (> writes 0)
+    (/ value-us (* (f64 writes) 1000.0))
+    0.0))
+
+(defn print-store-report-write-row [written: int, inserted: int, start: time.Time, interval-start: time.Time, call-us: f64, commit-us: f64, maintenance-us: f64, commits: int, maintenance-runs: int, pending-maintenance: u64, max-merge-runs: int, eavt-root-level: i64, eavt-root-children: u64, eavt-tree-nodes: u64, eavt-tree-leaves: u64, profile: vev.SQLite-Direct-Write-Profile]
+  (let [elapsed-us (bench.elapsed-us start)
+        interval-us (bench.elapsed-us interval-start)
+        elapsed-s (/ elapsed-us 1000000.0)
+        throughput (if (> elapsed-us 0.0)
+                     (/ (* (f64 inserted) 1000000.0) elapsed-us)
+                     0.0)
+        call-ms (if (> commits 0)
+                  (/ call-us (* (f64 commits) 1000.0))
+                  0.0)
+        commit-ms (if (> commits 0)
+                    (/ commit-us (* (f64 commits) 1000.0))
+                    0.0)
+        maintenance-ms (if (> maintenance-runs 0)
+                         (/ maintenance-us (* (f64 maintenance-runs) 1000.0))
+                         0.0)
+        open-before-ms (profile-avg-ms profile.open-before-us profile.writes)
+        read-source-ms (profile-avg-ms profile.read-source-us profile.writes)
+        resolve-ms (profile-avg-ms profile.resolve-us profile.writes)
+        overlay-ms (profile-avg-ms profile.overlay-us profile.writes)
+        append-ms (profile-avg-ms profile.append-us profile.writes)
+        report-open-ms (profile-avg-ms profile.report-open-us profile.writes)
+        direct-call-ms (profile-avg-ms profile.direct-call-us profile.writes)
+        auto-maintenance-ms (profile-avg-ms profile.auto-maintenance-us profile.writes)
+        listener-ms (profile-avg-ms profile.listener-us profile.writes)
+        direct-inner-accounted-ms (+ open-before-ms read-source-ms resolve-ms overlay-ms append-ms report-open-ms)
+        direct-inner-unaccounted-ms (max 0.0 (- direct-call-ms direct-inner-accounted-ms))
+        outer-unaccounted-ms (max 0.0 (- call-ms direct-call-ms auto-maintenance-ms listener-ms))]
+    (discard interval-us)
+    (fmt.printf "%d,%.3f,%.2f,%.3f,%.3f,%.3f,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n"
+                written
+                elapsed-s
+                throughput
+                call-ms
+                commit-ms
+                maintenance-ms
+                maintenance-runs
+                pending-maintenance
+                max-merge-runs
+                eavt-root-level
+                eavt-root-children
+                eavt-tree-nodes
+                eavt-tree-leaves
+                outer-unaccounted-ms
+                direct-call-ms
+                direct-inner-unaccounted-ms
+                auto-maintenance-ms
+                listener-ms
+                open-before-ms
+                read-source-ms
+                resolve-ms
+                overlay-ms
+                append-ms
+                (profile-avg-ms profile.append-begin-us profile.writes)
+                (profile-avg-ms profile.append-tx-us profile.writes)
+                (profile-avg-ms profile.append-datoms-us profile.writes)
+                (profile-avg-ms profile.append-meta-us profile.writes)
+                (profile-avg-ms profile.append-roots-us profile.writes)
+                (profile-avg-ms profile.append-root-build-us profile.writes)
+                (profile-avg-ms profile.append-root-sort-us profile.writes)
+                (profile-avg-ms profile.append-root-check-us profile.writes)
+                (profile-avg-ms profile.append-root-persist-us profile.writes)
+                (profile-avg-ms profile.append-eavt-root-build-us profile.writes)
+                (profile-avg-ms profile.append-aevt-root-build-us profile.writes)
+                (profile-avg-ms profile.append-avet-root-build-us profile.writes)
+                (profile-avg-ms profile.append-vaet-root-build-us profile.writes)
+                (profile-avg-ms profile.append-root-publish-us profile.writes)
+                (profile-avg-ms profile.append-commit-us profile.writes)
+                report-open-ms)))
+
+(defn store-max-latest-index-merge-runs [store: ^vev.Store-Conn] -> [max-runs: int, ok: bool, error: string]
+  (let [[eavt-runs _ eavt-ok eavt-error] (vev.store-latest-index-merge-run-count store ":eavt")]
+    (when (not eavt-ok)
+      (return 0 false eavt-error))
+    (let [[aevt-runs _ aevt-ok aevt-error] (vev.store-latest-index-merge-run-count store ":aevt")]
+      (when (not aevt-ok)
+        (return 0 false aevt-error))
+      (let [[avet-runs _ avet-ok avet-error] (vev.store-latest-index-merge-run-count store ":avet")]
+        (when (not avet-ok)
+          (return 0 false avet-error))
+        (let [[vaet-runs _ vaet-ok vaet-error] (vev.store-latest-index-merge-run-count store ":vaet")]
+          (if vaet-ok
+            (return (max (max eavt-runs aevt-runs) (max avet-runs vaet-runs)) true "")
+            (return 0 false vaet-error)))))))
+
+(defn maintain-store-report-bench! [store: ^vev.Store-Conn, maintain-steps: int, maintain-target: int] -> [steps: int, compacted: bool, pending: u64, ok: bool, error: string]
+  (if (>= maintain-target 0)
+    (vev.maintain-store-indexes-to-target! store maintain-steps (u64 maintain-target))
+    (let [[blind-steps blind-compacted blind-ok blind-error] (vev.maintain-store-indexes! store maintain-steps)
+          [blind-pending pending-ok pending-error] (vev.store-index-maintenance-count store)]
+      (if blind-ok
+        (return blind-steps blind-compacted blind-pending pending-ok pending-error)
+        (return blind-steps blind-compacted blind-pending blind-ok blind-error)))))
+
+(defn drain-store-report-maintenance! [store: ^vev.Store-Conn, max-steps-per-pass: int] -> [passes: int, steps: int, pending: u64, ok: bool, error: string]
+  (let [pass-count 0
+        total-steps 0
+        pending-count: u64 0]
+    (while true
+      (let [[before-pending before-ok before-error] (vev.store-index-maintenance-count store)]
+        (when (not before-ok)
+          (return pass-count total-steps pending-count false before-error))
+        (set! pending-count before-pending)
+        (when (= pending-count 0)
+          (return pass-count total-steps pending-count true ""))
+        (let [[steps _compacted after-pending maintain-ok maintain-error] (vev.maintain-store-indexes-to-target! store max-steps-per-pass (u64 0))]
+          (when (not maintain-ok)
+            (return pass-count total-steps after-pending false maintain-error))
+          (set! pass-count (+ pass-count 1))
+          (set! total-steps (+ total-steps steps))
+          (set! pending-count after-pending)
+          (when (= pending-count 0)
+            (return pass-count total-steps pending-count true ""))
+          (when (= steps 0)
+            (return pass-count total-steps pending-count false "deferred maintenance made no progress")))))
+    (return pass-count total-steps pending-count true "")))
 
 (defn measure-pure-write [path: string, batch-size: int, total: int, report-every: int]
   (remove-sqlite-files path)
@@ -136,6 +294,123 @@
             (set! commits 0)
             (set! interval-start (time.now))))))
     (vev.close-sqlite-conn store)))
+
+(defn measure-pure-store-report-write [path: string, batch-size: int, total: int, report-every: int, compact-every: int, maintain-every: int, maintain-steps: int, maintain-target: int, auto-maintain-steps: int, auto-maintain-target: int, auto-maintain-trigger: int]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-store path)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" open-error)
+      (return))
+    (when (not (seed-write-schema-store (addr store)))
+      (vev.close-store store)
+      (return))
+    (when (> auto-maintain-steps 0)
+      (let [target (max 0 auto-maintain-target)
+            trigger (if (>= auto-maintain-trigger 0)
+                      (max (+ target 1) auto-maintain-trigger)
+                      (+ target 1))
+            [auto-ok auto-error] (vev.configure-store-auto-maintenance-threshold! (addr store) auto-maintain-steps (u64 target) (u64 trigger))]
+        (when (not auto-ok)
+          (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" auto-error)
+          (vev.close-store store)
+          (return))))
+    (fmt.printf "engine=vev-store workload=pure-store-report batch=%d total=%d compact_every=%d maintain_every=%d maintain_steps=%d maintain_target=%d auto_maintain_steps=%d auto_maintain_target=%d auto_maintain_trigger=%d columns=writes,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,maintenance_latency_ms,maintenance_runs,pending_maintenance,max_merge_runs,eavt_root_level,eavt_root_children,eavt_tree_nodes,eavt_tree_leaves,outer_unaccounted_ms,direct_call_ms,direct_inner_unaccounted_ms,auto_maintenance_ms,listener_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,append_begin_ms,append_tx_ms,append_datoms_ms,append_meta_ms,append_roots_ms,append_root_build_ms,append_root_sort_ms,append_root_check_ms,append_root_persist_ms,append_eavt_root_build_ms,append_aevt_root_build_ms,append_avet_root_build_ms,append_vaet_root_build_ms,append_root_publish_ms,append_commit_ms,report_open_ms\n"
+                batch-size
+                total
+                compact-every
+                maintain-every
+                maintain-steps
+                maintain-target
+                auto-maintain-steps
+                auto-maintain-target
+                auto-maintain-trigger)
+    (vev.reset-store-direct-write-profile! (addr store))
+    (let [start (time.now)
+          interval-start start
+          call-us 0.0
+          commit-us 0.0
+          maintenance-us 0.0
+          commits 0
+          maintenance-runs 0
+          inserted 0
+          written 0]
+      (while (< written total)
+        (let [remaining (- total written)
+              actual-batch (min batch-size remaining)
+              tx (item-batch-tx (+ written 1) actual-batch 0)
+              before (time.now)
+              report (vev.transact-store-report-tx-data (addr store) (slice tx 0))
+              elapsed (bench.elapsed-us before)]
+          (set! call-us (+ call-us elapsed))
+          (set! commit-us (+ commit-us elapsed))
+          (set! commits (+ commits 1))
+          (when (not report.ok)
+            (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" report.error)
+            (vev.delete-store-tx-report report)
+            (delete tx)
+            (vev.close-store store)
+            (return))
+          (vev.delete-store-tx-report report)
+          (delete tx)
+          (set! inserted (+ inserted actual-batch))
+          (set! written (+ written actual-batch))
+          (when (and (> compact-every 0)
+                     (= (% written compact-every) 0))
+            (let [maintenance-before (time.now)
+                  [compacted compact-ok compact-error] (vev.compact-store-indexes! (addr store))
+                  maintenance-elapsed (bench.elapsed-us maintenance-before)]
+              (discard compacted)
+              (set! maintenance-us (+ maintenance-us maintenance-elapsed))
+              (set! maintenance-runs (+ maintenance-runs 1))
+              (when (not compact-ok)
+                (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" compact-error)
+                (vev.close-store store)
+                (return))))
+          (when (and (> maintain-every 0)
+                     (= (% written maintain-every) 0))
+            (let [maintenance-before (time.now)
+                  [steps maintained pending-after-target maintain-ok maintain-error] (maintain-store-report-bench! (addr store) maintain-steps maintain-target)
+                  maintenance-elapsed (bench.elapsed-us maintenance-before)]
+              (discard maintained)
+              (discard pending-after-target)
+              (set! maintenance-us (+ maintenance-us maintenance-elapsed))
+              (set! maintenance-runs (+ maintenance-runs steps))
+              (when (not maintain-ok)
+                (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" maintain-error)
+                (vev.close-store store)
+                (return))))
+          (when (or (= written total)
+                    (= (% written report-every) 0))
+            (let [[pending pending-ok pending-error] (vev.store-index-maintenance-count (addr store))]
+              (when (not pending-ok)
+                (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" pending-error)
+                (vev.close-store store)
+                (return))
+              (let [[max-runs max-runs-ok max-runs-error] (store-max-latest-index-merge-runs (addr store))]
+                (when (not max-runs-ok)
+                  (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" max-runs-error)
+                  (vev.close-store store)
+                  (return))
+                (let [[eavt-root-children eavt-root-children-ok eavt-root-children-error] (vev.store-latest-index-root-child-count (addr store) ":eavt")]
+                  (when (not eavt-root-children-ok)
+                    (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" eavt-root-children-error)
+                    (vev.close-store store)
+                    (return))
+                  (let [[eavt-tree-nodes eavt-tree-leaves eavt-root-level eavt-tree-ok eavt-tree-error] (vev.store-latest-index-root-tree-stats (addr store) ":eavt")]
+                    (when (not eavt-tree-ok)
+                      (fmt.printf "engine=vev-store workload=pure-store-report ok=false error=%s\n" eavt-tree-error)
+                      (vev.close-store store)
+                      (return))
+                    (let [profile (vev.store-direct-write-profile (addr store))]
+                      (print-store-report-write-row written inserted start interval-start call-us commit-us maintenance-us commits maintenance-runs pending max-runs eavt-root-level eavt-root-children eavt-tree-nodes eavt-tree-leaves profile)
+                      (vev.reset-store-direct-write-profile! (addr store)))))))
+            (set! call-us 0.0)
+            (set! commit-us 0.0)
+            (set! maintenance-us 0.0)
+            (set! commits 0)
+            (set! maintenance-runs 0)
+            (set! interval-start (time.now))))))
+    (vev.close-store store)))
 
 (defn lcg-next [state: u64] -> u64
   (+ (* state (u64 6364136223846793005)) (u64 1442695040888963407)))
@@ -274,6 +549,56 @@
                 call-ms
                 commit-ms
                 snapshot-ms)))
+
+(defn print-store-db-heavy-profile-row [written: int, retained: int, inserted: int, start: time.Time, interval-start: time.Time, call-us: f64, commit-us: f64, snapshot-us: f64, commits: int, profile: vev.SQLite-Direct-Write-Profile]
+  (let [elapsed-us (bench.elapsed-us start)
+        interval-us (bench.elapsed-us interval-start)
+        elapsed-s (/ elapsed-us 1000000.0)
+        throughput (if (> elapsed-us 0.0)
+                     (/ (* (f64 inserted) 1000000.0) elapsed-us)
+                     0.0)
+        call-ms (if (> commits 0)
+                  (/ call-us (* (f64 commits) 1000.0))
+                  0.0)
+        commit-ms (if (> commits 0)
+                    (/ commit-us (* (f64 commits) 1000.0))
+                    0.0)
+        snapshot-ms (if (> commits 0)
+                      (/ snapshot-us (* (f64 commits) 1000.0))
+                      0.0)
+        direct-call-ms (profile-avg-ms profile.direct-call-us profile.writes)
+        open-before-ms (profile-avg-ms profile.open-before-us profile.writes)
+        read-source-ms (profile-avg-ms profile.read-source-us profile.writes)
+        resolve-ms (profile-avg-ms profile.resolve-us profile.writes)
+        overlay-ms (profile-avg-ms profile.overlay-us profile.writes)
+        append-ms (profile-avg-ms profile.append-us profile.writes)
+        report-open-ms (profile-avg-ms profile.report-open-us profile.writes)
+        append-roots-ms (profile-avg-ms profile.append-roots-us profile.writes)
+        append-root-build-ms (profile-avg-ms profile.append-root-build-us profile.writes)
+        append-root-persist-ms (profile-avg-ms profile.append-root-persist-us profile.writes)
+        append-root-publish-ms (profile-avg-ms profile.append-root-publish-us profile.writes)
+        append-commit-ms (profile-avg-ms profile.append-commit-us profile.writes)]
+    (discard interval-us)
+    (fmt.printf "%d,%d,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n"
+                written
+                retained
+                elapsed-s
+                throughput
+                call-ms
+                commit-ms
+                snapshot-ms
+                direct-call-ms
+                open-before-ms
+                read-source-ms
+                resolve-ms
+                overlay-ms
+                append-ms
+                report-open-ms
+                append-roots-ms
+                append-root-build-ms
+                append-root-persist-ms
+                append-root-publish-ms
+                append-commit-ms)))
 
 (defn measure-snapshot-heavy-write [path: string, batch-size: int, total: int, report-every: int]
   (remove-sqlite-files path)
@@ -464,9 +789,500 @@
     (delete-retained-store-dbs retained)
     (vev.close-store store)))
 
+(defn measure-sqlite-store-db-heavy-write [path: string, batch-size: int, total: int, report-every: int, keep?: bool, durability-mode: string]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-store path)
+        retained (make [dynamic]vev.Store-DB)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=sqlite-store-db-heavy ok=false error=%s\n" open-error)
+      (delete retained)
+      (return))
+    (let [[durability-ok durability-error] (vev.configure-store-durability! (addr store) durability-mode)]
+      (when (not durability-ok)
+        (fmt.printf "engine=vev-store workload=sqlite-store-db-heavy ok=false error=%s\n" durability-error)
+        (delete retained)
+        (vev.close-store store)
+        (return)))
+    (when (not (seed-write-schema-store (addr store)))
+      (delete retained)
+      (vev.close-store store)
+      (when (not keep?)
+        (remove-sqlite-files path))
+      (return))
+    (fmt.printf "engine=vev-store workload=sqlite-store-db-heavy batch=%d total=%d durability=%s columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms,direct_call_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,report_open_ms,append_roots_ms,append_root_build_ms,append_root_persist_ms,append_root_publish_ms,append_commit_ms\n"
+                batch-size
+                total
+                durability-mode)
+    (vev.reset-store-direct-write-profile! (addr store))
+    (let [start (time.now)
+          interval-start start
+          call-us 0.0
+          commit-us 0.0
+          snapshot-us 0.0
+          commits 0
+          inserted 0
+          written 0]
+      (while (< written total)
+        (let [remaining (- total written)
+              actual-batch (min batch-size remaining)
+              tx (item-batch-tx (+ written 1) actual-batch 0)
+              before (time.now)
+              report (vev.transact-store-report-tx-data (addr store) (slice tx 0))
+              commit-elapsed (bench.elapsed-us before)]
+          (set! call-us (+ call-us commit-elapsed))
+          (set! commit-us (+ commit-us commit-elapsed))
+          (set! commits (+ commits 1))
+          (when (not report.ok)
+            (fmt.printf "engine=vev-store workload=sqlite-store-db-heavy ok=false error=%s\n" report.error)
+            (vev.delete-store-tx-report report)
+            (delete tx)
+            (delete-retained-store-dbs retained)
+            (vev.close-store store)
+            (when (not keep?)
+              (remove-sqlite-files path))
+            (return))
+          (delete tx)
+          (let [snapshot-before (time.now)
+                retained-after (vev.retain-store-db report.db-after)
+                snapshot-elapsed (bench.elapsed-us snapshot-before)]
+            (arr.push! retained retained-after)
+            (set! call-us (+ call-us snapshot-elapsed))
+            (set! snapshot-us (+ snapshot-us snapshot-elapsed)))
+          (vev.delete-store-tx-report report)
+          (set! inserted (+ inserted actual-batch))
+          (set! written (+ written actual-batch))
+          (when (or (= written total)
+                    (= (% written report-every) 0))
+            (let [profile (vev.store-direct-write-profile (addr store))]
+              (print-store-db-heavy-profile-row written (count retained) inserted start interval-start call-us commit-us snapshot-us commits profile)
+              (vev.reset-store-direct-write-profile! (addr store)))
+            (set! call-us 0.0)
+            (set! commit-us 0.0)
+            (set! snapshot-us 0.0)
+            (set! commits 0)
+            (set! interval-start (time.now))))))
+    (delete-retained-store-dbs retained)
+    (vev.close-store store)
+    (when (not keep?)
+      (remove-sqlite-files path))))
+
+(defn measure-sqlite-store-db-heavy-group-commit-write [path: string, group-size: int, total: int, report-every: int, keep?: bool, durability-mode: string]
+  (remove-sqlite-files path)
+  (let [[store open-ok open-error] (vev.open-store path)
+        retained (make [dynamic]vev.Store-DB)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=sqlite-store-db-heavy-group-commit ok=false error=%s\n" open-error)
+      (delete retained)
+      (return))
+    (let [[durability-ok durability-error] (vev.configure-store-durability! (addr store) durability-mode)]
+      (when (not durability-ok)
+        (fmt.printf "engine=vev-store workload=sqlite-store-db-heavy-group-commit ok=false error=%s\n" durability-error)
+        (delete retained)
+        (vev.close-store store)
+        (return)))
+    (when (not (seed-write-schema-store (addr store)))
+      (delete retained)
+      (vev.close-store store)
+      (when (not keep?)
+        (remove-sqlite-files path))
+      (return))
+    (fmt.printf "engine=vev-store workload=sqlite-store-db-heavy-group-commit group=%d total=%d durability=%s columns=writes,retained_snapshots,elapsed_s,throughput_writes_per_s,call_latency_ms,commit_latency_ms,snapshot_latency_ms,direct_call_ms,open_before_ms,read_source_ms,resolve_ms,overlay_ms,append_ms,report_open_ms,append_roots_ms,append_root_build_ms,append_root_persist_ms,append_root_publish_ms,append_commit_ms\n"
+                group-size
+                total
+                durability-mode)
+    (vev.reset-store-direct-write-profile! (addr store))
+    (let [start (time.now)
+          interval-start start
+          call-us 0.0
+          commit-us 0.0
+          snapshot-us 0.0
+          commits 0
+          inserted 0
+          written 0]
+      (while (< written total)
+        (let [remaining (- total written)
+              actual-group (min group-size remaining)
+              groups (item-logical-tx-groups (+ written 1) actual-group 0)
+              before (time.now)
+              [reports reports-ok reports-error] (vev.transact-store-report-logical-tx-data-groups (addr store) (slice groups 0))
+              commit-elapsed (bench.elapsed-us before)]
+          (set! call-us (+ call-us commit-elapsed))
+          (set! commit-us (+ commit-us commit-elapsed))
+          (set! commits (+ commits 1))
+          (when (not reports-ok)
+            (fmt.printf "engine=vev-store workload=sqlite-store-db-heavy-group-commit ok=false error=%s\n" reports-error)
+            (delete-store-tx-data-groups groups)
+            (vev.delete-store-tx-reports reports)
+            (delete-retained-store-dbs retained)
+            (vev.close-store store)
+            (when (not keep?)
+              (remove-sqlite-files path))
+            (return))
+          (for [report reports]
+            (let [snapshot-before (time.now)
+                  retained-after (vev.retain-store-db report.db-after)
+                  snapshot-elapsed (bench.elapsed-us snapshot-before)]
+              (arr.push! retained retained-after)
+              (set! call-us (+ call-us snapshot-elapsed))
+              (set! snapshot-us (+ snapshot-us snapshot-elapsed))))
+          (vev.delete-store-tx-reports reports)
+          (delete-store-tx-data-groups groups)
+          (set! inserted (+ inserted actual-group))
+          (set! written (+ written actual-group))
+          (when (or (= written total)
+                    (= (% written report-every) 0))
+            (let [profile (vev.store-direct-write-profile (addr store))]
+              (print-store-db-heavy-profile-row written (count retained) inserted start interval-start call-us commit-us snapshot-us commits profile)
+              (vev.reset-store-direct-write-profile! (addr store)))
+            (set! call-us 0.0)
+            (set! commit-us 0.0)
+            (set! snapshot-us 0.0)
+            (set! commits 0)
+            (set! interval-start (time.now))))))
+    (delete-retained-store-dbs retained)
+    (vev.close-store store)
+    (when (not keep?)
+      (remove-sqlite-files path))))
+
 (defn run-pure-workload [path: string, batch-size: int, total: int, report-every: int]
   (measure-pure-write path batch-size total report-every)
   (remove-sqlite-files path))
+
+(defn run-pure-store-report-workload [path: string, batch-size: int, total: int, report-every: int, compact-every: int, maintain-every: int, maintain-steps: int, maintain-target: int, auto-maintain-steps: int, auto-maintain-target: int, auto-maintain-trigger: int, keep?: bool]
+  (measure-pure-store-report-write path batch-size total report-every compact-every maintain-every maintain-steps maintain-target auto-maintain-steps auto-maintain-target auto-maintain-trigger)
+  (when (not keep?)
+    (remove-sqlite-files path)))
+
+(defn run-pure-store-report-deferred-workload [path: string, batch-size: int, total: int, report-every: int, deferred-maintain-steps: int]
+  (measure-pure-store-report-write path batch-size total report-every 0 0 1 -1 0 0 -1)
+  (let [[store open-ok open-error] (vev.open-store path)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=pure-store-report-deferred-maintenance ok=false error=%s\n" open-error)
+      (remove-sqlite-files path)
+      (return))
+    (let [[pending-before pending-before-ok pending-before-error] (vev.store-index-maintenance-count (addr store))]
+      (when (not pending-before-ok)
+        (fmt.printf "engine=vev-store workload=pure-store-report-deferred-maintenance ok=false error=%s\n" pending-before-error)
+        (vev.close-store store)
+        (remove-sqlite-files path)
+        (return))
+      (let [before (time.now)
+            [passes steps pending-after drain-ok drain-error] (drain-store-report-maintenance! (addr store) deferred-maintain-steps)
+            elapsed-us (bench.elapsed-us before)
+            elapsed-ms (/ elapsed-us 1000.0)]
+        (if drain-ok
+          (fmt.printf "engine=vev-store workload=pure-store-report-deferred-maintenance batch=%d total=%d maintain_steps=%d columns=pending_before,pending_after,passes,steps,elapsed_ms\n%d,%d,%d,%d,%.3f\n"
+                      batch-size
+                      total
+                      deferred-maintain-steps
+                      pending-before
+                      pending-after
+                      passes
+                      steps
+                      elapsed-ms)
+          (fmt.printf "engine=vev-store workload=pure-store-report-deferred-maintenance ok=false pending_before=%d pending_after=%d passes=%d steps=%d error=%s\n"
+                      pending-before
+                      pending-after
+                      passes
+                      steps
+                      drain-error))))
+    (vev.close-store store))
+  (remove-sqlite-files path))
+
+(defn print-manifest-read-timing [workload: string, total: int, samples: []f64]
+  (let [timing (bench.timing-from-samples samples)]
+    (fmt.printf
+      "engine=vev-store workload=%s total=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f samples=%d\n"
+      workload
+      total
+      timing.min-us
+      timing.median-us
+      timing.p90-us
+      timing.max-us
+      (count samples))))
+
+(defn print-manifest-retained-read-timing [workload: string, total: int, samples: []f64, cache-before: int, cache-after-warm: int, cache-after: int]
+  (let [timing (bench.timing-from-samples samples)]
+    (fmt.printf
+      "engine=vev-store workload=%s total=%d min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f samples=%d cache_before=%d cache_after_warm=%d cache_after=%d\n"
+      workload
+      total
+      timing.min-us
+      timing.median-us
+      timing.p90-us
+      timing.max-us
+      (count samples)
+      cache-before
+      cache-after-warm
+      cache-after)))
+
+(defn measure-manifest-chain-open [path: string, total: int, sample-count: int]
+  (let [samples (make [dynamic]f64 0 sample-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            [store open-ok open-error] (vev.open-store-read-only path)
+            elapsed (bench.elapsed-us start)]
+        (when (not open-ok)
+          (fmt.printf "engine=vev-store workload=manifest-chain-open ok=false error=%s\n" open-error)
+          (vev.close-store store)
+          (return))
+        (vev.close-store store)
+        (arr.push! samples elapsed)))
+    (print-manifest-read-timing "manifest-chain-open" total (slice samples 0))))
+
+(defn measure-manifest-chain-store-query [path: string, total: int, sample-count: int, workload-name: string]
+  (let [[store open-ok open-error] (vev.open-store-read-only path)
+        samples (make [dynamic]f64 0 sample-count)
+        prepared (vev.prepare-query-text "[:find ?v :where [?e :item/value ?v]]")]
+    (defer (delete samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=manifest-chain-store-query ok=false error=%s\n" open-error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store store)
+      (return))
+    (when (not prepared.ok)
+      (fmt.printf "engine=vev-store workload=manifest-chain-store-query ok=false error=%s\n" prepared.error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store store)
+      (return))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            result (vev.q-result-store-prepared (addr store) prepared)
+            elapsed (bench.elapsed-us start)]
+        (when (or (not result.result.ok)
+                  (not (= (count result.result.rows) total)))
+          (fmt.printf "engine=vev-store workload=manifest-chain-store-query ok=false expected=%d actual=%d error=%s\n" total (count result.result.rows) result.result.error)
+          (vev.delete-query-result result)
+          (vev.delete-prepared-query-shallow prepared)
+          (vev.close-store store)
+          (return))
+        (vev.delete-query-result result)
+        (arr.push! samples elapsed)))
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.close-store store)
+    (print-manifest-read-timing workload-name total (slice samples 0))))
+
+(defn measure-manifest-chain-store-selective-query [path: string, total: int, sample-count: int, workload-name: string]
+  (let [key (i64 (* (/ total 2) 2))
+        query-text (fmt.tprintf "[:find ?v :where [?e :item/key %d] [?e :item/value ?v]]" key)
+        [store open-ok open-error] (vev.open-store-read-only path)
+        samples (make [dynamic]f64 0 sample-count)
+        prepared (vev.prepare-query-text query-text)]
+    (defer (delete samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=%s ok=false error=%s\n" workload-name open-error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store store)
+      (return))
+    (when (not prepared.ok)
+      (fmt.printf "engine=vev-store workload=%s ok=false error=%s\n" workload-name prepared.error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store store)
+      (return))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            result (vev.q-result-store-prepared (addr store) prepared)
+            elapsed (bench.elapsed-us start)]
+        (when (or (not result.result.ok)
+                  (not (= (count result.result.rows) 1)))
+          (fmt.printf "engine=vev-store workload=%s ok=false expected=1 actual=%d error=%s\n" workload-name (count result.result.rows) result.result.error)
+          (vev.delete-query-result result)
+          (vev.delete-prepared-query-shallow prepared)
+          (vev.close-store store)
+          (return))
+        (vev.delete-query-result result)
+        (arr.push! samples elapsed)))
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.close-store store)
+    (print-manifest-read-timing workload-name total (slice samples 0))))
+
+(defn measure-manifest-chain-store-db-query [path: string, total: int, sample-count: int, workload-name: string]
+  (let [[store open-ok open-error] (vev.open-store-read-only path)
+        samples (make [dynamic]f64 0 sample-count)
+        prepared (vev.prepare-query-text "[:find ?v :where [?e :item/value ?v]]")
+        [snapshot snapshot-ok snapshot-error] (vev.store-db (addr store))]
+    (defer (delete samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=manifest-chain-store-db-query ok=false error=%s\n" open-error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (when (not snapshot-ok)
+      (fmt.printf "engine=vev-store workload=manifest-chain-store-db-query ok=false error=%s\n" snapshot-error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (when (not prepared.ok)
+      (fmt.printf "engine=vev-store workload=manifest-chain-store-db-query ok=false error=%s\n" prepared.error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            result (vev.q-result-store-db-prepared (addr snapshot) prepared)
+            elapsed (bench.elapsed-us start)]
+        (when (or (not result.result.ok)
+                  (not (= (count result.result.rows) total)))
+          (fmt.printf "engine=vev-store workload=manifest-chain-store-db-query ok=false expected=%d actual=%d error=%s\n" total (count result.result.rows) result.result.error)
+          (vev.delete-query-result result)
+          (vev.delete-prepared-query-shallow prepared)
+          (vev.close-store-db! (addr snapshot))
+          (vev.close-store store)
+          (return))
+        (vev.delete-query-result result)
+        (arr.push! samples elapsed)))
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.close-store-db! (addr snapshot))
+    (vev.close-store store)
+    (print-manifest-read-timing workload-name total (slice samples 0))))
+
+(defn measure-manifest-chain-retained-store-db-query [path: string, total: int, sample-count: int, workload-name: string, query-text: string, expected-rows: int]
+  (let [[store open-ok open-error] (vev.open-store-read-only path)
+        samples (make [dynamic]f64 0 sample-count)
+        prepared (vev.prepare-query-text query-text)
+        [snapshot snapshot-ok snapshot-error] (vev.store-db (addr store))]
+    (defer (delete samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=%s ok=false error=%s\n" workload-name open-error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (when (not snapshot-ok)
+      (fmt.printf "engine=vev-store workload=%s ok=false error=%s\n" workload-name snapshot-error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (when (not prepared.ok)
+      (fmt.printf "engine=vev-store workload=%s ok=false error=%s\n" workload-name prepared.error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (let [retained (vev.retain-store-db snapshot)
+          cache-before (vev.store-db-sqlite-page-cache-count (addr retained))
+          warm-result (vev.q-result-store-db-prepared (addr snapshot) prepared)]
+      (when (or (not warm-result.result.ok)
+                (not (= (count warm-result.result.rows) expected-rows)))
+        (fmt.printf "engine=vev-store workload=%s ok=false expected=%d actual=%d error=%s\n" workload-name expected-rows (count warm-result.result.rows) warm-result.result.error)
+        (vev.delete-query-result warm-result)
+        (vev.close-store-db! (addr retained))
+        (vev.delete-prepared-query-shallow prepared)
+        (vev.close-store-db! (addr snapshot))
+        (vev.close-store store)
+        (return))
+      (vev.delete-query-result warm-result)
+      (let [cache-after-warm (vev.store-db-sqlite-page-cache-count (addr retained))]
+        (for [sample-index (arr.range 0 sample-count)]
+          (let [start (time.now)
+                result (vev.q-result-store-db-prepared (addr retained) prepared)
+                elapsed (bench.elapsed-us start)]
+            (when (or (not result.result.ok)
+                      (not (= (count result.result.rows) expected-rows)))
+              (fmt.printf "engine=vev-store workload=%s ok=false expected=%d actual=%d error=%s\n" workload-name expected-rows (count result.result.rows) result.result.error)
+              (vev.delete-query-result result)
+              (vev.close-store-db! (addr retained))
+              (vev.delete-prepared-query-shallow prepared)
+              (vev.close-store-db! (addr snapshot))
+              (vev.close-store store)
+              (return))
+            (vev.delete-query-result result)
+            (arr.push! samples elapsed)))
+        (print-manifest-retained-read-timing workload-name total (slice samples 0) cache-before cache-after-warm (vev.store-db-sqlite-page-cache-count (addr retained))))
+      (vev.close-store-db! (addr retained)))
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.close-store-db! (addr snapshot))
+    (vev.close-store store)))
+
+(defn measure-manifest-chain-store-db-selective-query [path: string, total: int, sample-count: int, workload-name: string]
+  (let [key (i64 (* (/ total 2) 2))
+        query-text (fmt.tprintf "[:find ?v :where [?e :item/key %d] [?e :item/value ?v]]" key)
+        [store open-ok open-error] (vev.open-store-read-only path)
+        samples (make [dynamic]f64 0 sample-count)
+        prepared (vev.prepare-query-text query-text)
+        [snapshot snapshot-ok snapshot-error] (vev.store-db (addr store))]
+    (defer (delete samples))
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=%s ok=false error=%s\n" workload-name open-error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (when (not snapshot-ok)
+      (fmt.printf "engine=vev-store workload=%s ok=false error=%s\n" workload-name snapshot-error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (when (not prepared.ok)
+      (fmt.printf "engine=vev-store workload=%s ok=false error=%s\n" workload-name prepared.error)
+      (vev.delete-prepared-query-shallow prepared)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store store)
+      (return))
+    (for [sample-index (arr.range 0 sample-count)]
+      (let [start (time.now)
+            result (vev.q-result-store-db-prepared (addr snapshot) prepared)
+            elapsed (bench.elapsed-us start)]
+        (when (or (not result.result.ok)
+                  (not (= (count result.result.rows) 1)))
+          (fmt.printf "engine=vev-store workload=%s ok=false expected=1 actual=%d error=%s\n" workload-name (count result.result.rows) result.result.error)
+          (vev.delete-query-result result)
+          (vev.delete-prepared-query-shallow prepared)
+          (vev.close-store-db! (addr snapshot))
+          (vev.close-store store)
+          (return))
+        (vev.delete-query-result result)
+        (arr.push! samples elapsed)))
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.close-store-db! (addr snapshot))
+    (vev.close-store store)
+    (print-manifest-read-timing workload-name total (slice samples 0))))
+
+(defn measure-manifest-chain-compaction [path: string, total: int]
+  (let [[store open-ok open-error] (vev.open-store path)]
+    (when (not open-ok)
+      (fmt.printf "engine=vev-store workload=manifest-chain-compact ok=false error=%s\n" open-error)
+      (vev.close-store store)
+      (return))
+    (let [start (time.now)
+          [compacted compact-ok compact-error] (vev.compact-store-indexes! (addr store))
+          elapsed (bench.elapsed-us start)]
+      (if compact-ok
+        (fmt.printf
+          "engine=vev-store workload=manifest-chain-compact total=%d elapsed_us=%.0f compacted=%v\n"
+          total
+          elapsed
+          compacted)
+        (fmt.printf "engine=vev-store workload=manifest-chain-compact ok=false error=%s\n" compact-error)))
+    (vev.close-store store)))
+
+(defn run-manifest-chain-read-workload [path: string, batch-size: int, total: int, report-every: int, sample-count: int, auto-maintain-steps: int, auto-maintain-target: int, auto-maintain-trigger: int, keep?: bool]
+  (measure-pure-store-report-write path batch-size total report-every 0 0 1 -1 auto-maintain-steps auto-maintain-target auto-maintain-trigger)
+  (let [selective-query (fmt.tprintf "[:find ?v :where [?e :item/key %d] [?e :item/value ?v]]" (i64 (* (/ total 2) 2)))]
+    (measure-manifest-chain-open path total sample-count)
+    (measure-manifest-chain-store-query path total sample-count "manifest-chain-store-query")
+    (measure-manifest-chain-store-db-query path total sample-count "manifest-chain-store-db-query")
+    (measure-manifest-chain-retained-store-db-query path total sample-count "manifest-chain-retained-store-db-query" "[:find ?v :where [?e :item/value ?v]]" total)
+    (measure-manifest-chain-store-selective-query path total sample-count "manifest-chain-store-selective-query")
+    (measure-manifest-chain-store-db-selective-query path total sample-count "manifest-chain-store-db-selective-query")
+    (measure-manifest-chain-retained-store-db-query path total sample-count "manifest-chain-retained-store-db-selective-query" selective-query 1))
+  (measure-manifest-chain-compaction path total)
+  (measure-manifest-chain-open path total sample-count)
+  (let [selective-query (fmt.tprintf "[:find ?v :where [?e :item/key %d] [?e :item/value ?v]]" (i64 (* (/ total 2) 2)))]
+    (measure-manifest-chain-store-query path total sample-count "manifest-chain-store-query-compacted")
+    (measure-manifest-chain-store-db-query path total sample-count "manifest-chain-store-db-query-compacted")
+    (measure-manifest-chain-retained-store-db-query path total sample-count "manifest-chain-retained-store-db-query-compacted" "[:find ?v :where [?e :item/value ?v]]" total)
+    (measure-manifest-chain-store-selective-query path total sample-count "manifest-chain-store-selective-query-compacted")
+    (measure-manifest-chain-store-db-selective-query path total sample-count "manifest-chain-store-db-selective-query-compacted")
+    (measure-manifest-chain-retained-store-db-query path total sample-count "manifest-chain-retained-store-db-selective-query-compacted" selective-query 1))
+  (when (not keep?)
+    (remove-sqlite-files path)))
 
 (defn run-all-pure-workloads [base-path: string, total: int, report-every: int]
   (let [batch-sizes ([]int [1 10 100 1000])
@@ -484,34 +1300,59 @@
         mixed-operations (max 1 (cli.int-option os.args "--mixed-operations" (* total 2)))
         seed-batch (max 1 (cli.int-option os.args "--seed-batch" 100))
         selected-batch (cli.int-option os.args "--batch" 0)
+        compact-every (max 0 (cli.int-option os.args "--compact-every" 0))
+        maintain-every (max 0 (cli.int-option os.args "--maintain-every" 0))
+        maintain-steps (max 1 (cli.int-option os.args "--maintain-steps" 1))
+        maintain-target (cli.int-option os.args "--maintain-target" -1)
+        auto-maintain-steps (max 0 (cli.int-option os.args "--auto-maintain-steps" 0))
+        auto-maintain-target (cli.int-option os.args "--auto-maintain-target" 0)
+        auto-maintain-trigger (cli.int-option os.args "--auto-maintain-trigger" -1)
+        deferred-maintain-steps (max 1 (cli.int-option os.args "--deferred-maintain-steps" 128))
+        read-samples (max 1 (cli.int-option os.args "--read-samples" 10))
         chunk-size (max 1 (cli.int-option os.args "--chunk-size" 1024))
         workload (cli.option os.args "--workload" "both")
+        durability-mode (cli.option os.args "--durability" ":normal")
+        keep? (flag-present? os.args "--keep")
         path (cli.option os.args "--path" "tmp.vev.write-bench.sqlite")]
     (if (= workload "pure")
       (if (> selected-batch 0)
         (measure-pure-write path selected-batch total report-every)
         (run-all-pure-workloads path total report-every))
-      (if (= workload "mixed")
-        (measure-mixed-read-write path total mixed-operations report-every)
-        (if (= workload "snapshot-heavy")
-          (measure-snapshot-heavy-write path (max 1 selected-batch) total report-every)
-          (if (= workload "shared-snapshot-heavy")
-            (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
-            (if (= workload "shared-snapshot-heavy-direct")
-              (measure-shared-snapshot-heavy-direct-write chunk-size (max 1 selected-batch) total report-every)
-              (if (= workload "shared-store-db-heavy")
-                (measure-shared-store-db-heavy-write chunk-size (max 1 selected-batch) total report-every)
-                (if (= workload "both")
-                  (let [mixed-path (fmt.tprintf "%s.mixed" path)
-                        snapshot-path (fmt.tprintf "%s.snapshot" path)]
-                    (if (> selected-batch 0)
-                      (run-pure-workload path selected-batch total report-every)
-                      (run-all-pure-workloads path total report-every))
-                    (when (seed-pure-write mixed-path total seed-batch)
-                      (measure-mixed-read-write mixed-path total mixed-operations report-every))
-                    (measure-snapshot-heavy-write snapshot-path (max 1 selected-batch) total report-every)
-                    (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
-                    (measure-shared-snapshot-heavy-direct-write chunk-size (max 1 selected-batch) total report-every)
+        (if (= workload "pure-store-report")
+          (run-pure-store-report-workload path (max 1 selected-batch) total report-every compact-every maintain-every maintain-steps maintain-target auto-maintain-steps auto-maintain-target auto-maintain-trigger keep?)
+        (if (= workload "pure-store-report-deferred")
+          (run-pure-store-report-deferred-workload path (max 1 selected-batch) total report-every deferred-maintain-steps)
+          (if (= workload "manifest-chain-read")
+            (run-manifest-chain-read-workload path (max 1 selected-batch) total report-every read-samples auto-maintain-steps auto-maintain-target auto-maintain-trigger keep?)
+          (if (= workload "sqlite-store-db-heavy")
+            (measure-sqlite-store-db-heavy-write path (max 1 selected-batch) total report-every keep? durability-mode)
+          (if (= workload "sqlite-store-db-heavy-group-commit")
+            (measure-sqlite-store-db-heavy-group-commit-write path (max 1 selected-batch) total report-every keep? durability-mode)
+          (if (= workload "mixed")
+            (measure-mixed-read-write path total mixed-operations report-every)
+            (if (= workload "snapshot-heavy")
+              (measure-snapshot-heavy-write path (max 1 selected-batch) total report-every)
+              (if (= workload "shared-snapshot-heavy")
+                (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
+                (if (= workload "shared-snapshot-heavy-direct")
+                  (measure-shared-snapshot-heavy-direct-write chunk-size (max 1 selected-batch) total report-every)
+                  (if (= workload "shared-store-db-heavy")
                     (measure-shared-store-db-heavy-write chunk-size (max 1 selected-batch) total report-every)
-                    (remove-sqlite-files mixed-path))
-                  (fmt.printf "unknown --workload %s; expected pure, mixed, snapshot-heavy, shared-snapshot-heavy, shared-snapshot-heavy-direct, shared-store-db-heavy, or both\n" workload))))))))))
+                    (if (= workload "both")
+                      (let [mixed-path (fmt.tprintf "%s.mixed" path)
+                            snapshot-path (fmt.tprintf "%s.snapshot" path)
+                            store-report-path (fmt.tprintf "%s.store-report" path)]
+                        (if (> selected-batch 0)
+                          (run-pure-workload path selected-batch total report-every)
+                          (run-all-pure-workloads path total report-every))
+                        (run-pure-store-report-workload store-report-path (max 1 selected-batch) total report-every compact-every maintain-every maintain-steps maintain-target auto-maintain-steps auto-maintain-target auto-maintain-trigger keep?)
+                        (when (seed-pure-write mixed-path total seed-batch)
+                          (measure-mixed-read-write mixed-path total mixed-operations report-every))
+                        (measure-snapshot-heavy-write snapshot-path (max 1 selected-batch) total report-every)
+                        (measure-sqlite-store-db-heavy-write (fmt.tprintf "%s.sqlite-store-db-heavy" path) (max 1 selected-batch) total report-every keep? durability-mode)
+                        (measure-sqlite-store-db-heavy-group-commit-write (fmt.tprintf "%s.sqlite-store-db-heavy-group-commit" path) (max 1 selected-batch) total report-every keep? durability-mode)
+                        (measure-shared-snapshot-heavy-write chunk-size (max 1 selected-batch) total report-every)
+                        (measure-shared-snapshot-heavy-direct-write chunk-size (max 1 selected-batch) total report-every)
+                        (measure-shared-store-db-heavy-write chunk-size (max 1 selected-batch) total report-every)
+                        (remove-sqlite-files mixed-path))
+                      (fmt.printf "unknown --workload %s; expected pure, pure-store-report, pure-store-report-deferred, manifest-chain-read, sqlite-store-db-heavy, sqlite-store-db-heavy-group-commit, mixed, snapshot-heavy, shared-snapshot-heavy, shared-snapshot-heavy-direct, shared-store-db-heavy, or both\n" workload)))))))))))))))

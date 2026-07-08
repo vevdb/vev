@@ -30,8 +30,42 @@ The goal is to make the database feel like an ordinary part of the host program 
 
 ## Current Usage
 
-Vev is still under active development. The most complete local integration path
-today is the native library plus host-client smoke packages:
+Vev is still under active development, but the core programming model is already
+usable:
+
+```clojure
+(require '[vev.core :as d])
+
+(def conn (d/create-conn))
+
+(d/transact conn
+  [{:db/id 1 :user/name "Ada"}
+   {:db/id 2 :user/name "Grace"}])
+
+(def db (d/db conn))
+
+(d/q
+  '[:find ?name
+    :where [?e :user/name ?name]]
+  db)
+```
+
+Use `create-conn` for in-memory databases and `connect` for durable Vev store
+files:
+
+```clojure
+(def durable (d/connect "app.vev"))
+```
+
+Durable stores currently use SQLite internally and require a platform SQLite
+runtime, but application code does not set up SQLite schemas or issue SQL.
+
+See [docs/getting-started.md](docs/getting-started.md) for the current local
+setup and host-language examples. See
+[docs/runtime-dependencies.md](docs/runtime-dependencies.md) for native library
+and SQLite runtime details.
+
+For repository verification, run:
 
 ```sh
 scripts/smoke_clients.sh
@@ -43,10 +77,8 @@ The first command builds the platform library under `build/lib`, writes
 `build/lib/pkgconfig/vev.pc`, and runs the available clients under `clients/*`.
 The CLI smoke verifies `build/vev` against a temporary durable Vev store.
 The package smoke script verifies the current local C SDK, JVM, Python,
-Node/TypeScript, and Go package shapes from temporary projects or directories.
-
-See [docs/getting-started.md](docs/getting-started.md) for the current local
-setup and host-language examples.
+Node/TypeScript, Go, Rust, and Odin package shapes from temporary projects or
+directories.
 
 Current client work areas:
 
@@ -60,7 +92,12 @@ Current client work areas:
 * `clients/odin`: Odin `core:dynlib` smoke wrapper over the C ABI.
 
 Runnable examples live under `examples/*`, including the Clojure
-getting-started script.
+getting-started script and a Python contact-book smoke that uses both
+in-memory and durable Vev:
+
+```sh
+scripts/smoke_real_app.sh
+```
 
 ## Thesis
 

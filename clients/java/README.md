@@ -50,7 +50,22 @@ try (Vev vev = Vev.load();
         System.out.println(vev.queryRows(Map.of(
             "query", "[:find ?name :where [?e :user/name ?name]]",
             "args", List.of(db))));
+        System.out.println(db.pull("[:user/name]", 1));
     }
+}
+```
+
+DB snapshots can also produce entity views. The view is tied to the immutable
+DB value, not the live connection:
+
+```java
+try (Vev.DB db = conn.db();
+     Vev.EntityView ada = db.entity(1);
+     Vev.EntityView friend = ada.ref(":user/friend")) {
+    System.out.println(ada.get(":user/name"));
+    System.out.println(ada.values(":user/email"));
+    System.out.println(friend.get(":user/name"));
+    System.out.println(ada.touch());
 }
 ```
 
@@ -73,7 +88,37 @@ try (Vev.TxFunctionRegistry fns = vev.txFunctionRegistry()) {
 ```
 
 The Java callback returns EDN tx-data text. Higher-level clients such as
-Clojure can wrap this and let callbacks return ordinary host data.
+Clojure can wrap this and let callbacks return ordinary host data. The same
+registry shape works for durable `vev.connect("app.vev")` handles.
+
+Typed transaction builders are also accepted by durable connections, so bulk
+host writes do not have to round-trip through EDN text:
+
+```java
+try (Vev.DurableConnection durable = vev.connect("app.vev");
+     Vev.TxBuilder tx = vev.txBuilder(2)) {
+    tx.addString(1, ":user/name", "Ada");
+    tx.addString(1, ":user/email", "ada@example.com");
+    try (Vev.TxReport report = durable.transactReport(tx)) {
+        System.out.println(report.value());
+    }
+}
+```
+
+For explicit bulk ingest, pass several builders. Vev commits them as one
+ordinary durable transaction and returns one transaction report:
+
+```java
+try (Vev.DurableConnection durable = vev.connect("app.vev");
+     Vev.TxBuilder first = vev.txBuilder(1);
+     Vev.TxBuilder second = vev.txBuilder(1)) {
+    first.addString(2, ":user/name", "Grace");
+    second.addString(3, ":user/name", "Hedy");
+    try (Vev.TxReport report = durable.transactReport(List.of(first, second))) {
+        System.out.println(report.value());
+    }
+}
+```
 
 Successful transaction reports can be observed with a listener registration:
 
@@ -87,6 +132,10 @@ try (Vev.TxReportListenerRegistration listener =
 The callback receives the decoded report value while the native report handle is
 still valid. Keep data you need by copying it into ordinary Java structures
 inside the callback.
+
+Durable connections returned by `vev.connect("app.vev")` expose the same
+`listen` / `unlisten` API. Durable listener reports are delivered after
+successful commits only.
 
 The first published package should still support explicit native library paths.
 Bundled platform native artifacts should be published as separate

@@ -15,6 +15,22 @@ uses `core:dynlib` to load the Vev native library, opens an in-memory
 connection, transacts EDN, runs a Datalog query, and frees returned C ABI
 strings.
 
+The smoke also exercises the DB-value path directly through the ABI:
+
+```odin
+snapshot := api.db(conn)
+defer api.db_release(snapshot)
+
+query := api.prepare_query(query_text)
+defer api.free_query(query)
+
+result := api.query_db(snapshot, query, empty_inputs)
+defer api.string_free(result)
+```
+
+That is the shape a future Odin package should wrap in Odin-native `Conn`,
+`DB`, prepared-query, and result types.
+
 Run it from the repo root after building the native library:
 
 ```sh
@@ -38,10 +54,8 @@ It builds the smoke wrapper into a temporary directory and runs it against the
 platform native Vev library, mirroring how an Odin application would dynamically
 load `libvev`.
 
-A fuller Odin package can wrap the dynamic ABI table with Odin-native `Conn`,
-`DB`, prepared-query, and result types. Directly depending on generated Odin
-should remain a development/debug escape hatch rather than the documented
-integration path.
+Directly depending on generated Odin should remain a development/debug escape
+hatch rather than the documented integration path.
 
 Durable stores are opened through Vev APIs with paths such as `app.vev`. The
 current native library depends on the platform SQLite runtime; Odin application

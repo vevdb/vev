@@ -22,6 +22,7 @@ The current shape is intentionally narrow:
 - direct statement query execution through typed result-row callbacks
 - registered transaction function callbacks that return EDN tx-data
 - transaction report listener callbacks on connection commits
+- explicit durable index compaction for maintenance scheduling
 
 This is the portable baseline for Python, Rust, Java, Clojure, Go,
 Node/TypeScript, and other hosts. Host wrappers should build on this surface
@@ -309,11 +310,9 @@ vev_tx_report_free(with_report);
 
 vev_db_t next_db =
     vev_db_with_edn(retained_snapshot, "[{:db/id 3 :user/name \"Barbara\"}]");
-vev_conn_t derived = vev_conn_from_db(next_db);
-const char *derived_report =
-    vev_transact_edn(derived, "[{:db/id 4 :user/name \"Dorothy\"}]");
-vev_string_free(derived_report);
-vev_conn_close(derived);
+vev_result_t next_result =
+    vev_query_db_prepared_result_with_inputs(next_db, query, "[\"ada@example.com\"]");
+vev_result_free(next_result);
 vev_db_release(next_db);
 
 vev_db_release(retained_snapshot);
@@ -353,6 +352,57 @@ vev_tx_report_t durable_tx = vev_connection_transact_edn_report(
     "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\"}]");
 vev_tx_report_free(durable_tx);
 
+vev_tx_builder_t durable_builder = vev_tx_create(2);
+vev_tx_add_string(durable_builder, 2, ":user/name", "Grace");
+vev_tx_add_string(durable_builder, 2, ":user/email", "grace@example.com");
+vev_tx_report_t durable_typed =
+    vev_connection_tx_commit_report(durable, durable_builder);
+vev_tx_report_free(durable_typed);
+vev_tx_free(durable_builder);
+
+vev_tx_builder_t bulk_a = vev_tx_create(1);
+vev_tx_builder_t bulk_b = vev_tx_create(1);
+vev_tx_add_string(bulk_a, 3, ":user/name", "Hedy");
+vev_tx_add_string(bulk_b, 4, ":user/name", "Katherine");
+vev_tx_builder_t bulk_builders[] = {bulk_a, bulk_b};
+vev_tx_report_t durable_bulk =
+    vev_connection_tx_commit_many_report(durable, bulk_builders, 2);
+vev_tx_report_free(durable_bulk);
+vev_tx_free(bulk_a);
+vev_tx_free(bulk_b);
+
+vev_tx_builder_t logical_a = vev_tx_create(1);
+vev_tx_builder_t logical_b = vev_tx_create(1);
+vev_tx_add_string(logical_a, 5, ":user/name", "Grace Hopper");
+vev_tx_add_string(logical_b, 6, ":user/name", "Dorothy Vaughan");
+vev_tx_builder_t logical_builders[] = {logical_a, logical_b};
+vev_tx_report_array_t logical_reports =
+    vev_connection_tx_commit_logical_many_reports(
+        durable,
+        logical_builders,
+        2);
+for (int i = 0; i < vev_tx_report_array_count(logical_reports); i++) {
+    vev_tx_report_t logical_report =
+        vev_tx_report_array_get(logical_reports, i);
+    /* logical_report is borrowed from logical_reports. */
+}
+vev_tx_report_array_free(logical_reports);
+vev_tx_free(logical_a);
+vev_tx_free(logical_b);
+
+const char *logical_tx_texts[] = {
+    "[{:db/id 7 :user/name \"Mary Jackson\"}]",
+    "[{:db/id 8 :user/name \"Annie Easley\"}]",
+};
+vev_tx_report_array_t logical_text_reports =
+    vev_connection_transact_many_edn_reports(
+        durable,
+        logical_tx_texts,
+        2);
+vev_tx_report_array_free(logical_text_reports);
+
+bool compacted = vev_connection_compact_indexes(durable);
+
 vev_db_t durable_db = vev_connection_db(durable);
 vev_result_t durable_rows =
     vev_query_db_prepared_result_with_inputs(durable_db, durable_query, "[]");
@@ -363,8 +413,28 @@ vev_prepared_query_free(durable_query);
 ```
 
 The durable handle appends successful transaction datoms and tx metadata rows
-to SQLite before returning. DB snapshots from `vev_connection_db` follow the
-same immutable owned-handle contract as `vev_conn_db`. The backend-specific
+to SQLite before returning. EDN text transactions and typed transaction
+builders both return storage-neutral reports with retained `db-before` and
+`db-after` handles. `vev_connection_tx_commit_many_report` is an explicit bulk
+ingestion helper: it accepts a C array of typed builders, flattens them into one
+ordinary durable transaction, and returns one report/tx id. Use it when
+throughput matters more than preserving one transaction id per input builder.
+`vev_connection_tx_commit_logical_many_reports` is the typed-builder logical
+group commit variant: it accepts the same C array of typed builders, commits
+them under one SQLite transaction, and returns a report array with one report/tx
+id per input builder. `vev_connection_transact_many_edn_reports` is the EDN text
+variant for host callers that already have transaction data as strings. It
+parses every tx string before starting the SQLite transaction, so malformed
+later text does not commit earlier parsed groups. Reports returned by
+`vev_tx_report_array_get` are borrowed from the array; free the array with
+`vev_tx_report_array_free`, not the individual borrowed reports.
+Passing zero builders returns a non-null empty report array and does not advance
+the basis. Malformed non-empty builder arrays in the logical group path return a
+non-null report array containing one failed report when Vev can represent the
+error as ordinary transaction data. Host adapters should therefore inspect
+`:ok` / `:error` instead of treating every failure as a null handle.
+DB snapshots from `vev_connection_db` follow the same immutable owned-handle
+contract as `vev_conn_db`. The backend-specific
 `vev_sqlite_conn_*` functions remain available for storage tests and migration,
 but new host APIs should prefer `vev_connect` / `vev_connection_*`.
 `vev_connection_backend` and `vev_connection_path` return owned diagnostic
@@ -375,6 +445,10 @@ returns the Datomic-style basis transaction visible to the connection.
 `vev_u64_array_t`; callers free it with `vev_u64_array_free`.
 `vev_connection_info_edn` returns the same metadata as one owned EDN map string
 for simple C tooling and logging.
+`vev_connection_compact_indexes` is an explicit maintenance hook. It rewrites
+the latest logical index roots into fresh bounded ordered roots without loading
+a resident DB, so applications can schedule maintenance after write bursts and
+measure it separately from foreground transaction latency.
 
 ## Python Adapter
 
@@ -454,6 +528,9 @@ and Rust. Transactions can use `transact_report` / `with_report` for typed
 report maps, while `transact` / `with_text` remain string helpers. Prepared
 queries expose `edn()` for a portable parser description, and bound statements
 can return generic typed column batches without materializing result rows.
+Durable connections also expose `transact_bulk([builder, ...])` for committing
+several typed transaction builders as one Vev transaction and one durable
+commit.
 
 ## Rust Example
 
@@ -470,6 +547,8 @@ intended safe wrapper shape:
 - result values are converted into a small Rust `Value` enum
 - transaction reports use an owned `TxReport` wrapper with typed `Value`
   traversal
+- durable typed-builder bulk ingestion is exposed as
+  `DurableConn::transact_bulk_report(&[&first, &second])`
 
 The example covers transactions, rendered EDN query output, prepared statement
 bindings, homogeneous collection bindings, pull-pattern statement bindings,
@@ -661,6 +740,16 @@ This gives C and host wrappers the same DB-as-a-value shape as the Datomic-style
 API: retain a DB snapshot, pull against it, convert or copy the returned value,
 then free the pull handle.
 
+Entity handles follow the same DB-as-a-value rule. `vev_db_entity`,
+`vev_db_entity_lookup_ref_string`, and `vev_db_entity_ident` return owned
+`vev_entity_t` handles over the retained immutable DB snapshot. Release them
+with `vev_entity_free`. Entity scalar and vector reads return owned
+`vev_value_handle_t` values, so callers can inspect nested values with the same
+`vev_value_*` accessors used for pull/query results. This is intentionally a DB
+snapshot view, not a live connection cursor. Java and Clojure wrap this into
+host-level entity views; other host adapters should preserve the same ownership
+model when they add convenience APIs.
+
 The current parser stores references into transaction and query source text in
 some internal structures. The ABI wrappers therefore keep transaction source
 strings alive on the connection and prepared-query source strings alive on the
@@ -692,7 +781,10 @@ vev_value_t report_value = vev_tx_report_value(report);
 /* Inspect report_value before freeing report. */
 vev_tx_report_free(report);
 vev_db_t next_db = vev_db_with_edn(db, "[{:db/id 3 :user/name \"Barbara\"}]");
-vev_conn_t derived = vev_conn_from_db(next_db);
+vev_result_t rows =
+    vev_query_db_prepared_result_with_inputs(next_db, query, "[\"ada@example.com\"]");
+vev_result_free(rows);
+vev_db_release(next_db);
 ```
 
 `vev_transact_edn_report` and `vev_with_edn_report` return owned report
@@ -702,6 +794,11 @@ report; release the handle with `vev_tx_report_free`. The older
 debugging. `vev_db_with_edn` returns a new owned DB handle for a successful
 immutable transaction and returns null if the transaction fails or cannot be
 published for the source-backed DB value. The source DB is not mutated.
+
+`vev_conn_from_db` remains available for resident/in-memory compatibility tests,
+but it is not the normal durable DB-value API. Durable DB handles are immutable
+values; keep using `vev_db_t` with query, pull, `vev_with_edn_report`, and
+`vev_db_with_edn`.
 
 ## Transaction Report Listeners
 
@@ -728,6 +825,12 @@ vev_conn_listen_tx_report(conn, "app-listener", tx_listener, &state);
 vev_transact_edn(conn, "[{:db/id 1 :user/name \"Ada\"}]");
 vev_conn_unlisten_tx_report(conn, "app-listener");
 ```
+
+Durable `vev_connection_t` handles use the same callback contract through
+`vev_connection_listen_tx_report` and
+`vev_connection_unlisten_tx_report`. Successful durable commits deliver report
+handles whose `db-before` and `db-after` are storage-backed DB values; failed
+transactions do not notify listeners.
 
 The callback must copy any strings or values it wants to keep. It must not free
 the borrowed report handle. Listener callback failures do not roll back a
@@ -775,6 +878,17 @@ vev_tx_report_t report = vev_transact_edn_report_with_tx_fns(
 
 vev_tx_report_free(report);
 vev_tx_fn_registry_free(registry);
+```
+
+Durable connections use the same registry shape:
+
+```c
+vev_tx_report_t durable_report =
+    vev_connection_transact_edn_report_with_tx_fns(
+        durable,
+        "[[:db.fn/call :mark-seen 1 \"from-durable-c\"]]",
+        registry);
+vev_tx_report_free(durable_report);
 ```
 
 The callback receives a borrowed immutable DB snapshot handle for the
@@ -948,14 +1062,21 @@ and rendered pull results.
 For hot flat query shapes, the ABI also exposes column-oriented handles:
 
 - `vev_query_db_prepared_column_batch_with_inputs`
+- `vev_query_prepared_column_batch_with_inputs`
 - `vev_query_stmt_column_batch`
 - `vev_query_db_stmt_column_batch`
 - `vev_column_batch_kind`
 - `vev_column_batch_count`
+- `vev_column_batch_column_count`
+- `vev_column_batch_column_kind`
 - `vev_column_batch_entities_data`
 - `vev_column_batch_ints_data`
 - `vev_column_batch_string_data_array`
 - `vev_column_batch_string_lengths_data`
+- `vev_column_batch_column_entities_data`
+- `vev_column_batch_column_ints_data`
+- `vev_column_batch_column_string_data_array`
+- `vev_column_batch_column_string_lengths_data`
 - `vev_column_batch_string_dictionary_count`
 - `vev_column_batch_string_dictionary_data_array`
 - `vev_column_batch_string_dictionary_lengths_data`
@@ -986,35 +1107,64 @@ For hot flat query shapes, the ABI also exposes column-oriented handles:
 
 These are lower-level than the generic result API, but are the right shape for
 language adapters that want to avoid per-cell value handles for common
-`[:find ?e]`, `[:find ?text]`, `[:find ?e ?n]`, and `[:find ?e ?s ?n]`
-queries. `vev_query_db_prepared_column_batch_with_inputs` is the preferred
-one-call entry point for host adapters that want the fastest currently available
-flat representation without probing every exact-shape function. Its kind is one
-of `VEV_COLUMN_BATCH_ENTITY`, `VEV_COLUMN_BATCH_STRING`,
-`VEV_COLUMN_BATCH_ENTITY_INT`, `VEV_COLUMN_BATCH_ENTITY_STRING_INT`, or
+`[:find ?e]`, `[:find ?text]`, `[:find ?n]`, `[:find ?e ?n]`,
+`[:find ?e ?s]`, `[:find ?s ?n]`, `[:find ?s1 ?s2]`, and
+`[:find ?e ?s ?n]` queries. `vev_query_prepared_column_batch_with_inputs`
+runs a prepared query against a mutable resident connection.
+`vev_connection_prepared_column_batch_with_inputs` and
+`vev_sqlite_conn_prepared_column_batch_with_inputs` run against durable
+connection handles through the current root-backed source without forcing the
+host adapter to retain an intermediate exported DB snapshot.
+`vev_query_db_prepared_column_batch_with_inputs` runs the same column-batch path
+against an immutable DB value. These are the preferred one-call entry points for
+host adapters that want the fastest currently available flat representation
+without probing every exact-shape function. Their kind is one of
+`VEV_COLUMN_BATCH_ENTITY`,
+`VEV_COLUMN_BATCH_STRING`,
+`VEV_COLUMN_BATCH_INT`, `VEV_COLUMN_BATCH_ENTITY_INT`,
+`VEV_COLUMN_BATCH_ENTITY_STRING`, `VEV_COLUMN_BATCH_STRING_INT`,
+`VEV_COLUMN_BATCH_STRING_STRING`, `VEV_COLUMN_BATCH_ENTITY_STRING_INT`, or
 `VEV_COLUMN_BATCH_NONE`. The exact-shape functions remain public for callers
 that already know the expected result shape.
+
+New host adapters should prefer the generic column metadata accessors:
+`vev_column_batch_column_count`, `vev_column_batch_column_kind`, and the
+per-column data accessors. Column kinds are `VEV_COLUMN_KIND_ENTITY`,
+`VEV_COLUMN_KIND_STRING`, `VEV_COLUMN_KIND_INT`, or `VEV_COLUMN_KIND_NONE`.
+These accessors are the stable API for both legacy fixed-shape wrappers and the
+new arbitrary-width primitive column batch backing. Arbitrary-width batches may
+report `VEV_COLUMN_BATCH_NONE` from the older batch-kind accessor, so generic
+adapters should branch on column count and per-column kind instead of requiring
+a named tuple shape.
 
 Statement column batches use the same representation after inputs have been
 bound with `vev_stmt_bind_*`. `vev_query_stmt_column_batch` runs against the
 current connection DB, while `vev_query_db_stmt_column_batch` runs against a
 retained immutable `vev_db_t`. Statements without named DB sources use the
-current optimized column extractors. Source-bound statements fall back through
-the normal result engine and then build an owned flat column batch for supported
-entity, string, entity/int, and entity/string/int shapes. Entity positions in
-source relation rows may be represented as integer ids; the fallback accepts
-those as entity column values when they are non-negative.
+current optimized column extractors and the generic typed relation bridge.
+Source-bound statements use the same typed bridge when possible, then fall back
+through the normal result engine and build an owned flat column batch for
+supported primitive result rows. Entity positions in source relation rows may be
+represented as integer ids; the fallback accepts those as entity column values
+when they are non-negative. Wider flat primitive rows are exposed through the
+generic column accessors, while pulls, aggregates, and mixed/untyped values
+still require the row/value result APIs.
 
 Column pointers are borrowed and remain valid until the corresponding column
 handle or column batch is freed. Single string-column results use
 `vev_string_array_data_array` plus `vev_string_array_lengths_data`. For
-entity/string/int columns, prefer
+entity/string and entity/string/int columns, prefer
 `vev_entity_string_int_triples_string_data_array` plus
 `vev_entity_string_int_triples_string_lengths_data` so host adapters can read
 all borrowed UTF-8 byte pointers and lengths without one ABI call per cell.
-Optimized entity/string/int batches borrow strings from the DB. Fallback
-entity/string/int batches created from generic result rows copy string contents
-into the batch and release them when `vev_column_batch_free` is called.
+String/string column batches expose the first string column through
+`vev_column_batch_string_data_array` / `vev_column_batch_string_lengths_data`
+and the second through `vev_column_batch_second_string_data_array` /
+`vev_column_batch_second_string_lengths_data`.
+Optimized entity/string, string/int, and entity/string/int batches borrow
+strings from the DB. Fallback entity/string, string/int, and entity/string/int
+batches created from generic result rows copy string contents into the batch and
+release them when `vev_column_batch_free` is called.
 For repeated string-heavy results, adapters can instead use the optional string
 dictionary accessors: decode the dictionary entries once, then map each row
 through `vev_entity_string_int_triples_string_indices_data`. Vev only builds
@@ -1070,6 +1220,21 @@ Direct pull entry points use owned value handles:
 - `vev_value_handle_value`
 - `vev_value_handle_edn`
 - `vev_value_handle_free`
+
+Entity handles use the same retained DB snapshot model:
+
+- `vev_db_entity`
+- `vev_db_entity_lookup_ref_string`
+- `vev_db_entity_ident`
+- `vev_entity_found`
+- `vev_entity_id`
+- `vev_entity_contains`
+- `vev_entity_get`
+- `vev_entity_values`
+- `vev_entity_ref`
+- `vev_entity_refs`
+- `vev_entity_touch`
+- `vev_entity_free`
 - `vev_value_text_data`
 - `vev_value_text_len`
 
@@ -1127,13 +1292,14 @@ model.
 
 ## Next ABI Work
 
-The initial C ABI shape is now covered for C, Python, Rust, Java, and Clojure,
-including immutable DB handles, typed statement bindings, direct pull handles,
-direct row visitors, registered transaction function callbacks, status/error
-accessors, transaction report listeners, storage-neutral durable connection
-handles backed by SQLite, and baseline ABI-vs-native benchmarks. Basic Python,
-Rust, Java, and Clojure wrappers now smoke-test durable
-open/write/close/reopen/query. The next
+The initial C ABI shape is now covered for C, Python, Rust, Go,
+Node/TypeScript, Java, and Clojure, including immutable DB handles, typed
+statement bindings, direct pull handles, direct row visitors, registered
+transaction function callbacks, status/error accessors, transaction report
+listeners, storage-neutral durable connection handles backed by SQLite, and
+baseline ABI-vs-native benchmarks. Basic Python, Rust, Go, Node/TypeScript,
+Java, and Clojure wrappers now smoke-test durable open/write/close/reopen/query.
+The next
 interop work should be driven by concrete host adapter needs, especially
 packaging and richer host-specific APIs, rather than expanding the raw C surface
 speculatively.

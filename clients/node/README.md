@@ -35,9 +35,24 @@ Example:
 const vev = require("@vevdb/vev");
 
 const conn = vev.createConn();
-conn.transact('[{:db/id 1 :user/name "Ada"}]');
-console.log(conn.queryText('[:find ?name :where [?e :user/name ?name]]'));
+try {
+  conn.transact('[{:db/id 1 :user/name "Ada"}]');
+
+  const db = conn.db();
+  try {
+    console.log(vev.q('[:find ?name :where [?e :user/name ?name]]', db));
+    console.log(db.pull('[:user/name]', 1));
+  } finally {
+    db.close();
+  }
+} finally {
+  conn.close();
+}
 ```
+
+`conn.queryText(...)` remains available for quick EDN text calls, but DB
+snapshots are the closer match to Vev's immutable database value model.
+Use `conn.prepare(...)` when reusing the same query many times.
 
 The package should continue to expose explicit native-addon loading for local
 development while supporting bundled platform binaries. `scripts/build_c_abi.sh`

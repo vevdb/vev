@@ -14,6 +14,7 @@ typedef void *vev_conn_t;
 typedef void *vev_connection_t;
 typedef void *vev_sqlite_conn_t;
 typedef void *vev_db_t;
+typedef void *vev_entity_t;
 typedef void *vev_prepared_query_t;
 typedef void *vev_prepared_pull_pattern_t;
 typedef void *vev_result_t;
@@ -24,6 +25,7 @@ typedef void *vev_entity_string_int_triples_t;
 typedef void *vev_column_batch_t;
 typedef void *vev_stmt_t;
 typedef void *vev_tx_report_t;
+typedef void *vev_tx_report_array_t;
 typedef void *vev_tx_builder_t;
 typedef void *vev_tx_fn_registry_t;
 typedef const void *vev_tx_fn_args_t;
@@ -62,6 +64,21 @@ enum {
     VEV_COLUMN_BATCH_STRING = 2,
     VEV_COLUMN_BATCH_ENTITY_INT = 3,
     VEV_COLUMN_BATCH_ENTITY_STRING_INT = 4,
+    VEV_COLUMN_BATCH_INT = 5,
+    VEV_COLUMN_BATCH_ENTITY_STRING = 6,
+    VEV_COLUMN_BATCH_STRING_INT = 7,
+    VEV_COLUMN_BATCH_STRING_STRING = 8,
+};
+
+enum {
+    VEV_COLUMN_KIND_NONE = 0,
+    VEV_COLUMN_KIND_ENTITY = 1,
+    VEV_COLUMN_KIND_STRING = 2,
+    VEV_COLUMN_KIND_INT = 3,
+    VEV_COLUMN_KIND_MIXED = 4,
+    VEV_COLUMN_KIND_BOOL = 5,
+    VEV_COLUMN_KIND_FLOAT = 6,
+    VEV_COLUMN_KIND_VALUE = 7,
 };
 
 typedef bool (*vev_value_visit_fn)(void *user, int event, vev_value_t value);
@@ -96,6 +113,32 @@ vev_db_t vev_connection_db(vev_connection_t conn);
 vev_tx_report_t vev_connection_transact_edn_report(
     vev_connection_t conn,
     const char *tx_text);
+vev_tx_report_t vev_connection_transact_edn_report_with_tx_fns(
+    vev_connection_t conn,
+    const char *tx_text,
+    vev_tx_fn_registry_t registry);
+vev_tx_report_t vev_connection_tx_commit_report(
+    vev_connection_t conn,
+    vev_tx_builder_t builder);
+vev_tx_report_t vev_connection_tx_commit_many_report(
+    vev_connection_t conn,
+    vev_tx_builder_t *builders,
+    int builder_count);
+vev_tx_report_array_t vev_connection_tx_commit_logical_many_reports(
+    vev_connection_t conn,
+    vev_tx_builder_t *builders,
+    int builder_count);
+vev_tx_report_array_t vev_connection_transact_many_edn_reports(
+    vev_connection_t conn,
+    const char **tx_texts,
+    int tx_count);
+bool vev_connection_compact_indexes(vev_connection_t conn);
+bool vev_connection_listen_tx_report(
+    vev_connection_t conn,
+    const char *name,
+    vev_tx_report_listener_callback callback,
+    void *user);
+bool vev_connection_unlisten_tx_report(vev_connection_t conn, const char *name);
 vev_sqlite_conn_t vev_sqlite_conn_open(const char *path);
 bool vev_sqlite_conn_ok(vev_sqlite_conn_t conn);
 const char *vev_sqlite_conn_error(vev_sqlite_conn_t conn);
@@ -104,6 +147,32 @@ vev_db_t vev_sqlite_conn_db(vev_sqlite_conn_t conn);
 vev_tx_report_t vev_sqlite_conn_transact_edn_report(
     vev_sqlite_conn_t conn,
     const char *tx_text);
+vev_tx_report_t vev_sqlite_conn_transact_edn_report_with_tx_fns(
+    vev_sqlite_conn_t conn,
+    const char *tx_text,
+    vev_tx_fn_registry_t registry);
+vev_tx_report_t vev_sqlite_conn_tx_commit_report(
+    vev_sqlite_conn_t conn,
+    vev_tx_builder_t builder);
+vev_tx_report_t vev_sqlite_conn_tx_commit_many_report(
+    vev_sqlite_conn_t conn,
+    vev_tx_builder_t *builders,
+    int builder_count);
+vev_tx_report_array_t vev_sqlite_conn_tx_commit_logical_many_reports(
+    vev_sqlite_conn_t conn,
+    vev_tx_builder_t *builders,
+    int builder_count);
+vev_tx_report_array_t vev_sqlite_conn_transact_many_edn_reports(
+    vev_sqlite_conn_t conn,
+    const char **tx_texts,
+    int tx_count);
+bool vev_sqlite_conn_compact_indexes(vev_sqlite_conn_t conn);
+bool vev_sqlite_conn_listen_tx_report(
+    vev_sqlite_conn_t conn,
+    const char *name,
+    vev_tx_report_listener_callback callback,
+    void *user);
+bool vev_sqlite_conn_unlisten_tx_report(vev_sqlite_conn_t conn, const char *name);
 bool vev_conn_listen_tx_report(
     vev_conn_t conn,
     const char *name,
@@ -111,12 +180,27 @@ bool vev_conn_listen_tx_report(
     void *user);
 bool vev_conn_unlisten_tx_report(vev_conn_t conn, const char *name);
 vev_db_t vev_conn_db(vev_conn_t conn);
+/* Resident/in-memory compatibility only. Durable DB handles are immutable
+   values; use vev_db_with_edn, vev_with_edn_report, query, and pull on
+   vev_db_t instead of converting them back into mutable connections. */
 vev_conn_t vev_conn_from_db(vev_db_t db);
 vev_db_t vev_db_retain(vev_db_t db);
 void vev_db_release(vev_db_t db);
 const char *vev_with_edn(vev_db_t db, const char *tx_text);
 vev_tx_report_t vev_with_edn_report(vev_db_t db, const char *tx_text);
 vev_db_t vev_db_with_edn(vev_db_t db, const char *tx_text);
+vev_entity_t vev_db_entity(vev_db_t db, unsigned long long entity);
+vev_entity_t vev_db_entity_lookup_ref_string(vev_db_t db, const char *attr, const char *value);
+vev_entity_t vev_db_entity_ident(vev_db_t db, const char *ident);
+void vev_entity_free(vev_entity_t entity);
+bool vev_entity_found(vev_entity_t entity);
+unsigned long long vev_entity_id(vev_entity_t entity);
+bool vev_entity_contains(vev_entity_t entity, const char *attr);
+vev_value_handle_t vev_entity_get(vev_entity_t entity, const char *attr);
+vev_value_handle_t vev_entity_values(vev_entity_t entity, const char *attr);
+vev_entity_t vev_entity_ref(vev_entity_t entity, const char *attr);
+vev_u64_array_t vev_entity_refs(vev_entity_t entity, const char *attr);
+vev_value_handle_t vev_entity_touch(vev_entity_t entity);
 
 void vev_string_free(const char *text);
 
@@ -131,6 +215,9 @@ vev_tx_report_t vev_with_edn_report_with_tx_fns(
     const char *tx_text,
     vev_tx_fn_registry_t registry);
 void vev_tx_report_free(vev_tx_report_t report);
+void vev_tx_report_array_free(vev_tx_report_array_t reports);
+int vev_tx_report_array_count(vev_tx_report_array_t reports);
+vev_tx_report_t vev_tx_report_array_get(vev_tx_report_array_t reports, int index);
 vev_value_t vev_tx_report_value(vev_tx_report_t report);
 const char *vev_tx_report_edn(vev_tx_report_t report);
 vev_db_t vev_tx_report_db_before(vev_tx_report_t report);
@@ -226,6 +313,18 @@ const char *vev_query_prepared_with_inputs(
 vev_result_t vev_query_stmt_result(vev_conn_t conn, vev_stmt_t stmt);
 vev_result_t vev_query_db_stmt_result(vev_db_t db, vev_stmt_t stmt);
 vev_column_batch_t vev_query_stmt_column_batch(vev_conn_t conn, vev_stmt_t stmt);
+vev_column_batch_t vev_query_prepared_column_batch_with_inputs(
+    vev_conn_t conn,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+vev_column_batch_t vev_connection_prepared_column_batch_with_inputs(
+    vev_connection_t conn,
+    vev_prepared_query_t query,
+    const char *inputs_text);
+vev_column_batch_t vev_sqlite_conn_prepared_column_batch_with_inputs(
+    vev_sqlite_conn_t conn,
+    vev_prepared_query_t query,
+    const char *inputs_text);
 vev_column_batch_t vev_query_db_stmt_column_batch(vev_db_t db, vev_stmt_t stmt);
 bool vev_query_stmt_visit(
     vev_conn_t conn,
@@ -286,10 +385,22 @@ vev_column_batch_t vev_query_db_prepared_column_batch_with_inputs(
 void vev_column_batch_free(vev_column_batch_t batch);
 int vev_column_batch_kind(vev_column_batch_t batch);
 int vev_column_batch_count(vev_column_batch_t batch);
+int vev_column_batch_column_count(vev_column_batch_t batch);
+int vev_column_batch_column_kind(vev_column_batch_t batch, int column);
 const unsigned long long *vev_column_batch_entities_data(vev_column_batch_t batch);
 const long long *vev_column_batch_ints_data(vev_column_batch_t batch);
 const void *const *vev_column_batch_string_data_array(vev_column_batch_t batch);
 const int *vev_column_batch_string_lengths_data(vev_column_batch_t batch);
+const void *const *vev_column_batch_second_string_data_array(vev_column_batch_t batch);
+const int *vev_column_batch_second_string_lengths_data(vev_column_batch_t batch);
+const unsigned long long *vev_column_batch_column_entities_data(vev_column_batch_t batch, int column);
+const long long *vev_column_batch_column_ints_data(vev_column_batch_t batch, int column);
+const double *vev_column_batch_column_floats_data(vev_column_batch_t batch, int column);
+const bool *vev_column_batch_column_bools_data(vev_column_batch_t batch, int column);
+const int *vev_column_batch_column_value_kinds_data(vev_column_batch_t batch, int column);
+const vev_value_t *vev_column_batch_column_values_data(vev_column_batch_t batch, int column);
+const void *const *vev_column_batch_column_string_data_array(vev_column_batch_t batch, int column);
+const int *vev_column_batch_column_string_lengths_data(vev_column_batch_t batch, int column);
 int vev_column_batch_string_dictionary_count(vev_column_batch_t batch);
 const void *const *vev_column_batch_string_dictionary_data_array(vev_column_batch_t batch);
 const int *vev_column_batch_string_dictionary_lengths_data(vev_column_batch_t batch);
@@ -378,6 +489,24 @@ vev_value_handle_t vev_pull_many_prepared(
     vev_prepared_pull_pattern_t pattern,
     const unsigned long long *entities,
     int entity_count);
+vev_value_handle_t vev_pull_many_lookup_ref_string_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    const char **values,
+    int value_count);
+vev_value_handle_t vev_pull_many_lookup_ref_string_prepared(
+    vev_db_t db,
+    vev_prepared_pull_pattern_t pattern,
+    const char *attr,
+    const char **values,
+    int value_count);
+vev_value_handle_t vev_pull_many_lookup_ref_uuid_edn(
+    vev_db_t db,
+    const char *pattern_text,
+    const char *attr,
+    const char **values,
+    int value_count);
 vev_value_handle_t vev_pull_many_lookup_ref_uuid_prepared(
     vev_db_t db,
     vev_prepared_pull_pattern_t pattern,

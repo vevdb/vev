@@ -1,190 +1,101 @@
 # Storage Architecture
 
 Vev uses SQLite as the durable backing store, but SQLite is not the Datalog
-executor. Query, pull, entity, rules, and index semantics belong to Vev's own
-engine. SQLite stores durable facts, transaction metadata, and eventually
-engine-owned immutable index chunks.
+executor. Query, pull, rules, entity navigation, and index semantics run in Vev
+over Vev-owned logical indexes.
 
-## Current State
+In-memory Vev remains a first-class mode. None of the durable storage work
+should make SQLite required for tests, temporary databases, embedded in-memory
+use, or Kvist applications that want a pure in-memory database.
 
-The current SQLite path is correct but primitive:
+## Current Shape
 
-- successful transactions append datom rows and tx metadata rows
-- reopen reads durable datom rows
-- Vev rebuilds all in-memory indexes from those rows
-- immutable DB snapshots own dynamic arrays for the datom log and indexes
+SQLite stores:
 
-This proves open/write/close/reopen/query semantics, but it does not scale like
-a real embedded Datomic-like database. Large reopen currently means "read all
-datoms and rebuild all indexes", and frequent writes still copy too much DB and
-index storage per committed snapshot.
+- the append-only datom log and transaction metadata
+- durable `log_index` values for datom lookup
+- persisted logical index chunks for EAVT, AEVT, AVET, and VAET
+- root rows that identify the visible chunk root for each index at a basis tx
 
-## Target Shape
+Normal durable store APIs now return `Store-DB` and `Store-Tx-Report` values.
+Those values are source/root-backed handles where possible, not rebuilt resident
+`DB` values. Reopened durable reads can open persisted root metadata, use
+chunk-backed index cursors, and resolve datoms by durable log index.
+Root-backed DB handles, opened SQLite snapshots, and durable overlay DB values
+track the SQLite root row id separately from the basis tx: the row id selects
+normalized root pages, while the basis tx is the logical database value.
+Opened snapshots and durable overlays also preserve their shared SQLite page
+cache when converted back to root-backed handles. Opening a durable overlay for
+query keeps the root metadata/cache in place alongside the opened SQLite
+snapshot, so read access does not erase the cheap immutable handle shape.
 
-The durable store should become:
+Durable connection reads reuse a current-root page cache across repeated
+read-only queries. Public write wrappers invalidate that cache after successful
+ordinary writes, source-function writes, and logical grouped commits. The same
+wrappers also run auto-maintenance and listener notification through the shared
+profiling path. Committed durable transaction reports retain the before handle
+and page cache that the write path already opened when possible, instead of
+doing a second basis lookup just to manufacture `db-before`. Direct durable
+writes and source transaction-function writes acquire `db-before` through the
+current root-backed cache when available. Durable failure reports use the
+already-opened or current root-backed handle when available, so
+parse/read-only/direct-append failures remain storage-neutral and can keep
+warmed page cache state.
 
-- SQLite transaction log plus metadata as the source of durable truth
-- persisted immutable index chunks for Vev's logical indexes
-- root rows that identify the index chunk roots visible at a basis tx
-- DB snapshots that reference immutable index chunks plus small deltas
-- bounded/lazy chunk loading on reopen instead of full datom-log replay
+Legacy resident APIs still exist for compatibility and recovery:
 
-The query engine should continue to run over Vev indexes and physical query
-operators. We should not compile Datalog to SQL except for internal diagnostic
-or migration tooling.
+- `load-db-sqlite`
+- `open-conn-sqlite`
+- old `Tx-Report`-returning SQLite wrappers
+- resident-only connection conversion helpers such as `vev_conn_from_db`
 
-## SQLite Schema Direction
+Those APIs may rebuild a resident DB. They should stay explicit and should not
+be used silently by the production-shaped durable API.
 
-The SQLite schema now includes forward-compatible tables for the next storage
-generation:
+## Query Boundary
 
-- `vev_index_chunks`: immutable index pages/segments for `eavt`, `aevt`,
-  `avet`, and `vaet`
-- `vev_index_chunk_edges`: parent/child links for multi-level chunk trees
-- `vev_index_roots`: basis tx to root chunk pointers
-- `vev_datoms.log_index`: stable datom-log position used by persisted index
-  entries
-- `vev_meta.storage-architecture = vev-sqlite-chunked-index-v0`
+The query engine should keep targeting Vev logical indexes and physical query
+operators. It should not compile Datalog to SQL for normal execution.
 
-The new tables are no longer only schema scaffolding. On successful SQLite
-transactions and explicit SQLite persists, Vev writes persisted logical index
-artifacts for `eavt`, `aevt`, `avet`, and `vaet`. Small indexes use a single
-payload chunk. Larger indexes are split into bounded leaf chunks with a parent
-root chunk linked through `vev_index_chunk_edges`. Root rows point at the
-visible chunk root for each index at the committed basis tx. The payload stores
-current in-memory datom-index order, so it is a persisted Vev index artifact
-rather than a SQL query table. Those datom positions are now durable too:
-SQLite writes `vev_datoms.log_index`, preserves log-index order on load, and
-can fetch a single serialized datom by log index. Reopen now reads the latest
-root metadata before the datom rows and validates persisted chunk indexes
-against the rebuilt in-memory indexes. Vev can follow the latest root, load
-leaf chunks in edge order, parse the persisted index-entry vector, and compare
-it to the rebuilt `DB`. It can also load a bounded entry page from the
-persisted chunk tree by offset and limit, reading only the leaf chunks that
-cover the requested window.
-On top of that page loader, Vev now has a read-only SQLite index cursor that
-keeps one cached page and serves `count`/`at` access over a persisted logical
-index. `DB-Index-View` now has both resident-array and SQLite-cursor modes, and
-the storage tests exercise the same view `count`/`at`/bound helpers over a
-persisted cursor. `SQLite-Index-Snapshot` now opens all four persisted logical
-index cursors directly from a SQLite path or live handle, without calling
-`load-db-sqlite`, and can resolve individual datoms by durable log index.
-`SQLite-DB-Snapshot` wraps that index snapshot with basis tx and datom-count
-metadata, giving normal reopen/query code a durable snapshot shape to target. It
-can also binary-search persisted EAVT for an entity and materialize only that
-entity's datoms from durable log indexes. The same snapshot can binary-search
-persisted AEVT for an attribute and materialize entity+attribute reads without
-resident datom/index arrays. The snapshot owns a reusable prepared SQLite
-statement for datom-by-log-index resolution so broad materialization does not
-prepare one SQL statement per datom. Normal reopened `DB` values still use
-resident arrays today, but the query-facing boundary can now represent a
-chunk-backed source. `DB-Read-Source` can now wrap either a resident `DB` or a
-`SQLite-DB-Snapshot`, expose logical index views, filter retracted facts through
-source-backed currentness checks, run attr/entity+attr datom reads, render a
-simple pull-value map, and execute the first parsed EDN query shape over a
-persisted source: plain data clauses with `:find` variables, including
-multi-clause joins, primary `$` source-qualified clauses, predicate filters, and
-scalar plus destructuring function clauses over already materialized values, and
-`ground` clauses that bind values before later source-backed clauses. It also
-supports source-backed `get-else` and `get-some` clauses over current attr
-values plus `missing?`/not-group filtering over source-backed data clauses. It
-can render flat literal pull finds over forward attrs, wildcard pulls, flat
-reverse-ref pulls, nested forward/reverse-ref pulls, scalar inputs, and pull
-pattern inputs plus pull defaults/limits from the persisted snapshot. The
-public datom index APIs plus transaction, schema, lookup-ref, uniqueness,
-current-value, pull, and entity helper paths now go through a resident
-`DB-Index-View` boundary instead of directly owning the slice logic at each
-call site; this is still array-backed, but it gives query-facing and
-write-facing code a place to accept chunk-backed index views later. The general
-`Clause-Index-Scan` query operator now also carries a `DB-Index-View` instead
-of a raw index slice, so ordinary clause planning/matching is starting to use
-the same storage-facing abstraction. The optimized entity-star, threshold,
-self-join, two-attribute, entity-attribute, entity-int, entity string/int,
-top-N aggregate, and missing-attribute projection operators use the same
-boundary for their `avet`/`aevt`/`eavt` scans. The low-level latest-attribute
-and cardinality-one fast entity helpers also read datom indexes through that
-boundary now. Schema validation, transaction cardinality retractions, recursive
-rule adjacency builders, and the remaining optimized typed/projection scans no
-longer read datom index slices directly. The remaining resident read coupling
-is concentrated in `db-index-slice` itself and the `eavt` entity-position side
-tables.
-This is still a guarded compatibility path: Vev materializes datom rows and
-rebuilds indexes before validation for normal `DB` values. Wiring query/reopen
-to use `SQLite-Index-Snapshot`/chunk-backed DB snapshots instead of resident
-arrays is the next implementation step.
+The storage-facing abstraction is `DB-Index-View`, which can represent resident
+arrays or chunk-backed SQLite cursors. Query, pull, validation, transaction, and
+entity helper paths should move through this boundary instead of depending on
+raw resident index slices.
 
-The June 30, 2026 local SQLite storage benchmark now includes
-`persisted-db-snapshot-source-query` and
-`persisted-db-snapshot-source-join-query`, which parse and execute simple
-queries against a persisted `SQLite-DB-Snapshot` source. In that run the
-one-clause source query median was about 1.1ms, the three-clause joined source
-query median was about 3.4ms for the 2,000-entity fixture, and the compatibility
-`reopen-rebuild` path was about 61ms. This is not the final query path, but it
-proves parsed query execution can begin from persisted Vev index chunks without
-first rebuilding a resident `DB`.
+## Remaining Storage Work
 
-## Implementation Milestones
+1. Finish cheap durable DB values.
+   Retained `db-before`, `db-after`, reopened DB values, and source-backed DB
+   values should be cheap immutable handles over shared persisted chunks plus
+   small overlays.
 
-The concrete batch plan for the active storage phase is maintained in
-`docs/next-steps.md`. This section records the architectural milestones and
-current status.
+2. Remove hidden resident rebuilds from normal durable paths.
+   Resident rebuilds should be limited to compatibility, recovery, migration,
+   and explicit diagnostics.
 
-1. Schema, metadata, and bounded root writer.
-   Add root/chunk tables, architecture marker, inspection functions, and
-   bounded logical-index chunk/root publication. This is implemented; no query
-   or reopen behavior changes yet.
+3. Continue shared chunk ownership.
+   DB snapshots should share unchanged EAVT, AEVT, AVET, and VAET chunks and own
+   only new chunks or small deltas introduced by a transaction.
 
-2. Add read-only chunk cursors.
-   Teach Vev index accessors to read ranges from persisted chunks with an
-   in-memory cache. Whole-index loading and bounded page loading now exist and
-   are tested against rebuilt indexes. A read-only SQLite index cursor exists
-   with cached-page `count`/`at` access, and `DB-Index-View` can now wrap that
-   cursor as well as resident arrays. Public datom index APIs and
-   key transaction/schema/validation, pull, entity helper, general
-   `Clause-Index-Scan`, entity-star, threshold, self-join, two-attribute,
-   entity-attribute, entity-int, entity string/int, top-N aggregate, and
-   missing-attribute projection paths plus low-level latest-attribute and
-   cardinality-one fast entity helpers now use a resident index-view boundary.
-   Schema validation, transaction cardinality retractions, recursive rule
-   adjacency builders, and the remaining optimized typed/projection scans now
-   use that boundary too. Datom rows now carry durable `log_index` values and
-   SQLite can fetch an individual datom by log index, which is the next required
-   primitive for resolving persisted index entries without rebuilding the whole
-   DB. `SQLite-Index-Snapshot` packages the four persisted cursors plus datom
-   lookup, and `SQLite-DB-Snapshot` adds basis/datom-count metadata as the first
-   lazy-reopen DB snapshot object. It can now use persisted EAVT plus datom
-   lookup to read one entity, and persisted AEVT plus datom lookup to read an
-   attribute or entity+attribute, without resident datom/index arrays. Datom
-   lookup is backed by a reusable prepared statement on the snapshot. The
-   remaining work is to make normal reopened DB values construct persisted
-   cursor-backed views where appropriate and decide how entity-position side
-   tables are represented in shared/chunked snapshots.
+4. Keep source-backed query operators complete.
+   Remaining row/binding materialization fallbacks should move onto reusable
+   physical operators or typed materialization boundaries.
 
-3. Extend chunk-backed cursors to `aevt`, `avet`, and `vaet`.
-   Query planning should choose the same Vev logical indexes whether they are
-   fully resident arrays, chunk-backed cursors, or a snapshot delta overlay.
+5. Tighten compaction and maintenance policy.
+   Explicit and automatic compaction should preserve immutable snapshot
+   semantics and should not make ordinary small commits do surprising foreground
+   merge work.
 
-4. Replace whole-array DB snapshot ownership.
-   Move `DB` internals toward shared immutable index storage plus small per-tx
-   deltas. A new DB value should share unchanged chunks with older snapshots and
-   own only new/replaced chunks and delta data.
-
-5. Replace reopen rebuild behavior.
-   Reopen now loads metadata and latest root pointers first, then validates the
-   chunks after datom-log rebuild. The next step is to construct `DB` index
-   views from chunk roots directly, with datom-log replay reserved for recovery
-   and migration rather than normal large-database startup.
-
-6. Benchmark real workloads.
-   Measure MusicBrainz open/query/reopen, Datalevin-style write-bench append
-   workloads, and snapshot-heavy read/write loops. Compare against Datomic,
-   DataScript, and Datalevin where applicable.
+6. Preserve future history/as-of support.
+   Append-only log semantics and basis-root metadata must remain clear enough to
+   add historical database values later.
 
 ## Non-Goals
 
-- exposing SQLite tables as the public Vev data model
+- exposing SQLite tables as Vev's public data model
 - making application callers configure SQLite schemas directly
-- special reportless transaction fast paths that violate immutable DB snapshot
+- making SQLite execute Datalog queries
+- special reportless transaction paths that violate immutable DB snapshot
   semantics
 - distributed Datomic client/transactor semantics before embedded durable
   storage is solid

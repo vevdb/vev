@@ -32,7 +32,10 @@ public final class Vev {
     public static final int COLUMN_ENTITY = 1;
     public static final int COLUMN_STRING = 2;
     public static final int COLUMN_INT = 3;
+    public static final int COLUMN_MIXED = 4;
     public static final int COLUMN_BOOL = 5;
+    public static final int COLUMN_FLOAT = 6;
+    public static final int COLUMN_VALUE = 7;
 
     @FunctionalInterface
     public interface TxFunction {
@@ -66,17 +69,42 @@ public final class Vev {
     private final MethodHandle connectionClose;
     private final MethodHandle connectionDb;
     private final MethodHandle connectionTransactEdnReport;
+    private final MethodHandle connectionTransactEdnReportWithTxFns;
+    private final MethodHandle connectionTxCommitReport;
+    private final MethodHandle connectionTxCommitManyReport;
+    private final MethodHandle connectionTxCommitLogicalManyReports;
+    private final MethodHandle connectionTransactManyEdnReports;
+    private final MethodHandle connectionCompactIndexes;
+    private final MethodHandle connectionListenTxReport;
+    private final MethodHandle connectionUnlistenTxReport;
     private final MethodHandle sqliteConnOpen;
     private final MethodHandle sqliteConnOk;
     private final MethodHandle sqliteConnError;
     private final MethodHandle sqliteConnClose;
     private final MethodHandle sqliteConnDb;
     private final MethodHandle sqliteConnTransactEdnReport;
+    private final MethodHandle sqliteConnTxCommitReport;
+    private final MethodHandle sqliteConnTransactManyEdnReports;
+    private final MethodHandle sqliteConnCompactIndexes;
+    private final MethodHandle connectionPreparedColumnBatchWithInputs;
+    private final MethodHandle sqliteConnPreparedColumnBatchWithInputs;
     private final MethodHandle dbRetain;
     private final MethodHandle dbRelease;
     private final MethodHandle withEdn;
     private final MethodHandle withEdnReport;
     private final MethodHandle dbWithEdn;
+    private final MethodHandle dbEntity;
+    private final MethodHandle dbEntityLookupRefString;
+    private final MethodHandle dbEntityIdent;
+    private final MethodHandle entityFree;
+    private final MethodHandle entityFound;
+    private final MethodHandle entityId;
+    private final MethodHandle entityContains;
+    private final MethodHandle entityGet;
+    private final MethodHandle entityValues;
+    private final MethodHandle entityRef;
+    private final MethodHandle entityRefs;
+    private final MethodHandle entityTouch;
     private final MethodHandle stringFree;
     private final MethodHandle transactEdn;
     private final MethodHandle transactEdnReport;
@@ -85,6 +113,9 @@ public final class Vev {
     private final MethodHandle txReportEdn;
     private final MethodHandle txReportDbBefore;
     private final MethodHandle txReportDbAfter;
+    private final MethodHandle txReportArrayFree;
+    private final MethodHandle txReportArrayCount;
+    private final MethodHandle txReportArrayGet;
     private final MethodHandle txCreate;
     private final MethodHandle txFree;
     private final MethodHandle txAddString;
@@ -117,6 +148,7 @@ public final class Vev {
     private final MethodHandle queryStmtResult;
     private final MethodHandle queryDbStmtResult;
     private final MethodHandle queryDbStmtColumnBatch;
+    private final MethodHandle queryPreparedColumnBatchWithInputs;
     private final MethodHandle queryPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedProfileEdnWithInputs;
@@ -142,10 +174,22 @@ public final class Vev {
     private final MethodHandle columnBatchFree;
     private final MethodHandle columnBatchKind;
     private final MethodHandle columnBatchCount;
+    private final MethodHandle columnBatchColumnCount;
+    private final MethodHandle columnBatchColumnKind;
     private final MethodHandle columnBatchEntitiesData;
     private final MethodHandle columnBatchIntsData;
     private final MethodHandle columnBatchStringDataArray;
     private final MethodHandle columnBatchStringLengthsData;
+    private final MethodHandle columnBatchSecondStringDataArray;
+    private final MethodHandle columnBatchSecondStringLengthsData;
+    private final MethodHandle columnBatchColumnEntitiesData;
+    private final MethodHandle columnBatchColumnIntsData;
+    private final MethodHandle columnBatchColumnFloatsData;
+    private final MethodHandle columnBatchColumnBoolsData;
+    private final MethodHandle columnBatchColumnValueKindsData;
+    private final MethodHandle columnBatchColumnValuesData;
+    private final MethodHandle columnBatchColumnStringDataArray;
+    private final MethodHandle columnBatchColumnStringLengthsData;
     private final MethodHandle columnBatchStringDictionaryCount;
     private final MethodHandle columnBatchStringDictionaryDataArray;
     private final MethodHandle columnBatchStringDictionaryLengthsData;
@@ -182,6 +226,9 @@ public final class Vev {
     private final MethodHandle pullLookupRefIntPrepared;
     private final MethodHandle pullManyEdn;
     private final MethodHandle pullManyPrepared;
+    private final MethodHandle pullManyLookupRefStringEdn;
+    private final MethodHandle pullManyLookupRefStringPrepared;
+    private final MethodHandle pullManyLookupRefUuidEdn;
     private final MethodHandle pullManyLookupRefUuidPrepared;
     private final MethodHandle valueHandleFree;
     private final MethodHandle valueHandleValue;
@@ -311,17 +358,42 @@ public final class Vev {
         this.connectionClose = downcall("vev_connection_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connectionDb = downcall("vev_connection_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionTransactEdnReport = downcall("vev_connection_transact_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionTransactEdnReportWithTxFns = downcall("vev_connection_transact_edn_report_with_tx_fns", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionTxCommitReport = downcall("vev_connection_tx_commit_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionTxCommitManyReport = downcall("vev_connection_tx_commit_many_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.connectionTxCommitLogicalManyReports = downcall("vev_connection_tx_commit_logical_many_reports", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.connectionTransactManyEdnReports = downcall("vev_connection_transact_many_edn_reports", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.connectionCompactIndexes = downcall("vev_connection_compact_indexes", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
+        this.connectionListenTxReport = downcall("vev_connection_listen_tx_report", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionUnlistenTxReport = downcall("vev_connection_unlisten_tx_report", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.sqliteConnOpen = downcall("vev_sqlite_conn_open", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.sqliteConnOk = downcall("vev_sqlite_conn_ok", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
         this.sqliteConnError = downcall("vev_sqlite_conn_error", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.sqliteConnClose = downcall("vev_sqlite_conn_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.sqliteConnDb = downcall("vev_sqlite_conn_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.sqliteConnTransactEdnReport = downcall("vev_sqlite_conn_transact_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.sqliteConnTxCommitReport = downcall("vev_sqlite_conn_tx_commit_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.sqliteConnTransactManyEdnReports = downcall("vev_sqlite_conn_transact_many_edn_reports", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.sqliteConnCompactIndexes = downcall("vev_sqlite_conn_compact_indexes", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
+        this.connectionPreparedColumnBatchWithInputs = downcall("vev_connection_prepared_column_batch_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.sqliteConnPreparedColumnBatchWithInputs = downcall("vev_sqlite_conn_prepared_column_batch_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRetain = downcall("vev_db_retain", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbRelease = downcall("vev_db_release", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.withEdn = downcall("vev_with_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.withEdnReport = downcall("vev_with_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.dbWithEdn = downcall("vev_db_with_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.dbEntity = downcall("vev_db_entity", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        this.dbEntityLookupRefString = downcall("vev_db_entity_lookup_ref_string", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.dbEntityIdent = downcall("vev_db_entity_ident", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityFree = downcall("vev_entity_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.entityFound = downcall("vev_entity_found", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
+        this.entityId = downcall("vev_entity_id", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
+        this.entityContains = downcall("vev_entity_contains", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityGet = downcall("vev_entity_get", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityValues = downcall("vev_entity_values", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityRef = downcall("vev_entity_ref", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityRefs = downcall("vev_entity_refs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.entityTouch = downcall("vev_entity_touch", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stringFree = downcall("vev_string_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.transactEdn = downcall("vev_transact_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.transactEdnReport = downcall("vev_transact_edn_report", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -330,6 +402,9 @@ public final class Vev {
         this.txReportEdn = downcall("vev_tx_report_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.txReportDbBefore = downcall("vev_tx_report_db_before", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.txReportDbAfter = downcall("vev_tx_report_db_after", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.txReportArrayFree = downcall("vev_tx_report_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.txReportArrayCount = downcall("vev_tx_report_array_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.txReportArrayGet = downcall("vev_tx_report_array_get", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.txCreate = downcall("vev_tx_create", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.txFree = downcall("vev_tx_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.txAddString = downcall("vev_tx_add_string", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -362,6 +437,7 @@ public final class Vev {
         this.queryStmtResult = downcall("vev_query_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbStmtResult = downcall("vev_query_db_stmt_result", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbStmtColumnBatch = downcall("vev_query_db_stmt_column_batch", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryPreparedColumnBatchWithInputs = downcall("vev_query_prepared_column_batch_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryPreparedResultWithInputs = downcall("vev_query_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedProfileEdnWithInputs = downcall("vev_query_db_prepared_profile_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -387,10 +463,22 @@ public final class Vev {
         this.columnBatchFree = downcall("vev_column_batch_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.columnBatchKind = downcall("vev_column_batch_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.columnBatchCount = downcall("vev_column_batch_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.columnBatchColumnCount = downcall("vev_column_batch_column_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+        this.columnBatchColumnKind = downcall("vev_column_batch_column_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.columnBatchEntitiesData = downcall("vev_column_batch_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.columnBatchIntsData = downcall("vev_column_batch_ints_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.columnBatchStringDataArray = downcall("vev_column_batch_string_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.columnBatchStringLengthsData = downcall("vev_column_batch_string_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchSecondStringDataArray = downcall("vev_column_batch_second_string_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchSecondStringLengthsData = downcall("vev_column_batch_second_string_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.columnBatchColumnEntitiesData = downcall("vev_column_batch_column_entities_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.columnBatchColumnIntsData = downcall("vev_column_batch_column_ints_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.columnBatchColumnFloatsData = downcall("vev_column_batch_column_floats_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.columnBatchColumnBoolsData = downcall("vev_column_batch_column_bools_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.columnBatchColumnValueKindsData = downcall("vev_column_batch_column_value_kinds_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.columnBatchColumnValuesData = downcall("vev_column_batch_column_values_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.columnBatchColumnStringDataArray = downcall("vev_column_batch_column_string_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.columnBatchColumnStringLengthsData = downcall("vev_column_batch_column_string_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.columnBatchStringDictionaryCount = downcall("vev_column_batch_string_dictionary_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.columnBatchStringDictionaryDataArray = downcall("vev_column_batch_string_dictionary_data_array", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.columnBatchStringDictionaryLengthsData = downcall("vev_column_batch_string_dictionary_lengths_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -427,6 +515,9 @@ public final class Vev {
         this.pullLookupRefIntPrepared = downcall("vev_pull_lookup_ref_int_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.pullManyEdn = downcall("vev_pull_many_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.pullManyPrepared = downcall("vev_pull_many_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.pullManyLookupRefStringEdn = downcall("vev_pull_many_lookup_ref_string_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.pullManyLookupRefStringPrepared = downcall("vev_pull_many_lookup_ref_string_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        this.pullManyLookupRefUuidEdn = downcall("vev_pull_many_lookup_ref_uuid_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.pullManyLookupRefUuidPrepared = downcall("vev_pull_many_lookup_ref_uuid_prepared", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
         this.valueHandleFree = downcall("vev_value_handle_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.valueHandleValue = downcall("vev_value_handle_value", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -506,6 +597,8 @@ public final class Vev {
     }
 
     public Connection connFromDb(DB db) throws Throwable {
+        // Resident/in-memory compatibility only. Durable DB handles are
+        // immutable values and should be queried directly.
         db.requireOpen();
         MemorySegment raw = (MemorySegment) connFromDb.invoke(db.handle.raw);
         if (isNull(raw)) throw new IllegalStateException("failed to create Vev connection from DB");
@@ -677,6 +770,114 @@ public final class Vev {
             case 5 -> (boolean) resultValueBool.invoke(result, row, column);
             default -> valueToJava((MemorySegment) resultValue.invoke(result, row, column));
         };
+    }
+
+    private long[] columnLongs(MemorySegment data, int count) {
+        if (count == 0 || isNull(data)) return new long[0];
+        return data.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+    }
+
+    private int[] columnInts(MemorySegment data, int count) {
+        if (count == 0 || isNull(data)) return new int[0];
+        return data.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+    }
+
+    private double[] columnDoubles(MemorySegment data, int count) {
+        if (count == 0 || isNull(data)) return new double[0];
+        return data.reinterpret((long) count * Double.BYTES).toArray(ValueLayout.JAVA_DOUBLE);
+    }
+
+    private boolean[] columnBools(MemorySegment data, int count) {
+        if (count == 0 || isNull(data)) return new boolean[0];
+        byte[] bytes = data.reinterpret((long) count).toArray(ValueLayout.JAVA_BYTE);
+        boolean[] out = new boolean[count];
+        for (int index = 0; index < count; index++) {
+            out[index] = bytes[index] != 0;
+        }
+        return out;
+    }
+
+    private String[] columnStrings(MemorySegment raw, int column, int count) throws Throwable {
+        if (count == 0) return new String[0];
+        MemorySegment dataArrayRaw = (MemorySegment) columnBatchColumnStringDataArray.invoke(raw, column);
+        MemorySegment lengthsRaw = (MemorySegment) columnBatchColumnStringLengthsData.invoke(raw, column);
+        if (isNull(dataArrayRaw) || isNull(lengthsRaw)) return new String[0];
+        MemorySegment dataArray = dataArrayRaw.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+        int[] lengths = lengthsRaw.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+        String[] out = new String[count];
+        for (int index = 0; index < count; index++) {
+            MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
+            out[index] = borrowedUtf8String(data, lengths[index]);
+        }
+        return out;
+    }
+
+    private Object[] columnMixedValues(MemorySegment raw, int column, int count) throws Throwable {
+        int[] valueKinds = columnInts((MemorySegment) columnBatchColumnValueKindsData.invoke(raw, column), count);
+        if (valueKinds.length != count) return null;
+        long[] entities = columnLongs((MemorySegment) columnBatchColumnEntitiesData.invoke(raw, column), count);
+        long[] ints = columnLongs((MemorySegment) columnBatchColumnIntsData.invoke(raw, column), count);
+        double[] floats = columnDoubles((MemorySegment) columnBatchColumnFloatsData.invoke(raw, column), count);
+        boolean[] bools = columnBools((MemorySegment) columnBatchColumnBoolsData.invoke(raw, column), count);
+        String[] strings = columnStrings(raw, column, count);
+        Object[] out = new Object[count];
+        for (int row = 0; row < count; row++) {
+            out[row] = switch (valueKinds[row]) {
+                case 0 -> null;
+                case 1 -> new Entity(entities[row]);
+                case 2 -> strings[row];
+                case 3 -> ints[row];
+                case 4 -> floats[row];
+                case 5 -> bools[row];
+                case 6 -> new Keyword(strings[row]);
+                case 7 -> new Symbol(strings[row]);
+                case 10 -> UUID.fromString(strings[row]);
+                default -> strings[row];
+            };
+        }
+        return out;
+    }
+
+    private Object[] columnValueHandles(MemorySegment raw, int column, int count) throws Throwable {
+        if (count == 0) return new Object[0];
+        MemorySegment valuesData = (MemorySegment) columnBatchColumnValuesData.invoke(raw, column);
+        if (isNull(valuesData)) return null;
+        MemorySegment valueArray = valuesData.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+        Object[] out = new Object[count];
+        for (int row = 0; row < count; row++) {
+            MemorySegment value = valueArray.get(ValueLayout.ADDRESS, (long) row * ValueLayout.ADDRESS.byteSize());
+            out[row] = valueToJava(value);
+        }
+        return out;
+    }
+
+    private ColumnResult columnResultFromBatch(MemorySegment raw) throws Throwable {
+        if (isNull(raw)) return null;
+        try {
+            int count = (int) columnBatchCount.invoke(raw);
+            int columnCount = (int) columnBatchColumnCount.invoke(raw);
+            if (columnCount <= 0) return null;
+            int[] kinds = new int[columnCount];
+            Object[] columns = new Object[columnCount];
+            for (int column = 0; column < columnCount; column++) {
+                int kind = (int) columnBatchColumnKind.invoke(raw, column);
+                kinds[column] = kind;
+                columns[column] = switch (kind) {
+                    case COLUMN_ENTITY -> columnLongs((MemorySegment) columnBatchColumnEntitiesData.invoke(raw, column), count);
+                    case COLUMN_STRING -> columnStrings(raw, column, count);
+                    case COLUMN_INT -> columnLongs((MemorySegment) columnBatchColumnIntsData.invoke(raw, column), count);
+                    case COLUMN_BOOL -> columnBools((MemorySegment) columnBatchColumnBoolsData.invoke(raw, column), count);
+                    case COLUMN_FLOAT -> columnDoubles((MemorySegment) columnBatchColumnFloatsData.invoke(raw, column), count);
+                    case COLUMN_MIXED -> columnMixedValues(raw, column, count);
+                    case COLUMN_VALUE -> columnValueHandles(raw, column, count);
+                    default -> null;
+                };
+                if (columns[column] == null) return null;
+            }
+            return new ColumnResult(count, kinds, columns);
+        } finally {
+            columnBatchFree.invoke(raw);
+        }
     }
 
     private void closeHandle(MethodHandle handle, MemorySegment segment) {
@@ -878,6 +1079,9 @@ public final class Vev {
                 case COLUMN_INT -> ((long[]) values)[row];
                 case COLUMN_STRING -> ((String[]) values)[row];
                 case COLUMN_BOOL -> ((boolean[]) values)[row];
+                case COLUMN_FLOAT -> ((double[]) values)[row];
+                case COLUMN_MIXED -> ((Object[]) values)[row];
+                case COLUMN_VALUE -> ((Object[]) values)[row];
                 default -> throw new IllegalStateException("unsupported column kind: " + kinds[column]);
             };
         }
@@ -894,10 +1098,16 @@ public final class Vev {
 
     public final class TxReport implements AutoCloseable {
         private MemorySegment raw;
+        private final boolean owned;
 
         private TxReport(MemorySegment raw) {
+            this(raw, true);
+        }
+
+        private TxReport(MemorySegment raw, boolean owned) {
             if (isNull(raw)) throw new IllegalStateException("transaction returned null report");
             this.raw = raw;
+            this.owned = owned;
         }
 
         public Object value() throws Throwable {
@@ -931,7 +1141,51 @@ public final class Vev {
         @Override
         public void close() {
             if (!isNull(raw)) {
-                closeHandle(txReportFree, raw);
+                if (owned) {
+                    closeHandle(txReportFree, raw);
+                }
+                raw = MemorySegment.NULL;
+            }
+        }
+    }
+
+    public final class TxReportArray implements AutoCloseable {
+        private MemorySegment raw;
+
+        private TxReportArray(MemorySegment raw) {
+            if (isNull(raw)) throw new IllegalStateException("transaction returned null report array");
+            this.raw = raw;
+        }
+
+        public int size() throws Throwable {
+            requireOpen();
+            return (int) txReportArrayCount.invoke(raw);
+        }
+
+        public TxReport get(int index) throws Throwable {
+            requireOpen();
+            MemorySegment report = (MemorySegment) txReportArrayGet.invoke(raw, index);
+            return new TxReport(report, false);
+        }
+
+        public List<Object> values() throws Throwable {
+            requireOpen();
+            int count = size();
+            ArrayList<Object> values = new ArrayList<>(count);
+            for (int index = 0; index < count; index++) {
+                values.add(get(index).value());
+            }
+            return values;
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("transaction report array is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(txReportArrayFree, raw);
                 raw = MemorySegment.NULL;
             }
         }
@@ -997,14 +1251,24 @@ public final class Vev {
 
     public final class TxReportListenerRegistration implements AutoCloseable {
         private final Arena arena;
-        private final Connection conn;
+        private final MemorySegment connRaw;
+        private final MethodHandle unlistenFn;
         private final String name;
         private final TxReportListener listener;
         private boolean open;
 
         private TxReportListenerRegistration(Arena arena, Connection conn, String name, TxReportListener listener) {
+            this(arena, conn.raw, connUnlistenTxReport, name, listener);
+        }
+
+        private TxReportListenerRegistration(Arena arena, DurableConnection conn, String name, TxReportListener listener) {
+            this(arena, conn.raw, connectionUnlistenTxReport, name, listener);
+        }
+
+        private TxReportListenerRegistration(Arena arena, MemorySegment connRaw, MethodHandle unlistenFn, String name, TxReportListener listener) {
             this.arena = arena;
-            this.conn = conn;
+            this.connRaw = connRaw;
+            this.unlistenFn = unlistenFn;
             this.name = name;
             this.listener = listener;
             this.open = true;
@@ -1014,8 +1278,8 @@ public final class Vev {
         public void close() {
             if (open) {
                 try (Arena local = Arena.ofConfined()) {
-                    if (!isNull(conn.raw)) {
-                        connUnlistenTxReport.invoke(conn.raw, local.allocateUtf8String(name));
+                    if (!isNull(connRaw)) {
+                        unlistenFn.invoke(connRaw, local.allocateUtf8String(name));
                     }
                 } catch (Throwable error) {
                     throw new RuntimeException(error);
@@ -1107,6 +1371,16 @@ public final class Vev {
             }
         }
 
+        public ColumnResult queryColumns(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return columnResultFromBatch((MemorySegment) queryPreparedColumnBatchWithInputs.invoke(
+                    raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs)));
+            }
+        }
+
         public ResultSet query(PreparedQuery query, String rules, String inputs) throws Throwable {
             try (Arena local = Arena.ofConfined()) {
                 return new ResultSet((MemorySegment) queryPreparedResultWithRulesTextAndInputs.invoke(
@@ -1152,6 +1426,140 @@ public final class Vev {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 return new TxReport((MemorySegment) connectionTransactEdnReport.invoke(raw, local.allocateUtf8String(tx)));
+            }
+        }
+
+        public TxReport transactReport(String tx, TxFunctionRegistry registry) throws Throwable {
+            requireOpen();
+            registry.requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return new TxReport((MemorySegment) connectionTransactEdnReportWithTxFns.invoke(
+                    raw,
+                    local.allocateUtf8String(tx),
+                    registry.raw));
+            }
+        }
+
+        public TxReport transactReport(TxBuilder tx) throws Throwable {
+            requireOpen();
+            tx.requireOpen();
+            return new TxReport((MemorySegment) connectionTxCommitReport.invoke(raw, tx.raw));
+        }
+
+        public TxReport transactReport(List<TxBuilder> txs) throws Throwable {
+            requireOpen();
+            if (txs == null || txs.isEmpty()) {
+                throw new IllegalArgumentException("bulk transaction requires at least one builder");
+            }
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment builders = local.allocate(
+                    ValueLayout.ADDRESS.byteSize() * txs.size(),
+                    ValueLayout.ADDRESS.byteAlignment());
+                for (int index = 0; index < txs.size(); index++) {
+                    TxBuilder tx = txs.get(index);
+                    if (tx == null) {
+                        throw new IllegalArgumentException("bulk transaction builder cannot be null");
+                    }
+                    tx.requireOpen();
+                    builders.setAtIndex(ValueLayout.ADDRESS, index, tx.raw);
+                }
+                return new TxReport((MemorySegment) connectionTxCommitManyReport.invoke(raw, builders, txs.size()));
+            }
+        }
+
+        public TxReportArray transactLogicalReports(List<TxBuilder> txs) throws Throwable {
+            requireOpen();
+            if (txs == null) {
+                throw new IllegalArgumentException("logical group commit builders cannot be null");
+            }
+            if (txs.isEmpty()) {
+                return new TxReportArray((MemorySegment) connectionTxCommitLogicalManyReports.invoke(raw, MemorySegment.NULL, 0));
+            }
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment builders = local.allocate(
+                    ValueLayout.ADDRESS.byteSize() * txs.size(),
+                    ValueLayout.ADDRESS.byteAlignment());
+                for (int index = 0; index < txs.size(); index++) {
+                    TxBuilder tx = txs.get(index);
+                    if (tx == null) {
+                        throw new IllegalArgumentException("logical group commit builder cannot be null");
+                    }
+                    tx.requireOpen();
+                    builders.setAtIndex(ValueLayout.ADDRESS, index, tx.raw);
+                }
+                return new TxReportArray((MemorySegment) connectionTxCommitLogicalManyReports.invoke(raw, builders, txs.size()));
+            }
+        }
+
+        public TxReportArray transactLogicalEdnReports(List<String> txs) throws Throwable {
+            requireOpen();
+            if (txs == null) {
+                throw new IllegalArgumentException("logical EDN transaction group cannot be null");
+            }
+            if (txs.isEmpty()) {
+                return new TxReportArray((MemorySegment) connectionTransactManyEdnReports.invoke(raw, MemorySegment.NULL, 0));
+            }
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment texts = local.allocate(
+                    ValueLayout.ADDRESS.byteSize() * txs.size(),
+                    ValueLayout.ADDRESS.byteAlignment());
+                for (int index = 0; index < txs.size(); index++) {
+                    String tx = txs.get(index);
+                    if (tx == null) {
+                        throw new IllegalArgumentException("logical EDN transaction cannot be null");
+                    }
+                    texts.setAtIndex(ValueLayout.ADDRESS, index, local.allocateUtf8String(tx));
+                }
+                return new TxReportArray((MemorySegment) connectionTransactManyEdnReports.invoke(raw, texts, txs.size()));
+            }
+        }
+
+        public boolean compactIndexes() throws Throwable {
+            requireOpen();
+            return (boolean) connectionCompactIndexes.invoke(raw);
+        }
+
+        public ColumnResult queryColumns(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return columnResultFromBatch((MemorySegment) connectionPreparedColumnBatchWithInputs.invoke(
+                    raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs)));
+            }
+        }
+
+        public TxReportListenerRegistration listen(String name, TxReportListener listener) throws Throwable {
+            requireOpen();
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("listener name is required");
+            if (listener == null) throw new IllegalArgumentException("transaction listener callback is required");
+            Arena listenerArena = Arena.ofShared();
+            MethodHandle callback = MethodHandles.lookup()
+                .findVirtual(
+                    Vev.class,
+                    "txReportListenerCallback",
+                    MethodType.methodType(void.class, TxReportListener.class, MemorySegment.class, MemorySegment.class))
+                .bindTo(Vev.this)
+                .bindTo(listener);
+            MemorySegment stub = LINKER.upcallStub(
+                callback,
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+                listenerArena);
+            boolean ok;
+            try (Arena local = Arena.ofConfined()) {
+                ok = (boolean) connectionListenTxReport.invoke(raw, local.allocateUtf8String(name), stub, MemorySegment.NULL);
+            }
+            if (!ok) {
+                listenerArena.close();
+                throw new IllegalStateException("failed to register transaction listener: " + name);
+            }
+            return new TxReportListenerRegistration(listenerArena, this, name, listener);
+        }
+
+        public boolean unlisten(String name) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return (boolean) connectionUnlistenTxReport.invoke(raw, local.allocateUtf8String(name));
             }
         }
 
@@ -1229,6 +1637,50 @@ public final class Vev {
             }
         }
 
+        public TxReport transactReport(TxBuilder tx) throws Throwable {
+            requireOpen();
+            tx.requireOpen();
+            return new TxReport((MemorySegment) sqliteConnTxCommitReport.invoke(raw, tx.raw));
+        }
+
+        public TxReportArray transactLogicalEdnReports(List<String> txs) throws Throwable {
+            requireOpen();
+            if (txs == null) {
+                throw new IllegalArgumentException("logical EDN transaction group cannot be null");
+            }
+            if (txs.isEmpty()) {
+                return new TxReportArray((MemorySegment) sqliteConnTransactManyEdnReports.invoke(raw, MemorySegment.NULL, 0));
+            }
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment texts = local.allocate(
+                    ValueLayout.ADDRESS.byteSize() * txs.size(),
+                    ValueLayout.ADDRESS.byteAlignment());
+                for (int index = 0; index < txs.size(); index++) {
+                    String tx = txs.get(index);
+                    if (tx == null) {
+                        throw new IllegalArgumentException("logical EDN transaction cannot be null");
+                    }
+                    texts.setAtIndex(ValueLayout.ADDRESS, index, local.allocateUtf8String(tx));
+                }
+                return new TxReportArray((MemorySegment) sqliteConnTransactManyEdnReports.invoke(raw, texts, txs.size()));
+            }
+        }
+
+        public boolean compactIndexes() throws Throwable {
+            requireOpen();
+            return (boolean) sqliteConnCompactIndexes.invoke(raw);
+        }
+
+        public ColumnResult queryColumns(PreparedQuery query, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return columnResultFromBatch((MemorySegment) sqliteConnPreparedColumnBatchWithInputs.invoke(
+                    raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs)));
+            }
+        }
+
         public DB db() throws Throwable {
             requireOpen();
             MemorySegment db = (MemorySegment) sqliteConnDb.invoke(raw);
@@ -1263,6 +1715,34 @@ public final class Vev {
             MemorySegment retained = (MemorySegment) dbRetain.invoke(handle.raw);
             if (isNull(retained)) throw new IllegalStateException("failed to retain DB snapshot");
             return new DB(retained);
+        }
+
+        public EntityView entity(long entity) throws Throwable {
+            requireOpen();
+            MemorySegment raw = (MemorySegment) dbEntity.invoke(handle.raw, entity);
+            if (isNull(raw)) throw new IllegalStateException("failed to create entity view");
+            return new EntityView(raw);
+        }
+
+        public EntityView entityLookupRefString(String attr, String value) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) dbEntityLookupRefString.invoke(
+                    handle.raw,
+                    local.allocateUtf8String(attr),
+                    local.allocateUtf8String(value));
+                if (isNull(raw)) throw new IllegalStateException("failed to create lookup-ref entity view");
+                return new EntityView(raw);
+            }
+        }
+
+        public EntityView entityIdent(String ident) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) dbEntityIdent.invoke(handle.raw, local.allocateUtf8String(ident));
+                if (isNull(raw)) throw new IllegalStateException("failed to create ident entity view");
+                return new EntityView(raw);
+            }
         }
 
         public ResultSet query(PreparedQuery query, String inputs) throws Throwable {
@@ -1458,6 +1938,26 @@ public final class Vev {
             return data.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
         }
 
+        private int[] intColumn(MemorySegment data, int count) {
+            if (count == 0 || isNull(data)) return new int[0];
+            return data.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+        }
+
+        private double[] doubleColumn(MemorySegment data, int count) {
+            if (count == 0 || isNull(data)) return new double[0];
+            return data.reinterpret((long) count * Double.BYTES).toArray(ValueLayout.JAVA_DOUBLE);
+        }
+
+        private boolean[] boolColumn(MemorySegment data, int count) {
+            if (count == 0 || isNull(data)) return new boolean[0];
+            byte[] bytes = data.reinterpret((long) count).toArray(ValueLayout.JAVA_BYTE);
+            boolean[] out = new boolean[count];
+            for (int index = 0; index < count; index++) {
+                out[index] = bytes[index] != 0;
+            }
+            return out;
+        }
+
         private String[] columnBatchStrings(MemorySegment raw, int count) throws Throwable {
             if (count == 0) return new String[0];
             int dictionaryCount = (int) columnBatchStringDictionaryCount.invoke(raw);
@@ -1496,6 +1996,77 @@ public final class Vev {
             return out;
         }
 
+        private String[] columnBatchSecondStrings(MemorySegment raw, int count) throws Throwable {
+            if (count == 0) return new String[0];
+            MemorySegment stringDataArray = (MemorySegment) columnBatchSecondStringDataArray.invoke(raw);
+            MemorySegment stringLengthsData = (MemorySegment) columnBatchSecondStringLengthsData.invoke(raw);
+            if (isNull(stringDataArray) || isNull(stringLengthsData)) return new String[0];
+            MemorySegment dataArray = stringDataArray.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+            int[] lengths = stringLengthsData.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+            String[] out = new String[count];
+            for (int index = 0; index < count; index++) {
+                MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
+                out[index] = borrowedUtf8String(data, lengths[index]);
+            }
+            return out;
+        }
+
+        private String[] columnBatchStringColumn(MemorySegment raw, int column, int count) throws Throwable {
+            if (count == 0) return new String[0];
+            MemorySegment stringDataArray = (MemorySegment) columnBatchColumnStringDataArray.invoke(raw, column);
+            MemorySegment stringLengthsData = (MemorySegment) columnBatchColumnStringLengthsData.invoke(raw, column);
+            if (isNull(stringDataArray) || isNull(stringLengthsData)) return new String[0];
+            MemorySegment dataArray = stringDataArray.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+            int[] lengths = stringLengthsData.reinterpret((long) count * Integer.BYTES).toArray(ValueLayout.JAVA_INT);
+            String[] out = new String[count];
+            for (int index = 0; index < count; index++) {
+                MemorySegment data = dataArray.get(ValueLayout.ADDRESS, (long) index * ValueLayout.ADDRESS.byteSize());
+                out[index] = borrowedUtf8String(data, lengths[index]);
+            }
+            return out;
+        }
+
+        private Object[] mixedColumn(MemorySegment raw, int column, int count) throws Throwable {
+            int[] valueKinds = intColumn((MemorySegment) columnBatchColumnValueKindsData.invoke(raw, column), count);
+            if (valueKinds.length != count) return null;
+
+            long[] entities = longColumn((MemorySegment) columnBatchColumnEntitiesData.invoke(raw, column), count);
+            long[] ints = longColumn((MemorySegment) columnBatchColumnIntsData.invoke(raw, column), count);
+            double[] floats = doubleColumn((MemorySegment) columnBatchColumnFloatsData.invoke(raw, column), count);
+            boolean[] bools = boolColumn((MemorySegment) columnBatchColumnBoolsData.invoke(raw, column), count);
+            String[] strings = columnBatchStringColumn(raw, column, count);
+
+            Object[] out = new Object[count];
+            for (int row = 0; row < count; row++) {
+                out[row] = switch (valueKinds[row]) {
+                    case 0 -> null;
+                    case 1 -> new Entity(entities[row]);
+                    case 2 -> strings[row];
+                    case 3 -> ints[row];
+                    case 4 -> floats[row];
+                    case 5 -> bools[row];
+                    case 6 -> new Keyword(strings[row]);
+                    case 7 -> new Symbol(strings[row]);
+                    case 10 -> UUID.fromString(strings[row]);
+                    default -> strings[row];
+                };
+            }
+            return out;
+        }
+
+        private Object[] valueColumn(MemorySegment raw, int column, int count) throws Throwable {
+            if (count == 0) return new Object[0];
+            MemorySegment valuesData = (MemorySegment) columnBatchColumnValuesData.invoke(raw, column);
+            if (isNull(valuesData)) return null;
+            MemorySegment valueArray = valuesData.reinterpret((long) count * ValueLayout.ADDRESS.byteSize());
+            Object[] out = new Object[count];
+            for (int row = 0; row < count; row++) {
+                MemorySegment value = valueArray.get(ValueLayout.ADDRESS, (long) row * ValueLayout.ADDRESS.byteSize());
+                out[row] = valueToJava(value);
+            }
+            return out;
+        }
+
         public ColumnResult queryColumns(PreparedQuery query, String inputs) throws Throwable {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
@@ -1516,34 +2087,35 @@ public final class Vev {
         private ColumnResult columnResultFromBatch(MemorySegment raw) throws Throwable {
             if (isNull(raw)) return null;
             try {
-                int kind = (int) columnBatchKind.invoke(raw);
                 int count = (int) columnBatchCount.invoke(raw);
-                return switch (kind) {
-                    case 1 -> new ColumnResult(
-                        count,
-                        new int[] { COLUMN_ENTITY },
-                        new Object[] { longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count) });
-                    case 2 -> new ColumnResult(
-                        count,
-                        new int[] { COLUMN_STRING },
-                        new Object[] { columnBatchStrings(raw, count) });
-                    case 3 -> new ColumnResult(
-                        count,
-                        new int[] { COLUMN_ENTITY, COLUMN_INT },
-                        new Object[] {
-                            longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count),
-                            longColumn((MemorySegment) columnBatchIntsData.invoke(raw), count),
-                        });
-                    case 4 -> new ColumnResult(
-                        count,
-                        new int[] { COLUMN_ENTITY, COLUMN_STRING, COLUMN_INT },
-                        new Object[] {
-                            longColumn((MemorySegment) columnBatchEntitiesData.invoke(raw), count),
-                            columnBatchStrings(raw, count),
-                            longColumn((MemorySegment) columnBatchIntsData.invoke(raw), count),
-                        });
-                    default -> null;
-                };
+                int columnCount = (int) columnBatchColumnCount.invoke(raw);
+                if (columnCount <= 0) return null;
+                int[] kinds = new int[columnCount];
+                Object[] columns = new Object[columnCount];
+                for (int column = 0; column < columnCount; column++) {
+                    int kind = (int) columnBatchColumnKind.invoke(raw, column);
+                    kinds[column] = kind;
+                    columns[column] = switch (kind) {
+                        case COLUMN_ENTITY -> longColumn(
+                            (MemorySegment) columnBatchColumnEntitiesData.invoke(raw, column),
+                            count);
+                        case COLUMN_STRING -> columnBatchStringColumn(raw, column, count);
+                        case COLUMN_INT -> longColumn(
+                            (MemorySegment) columnBatchColumnIntsData.invoke(raw, column),
+                            count);
+                        case COLUMN_BOOL -> boolColumn(
+                            (MemorySegment) columnBatchColumnBoolsData.invoke(raw, column),
+                            count);
+                        case COLUMN_FLOAT -> doubleColumn(
+                            (MemorySegment) columnBatchColumnFloatsData.invoke(raw, column),
+                            count);
+                        case COLUMN_MIXED -> mixedColumn(raw, column, count);
+                        case COLUMN_VALUE -> valueColumn(raw, column, count);
+                        default -> null;
+                    };
+                    if (columns[column] == null) return null;
+                }
+                return new ColumnResult(count, kinds, columns);
             } finally {
                 columnBatchFree.invoke(raw);
             }
@@ -1768,6 +2340,61 @@ public final class Vev {
             }
         }
 
+        public Object pullManyLookupRefString(String pattern, String attr, String... values) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment array = local.allocateArray(ValueLayout.ADDRESS, values.length);
+                for (int i = 0; i < values.length; i++) {
+                    array.setAtIndex(ValueLayout.ADDRESS, i, local.allocateUtf8String(values[i]));
+                }
+                try (ValueHandle value = new ValueHandle((MemorySegment) pullManyLookupRefStringEdn.invoke(
+                         handle.raw,
+                         local.allocateUtf8String(pattern),
+                         local.allocateUtf8String(attr),
+                         array,
+                         values.length))) {
+                    return value.value();
+                }
+            }
+        }
+
+        public Object pullManyLookupRefString(PreparedPullPattern pattern, String attr, String... values) throws Throwable {
+            requireOpen();
+            pattern.requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment array = local.allocateArray(ValueLayout.ADDRESS, values.length);
+                for (int i = 0; i < values.length; i++) {
+                    array.setAtIndex(ValueLayout.ADDRESS, i, local.allocateUtf8String(values[i]));
+                }
+                try (ValueHandle value = new ValueHandle((MemorySegment) pullManyLookupRefStringPrepared.invoke(
+                         handle.raw,
+                         pattern.raw,
+                         local.allocateUtf8String(attr),
+                         array,
+                         values.length))) {
+                    return value.value();
+                }
+            }
+        }
+
+        public Object pullManyLookupRefUuid(String pattern, String attr, UUID... values) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment array = local.allocateArray(ValueLayout.ADDRESS, values.length);
+                for (int i = 0; i < values.length; i++) {
+                    array.setAtIndex(ValueLayout.ADDRESS, i, local.allocateUtf8String(values[i].toString()));
+                }
+                try (ValueHandle value = new ValueHandle((MemorySegment) pullManyLookupRefUuidEdn.invoke(
+                         handle.raw,
+                         local.allocateUtf8String(pattern),
+                         local.allocateUtf8String(attr),
+                         array,
+                         values.length))) {
+                    return value.value();
+                }
+            }
+        }
+
         public Object pullManyLookupRefUuid(PreparedPullPattern pattern, String attr, UUID... values) throws Throwable {
             requireOpen();
             pattern.requireOpen();
@@ -1789,6 +2416,95 @@ public final class Vev {
 
         private void requireOpen() {
             if (isNull(handle.raw)) throw new IllegalStateException("DB snapshot is closed");
+        }
+
+        @Override
+        public void close() {
+            cleanable.clean();
+        }
+    }
+
+    public final class EntityView implements AutoCloseable {
+        private final NativeHandle handle;
+        private final Cleaner.Cleanable cleanable;
+
+        private EntityView(MemorySegment raw) {
+            this.handle = new NativeHandle(entityFree, raw);
+            this.cleanable = CLEANER.register(this, handle);
+        }
+
+        public boolean found() throws Throwable {
+            requireOpen();
+            return (boolean) entityFound.invoke(handle.raw);
+        }
+
+        public long id() throws Throwable {
+            requireOpen();
+            return (long) entityId.invoke(handle.raw);
+        }
+
+        public boolean contains(String attr) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return (boolean) entityContains.invoke(handle.raw, local.allocateUtf8String(attr));
+            }
+        }
+
+        public Object get(String attr) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle value = new ValueHandle((MemorySegment) entityGet.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(attr)))) {
+                return value.value();
+            }
+        }
+
+        public Object values(String attr) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined();
+                 ValueHandle value = new ValueHandle((MemorySegment) entityValues.invoke(
+                     handle.raw,
+                     local.allocateUtf8String(attr)))) {
+                return value.value();
+            }
+        }
+
+        public EntityView ref(String attr) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) entityRef.invoke(handle.raw, local.allocateUtf8String(attr));
+                if (isNull(raw)) throw new IllegalStateException("failed to create referenced entity view");
+                return new EntityView(raw);
+            }
+        }
+
+        public long[] refs(String attr) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) entityRefs.invoke(handle.raw, local.allocateUtf8String(attr));
+                if (isNull(raw)) return null;
+                try {
+                    int count = (int) u64ArrayCount.invoke(raw);
+                    if (count == 0) return new long[0];
+                    MemorySegment data = (MemorySegment) u64ArrayData.invoke(raw);
+                    if (isNull(data)) return new long[0];
+                    return data.reinterpret((long) count * Long.BYTES).toArray(ValueLayout.JAVA_LONG);
+                } finally {
+                    u64ArrayFree.invoke(raw);
+                }
+            }
+        }
+
+        public Object touch() throws Throwable {
+            requireOpen();
+            try (ValueHandle value = new ValueHandle((MemorySegment) entityTouch.invoke(handle.raw))) {
+                return value.value();
+            }
+        }
+
+        private void requireOpen() {
+            if (isNull(handle.raw)) throw new IllegalStateException("entity view is closed");
         }
 
         @Override

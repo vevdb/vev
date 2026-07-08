@@ -1,1007 +1,4 @@
-// Copyright (c) Andreas Flakstad and Vev contributors
-// SPDX-License-Identifier: EPL-2.0
-
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_double, c_int, c_ulonglong, c_void};
-use std::ptr;
-use std::slice;
-
-type VevConn = *mut c_void;
-type VevConnection = *mut c_void;
-type VevColumnBatch = *mut c_void;
-type VevDb = *mut c_void;
-type VevPreparedQuery = *mut c_void;
-type VevPreparedPullPattern = *mut c_void;
-type VevResult = *mut c_void;
-type VevStmt = *mut c_void;
-type VevTxReport = *mut c_void;
-type VevU64Array = *mut c_void;
-type VevValue = *const c_void;
-type VevValueHandle = *mut c_void;
-
-const VEV_VALUE_NIL: c_int = 0;
-const VEV_VALUE_ENTITY: c_int = 1;
-const VEV_VALUE_STRING: c_int = 2;
-const VEV_VALUE_INT: c_int = 3;
-const VEV_VALUE_FLOAT: c_int = 4;
-const VEV_VALUE_BOOL: c_int = 5;
-const VEV_VALUE_KEYWORD: c_int = 6;
-const VEV_VALUE_SYMBOL: c_int = 7;
-const VEV_VALUE_VECTOR: c_int = 8;
-const VEV_VALUE_MAP: c_int = 9;
-const VEV_VALUE_UUID: c_int = 10;
-
-const VEV_COLUMN_BATCH_ENTITY: c_int = 1;
-const VEV_COLUMN_BATCH_STRING: c_int = 2;
-const VEV_COLUMN_BATCH_ENTITY_INT: c_int = 3;
-const VEV_COLUMN_BATCH_ENTITY_STRING_INT: c_int = 4;
-
-const VEV_COLUMN_ENTITY: c_int = 1;
-const VEV_COLUMN_STRING: c_int = 2;
-const VEV_COLUMN_INT: c_int = 3;
-
-#[link(name = "vev")]
-unsafe extern "C" {
-    fn vev_version() -> *const c_char;
-
-    fn vev_conn_open_memory() -> VevConn;
-    fn vev_conn_close(conn: VevConn);
-    fn vev_conn_db(conn: VevConn) -> VevDb;
-    fn vev_conn_from_db(db: VevDb) -> VevConn;
-    fn vev_connect(path: *const c_char) -> VevConnection;
-    fn vev_connection_ok(conn: VevConnection) -> bool;
-    fn vev_connection_error(conn: VevConnection) -> *const c_char;
-    fn vev_connection_backend(conn: VevConnection) -> *const c_char;
-    fn vev_connection_path(conn: VevConnection) -> *const c_char;
-    fn vev_connection_basis_t(conn: VevConnection) -> c_ulonglong;
-    fn vev_connection_tx_count(conn: VevConnection) -> c_ulonglong;
-    fn vev_connection_tx_ids(conn: VevConnection) -> VevU64Array;
-    fn vev_connection_info_edn(conn: VevConnection) -> *const c_char;
-    fn vev_connection_close(conn: VevConnection);
-    fn vev_connection_db(conn: VevConnection) -> VevDb;
-    fn vev_connection_transact_edn_report(
-        conn: VevConnection,
-        tx_text: *const c_char,
-    ) -> VevTxReport;
-    fn vev_db_release(db: VevDb);
-    fn vev_u64_array_free(array: VevU64Array);
-    fn vev_u64_array_count(array: VevU64Array) -> c_int;
-    fn vev_u64_array_value(array: VevU64Array, index: c_int) -> c_ulonglong;
-    fn vev_with_edn_report(db: VevDb, tx_text: *const c_char) -> VevTxReport;
-    fn vev_db_with_edn(db: VevDb, tx_text: *const c_char) -> VevDb;
-
-    fn vev_string_free(text: *const c_char);
-
-    fn vev_transact_edn(conn: VevConn, tx_text: *const c_char) -> *const c_char;
-    fn vev_transact_edn_report(conn: VevConn, tx_text: *const c_char) -> VevTxReport;
-    fn vev_tx_report_free(report: VevTxReport);
-    fn vev_tx_report_value(report: VevTxReport) -> VevValue;
-    fn vev_tx_report_edn(report: VevTxReport) -> *const c_char;
-    fn vev_tx_report_db_before(report: VevTxReport) -> VevDb;
-    fn vev_tx_report_db_after(report: VevTxReport) -> VevDb;
-    fn vev_query_edn_with_inputs(
-        conn: VevConn,
-        query_text: *const c_char,
-        inputs_text: *const c_char,
-    ) -> *const c_char;
-
-    fn vev_prepare_query_edn(query_text: *const c_char) -> VevPreparedQuery;
-    fn vev_prepared_query_edn(query: VevPreparedQuery) -> *const c_char;
-    fn vev_parse_clause_edn(clause_text: *const c_char) -> *const c_char;
-    fn vev_prepared_query_free(query: VevPreparedQuery);
-
-    fn vev_stmt_create(query: VevPreparedQuery) -> VevStmt;
-    fn vev_stmt_clear(stmt: VevStmt);
-    fn vev_stmt_free(stmt: VevStmt);
-    fn vev_stmt_bind_string(stmt: VevStmt, value: *const c_char) -> bool;
-    fn vev_stmt_bind_string_collection(
-        stmt: VevStmt,
-        values: *const *const c_char,
-        value_count: c_int,
-    ) -> bool;
-    fn vev_stmt_bind_pull_pattern_edn(stmt: VevStmt, pattern_text: *const c_char) -> bool;
-
-    fn vev_query_stmt_result(conn: VevConn, stmt: VevStmt) -> VevResult;
-    fn vev_query_db_stmt_result(db: VevDb, stmt: VevStmt) -> VevResult;
-    fn vev_query_stmt_column_batch(conn: VevConn, stmt: VevStmt) -> VevColumnBatch;
-    fn vev_query_db_stmt_column_batch(db: VevDb, stmt: VevStmt) -> VevColumnBatch;
-    fn vev_query_prepared_result_with_inputs(
-        conn: VevConn,
-        query: VevPreparedQuery,
-        inputs_text: *const c_char,
-    ) -> VevResult;
-    fn vev_query_db_prepared_result_with_inputs(
-        db: VevDb,
-        query: VevPreparedQuery,
-        inputs_text: *const c_char,
-    ) -> VevResult;
-    fn vev_query_db_prepared_column_batch_with_inputs(
-        db: VevDb,
-        query: VevPreparedQuery,
-        inputs_text: *const c_char,
-    ) -> VevColumnBatch;
-    fn vev_column_batch_free(batch: VevColumnBatch);
-    fn vev_column_batch_kind(batch: VevColumnBatch) -> c_int;
-    fn vev_column_batch_count(batch: VevColumnBatch) -> c_int;
-    fn vev_column_batch_entities_data(batch: VevColumnBatch) -> *const c_ulonglong;
-    fn vev_column_batch_ints_data(batch: VevColumnBatch) -> *const i64;
-    fn vev_column_batch_string_data_array(batch: VevColumnBatch) -> *const *const c_void;
-    fn vev_column_batch_string_lengths_data(batch: VevColumnBatch) -> *const c_int;
-    fn vev_column_batch_string_dictionary_count(batch: VevColumnBatch) -> c_int;
-    fn vev_column_batch_string_dictionary_data_array(batch: VevColumnBatch)
-        -> *const *const c_void;
-    fn vev_column_batch_string_dictionary_lengths_data(batch: VevColumnBatch) -> *const c_int;
-    fn vev_column_batch_string_indices_data(batch: VevColumnBatch) -> *const c_int;
-    fn vev_pull_edn(db: VevDb, pattern_text: *const c_char, entity: c_ulonglong) -> VevValueHandle;
-    fn vev_prepare_pull_pattern_edn(pattern_text: *const c_char) -> VevPreparedPullPattern;
-    fn vev_prepared_pull_pattern_ok(pattern: VevPreparedPullPattern) -> bool;
-    fn vev_prepared_pull_pattern_error(pattern: VevPreparedPullPattern) -> *const c_char;
-    fn vev_prepared_pull_pattern_edn(pattern: VevPreparedPullPattern) -> *const c_char;
-    fn vev_prepared_pull_pattern_free(pattern: VevPreparedPullPattern);
-    fn vev_pull_prepared(
-        db: VevDb,
-        pattern: VevPreparedPullPattern,
-        entity: c_ulonglong,
-    ) -> VevValueHandle;
-    fn vev_pull_lookup_ref_string_edn(
-        db: VevDb,
-        pattern_text: *const c_char,
-        attr: *const c_char,
-        value: *const c_char,
-    ) -> VevValueHandle;
-    fn vev_pull_many_edn(
-        db: VevDb,
-        pattern_text: *const c_char,
-        entities: *const c_ulonglong,
-        entity_count: c_int,
-    ) -> VevValueHandle;
-    fn vev_pull_many_prepared(
-        db: VevDb,
-        pattern: VevPreparedPullPattern,
-        entities: *const c_ulonglong,
-        entity_count: c_int,
-    ) -> VevValueHandle;
-    fn vev_value_handle_free(handle: VevValueHandle);
-    fn vev_value_handle_value(handle: VevValueHandle) -> VevValue;
-    fn vev_value_handle_edn(handle: VevValueHandle) -> *const c_char;
-
-    fn vev_result_free(result: VevResult);
-    fn vev_result_ok(result: VevResult) -> bool;
-    fn vev_result_error(result: VevResult) -> *const c_char;
-    fn vev_result_row_count(result: VevResult) -> c_int;
-    fn vev_result_value_count(result: VevResult, row: c_int) -> c_int;
-    fn vev_result_value(result: VevResult, row: c_int, column: c_int) -> VevValue;
-    fn vev_result_pull_count(result: VevResult, row: c_int) -> c_int;
-    fn vev_result_pull(result: VevResult, row: c_int, pull: c_int) -> VevValue;
-
-    fn vev_value_kind(value: VevValue) -> c_int;
-    fn vev_value_entity(value: VevValue) -> c_ulonglong;
-    fn vev_value_int(value: VevValue) -> i64;
-    fn vev_value_float(value: VevValue) -> c_double;
-    fn vev_value_bool(value: VevValue) -> bool;
-    fn vev_value_text(value: VevValue) -> *const c_char;
-    fn vev_value_edn(value: VevValue) -> *const c_char;
-    fn vev_value_item_count(value: VevValue) -> c_int;
-    fn vev_value_item(value: VevValue, index: c_int) -> VevValue;
-    fn vev_value_map_count(value: VevValue) -> c_int;
-    fn vev_value_map_key(value: VevValue, index: c_int) -> VevValue;
-    fn vev_value_map_value(value: VevValue, index: c_int) -> VevValue;
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum Value {
-    Nil,
-    Entity(u64),
-    String(String),
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    Keyword(String),
-    Symbol(String),
-    Uuid(String),
-    Vector(Vec<Value>),
-    Map(Vec<(Value, Value)>),
-}
-
-impl Value {
-    fn map_get(&self, key: &str) -> Option<&Value> {
-        match self {
-            Value::Map(items) => items.iter().find_map(|(k, v)| match k {
-                Value::Keyword(text)
-                | Value::String(text)
-                | Value::Symbol(text)
-                | Value::Uuid(text)
-                    if text == key =>
-                {
-                    Some(v)
-                }
-                _ => None,
-            }),
-            _ => None,
-        }
-    }
-}
-
-struct Library;
-
-impl Library {
-    unsafe fn owned_string(ptr: *const c_char) -> String {
-        if ptr.is_null() {
-            return String::new();
-        }
-        let out = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned();
-        unsafe { vev_string_free(ptr) };
-        out
-    }
-
-    unsafe fn borrowed_string(ptr: *const c_char) -> String {
-        if ptr.is_null() {
-            return String::new();
-        }
-        unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned()
-    }
-
-    unsafe fn borrowed_utf8(ptr: *const c_void, len: c_int) -> String {
-        if ptr.is_null() || len <= 0 {
-            return String::new();
-        }
-        let bytes = unsafe { slice::from_raw_parts(ptr as *const u8, len as usize) };
-        String::from_utf8_lossy(bytes).into_owned()
-    }
-
-    unsafe fn string_column(batch: VevColumnBatch, count: usize) -> Vec<String> {
-        let dictionary_count = unsafe { vev_column_batch_string_dictionary_count(batch) };
-        let dictionary_data = unsafe { vev_column_batch_string_dictionary_data_array(batch) };
-        let dictionary_lengths = unsafe { vev_column_batch_string_dictionary_lengths_data(batch) };
-        let string_indices = unsafe { vev_column_batch_string_indices_data(batch) };
-        if dictionary_count > 0
-            && !dictionary_data.is_null()
-            && !dictionary_lengths.is_null()
-            && !string_indices.is_null()
-        {
-            let data = unsafe { slice::from_raw_parts(dictionary_data, dictionary_count as usize) };
-            let lengths =
-                unsafe { slice::from_raw_parts(dictionary_lengths, dictionary_count as usize) };
-            let indices = unsafe { slice::from_raw_parts(string_indices, count) };
-            let dictionary: Vec<String> = data
-                .iter()
-                .zip(lengths.iter())
-                .map(|(text, len)| unsafe { Self::borrowed_utf8(*text, *len) })
-                .collect();
-            return indices
-                .iter()
-                .map(|index| dictionary[*index as usize].clone())
-                .collect();
-        }
-
-        let string_data = unsafe { vev_column_batch_string_data_array(batch) };
-        let string_lengths = unsafe { vev_column_batch_string_lengths_data(batch) };
-        if string_data.is_null() || string_lengths.is_null() {
-            return Vec::new();
-        }
-        let data = unsafe { slice::from_raw_parts(string_data, count) };
-        let lengths = unsafe { slice::from_raw_parts(string_lengths, count) };
-        data.iter()
-            .zip(lengths.iter())
-            .map(|(text, len)| unsafe { Self::borrowed_utf8(*text, *len) })
-            .collect()
-    }
-
-    unsafe fn value_to_rust(value: VevValue) -> Value {
-        match unsafe { vev_value_kind(value) } {
-            VEV_VALUE_NIL => Value::Nil,
-            VEV_VALUE_ENTITY => Value::Entity(unsafe { vev_value_entity(value) } as u64),
-            VEV_VALUE_STRING => Value::String(unsafe { Self::owned_string(vev_value_text(value)) }),
-            VEV_VALUE_INT => Value::Int(unsafe { vev_value_int(value) }),
-            VEV_VALUE_FLOAT => Value::Float(unsafe { vev_value_float(value) }),
-            VEV_VALUE_BOOL => Value::Bool(unsafe { vev_value_bool(value) }),
-            VEV_VALUE_KEYWORD => {
-                Value::Keyword(unsafe { Self::owned_string(vev_value_text(value)) })
-            }
-            VEV_VALUE_SYMBOL => Value::Symbol(unsafe { Self::owned_string(vev_value_text(value)) }),
-            VEV_VALUE_UUID => Value::Uuid(unsafe { Self::owned_string(vev_value_text(value)) }),
-            VEV_VALUE_VECTOR => {
-                let count = unsafe { vev_value_item_count(value) };
-                let mut out = Vec::with_capacity(count as usize);
-                for index in 0..count {
-                    out.push(unsafe { Self::value_to_rust(vev_value_item(value, index)) });
-                }
-                Value::Vector(out)
-            }
-            VEV_VALUE_MAP => {
-                let count = unsafe { vev_value_map_count(value) };
-                let mut out = Vec::with_capacity(count as usize);
-                for index in 0..count {
-                    let key = unsafe { Self::value_to_rust(vev_value_map_key(value, index)) };
-                    let value = unsafe { Self::value_to_rust(vev_value_map_value(value, index)) };
-                    out.push((key, value));
-                }
-                Value::Map(out)
-            }
-            _ => Value::String(unsafe { Self::owned_string(vev_value_edn(value)) }),
-        }
-    }
-}
-
-fn cstring(text: &str) -> CString {
-    CString::new(text).expect("CString input cannot contain NUL")
-}
-
-struct Conn {
-    raw: VevConn,
-}
-
-impl Conn {
-    fn open_memory() -> Result<Self, String> {
-        let raw = unsafe { vev_conn_open_memory() };
-        if raw.is_null() {
-            Err("failed to open Vev connection".to_string())
-        } else {
-            Ok(Self { raw })
-        }
-    }
-
-    fn from_db(db: &Db) -> Result<Self, String> {
-        let raw = unsafe { vev_conn_from_db(db.raw) };
-        if raw.is_null() {
-            Err("failed to create connection from DB snapshot".to_string())
-        } else {
-            Ok(Self { raw })
-        }
-    }
-
-    fn transact(&self, tx: &str) -> String {
-        let tx = cstring(tx);
-        unsafe { Library::owned_string(vev_transact_edn(self.raw, tx.as_ptr())) }
-    }
-
-    fn transact_report(&self, tx: &str) -> Result<TxReport, String> {
-        let tx = cstring(tx);
-        let raw = unsafe { vev_transact_edn_report(self.raw, tx.as_ptr()) };
-        if raw.is_null() {
-            Err("failed to transact".to_string())
-        } else {
-            Ok(TxReport { raw })
-        }
-    }
-
-    fn query_text_with_inputs(&self, query: &str, inputs: &str) -> String {
-        let query = cstring(query);
-        let inputs = cstring(inputs);
-        unsafe {
-            Library::owned_string(vev_query_edn_with_inputs(
-                self.raw,
-                query.as_ptr(),
-                inputs.as_ptr(),
-            ))
-        }
-    }
-
-    fn prepare(&self, query: &str) -> Result<PreparedQuery, String> {
-        PreparedQuery::new(query)
-    }
-
-    fn parse_clause_edn(&self, clause: &str) -> String {
-        let clause = cstring(clause);
-        unsafe { Library::owned_string(vev_parse_clause_edn(clause.as_ptr())) }
-    }
-
-    fn db(&self) -> Result<Db, String> {
-        let raw = unsafe { vev_conn_db(self.raw) };
-        if raw.is_null() {
-            Err("failed to retain DB snapshot".to_string())
-        } else {
-            Ok(Db { raw })
-        }
-    }
-}
-
-impl Drop for Conn {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_conn_close(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-struct DurableConn {
-    raw: VevConnection,
-}
-
-impl DurableConn {
-    fn open(path: &str) -> Result<Self, String> {
-        let path = cstring(path);
-        let raw = unsafe { vev_connect(path.as_ptr()) };
-        if raw.is_null() {
-            return Err("failed to connect Vev durable connection".to_string());
-        }
-        if unsafe { vev_connection_ok(raw) } {
-            Ok(Self { raw })
-        } else {
-            let error = unsafe { Library::owned_string(vev_connection_error(raw)) };
-            unsafe { vev_connection_close(raw) };
-            Err(error)
-        }
-    }
-
-    fn transact_report(&self, tx: &str) -> Result<TxReport, String> {
-        let tx = cstring(tx);
-        let raw = unsafe { vev_connection_transact_edn_report(self.raw, tx.as_ptr()) };
-        if raw.is_null() {
-            Err("failed to transact".to_string())
-        } else {
-            Ok(TxReport { raw })
-        }
-    }
-
-    fn db(&self) -> Result<Db, String> {
-        let raw = unsafe { vev_connection_db(self.raw) };
-        if raw.is_null() {
-            Err("failed to retain DB snapshot".to_string())
-        } else {
-            Ok(Db { raw })
-        }
-    }
-
-    fn backend(&self) -> String {
-        unsafe { Library::owned_string(vev_connection_backend(self.raw)) }
-    }
-
-    fn path(&self) -> String {
-        unsafe { Library::owned_string(vev_connection_path(self.raw)) }
-    }
-
-    fn basis_t(&self) -> u64 {
-        unsafe { vev_connection_basis_t(self.raw) as u64 }
-    }
-
-    fn tx_count(&self) -> u64 {
-        unsafe { vev_connection_tx_count(self.raw) as u64 }
-    }
-
-    fn tx_ids(&self) -> Vec<u64> {
-        let raw = unsafe { vev_connection_tx_ids(self.raw) };
-        if raw.is_null() {
-            return Vec::new();
-        }
-        let count = unsafe { vev_u64_array_count(raw) };
-        let mut out = Vec::with_capacity(count.max(0) as usize);
-        for index in 0..count {
-            out.push(unsafe { vev_u64_array_value(raw, index) as u64 });
-        }
-        unsafe { vev_u64_array_free(raw) };
-        out
-    }
-
-    fn info_edn(&self) -> String {
-        unsafe { Library::owned_string(vev_connection_info_edn(self.raw)) }
-    }
-}
-
-impl Drop for DurableConn {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_connection_close(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-struct Db {
-    raw: VevDb,
-}
-
-impl Db {
-    fn query_columns(
-        &self,
-        query: &PreparedQuery,
-        inputs: &str,
-    ) -> Result<Option<ColumnResult>, String> {
-        let inputs = cstring(inputs);
-        let raw = unsafe {
-            vev_query_db_prepared_column_batch_with_inputs(self.raw, query.raw, inputs.as_ptr())
-        };
-        if raw.is_null() {
-            return Ok(None);
-        }
-        let result = unsafe { ColumnResult::from_raw(raw) };
-        unsafe { vev_column_batch_free(raw) };
-        result
-    }
-
-    fn query_stmt_columns(&self, stmt: &Statement<'_>) -> Result<Option<ColumnResult>, String> {
-        let raw = unsafe { vev_query_db_stmt_column_batch(self.raw, stmt.raw) };
-        if raw.is_null() {
-            return Ok(None);
-        }
-        let result = unsafe { ColumnResult::from_raw(raw) };
-        unsafe { vev_column_batch_free(raw) };
-        result
-    }
-
-    fn with_report(&self, tx: &str) -> Result<TxReport, String> {
-        let tx = cstring(tx);
-        let raw = unsafe { vev_with_edn_report(self.raw, tx.as_ptr()) };
-        if raw.is_null() {
-            Err("failed to transact against DB snapshot".to_string())
-        } else {
-            Ok(TxReport { raw })
-        }
-    }
-
-    fn db_with(&self, tx: &str) -> Result<Db, String> {
-        let tx = cstring(tx);
-        let raw = unsafe { vev_db_with_edn(self.raw, tx.as_ptr()) };
-        if raw.is_null() {
-            Err("failed to create DB snapshot".to_string())
-        } else {
-            Ok(Db { raw })
-        }
-    }
-
-    fn pull(&self, pattern: &str, entity: u64) -> Result<Value, String> {
-        let pattern = cstring(pattern);
-        let raw = unsafe { vev_pull_edn(self.raw, pattern.as_ptr(), entity as c_ulonglong) };
-        let handle = ValueHandle::new(raw)?;
-        Ok(handle.value())
-    }
-
-    fn pull_prepared(&self, pattern: &PreparedPullPattern, entity: u64) -> Result<Value, String> {
-        let raw = unsafe { vev_pull_prepared(self.raw, pattern.raw, entity as c_ulonglong) };
-        let handle = ValueHandle::new(raw)?;
-        Ok(handle.value())
-    }
-
-    fn pull_lookup_ref_string(
-        &self,
-        pattern: &str,
-        attr: &str,
-        value: &str,
-    ) -> Result<Value, String> {
-        let pattern = cstring(pattern);
-        let attr = cstring(attr);
-        let value = cstring(value);
-        let raw = unsafe {
-            vev_pull_lookup_ref_string_edn(
-                self.raw,
-                pattern.as_ptr(),
-                attr.as_ptr(),
-                value.as_ptr(),
-            )
-        };
-        let handle = ValueHandle::new(raw)?;
-        Ok(handle.value())
-    }
-
-    fn pull_many(&self, pattern: &str, entities: &[u64]) -> Result<Value, String> {
-        let pattern = cstring(pattern);
-        let raw = unsafe {
-            vev_pull_many_edn(
-                self.raw,
-                pattern.as_ptr(),
-                entities.as_ptr(),
-                entities.len() as c_int,
-            )
-        };
-        let handle = ValueHandle::new(raw)?;
-        Ok(handle.value())
-    }
-
-    fn pull_many_prepared(
-        &self,
-        pattern: &PreparedPullPattern,
-        entities: &[u64],
-    ) -> Result<Value, String> {
-        let raw = unsafe {
-            vev_pull_many_prepared(
-                self.raw,
-                pattern.raw,
-                entities.as_ptr(),
-                entities.len() as c_int,
-            )
-        };
-        let handle = ValueHandle::new(raw)?;
-        Ok(handle.value())
-    }
-}
-
-impl Drop for Db {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_db_release(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum Column {
-    Entity(Vec<u64>),
-    String(Vec<String>),
-    Int(Vec<i64>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ColumnResult {
-    count: usize,
-    kinds: Vec<c_int>,
-    columns: Vec<Column>,
-}
-
-impl ColumnResult {
-    unsafe fn from_raw(raw: VevColumnBatch) -> Result<Option<Self>, String> {
-        let kind = unsafe { vev_column_batch_kind(raw) };
-        let count = unsafe { vev_column_batch_count(raw) }.max(0) as usize;
-        let entities_data = unsafe { vev_column_batch_entities_data(raw) };
-        let ints_data = unsafe { vev_column_batch_ints_data(raw) };
-        let entities = || {
-            if entities_data.is_null() {
-                Vec::new()
-            } else {
-                unsafe { slice::from_raw_parts(entities_data, count) }
-                    .iter()
-                    .map(|value| *value as u64)
-                    .collect()
-            }
-        };
-        let ints = || {
-            if ints_data.is_null() {
-                Vec::new()
-            } else {
-                unsafe { slice::from_raw_parts(ints_data, count) }.to_vec()
-            }
-        };
-        let strings = || unsafe { Library::string_column(raw, count) };
-
-        match kind {
-            VEV_COLUMN_BATCH_ENTITY => Ok(Some(Self {
-                count,
-                kinds: vec![VEV_COLUMN_ENTITY],
-                columns: vec![Column::Entity(entities())],
-            })),
-            VEV_COLUMN_BATCH_STRING => Ok(Some(Self {
-                count,
-                kinds: vec![VEV_COLUMN_STRING],
-                columns: vec![Column::String(strings())],
-            })),
-            VEV_COLUMN_BATCH_ENTITY_INT => Ok(Some(Self {
-                count,
-                kinds: vec![VEV_COLUMN_ENTITY, VEV_COLUMN_INT],
-                columns: vec![Column::Entity(entities()), Column::Int(ints())],
-            })),
-            VEV_COLUMN_BATCH_ENTITY_STRING_INT => Ok(Some(Self {
-                count,
-                kinds: vec![VEV_COLUMN_ENTITY, VEV_COLUMN_STRING, VEV_COLUMN_INT],
-                columns: vec![
-                    Column::Entity(entities()),
-                    Column::String(strings()),
-                    Column::Int(ints()),
-                ],
-            })),
-            _ => Ok(None),
-        }
-    }
-
-    fn rows(&self) -> Vec<Vec<Value>> {
-        let mut out = Vec::with_capacity(self.count);
-        for row in 0..self.count {
-            let mut values = Vec::with_capacity(self.columns.len());
-            for column in &self.columns {
-                values.push(match column {
-                    Column::Entity(values) => Value::Entity(values[row]),
-                    Column::String(values) => Value::String(values[row].clone()),
-                    Column::Int(values) => Value::Int(values[row]),
-                });
-            }
-            out.push(values);
-        }
-        out
-    }
-}
-
-struct ValueHandle {
-    raw: VevValueHandle,
-}
-
-impl ValueHandle {
-    fn new(raw: VevValueHandle) -> Result<Self, String> {
-        if raw.is_null() {
-            Err("pull returned null value handle".to_string())
-        } else {
-            Ok(Self { raw })
-        }
-    }
-
-    fn value(&self) -> Value {
-        unsafe { Library::value_to_rust(vev_value_handle_value(self.raw)) }
-    }
-
-    #[allow(dead_code)]
-    fn edn(&self) -> String {
-        unsafe { Library::owned_string(vev_value_handle_edn(self.raw)) }
-    }
-}
-
-impl Drop for ValueHandle {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_value_handle_free(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-struct TxReport {
-    raw: VevTxReport,
-}
-
-impl TxReport {
-    fn value(&self) -> Value {
-        unsafe { Library::value_to_rust(vev_tx_report_value(self.raw)) }
-    }
-
-    fn edn(&self) -> String {
-        unsafe { Library::owned_string(vev_tx_report_edn(self.raw)) }
-    }
-
-    fn db_before(&self) -> Result<Db, String> {
-        let raw = unsafe { vev_tx_report_db_before(self.raw) };
-        if raw.is_null() {
-            Err("transaction report has no db-before".to_string())
-        } else {
-            Ok(Db { raw })
-        }
-    }
-
-    fn db_after(&self) -> Result<Db, String> {
-        let raw = unsafe { vev_tx_report_db_after(self.raw) };
-        if raw.is_null() {
-            Err("transaction report has no db-after".to_string())
-        } else {
-            Ok(Db { raw })
-        }
-    }
-}
-
-impl Drop for TxReport {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_tx_report_free(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-struct PreparedQuery {
-    raw: VevPreparedQuery,
-}
-
-impl PreparedQuery {
-    fn new(query: &str) -> Result<Self, String> {
-        let query = cstring(query);
-        let raw = unsafe { vev_prepare_query_edn(query.as_ptr()) };
-        if raw.is_null() {
-            Err("failed to prepare query".to_string())
-        } else {
-            Ok(Self { raw })
-        }
-    }
-
-    fn statement(&self) -> Result<Statement<'_>, String> {
-        let raw = unsafe { vev_stmt_create(self.raw) };
-        if raw.is_null() {
-            Err("failed to create statement".to_string())
-        } else {
-            Ok(Statement { raw, _query: self })
-        }
-    }
-
-    fn edn(&self) -> String {
-        unsafe { Library::owned_string(vev_prepared_query_edn(self.raw)) }
-    }
-
-    fn query_conn(&self, conn: &Conn, inputs: &str) -> Result<ResultSet, String> {
-        let inputs = cstring(inputs);
-        let raw =
-            unsafe { vev_query_prepared_result_with_inputs(conn.raw, self.raw, inputs.as_ptr()) };
-        ResultSet::new(raw)
-    }
-
-    fn query_db(&self, db: &Db, inputs: &str) -> Result<ResultSet, String> {
-        let inputs = cstring(inputs);
-        let raw =
-            unsafe { vev_query_db_prepared_result_with_inputs(db.raw, self.raw, inputs.as_ptr()) };
-        ResultSet::new(raw)
-    }
-}
-
-impl Drop for PreparedQuery {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_prepared_query_free(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-struct PreparedPullPattern {
-    raw: VevPreparedPullPattern,
-}
-
-impl PreparedPullPattern {
-    fn new(pattern: &str) -> Result<Self, String> {
-        let pattern = cstring(pattern);
-        let raw = unsafe { vev_prepare_pull_pattern_edn(pattern.as_ptr()) };
-        if raw.is_null() {
-            return Err("failed to prepare pull pattern".to_string());
-        }
-        if !unsafe { vev_prepared_pull_pattern_ok(raw) } {
-            let err = unsafe { Library::owned_string(vev_prepared_pull_pattern_error(raw)) };
-            unsafe { vev_prepared_pull_pattern_free(raw) };
-            return Err(err);
-        }
-        Ok(Self { raw })
-    }
-
-    fn edn(&self) -> String {
-        unsafe { Library::owned_string(vev_prepared_pull_pattern_edn(self.raw)) }
-    }
-}
-
-impl Drop for PreparedPullPattern {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_prepared_pull_pattern_free(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-struct Statement<'a> {
-    raw: VevStmt,
-    _query: &'a PreparedQuery,
-}
-
-impl Statement<'_> {
-    fn bind_string(&mut self, value: &str) -> Result<&mut Self, String> {
-        unsafe { vev_stmt_clear(self.raw) };
-        let value = cstring(value);
-        if unsafe { vev_stmt_bind_string(self.raw, value.as_ptr()) } {
-            Ok(self)
-        } else {
-            Err("failed to bind string".to_string())
-        }
-    }
-
-    fn bind_string_collection(&mut self, values: &[&str]) -> Result<&mut Self, String> {
-        unsafe { vev_stmt_clear(self.raw) };
-        let owned: Vec<CString> = values.iter().map(|value| cstring(value)).collect();
-        let ptrs: Vec<*const c_char> = owned.iter().map(|value| value.as_ptr()).collect();
-        if unsafe { vev_stmt_bind_string_collection(self.raw, ptrs.as_ptr(), ptrs.len() as c_int) }
-        {
-            Ok(self)
-        } else {
-            Err("failed to bind string collection".to_string())
-        }
-    }
-
-    fn bind_pull_pattern_and_string(
-        &mut self,
-        pattern: &str,
-        value: &str,
-    ) -> Result<&mut Self, String> {
-        unsafe { vev_stmt_clear(self.raw) };
-        let pattern = cstring(pattern);
-        let value = cstring(value);
-        if unsafe {
-            vev_stmt_bind_pull_pattern_edn(self.raw, pattern.as_ptr())
-                && vev_stmt_bind_string(self.raw, value.as_ptr())
-        } {
-            Ok(self)
-        } else {
-            Err("failed to bind pull pattern and string".to_string())
-        }
-    }
-
-    fn query_conn(&self, conn: &Conn) -> Result<ResultSet, String> {
-        let raw = unsafe { vev_query_stmt_result(conn.raw, self.raw) };
-        ResultSet::new(raw)
-    }
-
-    fn query_db(&self, db: &Db) -> Result<ResultSet, String> {
-        let raw = unsafe { vev_query_db_stmt_result(db.raw, self.raw) };
-        ResultSet::new(raw)
-    }
-
-    fn columns_conn(&self, conn: &Conn) -> Result<Option<ColumnResult>, String> {
-        let raw = unsafe { vev_query_stmt_column_batch(conn.raw, self.raw) };
-        if raw.is_null() {
-            return Ok(None);
-        }
-        let result = unsafe { ColumnResult::from_raw(raw) };
-        unsafe { vev_column_batch_free(raw) };
-        result
-    }
-
-    fn columns_db(&self, db: &Db) -> Result<Option<ColumnResult>, String> {
-        db.query_stmt_columns(self)
-    }
-}
-
-impl Drop for Statement<'_> {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_stmt_free(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
-
-struct ResultSet {
-    raw: VevResult,
-}
-
-impl ResultSet {
-    fn new(raw: VevResult) -> Result<Self, String> {
-        if raw.is_null() {
-            return Err("query returned null result".to_string());
-        }
-        if unsafe { vev_result_ok(raw) } {
-            Ok(Self { raw })
-        } else {
-            let error = unsafe { Library::owned_string(vev_result_error(raw)) };
-            unsafe { vev_result_free(raw) };
-            Err(error)
-        }
-    }
-
-    fn row_count(&self) -> usize {
-        unsafe { vev_result_row_count(self.raw) as usize }
-    }
-
-    fn rows(&self) -> Vec<Vec<Value>> {
-        let mut out = Vec::with_capacity(self.row_count());
-        for row in 0..self.row_count() as c_int {
-            let mut values = Vec::new();
-            let value_count = unsafe { vev_result_value_count(self.raw, row) };
-            for column in 0..value_count {
-                values.push(unsafe {
-                    Library::value_to_rust(vev_result_value(self.raw, row, column))
-                });
-            }
-            let pull_count = unsafe { vev_result_pull_count(self.raw, row) };
-            for pull in 0..pull_count {
-                values
-                    .push(unsafe { Library::value_to_rust(vev_result_pull(self.raw, row, pull)) });
-            }
-            out.push(values);
-        }
-        out
-    }
-
-    fn scalar(&self) -> Result<Value, String> {
-        let rows = self.rows();
-        if rows.len() == 1 && rows[0].len() == 1 {
-            Ok(rows[0][0].clone())
-        } else {
-            Err(format!("expected one scalar result, got {rows:?}"))
-        }
-    }
-}
-
-impl Drop for ResultSet {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { vev_result_free(self.raw) };
-            self.raw = ptr::null_mut();
-        }
-    }
-}
+use vev::*;
 
 fn remove_sqlite_files(path: &str) {
     let _ = std::fs::remove_file(path);
@@ -1010,7 +7,7 @@ fn remove_sqlite_files(path: &str) {
 }
 
 fn main() -> Result<(), String> {
-    let version = unsafe { Library::borrowed_string(vev_version()) };
+    let version = version();
     println!("version: {version}");
 
     let conn = Conn::open_memory()?;
@@ -1041,6 +38,17 @@ fn main() -> Result<(), String> {
     println!("input-collection: {collection_text}");
     if !collection_text.contains("\"Ada\"") || !collection_text.contains("\"Grace\"") {
         return Err("unexpected collection query output".to_string());
+    }
+
+    let mut one_shot_rows = conn.q(r#"[:find ?name :where [?e :user/name ?name]]"#, "[]")?;
+    one_shot_rows.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+    if one_shot_rows
+        != vec![
+            vec![Value::String("Ada".to_string())],
+            vec![Value::String("Grace".to_string())],
+        ]
+    {
+        return Err("unexpected one-shot connection query rows".to_string());
     }
 
     conn.transact(
@@ -1193,6 +201,48 @@ fn main() -> Result<(), String> {
         return Err("unexpected pull-many".to_string());
     }
 
+    let ada_entity = pull_db.entity(1)?;
+    let friend_entity = ada_entity.ref_entity(":user/friend")?;
+    let lookup_entity = pull_db.entity_lookup_ref_string(":user/email", "ada@example.com")?;
+    let ident_entity = pull_db.entity_ident(":user/email")?;
+    println!("entity view: {:?}", ada_entity.touch()?);
+    if !ada_entity.found()
+        || ada_entity.id() != 1
+        || !ada_entity.contains(":user/name")
+        || ada_entity.get(":user/name")? != Value::String("Ada".to_string())
+        || ada_entity.values(":user/name")? != Value::Vector(vec![Value::String("Ada".to_string())])
+        || friend_entity.id() != 2
+        || friend_entity.get(":user/name")? != Value::String("Grace".to_string())
+        || ada_entity.refs(":user/friend") != vec![2]
+        || lookup_entity.id() != 1
+        || lookup_entity.get(":user/name")? != Value::String("Ada".to_string())
+        || ident_entity.id() != 90
+        || ada_entity.touch()?.map_get(":user/name") != Some(&Value::String("Ada".to_string()))
+    {
+        return Err("unexpected entity view output".to_string());
+    }
+
+    let many_lookup_pull = pull_db.pull_many_lookup_ref_string(
+        "[:user/name]",
+        ":user/email",
+        &[
+            "ada@example.com",
+            "missing@example.com",
+            "grace@example.com",
+        ],
+    )?;
+    let many_lookup_items = match many_lookup_pull {
+        Value::Vector(items) => items,
+        _ => Vec::new(),
+    };
+    if many_lookup_items.len() != 3
+        || many_lookup_items[0].map_get(":user/name") != Some(&Value::String("Ada".to_string()))
+        || many_lookup_items[1] != Value::Nil
+        || many_lookup_items[2].map_get(":user/name") != Some(&Value::String("Grace".to_string()))
+    {
+        return Err("unexpected pull-many lookup-ref".to_string());
+    }
+
     let prepared_pattern = PreparedPullPattern::new("[:user/name]")?;
     let prepared_pattern_ast = prepared_pattern.edn();
     if !prepared_pattern_ast.contains(":pattern") || !prepared_pattern_ast.contains(":attr") {
@@ -1217,6 +267,25 @@ fn main() -> Result<(), String> {
     prepared_names.sort();
     if prepared_names != vec!["Ada".to_string(), "Grace".to_string()] {
         return Err("unexpected prepared pull-many".to_string());
+    }
+    let prepared_lookup_pull = pull_db.pull_many_lookup_ref_string_prepared(
+        &prepared_pattern,
+        ":user/email",
+        &["ada@example.com", "grace@example.com"],
+    )?;
+    let mut prepared_lookup_names: Vec<String> = match prepared_lookup_pull {
+        Value::Vector(items) => items
+            .iter()
+            .filter_map(|item| match item.map_get(":user/name") {
+                Some(Value::String(name)) => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    prepared_lookup_names.sort();
+    if prepared_lookup_names != vec!["Ada".to_string(), "Grace".to_string()] {
+        return Err("unexpected prepared pull-many lookup-ref".to_string());
     }
 
     let pull_pattern_query = conn.prepare(
@@ -1248,6 +317,16 @@ fn main() -> Result<(), String> {
     println!("snapshot-db rows: {snapshot_rows}");
     if current_rows != 3 || snapshot_rows != 2 {
         return Err("unexpected snapshot row counts".to_string());
+    }
+    let mut snapshot_names = snapshot.q(r#"[:find ?name :where [?e :user/name ?name]]"#, "[]")?;
+    snapshot_names.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+    if snapshot_names
+        != vec![
+            vec![Value::String("Ada".to_string())],
+            vec![Value::String("Grace".to_string())],
+        ]
+    {
+        return Err("unexpected one-shot DB query rows".to_string());
     }
 
     let mut snapshot_stmt = email_query.statement()?;
@@ -1325,46 +404,126 @@ fn main() -> Result<(), String> {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected durable connection info".to_string());
         }
-        let report = durable.transact_report(
+        durable.transact(
             r#"[{:db/id 1 :user/name "Durable Ada" :user/email "durable-ada@example.com"}]"#,
+        )?;
+        if durable.basis_t() != 1 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable basis after simple tx".to_string());
+        }
+        let report = durable.transact_report(
+            r#"[{:db/id 8 :user/name "Durable Report" :user/email "durable-report@example.com"}]"#,
         )?;
         if report.value().map_get(":ok") != Some(&Value::Bool(true)) {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected SQLite transaction report".to_string());
         }
-        if durable.basis_t() != 1 {
+        if durable.basis_t() != 2 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected durable basis after first tx".to_string());
         }
-        if durable.tx_count() != 1 {
+        if durable.tx_count() != 2 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected durable tx count after first tx".to_string());
         }
-        if durable.tx_ids() != vec![1] {
+        if durable.tx_ids() != vec![1, 2] {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected durable tx ids after first tx".to_string());
+        }
+        let bulk_a = TxBuilder::new(3)?;
+        let bulk_b = TxBuilder::new(1)?;
+        bulk_a.add_string(2, ":user/name", "Durable Grace")?;
+        bulk_a.add_int(2, ":user/age", 37)?;
+        bulk_a.add_bool(2, ":user/active", true)?;
+        bulk_b.add_string(3, ":user/name", "Durable Hedy")?;
+        let bulk_report = durable.transact_bulk_report(&[&bulk_a, &bulk_b])?;
+        if bulk_report.value().map_get(":ok") != Some(&Value::Bool(true)) {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected SQLite bulk transaction report".to_string());
+        }
+        if durable.basis_t() != 3 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable basis after bulk tx".to_string());
+        }
+        if durable.tx_count() != 3 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable tx count after bulk tx".to_string());
+        }
+        if durable.tx_ids() != vec![1, 2, 3] {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable tx ids after bulk tx".to_string());
+        }
+        let logical_a = TxBuilder::new(3)?;
+        let logical_b = TxBuilder::new(2)?;
+        logical_a.add_string(4, ":user/name", "Durable Ada")?;
+        logical_a.add_keyword(4, ":user/role", ":role/admin")?;
+        logical_a.add_entity(4, ":user/friend", 5)?;
+        logical_b.add_string(5, ":user/name", "Durable Dorothy")?;
+        logical_b.add_symbol(5, ":user/source", "source/import")?;
+        let logical_reports = durable.transact_logical_bulk_reports(&[&logical_a, &logical_b])?;
+        let logical_values = logical_reports.values()?;
+        if logical_values.len() != 2
+            || logical_values[0].map_get(":ok") != Some(&Value::Bool(true))
+            || logical_values[1].map_get(":ok") != Some(&Value::Bool(true))
+        {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected SQLite logical group transaction reports".to_string());
+        }
+        let empty_logical_reports = durable.transact_logical_bulk_reports(&[])?;
+        if !empty_logical_reports.values()?.is_empty() {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected empty logical group transaction reports".to_string());
+        }
+        let logical_edn_reports = durable.transact_logical_edn_reports(&[
+            r#"[{:db/id 6 :user/name "Durable Katherine"}]"#,
+            r#"[{:db/id 7 :user/name "Durable Mary"}]"#,
+        ])?;
+        let logical_edn_values = logical_edn_reports.values()?;
+        if logical_edn_values.len() != 2
+            || logical_edn_values[0].map_get(":ok") != Some(&Value::Bool(true))
+            || logical_edn_values[1].map_get(":ok") != Some(&Value::Bool(true))
+        {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected SQLite logical EDN group transaction reports".to_string());
+        }
+        if durable.basis_t() != 7 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable basis after logical group tx".to_string());
+        }
+        if durable.tx_count() != 7 {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable tx count after logical group tx".to_string());
+        }
+        if durable.tx_ids() != vec![1, 2, 3, 4, 5, 6, 7] {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected durable tx ids after logical group tx".to_string());
         }
         let durable_query =
             PreparedQuery::new(r#"[:find ?e ?email :where [?e :user/email ?email]]"#)?;
         let durable_db = durable.db()?;
         let live_rows = durable_query.query_db(&durable_db, "[]")?.row_count();
         println!("sqlite-live rows: {live_rows}");
-        if live_rows != 1 {
+        let durable_q_rows = durable.q(
+            r#"[:find ?name :where [?e :user/email "durable-ada@example.com"] [?e :user/name ?name]]"#,
+            "[]",
+        )?;
+        if live_rows != 2 || durable_q_rows != vec![vec![Value::String("Durable Ada".to_string())]]
+        {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected SQLite live row count".to_string());
         }
     }
     {
         let durable = DurableConn::open(sqlite_path)?;
-        if durable.basis_t() != 1 {
+        if durable.basis_t() != 7 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected reopened durable basis".to_string());
         }
-        if durable.tx_count() != 1 {
+        if durable.tx_count() != 7 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected reopened durable tx count".to_string());
         }
-        if durable.tx_ids() != vec![1] {
+        if durable.tx_ids() != vec![1, 2, 3, 4, 5, 6, 7] {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected reopened durable tx ids".to_string());
         }
@@ -1373,9 +532,17 @@ fn main() -> Result<(), String> {
         let durable_db = durable.db()?;
         let reopened_rows = durable_query.query_db(&durable_db, "[]")?.row_count();
         println!("sqlite-reopened rows: {reopened_rows}");
-        if reopened_rows != 1 {
+        if reopened_rows != 2 {
             remove_sqlite_files(sqlite_path);
             return Err("unexpected SQLite reopened row count".to_string());
+        }
+        let durable_entity = durable_db.entity(1)?;
+        if durable_entity.get(":user/name")? != Value::String("Durable Ada".to_string())
+            || durable_entity.get(":user/email")?
+                != Value::String("durable-ada@example.com".to_string())
+        {
+            remove_sqlite_files(sqlite_path);
+            return Err("unexpected SQLite entity view".to_string());
         }
     }
     remove_sqlite_files(sqlite_path);

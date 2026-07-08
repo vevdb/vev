@@ -190,6 +190,55 @@ static int tx_report_ok_or_error(const char *label, vev_tx_report_t report) {
     return 0;
 }
 
+static int tx_report_failed_contains(const char *label, vev_tx_report_t report, const char *needle) {
+    if (report == NULL) {
+        fprintf(stderr, "%s: null transaction report\n", label);
+        return 0;
+    }
+    vev_value_t value = vev_tx_report_value(report);
+    vev_value_t ok = map_get(value, ":ok");
+    if (vev_value_kind(ok) != VEV_VALUE_BOOL || vev_value_bool(ok)) {
+        const char *edn = vev_tx_report_edn(report);
+        fprintf(stderr, "%s: expected failed transaction report, got: %s\n", label, edn);
+        vev_string_free(edn);
+        return 0;
+    }
+    const char *edn = vev_tx_report_edn(report);
+    int contains = edn != NULL && strstr(edn, needle) != NULL;
+    if (!contains) {
+        fprintf(stderr, "%s: expected failure containing '%s', got: %s\n", label, needle, edn);
+    }
+    vev_string_free(edn);
+    return contains;
+}
+
+static int tx_report_first_tx_value_is_int_vector(const char *label, vev_tx_report_t report, long long first, long long second) {
+    vev_value_t value = vev_tx_report_value(report);
+    vev_value_t tx_data = map_get(value, ":tx-data");
+    if (vev_value_kind(tx_data) != VEV_VALUE_VECTOR || vev_value_item_count(tx_data) < 1) {
+        fprintf(stderr, "%s: expected non-empty :tx-data vector\n", label);
+        return 0;
+    }
+    vev_value_t first_datom = vev_value_item(tx_data, 0);
+    vev_value_t datom_value = map_get(first_datom, ":v");
+    if (vev_value_kind(datom_value) != VEV_VALUE_VECTOR || vev_value_item_count(datom_value) != 2) {
+        const char *edn = vev_value_edn(datom_value);
+        fprintf(stderr, "%s: expected vector tx value, got %s\n", label, edn);
+        vev_string_free(edn);
+        return 0;
+    }
+    vev_value_t a = vev_value_item(datom_value, 0);
+    vev_value_t b = vev_value_item(datom_value, 1);
+    if (vev_value_kind(a) != VEV_VALUE_INT || vev_value_kind(b) != VEV_VALUE_INT ||
+        vev_value_int(a) != first || vev_value_int(b) != second) {
+        const char *edn = vev_value_edn(datom_value);
+        fprintf(stderr, "%s: unexpected vector tx value %s\n", label, edn);
+        vev_string_free(edn);
+        return 0;
+    }
+    return 1;
+}
+
 struct tx_listener_stats {
     int count;
     int saw_listener_attr;
@@ -221,8 +270,15 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     vev_db_t db = NULL;
     vev_result_t result = NULL;
     vev_tx_report_t report = NULL;
+    vev_tx_report_array_t reports = NULL;
     vev_tx_fn_registry_t tx_fns = NULL;
+    vev_tx_builder_t builder = NULL;
+    vev_tx_builder_t bulk_a = NULL;
+    vev_tx_builder_t bulk_b = NULL;
     vev_u64_array_t tx_ids = NULL;
+    vev_prepared_query_t source_column_query = NULL;
+    vev_column_batch_t source_column_batch = NULL;
+    vev_string_array_t source_string_column = NULL;
 
     durable = vev_connect(path);
     if (durable == NULL || !vev_connection_ok(durable)) {
@@ -340,6 +396,47 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     vev_db_release(db);
     db = NULL;
 
+    struct tx_listener_stats durable_listener_stats = {0, 0};
+    if (!vev_connection_listen_tx_report(durable, "durable-listener", count_tx_listener, &durable_listener_stats)) {
+        fprintf(stderr, "failed to register durable tx report listener\n");
+        goto cleanup;
+    }
+    report = vev_connection_transact_edn_report(
+        durable,
+        "[[:db/add 1 :user/listener \"durable-heard\"]]");
+    if (!tx_report_ok_or_error("sqlite-listener-tx", report)) {
+        goto cleanup;
+    }
+    vev_tx_report_free(report);
+    report = NULL;
+    if (durable_listener_stats.count != 1 || !durable_listener_stats.saw_listener_attr) {
+        fprintf(stderr, "durable tx report listener did not observe successful transaction\n");
+        goto cleanup;
+    }
+    report = vev_connection_transact_edn_report(durable, "[[:db/add 1 123 \"bad\"]]");
+    vev_tx_report_free(report);
+    report = NULL;
+    if (durable_listener_stats.count != 1) {
+        fprintf(stderr, "durable tx report listener observed failed transaction\n");
+        goto cleanup;
+    }
+    if (!vev_connection_unlisten_tx_report(durable, "durable-listener")) {
+        fprintf(stderr, "failed to unregister durable tx report listener\n");
+        goto cleanup;
+    }
+    report = vev_connection_transact_edn_report(
+        durable,
+        "[[:db/add 1 :user/listener \"durable-after-unlisten\"]]");
+    if (!tx_report_ok_or_error("sqlite-listener-after-unlisten", report)) {
+        goto cleanup;
+    }
+    vev_tx_report_free(report);
+    report = NULL;
+    if (durable_listener_stats.count != 1) {
+        fprintf(stderr, "durable tx report listener observed transaction after unlisten\n");
+        goto cleanup;
+    }
+
     report = vev_connection_transact_edn_report(
         durable,
         "[{:db/id 2 :user/name \"Durable Grace\" :user/email \"durable-grace@example.com\"}]");
@@ -348,17 +445,17 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     }
     vev_tx_report_free(report);
     report = NULL;
-    if (vev_connection_basis_t(durable) != 2) {
+    if (vev_connection_basis_t(durable) != 4) {
         fprintf(stderr, "unexpected durable basis after second tx\n");
         goto cleanup;
     }
-    if (vev_connection_tx_count(durable) != 2) {
+    if (vev_connection_tx_count(durable) != 4) {
         fprintf(stderr, "unexpected durable tx count after second tx\n");
         goto cleanup;
     }
-    unsigned long long two_tx_ids[] = {1, 2};
+    unsigned long long four_tx_ids[] = {1, 2, 3, 4};
     tx_ids = vev_connection_tx_ids(durable);
-    if (!expect_u64_array("second-tx-ids", tx_ids, two_tx_ids, 2)) {
+    if (!expect_u64_array("second-tx-ids", tx_ids, four_tx_ids, 4)) {
         goto cleanup;
     }
     vev_u64_array_free(tx_ids);
@@ -373,16 +470,16 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         vev_string_free(error);
         goto cleanup;
     }
-    if (vev_connection_basis_t(durable) != 2) {
+    if (vev_connection_basis_t(durable) != 4) {
         fprintf(stderr, "unexpected final reopened durable basis\n");
         goto cleanup;
     }
-    if (vev_connection_tx_count(durable) != 2) {
+    if (vev_connection_tx_count(durable) != 4) {
         fprintf(stderr, "unexpected final reopened durable tx count\n");
         goto cleanup;
     }
     tx_ids = vev_connection_tx_ids(durable);
-    if (!expect_u64_array("final-tx-ids", tx_ids, two_tx_ids, 2)) {
+    if (!expect_u64_array("final-tx-ids", tx_ids, four_tx_ids, 4)) {
         goto cleanup;
     }
     vev_u64_array_free(tx_ids);
@@ -395,10 +492,242 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
         fprintf(stderr, "unexpected sqlite final row count\n");
         goto cleanup;
     }
+
+    source_column_query =
+        vev_prepare_query_edn(
+            "[:find ?email"
+            " :where [?e :user/name ?name]"
+            "        [?e :user/email ?email]"
+            "        [(= ?name \"Durable Ada\")]]");
+    if (source_column_query == NULL) {
+        fprintf(stderr, "failed to prepare sqlite source column batch query\n");
+        goto cleanup;
+    }
+    source_column_batch =
+        vev_query_db_prepared_column_batch_with_inputs(db, source_column_query, "[]");
+    if (source_column_batch == NULL ||
+        vev_column_batch_kind(source_column_batch) != VEV_COLUMN_BATCH_STRING ||
+        vev_column_batch_count(source_column_batch) != 1) {
+        fprintf(stderr, "unexpected sqlite source column batch shape\n");
+        goto cleanup;
+    }
+    const void *const *source_column_strings =
+        vev_column_batch_string_data_array(source_column_batch);
+    const int *source_column_lengths =
+        vev_column_batch_string_lengths_data(source_column_batch);
+    if (!bytes_equal(source_column_strings[0], source_column_lengths[0], "durable-ada@example.com")) {
+        fprintf(stderr, "unexpected sqlite source column batch contents\n");
+        goto cleanup;
+    }
+    printf("sqlite-source column-batch kind=%d rows=%d\n",
+           vev_column_batch_kind(source_column_batch),
+           vev_column_batch_count(source_column_batch));
+    vev_column_batch_free(source_column_batch);
+    source_column_batch = NULL;
+
+    source_string_column =
+        vev_query_db_prepared_string_column_with_inputs(db, source_column_query, "[]");
+    if (source_string_column == NULL ||
+        vev_string_array_count(source_string_column) != 1) {
+        fprintf(stderr, "unexpected sqlite source string column shape\n");
+        goto cleanup;
+    }
+    const void *const *source_string_data =
+        vev_string_array_data_array(source_string_column);
+    const int *source_string_lengths =
+        vev_string_array_lengths_data(source_string_column);
+    if (!bytes_equal(source_string_data[0], source_string_lengths[0], "durable-ada@example.com")) {
+        fprintf(stderr, "unexpected sqlite source string column contents\n");
+        goto cleanup;
+    }
+    vev_string_array_free(source_string_column);
+    source_string_column = NULL;
+
+    vev_prepared_query_free(source_column_query);
+    source_column_query = NULL;
+
     vev_result_free(result);
     result = NULL;
     vev_db_release(db);
     db = NULL;
+
+    builder = vev_tx_create(2);
+    if (builder == NULL ||
+        !vev_tx_add_string(builder, 3, ":user/name", "Durable Katherine") ||
+        !vev_tx_add_string(builder, 3, ":user/email", "durable-katherine@example.com")) {
+        fprintf(stderr, "failed to build durable typed transaction\n");
+        goto cleanup;
+    }
+    report = vev_connection_tx_commit_report(durable, builder);
+    if (!tx_report_ok_or_error("sqlite-typed-builder-tx", report)) {
+        goto cleanup;
+    }
+    vev_tx_report_free(report);
+    report = NULL;
+    vev_tx_free(builder);
+    builder = NULL;
+    if (vev_connection_basis_t(durable) != 5) {
+        fprintf(stderr, "unexpected durable basis after typed builder tx\n");
+        goto cleanup;
+    }
+    if (!vev_connection_compact_indexes(durable)) {
+        fprintf(stderr, "failed to compact durable indexes\n");
+        goto cleanup;
+    }
+    db = vev_connection_db(durable);
+    result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
+    int typed_rows = result_row_count_or_error("sqlite-typed-builder", result);
+    printf("sqlite-typed-builder rows: %d\n", typed_rows);
+    if (typed_rows != 3) {
+        fprintf(stderr, "unexpected sqlite typed builder row count\n");
+        goto cleanup;
+    }
+    vev_result_free(result);
+    result = NULL;
+    vev_db_release(db);
+    db = NULL;
+
+    bulk_a = vev_tx_create(1);
+    bulk_b = vev_tx_create(1);
+    if (bulk_a == NULL ||
+        bulk_b == NULL ||
+        !vev_tx_add_string(bulk_a, 4, ":user/name", "Durable Hedy") ||
+        !vev_tx_add_string(bulk_b, 5, ":user/name", "Durable Dorothy")) {
+        fprintf(stderr, "failed to build durable bulk typed transaction\n");
+        goto cleanup;
+    }
+    vev_tx_builder_t bulk_builders[] = {bulk_a, bulk_b};
+    report = vev_connection_tx_commit_many_report(durable, bulk_builders, 2);
+    if (!tx_report_ok_or_error("sqlite-typed-builder-bulk-tx", report)) {
+        goto cleanup;
+    }
+    vev_tx_report_free(report);
+    report = NULL;
+    vev_tx_free(bulk_a);
+    bulk_a = NULL;
+    vev_tx_free(bulk_b);
+    bulk_b = NULL;
+    if (vev_connection_basis_t(durable) != 6) {
+        fprintf(stderr, "unexpected durable basis after bulk typed builder tx\n");
+        goto cleanup;
+    }
+    db = vev_connection_db(durable);
+    result = vev_query_db_prepared_result_with_inputs(db, all_emails, "[]");
+    int bulk_rows = result_row_count_or_error("sqlite-typed-builder-bulk", result);
+    printf("sqlite-typed-builder-bulk rows: %d\n", bulk_rows);
+    if (bulk_rows != 3) {
+        fprintf(stderr, "unexpected sqlite typed builder bulk email row count\n");
+        goto cleanup;
+    }
+    vev_result_free(result);
+    result = NULL;
+    vev_db_release(db);
+    db = NULL;
+
+    bulk_a = vev_tx_create(1);
+    bulk_b = vev_tx_create(1);
+    if (bulk_a == NULL ||
+        bulk_b == NULL ||
+        !vev_tx_add_string(bulk_a, 6, ":user/name", "Durable Grace") ||
+        !vev_tx_add_string(bulk_b, 7, ":user/name", "Durable Ada")) {
+        fprintf(stderr, "failed to build durable logical group transaction\n");
+        goto cleanup;
+    }
+    vev_tx_builder_t logical_builders[] = {bulk_a, bulk_b};
+    reports = vev_connection_tx_commit_logical_many_reports(durable, logical_builders, 2);
+    if (reports == NULL || vev_tx_report_array_count(reports) != 2) {
+        fprintf(stderr, "unexpected logical group commit report count\n");
+        goto cleanup;
+    }
+    if (!tx_report_ok_or_error("sqlite-typed-builder-logical-group-tx-0", vev_tx_report_array_get(reports, 0)) ||
+        !tx_report_ok_or_error("sqlite-typed-builder-logical-group-tx-1", vev_tx_report_array_get(reports, 1))) {
+        goto cleanup;
+    }
+    vev_tx_report_array_free(reports);
+    reports = NULL;
+    vev_tx_free(bulk_a);
+    bulk_a = NULL;
+    vev_tx_free(bulk_b);
+    bulk_b = NULL;
+    reports = vev_connection_tx_commit_logical_many_reports(durable, NULL, 0);
+    if (reports == NULL || vev_tx_report_array_count(reports) != 0) {
+        fprintf(stderr, "expected empty logical group report array for empty builders\n");
+        goto cleanup;
+    }
+    vev_tx_report_array_free(reports);
+    reports = NULL;
+    reports = vev_connection_tx_commit_logical_many_reports(durable, NULL, 1);
+    if (reports == NULL || vev_tx_report_array_count(reports) != 1) {
+        fprintf(stderr, "expected failed logical group report array for null builder array\n");
+        goto cleanup;
+    }
+    if (!tx_report_failed_contains(
+            "sqlite-typed-builder-logical-group-null-builders",
+            vev_tx_report_array_get(reports, 0),
+            "null")) {
+        goto cleanup;
+    }
+    vev_tx_report_array_free(reports);
+    reports = NULL;
+    vev_tx_builder_t malformed_logical_builders[] = {NULL};
+    reports = vev_connection_tx_commit_logical_many_reports(durable, malformed_logical_builders, 1);
+    if (reports == NULL || vev_tx_report_array_count(reports) != 1) {
+        fprintf(stderr, "expected failed logical group report array for malformed builders\n");
+        goto cleanup;
+    }
+    if (!tx_report_failed_contains(
+            "sqlite-typed-builder-logical-group-malformed",
+            vev_tx_report_array_get(reports, 0),
+            "null builder")) {
+        goto cleanup;
+    }
+    vev_tx_report_array_free(reports);
+    reports = NULL;
+    if (vev_connection_basis_t(durable) != 8) {
+        fprintf(stderr, "unexpected durable basis after logical group commit\n");
+        goto cleanup;
+    }
+
+    const char *logical_texts[] = {
+        "[{:db/id 8 :user/name \"Durable Katherine\"}]",
+        "[{:db/id 9 :user/name \"Durable Hedy\"}]",
+    };
+    reports = vev_connection_transact_many_edn_reports(durable, logical_texts, 2);
+    if (reports == NULL || vev_tx_report_array_count(reports) != 2) {
+        fprintf(stderr, "unexpected EDN logical group report count\n");
+        goto cleanup;
+    }
+    if (!tx_report_ok_or_error("sqlite-edn-logical-group-tx-0", vev_tx_report_array_get(reports, 0)) ||
+        !tx_report_ok_or_error("sqlite-edn-logical-group-tx-1", vev_tx_report_array_get(reports, 1))) {
+        goto cleanup;
+    }
+    vev_tx_report_array_free(reports);
+    reports = NULL;
+    if (vev_connection_basis_t(durable) != 10) {
+        fprintf(stderr, "unexpected durable basis after EDN logical group commit\n");
+        goto cleanup;
+    }
+    const char *malformed_logical_texts[] = {
+        "[{:db/id 10 :user/name \"Should Not Commit\"}]",
+        "[{:db/id 11 :user/name",
+    };
+    reports = vev_connection_transact_many_edn_reports(durable, malformed_logical_texts, 2);
+    if (reports == NULL || vev_tx_report_array_count(reports) != 1) {
+        fprintf(stderr, "expected failed EDN logical group report array for malformed text\n");
+        goto cleanup;
+    }
+    if (!tx_report_failed_contains(
+            "sqlite-edn-logical-group-malformed",
+            vev_tx_report_array_get(reports, 0),
+            "transaction group 1")) {
+        goto cleanup;
+    }
+    vev_tx_report_array_free(reports);
+    reports = NULL;
+    if (vev_connection_basis_t(durable) != 10) {
+        fprintf(stderr, "malformed EDN logical group advanced durable basis\n");
+        goto cleanup;
+    }
 
     report = vev_connection_transact_edn_report(
         durable,
@@ -434,6 +763,23 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     report = NULL;
     vev_db_release(db);
     db = NULL;
+
+    report = vev_connection_transact_edn_report_with_tx_fns(
+        durable,
+        "[[:db.fn/call :mark-seen 2 \"from-sqlite-transact-c\"]]",
+        tx_fns);
+    sqlite_tx_fn_edn = vev_tx_report_edn(report);
+    printf("sqlite-transact-tx-fn-callback: %s\n", sqlite_tx_fn_edn);
+    if (!tx_report_ok_or_error("sqlite-transact-tx-fn-callback", report) ||
+        strstr(sqlite_tx_fn_edn, "from-sqlite-transact-c") == NULL) {
+        fprintf(stderr, "sqlite live transaction callback did not apply returned tx-data\n");
+        vev_string_free(sqlite_tx_fn_edn);
+        goto cleanup;
+    }
+    vev_string_free(sqlite_tx_fn_edn);
+    vev_tx_report_free(report);
+    report = NULL;
+
     vev_tx_fn_registry_free(tx_fns);
     tx_fns = NULL;
 
@@ -443,11 +789,32 @@ cleanup:
     if (report != NULL) {
         vev_tx_report_free(report);
     }
+    if (reports != NULL) {
+        vev_tx_report_array_free(reports);
+    }
     if (tx_ids != NULL) {
         vev_u64_array_free(tx_ids);
     }
     if (tx_fns != NULL) {
         vev_tx_fn_registry_free(tx_fns);
+    }
+    if (builder != NULL) {
+        vev_tx_free(builder);
+    }
+    if (bulk_a != NULL) {
+        vev_tx_free(bulk_a);
+    }
+    if (bulk_b != NULL) {
+        vev_tx_free(bulk_b);
+    }
+    if (source_column_batch != NULL) {
+        vev_column_batch_free(source_column_batch);
+    }
+    if (source_string_column != NULL) {
+        vev_string_array_free(source_string_column);
+    }
+    if (source_column_query != NULL) {
+        vev_prepared_query_free(source_column_query);
     }
     if (result != NULL) {
         vev_result_free(result);
@@ -475,8 +842,8 @@ int main(void) {
 
     vev_tx_report_t tx_report = vev_transact_edn_report(
         conn,
-        "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\" :user/age 37}"
-        " {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\" :user/age 41}]");
+        "[{:db/id 1 :user/name \"Ada\" :user/email \"ada@example.com\" :user/age 37 :user/active true :user/score 9.5}"
+        " {:db/id 2 :user/name \"Grace\" :user/email \"grace@example.com\" :user/age 41 :user/active false :user/score 8.25}]");
     print_and_free("tx", vev_tx_report_edn(tx_report));
     if (!tx_report_ok_or_error("tx", tx_report)) {
         vev_tx_report_free(tx_report);
@@ -484,6 +851,16 @@ int main(void) {
         return 1;
     }
     vev_tx_report_free(tx_report);
+
+    vev_tx_report_t vector_tx_report =
+        vev_transact_edn_report(conn, "[[:db/add 1 :user/tags [1 2]] [:db/add 1 :user/mixed 1] [:db/add 2 :user/mixed [2 3]]]");
+    if (!tx_report_ok_or_error("vector-tx", vector_tx_report) ||
+        !tx_report_first_tx_value_is_int_vector("vector-tx", vector_tx_report, 1, 2)) {
+        vev_tx_report_free(vector_tx_report);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_tx_report_free(vector_tx_report);
 
     struct tx_listener_stats listener_stats = {0, 0};
     if (!vev_conn_listen_tx_report(conn, "smoke-listener", count_tx_listener, &listener_stats)) {
@@ -747,6 +1124,880 @@ int main(void) {
     printf("column-batch kind=%d rows=%d\n", vev_column_batch_kind(batch), vev_column_batch_count(batch));
     vev_column_batch_free(batch);
     vev_prepared_query_free(batch_query);
+
+    vev_prepared_query_t pair_batch_query =
+        vev_prepare_query_edn("[:find ?e ?name :where [?e :user/name ?name]]");
+    if (pair_batch_query == NULL || !vev_prepared_query_ok(pair_batch_query)) {
+        fprintf(stderr, "failed to prepare entity+string column batch query\n");
+        if (pair_batch_query != NULL) {
+            vev_prepared_query_free(pair_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t pair_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, pair_batch_query, "[]");
+    if (pair_batch == NULL ||
+        vev_column_batch_kind(pair_batch) != VEV_COLUMN_BATCH_ENTITY_STRING ||
+        vev_column_batch_count(pair_batch) != 2) {
+        fprintf(stderr, "unexpected entity+string column batch shape\n");
+        if (pair_batch != NULL) {
+            vev_column_batch_free(pair_batch);
+        }
+        vev_prepared_query_free(pair_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const unsigned long long *pair_batch_entities = vev_column_batch_entities_data(pair_batch);
+    const void *const *pair_batch_strings = vev_column_batch_string_data_array(pair_batch);
+    const int *pair_batch_lengths = vev_column_batch_string_lengths_data(pair_batch);
+    int saw_entity_ada = 0;
+    int saw_entity_grace = 0;
+    for (int i = 0; i < vev_column_batch_count(pair_batch); i++) {
+        if (pair_batch_entities[i] == 1 &&
+            bytes_equal(pair_batch_strings[i], pair_batch_lengths[i], "Ada")) {
+            saw_entity_ada = 1;
+        } else if (pair_batch_entities[i] == 2 &&
+                   bytes_equal(pair_batch_strings[i], pair_batch_lengths[i], "Grace")) {
+            saw_entity_grace = 1;
+        }
+    }
+    if (!saw_entity_ada || !saw_entity_grace) {
+        fprintf(stderr, "unexpected entity+string column batch contents\n");
+        vev_column_batch_free(pair_batch);
+        vev_prepared_query_free(pair_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("entity+string column-batch kind=%d rows=%d\n", vev_column_batch_kind(pair_batch), vev_column_batch_count(pair_batch));
+    vev_column_batch_free(pair_batch);
+    vev_prepared_query_free(pair_batch_query);
+
+    vev_prepared_query_t string_int_batch_query =
+        vev_prepare_query_edn("[:find ?name ?age :where [?e :user/name ?name] [?e :user/age ?age]]");
+    if (string_int_batch_query == NULL || !vev_prepared_query_ok(string_int_batch_query)) {
+        fprintf(stderr, "failed to prepare string+int column batch query\n");
+        if (string_int_batch_query != NULL) {
+            vev_prepared_query_free(string_int_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t string_int_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, string_int_batch_query, "[]");
+    if (string_int_batch == NULL ||
+        vev_column_batch_kind(string_int_batch) != VEV_COLUMN_BATCH_STRING_INT ||
+        vev_column_batch_count(string_int_batch) != 2) {
+        fprintf(stderr, "unexpected string+int column batch shape\n");
+        if (string_int_batch != NULL) {
+            vev_column_batch_free(string_int_batch);
+        }
+        vev_prepared_query_free(string_int_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const void *const *string_int_batch_strings = vev_column_batch_string_data_array(string_int_batch);
+    const int *string_int_batch_lengths = vev_column_batch_string_lengths_data(string_int_batch);
+    const long long *string_int_batch_ints = vev_column_batch_ints_data(string_int_batch);
+    if (vev_column_batch_column_count(string_int_batch) != 2 ||
+        vev_column_batch_column_kind(string_int_batch, 0) != VEV_COLUMN_KIND_STRING ||
+        vev_column_batch_column_kind(string_int_batch, 1) != VEV_COLUMN_KIND_INT ||
+        vev_column_batch_column_kind(string_int_batch, 2) != VEV_COLUMN_KIND_NONE ||
+        vev_column_batch_column_string_data_array(string_int_batch, 0) != string_int_batch_strings ||
+        vev_column_batch_column_string_lengths_data(string_int_batch, 0) != string_int_batch_lengths ||
+        vev_column_batch_column_ints_data(string_int_batch, 1) != string_int_batch_ints) {
+        fprintf(stderr, "unexpected generic string+int column metadata\n");
+        vev_column_batch_free(string_int_batch);
+        vev_prepared_query_free(string_int_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    int saw_ada_age = 0;
+    int saw_grace_age = 0;
+    for (int i = 0; i < vev_column_batch_count(string_int_batch); i++) {
+        if (string_int_batch_ints[i] == 37 &&
+            bytes_equal(string_int_batch_strings[i], string_int_batch_lengths[i], "Ada")) {
+            saw_ada_age = 1;
+        } else if (string_int_batch_ints[i] == 41 &&
+                   bytes_equal(string_int_batch_strings[i], string_int_batch_lengths[i], "Grace")) {
+            saw_grace_age = 1;
+        }
+    }
+    if (!saw_ada_age || !saw_grace_age) {
+        fprintf(stderr, "unexpected string+int column batch contents\n");
+        vev_column_batch_free(string_int_batch);
+        vev_prepared_query_free(string_int_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("string+int column-batch kind=%d rows=%d\n", vev_column_batch_kind(string_int_batch), vev_column_batch_count(string_int_batch));
+    vev_column_batch_free(string_int_batch);
+    vev_prepared_query_free(string_int_batch_query);
+
+    vev_prepared_query_t string_string_batch_query =
+        vev_prepare_query_edn("[:find ?name ?email :where [?e :user/name ?name] [?e :user/email ?email]]");
+    if (string_string_batch_query == NULL || !vev_prepared_query_ok(string_string_batch_query)) {
+        fprintf(stderr, "failed to prepare string+string column batch query\n");
+        if (string_string_batch_query != NULL) {
+            vev_prepared_query_free(string_string_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t string_string_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, string_string_batch_query, "[]");
+    if (string_string_batch == NULL ||
+        vev_column_batch_kind(string_string_batch) != VEV_COLUMN_BATCH_STRING_STRING ||
+        vev_column_batch_count(string_string_batch) != 2) {
+        fprintf(stderr, "unexpected string+string column batch shape\n");
+        if (string_string_batch != NULL) {
+            vev_column_batch_free(string_string_batch);
+        }
+        vev_prepared_query_free(string_string_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const void *const *string_string_batch_first = vev_column_batch_string_data_array(string_string_batch);
+    const int *string_string_batch_first_lengths = vev_column_batch_string_lengths_data(string_string_batch);
+    const void *const *string_string_batch_second = vev_column_batch_second_string_data_array(string_string_batch);
+    const int *string_string_batch_second_lengths = vev_column_batch_second_string_lengths_data(string_string_batch);
+    int saw_ada_email = 0;
+    int saw_grace_email = 0;
+    for (int i = 0; i < vev_column_batch_count(string_string_batch); i++) {
+        if (bytes_equal(string_string_batch_first[i], string_string_batch_first_lengths[i], "Ada") &&
+            bytes_equal(string_string_batch_second[i], string_string_batch_second_lengths[i], "ada@example.com")) {
+            saw_ada_email = 1;
+        } else if (bytes_equal(string_string_batch_first[i], string_string_batch_first_lengths[i], "Grace") &&
+                   bytes_equal(string_string_batch_second[i], string_string_batch_second_lengths[i], "grace@example.com")) {
+            saw_grace_email = 1;
+        }
+    }
+    if (!saw_ada_email || !saw_grace_email) {
+        fprintf(stderr, "unexpected string+string column batch contents\n");
+        vev_column_batch_free(string_string_batch);
+        vev_prepared_query_free(string_string_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("string+string column-batch kind=%d rows=%d\n", vev_column_batch_kind(string_string_batch), vev_column_batch_count(string_string_batch));
+    vev_column_batch_free(string_string_batch);
+    vev_prepared_query_free(string_string_batch_query);
+
+    vev_prepared_query_t wide_batch_query =
+        vev_prepare_query_edn("[:find ?e ?name ?email ?age :where [?e :user/name ?name] [?e :user/email ?email] [?e :user/age ?age]]");
+    if (wide_batch_query == NULL || !vev_prepared_query_ok(wide_batch_query)) {
+        fprintf(stderr, "failed to prepare generic wide column batch query\n");
+        if (wide_batch_query != NULL) {
+            vev_prepared_query_free(wide_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t wide_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, wide_batch_query, "[]");
+    if (wide_batch == NULL ||
+        vev_column_batch_count(wide_batch) != 2 ||
+        vev_column_batch_column_count(wide_batch) != 4 ||
+        vev_column_batch_column_kind(wide_batch, 0) != VEV_COLUMN_KIND_ENTITY ||
+        vev_column_batch_column_kind(wide_batch, 1) != VEV_COLUMN_KIND_STRING ||
+        vev_column_batch_column_kind(wide_batch, 2) != VEV_COLUMN_KIND_STRING ||
+        vev_column_batch_column_kind(wide_batch, 3) != VEV_COLUMN_KIND_INT) {
+        fprintf(stderr,
+                "unexpected generic wide column batch shape: ptr=%p rows=%d cols=%d kinds=[%d %d %d %d]\n",
+                (void *)wide_batch,
+                wide_batch == NULL ? -1 : vev_column_batch_count(wide_batch),
+                wide_batch == NULL ? -1 : vev_column_batch_column_count(wide_batch),
+                wide_batch == NULL ? -1 : vev_column_batch_column_kind(wide_batch, 0),
+                wide_batch == NULL ? -1 : vev_column_batch_column_kind(wide_batch, 1),
+                wide_batch == NULL ? -1 : vev_column_batch_column_kind(wide_batch, 2),
+                wide_batch == NULL ? -1 : vev_column_batch_column_kind(wide_batch, 3));
+        if (wide_batch != NULL) {
+            vev_column_batch_free(wide_batch);
+        }
+        vev_prepared_query_free(wide_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const unsigned long long *wide_entities = vev_column_batch_column_entities_data(wide_batch, 0);
+    const void *const *wide_names = vev_column_batch_column_string_data_array(wide_batch, 1);
+    const int *wide_name_lengths = vev_column_batch_column_string_lengths_data(wide_batch, 1);
+    const void *const *wide_emails = vev_column_batch_column_string_data_array(wide_batch, 2);
+    const int *wide_email_lengths = vev_column_batch_column_string_lengths_data(wide_batch, 2);
+    const long long *wide_ages = vev_column_batch_column_ints_data(wide_batch, 3);
+    int saw_wide_ada = 0;
+    int saw_wide_grace = 0;
+    for (int i = 0; i < vev_column_batch_count(wide_batch); i++) {
+        if (wide_entities[i] == 1 &&
+            wide_ages[i] == 37 &&
+            bytes_equal(wide_names[i], wide_name_lengths[i], "Ada") &&
+            bytes_equal(wide_emails[i], wide_email_lengths[i], "ada@example.com")) {
+            saw_wide_ada = 1;
+        } else if (wide_entities[i] == 2 &&
+                   wide_ages[i] == 41 &&
+                   bytes_equal(wide_names[i], wide_name_lengths[i], "Grace") &&
+                   bytes_equal(wide_emails[i], wide_email_lengths[i], "grace@example.com")) {
+            saw_wide_grace = 1;
+        }
+    }
+    if (!saw_wide_ada || !saw_wide_grace) {
+        fprintf(stderr, "unexpected generic wide column batch contents\n");
+        vev_column_batch_free(wide_batch);
+        vev_prepared_query_free(wide_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("wide column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(wide_batch),
+           vev_column_batch_count(wide_batch));
+    vev_column_batch_free(wide_batch);
+    vev_prepared_query_free(wide_batch_query);
+
+    vev_prepared_query_t bool_float_batch_query =
+        vev_prepare_query_edn("[:find ?active ?score :where [?e :user/name ?name] [?e :user/active ?active] [?e :user/score ?score]]");
+    if (bool_float_batch_query == NULL || !vev_prepared_query_ok(bool_float_batch_query)) {
+        fprintf(stderr, "failed to prepare bool+float column batch query\n");
+        if (bool_float_batch_query != NULL) {
+            vev_prepared_query_free(bool_float_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t bool_float_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, bool_float_batch_query, "[]");
+    if (bool_float_batch == NULL ||
+        vev_column_batch_count(bool_float_batch) != 2 ||
+        vev_column_batch_column_count(bool_float_batch) != 2 ||
+        vev_column_batch_column_kind(bool_float_batch, 0) != VEV_COLUMN_KIND_BOOL ||
+        vev_column_batch_column_kind(bool_float_batch, 1) != VEV_COLUMN_KIND_FLOAT) {
+        fprintf(stderr,
+                "unexpected bool+float column batch shape: ptr=%p rows=%d cols=%d kinds=[%d %d]\n",
+                (void *)bool_float_batch,
+                bool_float_batch == NULL ? -1 : vev_column_batch_count(bool_float_batch),
+                bool_float_batch == NULL ? -1 : vev_column_batch_column_count(bool_float_batch),
+                bool_float_batch == NULL ? -1 : vev_column_batch_column_kind(bool_float_batch, 0),
+                bool_float_batch == NULL ? -1 : vev_column_batch_column_kind(bool_float_batch, 1));
+        if (bool_float_batch != NULL) {
+            vev_column_batch_free(bool_float_batch);
+        }
+        vev_prepared_query_free(bool_float_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const bool *bool_values = vev_column_batch_column_bools_data(bool_float_batch, 0);
+    const double *float_values = vev_column_batch_column_floats_data(bool_float_batch, 1);
+    int saw_ada_score = 0;
+    int saw_grace_score = 0;
+    for (int i = 0; i < vev_column_batch_count(bool_float_batch); i++) {
+        if (bool_values[i] && float_values[i] > 9.49 && float_values[i] < 9.51) {
+            saw_ada_score = 1;
+        } else if (!bool_values[i] && float_values[i] > 8.24 && float_values[i] < 8.26) {
+            saw_grace_score = 1;
+        }
+    }
+    if (!saw_ada_score || !saw_grace_score) {
+        fprintf(stderr, "unexpected bool+float column batch contents\n");
+        vev_column_batch_free(bool_float_batch);
+        vev_prepared_query_free(bool_float_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("bool+float column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(bool_float_batch),
+           vev_column_batch_count(bool_float_batch));
+    vev_column_batch_free(bool_float_batch);
+    vev_prepared_query_free(bool_float_batch_query);
+
+    vev_prepared_query_t mixed_batch_query =
+        vev_prepare_query_edn("[:find ?value :where (or (and [?e :user/name \"Ada\"] [?e :user/name ?value]) (and [?e :user/name \"Grace\"] [?e :user/age ?value]))]");
+    if (mixed_batch_query == NULL || !vev_prepared_query_ok(mixed_batch_query)) {
+        fprintf(stderr, "failed to prepare mixed column batch query\n");
+        if (mixed_batch_query != NULL) {
+            vev_prepared_query_free(mixed_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t mixed_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, mixed_batch_query, "[]");
+	if (mixed_batch == NULL ||
+	    vev_column_batch_count(mixed_batch) != 2 ||
+	    vev_column_batch_column_count(mixed_batch) != 1 ||
+	    vev_column_batch_column_kind(mixed_batch, 0) != VEV_COLUMN_KIND_VALUE) {
+		fprintf(stderr,
+		        "unexpected mixed column batch shape: ptr=%p rows=%d cols=%d kind=%d\n",
+		        (void *)mixed_batch,
+		        mixed_batch == NULL ? -1 : vev_column_batch_count(mixed_batch),
+                mixed_batch == NULL ? -1 : vev_column_batch_column_count(mixed_batch),
+                mixed_batch == NULL ? -1 : vev_column_batch_column_kind(mixed_batch, 0));
+        if (mixed_batch != NULL) {
+            vev_column_batch_free(mixed_batch);
+        }
+        vev_prepared_query_free(mixed_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+		vev_conn_close(conn);
+		return 1;
+	}
+	const vev_value_t *mixed_values = vev_column_batch_column_values_data(mixed_batch, 0);
+	int saw_mixed_ada = 0;
+	int saw_mixed_grace_age = 0;
+	if (mixed_values != NULL) {
+		for (int i = 0; i < vev_column_batch_count(mixed_batch); i++) {
+			if (vev_value_kind(mixed_values[i]) == VEV_VALUE_STRING &&
+			    value_text_equals(mixed_values[i], "Ada")) {
+				saw_mixed_ada = 1;
+			} else if (vev_value_kind(mixed_values[i]) == VEV_VALUE_INT &&
+			           vev_value_int(mixed_values[i]) == 41) {
+				saw_mixed_grace_age = 1;
+			}
+		}
+	}
+    if (!saw_mixed_ada || !saw_mixed_grace_age) {
+        fprintf(stderr, "unexpected mixed column batch contents\n");
+        vev_column_batch_free(mixed_batch);
+        vev_prepared_query_free(mixed_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("mixed column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(mixed_batch),
+           vev_column_batch_count(mixed_batch));
+    vev_column_batch_free(mixed_batch);
+    vev_prepared_query_free(mixed_batch_query);
+
+    vev_prepared_query_t value_batch_query =
+        vev_prepare_query_edn("[:find ?name ?age ?active ?tags :in ?tags :where [(ground \"Ada\") ?name] [(ground 37) ?age] [(ground true) ?active]]");
+    if (value_batch_query == NULL || !vev_prepared_query_ok(value_batch_query)) {
+        fprintf(stderr, "failed to prepare value column batch query\n");
+        if (value_batch_query != NULL) {
+            vev_prepared_query_free(value_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t value_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, value_batch_query, "[[1 2]]");
+    if (value_batch == NULL ||
+        vev_column_batch_count(value_batch) != 1 ||
+        vev_column_batch_column_count(value_batch) != 4 ||
+        vev_column_batch_column_kind(value_batch, 3) != VEV_COLUMN_KIND_VALUE) {
+        fprintf(stderr,
+                "unexpected value column batch shape: ptr=%p rows=%d cols=%d kind3=%d\n",
+                (void *)value_batch,
+                value_batch == NULL ? -1 : vev_column_batch_count(value_batch),
+                value_batch == NULL ? -1 : vev_column_batch_column_count(value_batch),
+                value_batch == NULL ? -1 : vev_column_batch_column_kind(value_batch, 3));
+        if (value_batch != NULL) {
+            vev_column_batch_free(value_batch);
+        }
+        vev_prepared_query_free(value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const vev_value_t *value_cells = vev_column_batch_column_values_data(value_batch, 3);
+    if (value_cells == NULL ||
+        vev_value_kind(value_cells[0]) != VEV_VALUE_VECTOR ||
+        vev_value_item_count(value_cells[0]) != 2 ||
+        vev_value_int(vev_value_item(value_cells[0], 0)) != 1 ||
+        vev_value_int(vev_value_item(value_cells[0], 1)) != 2) {
+        const char *edn = value_cells == NULL ? NULL : vev_value_edn(value_cells[0]);
+        fprintf(stderr, "unexpected value column batch contents: %s\n", edn == NULL ? "<null>" : edn);
+        if (edn != NULL) {
+            vev_string_free(edn);
+        }
+        vev_column_batch_free(value_batch);
+        vev_prepared_query_free(value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("value column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(value_batch),
+           vev_column_batch_count(value_batch));
+    vev_column_batch_free(value_batch);
+    vev_prepared_query_free(value_batch_query);
+
+    vev_prepared_query_t ground_value_batch_query =
+        vev_prepare_query_edn("[:find ?tags :where [(ground [1 2]) ?tags]]");
+    if (ground_value_batch_query == NULL || !vev_prepared_query_ok(ground_value_batch_query)) {
+        fprintf(stderr, "failed to prepare ground value column batch query\n");
+        if (ground_value_batch_query != NULL) {
+            vev_prepared_query_free(ground_value_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t ground_value_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, ground_value_batch_query, "[]");
+    if (ground_value_batch == NULL ||
+        vev_column_batch_count(ground_value_batch) != 1 ||
+        vev_column_batch_column_count(ground_value_batch) != 1 ||
+        vev_column_batch_column_kind(ground_value_batch, 0) != VEV_COLUMN_KIND_VALUE) {
+        fprintf(stderr,
+                "unexpected ground value column batch shape: ptr=%p rows=%d cols=%d kind0=%d\n",
+                (void *)ground_value_batch,
+                ground_value_batch == NULL ? -1 : vev_column_batch_count(ground_value_batch),
+                ground_value_batch == NULL ? -1 : vev_column_batch_column_count(ground_value_batch),
+                ground_value_batch == NULL ? -1 : vev_column_batch_column_kind(ground_value_batch, 0));
+        if (ground_value_batch != NULL) {
+            vev_column_batch_free(ground_value_batch);
+        }
+        vev_prepared_query_free(ground_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const vev_value_t *ground_value_cells = vev_column_batch_column_values_data(ground_value_batch, 0);
+    if (ground_value_cells == NULL ||
+        vev_value_kind(ground_value_cells[0]) != VEV_VALUE_VECTOR ||
+        vev_value_item_count(ground_value_cells[0]) != 2 ||
+        vev_value_int(vev_value_item(ground_value_cells[0], 0)) != 1 ||
+        vev_value_int(vev_value_item(ground_value_cells[0], 1)) != 2) {
+        fprintf(stderr, "unexpected ground value column batch contents\n");
+        vev_column_batch_free(ground_value_batch);
+        vev_prepared_query_free(ground_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("ground value column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(ground_value_batch),
+           vev_column_batch_count(ground_value_batch));
+    vev_column_batch_free(ground_value_batch);
+    vev_prepared_query_free(ground_value_batch_query);
+
+    vev_prepared_query_t function_value_batch_query =
+        vev_prepare_query_edn("[:find ?pair :where [?e :user/name ?name] [?e :user/age ?age] [(vector ?name ?age) ?pair]]");
+    if (function_value_batch_query == NULL || !vev_prepared_query_ok(function_value_batch_query)) {
+        fprintf(stderr, "failed to prepare function value column batch query\n");
+        if (function_value_batch_query != NULL) {
+            vev_prepared_query_free(function_value_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t function_value_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, function_value_batch_query, "[]");
+    if (function_value_batch == NULL ||
+        vev_column_batch_count(function_value_batch) != 2 ||
+        vev_column_batch_column_count(function_value_batch) != 1 ||
+        vev_column_batch_column_kind(function_value_batch, 0) != VEV_COLUMN_KIND_VALUE) {
+        fprintf(stderr,
+                "unexpected function value column batch shape: ptr=%p rows=%d cols=%d kind0=%d\n",
+                (void *)function_value_batch,
+                function_value_batch == NULL ? -1 : vev_column_batch_count(function_value_batch),
+                function_value_batch == NULL ? -1 : vev_column_batch_column_count(function_value_batch),
+                function_value_batch == NULL ? -1 : vev_column_batch_column_kind(function_value_batch, 0));
+        if (function_value_batch != NULL) {
+            vev_column_batch_free(function_value_batch);
+        }
+        vev_prepared_query_free(function_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const vev_value_t *function_value_cells = vev_column_batch_column_values_data(function_value_batch, 0);
+    int saw_ada_pair = 0;
+    int saw_grace_pair = 0;
+    if (function_value_cells != NULL) {
+        for (int i = 0; i < vev_column_batch_count(function_value_batch); i++) {
+            if (vev_value_kind(function_value_cells[i]) == VEV_VALUE_VECTOR &&
+                vev_value_item_count(function_value_cells[i]) == 2) {
+                const vev_value_t name = vev_value_item(function_value_cells[i], 0);
+                const vev_value_t age = vev_value_item(function_value_cells[i], 1);
+                if (vev_value_kind(name) == VEV_VALUE_STRING &&
+                    vev_value_kind(age) == VEV_VALUE_INT &&
+                    value_text_equals(name, "Ada") &&
+                    vev_value_int(age) == 37) {
+                    saw_ada_pair = 1;
+                } else if (vev_value_kind(name) == VEV_VALUE_STRING &&
+                           vev_value_kind(age) == VEV_VALUE_INT &&
+                           value_text_equals(name, "Grace") &&
+                           vev_value_int(age) == 41) {
+                    saw_grace_pair = 1;
+                }
+            }
+        }
+    }
+    if (!saw_ada_pair || !saw_grace_pair) {
+        fprintf(stderr, "unexpected function value column batch contents\n");
+        vev_column_batch_free(function_value_batch);
+        vev_prepared_query_free(function_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("function value column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(function_value_batch),
+           vev_column_batch_count(function_value_batch));
+    vev_column_batch_free(function_value_batch);
+    vev_prepared_query_free(function_value_batch_query);
+
+    vev_prepared_query_t promoted_value_batch_query =
+        vev_prepare_query_edn("[:find ?x :where [?e :user/mixed ?x]]");
+    if (promoted_value_batch_query == NULL || !vev_prepared_query_ok(promoted_value_batch_query)) {
+        fprintf(stderr, "failed to prepare promoted value column batch query\n");
+        if (promoted_value_batch_query != NULL) {
+            vev_prepared_query_free(promoted_value_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t promoted_value_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, promoted_value_batch_query, "[]");
+    if (promoted_value_batch == NULL ||
+        vev_column_batch_count(promoted_value_batch) != 2 ||
+        vev_column_batch_column_count(promoted_value_batch) != 1 ||
+        vev_column_batch_column_kind(promoted_value_batch, 0) != VEV_COLUMN_KIND_VALUE) {
+        fprintf(stderr,
+                "unexpected promoted value column batch shape: ptr=%p rows=%d cols=%d kind0=%d\n",
+                (void *)promoted_value_batch,
+                promoted_value_batch == NULL ? -1 : vev_column_batch_count(promoted_value_batch),
+                promoted_value_batch == NULL ? -1 : vev_column_batch_column_count(promoted_value_batch),
+                promoted_value_batch == NULL ? -1 : vev_column_batch_column_kind(promoted_value_batch, 0));
+        if (promoted_value_batch != NULL) {
+            vev_column_batch_free(promoted_value_batch);
+        }
+        vev_prepared_query_free(promoted_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const vev_value_t *promoted_value_cells = vev_column_batch_column_values_data(promoted_value_batch, 0);
+    int saw_promoted_int = 0;
+    int saw_promoted_vector = 0;
+    if (promoted_value_cells != NULL) {
+        for (int i = 0; i < vev_column_batch_count(promoted_value_batch); i++) {
+            if (vev_value_kind(promoted_value_cells[i]) == VEV_VALUE_INT &&
+                vev_value_int(promoted_value_cells[i]) == 1) {
+                saw_promoted_int = 1;
+            } else if (vev_value_kind(promoted_value_cells[i]) == VEV_VALUE_VECTOR &&
+                       vev_value_item_count(promoted_value_cells[i]) == 2 &&
+                       vev_value_int(vev_value_item(promoted_value_cells[i], 0)) == 2 &&
+                       vev_value_int(vev_value_item(promoted_value_cells[i], 1)) == 3) {
+                saw_promoted_vector = 1;
+            }
+        }
+    }
+    if (!saw_promoted_int || !saw_promoted_vector) {
+        fprintf(stderr, "unexpected promoted value column batch contents\n");
+        vev_column_batch_free(promoted_value_batch);
+        vev_prepared_query_free(promoted_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("promoted value column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(promoted_value_batch),
+           vev_column_batch_count(promoted_value_batch));
+    vev_column_batch_free(promoted_value_batch);
+    vev_prepared_query_free(promoted_value_batch_query);
+
+    vev_prepared_query_t top_n_value_batch_query =
+        vev_prepare_query_edn("[:find (max 1 ?age) (min 1 ?age) :where [?e :user/age ?age]]");
+    if (top_n_value_batch_query == NULL || !vev_prepared_query_ok(top_n_value_batch_query)) {
+        fprintf(stderr, "failed to prepare top-n value column batch query\n");
+        if (top_n_value_batch_query != NULL) {
+            vev_prepared_query_free(top_n_value_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t top_n_value_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, top_n_value_batch_query, "[]");
+    if (top_n_value_batch == NULL ||
+        vev_column_batch_count(top_n_value_batch) != 1 ||
+        vev_column_batch_column_count(top_n_value_batch) != 2 ||
+        vev_column_batch_column_kind(top_n_value_batch, 0) != VEV_COLUMN_KIND_VALUE ||
+        vev_column_batch_column_kind(top_n_value_batch, 1) != VEV_COLUMN_KIND_VALUE) {
+        fprintf(stderr,
+                "unexpected top-n value column batch shape: ptr=%p rows=%d cols=%d kinds=[%d %d]\n",
+                (void *)top_n_value_batch,
+                top_n_value_batch == NULL ? -1 : vev_column_batch_count(top_n_value_batch),
+                top_n_value_batch == NULL ? -1 : vev_column_batch_column_count(top_n_value_batch),
+                top_n_value_batch == NULL ? -1 : vev_column_batch_column_kind(top_n_value_batch, 0),
+                top_n_value_batch == NULL ? -1 : vev_column_batch_column_kind(top_n_value_batch, 1));
+        if (top_n_value_batch != NULL) {
+            vev_column_batch_free(top_n_value_batch);
+        }
+        vev_prepared_query_free(top_n_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const vev_value_t *top_n_max_cells = vev_column_batch_column_values_data(top_n_value_batch, 0);
+    const vev_value_t *top_n_min_cells = vev_column_batch_column_values_data(top_n_value_batch, 1);
+    if (top_n_max_cells == NULL ||
+        top_n_min_cells == NULL ||
+        vev_value_kind(top_n_max_cells[0]) != VEV_VALUE_VECTOR ||
+        vev_value_kind(top_n_min_cells[0]) != VEV_VALUE_VECTOR ||
+        vev_value_item_count(top_n_max_cells[0]) != 1 ||
+        vev_value_item_count(top_n_min_cells[0]) != 1 ||
+        vev_value_int(vev_value_item(top_n_max_cells[0], 0)) != 41 ||
+        vev_value_int(vev_value_item(top_n_min_cells[0], 0)) != 37) {
+        fprintf(stderr, "unexpected top-n value column batch contents\n");
+        vev_column_batch_free(top_n_value_batch);
+        vev_prepared_query_free(top_n_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("top-n value column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(top_n_value_batch),
+           vev_column_batch_count(top_n_value_batch));
+    vev_column_batch_free(top_n_value_batch);
+    vev_prepared_query_free(top_n_value_batch_query);
+
+    vev_prepared_query_t pull_value_batch_query =
+        vev_prepare_query_edn("[:find (pull ?e [:user/name {:user/friend [:user/name]}]) :where [?e :user/name \"Ada\"]]");
+    if (pull_value_batch_query == NULL || !vev_prepared_query_ok(pull_value_batch_query)) {
+        fprintf(stderr, "failed to prepare pull value column batch query\n");
+        if (pull_value_batch_query != NULL) {
+            vev_prepared_query_free(pull_value_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t pull_value_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, pull_value_batch_query, "[]");
+    if (pull_value_batch == NULL ||
+        vev_column_batch_count(pull_value_batch) != 1 ||
+        vev_column_batch_column_count(pull_value_batch) != 1 ||
+        vev_column_batch_column_kind(pull_value_batch, 0) != VEV_COLUMN_KIND_VALUE) {
+        fprintf(stderr,
+                "unexpected pull value column batch shape: ptr=%p rows=%d cols=%d kind0=%d\n",
+                (void *)pull_value_batch,
+                pull_value_batch == NULL ? -1 : vev_column_batch_count(pull_value_batch),
+                pull_value_batch == NULL ? -1 : vev_column_batch_column_count(pull_value_batch),
+                pull_value_batch == NULL ? -1 : vev_column_batch_column_kind(pull_value_batch, 0));
+        if (pull_value_batch != NULL) {
+            vev_column_batch_free(pull_value_batch);
+        }
+        vev_prepared_query_free(pull_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const vev_value_t *pull_value_cells = vev_column_batch_column_values_data(pull_value_batch, 0);
+    vev_value_t pull_value_name = pull_value_cells == NULL ? NULL : map_get(pull_value_cells[0], ":user/name");
+    vev_value_t pull_value_friend = pull_value_cells == NULL ? NULL : map_get(pull_value_cells[0], ":user/friend");
+    vev_value_t pull_value_friend_name = pull_value_friend == NULL ? NULL : map_get(pull_value_friend, ":user/name");
+    if (pull_value_cells == NULL ||
+        vev_value_kind(pull_value_cells[0]) != VEV_VALUE_MAP ||
+        !value_text_equals(pull_value_name, "Ada") ||
+        !value_text_equals(pull_value_friend_name, "Grace")) {
+        const char *edn = pull_value_cells == NULL ? NULL : vev_value_edn(pull_value_cells[0]);
+        fprintf(stderr, "unexpected pull value column batch contents: %s\n", edn == NULL ? "<null>" : edn);
+        if (edn != NULL) {
+            vev_string_free(edn);
+        }
+        vev_column_batch_free(pull_value_batch);
+        vev_prepared_query_free(pull_value_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("pull value column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(pull_value_batch),
+           vev_column_batch_count(pull_value_batch));
+    vev_column_batch_free(pull_value_batch);
+    vev_prepared_query_free(pull_value_batch_query);
+
+    vev_prepared_query_t pull_aggregate_batch_query =
+        vev_prepare_query_edn("[:find ?e (pull ?e [:user/name]) (count ?age) :where [?e :user/name] [?e :user/age ?age]]");
+    if (pull_aggregate_batch_query == NULL || !vev_prepared_query_ok(pull_aggregate_batch_query)) {
+        fprintf(stderr, "failed to prepare pull+aggregate column batch query\n");
+        if (pull_aggregate_batch_query != NULL) {
+            vev_prepared_query_free(pull_aggregate_batch_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t pull_aggregate_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, pull_aggregate_batch_query, "[]");
+    if (pull_aggregate_batch == NULL ||
+        vev_column_batch_count(pull_aggregate_batch) != 2 ||
+        vev_column_batch_column_count(pull_aggregate_batch) != 3 ||
+        vev_column_batch_column_kind(pull_aggregate_batch, 0) != VEV_COLUMN_KIND_ENTITY ||
+        vev_column_batch_column_kind(pull_aggregate_batch, 1) != VEV_COLUMN_KIND_VALUE ||
+        vev_column_batch_column_kind(pull_aggregate_batch, 2) != VEV_COLUMN_KIND_INT) {
+        fprintf(stderr,
+                "unexpected pull+aggregate column batch shape: ptr=%p rows=%d cols=%d kinds=[%d %d %d]\n",
+                (void *)pull_aggregate_batch,
+                pull_aggregate_batch == NULL ? -1 : vev_column_batch_count(pull_aggregate_batch),
+                pull_aggregate_batch == NULL ? -1 : vev_column_batch_column_count(pull_aggregate_batch),
+                pull_aggregate_batch == NULL ? -1 : vev_column_batch_column_kind(pull_aggregate_batch, 0),
+                pull_aggregate_batch == NULL ? -1 : vev_column_batch_column_kind(pull_aggregate_batch, 1),
+                pull_aggregate_batch == NULL ? -1 : vev_column_batch_column_kind(pull_aggregate_batch, 2));
+        if (pull_aggregate_batch != NULL) {
+            vev_column_batch_free(pull_aggregate_batch);
+        }
+        vev_prepared_query_free(pull_aggregate_batch_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const unsigned long long *pull_aggregate_entities = vev_column_batch_column_entities_data(pull_aggregate_batch, 0);
+    const vev_value_t *pull_aggregate_pulls = vev_column_batch_column_values_data(pull_aggregate_batch, 1);
+    const long long *pull_aggregate_counts = vev_column_batch_column_ints_data(pull_aggregate_batch, 2);
+    for (int i = 0; i < vev_column_batch_count(pull_aggregate_batch); i++) {
+        vev_value_t name = pull_aggregate_pulls == NULL ? NULL : map_get(pull_aggregate_pulls[i], ":user/name");
+        if (pull_aggregate_entities == NULL ||
+            pull_aggregate_pulls == NULL ||
+            pull_aggregate_counts == NULL ||
+            pull_aggregate_entities[i] == 0 ||
+            pull_aggregate_counts[i] != 1 ||
+            vev_value_kind(pull_aggregate_pulls[i]) != VEV_VALUE_MAP ||
+            vev_value_kind(name) != VEV_VALUE_STRING) {
+            const char *edn = pull_aggregate_pulls == NULL ? NULL : vev_value_edn(pull_aggregate_pulls[i]);
+            fprintf(stderr, "unexpected pull+aggregate column batch row: %s\n", edn == NULL ? "<null>" : edn);
+            if (edn != NULL) {
+                vev_string_free(edn);
+            }
+            vev_column_batch_free(pull_aggregate_batch);
+            vev_prepared_query_free(pull_aggregate_batch_query);
+            vev_db_release(batch_db);
+            vev_prepared_query_free(query);
+            vev_conn_close(conn);
+            return 1;
+        }
+    }
+    printf("pull+aggregate column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(pull_aggregate_batch),
+           vev_column_batch_count(pull_aggregate_batch));
+    vev_column_batch_free(pull_aggregate_batch);
+    vev_prepared_query_free(pull_aggregate_batch_query);
+
+    vev_prepared_query_t hidden_group_pull_aggregate_query =
+        vev_prepare_query_edn("[:find (pull ?e [:user/name]) (count ?age) :where [?e :user/name] [?e :user/age ?age]]");
+    if (hidden_group_pull_aggregate_query == NULL ||
+        !vev_prepared_query_ok(hidden_group_pull_aggregate_query)) {
+        fprintf(stderr, "failed to prepare hidden-group pull+aggregate column batch query\n");
+        if (hidden_group_pull_aggregate_query != NULL) {
+            vev_prepared_query_free(hidden_group_pull_aggregate_query);
+        }
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t hidden_group_pull_aggregate_batch =
+        vev_query_db_prepared_column_batch_with_inputs(batch_db, hidden_group_pull_aggregate_query, "[]");
+    if (hidden_group_pull_aggregate_batch == NULL ||
+        vev_column_batch_count(hidden_group_pull_aggregate_batch) != 2 ||
+        vev_column_batch_column_count(hidden_group_pull_aggregate_batch) != 2 ||
+        vev_column_batch_column_kind(hidden_group_pull_aggregate_batch, 0) != VEV_COLUMN_KIND_VALUE ||
+        vev_column_batch_column_kind(hidden_group_pull_aggregate_batch, 1) != VEV_COLUMN_KIND_INT) {
+        fprintf(stderr,
+                "unexpected hidden-group pull+aggregate column batch shape: ptr=%p rows=%d cols=%d kinds=[%d %d]\n",
+                (void *)hidden_group_pull_aggregate_batch,
+                hidden_group_pull_aggregate_batch == NULL ? -1 : vev_column_batch_count(hidden_group_pull_aggregate_batch),
+                hidden_group_pull_aggregate_batch == NULL ? -1 : vev_column_batch_column_count(hidden_group_pull_aggregate_batch),
+                hidden_group_pull_aggregate_batch == NULL ? -1 : vev_column_batch_column_kind(hidden_group_pull_aggregate_batch, 0),
+                hidden_group_pull_aggregate_batch == NULL ? -1 : vev_column_batch_column_kind(hidden_group_pull_aggregate_batch, 1));
+        if (hidden_group_pull_aggregate_batch != NULL) {
+            vev_column_batch_free(hidden_group_pull_aggregate_batch);
+        }
+        vev_prepared_query_free(hidden_group_pull_aggregate_query);
+        vev_db_release(batch_db);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const vev_value_t *hidden_group_pull_aggregate_pulls =
+        vev_column_batch_column_values_data(hidden_group_pull_aggregate_batch, 0);
+    const long long *hidden_group_pull_aggregate_counts =
+        vev_column_batch_column_ints_data(hidden_group_pull_aggregate_batch, 1);
+    for (int i = 0; i < vev_column_batch_count(hidden_group_pull_aggregate_batch); i++) {
+        vev_value_t name = hidden_group_pull_aggregate_pulls == NULL ? NULL : map_get(hidden_group_pull_aggregate_pulls[i], ":user/name");
+        if (hidden_group_pull_aggregate_pulls == NULL ||
+            hidden_group_pull_aggregate_counts == NULL ||
+            hidden_group_pull_aggregate_counts[i] != 1 ||
+            vev_value_kind(hidden_group_pull_aggregate_pulls[i]) != VEV_VALUE_MAP ||
+            vev_value_kind(name) != VEV_VALUE_STRING) {
+            const char *edn = hidden_group_pull_aggregate_pulls == NULL ? NULL : vev_value_edn(hidden_group_pull_aggregate_pulls[i]);
+            fprintf(stderr, "unexpected hidden-group pull+aggregate column batch row: %s\n", edn == NULL ? "<null>" : edn);
+            if (edn != NULL) {
+                vev_string_free(edn);
+            }
+            vev_column_batch_free(hidden_group_pull_aggregate_batch);
+            vev_prepared_query_free(hidden_group_pull_aggregate_query);
+            vev_db_release(batch_db);
+            vev_prepared_query_free(query);
+            vev_conn_close(conn);
+            return 1;
+        }
+    }
+    printf("hidden-group pull+aggregate column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(hidden_group_pull_aggregate_batch),
+           vev_column_batch_count(hidden_group_pull_aggregate_batch));
+    vev_column_batch_free(hidden_group_pull_aggregate_batch);
+    vev_prepared_query_free(hidden_group_pull_aggregate_query);
+
     vev_db_release(batch_db);
 
     vev_stmt_t stmt = vev_stmt_create(query);
@@ -1182,6 +2433,65 @@ int main(void) {
         vev_conn_close(conn);
         return 1;
     }
+    vev_stmt_t pull_batch_stmt = vev_stmt_create(pull_query);
+    if (pull_batch_stmt == NULL) {
+        fprintf(stderr, "failed to create resident pull column batch statement\n");
+        vev_result_free(pull_result);
+        vev_prepared_query_free(pull_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_column_batch_t resident_pull_batch = vev_query_stmt_column_batch(conn, pull_batch_stmt);
+    if (resident_pull_batch == NULL ||
+        vev_column_batch_count(resident_pull_batch) != 1 ||
+        vev_column_batch_column_count(resident_pull_batch) != 1 ||
+        vev_column_batch_column_kind(resident_pull_batch, 0) != VEV_COLUMN_KIND_VALUE) {
+        fprintf(stderr,
+                "unexpected resident pull column batch shape: ptr=%p rows=%d cols=%d kind0=%d\n",
+                (void *)resident_pull_batch,
+                resident_pull_batch == NULL ? -1 : vev_column_batch_count(resident_pull_batch),
+                resident_pull_batch == NULL ? -1 : vev_column_batch_column_count(resident_pull_batch),
+                resident_pull_batch == NULL ? -1 : vev_column_batch_column_kind(resident_pull_batch, 0));
+        if (resident_pull_batch != NULL) {
+            vev_column_batch_free(resident_pull_batch);
+        }
+        vev_stmt_free(pull_batch_stmt);
+        vev_result_free(pull_result);
+        vev_prepared_query_free(pull_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    const vev_value_t *resident_pull_cells = vev_column_batch_column_values_data(resident_pull_batch, 0);
+    vev_value_t resident_pull_name = resident_pull_cells == NULL ? NULL : map_get(resident_pull_cells[0], ":user/name");
+    vev_value_t resident_pull_friend = resident_pull_cells == NULL ? NULL : map_get(resident_pull_cells[0], ":user/friend");
+    vev_value_t resident_pull_friend_name = resident_pull_friend == NULL ? NULL : map_get(resident_pull_friend, ":user/name");
+    if (resident_pull_cells == NULL ||
+        vev_value_kind(resident_pull_cells[0]) != VEV_VALUE_MAP ||
+        !value_text_equals(resident_pull_name, "Ada") ||
+        !value_text_equals(resident_pull_friend_name, "Grace")) {
+        const char *edn = resident_pull_cells == NULL ? NULL : vev_value_edn(resident_pull_cells[0]);
+        fprintf(stderr, "unexpected resident pull column batch contents: %s\n", edn == NULL ? "<null>" : edn);
+        if (edn != NULL) {
+            vev_string_free(edn);
+        }
+        vev_column_batch_free(resident_pull_batch);
+        vev_stmt_free(pull_batch_stmt);
+        vev_result_free(pull_result);
+        vev_prepared_query_free(pull_query);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    printf("resident pull column-batch columns=%d rows=%d\n",
+           vev_column_batch_column_count(resident_pull_batch),
+           vev_column_batch_count(resident_pull_batch));
+    vev_column_batch_free(resident_pull_batch);
+    vev_stmt_free(pull_batch_stmt);
     vev_result_free(pull_result);
     vev_prepared_query_free(pull_query);
 
@@ -1269,6 +2579,139 @@ int main(void) {
         return 1;
     }
     vev_value_handle_free(many_pull);
+
+    const char *pull_many_emails[] = {"ada@example.com", "missing@example.com", "grace@example.com"};
+    vev_value_handle_t many_lookup_pull =
+        vev_pull_many_lookup_ref_string_edn(pull_db, "[:user/name]", ":user/email", pull_many_emails, 3);
+    if (many_lookup_pull == NULL) {
+        fprintf(stderr, "failed pull-many lookup-ref API\n");
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_t many_lookup_value = vev_value_handle_value(many_lookup_pull);
+    if (vev_value_kind(many_lookup_value) != VEV_VALUE_VECTOR ||
+        vev_value_item_count(many_lookup_value) != 3 ||
+        !value_text_equals(map_get(vev_value_item(many_lookup_value, 0), ":user/name"), "Ada") ||
+        vev_value_kind(vev_value_item(many_lookup_value, 1)) != VEV_VALUE_NIL ||
+        !value_text_equals(map_get(vev_value_item(many_lookup_value, 2), ":user/name"), "Grace")) {
+        const char *many_lookup_edn = vev_value_handle_edn(many_lookup_pull);
+        fprintf(stderr, "unexpected pull-many lookup-ref output: %s\n", many_lookup_edn);
+        vev_string_free(many_lookup_edn);
+        vev_value_handle_free(many_lookup_pull);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(many_lookup_pull);
+
+    vev_entity_t ada_entity = vev_db_entity(pull_db, 1);
+    if (ada_entity == NULL ||
+        !vev_entity_found(ada_entity) ||
+        vev_entity_id(ada_entity) != 1 ||
+        !vev_entity_contains(ada_entity, ":user/name")) {
+        fprintf(stderr, "unexpected entity handle state\n");
+        if (ada_entity != NULL) vev_entity_free(ada_entity);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_t entity_name = vev_entity_get(ada_entity, ":user/name");
+    if (entity_name == NULL ||
+        !value_text_equals(vev_value_handle_value(entity_name), "Ada")) {
+        fprintf(stderr, "unexpected entity get output\n");
+        if (entity_name != NULL) vev_value_handle_free(entity_name);
+        vev_entity_free(ada_entity);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(entity_name);
+
+    vev_value_handle_t entity_values = vev_entity_values(ada_entity, ":user/name");
+    vev_value_t entity_values_value = entity_values == NULL ? NULL : vev_value_handle_value(entity_values);
+    if (entity_values == NULL ||
+        vev_value_kind(entity_values_value) != VEV_VALUE_VECTOR ||
+        vev_value_item_count(entity_values_value) != 1 ||
+        !value_text_equals(vev_value_item(entity_values_value, 0), "Ada")) {
+        fprintf(stderr, "unexpected entity values output\n");
+        if (entity_values != NULL) vev_value_handle_free(entity_values);
+        vev_entity_free(ada_entity);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(entity_values);
+
+    vev_entity_t friend_entity = vev_entity_ref(ada_entity, ":user/friend");
+    if (friend_entity == NULL ||
+        !vev_entity_found(friend_entity) ||
+        vev_entity_id(friend_entity) != 2) {
+        fprintf(stderr, "unexpected entity ref output\n");
+        if (friend_entity != NULL) vev_entity_free(friend_entity);
+        vev_entity_free(ada_entity);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_entity_free(friend_entity);
+
+    unsigned long long expected_friend_ids[] = {2};
+    vev_u64_array_t friend_refs = vev_entity_refs(ada_entity, ":user/friend");
+    if (!expect_u64_array("entity refs", friend_refs, expected_friend_ids, 1)) {
+        if (friend_refs != NULL) vev_u64_array_free(friend_refs);
+        vev_entity_free(ada_entity);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_u64_array_free(friend_refs);
+
+    vev_entity_t lookup_entity =
+        vev_db_entity_lookup_ref_string(pull_db, ":user/email", "ada@example.com");
+    if (lookup_entity == NULL ||
+        !vev_entity_found(lookup_entity) ||
+        vev_entity_id(lookup_entity) != 1) {
+        fprintf(stderr, "unexpected lookup-ref entity output\n");
+        if (lookup_entity != NULL) vev_entity_free(lookup_entity);
+        vev_entity_free(ada_entity);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_entity_free(lookup_entity);
+
+    vev_value_handle_t touched = vev_entity_touch(ada_entity);
+    vev_value_t touched_value = touched == NULL ? NULL : vev_value_handle_value(touched);
+    if (touched == NULL ||
+        !value_text_equals(map_get(touched_value, ":user/name"), "Ada")) {
+        fprintf(stderr, "unexpected entity touch output\n");
+        if (touched != NULL) vev_value_handle_free(touched);
+        vev_entity_free(ada_entity);
+        vev_db_release(pull_db);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    vev_value_handle_free(touched);
+    vev_entity_free(ada_entity);
     vev_db_release(pull_db);
 
     vev_prepared_pull_pattern_t prepared_pull_pattern =

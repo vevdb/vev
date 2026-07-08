@@ -57,7 +57,7 @@
       (t.is (= read-opened-error ""))
       (t.is snapshot-ok)
       (t.is (= snapshot-error ""))
-      (t.is (= snapshot.kind .SQLite-Snapshot))
+      (t.is (vev.source-backed-store-db? (addr snapshot)))
       (t.is (= next-snapshot.kind .SQLite-Tx-Ops-Overlay))
       (t.is friend-result.result.ok friend-result.result.error)
       (t.is (= (count friend-result.result.rows) 1))
@@ -87,9 +87,109 @@
       (t.is (= read-opened-error ""))
       (t.is snapshot-ok)
       (t.is (= snapshot-error ""))
-      (t.is (= snapshot.kind .SQLite-Snapshot))
+      (t.is (vev.source-backed-store-db? (addr snapshot)))
       (t.is (not report.ok))
       (t.is (= report.error "with-store-db-text is resident-only; use with-store-db-report-text for source-backed Store-DB values"))
       (vev.delete-store-db-temp-tx-report report)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store read-store))))
+
+(t.deftest sqlite-source-store-db-pull-many-lookup-refs-text
+  (defer (free_all context.allocator))
+  (remove-storage-with-sqlite-files "tmp.vev.store-db-pull-many-lookup-refs-text.sqlite")
+  (let [path "tmp.vev.store-db-pull-many-lookup-refs-text.sqlite"]
+    (defer (remove-storage-with-sqlite-files path))
+    (let [[seed-ok seed-error] (seed-cas-lookup-ref-store path)]
+      (t.is seed-ok seed-error))
+    (let [[read-store read-opened-ok read-opened-error] (vev.open-store-read-only path)
+          [snapshot snapshot-ok snapshot-error] (vev.store-db (addr read-store))
+          attrs ([]string [":user/email" ":user/email" ":user/email"])
+          lookup-values ([]vev.Value [(vev.value-string "ada@example.com")
+                                      (vev.value-string "missing@example.com")
+                                      (vev.value-string "grace@example.com")])
+          [pulled pulled-ok pulled-error] (vev.pull-many-store-db-lookup-refs-value-text (addr snapshot) "[:user/email]" attrs lookup-values)]
+      (t.is read-opened-ok)
+      (t.is (= read-opened-error ""))
+      (t.is snapshot-ok)
+      (t.is (= snapshot-error ""))
+      (t.is (vev.source-backed-store-db? (addr snapshot)))
+      (t.is pulled-ok pulled-error)
+      (t.is (= pulled.kind .Vector))
+      (t.is (= (count pulled.items) 3))
+      (t.is (= pulled.items[0].kind .Map))
+      (t.is (= pulled.items[1].kind .Nil))
+      (t.is (= pulled.items[2].kind .Map))
+      (let [[first-email first-email-ok] (vev.map-get-value pulled.items[0] (vev.value-keyword ":user/email"))
+            [last-email last-email-ok] (vev.map-get-value pulled.items[2] (vev.value-keyword ":user/email"))]
+        (t.is first-email-ok)
+        (t.is (= first-email.kind .String))
+        (t.is (= first-email.text "ada@example.com"))
+        (t.is last-email-ok)
+        (t.is (= last-email.kind .String))
+        (t.is (= last-email.text "grace@example.com")))
+      (vev.delete-owned-value pulled)
+      (for [value lookup-values]
+        (vev.delete-owned-value value))
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store read-store))))
+
+(t.deftest sqlite-source-store-db-collection-lookup-ref-input-stays-source-backed
+  (defer (free_all context.allocator))
+  (remove-storage-with-sqlite-files "tmp.vev.store-db-collection-lookup-ref-input.sqlite")
+  (let [path "tmp.vev.store-db-collection-lookup-ref-input.sqlite"]
+    (defer (remove-storage-with-sqlite-files path))
+    (let [[seed-ok seed-error] (seed-cas-lookup-ref-store path)]
+      (t.is seed-ok seed-error))
+    (let [[read-store read-opened-ok read-opened-error] (vev.open-store-read-only path)
+          [snapshot snapshot-ok snapshot-error] (vev.store-db (addr read-store))
+          [source source-ok source-error] (vev.store-db-read-source (addr snapshot))
+          input (vev.query-input-collection-lookup-refs
+                  ([]string [":user/email" ":user/email" ":user/email"])
+                  ([]vev.Value [(vev.value-string "ada@example.com")
+                                (vev.value-string "missing@example.com")
+                                (vev.value-string "grace@example.com")]))
+          profiled (vev.q-text-db-read-source-profiled-with-inputs
+                     source
+                     "[:find ?email :in $ [?e ...] :where [?e :user/email ?email]]"
+                     ([]vev.Query-Input [input]))]
+      (t.is read-opened-ok)
+      (t.is (= read-opened-error ""))
+      (t.is snapshot-ok)
+      (t.is (= snapshot-error ""))
+      (t.is source-ok source-error)
+      (t.is (vev.source-backed-store-db? (addr snapshot)))
+      (t.is profiled.result.ok profiled.result.error)
+      (t.is (= (count profiled.result.rows) 2))
+      (t.is (= profiled.stats.input-bindings 2))
+      (t.is (= profiled.stats.binding-materializations 0))
+      (t.is (not (vev.store-resident-db-available? (addr read-store))))
+      (vev.delete-profiled-result-set-owned-values profiled)
+      (vev.close-store-db! (addr snapshot))
+      (vev.close-store read-store))))
+
+(t.deftest sqlite-store-db-text-collection-lookup-ref-input-stays-source-backed
+  (defer (free_all context.allocator))
+  (remove-storage-with-sqlite-files "tmp.vev.store-db-text-collection-lookup-ref-input.sqlite")
+  (let [path "tmp.vev.store-db-text-collection-lookup-ref-input.sqlite"]
+    (defer (remove-storage-with-sqlite-files path))
+    (let [[seed-ok seed-error] (seed-cas-lookup-ref-store path)]
+      (t.is seed-ok seed-error))
+    (let [[read-store read-opened-ok read-opened-error] (vev.open-store-read-only path)
+          [snapshot snapshot-ok snapshot-error] (vev.store-db (addr read-store))
+          profiled (vev.q-profiled-store-db-text-with-input-text
+                     (addr snapshot)
+                     "[:find ?email :in $ [?e ...] :where [?e :user/email ?email]]"
+                     "[[[:user/email \"ada@example.com\"] [:user/email \"missing@example.com\"] [:user/email \"grace@example.com\"]]]")]
+      (t.is read-opened-ok)
+      (t.is (= read-opened-error ""))
+      (t.is snapshot-ok)
+      (t.is (= snapshot-error ""))
+      (t.is (vev.source-backed-store-db? (addr snapshot)))
+      (t.is profiled.result.ok profiled.result.error)
+      (t.is (= (count profiled.result.rows) 2))
+      (t.is (= profiled.stats.input-bindings 2))
+      (t.is (= profiled.stats.binding-materializations 0))
+      (t.is (not (vev.store-resident-db-available? (addr read-store))))
+      (vev.delete-profiled-result-set-owned-values profiled)
       (vev.close-store-db! (addr snapshot))
       (vev.close-store read-store))))

@@ -34,10 +34,18 @@ VEV_COLUMN_BATCH_ENTITY = 1
 VEV_COLUMN_BATCH_STRING = 2
 VEV_COLUMN_BATCH_ENTITY_INT = 3
 VEV_COLUMN_BATCH_ENTITY_STRING_INT = 4
+VEV_COLUMN_BATCH_INT = 5
+VEV_COLUMN_BATCH_ENTITY_STRING = 6
+VEV_COLUMN_BATCH_STRING_INT = 7
+VEV_COLUMN_BATCH_STRING_STRING = 8
 
 VEV_COLUMN_ENTITY = 1
 VEV_COLUMN_STRING = 2
 VEV_COLUMN_INT = 3
+VEV_COLUMN_MIXED = 4
+VEV_COLUMN_BOOL = 5
+VEV_COLUMN_FLOAT = 6
+VEV_COLUMN_VALUE = 7
 
 RESULT_VISIT_FN = ctypes.CFUNCTYPE(
     ctypes.c_bool,
@@ -220,6 +228,24 @@ class Library:
             ctypes.c_char_p,
         ]
         lib.vev_connection_transact_edn_report.restype = ctypes.c_void_p
+        lib.vev_connection_tx_commit_many_report.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_int,
+        ]
+        lib.vev_connection_tx_commit_many_report.restype = ctypes.c_void_p
+        lib.vev_connection_tx_commit_logical_many_reports.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_int,
+        ]
+        lib.vev_connection_tx_commit_logical_many_reports.restype = ctypes.c_void_p
+        lib.vev_connection_transact_many_edn_reports.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_connection_transact_many_edn_reports.restype = ctypes.c_void_p
         lib.vev_sqlite_conn_open.argtypes = [ctypes.c_char_p]
         lib.vev_sqlite_conn_open.restype = ctypes.c_void_p
         lib.vev_sqlite_conn_ok.argtypes = [ctypes.c_void_p]
@@ -234,6 +260,24 @@ class Library:
             ctypes.c_char_p,
         ]
         lib.vev_sqlite_conn_transact_edn_report.restype = ctypes.c_void_p
+        lib.vev_sqlite_conn_tx_commit_many_report.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_int,
+        ]
+        lib.vev_sqlite_conn_tx_commit_many_report.restype = ctypes.c_void_p
+        lib.vev_sqlite_conn_tx_commit_logical_many_reports.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_int,
+        ]
+        lib.vev_sqlite_conn_tx_commit_logical_many_reports.restype = ctypes.c_void_p
+        lib.vev_sqlite_conn_transact_many_edn_reports.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_sqlite_conn_transact_many_edn_reports.restype = ctypes.c_void_p
         lib.vev_db_release.argtypes = [ctypes.c_void_p]
         lib.vev_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_with_edn.restype = ctypes.c_void_p
@@ -246,6 +290,33 @@ class Library:
         lib.vev_u64_array_count.restype = ctypes.c_int
         lib.vev_u64_array_value.argtypes = [ctypes.c_void_p, ctypes.c_int]
         lib.vev_u64_array_value.restype = ctypes.c_ulonglong
+        lib.vev_db_entity.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+        lib.vev_db_entity.restype = ctypes.c_void_p
+        lib.vev_db_entity_lookup_ref_string.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_db_entity_lookup_ref_string.restype = ctypes.c_void_p
+        lib.vev_db_entity_ident.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_db_entity_ident.restype = ctypes.c_void_p
+        lib.vev_entity_free.argtypes = [ctypes.c_void_p]
+        lib.vev_entity_found.argtypes = [ctypes.c_void_p]
+        lib.vev_entity_found.restype = ctypes.c_bool
+        lib.vev_entity_id.argtypes = [ctypes.c_void_p]
+        lib.vev_entity_id.restype = ctypes.c_ulonglong
+        lib.vev_entity_contains.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_entity_contains.restype = ctypes.c_bool
+        lib.vev_entity_get.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_entity_get.restype = ctypes.c_void_p
+        lib.vev_entity_values.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_entity_values.restype = ctypes.c_void_p
+        lib.vev_entity_ref.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_entity_ref.restype = ctypes.c_void_p
+        lib.vev_entity_refs.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.vev_entity_refs.restype = ctypes.c_void_p
+        lib.vev_entity_touch.argtypes = [ctypes.c_void_p]
+        lib.vev_entity_touch.restype = ctypes.c_void_p
 
         lib.vev_string_free.argtypes = [ctypes.c_void_p]
 
@@ -262,6 +333,56 @@ class Library:
         lib.vev_tx_report_db_before.restype = ctypes.c_void_p
         lib.vev_tx_report_db_after.argtypes = [ctypes.c_void_p]
         lib.vev_tx_report_db_after.restype = ctypes.c_void_p
+        lib.vev_tx_report_array_free.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_array_count.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_report_array_count.restype = ctypes.c_int
+        lib.vev_tx_report_array_get.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.vev_tx_report_array_get.restype = ctypes.c_void_p
+        lib.vev_tx_create.argtypes = [ctypes.c_int]
+        lib.vev_tx_create.restype = ctypes.c_void_p
+        lib.vev_tx_free.argtypes = [ctypes.c_void_p]
+        lib.vev_tx_add_string.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulonglong,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_tx_add_string.restype = ctypes.c_bool
+        lib.vev_tx_add_keyword.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulonglong,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_tx_add_keyword.restype = ctypes.c_bool
+        lib.vev_tx_add_symbol.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulonglong,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        lib.vev_tx_add_symbol.restype = ctypes.c_bool
+        lib.vev_tx_add_entity.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulonglong,
+            ctypes.c_char_p,
+            ctypes.c_ulonglong,
+        ]
+        lib.vev_tx_add_entity.restype = ctypes.c_bool
+        lib.vev_tx_add_int.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulonglong,
+            ctypes.c_char_p,
+            ctypes.c_longlong,
+        ]
+        lib.vev_tx_add_int.restype = ctypes.c_bool
+        lib.vev_tx_add_bool.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulonglong,
+            ctypes.c_char_p,
+            ctypes.c_bool,
+        ]
+        lib.vev_tx_add_bool.restype = ctypes.c_bool
         lib.vev_query_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_query_edn.restype = ctypes.c_void_p
         lib.vev_query_edn_with_inputs.argtypes = [
@@ -516,6 +637,10 @@ class Library:
         lib.vev_column_batch_kind.restype = ctypes.c_int
         lib.vev_column_batch_count.argtypes = [ctypes.c_void_p]
         lib.vev_column_batch_count.restype = ctypes.c_int
+        lib.vev_column_batch_column_count.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_column_count.restype = ctypes.c_int
+        lib.vev_column_batch_column_kind.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.vev_column_batch_column_kind.restype = ctypes.c_int
         lib.vev_column_batch_entities_data.argtypes = [ctypes.c_void_p]
         lib.vev_column_batch_entities_data.restype = ctypes.c_void_p
         lib.vev_column_batch_ints_data.argtypes = [ctypes.c_void_p]
@@ -524,6 +649,50 @@ class Library:
         lib.vev_column_batch_string_data_array.restype = ctypes.c_void_p
         lib.vev_column_batch_string_lengths_data.argtypes = [ctypes.c_void_p]
         lib.vev_column_batch_string_lengths_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_second_string_data_array.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_second_string_data_array.restype = ctypes.c_void_p
+        lib.vev_column_batch_second_string_lengths_data.argtypes = [ctypes.c_void_p]
+        lib.vev_column_batch_second_string_lengths_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_column_entities_data.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.vev_column_batch_column_entities_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_column_ints_data.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.vev_column_batch_column_ints_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_column_floats_data.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.vev_column_batch_column_floats_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_column_bools_data.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.vev_column_batch_column_bools_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_column_value_kinds_data.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.vev_column_batch_column_value_kinds_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_column_values_data.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.vev_column_batch_column_values_data.restype = ctypes.c_void_p
+        lib.vev_column_batch_column_string_data_array.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.vev_column_batch_column_string_data_array.restype = ctypes.c_void_p
+        lib.vev_column_batch_column_string_lengths_data.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.vev_column_batch_column_string_lengths_data.restype = ctypes.c_void_p
         lib.vev_column_batch_string_dictionary_count.argtypes = [ctypes.c_void_p]
         lib.vev_column_batch_string_dictionary_count.restype = ctypes.c_int
         lib.vev_column_batch_string_dictionary_data_array.argtypes = [ctypes.c_void_p]
@@ -574,6 +743,22 @@ class Library:
             ctypes.c_int,
         ]
         lib.vev_pull_many_prepared.restype = ctypes.c_void_p
+        lib.vev_pull_many_lookup_ref_string_edn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_pull_many_lookup_ref_string_edn.restype = ctypes.c_void_p
+        lib.vev_pull_many_lookup_ref_string_prepared.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        lib.vev_pull_many_lookup_ref_string_prepared.restype = ctypes.c_void_p
         lib.vev_value_handle_free.argtypes = [ctypes.c_void_p]
         lib.vev_value_handle_value.argtypes = [ctypes.c_void_p]
         lib.vev_value_handle_value.restype = ctypes.c_void_p
@@ -683,6 +868,24 @@ class Library:
         array = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_longlong))
         return [int(array[index]) for index in range(count)]
 
+    def _int32_column(self, pointer: int, count: int) -> list[int]:
+        if not pointer:
+            return []
+        array = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_int))
+        return [int(array[index]) for index in range(count)]
+
+    def _float_column(self, pointer: int, count: int) -> list[float]:
+        if not pointer:
+            return []
+        array = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_double))
+        return [float(array[index]) for index in range(count)]
+
+    def _bool_column(self, pointer: int, count: int) -> list[bool]:
+        if not pointer:
+            return []
+        array = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_bool))
+        return [bool(array[index]) for index in range(count)]
+
     def _string_column(self, batch: int, count: int) -> list[str]:
         dictionary_count = self.lib.vev_column_batch_string_dictionary_count(batch)
         dictionary_data = self.lib.vev_column_batch_string_dictionary_data_array(batch)
@@ -709,46 +912,152 @@ class Library:
             for index in range(count)
         ]
 
+    def _second_string_column(self, batch: int, count: int) -> list[str]:
+        string_data = self.lib.vev_column_batch_second_string_data_array(batch)
+        string_lengths = self.lib.vev_column_batch_second_string_lengths_data(batch)
+        if not string_data or not string_lengths:
+            return []
+        data_array = ctypes.cast(string_data, ctypes.POINTER(ctypes.c_void_p))
+        length_array = ctypes.cast(string_lengths, ctypes.POINTER(ctypes.c_int))
+        return [
+            ctypes.string_at(data_array[index], length_array[index]).decode("utf-8")
+            for index in range(count)
+        ]
+
+    def _string_column_at(self, batch: int, column: int, count: int) -> list[str]:
+        string_data = self.lib.vev_column_batch_column_string_data_array(batch, column)
+        string_lengths = self.lib.vev_column_batch_column_string_lengths_data(
+            batch, column
+        )
+        if not string_data or not string_lengths:
+            return []
+        data_array = ctypes.cast(string_data, ctypes.POINTER(ctypes.c_void_p))
+        length_array = ctypes.cast(string_lengths, ctypes.POINTER(ctypes.c_int))
+        return [
+            ctypes.string_at(data_array[index], length_array[index]).decode("utf-8")
+            for index in range(count)
+        ]
+
+    def _mixed_column_at(self, batch: int, column: int, count: int) -> list[object]:
+        value_kinds = self._int32_column(
+            self.lib.vev_column_batch_column_value_kinds_data(batch, column), count
+        )
+        if len(value_kinds) != count:
+            return []
+        entities = self._long_column(
+            self.lib.vev_column_batch_column_entities_data(batch, column), count
+        )
+        ints = self._int_column(
+            self.lib.vev_column_batch_column_ints_data(batch, column), count
+        )
+        floats = self._float_column(
+            self.lib.vev_column_batch_column_floats_data(batch, column), count
+        )
+        bools = self._bool_column(
+            self.lib.vev_column_batch_column_bools_data(batch, column), count
+        )
+        strings = self._string_column_at(batch, column, count)
+        out: list[object] = []
+        for index, kind in enumerate(value_kinds):
+            if kind == VEV_VALUE_NIL:
+                out.append(None)
+            elif kind == VEV_VALUE_ENTITY:
+                out.append(Entity(entities[index]))
+            elif kind == VEV_VALUE_STRING:
+                out.append(strings[index])
+            elif kind == VEV_VALUE_INT:
+                out.append(ints[index])
+            elif kind == VEV_VALUE_FLOAT:
+                out.append(floats[index])
+            elif kind == VEV_VALUE_BOOL:
+                out.append(bools[index])
+            elif kind == VEV_VALUE_KEYWORD:
+                out.append(Keyword(strings[index]))
+            elif kind == VEV_VALUE_SYMBOL:
+                out.append(Symbol(strings[index]))
+            elif kind == VEV_VALUE_UUID:
+                out.append(uuid.UUID(strings[index]))
+            else:
+                out.append(strings[index])
+        return out
+
+    def _value_column_at(self, batch: int, column: int, count: int) -> list[object]:
+        values = self.lib.vev_column_batch_column_values_data(batch, column)
+        if not values:
+            return []
+        value_array = ctypes.cast(values, ctypes.POINTER(ctypes.c_void_p))
+        return [self.value_to_python(value_array[index]) for index in range(count)]
+
     def _column_result_from_handle(self, handle: int) -> "ColumnResult | None":
         if not handle:
             return None
         try:
-            kind = self.lib.vev_column_batch_kind(handle)
             count = self.lib.vev_column_batch_count(handle)
-            entities = self.lib.vev_column_batch_entities_data(handle)
-            ints = self.lib.vev_column_batch_ints_data(handle)
-            if kind == VEV_COLUMN_BATCH_ENTITY:
-                return ColumnResult(
-                    count,
-                    (VEV_COLUMN_ENTITY,),
-                    (self._long_column(entities, count),),
-                )
-            if kind == VEV_COLUMN_BATCH_STRING:
-                return ColumnResult(
-                    count,
-                    (VEV_COLUMN_STRING,),
-                    (self._string_column(handle, count),),
-                )
-            if kind == VEV_COLUMN_BATCH_ENTITY_INT:
-                return ColumnResult(
-                    count,
-                    (VEV_COLUMN_ENTITY, VEV_COLUMN_INT),
-                    (
-                        self._long_column(entities, count),
-                        self._int_column(ints, count),
-                    ),
-                )
-            if kind == VEV_COLUMN_BATCH_ENTITY_STRING_INT:
-                return ColumnResult(
-                    count,
-                    (VEV_COLUMN_ENTITY, VEV_COLUMN_STRING, VEV_COLUMN_INT),
-                    (
-                        self._long_column(entities, count),
-                        self._string_column(handle, count),
-                        self._int_column(ints, count),
-                    ),
-                )
-            return None
+            column_count = self.lib.vev_column_batch_column_count(handle)
+            if column_count <= 0:
+                return None
+            kinds: list[int] = []
+            columns: list[list[object]] = []
+            for column in range(column_count):
+                kind = self.lib.vev_column_batch_column_kind(handle, column)
+                if kind == VEV_COLUMN_ENTITY:
+                    kinds.append(kind)
+                    columns.append(
+                        self._long_column(
+                            self.lib.vev_column_batch_column_entities_data(
+                                handle, column
+                            ),
+                            count,
+                        )
+                    )
+                elif kind == VEV_COLUMN_STRING:
+                    kinds.append(kind)
+                    columns.append(self._string_column_at(handle, column, count))
+                elif kind == VEV_COLUMN_INT:
+                    kinds.append(kind)
+                    columns.append(
+                        self._int_column(
+                            self.lib.vev_column_batch_column_ints_data(
+                                handle, column
+                            ),
+                            count,
+                        )
+                    )
+                elif kind == VEV_COLUMN_BOOL:
+                    kinds.append(kind)
+                    columns.append(
+                        self._bool_column(
+                            self.lib.vev_column_batch_column_bools_data(
+                                handle, column
+                            ),
+                            count,
+                        )
+                    )
+                elif kind == VEV_COLUMN_FLOAT:
+                    kinds.append(kind)
+                    columns.append(
+                        self._float_column(
+                            self.lib.vev_column_batch_column_floats_data(
+                                handle, column
+                            ),
+                            count,
+                        )
+                    )
+                elif kind == VEV_COLUMN_MIXED:
+                    kinds.append(kind)
+                    mixed = self._mixed_column_at(handle, column, count)
+                    if len(mixed) != count:
+                        return None
+                    columns.append(mixed)
+                elif kind == VEV_COLUMN_VALUE:
+                    kinds.append(kind)
+                    values = self._value_column_at(handle, column, count)
+                    if len(values) != count:
+                        return None
+                    columns.append(values)
+                else:
+                    return None
+            return ColumnResult(count, tuple(kinds), tuple(columns))
         finally:
             self.lib.vev_column_batch_free(handle)
 
@@ -779,12 +1088,34 @@ def open_sqlite(path: str | pathlib.Path) -> "SQLiteConnection":
     return SQLiteConnection(default_library(), path)
 
 
+def q(
+    query_edn: str,
+    source: "Connection | DurableConnection | DB",
+    inputs_edn: str = "[]",
+) -> list[list[Any]]:
+    """Run a one-shot Datalog query.
+
+    Prefer passing an immutable DB snapshot. Passing a connection is accepted as
+    a convenience and takes a short-lived DB snapshot for the call.
+    """
+    if isinstance(source, DB):
+        return source.q(query_edn, inputs_edn)
+    if isinstance(source, (Connection, DurableConnection)):
+        with source.db() as db:
+            return db.q(query_edn, inputs_edn)
+    raise VevError("q expects a DB, Connection, or DurableConnection")
+
+
 def parse_clause_edn(clause_edn: str) -> str:
     return default_library().parse_clause_edn(clause_edn)
 
 
 def prepare_pull_pattern(pattern_edn: str) -> "PreparedPullPattern":
     return default_library().prepare_pull_pattern(pattern_edn)
+
+
+def tx_builder(capacity: int = 0) -> "TxBuilder":
+    return TxBuilder(default_library(), capacity)
 
 
 class Connection:
@@ -849,6 +1180,11 @@ class Connection:
 
     @classmethod
     def from_db(cls, db: "DB") -> "Connection":
+        """Create a mutable connection from a resident/in-memory DB value.
+
+        Durable DB handles are immutable values; query/pull/with them directly
+        instead of converting them back into connections.
+        """
         db._require_open()
         handle = db._library.lib.vev_conn_from_db(db._handle)
         if not handle:
@@ -915,6 +1251,10 @@ class DurableConnection:
     def __del__(self) -> None:
         self.close()
 
+    def transact(self, tx_edn: str) -> str:
+        with self.transact_report(tx_edn) as report:
+            return report.edn()
+
     def transact_report(self, tx_edn: str) -> "TxReport":
         self._require_open()
         handle = self._library.lib.vev_connection_transact_edn_report(
@@ -923,6 +1263,42 @@ class DurableConnection:
         if not handle:
             raise VevError("failed to transact")
         return TxReport(self._library, handle)
+
+    def transact_bulk(self, txs: list["TxBuilder"] | tuple["TxBuilder", ...]) -> "TxReport":
+        self._require_open()
+        handles = _tx_builder_handle_array(txs)
+        handle = self._library.lib.vev_connection_tx_commit_many_report(
+            self._handle, handles, len(txs)
+        )
+        if not handle:
+            raise VevError("failed to transact bulk tx builders")
+        return TxReport(self._library, handle)
+
+    def transact_logical_bulk(
+        self, txs: list["TxBuilder"] | tuple["TxBuilder", ...]
+    ) -> "TxReportArray":
+        self._require_open()
+        handles = _tx_builder_handle_array(
+            txs, name="transact_logical_bulk", allow_empty=True
+        )
+        handle = self._library.lib.vev_connection_tx_commit_logical_many_reports(
+            self._handle, handles, len(txs)
+        )
+        if not handle:
+            raise VevError("failed to logical-group transact tx builders")
+        return TxReportArray(self._library, handle)
+
+    def transact_logical(
+        self, txs: list[str] | tuple[str, ...]
+    ) -> "TxReportArray":
+        self._require_open()
+        texts = _edn_text_array(txs, name="transact_logical")
+        handle = self._library.lib.vev_connection_transact_many_edn_reports(
+            self._handle, texts, len(txs)
+        )
+        if not handle:
+            raise VevError("failed to logical-group transact EDN tx data")
+        return TxReportArray(self._library, handle)
 
     def db(self) -> "DB":
         self._require_open()
@@ -1006,6 +1382,10 @@ class SQLiteConnection:
     def __del__(self) -> None:
         self.close()
 
+    def transact(self, tx_edn: str) -> str:
+        with self.transact_report(tx_edn) as report:
+            return report.edn()
+
     def transact_report(self, tx_edn: str) -> "TxReport":
         self._require_open()
         handle = self._library.lib.vev_sqlite_conn_transact_edn_report(
@@ -1014,6 +1394,42 @@ class SQLiteConnection:
         if not handle:
             raise VevError("failed to transact")
         return TxReport(self._library, handle)
+
+    def transact_bulk(self, txs: list["TxBuilder"] | tuple["TxBuilder", ...]) -> "TxReport":
+        self._require_open()
+        handles = _tx_builder_handle_array(txs)
+        handle = self._library.lib.vev_sqlite_conn_tx_commit_many_report(
+            self._handle, handles, len(txs)
+        )
+        if not handle:
+            raise VevError("failed to transact bulk tx builders")
+        return TxReport(self._library, handle)
+
+    def transact_logical_bulk(
+        self, txs: list["TxBuilder"] | tuple["TxBuilder", ...]
+    ) -> "TxReportArray":
+        self._require_open()
+        handles = _tx_builder_handle_array(
+            txs, name="transact_logical_bulk", allow_empty=True
+        )
+        handle = self._library.lib.vev_sqlite_conn_tx_commit_logical_many_reports(
+            self._handle, handles, len(txs)
+        )
+        if not handle:
+            raise VevError("failed to logical-group transact tx builders")
+        return TxReportArray(self._library, handle)
+
+    def transact_logical(
+        self, txs: list[str] | tuple[str, ...]
+    ) -> "TxReportArray":
+        self._require_open()
+        texts = _edn_text_array(txs, name="transact_logical")
+        handle = self._library.lib.vev_sqlite_conn_transact_many_edn_reports(
+            self._handle, texts, len(txs)
+        )
+        if not handle:
+            raise VevError("failed to logical-group transact EDN tx data")
+        return TxReportArray(self._library, handle)
 
     def db(self) -> "DB":
         self._require_open()
@@ -1057,6 +1473,13 @@ class DB:
             self._handle, prepared._handle, _bytes(inputs_edn)
         )
         return Result(self._library, handle)
+
+    def q(self, query_edn: str, inputs_edn: str = "[]") -> list[list[Any]]:
+        """Run a one-shot Datalog query against this immutable DB value."""
+        self._require_open()
+        with PreparedQuery(self._library, query_edn) as prepared:
+            with self.query(prepared, inputs_edn) as result:
+                return result.rows()
 
     def query_with_rules(
         self, prepared: "PreparedQuery", rules_edn: str, inputs_edn: str = "[]"
@@ -1113,6 +1536,30 @@ class DB:
             raise VevError("failed to create DB snapshot")
         return DB(self._library, handle)
 
+    def entity(self, entity: int | Entity) -> "EntityView":
+        self._require_open()
+        entity_id = entity.id if isinstance(entity, Entity) else int(entity)
+        handle = self._library.lib.vev_db_entity(self._handle, entity_id)
+        if not handle:
+            raise VevError("failed to create entity view")
+        return EntityView(self._library, handle)
+
+    def entity_lookup_ref(self, attr: str, value: str) -> "EntityView":
+        self._require_open()
+        handle = self._library.lib.vev_db_entity_lookup_ref_string(
+            self._handle, _bytes(attr), _bytes(value)
+        )
+        if not handle:
+            raise VevError("failed to create lookup-ref entity view")
+        return EntityView(self._library, handle)
+
+    def entity_ident(self, ident: str) -> "EntityView":
+        self._require_open()
+        handle = self._library.lib.vev_db_entity_ident(self._handle, _bytes(ident))
+        if not handle:
+            raise VevError("failed to create ident entity view")
+        return EntityView(self._library, handle)
+
     def pull(self, pattern_edn: str | "PreparedPullPattern", entity: int | Entity) -> Any:
         self._require_open()
         entity_id = entity.id if isinstance(entity, Entity) else int(entity)
@@ -1160,9 +1607,132 @@ class DB:
             raise VevError(f"expected pull_many vector, got {result!r}")
         return result
 
+    def pull_many_lookup_ref(
+        self, pattern_edn: str | "PreparedPullPattern", refs: list[LookupRef]
+    ) -> list[Any]:
+        self._require_open()
+        if not refs:
+            return []
+        attr = refs[0].attr
+        values: list[str] = []
+        for ref in refs:
+            if ref.attr != attr:
+                raise TypeError("pull_many_lookup_ref requires one lookup-ref attr")
+            if not isinstance(ref.value, str):
+                raise TypeError("pull_many_lookup_ref currently supports string lookup values")
+            values.append(ref.value)
+        encoded_values = [_bytes(value) for value in values]
+        array_type = ctypes.c_char_p * len(encoded_values)
+        array = array_type(*encoded_values)
+        if isinstance(pattern_edn, PreparedPullPattern):
+            pattern_edn._require_open()
+            handle = self._library.lib.vev_pull_many_lookup_ref_string_prepared(
+                self._handle, pattern_edn._handle, _bytes(attr), array, len(encoded_values)
+            )
+        else:
+            handle = self._library.lib.vev_pull_many_lookup_ref_string_edn(
+                self._handle, _bytes(pattern_edn), _bytes(attr), array, len(encoded_values)
+            )
+        with ValueHandle(self._library, handle) as value:
+            result = value.value()
+        if not isinstance(result, list):
+            raise VevError(f"expected pull_many_lookup_ref vector, got {result!r}")
+        return result
+
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("DB snapshot is closed")
+
+
+class EntityView:
+    def __init__(self, library: Library, handle: int):
+        self._library = library
+        self._handle = handle
+        if not self._handle:
+            raise VevError("entity view is null")
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_entity_free(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "EntityView":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __contains__(self, attr: str) -> bool:
+        return self.contains(attr)
+
+    def __getitem__(self, attr: str) -> Any:
+        value = self.get(attr)
+        if value is None:
+            raise KeyError(attr)
+        return value
+
+    def found(self) -> bool:
+        self._require_open()
+        return bool(self._library.lib.vev_entity_found(self._handle))
+
+    @property
+    def id(self) -> int:
+        self._require_open()
+        return int(self._library.lib.vev_entity_id(self._handle))
+
+    def contains(self, attr: str) -> bool:
+        self._require_open()
+        return bool(self._library.lib.vev_entity_contains(self._handle, _bytes(attr)))
+
+    def get(self, attr: str, default: Any = None) -> Any:
+        self._require_open()
+        handle = self._library.lib.vev_entity_get(self._handle, _bytes(attr))
+        with ValueHandle(self._library, handle) as value:
+            result = value.value()
+        return default if result is None else result
+
+    def values(self, attr: str) -> list[Any]:
+        self._require_open()
+        handle = self._library.lib.vev_entity_values(self._handle, _bytes(attr))
+        with ValueHandle(self._library, handle) as value:
+            result = value.value()
+        if not isinstance(result, list):
+            raise VevError(f"expected entity values vector, got {result!r}")
+        return result
+
+    def ref(self, attr: str) -> "EntityView":
+        self._require_open()
+        handle = self._library.lib.vev_entity_ref(self._handle, _bytes(attr))
+        if not handle:
+            raise VevError("failed to create referenced entity view")
+        return EntityView(self._library, handle)
+
+    def refs(self, attr: str) -> list[Entity]:
+        self._require_open()
+        handle = self._library.lib.vev_entity_refs(self._handle, _bytes(attr))
+        if not handle:
+            return []
+        try:
+            count = int(self._library.lib.vev_u64_array_count(handle))
+            return [
+                Entity(int(self._library.lib.vev_u64_array_value(handle, index)))
+                for index in range(count)
+            ]
+        finally:
+            self._library.lib.vev_u64_array_free(handle)
+
+    def touch(self) -> Any:
+        self._require_open()
+        handle = self._library.lib.vev_entity_touch(self._handle)
+        with ValueHandle(self._library, handle) as value:
+            return value.value()
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("entity view is closed")
 
 
 class ValueHandle:
@@ -1204,13 +1774,15 @@ class ValueHandle:
 
 
 class TxReport:
-    def __init__(self, library: Library, handle: int):
+    def __init__(self, library: Library, handle: int, owned: bool = True):
         self._library = library
         self._handle = handle
+        self._owned = owned
 
     def close(self) -> None:
         if self._handle:
-            self._library.lib.vev_tx_report_free(self._handle)
+            if self._owned:
+                self._library.lib.vev_tx_report_free(self._handle)
             self._handle = None
 
     def __enter__(self) -> "TxReport":
@@ -1251,6 +1823,169 @@ class TxReport:
     def _require_open(self) -> None:
         if not self._handle:
             raise VevError("transaction report is closed")
+
+
+class TxReportArray:
+    def __init__(self, library: Library, handle: int):
+        self._library = library
+        self._handle = handle
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_tx_report_array_free(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "TxReportArray":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __len__(self) -> int:
+        self._require_open()
+        return int(self._library.lib.vev_tx_report_array_count(self._handle))
+
+    def get(self, index: int) -> TxReport:
+        self._require_open()
+        handle = self._library.lib.vev_tx_report_array_get(self._handle, int(index))
+        if not handle:
+            raise VevError("transaction report index out of range")
+        return TxReport(self._library, handle, owned=False)
+
+    def values(self) -> list[Any]:
+        return [self.get(index).value() for index in range(len(self))]
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("transaction report array is closed")
+
+
+class TxBuilder:
+    def __init__(self, library: Library | None = None, capacity: int = 0):
+        self._library = library if library is not None else default_library()
+        self._handle = self._library.lib.vev_tx_create(capacity)
+        if not self._handle:
+            raise VevError("failed to create transaction builder")
+
+    def close(self) -> None:
+        if self._handle:
+            self._library.lib.vev_tx_free(self._handle)
+            self._handle = None
+
+    def __enter__(self) -> "TxBuilder":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def add_string(self, entity: int, attr: str, value: str) -> "TxBuilder":
+        self._add(
+            self._library.lib.vev_tx_add_string,
+            entity,
+            attr,
+            _bytes(value),
+            "string",
+        )
+        return self
+
+    def add_keyword(self, entity: int, attr: str, value: str) -> "TxBuilder":
+        self._add(
+            self._library.lib.vev_tx_add_keyword,
+            entity,
+            attr,
+            _bytes(value),
+            "keyword",
+        )
+        return self
+
+    def add_symbol(self, entity: int, attr: str, value: str) -> "TxBuilder":
+        self._add(
+            self._library.lib.vev_tx_add_symbol,
+            entity,
+            attr,
+            _bytes(value),
+            "symbol",
+        )
+        return self
+
+    def add_entity(self, entity: int, attr: str, value: int) -> "TxBuilder":
+        self._add(
+            self._library.lib.vev_tx_add_entity,
+            entity,
+            attr,
+            int(value),
+            "entity",
+        )
+        return self
+
+    def add_int(self, entity: int, attr: str, value: int) -> "TxBuilder":
+        self._add(self._library.lib.vev_tx_add_int, entity, attr, int(value), "int")
+        return self
+
+    def add_bool(self, entity: int, attr: str, value: bool) -> "TxBuilder":
+        self._add(
+            self._library.lib.vev_tx_add_bool,
+            entity,
+            attr,
+            bool(value),
+            "bool",
+        )
+        return self
+
+    def _add(
+        self,
+        add_fn: object,
+        entity: int,
+        attr: str,
+        value: object,
+        value_type: str,
+    ) -> None:
+        self._require_open()
+        if not add_fn(self._handle, entity, _bytes(attr), value):
+            raise VevError(f"failed to add {value_type} datom to transaction builder")
+
+    def _require_open(self) -> None:
+        if not self._handle:
+            raise VevError("transaction builder is closed")
+
+
+def _tx_builder_handle_array(
+    txs: list[TxBuilder] | tuple[TxBuilder, ...],
+    name: str = "transact_bulk",
+    allow_empty: bool = False,
+) -> object:
+    if len(txs) == 0:
+        if allow_empty:
+            return None
+        raise VevError(f"{name} requires at least one transaction builder")
+    array = (ctypes.c_void_p * len(txs))()
+    for index, tx in enumerate(txs):
+        if not isinstance(tx, TxBuilder):
+            raise VevError(f"{name} expects TxBuilder values")
+        tx._require_open()
+        array[index] = tx._handle
+    return array
+
+
+def _edn_text_array(
+    txs: list[str] | tuple[str, ...],
+    name: str = "transact_logical",
+) -> object:
+    if len(txs) == 0:
+        return None
+    encoded = []
+    for tx in txs:
+        if not isinstance(tx, str):
+            raise VevError(f"{name} expects EDN transaction strings")
+        encoded.append(_bytes(tx))
+    array_type = ctypes.c_char_p * len(encoded)
+    return array_type(*encoded)
 
 
 class PreparedQuery:

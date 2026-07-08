@@ -14,7 +14,110 @@ The storage layer must preserve the existing semantic model:
 - Query, pull, entity, and index semantics are owned by the engine, not by SQL.
 - Host APIs should keep using opaque connection and DB snapshot handles.
 
-## Current Slice
+## Public Shape
+
+The public durable API should be storage-neutral. Applications should open a
+Vev store/connection, transact EDN or prepared tx-data, obtain immutable DB
+values, and query/pull those DB values without programming SQLite directly.
+
+Current preferred entry points:
+
+- Kvist/internal: `open-store`, `store-db`, `transact-store-report-text`,
+  `transact-store-report-tx-data`, `transact-store-report-tx-data-groups`,
+  `q-result-store-*`, `q-result-store-db-*`
+- C ABI: `vev_connect`, `vev_connection_db`,
+  `vev_connection_transact_edn_report`, `vev_tx_report_db_before`,
+  `vev_tx_report_db_after`
+- Host wrappers: `connect`, `db`, `transact`, `q`, `pull`, `with`, and
+  `db-with` in the language-specific API
+
+The current durable backend is SQLite. A plain filesystem path and
+`sqlite://...` URI both select that backend, and the native library currently
+depends on a platform SQLite runtime. Application code does not create SQLite
+tables, run migrations, issue SQL, or configure SQLite schemas.
+
+Durable stores can be configured with `configure-store-durability!`:
+
+- `:strict`: asks the backend for stricter commit synchronization
+- `:normal`: default durable mode
+- `:relaxed`: faster local/testing mode with weaker synchronization guarantees
+
+This is a Vev store-level setting, not an application-facing SQLite schema
+hook. It exists because the current write profile shows per-transaction durable
+commit cost dominates one-datom SQLite writes once Vev root publication is
+small.
+
+Prepared query reuse is available at both immutable DB-value and connection
+boundaries. `q-result-store-db-prepared-with-input-text` runs a prepared query
+against a retained immutable `Store-DB`; `q-result-store-prepared-with-input-text`
+runs the same shape directly against a `Store-Conn`, including durable
+SQLite-backed and shared in-memory stores. The connection-level wrapper still
+returns an owned result when it closes a temporary durable DB handle internally.
+Retained `Store-DB` query APIs may use shallow result rows when the DB handle
+stays alive, while connection-level durable query APIs use explicit owned
+source-query variants before closing their temporary snapshot. This keeps
+host-facing cleanup simple without forcing every immutable DB-value read to
+deep-copy plain datom-backed result rows.
+
+Prepared tx-data can also be grouped explicitly with
+`store-tx-data-group` and committed through
+`transact-store-report-tx-data-groups`. This is a bulk ingestion API, not a
+transparent change to `transact`: Vev flattens the groups into one ordinary
+transaction/report and therefore one durable commit. It is useful when the
+caller wants bulk throughput and does not need a separate tx id for each input
+group. The C ABI exposes the same low-level shape for typed transaction
+builders as `vev_connection_tx_commit_many_report`; Java, Clojure, Python, and
+Rust wrap that as durable bulk builder APIs.
+
+Vev also has a lower-level logical group commit entry point,
+`transact-store-report-logical-tx-data-groups`, for source-backed SQLite
+stores, including first use on an empty durable store. This keeps each group as
+its own logical transaction, advances tx ids per group, returns one
+`Store-Tx-Report` per group, and wraps the whole batch in one SQLite
+transaction/commit. It is not the same as flattened bulk ingestion. The C ABI
+exposes this as
+`vev_connection_tx_commit_logical_many_reports`, returning a report-array handle
+with one borrowed report per logical transaction. Java exposes
+`DurableConnection.transactLogicalReports`, Clojure exposes
+`transact-logical-bulk`, Python exposes
+`DurableConnection.transact_logical_bulk`, and Rust exposes
+`DurableConn::transact_logical_bulk_reports`. Ordinary EDN tx-data logical
+groups are also exposed as Java `transactLogicalEdnReports`, Clojure
+`transact-logical`, Python `transact_logical`, and Rust
+`transact_logical_edn_reports`. Empty-store bootstrap,
+empty group lists, no-op/cancelling logical transactions, and sequential CAS
+basis changes have source-backed storage regressions. A later CAS failure also
+proves the whole logical group rolls back, including earlier successful logical
+writes in the same SQLite transaction. Read-only durable stores and
+shared/in-memory stores reject this durable-only logical group path with
+explicit errors instead of silently rebuilding a resident compatibility DB.
+Empty logical groups return empty report arrays through the host APIs, matching
+the store-level no-op behavior. Malformed non-empty C builder arrays in this
+path return a one-report failed report array instead of a null handle, so host
+adapters can surface normal `:ok false` / `:error` data.
+The group path does not require a pre-existing durable index root; empty stores
+bootstrap through the same source-direct first-write path as ordinary durable
+transactions.
+Grouped source transaction functions now use the same logical group commit
+machinery: later source-fn calls can read prior logical writes inside the same
+SQLite transaction, and durable roots are published per logical tx basis. The
+important implementation boundary is that carried group snapshots must stay on
+the same SQLite handle while the outer transaction is open; reopening by file
+path cannot see uncommitted roots. Malformed text/parser input behavior and
+retained DB-value benchmarking also remain next work.
+
+SQLite-specific names such as `open-sqlite-conn`, `transact-sqlite-*`,
+`vev_sqlite_conn_*`, `open-sqlite`, and `openSqlite` remain compatibility,
+debug, or low-level backend entry points. They should not be used in tutorial
+or normal application examples. Older resident-shaped `Tx-Report` paths are
+resident compatibility only; reopened durable stores should either use
+`Store-Tx-Report`/`Store-DB` or fail loudly instead of silently rebuilding a
+resident DB.
+Likewise, `vev_conn_from_db` is a resident/in-memory compatibility escape hatch.
+Durable code should pass immutable DB handles as values and query/pull/with
+against those handles directly.
+
+## Implemented Storage Slices
 
 The first implemented storage slice was snapshot-file persistence:
 
@@ -28,31 +131,34 @@ This is deliberately a scaffold, not the final SQLite backend. Its job is to
 make the durable open/write/close/reopen/query loop real while the storage
 boundary is still small.
 
-The SQLite-backed slice persists datoms as rows:
+The first SQLite-backed compatibility slice persisted datoms as rows:
 
 - `save-db-sqlite`
-- `load-db-sqlite`
-- `open-conn-sqlite`
-- `persist-conn-sqlite`
-- `open-sqlite-conn`
-- `transact-sqlite-tx-data`
-- `transact-sqlite-text`
+- `load-db-sqlite-resident`
+- `open-conn-sqlite-resident`
+- `persist-conn-sqlite-resident`
 
 It creates Vev metadata, transaction, datom, and forward-compatible index
 root/chunk tables, writes one row per datom through a SQLite transaction,
-reopens from disk, rebuilds the in-memory indexes from those rows, and then
-runs normal Vev queries. The older snapshot table remains as a compatibility
-fallback for databases created by the first SQLite snapshot slice. Vev now
-writes stable `vev_datoms.log_index` values and bounded logical-index chunks
-after successful SQLite transactions and explicit SQLite persists: small
+and can rebuild a resident `DB` from those rows for compatibility and
+validation. The older `load-db-sqlite`, `open-conn-sqlite`, and
+`persist-conn-sqlite` names remain wrappers around the explicit resident
+entry points. Normal durable application code should use `open-store`,
+`store-db`, `transact-store-report-*`, and `q-result-store-db-*` so reopened DB
+values stay root/source-backed instead of rebuilding resident arrays.
+
+The older snapshot table remains as a compatibility fallback for databases
+created by the first SQLite snapshot slice. Vev now writes stable
+`vev_datoms.log_index` values and bounded logical-index chunks after
+successful SQLite transactions and explicit SQLite persists: small
 indexes use a single payload chunk, larger indexes use bounded leaf chunks plus
 a parent root chunk, and a root row records the visible chunk root for each
-logical index at the committed basis tx. Reopen
-now loads the latest root metadata before datom rows, rebuilds from datom rows
-as the compatibility path, and validates persisted index entries back through
-root/chunk edges against those rebuilt indexes. Vev can now also load bounded
-persisted index-entry pages by offset and limit, reading only the leaf chunks
-covering that page. A read-only SQLite index cursor wraps that page loader with
+logical index at the committed basis tx. Resident compatibility reload can
+validate persisted index entries back through root/chunk edges against rebuilt
+indexes, but the normal durable DB-value path opens root metadata and cursor
+state directly. Vev can now also load bounded persisted index-entry pages by
+offset and limit, reading only the leaf chunks covering that page. A read-only
+SQLite index cursor wraps that page loader with
 cached-page `count`/`at` access over persisted logical index entries. The
 runtime `DB-Index-View` abstraction can now wrap either resident arrays or a
 SQLite cursor, and tests exercise view `count`/`at`/bound helpers over a
@@ -80,11 +186,78 @@ the persisted roots. Publication chooses append-root sharing independently by
 checking the appended segment against each index's own key order; if ranges
 overlap, that index falls back to a merged root while other indexes can still
 share.
+The durable schema now also has explicit run-manifest tables for non-append
+publication. `vev_index_run_manifests` records a base index root, total logical
+row count, total run count, and optional parent manifest. `vev_index_run_manifest_runs`
+records the manifest's local pending run roots. Normal source-backed SQLite
+writes now use these manifests for non-append logical indexes: each tiny commit
+publishes one small run plus a manifest pointer instead of copying or rebuilding
+a generic merge-root tree for AEVT/AVET/VAET. Source cursors read manifest-backed
+roots by expanding the parent chain and merging the base root plus pending runs
+through Vev's normal index/order logic. Generic merge-root publication remains
+for compatibility and for older root shapes, but it is no longer the normal
+non-append tiny-commit path.
 Lazy page reads over recursive roots select only overlapping leaf chunks and
 return the selected leaf base offset to the in-memory windowing layer. Full
 index-entry reads still concatenate the full recursive root for diagnostics and
-tests. AEVT/AVET/VAET still use full merged root publication until their
-ordering cases are split safely.
+tests. Explicit index compaction can collapse latest manifest-backed roots into
+ordinary persisted roots. Automatic foreground maintenance now also recognizes
+manifest-backed latest roots even when the old maintenance queue is empty, and
+compacts one bounded run range at a time before republishing a replacement
+manifest. Long parent chains are therefore bounded by policy instead of left to
+grow unchecked. Broad-read cost over bounded manifest roots is now much closer
+to compacted-root cost for the current gate benchmark: a 1000 batch-1
+manifest-chain read benchmark with automatic maintenance keeps
+`max_merge_runs=5` and reads broad source queries in about 19.5ms, versus about
+18.7ms after explicit compaction. Resumable merge/manifest cursor state removed
+the worst repeated-page replay cost, read snapshots now use a larger cursor
+window than write leaf chunks, append-only SQLite snapshots skip redundant
+currentness materialization, merge/manifest pages retain the datoms they
+already materialize for k-way ordering, and broad prefix source scans over
+manifest roots now scan child runs directly instead of binary-searching random
+positions in a merged cursor. Selective manifest prefix scans now persist
+attr-segment value bounds for AEVT/AVET runs, including direct tiny runs and
+compacted child roots, and now also stores first/last segment ordinals so attr
+scans can avoid rediscovering segment bounds with per-run binary searches. The
+source planner also drives literal attr/value anchor joins through the filtered
+entity+attr operator instead of the broad two-attr scan. The current
+bounded-manifest selective row is about 3.3ms on the 1000-row gate, down from
+the previous 80-93ms row. The 5000-row gate now keeps selective reads around
+10.3-11.5ms before explicit compaction and 16.7-17.0ms after compaction.
+Broad reads are now about 36ms before explicit compaction and 55ms after
+compaction. Lazy manifest run-range streams avoid materializing an intermediate
+datom array and skip redundant prefix checks when run bounds are already exact.
+Non-manifest merge roots now use the same lazy run-range stream instead of
+building a full owned datom array before returning rows.
+Single-column source projections also dedupe through a keyed set instead of
+linearly scanning already-emitted rows, removing an O(n^2) broad-result cost.
+The remaining storage work is to reduce per-returned-value materialization with
+page/chunk-level result streaming or typed column batches and keep range
+metadata compact as manifests age. The run-range stream still triggers a Kvist
+ownership warning for owned arrays transferred into the returned stream struct;
+cleanup is centralized in
+`delete-source-index-datom-stream`.
+`SQLite-DB-Snapshot` now also records
+whether the snapshot has persisted retractions; append-only snapshots can skip
+the expensive per-candidate EAVT currentness proof and treat added datoms as
+current, while snapshots with retractions keep the conservative proof path.
+Writable SQLite connections cache this durable-log metadata directly: current
+datom count and whether any retractions have been persisted. Direct source
+writes advance the cache after successful appends and rollback/legacy paths
+invalidate it. This keeps the current-source open path from re-counting the
+whole durable log or re-scanning for retractions before every tiny commit,
+without reusing a stale DB snapshot for transaction validation. The same source
+open path can now reuse the connection's cached current basis after
+source-direct writes, avoiding a redundant latest-root lookup. This is a
+metadata cleanup only; logical group commit still needs group-local root/source
+state to avoid opening a source snapshot for each logical transaction.
+Direct source writes also reuse a prepared root-row insert in the existing
+index write-statement bundle, so root publication no longer prepares/finalizes
+the `vev_index_roots` insert per commit.
+The same write-statement bundle now also prepares run-manifest row, run-entry,
+and attr-range inserts. Direct source writes build manifest attr ranges from
+the commit's appended datoms when those datoms are already available, avoiding
+a reload of just-written log indexes while publishing non-append manifest roots.
 Live SQLite connections now have internal text and prepared query wrappers
 (`q-result-sqlite-conn-text` and `q-result-sqlite-conn-prepared`) that open a
 short-lived `SQLite-DB-Snapshot`, query through `DB-Read-Source`, close the
@@ -108,13 +281,28 @@ source transaction functions, and CAS. Shared-store source-function transaction
 reports also return retained shared `Store-DB` snapshots for `db-before` and
 `db-after`, including failure reports. SQLite store-report parse failures,
 read-only write failures, and source-direct validation failures return
-SQLite-backed `db-before`/`db-after` handles without loading the resident DB.
-The remaining write-publication work is mostly uncommon transaction-function
-success/report edge cases plus migrating the older resident-shaped
-compatibility report path. The older resident-shaped `Tx-Report` transaction
-API still upgrades by loading the resident connection before running the
-existing compatibility path. There is also an internal source-only SQLite
-connection opener with the same no-rebuild read shape that rejects transactions
+root-backed `db-before`/`db-after` handles for initialized stores without
+loading the resident DB or opening report snapshots eagerly. If root metadata is
+not available they fall back to the older path/basis lazy handle shape. No-root
+parse failures still return empty storage-neutral handles.
+SQLite source transaction-function commits now use the same direct source
+append helper, append-mode metadata, write-state cache advance, and lazy report
+`Store-DB` handles as ordinary durable `Store-Tx-Report` writes. Their
+pre-call, generated, and tail tx-data segments resolve through the source-only
+resolver, so a durable/source-backed report never falls back to resident
+transaction resolution for unsupported function output. Initial
+SQLite store-report commits now also publish lazy durable `db-after` handles
+instead of opening a report snapshot immediately after writing the first index
+roots. No-op/cancelling source-direct commits, including source transaction
+functions that expand to empty tx-data, still advance transaction/root
+metadata, but they now copy the latest persisted index root ids/manifests for
+the new basis instead of rebuilding unchanged index chunks. The remaining
+write-publication work is mostly reducing tiny-commit root/chunk publication
+cost and migrating the older resident-shaped compatibility report path. The
+older resident-shaped `Tx-Report` transaction API still upgrades by loading the
+resident connection before running the existing compatibility path. There is
+also an internal source-only SQLite connection opener with the same no-rebuild
+read shape that rejects transactions
 explicitly.
 The storage-neutral aliases (`open-store-read-only`, `q-result-store-text`, and
 `q-result-store-prepared`) now expose this mode inside Vev without making
@@ -149,15 +337,94 @@ rebuilding a resident compatibility DB.
 Durable host transaction reports now use the same storage-neutral report shape:
 the C ABI transact report path returns retained `Store-DB` handles, and for
 supported source-direct SQLite writes those handles are backed directly by the
-new persisted index roots instead of resident clones.
+new persisted index roots instead of resident clones. Direct durable reports
+now publish lazy SQLite-backed `Store-DB` values for `db-before` and
+`db-after`: the report carries the durable path and basis tx, and Vev opens the
+basis-pinned SQLite snapshot only when the caller actually queries, pulls, or
+otherwise reads that DB value. This preserves the Datomic-like DB-as-value API
+without paying report snapshot-open cost on every commit. The direct durable
+root builder also reuses prepared SQLite statements for index chunk and edge
+inserts across all four index roots in a commit, so the remaining write cost is
+the persisted root/run representation itself rather than repeated SQL prepare
+work for each tiny chunk row. Persisted index chunk rows now also record
+`child_count`; new parent roots can carry append/flatten metadata directly, and
+migrated older parent rows fall back to counting `vev_index_chunk_edges` only
+when the stored count is absent. Small repeated append roots now fill the
+rightmost level-0 leaf chunk before appending a new leaf sibling. A small
+append from a level-0 root rewrites a new leaf chunk containing the previous
+leaf payload plus the appended entries until the configured leaf chunk size is
+reached. Once a leaf is full, Vev appends a new leaf through the segmented
+right-spine parent shape: it fills the last child subtree before adding a
+sibling, and only increases the root level when the whole root is full. That
+keeps retained roots valid, avoids a long one-child parent chain, and fixes
+the earlier one-leaf-per-visible-datom shape. The write benchmark reports root
+level, root child count, tree node count, and leaf count so this shape is
+observable. The latest batch-1 smoke keeps EAVT at 16 leaves / 17 total nodes
+after 1000 writes and 79 leaves / 82 total nodes after 5000 writes.
+Merge roots persist flattened run-count metadata in chunk metadata during
+parent chunk insertion, so normal maintenance scheduling and non-inline append
+publication can decide from local metadata instead of recursively flattening
+retained merge roots or doing a second metadata update. Actual compaction still
+loads child roots because the merge operation needs them.
+Appending an empty per-index delta to an existing persisted root now returns
+that existing root directly. This is a small but important invariant for the
+next storage representation: a transaction that leaves an index unchanged
+should copy the root id/manifest metadata, not publish empty chunks. Vev does
+this at the root-set boundary for empty-delta source commits: the new basis row
+points at the previous root ids/manifests through the same helper for
+mode-discovery and known-mode append publication, and root-only durable tests
+assert that no datoms, chunks, or maintenance queue entries are added. Vev does not yet
+prune VAET for scalar-looking attrs, because current semantics and tests still
+allow reverse/pull behavior over attrs without explicit ref schema. Schema-aware
+VAET pruning should be treated as a compatibility decision, not a local storage
+optimization.
+Root publication now has explicit `SQLite-Index-Root-Publish` values carrying
+each index root id, manifest id, and append/manifest mode, and those feed one
+`SQLite-Index-Root-Set` carrying the four logical root ids and four manifest
+ids. Append modes are also grouped as `SQLite-Index-Append-Modes` at this
+boundary and flow through source append, source-direct write publication, and
+the older full-index compatibility append helper as one value instead of four
+loose booleans. Source-direct appends and maintenance republish paths
+build/publish these values instead of passing loose parallel root arguments.
+Durable root publication now persists this page-shaped boundary in
+`vev_index_root_pages`: every published root row has four normalized page rows
+with index name, root chunk id, manifest id, and ordinal. The existing wide
+`vev_index_roots` columns remain for compatibility and migration. Root-set
+reads now prefer `vev_index_root_pages` and fall back to the wide row for older
+or partially migrated files. The main lower-level latest/basis metadata reads
+for row counts, root chunk ids, manifest ids, run counts, first keys, levels,
+and child counts also prefer root-page rows. Debug and entry-page helpers now
+also discover current root chunks through the same root-page metadata path.
+The wide row is still written and read as compatibility fallback, but it is no
+longer the preferred durable read boundary.
+Append-mode source-backed writes now use this boundary to publish SQLite cursor
+views as run-manifest deltas too, so the normal small durable write shape is
+old root plus a small persisted run rather than a newly grown append-tree root.
+Both append root publication paths build the four ordered appended delta views
+once at the root-set publication boundary and pass those slices to per-index
+publication, rather than letting each index helper rediscover its ordered
+append slice. Small manifest delta runs now use an entry-backed chunk
+representation: `vev_index_chunks.payload_text` stores the `:entries` marker
+and the ordered durable log indexes are stored in `vev_index_chunk_entries`.
+Larger delta runs build ordinary parent chunks over entry-backed leaves. Leaf
+page readers support both this representation and older serialized payload
+chunks, so current files remain readable while new deltas become explicit
+persisted segments.
+Vev still has a
+rollover path for migrated/intermediate one-child parent roots with local
+payload: that path promotes the local payload into child chunks at the same
+parent level before adding the new appended leaf. The next storage layout work
+is reducing the remaining repeated root/chunk-row publication cost with a
+clearer B-tree/LSM node update strategy or page-level delta representation.
 
-There are now two write modes:
+There are now two internal write modes:
 
-- explicit full persist: `persist-conn-sqlite` replaces the durable datom rows
-  with the connection's current full datom log
-- SQLite-backed connection wrapper: `transact-sqlite-*` runs the normal Vev
-  transaction engine and appends the successful report tx-data plus tx metadata
-  rows to SQLite before returning
+- explicit resident full persist: `persist-conn-sqlite-resident` replaces the
+  durable datom rows with the connection's current full datom log
+- SQLite-backed store writes: `transact-store-report-*` and the lower-level
+  `transact-sqlite-store-report-*` source-backed paths append successful
+  report tx-data plus tx metadata rows to SQLite before returning retained
+  `Store-DB` values
 
 If the SQLite append fails after the in-memory transaction succeeds, the
 wrapper restores the previous DB snapshot and reports a failed transaction.
@@ -209,6 +476,11 @@ wrapper when it has the successful transaction report in hand.
 
 - `single-append`: one SQLite-backed transaction per entity
 - `batch-append`: one SQLite-backed transaction for a configurable entity batch
+- `store-report-single-append`: one production durable `Store-Tx-Report`
+  transaction per entity through `open-store`
+- `store-report-batch-append`: one production durable `Store-Tx-Report`
+  transaction for a configurable entity batch through `open-store`
+- `store-append`: runs both `store-report-*` append workloads
 - `batch-transact-memory`: the in-memory transaction part of the same batch
 - `batch-append-sqlite`: the SQLite append part of the same batch
 - `batch-before-snapshot`: reportable DB-before snapshot creation
@@ -263,6 +535,12 @@ wrapper when it has the successful transaction report in hand.
 The group names `append`, `durable`, and `source` run related subsets; `all`
 remains the default.
 
+The `store-report-*` append workloads also print `engine=vev-store-profile`
+rows with average direct-write phase costs. Use those rows to decide storage
+work: source-open/read overhead, tx resolution, overlay construction, append
+root build/persist, SQLite commit, maintenance, and listener notification are
+reported separately.
+
 The current `source` subset exercises the persisted source query path, the
 store-level prepared query wrapper, read-only store open/query, and retained
 `Store-DB` DB-value queries without resident datom-log replay. While adding
@@ -287,15 +565,15 @@ This harness is intentionally smaller than the final external benchmark. It is
 for regular development runs and accepts `--total`, `--report-every`,
 `--mixed-operations`, `--batch`, and `--seed-batch` so larger runs can be
 launched without source edits. It also has
-`--workload pure|mixed|snapshot-heavy|shared-snapshot-heavy|shared-snapshot-heavy-direct|shared-store-db-heavy|both`
+`--workload pure|pure-store-report|pure-store-report-deferred|manifest-chain-read|sqlite-store-db-heavy|mixed|snapshot-heavy|shared-snapshot-heavy|shared-snapshot-heavy-direct|shared-store-db-heavy|both`
 and `--path`, which allows the Datalevin-style sequence of writing a durable
-store first and then running mixed read/write against the same store. It uses a
-plain long `:item/key`, matching Datalevin's write-bench schema.
-The `snapshot-heavy` workload keeps the same durable write path but calls the
-ordinary DB snapshot API after each commit and retains every old DB value until
-the end of the run. That workload is the current Batch 4 acceptance harness for
-Datomic-style code that passes DB snapshots around while a connection continues
-to transact.
+store first and then running mixed read/write against the same store.
+`sqlite-store-db-heavy` also accepts `--durability :strict|:normal|:relaxed`
+to make the commit-synchronization tradeoff explicit. It uses a plain long
+`:item/key`, matching Datalevin's write-bench schema.
+The legacy `snapshot-heavy` workload keeps the resident SQLite compatibility
+write path and retains ordinary `DB` snapshots. It remains useful as a
+comparison harness, but it is no longer the durable DB-value gate.
 The `shared-store-db-heavy` workload measures the storage-neutral host-facing
 shape over the shared in-memory publish path. It commits typed tx-data through
 `Store-Conn`, retains every `Store-DB`, and closes those retained handles at the
@@ -305,6 +583,29 @@ and 0.012 ms snapshot-retain latency at 200 writes. That means the
 storage-neutral `Store-DB` wrapper is not adding visible cost at this scale;
 the remaining work is still the shared publication adapter and resident-index
 boundary.
+The `sqlite-store-db-heavy` workload is the durable equivalent over SQLite. It
+writes through `open-store` / `transact-store-report`, retains a public
+`Store-DB` from each report after deleting the report, and closes those retained
+handles at the end. That workload is the current acceptance harness for
+Datomic-style code that passes durable DB values around while a connection
+continues to transact.
+The first profiled 5000-write run shows retained `Store-DB` handles are already
+cheap (`snapshot_latency_ms` stays around 0.001 ms), but direct writes still pay
+growing `open_before_ms` to reopen the current SQLite snapshot/root metadata
+before every append. The next storage architecture target is therefore a safe
+current-source/root metadata cache for direct writes, not a retained-handle
+wrapper shortcut. The cache must include the previous committed datoms in
+transaction semantics; simply reusing the old pre-commit snapshot would break
+uniqueness, cardinality, lookup refs, and transaction functions.
+That metadata cache is now in place for direct writes, and logical group commit
+also carries the current basis forward through same-handle SQLite snapshots.
+The current group-commit bottleneck is no longer source/root reopen work:
+batch-50 group commit measures about `0.002ms/write` in `open_before_ms`, and
+the loop avoids opening a carried source snapshot after the final logical
+transaction. The remaining group-commit storage target is root/write-state
+publication: avoid redoing per-index root append/persist setup for every
+logical transaction while still producing distinct durable tx ids, root rows,
+reports, and retained `Store-DB` values.
 The `shared-snapshot-heavy-direct` workload routes successful append-only
 transactions through the direct shared-log comparison path. A local batch-1,
 300-write comparison with chunk size 1024 ended around 0.248 ms commit latency
@@ -692,31 +993,34 @@ Initial schema direction:
 
 Current implementation status and later order:
 
-1. Add storage-level metadata inspection/replay APIs only where concrete tools
-   need them.
-2. Keep rebuilding in-memory indexes from the datom tables on open until reopen
-   cost measurements require persisted logical indexes.
-3. Continue the append-only transaction path when storage work resumes. The current implementation avoids
-   full index rebuilds for conservative direct add-only transactions, skips
-   full-schema validation for ordinary non-schema transactions, and clones
-   reportable DB snapshots from existing indexes instead of rebuilding them.
-   Append-only eligibility skips current-DB fact/entity-attr checks when all
-   ops target genuinely absent entities. Ordered absent-entity imports enforce
-   cardinality-one and cardinality-many duplicate rules locally, and
-   append-only index maintenance extends the `eavt` entity table when new entity
-   ids sort after existing ids. Parsed EDN transaction values are cloned into
-   DB log datoms, so chunked imports are independent from per-file input buffer
-   lifetimes.
-   The benchmark now separates snapshot, resolution, apply, log copy,
-   incremental index build, SQLite append cost, and a shared snapshot-heavy
-   publish path. The next write-performance milestone is replacing the
-   remaining resident-array adaptation in `Shared-Conn` with direct shared
-   chunk publication.
-4. Move selected logical indexes to persisted structures, starting with a single
-   read-only chunk writer/cursor and then expanding to the full index set.
-5. Keep extending the new `bench/write_bench.kvist` harness until it can run at
-   Datalevin `write-bench` scale, then compare commit/reopen behavior against
-   existing systems.
+1. Keep storage-level metadata inspection/replay APIs focused on concrete tools
+   and benchmarks.
+2. Treat persisted logical index roots/chunks as the normal durable read shape.
+   Opening a durable store should load root metadata and expose source-backed
+   `Store-DB` handles, not rebuild a resident DB from the datom log.
+3. Continue reducing durable write publication cost. Normal direct
+   `Store-Tx-Report` writes now publish lazy SQLite-backed `Store-DB` values,
+   reuse existing persisted chunks where the index order allows it, and publish
+   manifest-backed non-append roots for tiny source-backed commits. Current
+   profiling shows the first chained-manifest slice moved the batch-1
+   publication bottleneck substantially, and the SQLite store-report path now
+   keeps current durable-log metadata cached, reuses prepared root/manifest
+   statements, and builds manifest attr ranges from appended datoms when
+   available. Small manifest delta runs now use entry-backed leaf chunks, and
+   larger delta runs use parent chunks over entry-backed leaves. The current
+   `sqlite-store-db-heavy --batch 1 --total 5000` gate is about
+   `2135 writes/s`, with flat `open_before_ms` around `0.08ms/write` and
+   `append_root_persist_ms` about `0.067ms/write` at 5000 writes.
+4. Move repeated tiny commits toward a clearer page-delta/LSM-style index
+   representation. The current packed-leaf/right-spine tree keeps append roots
+   shallow, and chained manifests make non-append tiny commits cheap.
+   Automatic foreground maintenance now performs bounded manifest compaction
+   steps, so visible run count can stay small. The next representation work is
+   making those bounded manifest roots broad-scan cheaply enough without
+   requiring manual full compaction, not another local merge-root shortcut.
+5. Keep `bench/write_bench.kvist` focused on public durable API shapes:
+   `pure-store-report`, `pure-store-report-deferred`, snapshot-heavy, mixed,
+   and MusicBrainz/Datomic-style durable query/reopen checks.
 
 Non-goals for the first SQLite backend:
 

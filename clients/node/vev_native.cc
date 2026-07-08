@@ -309,6 +309,42 @@ napi_value durable_db(napi_env env, napi_callback_info info) {
   return wrap_db(env, vev_connection_db(conn->raw));
 }
 
+napi_value close_conn(napi_env env, napi_callback_info info) {
+  Conn *conn = external_arg<Conn>(env, info, 0);
+  if (conn && conn->raw) {
+    vev_conn_close(conn->raw);
+    conn->raw = nullptr;
+  }
+  return nullptr;
+}
+
+napi_value close_durable_conn(napi_env env, napi_callback_info info) {
+  DurableConn *conn = external_arg<DurableConn>(env, info, 0);
+  if (conn && conn->raw) {
+    vev_connection_close(conn->raw);
+    conn->raw = nullptr;
+  }
+  return nullptr;
+}
+
+napi_value close_db(napi_env env, napi_callback_info info) {
+  DB *snapshot = external_arg<DB>(env, info, 0);
+  if (snapshot && snapshot->raw) {
+    vev_db_release(snapshot->raw);
+    snapshot->raw = nullptr;
+  }
+  return nullptr;
+}
+
+napi_value close_prepared_query(napi_env env, napi_callback_info info) {
+  PreparedQuery *query = external_arg<PreparedQuery>(env, info, 0);
+  if (query && query->raw) {
+    vev_prepared_query_free(query->raw);
+    query->raw = nullptr;
+  }
+  return nullptr;
+}
+
 napi_value transact(napi_env env, napi_callback_info info) {
   Conn *conn = external_arg<Conn>(env, info, 0);
   char *tx = string_arg(env, info, 1);
@@ -708,6 +744,10 @@ napi_value init(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
       {"openMemory", nullptr, open_memory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"connect", nullptr, connect, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"closeConn", nullptr, close_conn, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"closeDurableConn", nullptr, close_durable_conn, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"closeDb", nullptr, close_db, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"closePreparedQuery", nullptr, close_prepared_query, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"db", nullptr, db, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"durableDb", nullptr, durable_db, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"transact", nullptr, transact, nullptr, nullptr, nullptr, napi_default, nullptr},

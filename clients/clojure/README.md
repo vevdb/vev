@@ -49,6 +49,9 @@ Transaction listeners are report callbacks on successful commits:
 (d/unlisten conn listener)
 ```
 
+The same `d/listen` / `d/unlisten` functions work for durable connections
+opened with `d/connect`; failed transactions do not notify listeners.
+
 Durable usage should be similarly direct:
 
 ```clojure
@@ -56,6 +59,17 @@ Durable usage should be similarly direct:
 
 (d/transact conn [{:db/id 1 :user/name "Ada"}])
 (d/q '[:find ?name :where [?e :user/name ?name]] (d/db conn))
+```
+
+For bulk host writes, `tx-builder` can be passed to the same `d/transact`
+function on either in-memory or durable connections:
+
+```clojure
+(def tx (d/tx-builder conn 2))
+(d/tx-add! tx 2 :user/name "Grace")
+(d/tx-add! tx 2 :user/email "grace@example.com")
+(d/transact conn tx)
+(.close tx)
 ```
 
 The current repo has not published the Java/Clojure/native artifacts yet, so
@@ -117,10 +131,11 @@ Until native artifacts are packaged, no-arg `create-conn` and one-arg
 `connect` resolve the native library from the `vev.library` JVM property, then
 `VEV_LIB`, then a local `build/lib` library, then a bundled platform resource.
 
-`q` accepts both DB-first Vev style and query-first Datomic/DataScript style:
+`q` uses Datomic/DataScript-style query-first argument order. The wrapper also
+accepts DB-first calls for compatibility with earlier Vev code, but new code
+should follow the familiar query-then-sources shape:
 
 ```clojure
-(d/q db '[:find ?name :where [?e :user/name ?name]])
 (d/q '[:find ?name :where [?e :user/name ?name]] db)
 ```
 
@@ -151,11 +166,11 @@ Inputs are passed as ordinary arguments after the query and DB:
 
 ```clojure
 (d/q
-  db
   '[:find ?name
-    :in [?email ...]
+    :in $ [?email ...]
     :where [?e :user/email ?email]
            [?e :user/name ?name]]
+  db
   ["ada@example.com" "grace@example.com"])
 ```
 
@@ -171,7 +186,7 @@ the call. Use `prepare` when the same query should be reused:
              [(= ?email ?needle)]]))
 
 (d/prepared-edn email-query)
-(d/q db email-query "ada@example.com")
+(d/q email-query db "ada@example.com")
 ```
 
 Single where clauses can be parsed directly for DataScript-style parser tooling:
@@ -201,6 +216,26 @@ Pull follows the same DB-value shape:
 (d/pull-many db [:user/name] [1 2])
 ```
 
+Entity views also follow the DB-value shape. They are backed by the immutable
+DB snapshot, so later transactions on the connection do not change what the
+view sees:
+
+```clojure
+(let [db (d/db conn)
+      ada (d/entity db 1)]
+  (:user/name ada)
+  (d/entity-values ada :user/email)
+  (d/entity-ref ada :user/friend)
+  (d/touch ada))
+```
+
+Lookup refs and idents are supported through the same function:
+
+```clojure
+(d/entity db [:user/email "ada@example.com"])
+(d/entity db :user/ada)
+```
+
 Transaction functions follow Datomic's installed-ident model: the DB contains
 the function ident, while the host registry supplies the executable callback for
 this process.
@@ -214,9 +249,10 @@ this process.
   (d/transact conn [[:user/set-name 1 "Ada"]] fns))
 ```
 
-The callback receives `(db & args)` and returns ordinary tx-data. The DB value
-is valid for the callback call; keep durable application state outside the
-callback if it needs to outlive the transaction.
+The same shape works with `d/connect` durable handles. The callback receives
+`(db & args)` and returns ordinary tx-data. The DB value is valid for the
+callback call; keep durable application state outside the callback if it needs
+to outlive the transaction.
 
 Immutable DB values support Datomic/DataScript-style `with` operations:
 
@@ -224,8 +260,8 @@ Immutable DB values support Datomic/DataScript-style `with` operations:
 (let [report (d/with db [{:db/id 3 :user/name "Barbara"}])
       next-db (d/db-with db [{:db/id 3 :user/name "Barbara"}])]
   [(:ok report)
-   (d/q db '[:find ?e :where [?e :user/name "Barbara"]])
-   (d/q next-db '[:find ?e :where [?e :user/name "Barbara"]])])
+   (d/q '[:find ?e :where [?e :user/name "Barbara"]] db)
+   (d/q '[:find ?e :where [?e :user/name "Barbara"]] next-db)])
 ```
 
 A mutable connection can also be initialized from an immutable DB snapshot:
@@ -234,7 +270,7 @@ A mutable connection can also be initialized from an immutable DB snapshot:
 (def next-conn (d/conn-from-db next-db))
 
 (d/transact next-conn [{:db/id 4 :user/name "Dorothy"}])
-(d/q (d/db next-conn) '[:find ?name :where [?e :user/name ?name]])
+(d/q '[:find ?name :where [?e :user/name ?name]] (d/db next-conn))
 ```
 
 Durable connections use the same transaction and DB-value query shape:
@@ -246,7 +282,18 @@ Durable connections use the same transaction and DB-value query shape:
 ;; => {:backend :sqlite, :path "app.vev", :basis-t 0, :tx-count 0, :tx-ids []}
 
 (d/transact durable [{:db/id 1 :user/name "Ada"}])
-(d/q (d/db durable) '[:find ?name :where [?e :user/name ?name]])
+(d/q '[:find ?name :where [?e :user/name ?name]] (d/db durable))
+```
+
+For explicit durable bulk ingest, native builders can be committed as one
+ordinary transaction:
+
+```clojure
+(with-open [first (d/tx-builder durable 1)
+            second (d/tx-builder durable 1)]
+  (d/tx-add! first 2 :user/name "Grace")
+  (d/tx-add! second 3 :user/name "Hedy")
+  (d/transact-bulk durable [first second]))
 ```
 
 The wrapper has JVM cleanup fallback for native handles, so examples use normal

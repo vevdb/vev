@@ -96,6 +96,22 @@
                       [:db/add 100 :db/valueType :db.type/ref]
                       [:db/add 1 :user/friend 2]])
 
+      (let [db (vev/db conn)]
+        (with-open [ada (vev/entity db 1)
+                    friend (vev/entity-ref ada :user/friend)
+                    lookup (vev/entity db [:user/email "ada@example.com"])]
+          (when-not (and (vev/entity-found? ada)
+                         (= 1 (vev/entity-id ada))
+                         (= "Ada" (:user/name ada))
+                         (= ["Ada"] (vev/entity-values ada :user/name))
+                         (= 2 (vev/entity-id friend))
+                         (= "Grace" (:user/name friend))
+                         (= [2] (vev/entity-refs ada :user/friend))
+                         (= 1 (vev/entity-id lookup))
+                         (= "Ada" (:user/name (vev/touch ada))))
+            (throw (ex-info "unexpected entity view output"
+                            {:entity (vev/touch ada)})))))
+
       (with-open [fns (vev/tx-fns conn {:user/set-name
                                         (fn [db e name]
                                           [[:db/add e :user/nickname name]])})]
@@ -140,6 +156,20 @@
                         :user/friend {:user/name "Grace"}}
                        pulled)
             (throw (ex-info "unexpected pull result" {:pull pulled}))))
+
+        (with-open [pull-column-query (vev/prepare conn
+                                                   '[:find (pull ?e [:user/name {:user/friend [:user/name]}])
+                                                     :where [?e :user/name "Ada"]])
+                    db (vev/db conn)]
+          (let [columns (vev/columns pull-column-query db)
+                pulled (first (first (:columns columns)))]
+            (println "pull column batch:" columns)
+            (when-not (and (= [:value] (:kinds columns))
+                           (= {:user/name "Ada"
+                               :user/friend {:user/name "Grace"}}
+                              pulled))
+              (throw (ex-info "unexpected pull column batch"
+                              {:columns columns})))))
 
         (let [db (vev/db conn)]
           (with-open [prepared-pattern (vev/prepare-pull-pattern db [:user/name])]
@@ -260,6 +290,49 @@
             (throw (ex-info "unexpected durable tx count after first tx" {})))
           (when (not= [1] (:tx-ids (vev/connection-info durable)))
             (throw (ex-info "unexpected durable tx ids after first tx" {})))
+          (with-open [bulk-a (vev/tx-builder durable 1)
+                      bulk-b (vev/tx-builder durable 1)]
+            (vev/tx-add! bulk-a 2 :user/name "Durable Grace")
+            (vev/tx-add! bulk-b 3 :user/name "Durable Hedy")
+            (let [tx (vev/transact-bulk durable [bulk-a bulk-b])]
+              (when-not (:ok tx)
+                (throw (ex-info "unexpected durable bulk builder report"
+                                {:report tx})))))
+          (when (not= 2 (:basis-t (vev/connection-info durable)))
+            (throw (ex-info "unexpected durable basis after bulk builder tx" {})))
+          (when (not= 2 (:tx-count (vev/connection-info durable)))
+            (throw (ex-info "unexpected durable tx count after bulk builder tx" {})))
+          (when (not= [1 2] (:tx-ids (vev/connection-info durable)))
+            (throw (ex-info "unexpected durable tx ids after bulk builder tx" {})))
+          (with-open [logical-a (vev/tx-builder durable 1)
+                      logical-b (vev/tx-builder durable 1)]
+            (vev/tx-add! logical-a 4 :user/name "Durable Ada")
+            (vev/tx-add! logical-b 5 :user/name "Durable Dorothy")
+            (let [reports (vev/transact-logical-bulk durable [logical-a logical-b])]
+              (when-not (and (= 2 (count reports))
+                             (every? :ok reports))
+                (throw (ex-info "unexpected durable logical group reports"
+                                {:reports reports})))))
+          (let [reports (vev/transact-logical-bulk durable [])]
+            (when-not (empty? reports)
+              (throw (ex-info "unexpected empty logical group reports"
+                              {:reports reports}))))
+          (let [reports (vev/transact-logical durable
+                                               [[{:db/id 6
+                                                  :user/name "Durable Katherine"}]
+                                                "[{:db/id 7 :user/name \"Durable Mary\"}]"])]
+            (when-not (and (= 2 (count reports))
+                           (every? :ok reports))
+              (throw (ex-info "unexpected durable logical EDN group reports"
+                              {:reports reports}))))
+          (when (not= 6 (:basis-t (vev/connection-info durable)))
+            (throw (ex-info "unexpected durable basis after logical group tx" {})))
+          (when (not= 6 (:tx-count (vev/connection-info durable)))
+            (throw (ex-info "unexpected durable tx count after logical group tx" {})))
+          (when (not= [1 2 3 4 5 6] (:tx-ids (vev/connection-info durable)))
+            (throw (ex-info "unexpected durable tx ids after logical group tx" {})))
+          (when-not (vev/compact-indexes! durable)
+            (throw (ex-info "durable index compaction failed" {})))
           (with-open [db (vev/db durable)
                       all-emails (vev/prepare durable
                                               '[:find ?e ?email
@@ -273,11 +346,11 @@
                     all-emails (vev/prepare durable
                                             '[:find ?e ?email
                                               :where [?e :user/email ?email]])]
-          (when (not= 1 (:basis-t (vev/connection-info durable)))
+          (when (not= 6 (:basis-t (vev/connection-info durable)))
             (throw (ex-info "unexpected reopened durable basis" {})))
-          (when (not= 1 (:tx-count (vev/connection-info durable)))
+          (when (not= 6 (:tx-count (vev/connection-info durable)))
             (throw (ex-info "unexpected reopened durable tx count" {})))
-          (when (not= [1] (:tx-ids (vev/connection-info durable)))
+          (when (not= [1 2 3 4 5 6] (:tx-ids (vev/connection-info durable)))
             (throw (ex-info "unexpected reopened durable tx ids" {})))
           (let [rows (vev/q db all-emails)]
             (println "sqlite-reopened rows:" rows)

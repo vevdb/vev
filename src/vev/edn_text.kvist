@@ -6,6 +6,13 @@
 (defn db-source [name: string, db: DB] -> DB-Source
   (DB-Source {name: name db: db}))
 
+(defn append-db-read-named-sources-from-db-sources! [out: ^[dynamic]DB-Read-Named-Source, db-aliases: ^[dynamic]DB, sources: []DB-Source] -> bool
+  (for [source sources]
+    (arr.push! db-aliases^ source.db))
+  (for [source index sources]
+    (arr.push! out^ (db-read-named-source source.name (resident-db-read-source (addr db-aliases^[index])))))
+  true)
+
 (defn parser-string-vector-value [items: []string, as-symbols: bool] -> Value
   (let [out (make [dynamic]Value 0 (count items))]
     (for [item items]
@@ -152,6 +159,8 @@
                 (value-keyword ":clauses") (parser-clauses-value (slice group.clauses 0))
                 (value-keyword ":predicates") (parser-predicates-value group.predicates)
                 (value-keyword ":functions") (parser-function-clauses-value group.function-clauses)
+                (value-keyword ":get-elses") (parser-get-elses-value (slice group.get-elses 0))
+                (value-keyword ":get-somes") (parser-get-somes-value (slice group.get-somes 0))
                 (value-keyword ":not-groups") (value-vector (slice children 0))]))))
 
 (defn parser-not-groups-value [groups: []Not-Group] -> Value
@@ -1505,6 +1514,13 @@
     (append-predicate-vars! vars predicate))
   (for [function group.function-clauses]
     (append-function-vars! vars function))
+  (for [get-else group.get-elses]
+    (append-var-once! vars get-else.out))
+  (for [get-some group.get-somes]
+    (append-var-once! vars get-some.out-attr)
+    (append-var-once! vars get-some.out-value))
+  (for [call group.rule-calls]
+    (append-rule-call-vars! vars call))
   (for [child group.not-groups]
     (append-not-group-var-names! vars child)))
 
@@ -1575,7 +1591,7 @@
 (defn append-edn-local-step-kind! [step-kinds: ^[dynamic]Query-Step-Kind, kind: Query-Step-Kind]
   (arr.push! step-kinds^ kind))
 
-(defn append-edn-local-not-step-with-source! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, not-groups: ^[dynamic]Not-Group, step-kinds: ^[dynamic]Query-Step-Kind, doc: EDN-Doc, item: int, source: string, has-source: bool] -> [ok: bool, error: string]
+(defn append-edn-local-not-step-with-source! [clauses: ^[dynamic]Clause, predicates: ^[dynamic]Predicate, function-clauses: ^[dynamic]Function-Clause, get-elses: ^[dynamic]Get-Else, get-somes: ^[dynamic]Get-Some, grounds: ^[dynamic]Ground, rule-calls: ^[dynamic]Rule-Call, not-groups: ^[dynamic]Not-Group, step-kinds: ^[dynamic]Query-Step-Kind, doc: EDN-Doc, item: int, source: string, has-source: bool] -> [ok: bool, error: string]
   (if (= doc.nodes[item].kind .List)
     (let [head (edn-list-op-text doc item)
           [child-source child-has-source] (edn-list-default-source doc item)]
@@ -1588,7 +1604,18 @@
               (return false error))
             (append-edn-local-step-kind! step-kinds .Not)
             (return true ""))
-        :else (return false "query text branch lists currently support nested not")))
+        :else
+          (let [call-index (count rule-calls^)
+                [ok error] (append-edn-rule-call! rule-calls doc item)]
+            (when (not ok)
+              (return false error))
+            (when has-source
+              (let [call rule-calls^[call-index]]
+                (set! call.source source)
+                (set! call.has-source true)
+                (set! rule-calls^[call-index] call)))
+            (append-edn-local-step-kind! step-kinds .RuleCall)
+            (return true ""))))
     (if (= doc.nodes[item].kind .Vector)
       (let [first-item (edn-child-at doc item 0)]
         (if (and (not (= first-item -1)) (= doc.nodes[first-item].kind .List))
@@ -1601,6 +1628,24 @@
                   (when (not ok)
                     (return false error))
                   (append-edn-local-step-kind! step-kinds .Not)
+                  (return true ""))
+              (= op "get-else")
+                (let [[ok error] (append-edn-get-else! get-elses doc expr output)]
+                  (when (not ok)
+                    (return false error))
+                  (append-edn-local-step-kind! step-kinds .GetElse)
+                  (return true ""))
+              (= op "get-some")
+                (let [[ok error] (append-edn-get-some! get-somes doc expr output)]
+                  (when (not ok)
+                    (return false error))
+                  (append-edn-local-step-kind! step-kinds .GetSome)
+                  (return true ""))
+              (= op "ground")
+                (let [[ok error] (append-edn-ground! grounds doc expr output)]
+                  (when (not ok)
+                    (return false error))
+                  (append-edn-local-step-kind! step-kinds .Ground)
                   (return true ""))
               (not (= output -1))
                 (let [[ok error] (append-edn-function-clause! function-clauses doc expr output)]
@@ -1629,6 +1674,10 @@
   (let [clauses (make [dynamic]Clause) :defer
         predicates (make [dynamic]Predicate) :defer
         function-clauses (make [dynamic]Function-Clause) :defer
+        get-elses (make [dynamic]Get-Else) :defer
+        get-somes (make [dynamic]Get-Some) :defer
+        grounds (make [dynamic]Ground) :defer
+        rule-calls (make [dynamic]Rule-Call) :defer
         not-groups (make [dynamic]Not-Group) :defer
         step-kinds (make [dynamic]Query-Step-Kind) :defer
         op-node (edn-list-op-node doc form)
@@ -1636,11 +1685,11 @@
     (when (= cursor -1)
       (return false "Cannot parse 'not' clause"))
     (while (not (= cursor -1))
-      (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
+      (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr rule-calls) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
         (when (not ok)
           (return false error)))
       (set! cursor doc.nodes[cursor].next-sibling))
-    (let [group (not-group-program (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice not-groups 0) (slice step-kinds 0))]
+    (let [group (not-group-program-with-operators-grounds-and-rules (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice rule-calls 0) (slice not-groups 0) (slice step-kinds 0))]
       (when (not (not-group-has-vars? group))
         (return false "Join variables should not be empty"))
       (arr.push! out^ group))
@@ -1659,6 +1708,10 @@
           clauses (make [dynamic]Clause) :defer
           predicates (make [dynamic]Predicate) :defer
           function-clauses (make [dynamic]Function-Clause) :defer
+          get-elses (make [dynamic]Get-Else) :defer
+          get-somes (make [dynamic]Get-Some) :defer
+          grounds (make [dynamic]Ground) :defer
+          rule-calls (make [dynamic]Rule-Call) :defer
           not-groups (make [dynamic]Not-Group) :defer
           step-kinds (make [dynamic]Query-Step-Kind) :defer
           cursor doc.nodes[join-node].next-sibling]
@@ -1667,11 +1720,11 @@
       (when (= cursor -1)
         (return false "Cannot parse 'not-join' clause"))
       (while (not (= cursor -1))
-        (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
+        (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr rule-calls) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
           (when (not ok)
             (return false error)))
         (set! cursor doc.nodes[cursor].next-sibling))
-      (arr.push! out^ (not-join-group-program (slice join-vars 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice not-groups 0) (slice step-kinds 0)))
+      (arr.push! out^ (not-join-group-program-with-operators-grounds-and-rules (slice join-vars 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice rule-calls 0) (slice not-groups 0) (slice step-kinds 0)))
       (return true ""))))
 
 (defn append-edn-not-join-group! [out: ^[dynamic]Not-Group, doc: EDN-Doc, form: int] -> [ok: bool, error: string]
@@ -1682,6 +1735,10 @@
   (let [clauses (make [dynamic]Clause) :defer
         predicates (make [dynamic]Predicate) :defer
         function-clauses (make [dynamic]Function-Clause) :defer
+        get-elses (make [dynamic]Get-Else) :defer
+        get-somes (make [dynamic]Get-Some) :defer
+        grounds (make [dynamic]Ground) :defer
+        rule-calls (make [dynamic]Rule-Call) :defer
         not-groups (make [dynamic]Not-Group) :defer
         step-kinds (make [dynamic]Query-Step-Kind) :defer]
     (if (= doc.nodes[branch].kind .List)
@@ -1689,16 +1746,16 @@
         (when (not (= head "and"))
           (return false "query text or branches support data clauses or and"))
         (let [op-node (edn-list-op-node doc branch)
-              cursor doc.nodes[op-node].next-sibling]
+          cursor doc.nodes[op-node].next-sibling]
           (while (not (= cursor -1))
-            (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
+            (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr rule-calls) (addr not-groups) (addr step-kinds) doc cursor source has-source)]
               (when (not ok)
                 (return false error)))
             (set! cursor doc.nodes[cursor].next-sibling))))
-      (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr not-groups) (addr step-kinds) doc branch source has-source)]
+      (let [[ok error] (append-edn-local-not-step-with-source! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr rule-calls) (addr not-groups) (addr step-kinds) doc branch source has-source)]
         (when (not ok)
           (return false error))))
-    (arr.push! out^ (not-group-program (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice not-groups 0) (slice step-kinds 0)))
+    (arr.push! out^ (not-group-program-with-operators-grounds-and-rules (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice rule-calls 0) (slice not-groups 0) (slice step-kinds 0)))
     (return true "")))
 
 (defn append-edn-or-branch! [out: ^[dynamic]Not-Group, doc: EDN-Doc, branch: int] -> [ok: bool, error: string]
@@ -2494,13 +2551,12 @@
         (Prepared-Query {ok: true error: "" query: query-with-attached-rules})))))
 
 (defn q-prepared [db: DB, prepared: Prepared-Query] -> Result-Set
-  (if prepared.ok
-    (q-query db prepared.query)
-    (result-set-error prepared.error)))
+  (let [db-alias db]
+    (q-prepared-db-read-source (resident-db-read-source (addr db-alias)) prepared)))
 
 (defn q-result-prepared [db: DB, prepared: Prepared-Query] -> Query-Result
   (let [db-alias db]
-    (q-result-prepared-db-read-source (resident-db-read-source (addr db-alias)) prepared)))
+    (query-result-owned-copy (q-result-prepared-db-read-source (resident-db-read-source (addr db-alias)) prepared))))
 
 (defn q-prepared-db-read-source-with-sources-inputs-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
   (if prepared.ok
@@ -2541,14 +2597,83 @@
 (defn q-prepared-db-read-source-with-sources-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, prepared: Prepared-Query, registry: []Native-Query-Fn] -> Result-Set
   (q-prepared-db-read-source-with-sources-inputs-and-fns source sources prepared ([]Query-Input []) registry))
 
+(defn query-source-plain-clause-var? [query-value: Query, name: string] -> bool
+  (let [index 0]
+    (while (< index (count query-value.clauses))
+      (let [clause-value query-value.clauses[index]]
+        (when (not clause-value.has-source)
+          (when (and (= clause-value.e.kind .Var) (= clause-value.e.name name))
+            (return true))
+          (when (and (= clause-value.a.kind .Var) (= clause-value.a.name name))
+            (return true))
+          (when (and (= clause-value.v.kind .Var) (= clause-value.v.name name))
+            (return true))
+          (when (and (= clause-value.tx-term.kind .Var) (= clause-value.tx-term.name name))
+            (return true))
+          (when (and (= clause-value.op-term.kind .Var) (= clause-value.op-term.name name))
+            (return true))))
+      (set! index (+ index 1))))
+  false)
+
+(defn query-source-result-shallow-safe? [query-value: Query] -> bool
+  (when (or (> (count query-value.pulls) 0)
+            (> (count query-value.aggregates) 0)
+            (> (count query-value.function-clauses) 0)
+            (> (count query-value.grounds) 0)
+            (> (count query-value.get-elses) 0)
+            (> (count query-value.get-somes) 0)
+            (> (count query-value.rule-calls) 0)
+            (> (count query-value.rules) 0))
+    (return false))
+  (for [name query-value.find]
+    (when (not (query-source-plain-clause-var? query-value name))
+      (return false)))
+  (for [name query-value.with]
+    (when (not (query-source-plain-clause-var? query-value name))
+      (return false)))
+  true)
+
+(defn query-result-db-read-source-query-result [query-value: Query, result: Result-Set] -> Query-Result
+  (cond
+    (not result.ok) (query-result-owned-values result)
+    (query-source-result-shallow-safe? query-value) (query-result-shallow result)
+    :else (query-result-owned-values result)))
+
+(defn query-result-db-read-source-query-result-owned [query-value: Query, result: Result-Set] -> Query-Result
+  (cond
+    (not result.ok) (query-result-owned-values result)
+    (query-source-result-shallow-safe? query-value)
+      (let [owned (query-result-owned-values (result-set-owned result))]
+        (delete-result-set-shallow result)
+        owned)
+    :else (query-result-owned-values result)))
+
+(defn query-result-db-read-source-result [result: Result-Set] -> Query-Result
+  (if result.ok
+    (query-result-shallow result)
+    (query-result-owned-values result)))
+
 (defn q-result-prepared-db-read-source-with-sources-inputs-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Query-Result
-  (query-result-owned-values (q-prepared-db-read-source-with-sources-inputs-and-fns source sources prepared inputs registry)))
+  (if prepared.ok
+    (query-result-db-read-source-query-result prepared.query (db-read-source-q-query-with-sources-inputs-and-fns source sources prepared.query inputs registry))
+    (query-result-owned-values (result-set-error prepared.error))))
+
+(defn q-result-prepared-db-read-source-owned-with-sources-inputs-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Query-Result
+  (if prepared.ok
+    (query-result-db-read-source-query-result-owned prepared.query (db-read-source-q-query-with-sources-inputs-and-fns source sources prepared.query inputs registry))
+    (query-result-owned-values (result-set-error prepared.error))))
 
 (defn q-result-prepared-db-read-source [source: DB-Read-Source, prepared: Prepared-Query] -> Query-Result
   (q-result-prepared-db-read-source-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) prepared ([]Query-Input []) ([]Native-Query-Fn [])))
 
+(defn q-result-prepared-db-read-source-owned [source: DB-Read-Source, prepared: Prepared-Query] -> Query-Result
+  (q-result-prepared-db-read-source-owned-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) prepared ([]Query-Input []) ([]Native-Query-Fn [])))
+
 (defn q-result-prepared-db-read-source-with-inputs [source: DB-Read-Source, prepared: Prepared-Query, inputs: []Query-Input] -> Query-Result
   (q-result-prepared-db-read-source-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) prepared inputs ([]Native-Query-Fn [])))
+
+(defn q-result-prepared-db-read-source-owned-with-inputs [source: DB-Read-Source, prepared: Prepared-Query, inputs: []Query-Input] -> Query-Result
+  (q-result-prepared-db-read-source-owned-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) prepared inputs ([]Native-Query-Fn [])))
 
 (defn q-result-prepared-db-read-source-with-sources [source: DB-Read-Source, sources: []DB-Read-Named-Source, prepared: Prepared-Query] -> Query-Result
   (q-result-prepared-db-read-source-with-sources-inputs-and-fns source sources prepared ([]Query-Input []) ([]Native-Query-Fn [])))
@@ -2566,7 +2691,14 @@
   (q-prepared-db-read-source-with-rules-and-fns source prepared prepared-rules inputs ([]Native-Query-Fn [])))
 
 (defn q-result-prepared-db-read-source-with-rules-and-fns [source: DB-Read-Source, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input, registry: []Native-Query-Fn] -> Query-Result
-  (query-result-owned-values (q-prepared-db-read-source-with-rules-and-fns source prepared prepared-rules inputs registry)))
+  (cond
+    (not prepared.ok) (query-result-owned-values (result-set-error prepared.error))
+    (not prepared-rules.ok) (query-result-owned-values (result-set-error prepared-rules.error))
+    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+                result (db-read-source-q-query-with-inputs-and-fns source query-value inputs registry)
+                out (query-result-db-read-source-query-result query-value result)]
+            (delete-query-shallow query-value)
+            out)))
 
 (defn q-result-prepared-db-read-source-with-rules [source: DB-Read-Source, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Query-Result
   (q-result-prepared-db-read-source-with-rules-and-fns source prepared prepared-rules inputs ([]Native-Query-Fn [])))
@@ -2685,87 +2817,140 @@
         result))))
 
 (defn q-result-text-db-read-source [source: DB-Read-Source, text: string] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source source text)))
+  (q-result-text-db-read-source-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) text ([]Query-Input []) ([]Native-Query-Fn [])))
 
 (defn q-result-text-db-read-source-with-fns [source: DB-Read-Source, text: string, registry: []Native-Query-Fn] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-fns source text registry)))
+  (q-result-text-db-read-source-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) text ([]Query-Input []) registry))
 
 (defn q-result-text-db-read-source-with-inputs [source: DB-Read-Source, text: string, inputs: []Query-Input] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-inputs source text inputs)))
+  (q-result-text-db-read-source-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) text inputs ([]Native-Query-Fn [])))
 
 (defn q-result-text-db-read-source-with-inputs-and-fns [source: DB-Read-Source, text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-inputs-and-fns source text inputs registry)))
+  (q-result-text-db-read-source-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) text inputs registry))
 
 (defn q-result-text-db-read-source-with-sources-inputs-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-sources-inputs-and-fns source sources text inputs registry)))
+  (let [query-value (empty-query)
+        [query-ok query-error] (parse-query-text! (addr query-value) text)]
+    (when (not query-ok)
+      (return (query-result-owned-values (result-set-error query-error))))
+    (let [result (db-read-source-q-query-with-sources-inputs-and-fns source sources query-value inputs registry)
+          out (query-result-db-read-source-query-result query-value result)]
+      (delete-query-shallow query-value)
+      out)))
+
+(defn q-result-text-db-read-source-owned-with-sources-inputs-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Query-Result
+  (let [query-value (empty-query)
+        [query-ok query-error] (parse-query-text! (addr query-value) text)]
+    (when (not query-ok)
+      (return (query-result-owned-values (result-set-error query-error))))
+    (let [result (db-read-source-q-query-with-sources-inputs-and-fns source sources query-value inputs registry)
+          out (query-result-db-read-source-query-result-owned query-value result)]
+      (delete-query-shallow query-value)
+      out)))
+
+(defn q-result-text-db-read-source-owned [source: DB-Read-Source, text: string] -> Query-Result
+  (q-result-text-db-read-source-owned-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) text ([]Query-Input []) ([]Native-Query-Fn [])))
 
 (defn q-result-text-db-read-source-with-sources [source: DB-Read-Source, sources: []DB-Read-Named-Source, text: string] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-sources source sources text)))
+  (q-result-text-db-read-source-with-sources-inputs-and-fns source sources text ([]Query-Input []) ([]Native-Query-Fn [])))
 
 (defn q-result-text-db-read-source-with-sources-and-inputs [source: DB-Read-Source, sources: []DB-Read-Named-Source, text: string, inputs: []Query-Input] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-sources-and-inputs source sources text inputs)))
+  (q-result-text-db-read-source-with-sources-inputs-and-fns source sources text inputs ([]Native-Query-Fn [])))
 
 (defn q-result-text-db-read-source-with-sources-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, text: string, registry: []Native-Query-Fn] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-sources-and-fns source sources text registry)))
+  (q-result-text-db-read-source-with-sources-inputs-and-fns source sources text ([]Query-Input []) registry))
 
 (defn q-result-text-db-read-source-with-input-text [source: DB-Read-Source, text: string, inputs-text: string] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-input-text source text inputs-text)))
+  (let [query-value (empty-query)
+        [query-ok query-error] (parse-query-text! (addr query-value) text)]
+    (when (not query-ok)
+      (return (query-result-owned-values (result-set-error query-error))))
+    (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query query-value inputs-text)]
+      (when (not input-ok)
+        (delete-query-shallow query-value)
+        (return (query-result-owned-values (result-set-error input-error))))
+      (let [result (db-read-source-q-query-with-inputs source query-value (slice inputs 0))
+            out (query-result-db-read-source-query-result query-value result)]
+        (delete inputs)
+        (delete-query-shallow query-value)
+        out))))
+
+(defn q-result-text-db-read-source-owned-with-input-text [source: DB-Read-Source, text: string, inputs-text: string] -> Query-Result
+  (let [query-value (empty-query)
+        [query-ok query-error] (parse-query-text! (addr query-value) text)]
+    (when (not query-ok)
+      (return (query-result-owned-values (result-set-error query-error))))
+    (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query query-value inputs-text)]
+      (when (not input-ok)
+        (delete-query-shallow query-value)
+        (return (query-result-owned-values (result-set-error input-error))))
+      (let [result (db-read-source-q-query-with-inputs source query-value (slice inputs 0))
+            out (query-result-db-read-source-query-result-owned query-value result)]
+        (delete inputs)
+        (delete-query-shallow query-value)
+        out))))
 
 (defn q-result-text-db-read-source-with-input-text-and-fns [source: DB-Read-Source, text: string, inputs-text: string, registry: []Native-Query-Fn] -> Query-Result
-  (query-result-owned-values (q-text-db-read-source-with-input-text-and-fns source text inputs-text registry)))
+  (let [query-value (empty-query)
+        [query-ok query-error] (parse-query-text! (addr query-value) text)]
+    (when (not query-ok)
+      (return (query-result-owned-values (result-set-error query-error))))
+    (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query query-value inputs-text)]
+      (when (not input-ok)
+        (delete-query-shallow query-value)
+        (return (query-result-owned-values (result-set-error input-error))))
+      (let [result (db-read-source-q-query-with-inputs-and-fns source query-value (slice inputs 0) registry)
+            out (query-result-db-read-source-query-result query-value result)]
+        (delete inputs)
+        (delete-query-shallow query-value)
+        out))))
 
 (defn q-prepared-value [db: DB, prepared: Prepared-Query] -> Value
   (result-set-value db (q-prepared db prepared)))
 
 (defn q-prepared-with-fns [db: DB, prepared: Prepared-Query, registry: []Native-Query-Fn] -> Result-Set
-  (if prepared.ok
-    (q-query-with-fns db prepared.query registry)
-    (result-set-error prepared.error)))
+  (let [db-alias db]
+    (q-prepared-db-read-source-with-fns (resident-db-read-source (addr db-alias)) prepared registry)))
 
 (defn q-prepared-value-with-fns [db: DB, prepared: Prepared-Query, registry: []Native-Query-Fn] -> Value
   (result-set-value db (q-prepared-with-fns db prepared registry)))
 
 (defn q-prepared-with-inputs [db: DB, prepared: Prepared-Query, inputs: []Query-Input] -> Result-Set
-  (if prepared.ok
-    (q-query-with-inputs db prepared.query inputs)
-    (result-set-error prepared.error)))
+  (let [db-alias db]
+    (q-prepared-db-read-source-with-inputs (resident-db-read-source (addr db-alias)) prepared inputs)))
 
 (defn q-prepared-value-with-inputs [db: DB, prepared: Prepared-Query, inputs: []Query-Input] -> Value
   (result-set-value db (q-prepared-with-inputs db prepared inputs)))
 
 (defn q-prepared-with-inputs-and-fns [db: DB, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
-  (if prepared.ok
-    (q-query-with-inputs-and-fns db prepared.query inputs registry)
-    (result-set-error prepared.error)))
+  (let [db-alias db]
+    (q-prepared-db-read-source-with-inputs-and-fns (resident-db-read-source (addr db-alias)) prepared inputs registry)))
 
 (defn q-result-prepared-with-fns [db: DB, prepared: Prepared-Query, registry: []Native-Query-Fn] -> Query-Result
   (let [db-alias db]
-    (q-result-prepared-db-read-source-with-sources-inputs-and-fns (resident-db-read-source (addr db-alias)) ([]DB-Read-Named-Source []) prepared ([]Query-Input []) registry)))
+    (query-result-owned-copy
+      (q-result-prepared-db-read-source-with-sources-inputs-and-fns (resident-db-read-source (addr db-alias)) ([]DB-Read-Named-Source []) prepared ([]Query-Input []) registry))))
 
 (defn q-result-prepared-with-inputs [db: DB, prepared: Prepared-Query, inputs: []Query-Input] -> Query-Result
   (let [db-alias db]
-    (q-result-prepared-db-read-source-with-inputs (resident-db-read-source (addr db-alias)) prepared inputs)))
+    (query-result-owned-copy (q-result-prepared-db-read-source-with-inputs (resident-db-read-source (addr db-alias)) prepared inputs))))
 
 (defn q-result-prepared-with-inputs-and-fns [db: DB, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Query-Result
   (let [db-alias db]
-    (q-result-prepared-db-read-source-with-sources-inputs-and-fns (resident-db-read-source (addr db-alias)) ([]DB-Read-Named-Source []) prepared inputs registry)))
+    (query-result-owned-copy
+      (q-result-prepared-db-read-source-with-sources-inputs-and-fns (resident-db-read-source (addr db-alias)) ([]DB-Read-Named-Source []) prepared inputs registry))))
 
 (defn q-prepared-value-with-inputs-and-fns [db: DB, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Value
   (result-set-value db (q-prepared-with-inputs-and-fns db prepared inputs registry)))
 
 (defn q-prepared-profiled-with-inputs-and-fns [db: DB, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Profiled-Result-Set
-  (if (and (= (count inputs) 0)
-           (= (count registry) 0))
-    (let [db-alias db]
-      (q-prepared-db-read-source-profiled-with-sources-inputs-and-fns
-        (resident-db-read-source (addr db-alias))
-        ([]DB-Read-Named-Source [])
-        prepared
-        inputs
-        registry))
-    (if prepared.ok
-      (q-query-profiled-with-sources-and-fns db prepared.query inputs ([]DB-Source []) registry)
-      (profiled-result-set (result-set-error prepared.error) (query-stats-empty)))))
+  (let [db-alias db]
+    (q-prepared-db-read-source-profiled-with-sources-inputs-and-fns
+      (resident-db-read-source (addr db-alias))
+      ([]DB-Read-Named-Source [])
+      prepared
+      inputs
+      registry)))
 
 (defn q-prepared-profiled-with-inputs [db: DB, prepared: Prepared-Query, inputs: []Query-Input] -> Profiled-Result-Set
   (q-prepared-profiled-with-inputs-and-fns db prepared inputs ([]Native-Query-Fn [])))
@@ -2783,25 +2968,25 @@
   (q-prepared-profiled-value-with-inputs db prepared ([]Query-Input [])))
 
 (defn q-prepared-with-rules [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Result-Set
-  (cond
-    (not prepared.ok) (result-set-error prepared.error)
-    (not prepared-rules.ok) (result-set-error prepared-rules.error)
-    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
-                result (q-query-with-inputs db query-value inputs)]
-            (delete-query-shallow query-value)
-            result)))
+  (let [db-alias db]
+    (q-prepared-db-read-source-with-rules-and-fns
+      (resident-db-read-source (addr db-alias))
+      prepared
+      prepared-rules
+      inputs
+      ([]Native-Query-Fn []))))
 
 (defn q-prepared-value-with-rules [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Value
   (result-set-value db (q-prepared-with-rules db prepared prepared-rules inputs)))
 
 (defn q-prepared-with-rules-and-fns [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
-  (cond
-    (not prepared.ok) (result-set-error prepared.error)
-    (not prepared-rules.ok) (result-set-error prepared-rules.error)
-    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
-                result (q-query-with-inputs-and-fns db query-value inputs registry)]
-            (delete-query-shallow query-value)
-            result)))
+  (let [db-alias db]
+    (q-prepared-db-read-source-with-rules-and-fns
+      (resident-db-read-source (addr db-alias))
+      prepared
+      prepared-rules
+      inputs
+      registry)))
 
 (defn q-prepared-value-with-rules-and-fns [db: DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input, registry: []Native-Query-Fn] -> Value
   (result-set-value db (q-prepared-with-rules-and-fns db prepared prepared-rules inputs registry)))
@@ -2826,7 +3011,16 @@
 
 (defn q-prepared-with-sources [db: DB, prepared: Prepared-Query, inputs: []Query-Input, sources: []DB-Source] -> Result-Set
   (if prepared.ok
-    (q-query-with-sources db prepared.query inputs sources)
+    (let [db-alias db
+          source-db-aliases (make [dynamic]DB 0 (count sources)) :defer
+          read-sources (make [dynamic]DB-Read-Named-Source 0 (count sources)) :defer
+          _ (append-db-read-named-sources-from-db-sources! (addr read-sources) (addr source-db-aliases) sources)]
+      (db-read-source-q-query-with-sources-inputs-and-fns
+        (resident-db-read-source (addr db-alias))
+        (slice read-sources 0)
+        prepared.query
+        inputs
+        ([]Native-Query-Fn [])))
     (result-set-error prepared.error)))
 
 (defn q-prepared-value-with-sources [db: DB, prepared: Prepared-Query, inputs: []Query-Input, sources: []DB-Source] -> Value
@@ -2834,7 +3028,16 @@
 
 (defn q-prepared-with-sources-and-fns [db: DB, prepared: Prepared-Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Result-Set
   (if prepared.ok
-    (q-query-with-sources-and-fns db prepared.query inputs sources registry)
+    (let [db-alias db
+          source-db-aliases (make [dynamic]DB 0 (count sources)) :defer
+          read-sources (make [dynamic]DB-Read-Named-Source 0 (count sources)) :defer
+          _ (append-db-read-named-sources-from-db-sources! (addr read-sources) (addr source-db-aliases) sources)]
+      (db-read-source-q-query-with-sources-inputs-and-fns
+        (resident-db-read-source (addr db-alias))
+        (slice read-sources 0)
+        prepared.query
+        inputs
+        registry))
     (result-set-error prepared.error)))
 
 (defn q-prepared-value-with-sources-and-fns [db: DB, prepared: Prepared-Query, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Value
@@ -2879,81 +3082,57 @@
             result)))
 
 (defn q-text [db: DB, text: string] -> Result-Set
-  (let [query-value (empty-query)
-        [ok error] (parse-query-text! (addr query-value) text)]
-    (defer (delete-query-shallow query-value))
-    (when ok
-      (return (q-query db query-value)))
-    (return (result-set-error error))))
+  (let [db-alias db]
+    (q-text-db-read-source (resident-db-read-source (addr db-alias)) text)))
 
 (defn q-text-value [db: DB, text: string] -> Value
   (result-set-value db (q-text db text)))
 
 (defn q-text-with-fns [db: DB, text: string, registry: []Native-Query-Fn] -> Result-Set
-  (let [query-value (empty-query)
-        [ok error] (parse-query-text! (addr query-value) text)]
-    (defer (delete-query-shallow query-value))
-    (if ok
-      (q-query-with-fns db query-value registry)
-      (result-set-error error))))
+  (let [db-alias db]
+    (q-text-db-read-source-with-fns (resident-db-read-source (addr db-alias)) text registry)))
 
 (defn q-text-value-with-fns [db: DB, text: string, registry: []Native-Query-Fn] -> Value
   (result-set-value db (q-text-with-fns db text registry)))
 
 (defn q-text-with-inputs [db: DB, text: string, inputs: []Query-Input] -> Result-Set
-  (let [query-value (empty-query)
-        [ok error] (parse-query-text! (addr query-value) text)]
-    (defer (delete-query-shallow query-value))
-    (if ok
-      (return (q-query-with-inputs db query-value inputs))
-      (return (result-set-error error)))))
+  (let [db-alias db]
+    (q-text-db-read-source-with-inputs (resident-db-read-source (addr db-alias)) text inputs)))
 
 (defn q-text-value-with-inputs [db: DB, text: string, inputs: []Query-Input] -> Value
   (result-set-value db (q-text-with-inputs db text inputs)))
 
 (defn q-text-with-inputs-and-fns [db: DB, text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Result-Set
-  (let [query-value (empty-query)
-        [ok error] (parse-query-text! (addr query-value) text)]
-    (defer (delete-query-shallow query-value))
-    (if ok
-      (return (q-query-with-inputs-and-fns db query-value inputs registry))
-      (return (result-set-error error)))))
+  (let [db-alias db]
+    (q-text-db-read-source-with-inputs-and-fns (resident-db-read-source (addr db-alias)) text inputs registry)))
 
 (defn q-result-text [db: DB, text: string] -> Query-Result
   (let [db-alias db]
-    (q-result-text-db-read-source (resident-db-read-source (addr db-alias)) text)))
+    (query-result-owned-copy (q-result-text-db-read-source (resident-db-read-source (addr db-alias)) text))))
 
 (defn q-result-text-with-fns [db: DB, text: string, registry: []Native-Query-Fn] -> Query-Result
   (let [db-alias db]
-    (q-result-text-db-read-source-with-fns (resident-db-read-source (addr db-alias)) text registry)))
+    (query-result-owned-copy (q-result-text-db-read-source-with-fns (resident-db-read-source (addr db-alias)) text registry))))
 
 (defn q-result-text-with-inputs [db: DB, text: string, inputs: []Query-Input] -> Query-Result
   (let [db-alias db]
-    (q-result-text-db-read-source-with-inputs (resident-db-read-source (addr db-alias)) text inputs)))
+    (query-result-owned-copy (q-result-text-db-read-source-with-inputs (resident-db-read-source (addr db-alias)) text inputs))))
 
 (defn q-result-text-with-inputs-and-fns [db: DB, text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Query-Result
   (let [db-alias db]
-    (q-result-text-db-read-source-with-inputs-and-fns (resident-db-read-source (addr db-alias)) text inputs registry)))
+    (query-result-owned-copy (q-result-text-db-read-source-with-inputs-and-fns (resident-db-read-source (addr db-alias)) text inputs registry))))
 
 (defn q-text-value-with-inputs-and-fns [db: DB, text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Value
   (result-set-value db (q-text-with-inputs-and-fns db text inputs registry)))
 
 (defn q-text-profiled-with-inputs-and-fns [db: DB, text: string, inputs: []Query-Input, registry: []Native-Query-Fn] -> Profiled-Result-Set
-  (if (and (= (count inputs) 0)
-           (= (count registry) 0))
-    (let [db-alias db]
-      (q-text-db-read-source-profiled-with-sources-inputs-and-fns
-        (resident-db-read-source (addr db-alias))
-        ([]DB-Read-Named-Source [])
-        text
-        inputs
-        registry))
-    (let [query-value (empty-query)
-          [ok error] (parse-query-text! (addr query-value) text)]
-      (defer (delete-query-shallow query-value))
-      (if ok
-        (q-query-profiled-with-sources-and-fns db query-value inputs ([]DB-Source []) registry)
-        (profiled-result-set (result-set-error error) (query-stats-empty))))))
+  (let [db-alias db]
+    (q-text-db-read-source-profiled-with-sources-inputs-and-fns
+      (resident-db-read-source (addr db-alias))
+      ([]DB-Read-Named-Source [])
+      text
+      inputs
+      registry)))
 
 (defn q-text-profiled-with-inputs [db: DB, text: string, inputs: []Query-Input] -> Profiled-Result-Set
   (q-text-profiled-with-inputs-and-fns db text inputs ([]Native-Query-Fn [])))
@@ -3007,7 +3186,16 @@
         [ok error] (parse-query-text-with-sources! (addr query-value) text sources)]
     (defer (delete-query-shallow query-value))
     (if ok
-      (q-query-with-sources db query-value inputs sources)
+      (let [db-alias db
+            source-db-aliases (make [dynamic]DB 0 (count sources)) :defer
+            read-sources (make [dynamic]DB-Read-Named-Source 0 (count sources)) :defer
+            _ (append-db-read-named-sources-from-db-sources! (addr read-sources) (addr source-db-aliases) sources)]
+        (db-read-source-q-query-with-sources-inputs-and-fns
+          (resident-db-read-source (addr db-alias))
+          (slice read-sources 0)
+          query-value
+          inputs
+          ([]Native-Query-Fn [])))
       (result-set-error error))))
 
 (defn q-text-profiled-with-sources-and-fns [db: DB, text: string, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Profiled-Result-Set
@@ -3029,7 +3217,16 @@
         [ok error] (parse-query-text-with-sources! (addr query-value) text sources)]
     (defer (delete-query-shallow query-value))
     (if ok
-      (q-query-with-sources-and-fns db query-value inputs sources registry)
+      (let [db-alias db
+            source-db-aliases (make [dynamic]DB 0 (count sources)) :defer
+            read-sources (make [dynamic]DB-Read-Named-Source 0 (count sources)) :defer
+            _ (append-db-read-named-sources-from-db-sources! (addr read-sources) (addr source-db-aliases) sources)]
+        (db-read-source-q-query-with-sources-inputs-and-fns
+          (resident-db-read-source (addr db-alias))
+          (slice read-sources 0)
+          query-value
+          inputs
+          registry))
       (result-set-error error))))
 
 (defn q-text-value-with-sources-and-fns [db: DB, text: string, inputs: []Query-Input, sources: []DB-Source, registry: []Native-Query-Fn] -> Value
@@ -3046,8 +3243,9 @@
       (when (not rules-ok)
         (delete-query-shallow query-value)
         (return (result-set-error rules-error)))
-      (let [query-with-attached-rules (query-with-rules query-value (slice rules 0))
-            result (q-query-with-inputs db query-with-attached-rules inputs)]
+      (let [db-alias db
+            query-with-attached-rules (query-with-rule-call-plans (query-with-rules query-value (slice rules 0)))
+            result (db-read-source-q-query-with-inputs-and-fns (resident-db-read-source (addr db-alias)) query-with-attached-rules inputs ([]Native-Query-Fn []))]
         (delete-query-shallow query-with-attached-rules)
         result))))
 
@@ -3065,8 +3263,9 @@
       (when (not rules-ok)
         (delete-query-shallow query-value)
         (return (result-set-error rules-error)))
-      (let [query-with-attached-rules (query-with-rules query-value (slice rules 0))
-            result (q-query-with-inputs-and-fns db query-with-attached-rules inputs registry)]
+      (let [db-alias db
+            query-with-attached-rules (query-with-rule-call-plans (query-with-rules query-value (slice rules 0)))
+            result (db-read-source-q-query-with-inputs-and-fns (resident-db-read-source (addr db-alias)) query-with-attached-rules inputs registry)]
         (delete-query-shallow query-with-attached-rules)
         result))))
 
@@ -3192,11 +3391,32 @@
             (arr.push! flat row)))
         (query-input-relation (slice flat 0) width))))
 
+(defn value-vector-all-lookup-refs? [value: Value] -> bool
+  (when (or (not (= value.kind .Vector))
+            (= (count value.items) 0))
+    (return false))
+  (for [item value.items]
+    (let [[_ _ lookup-ok] (value-lookup-ref-parts item)]
+      (when (not lookup-ok)
+        (return false))))
+  true)
+
+(defn query-input-collection-from-value [value: Value] -> Query-Input
+  (if (value-vector-all-lookup-refs? value)
+    (let [attrs (make [dynamic]string 0 (count value.items))
+          values (make [dynamic]Value 0 (count value.items))]
+      (for [item value.items]
+        (let [[attr lookup-value _] (value-lookup-ref-parts item)]
+          (arr.push! attrs attr)
+          (arr.push! values lookup-value)))
+      (query-input-collection-lookup-refs (slice attrs 0) (slice values 0)))
+    (query-input-collection (slice value.items 0))))
+
 (defn query-input-from-value-for-spec [spec: Query-Input-Spec, value: Value] -> Query-Input
   (case spec.kind
     .Collection
       (if (= value.kind .Vector)
-        (query-input-collection (slice value.items 0))
+        (query-input-collection-from-value value)
         (query-input-scalar value))
     .Tuple
       (if (= value.kind .Vector)
@@ -3281,15 +3501,8 @@
     (return out true "")))
 
 (defn q-text-value-with-input-text [db: DB, text: string, inputs-text: string] -> Value
-  (let [query-value (empty-query)
-        [query-ok query-error] (parse-query-text! (addr query-value) text)]
-    (defer (delete-query-shallow query-value))
-    (when (not query-ok)
-      (return (result-set-value db (result-set-error query-error))))
-    (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query query-value inputs-text)]
-      (when (not input-ok)
-        (return (result-set-value db (result-set-error input-error))))
-      (result-set-value db (q-query-with-inputs db query-value (slice inputs 0))))))
+  (let [db-alias db]
+    (result-set-value db (q-text-db-read-source-with-input-text (resident-db-read-source (addr db-alias)) text inputs-text))))
 
 (defn q-prepared-with-input-text [db: DB, prepared: Prepared-Query, inputs-text: string] -> Result-Set
   (when (not prepared.ok)

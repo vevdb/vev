@@ -49,6 +49,13 @@ def main() -> int:
         if '"Ada"' not in collection or '"Grace"' not in collection:
             raise RuntimeError("unexpected collection query output")
 
+        one_shot_rows = vev.q(
+            '[:find ?name :where [?e :user/name ?name]]',
+            conn,
+        )
+        if sorted(row[0] for row in one_shot_rows) != ["Ada", "Grace"]:
+            raise RuntimeError("unexpected one-shot query rows")
+
         conn.transact(
             """
             [[:db/add 100 :db/ident :user/friend]
@@ -281,6 +288,17 @@ def main() -> int:
                     or pulled.get(":user/friend", {}).get(":user/name") != "Grace"
                 ):
                     raise RuntimeError("unexpected pull result")
+
+                with pull_query.statement() as stmt:
+                    columns = stmt.columns(conn)
+                print(f"pull column batch: {columns}")
+                if (
+                    columns is None
+                    or columns.kinds != (vev.VEV_COLUMN_VALUE,)
+                    or columns.rows()
+                    != [[{":user/name": "Ada", ":user/friend": {":user/name": "Grace"}}]]
+                ):
+                    raise RuntimeError("unexpected pull column batch")
             finally:
                 pull_query.close()
 
@@ -309,6 +327,42 @@ def main() -> int:
                 if names != ["Ada", "Grace"]:
                     raise RuntimeError("unexpected pull-many")
 
+                with pull_db.entity(1) as ada, ada.ref(":user/friend") as friend:
+                    lookup = pull_db.entity_lookup_ref(":user/email", "ada@example.com")
+                    try:
+                        print(f"entity view: {ada.touch()}")
+                        if (
+                            not ada.found()
+                            or ada.id != 1
+                            or ada[":user/name"] != "Ada"
+                            or ada.values(":user/name") != ["Ada"]
+                            or friend.id != 2
+                            or friend.get(":user/name") != "Grace"
+                            or ada.refs(":user/friend") != [vev.Entity(2)]
+                            or lookup.id != 1
+                            or lookup.get(":user/name") != "Ada"
+                            or ada.touch().get(":user/name") != "Ada"
+                        ):
+                            raise RuntimeError("unexpected entity view output")
+                    finally:
+                        lookup.close()
+
+                many_lookup_pull = pull_db.pull_many_lookup_ref(
+                    "[:user/name]",
+                    [
+                        vev.LookupRef(":user/email", "ada@example.com"),
+                        vev.LookupRef(":user/email", "missing@example.com"),
+                        vev.LookupRef(":user/email", "grace@example.com"),
+                    ],
+                )
+                if (
+                    len(many_lookup_pull) != 3
+                    or many_lookup_pull[0].get(":user/name") != "Ada"
+                    or many_lookup_pull[1] is not None
+                    or many_lookup_pull[2].get(":user/name") != "Grace"
+                ):
+                    raise RuntimeError("unexpected pull-many lookup-ref")
+
                 with vev.prepare_pull_pattern("[:user/name]") as prepared_pattern:
                     prepared_pattern_ast = prepared_pattern.edn()
                     if (
@@ -322,12 +376,24 @@ def main() -> int:
                     prepared_many = pull_db.pull_many(
                         prepared_pattern, [vev.Entity(1), vev.Entity(2)]
                     )
+                    prepared_many_lookup = pull_db.pull_many_lookup_ref(
+                        prepared_pattern,
+                        [
+                            vev.LookupRef(":user/email", "ada@example.com"),
+                            vev.LookupRef(":user/email", "grace@example.com"),
+                        ],
+                    )
                     print(f"prepared direct pull: {prepared_pull}")
                     if prepared_pull.get(":user/name") != "Ada":
                         raise RuntimeError("unexpected prepared pull")
                     prepared_names = sorted(item.get(":user/name") for item in prepared_many)
                     if prepared_names != ["Ada", "Grace"]:
                         raise RuntimeError("unexpected prepared pull-many")
+                    prepared_lookup_names = sorted(
+                        item.get(":user/name") for item in prepared_many_lookup
+                    )
+                    if prepared_lookup_names != ["Ada", "Grace"]:
+                        raise RuntimeError("unexpected prepared pull-many lookup-ref")
 
             with conn.prepare(
                 "[:find ?name :in $ % :where (named ?e ?name)]"
@@ -484,6 +550,45 @@ def main() -> int:
                 raise RuntimeError("unexpected durable tx count after first tx")
             if durable.tx_ids() != [1]:
                 raise RuntimeError("unexpected durable tx ids after first tx")
+            with vev.tx_builder(1) as bulk_a, vev.tx_builder(1) as bulk_b:
+                bulk_a.add_string(2, ":user/name", "Durable Grace")
+                bulk_b.add_string(3, ":user/name", "Durable Hedy")
+                with durable.transact_bulk([bulk_a, bulk_b]) as report:
+                    if not report.value().get(":ok"):
+                        raise RuntimeError("unexpected SQLite bulk transaction report")
+            if durable.basis_t() != 2:
+                raise RuntimeError("unexpected durable basis after bulk tx")
+            if durable.tx_count() != 2:
+                raise RuntimeError("unexpected durable tx count after bulk tx")
+            if durable.tx_ids() != [1, 2]:
+                raise RuntimeError("unexpected durable tx ids after bulk tx")
+            with vev.tx_builder(1) as logical_a, vev.tx_builder(1) as logical_b:
+                logical_a.add_string(4, ":user/name", "Durable Ada")
+                logical_b.add_string(5, ":user/name", "Durable Dorothy")
+                with durable.transact_logical_bulk([logical_a, logical_b]) as reports:
+                    values = reports.values()
+                    if len(values) != 2 or not all(value.get(":ok") for value in values):
+                        raise RuntimeError("unexpected SQLite logical group transaction reports")
+            with durable.transact_logical_bulk([]) as reports:
+                if reports.values() != []:
+                    raise RuntimeError("unexpected empty logical group transaction reports")
+            with durable.transact_logical(
+                [
+                    '[{:db/id 6 :user/name "Durable Katherine"}]',
+                    '[{:db/id 7 :user/name "Durable Mary"}]',
+                ]
+            ) as reports:
+                values = reports.values()
+                if len(values) != 2 or not all(value.get(":ok") for value in values):
+                    raise RuntimeError(
+                        "unexpected SQLite logical EDN group transaction reports"
+                    )
+            if durable.basis_t() != 6:
+                raise RuntimeError("unexpected durable basis after logical group tx")
+            if durable.tx_count() != 6:
+                raise RuntimeError("unexpected durable tx count after logical group tx")
+            if durable.tx_ids() != [1, 2, 3, 4, 5, 6]:
+                raise RuntimeError("unexpected durable tx ids after logical group tx")
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
             ) as all_emails, durable.db() as db:
@@ -493,11 +598,11 @@ def main() -> int:
                     raise RuntimeError("unexpected SQLite live row count")
 
         with vev.connect(sqlite_path) as durable:
-            if durable.basis_t() != 1:
+            if durable.basis_t() != 6:
                 raise RuntimeError("unexpected reopened durable basis")
-            if durable.tx_count() != 1:
+            if durable.tx_count() != 6:
                 raise RuntimeError("unexpected reopened durable tx count")
-            if durable.tx_ids() != [1]:
+            if durable.tx_ids() != [1, 2, 3, 4, 5, 6]:
                 raise RuntimeError("unexpected reopened durable tx ids")
             with durable.prepare(
                 "[:find ?e ?email :where [?e :user/email ?email]]"
@@ -518,6 +623,9 @@ def main() -> int:
                 with durable.db() as db:
                     pulled = db.pull(pattern, vev.Entity(1))
                     pulled_many = db.pull_many(pattern, [vev.Entity(1)])
+                    with db.entity(1) as entity:
+                        entity_name = entity[":user/name"]
+                        entity_email = entity.get(":user/email")
                 if (
                     pulled.get(":user/name") != "Durable Ada"
                     or pulled.get(":user/email") != "durable-ada@example.com"
@@ -525,6 +633,11 @@ def main() -> int:
                     raise RuntimeError("unexpected SQLite prepared pull")
                 if pulled_many != [pulled]:
                     raise RuntimeError("unexpected SQLite prepared pull-many")
+                if (
+                    entity_name != "Durable Ada"
+                    or entity_email != "durable-ada@example.com"
+                ):
+                    raise RuntimeError("unexpected SQLite entity view")
             with durable.prepare(
                 "[:find ?email :in $snap :where [$snap 1 :user/email ?email]]",
                 ["$snap"],
@@ -542,7 +655,14 @@ def main() -> int:
                     "[[(named ?e ?name) [?e :user/name ?name]]]",
                 )
                 print(f"sqlite-rules rows: {rows}")
-                if rows != [["Durable Ada"]]:
+                if rows != [
+                    ["Durable Ada"],
+                    ["Durable Grace"],
+                    ["Durable Hedy"],
+                    ["Durable Dorothy"],
+                    ["Durable Katherine"],
+                    ["Durable Mary"],
+                ]:
                     raise RuntimeError("unexpected SQLite rules rows")
     finally:
         remove_sqlite_files(sqlite_path)
