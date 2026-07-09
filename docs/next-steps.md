@@ -66,7 +66,11 @@ Covered in both `examples/clojure/musicbrainz_workshop.clj` and
 - direct pull tutorial examples from `tutorial/pull.clj` setup through map
   specifications: attribute-name pulls, lookup refs, component defaults,
   reverse component lookup, map specifications, nested map specifications, and
-  wildcard plus map specifications
+  wildcard plus map specifications, default option, and default option with a
+  different value type, absent attributes omitted from results, explicit
+  limit, limit with subspec, limit with subspec plus `:as`, no limit, and
+  empty results including empty nested results in a collection, pull
+  expressions in queries, and dynamic pull-pattern query inputs
 
 The Clojure path uses the Datomic-like `vev.core` API. The Kvist path uses the
 Vev Kvist package directly against the same persistent store. Both paths are
@@ -108,13 +112,12 @@ internals:
    Status: active. `examples/clojure/musicbrainz_workshop.clj` and
    `examples/kvist/musicbrainz_workshop.kvist` cover
    `day-of-datomic-conj/src/music_brainz.clj` through Pattern inputs, then
-   `day-of-datomic/tutorial/pull.clj` setup through wildcard plus map
-   specification.
+   all of `day-of-datomic/tutorial/pull.clj`.
 
    Next upstream section:
 
-   - continue at "default option" in
-     `build/upstream/day-of-datomic/tutorial/pull.clj`
+   - close the remaining documented blockers exposed by the already-ported
+     upstream tutorial/workshop files before inventing new examples
 
    Keep both tutorial paths moving together. Every new Clojure tutorial slice
    should have a matching Kvist slice unless the missing piece is explicitly

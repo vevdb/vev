@@ -8,11 +8,12 @@
 ;; build/upstream/day-of-datomic-conj/src/music_brainz.clj
 ;; Sections: file top through Pattern inputs.
 ;; build/upstream/day-of-datomic/tutorial/pull.clj
-;; Sections: setup through wildcard + map specification.
+;; Sections: setup through dynamic pattern input.
 
 (def default-uri "build/musicbrainz/vev-mbrainz-tutorial.sqlite")
 
 (def led-zeppelin [:artist/gid #uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"])
+(def mccartney [:artist/gid #uuid "ba550d0e-adac-4864-b88b-407cab5e76af"])
 (def dark-side-of-the-moon [:release/gid #uuid "24824319-9bb8-3d1e-a2c5-b8b864dafd1b"])
 (def dylan-harrison-sessions [:release/gid #uuid "67bbc160-ac45-4caf-baae-a7e9f5180429"])
 (def concert-for-bangla-desh [:release/gid #uuid "f3bdff34-9a85-4adc-a014-922eef9cdaa5"])
@@ -360,6 +361,18 @@
     [?a :artist/name ?artist-name]
     [?e :release/artists ?a]])
 
+(def direct-pull-expression-in-query-query
+  '[:find [(pull ?e [:release/name]) ...]
+    :in $ ?artist
+    :where
+    [?e :release/artists ?artist]])
+
+(def direct-dynamic-pattern-input-query
+  '[:find [(pull ?e pattern) ...]
+    :in $ ?artist pattern
+    :where
+    [?e :release/artists ?artist]])
+
 (defn opening-release-pulls [db]
   (d/q john-lennon-release-pull-query db "John Lennon"))
 
@@ -518,6 +531,12 @@
   (d/query {:query deep-pull-release-artists-country-query
             :args [db "Led Zeppelin" [:release/name]]}))
 
+(defn direct-pull-expression-in-query [db]
+  (d/q direct-pull-expression-in-query-query db led-zeppelin))
+
+(defn direct-dynamic-pattern-input [db]
+  (d/q direct-dynamic-pattern-input-query db led-zeppelin [:release/name]))
+
 (defn dylan-harrison-cd [db]
   (d/q '[:find ?medium .
          :in $ ?release
@@ -567,6 +586,33 @@
 
 (defn pull-track-wildcard-artists [db]
   (d/pull db '[* {:track/artists [:artist/name]}] (ghost-riders db)))
+
+(defn pull-mccartney-default-end-year [db]
+  (d/pull db '[:artist/name (:artist/endYear :default 0)] mccartney))
+
+(defn pull-mccartney-default-end-year-string [db]
+  (d/pull db '[:artist/name (:artist/endYear :default "N/A")] mccartney))
+
+(defn pull-mccartney-absent-attribute [db]
+  (d/pull db '[:artist/name :died-in-1966?] mccartney))
+
+(defn pull-led-zeppelin-track-limit [db]
+  (d/pull db '[(:track/_artists :limit 10)] led-zeppelin))
+
+(defn pull-led-zeppelin-track-limit-names [db]
+  (d/pull db '[{(:track/_artists :limit 10) [:track/name]}] led-zeppelin))
+
+(defn pull-led-zeppelin-track-limit-names-as [db]
+  (d/pull db '[{(:track/_artists :limit 10 :as "Tracks") [:track/name]}] led-zeppelin))
+
+(defn pull-led-zeppelin-track-no-limit [db]
+  (d/pull db '[(:track/_artists :limit nil)] led-zeppelin))
+
+(defn pull-led-zeppelin-empty-results [db]
+  (d/pull db '[:penguins] led-zeppelin))
+
+(defn pull-track-artists-empty-results [db]
+  (d/pull db '[{:track/artists [:penguins]}] (ghost-riders db)))
 
 (defn validate-opening-bindings! []
   (with-open [conn (connect)
@@ -813,6 +859,118 @@
        :pull-wildcard-map-track-name (:track/name pulled)
        :pull-wildcard-map-artists artist-names})))
 
+(defn validate-pull-default-option! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-mccartney-default-end-year db)]
+      (assert (= "Paul McCartney" (:artist/name pulled)))
+      (assert (= 0 (:artist/endYear pulled)))
+      {:pull-default-option-name (:artist/name pulled)
+       :pull-default-option-end-year (:artist/endYear pulled)})))
+
+(defn validate-pull-default-option-string! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-mccartney-default-end-year-string db)]
+      (assert (= "Paul McCartney" (:artist/name pulled)))
+      (assert (= "N/A" (:artist/endYear pulled)))
+      {:pull-default-option-string-name (:artist/name pulled)
+       :pull-default-option-string-end-year (:artist/endYear pulled)})))
+
+(defn validate-pull-absent-attribute! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-mccartney-absent-attribute db)]
+      (assert (= "Paul McCartney" (:artist/name pulled)))
+      (assert (not (contains? pulled :died-in-1966?)))
+      {:pull-absent-attribute-name (:artist/name pulled)
+       :pull-absent-attribute-present? (contains? pulled :died-in-1966?)})))
+
+(defn validate-pull-explicit-limit! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-led-zeppelin-track-limit db)
+          tracks (:track/_artists pulled)]
+      (assert (= 10 (count tracks)))
+      (assert (every? #(contains? % :db/id) tracks))
+      {:pull-explicit-limit-count (count tracks)})))
+
+(defn validate-pull-limit-subspec! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-led-zeppelin-track-limit-names db)
+          tracks (:track/_artists pulled)
+          names (mapv :track/name tracks)]
+      (assert (= 10 (count tracks)))
+      (assert (= "Whole Lotta Love" (first names)))
+      (assert (some #{"Stairway to Heaven"} names))
+      (assert (every? #(contains? % :track/name) tracks))
+      {:pull-limit-subspec-count (count tracks)
+       :pull-limit-subspec-first (first names)})))
+
+(defn validate-pull-limit-subspec-as! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-led-zeppelin-track-limit-names-as db)
+          tracks (get pulled "Tracks")
+          names (mapv :track/name tracks)]
+      (assert (= 10 (count tracks)))
+      (assert (not (contains? pulled :track/_artists)))
+      (assert (= "Whole Lotta Love" (first names)))
+      (assert (some #{"Stairway to Heaven"} names))
+      (assert (every? #(contains? % :track/name) tracks))
+      {:pull-limit-subspec-as-count (count tracks)
+       :pull-limit-subspec-as-first (first names)})))
+
+(defn validate-pull-no-limit! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-led-zeppelin-track-no-limit db)
+          tracks (:track/_artists pulled)]
+      (assert (= 128 (count tracks)))
+      (assert (every? #(contains? % :db/id) tracks))
+      {:pull-no-limit-count (count tracks)})))
+
+(defn validate-pull-empty-results! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-led-zeppelin-empty-results db)]
+      (assert (map? pulled))
+      (assert (empty? pulled))
+      {:pull-empty-results-count (count pulled)})))
+
+(defn validate-pull-empty-results-in-collection! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-track-artists-empty-results db)
+          artists (:track/artists pulled)]
+      (assert (= 2 (count artists)))
+      (assert (every? map? artists))
+      (assert (every? empty? artists))
+      {:pull-empty-results-in-collection-count (count artists)})))
+
+(defn validate-pull-expression-in-query! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (direct-pull-expression-in-query db)
+          names (set (map :release/name pulled))]
+      (assert (= 8 (count pulled)))
+      (assert (contains? names "Led Zeppelin"))
+      (assert (every? #(= #{:release/name} (set (keys %))) pulled))
+      {:pull-expression-in-query-count (count pulled)
+       :pull-expression-in-query-has-led-zeppelin (contains? names "Led Zeppelin")})))
+
+(defn validate-dynamic-pattern-input! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (direct-dynamic-pattern-input db)
+          names (set (map :release/name pulled))]
+      (assert (= 8 (count pulled)))
+      (assert (contains? names "Led Zeppelin"))
+      (assert (every? #(= #{:release/name} (set (keys %))) pulled))
+      {:dynamic-pattern-input-count (count pulled)
+       :dynamic-pattern-input-has-led-zeppelin (contains? names "Led Zeppelin")})))
+
 (comment
   (def conn (connect))
   (def db (db conn))
@@ -943,7 +1101,7 @@
 
   ;; Direct pull tutorial:
   ;; Source of truth is `build/upstream/day-of-datomic/tutorial/pull.clj`,
-  ;; from "attribute name" through "wildcard + map specification".
+  ;; from "attribute name" through "dynamic pattern input".
   (pull-artist-name-start db)
   (pull-artist-country db)
   ;; Upstream expects this reverse lookup to return artists. Vev currently
@@ -962,6 +1120,39 @@
 
   ;; Wildcard + map specification:
   (pull-track-wildcard-artists db)
+
+  ;; Default option:
+  (pull-mccartney-default-end-year db)
+
+  ;; Default option with different type:
+  (pull-mccartney-default-end-year-string db)
+
+  ;; Absent attributes are omitted from results:
+  (pull-mccartney-absent-attribute db)
+
+  ;; Explicit limit:
+  (pull-led-zeppelin-track-limit db)
+
+  ;; Limit + subspec:
+  (pull-led-zeppelin-track-limit-names db)
+
+  ;; Limit + subspec + :as option:
+  (pull-led-zeppelin-track-limit-names-as db)
+
+  ;; No limit:
+  (pull-led-zeppelin-track-no-limit db)
+
+  ;; Empty results:
+  (pull-led-zeppelin-empty-results db)
+
+  ;; Empty results in a collection:
+  (pull-track-artists-empty-results db)
+
+  ;; Pull expression in query:
+  (direct-pull-expression-in-query db)
+
+  ;; Dynamic pattern input:
+  (direct-dynamic-pattern-input db)
 
   (.close db)
   (.close conn))

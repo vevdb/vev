@@ -660,7 +660,6 @@
       (and (= 1 (count find-forms))
            (vector? first-form)
            (= 2 (count first-form))
-           (symbol? (first first-form))
            (= '... (second first-form)))
       :collection
 

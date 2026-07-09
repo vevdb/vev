@@ -11,7 +11,7 @@
 // build/upstream/day-of-datomic-conj/src/music_brainz.clj
 // Sections: file top through Pattern inputs.
 // build/upstream/day-of-datomic/tutorial/pull.clj
-// Sections: setup through wildcard + map specification.
+// Sections: setup through dynamic pattern input.
 
 (def default-uri "build/musicbrainz/vev-mbrainz-tutorial.sqlite")
 
@@ -50,6 +50,8 @@
 (def nested-pull-release-artists-query "[:find (pull ?e [:release/name {:release/artists [*]}]) :in $ ?artist-name pattern :where [?a :artist/name ?artist-name] [?e :release/artists ?a]]")
 (def nested-pull-release-artists-country-query "[:find (pull ?e [:release/name {:release/artists [*]} {:release/country [*]}]) :in $ ?artist-name pattern :where [?a :artist/name ?artist-name] [?e :release/artists ?a]]")
 (def deep-pull-release-artists-country-query "[:find (pull ?e [:release/name {:release/artists [* {:artist/country [*]}]} {:release/country [*]}]) :in $ ?artist-name pattern :where [?a :artist/name ?artist-name] [?e :release/artists ?a]]")
+(def direct-pull-expression-in-query-query "[:find [(pull ?e [:release/name]) ...] :in $ ?artist :where [?e :release/artists ?artist]]")
+(def direct-dynamic-pattern-input-query "[:find [(pull ?e pattern) ...] :in $ ?artist pattern :where [?e :release/artists ?artist]]")
 
 (def dylan-harrison-cd-query "[:find ?medium . :in $ ?release :where [?release :release/media ?medium]]")
 (def ghost-riders-query "[:find ?track . :in $ ?release ?trackno :where [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/position ?trackno]]")
@@ -152,6 +154,33 @@
   (when (not ok)
     (set! passed^ false)))
 
+(defn pull-query-row-has-release-name? [row: vev.Result-Row, expected: string] -> bool
+  (when (not (= (count row.pulls) 1))
+    (return false))
+  (let [attrs row.pulls[0].attrs]
+    (when (not (= (count attrs) 1))
+      (return false))
+    (and (= attrs[0].a ":release/name")
+         (= attrs[0].v.kind .String)
+         (= attrs[0].v.text expected))))
+
+(defn pull-query-result-has-release-name? [result: vev.Query-Result, expected: string] -> bool
+  (for [row result.result.rows]
+    (when (pull-query-row-has-release-name? row expected)
+      (return true)))
+  false)
+
+(defn validate-pull-query! [snapshot: ^vev.Store-DB, label: string, query: string, inputs: string, expected: int, expected-name: string, passed: ^bool]
+  (let [result (vev.q-result-store-db-text-with-input-text snapshot query inputs)
+        rows (count result.result.rows)
+        ok (and result.result.ok
+                (= rows expected)
+                (pull-query-result-has-release-name? result expected-name))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=%d error=%s\n" label ok rows expected result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
 (defn validate-direct-pull! [snapshot: ^vev.Store-DB, passed: ^bool]
   (do
   (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[:artist/name :artist/startYear]" ":artist/gid" (vev.value-uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"))
@@ -197,7 +226,40 @@
             [track-duration track-duration-ok] (value-map-get track-pull ":track/duration")
             [artists artists-ok] (value-map-get track-pull ":track/artists")]
         (check-pull! "pull-wildcard-map-specification" (and track-pull-ok (= track-pull-error "") (= (value-map-count track-pull) 6) track-name-ok (= track-name.kind .String) (= track-name.text "Ghost Riders in the Sky") track-position-ok (= track-position.kind .Int) (= track-position.int-value 11) track-duration-ok (= track-duration.kind .Int) (= track-duration.int-value 218506) artists-ok (= (value-vector-count artists) 2) (value-vector-has-map-string? artists ":artist/name" "George Harrison") (value-vector-has-map-string? artists ":artist/name" "Bob Dylan")) passed))
-      (check-pull! "pull-wildcard-map-specification" false passed)))))
+      (check-pull! "pull-wildcard-map-specification" false passed)))
+  (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[:artist/name (:artist/endYear :default 0)]" ":artist/gid" (vev.value-uuid "ba550d0e-adac-4864-b88b-407cab5e76af"))
+        [artist-name artist-name-ok] (value-map-get artist ":artist/name")
+        [artist-end artist-end-ok] (value-map-get artist ":artist/endYear")]
+    (check-pull! "pull-default-option" (and artist-ok (= artist-error "") artist-name-ok (= artist-name.kind .String) (= artist-name.text "Paul McCartney") artist-end-ok (= artist-end.kind .Int) (= artist-end.int-value 0)) passed))
+  (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[:artist/name (:artist/endYear :default \"N/A\")]" ":artist/gid" (vev.value-uuid "ba550d0e-adac-4864-b88b-407cab5e76af"))
+        [artist-name artist-name-ok] (value-map-get artist ":artist/name")
+        [artist-end artist-end-ok] (value-map-get artist ":artist/endYear")]
+    (check-pull! "pull-default-option-string" (and artist-ok (= artist-error "") artist-name-ok (= artist-name.kind .String) (= artist-name.text "Paul McCartney") artist-end-ok (= artist-end.kind .String) (= artist-end.text "N/A")) passed))
+  (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[:artist/name :died-in-1966?]" ":artist/gid" (vev.value-uuid "ba550d0e-adac-4864-b88b-407cab5e76af"))
+        [artist-name artist-name-ok] (value-map-get artist ":artist/name")
+        [_ died-ok] (value-map-get artist ":died-in-1966?")]
+    (check-pull! "pull-absent-attribute" (and artist-ok (= artist-error "") artist-name-ok (= artist-name.kind .String) (= artist-name.text "Paul McCartney") (not died-ok)) passed))
+  (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[(:track/_artists :limit 10)]" ":artist/gid" (vev.value-uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"))
+        [tracks tracks-ok] (value-map-get artist ":track/_artists")]
+    (check-pull! "pull-explicit-limit" (and artist-ok (= artist-error "") tracks-ok (= (value-vector-count tracks) 10)) passed))
+  (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[{(:track/_artists :limit 10) [:track/name]}]" ":artist/gid" (vev.value-uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"))
+        [tracks tracks-ok] (value-map-get artist ":track/_artists")]
+    (check-pull! "pull-limit-subspec" (and artist-ok (= artist-error "") tracks-ok (= (value-vector-count tracks) 10) (value-vector-has-map-string? tracks ":track/name" "Whole Lotta Love") (value-vector-has-map-string? tracks ":track/name" "Stairway to Heaven")) passed))
+  (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[{(:track/_artists :limit 10 :as \"Tracks\") [:track/name]}]" ":artist/gid" (vev.value-uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"))
+        [tracks tracks-ok] (vev.map-get-value artist (vev.value-string "Tracks"))
+        [_ attr-ok] (value-map-get artist ":track/_artists")]
+    (check-pull! "pull-limit-subspec-as" (and artist-ok (= artist-error "") tracks-ok (not attr-ok) (= (value-vector-count tracks) 10) (value-vector-has-map-string? tracks ":track/name" "Whole Lotta Love") (value-vector-has-map-string? tracks ":track/name" "Stairway to Heaven")) passed))
+  (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[(:track/_artists :limit nil)]" ":artist/gid" (vev.value-uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"))
+        [tracks tracks-ok] (value-map-get artist ":track/_artists")]
+    (check-pull! "pull-no-limit" (and artist-ok (= artist-error "") tracks-ok (= (value-vector-count tracks) 128)) passed))
+  (let [[artist artist-ok artist-error] (vev.pull-store-db-lookup-ref-value-text snapshot "[:penguins]" ":artist/gid" (vev.value-uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"))]
+    (check-pull! "pull-empty-results" (and artist-ok (= artist-error "") (= artist.kind .Map) (= (value-map-count artist) 0)) passed))
+  (let [[track track-ok] (query-scalar-entity! snapshot ghost-riders-query "[[:release/gid #uuid \"67bbc160-ac45-4caf-baae-a7e9f5180429\"] 11]")]
+    (if track-ok
+      (let [[track-pull track-pull-ok track-pull-error] (vev.pull-store-db-value-text snapshot "[{:track/artists [:penguins]}]" track)
+            [artists artists-ok] (value-map-get track-pull ":track/artists")]
+        (check-pull! "pull-empty-results-in-collection" (and track-pull-ok (= track-pull-error "") artists-ok (= (value-vector-count artists) 2) (= artists.items[0].kind .Map) (= (value-map-count artists.items[0]) 0) (= artists.items[1].kind .Map) (= (value-map-count artists.items[1]) 0)) passed))
+      (check-pull! "pull-empty-results-in-collection" false passed)))))
 
 (defn main []
   (defer (free_all context.allocator))
@@ -244,4 +306,6 @@
       (validate-query! (addr snapshot) "nested-pull-release-artists-country" nested-pull-release-artists-country-query "[\"Led Zeppelin\" [:release/name]]" 14 (addr passed))
       (validate-query! (addr snapshot) "deep-pull-release-artists-country" deep-pull-release-artists-country-query "[\"Led Zeppelin\" [:release/name]]" 14 (addr passed))
       (validate-direct-pull! (addr snapshot) (addr passed))
+      (validate-pull-query! (addr snapshot) "direct-pull-expression-in-query" direct-pull-expression-in-query-query "[[:artist/gid #uuid \"678d88b2-87b0-403b-b63d-5da7465aecc3\"]]" 8 "Led Zeppelin" (addr passed))
+      (validate-pull-query! (addr snapshot) "direct-dynamic-pattern-input" direct-dynamic-pattern-input-query "[[:artist/gid #uuid \"678d88b2-87b0-403b-b63d-5da7465aecc3\"] [:release/name]]" 8 "Led Zeppelin" (addr passed))
       (fmt.printf "source=kvist section=summary ok=%v\n" passed))))

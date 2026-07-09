@@ -3013,7 +3013,8 @@
                 a-owned: true
                 key-kind: pulled.key-kind
                 v: (value-owned pulled.v)
-                attrs: children})))
+                attrs: children
+                has-explicit-pattern: pulled.has-explicit-pattern})))
 
 (defn pull-result-owned [result: Pull-Result] -> Pull-Result
   (let [attrs (make [dynamic]Pull-Attr 0 (count result.attrs))]
@@ -7586,7 +7587,8 @@
                         a-owned: true
                         key-kind: (pull-output-key-kind spec)
                         v: (value-entity datom.e)
-                        attrs: children})
+                        attrs: children
+                        has-explicit-pattern: (> (count spec.pattern) 0)})
             registry)))
       (delete-pull-attrs-owned-values children)))
   (return true ""))
@@ -7631,7 +7633,8 @@
                         a-owned: true
                         key-kind: (pull-output-key-kind spec)
                         v: (value-owned datom.v)
-                        attrs: children})
+                        attrs: children
+                        has-explicit-pattern: (> (count spec.pattern) 0)})
             registry)))
       (delete-pull-attrs-owned-values children)))
   (return true ""))
@@ -34924,10 +34927,12 @@
 (defn pull-render-attr-value [db: DB, pulled: Pull-Attr] -> Value
   (if (> (count pulled.attrs) 0)
     (pull-render-attrs-map db (slice pulled.attrs 0))
-    (if (and (= pulled.v.kind .Entity)
-             (not (= pulled.a ":db/id")))
-      (pull-render-ref-id-map pulled.v.entity)
-      pulled.v)))
+    (if pulled.has-explicit-pattern
+      (value-map ([]Value []))
+      (if (and (= pulled.v.kind .Entity)
+               (not (= pulled.a ":db/id")))
+        (pull-render-ref-id-map pulled.v.entity)
+        pulled.v))))
 
 (defn pull-render-attr-is-many? [db: DB, pulled: Pull-Attr, count-for-attr: int] -> bool
   (when (> count-for-attr 1)
@@ -34995,16 +35000,20 @@
 
 (defn pull-result-value [db: DB, result: Pull-Result] -> Value
   (if (= (count result.attrs) 0)
-    (value-nil)
+    (if (= result.e 0)
+      (value-nil)
+      (value-map ([]Value [])))
     (pull-render-attrs-map db (slice result.attrs 0))))
 
 (defn db-read-source-pull-render-attr-value [source: DB-Read-Source, pulled: Pull-Attr] -> [value: Value, ok: bool, error: string]
   (if (> (count pulled.attrs) 0)
     (db-read-source-pull-render-attrs-map source (slice pulled.attrs 0))
-    (if (and (= pulled.v.kind .Entity)
-             (not (= pulled.a ":db/id")))
-      (return (value-map ([]Value [(value-keyword (string-owned ":db/id")) (value-entity pulled.v.entity)])) true "")
-      (return (value-owned pulled.v) true ""))))
+    (if pulled.has-explicit-pattern
+      (return (value-map ([]Value [])) true "")
+      (if (and (= pulled.v.kind .Entity)
+               (not (= pulled.a ":db/id")))
+        (return (value-map ([]Value [(value-keyword (string-owned ":db/id")) (value-entity pulled.v.entity)])) true "")
+        (return (value-owned pulled.v) true "")))))
 
 (defn db-read-source-pull-render-attr-is-many? [source: DB-Read-Source, pulled: Pull-Attr, count-for-attr: int] -> [many: bool, ok: bool, error: string]
   (when (> count-for-attr 1)
@@ -35056,7 +35065,7 @@
 
 (defn db-read-source-pull-result-value [source: DB-Read-Source, result: Pull-Result] -> [value: Value, ok: bool, error: string]
   (if (= (count result.attrs) 0)
-    (return (value-nil) true "")
+    (return (if (= result.e 0) (value-nil) (value-map ([]Value []))) true "")
     (db-read-source-pull-render-attrs-map source (slice result.attrs 0))))
 
 (defn db-read-source-pull-many-result-values [source: DB-Read-Source, results: []Pull-Result] -> [values: [dynamic]Value, ok: bool, error: string]
@@ -35398,8 +35407,7 @@
   (pull-child-recursion-with-fns db entity pattern seen ([]Native-Query-Fn [])))
 
 (defn pull-include-ref-result? [spec: Pull-Spec, children: []Pull-Attr] -> bool
-  (or (= (count spec.pattern) 0)
-      (> (count children) 0)))
+  true)
 
 (defn pull-reverse-attr-with-fns! [out: ^[dynamic]Pull-Attr, db: DB, entity: u64, spec: Pull-Spec, root: []Pull-Spec, seen-entities: ^[dynamic]u64, seen-counts: (ptr (map u64 int)), registry: []Native-Query-Fn] -> bool
   (let [forward-attr (forward-attr-for-reverse spec.a) :defer
@@ -35503,7 +35511,8 @@
               a-owned: true
               key-kind: (pull-output-key-kind spec)
               v: value
-              attrs: attrs}))
+              attrs: attrs
+              has-explicit-pattern: (> (count spec.pattern) 0)}))
 
 (defn pull-next-recursion-depth [depth: int] -> int
   (- depth 1))
@@ -35609,7 +35618,8 @@
                         a-owned: attr.a-owned
                         key-kind: attr.key-kind
                         v: (value-vector ([]Value [attr.v]))
-                        attrs: (make [dynamic]Pull-Attr)})))
+                        attrs: (make [dynamic]Pull-Attr)
+                        has-explicit-pattern: attr.has-explicit-pattern})))
   (when (= spec.xform "name")
     (let [[name name-ok] (pull-attr-child-value (slice attr.attrs 0) ":name")]
       (when name-ok
@@ -35618,7 +35628,8 @@
                             a-owned: attr.a-owned
                             key-kind: attr.key-kind
                             v: name
-                            attrs: (make [dynamic]Pull-Attr)})))))
+                            attrs: (make [dynamic]Pull-Attr)
+                            has-explicit-pattern: attr.has-explicit-pattern})))))
   (let [[index found] (query-fn-index registry spec.xform)]
     (when found
       (let [entry registry[index]]
@@ -35630,7 +35641,8 @@
                                   a-owned: attr.a-owned
                                   key-kind: attr.key-kind
                                   v: result.value
-                                  attrs: (make [dynamic]Pull-Attr)}))))))))
+                                  attrs: (make [dynamic]Pull-Attr)
+                                  has-explicit-pattern: attr.has-explicit-pattern}))))))))
   attr)
 
 (defn pull-spec-transform-attr [spec: Pull-Spec, attr: Pull-Attr] -> Pull-Attr
