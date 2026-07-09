@@ -2179,7 +2179,7 @@
           (for [column-index find-indexes]
             (let [[value _] (typed-relation-column-value rel.typed-columns[column-index] row)]
               (arr.push! values value)))
-          (if (or (> (count pulls) 0) trust-unique-bindings)
+          (if trust-unique-bindings
             (do
               (arr.push! out (Result-Row {values: values pulls: pulls}))
               (set! pushed true))
@@ -2189,7 +2189,7 @@
               (for [column-index with-indexes]
                 (let [[value _] (typed-relation-column-value rel.typed-columns[column-index] row)]
                   (arr.push! dedupe-values value)))
-              (let [[key key-ok] (row-values-dedupe-key (slice dedupe-values 0))]
+              (let [[key key-ok] (result-row-dedupe-key (slice dedupe-values 0) (slice pulls 0))]
                 (if key-ok
                   (let [already-seen (set.contains? seen key)]
                     (when (not already-seen)
@@ -2376,11 +2376,11 @@
                   (delete-result-rows-owned-values out)
                   (return (make [dynamic]Result-Row) false "with var value missing"))
                 (arr.push! dedupe-values value)))
-            (if (or (> (count pulls) 0) trust-unique-bindings)
+            (if trust-unique-bindings
               (do
                 (arr.push! out (Result-Row {values: values pulls: pulls}))
                 (set! pushed true))
-              (let [[key key-ok] (row-values-dedupe-key (slice dedupe-values 0))]
+              (let [[key key-ok] (result-row-dedupe-key (slice dedupe-values 0) (slice pulls 0))]
                 (if key-ok
                   (let [already-seen (set.contains? seen key)]
                     (when (not already-seen)
@@ -2959,6 +2959,21 @@
     (delete-owned-value pulled.v)
     (delete-pull-attrs-owned-values pulled.attrs))
   (delete attrs))
+
+(defn delete-pull-attr-shallow-owned-key [pulled: Pull-Attr]
+  (when pulled.a-owned
+    (delete pulled.a))
+  (for [child pulled.attrs]
+    (delete-pull-attr-shallow-owned-key child))
+  (delete pulled.attrs))
+
+(defn delete-pull-attr-owned-values [pulled: Pull-Attr]
+  (when pulled.a-owned
+    (delete pulled.a))
+  (delete-owned-value pulled.v)
+  (for [child pulled.attrs]
+    (delete-pull-attr-owned-values child))
+  (delete pulled.attrs))
 
 (defn delete-pull-result-shallow [result: Pull-Result]
   (delete-pull-attrs-shallow result.attrs))
@@ -3868,6 +3883,38 @@
           (return "" false))
         (arr.push! parts (fmt.tprintf "%d:%s;" (count part) part))))
     (return (core-strings.concatenate (slice parts 0)) true)))
+
+(defn pull-attrs-dedupe-key [attrs: []Pull-Attr] -> [key: string, ok: bool]
+  (let [parts (make [dynamic]string 0 (count attrs))]
+    (defer (delete parts))
+    (for [pull-attr attrs]
+      (let [[value-key value-ok] (primitive-value-dedupe-key pull-attr.v)]
+        (when (not value-ok)
+          (return "" false))
+        (let [[child-key child-ok] (pull-attrs-dedupe-key (slice pull-attr.attrs 0))]
+          (when (not child-ok)
+            (return "" false))
+          (arr.push! parts (fmt.tprintf "%d:%s:%d:%s:%d:%s;" (count pull-attr.a) pull-attr.a (count value-key) value-key (count child-key) child-key)))))
+    (return (fmt.tprintf "pa:%d:%s" (count attrs) (core-strings.concatenate (slice parts 0))) true)))
+
+(defn pull-result-dedupe-key [pull: Pull-Result] -> [key: string, ok: bool]
+  (let [[attrs-key attrs-ok] (pull-attrs-dedupe-key (slice pull.attrs 0))]
+    (if attrs-ok
+      (return (fmt.tprintf "pr:%s" attrs-key) true)
+      (return "" false))))
+
+(defn result-row-dedupe-key [values: []Value, pulls: []Pull-Result] -> [key: string, ok: bool]
+  (let [[values-key values-ok] (row-values-dedupe-key values)]
+    (when (not values-ok)
+      (return "" false))
+    (let [pull-parts (make [dynamic]string 0 (count pulls))]
+      (defer (delete pull-parts))
+      (for [pull pulls]
+        (let [[pull-key pull-ok] (pull-result-dedupe-key pull)]
+          (when (not pull-ok)
+            (return "" false))
+          (arr.push! pull-parts (fmt.tprintf "%d:%s;" (count pull-key) pull-key))))
+      (return (fmt.tprintf "rv:%d:%s:rp:%d:%s" (count values-key) values-key (count pulls) (core-strings.concatenate (slice pull-parts 0))) true))))
 
 (defn two-primitive-values-dedupe-key [first: Value, second: Value] -> [key: string, ok: bool]
   (cond
@@ -6447,6 +6494,11 @@
     (db-read-source-delete-binding-owned binding))
   (delete bindings))
 
+(defn delete-bindings-shallow [bindings: [dynamic]Binding]
+  (for [binding bindings]
+    (delete binding.items))
+  (delete bindings))
+
 (defn db-read-source-project-binding-owned [binding: Binding, names: []string] -> Binding
   (let [items (make [dynamic]Var-Binding)]
     (for [name names]
@@ -7593,38 +7645,43 @@
           (when (not (db-read-source-pull-spec-supported? spec registry))
             (delete-pull-attrs-owned-values attrs)
             (return (Pull-Result {}) false "SQLite DB snapshot source currently supports forward, wildcard, reverse, nested, pattern-input, default, limit, recursion, and built-in xform pull attrs only"))
+          (when (not (= spec.a "*"))
+            (pull-remove-output-attr-owned-values! (addr attrs) (pull-output-attr spec)))
           (cond
             (= spec.a "*")
               (do
-                (arr.push! attrs
-                  (Pull-Attr {a: ":db/id"
-                              key-kind: .Keyword
-                              v: (value-entity entity)
-                              attrs: (make [dynamic]Pull-Attr)}))
+                (when (not (pull-output-has-attr? attrs ":db/id"))
+                  (arr.push! attrs
+                    (Pull-Attr {a: ":db/id"
+                                key-kind: .Keyword
+                                v: (value-entity entity)
+                                attrs: (make [dynamic]Pull-Attr)})))
                 (if (db-read-source-has-overlay? source)
                   (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-entity source entity)]
                     (when (not datoms-ok)
                       (delete-pull-attrs-owned-values attrs)
                       (return (Pull-Result {}) false datoms-error))
                     (for [datom datoms]
-                      (arr.push! attrs
-                        (Pull-Attr {a: (string-owned datom.a)
-                                    a-owned: true
-                                    key-kind: .Keyword
-                                    v: (value-owned datom.v)
-                                    attrs: (make [dynamic]Pull-Attr)})))
+                      (when (not (pull-output-has-attr? attrs datom.a))
+                        (arr.push! attrs
+                          (Pull-Attr {a: (string-owned datom.a)
+                                      a-owned: true
+                                      key-kind: .Keyword
+                                      v: (value-owned datom.v)
+                                      attrs: (make [dynamic]Pull-Attr)}))))
                     (delete-owned-datoms datoms))
                   (let [[stream stream-ok stream-error] (source-eavt-entity-stream source entity)]
                     (when (not stream-ok)
                       (delete-pull-attrs-owned-values attrs)
                       (return (Pull-Result {}) false stream-error))
                     (while stream.has-current
-                      (arr.push! attrs
-                        (Pull-Attr {a: (string-owned stream.current.a)
-                                    a-owned: true
-                                    key-kind: .Keyword
-                                    v: (value-owned stream.current.v)
-                                    attrs: (make [dynamic]Pull-Attr)}))
+                      (when (not (pull-output-has-attr? attrs stream.current.a))
+                        (arr.push! attrs
+                          (Pull-Attr {a: (string-owned stream.current.a)
+                                      a-owned: true
+                                      key-kind: .Keyword
+                                      v: (value-owned stream.current.v)
+                                      attrs: (make [dynamic]Pull-Attr)})))
                       (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr stream))]
                         (when (not advance-ok)
                           (delete-source-index-datom-stream stream)
@@ -7844,11 +7901,11 @@
               (delete-pull-result-owned-values pull))
             (delete pulls))
           (do
-            (if (or (> (count pulls) 0) trust-unique-bindings)
+            (if trust-unique-bindings
               (do
                 (arr.push! rows (Result-Row {values: values pulls: pulls}))
                 (set! pushed true))
-              (let [[key key-ok] (row-values-dedupe-key (slice dedupe-values 0))]
+              (let [[key key-ok] (result-row-dedupe-key (slice dedupe-values 0) (slice pulls 0))]
                 (if key-ok
                   (let [already-seen (set.contains? seen key)]
                     (when (not already-seen)
@@ -10488,6 +10545,85 @@
           (return current true))))
     (return current true)))
 
+(defn db-read-source-query-relation-from-rule-body-seeded-typed-depth [source: DB-Read-Source, sources: []DB-Read-Named-Source, rules: []Rule, rule: Rule, seed: Query-Relation, registry: []Native-Query-Fn, stats: ^Query-Stats, depth: int] -> [rel: Query-Relation, ok: bool]
+  (when (< depth 0)
+    (return (query-relation-empty) false))
+  (when (not (and seed.has-typed-columns
+                  (source-rule-body-typed-eligible? rules rule registry)))
+    (return (query-relation-empty) false))
+  (let [current (query-relation-copy seed)]
+    (for [step rule.body-steps]
+      (let [[next next-ok] (db-read-source-query-relation-apply-typed-step
+                             source
+                             sources
+                             current
+                             step
+                             (slice rule.clauses 0)
+                             (slice rule.predicates 0)
+                             (slice rule.function-clauses 0)
+                             (slice rule.grounds 0)
+                             (slice rule.get-elses 0)
+                             (slice rule.get-somes 0)
+                             (slice rule.not-groups 0)
+                             (slice rule.or-groups 0)
+                             rules
+                             (slice rule.rule-calls 0)
+                             registry
+                             stats)]
+        (delete-query-relation current)
+        (when (not next-ok)
+          (delete-query-relation next)
+          (return (query-relation-empty) false))
+        (let [deduped (query-relation-dedupe-step next)]
+          (delete-query-relation next)
+          (set! current deduped))
+        (when (= (query-relation-row-count current) 0)
+          (return current true))))
+    (return current true)))
+
+(defn bind-rule-param-value! [binding: ^Binding, param: string, value: Value] -> bool
+  (let [[existing exists] (binding-lookup binding^ param)]
+    (if exists
+      (predicate-value-equal? existing value)
+      (do
+        (binding-store! binding param value)
+        true))))
+
+(defn query-relation-seed-for-rule-call [rel: Query-Relation, rule: Rule, call: Rule-Call] -> [seed: Query-Relation, ok: bool]
+  (when (not (and rel.has-typed-columns
+                  (= (count rule.params) (count call.args))))
+    (return (query-relation-empty) false))
+  (let [bindings (make [dynamic]Binding)]
+    (defer (delete-bindings-shallow bindings))
+    (let [row 0]
+      (while (< row rel.typed-rows)
+        (let [[binding binding-ok] (binding-from-query-relation-typed-row rel row)]
+          (when (not binding-ok)
+            (return (query-relation-empty) false))
+          (let [ok true]
+            (for [param index rule.params]
+              (when ok
+                (let [arg call.args[index]]
+                  (case arg.kind
+                    .Var
+                      (let [[value value-ok] (query-relation-typed-row-value rel row arg.name)]
+                        (when value-ok
+                          (set! ok (bind-rule-param-value! (addr binding) param value))))
+                    .Value
+                      (set! ok (bind-rule-param-value! (addr binding) param arg.value))
+                    .Wildcard
+                      (discard arg)
+                    .LookupRef
+                      (set! ok false)
+
+                      (set! ok false)))))
+            (if ok
+              (arr.push! bindings binding)
+              (delete binding.items))))
+        (set! row (+ row 1))))
+    (let [out (query-relation-from-bindings (slice bindings 0))]
+      (return out out.has-typed-columns))))
+
 (defn db-read-source-query-relation-from-rule-call-typed-depth [source: DB-Read-Source, sources: []DB-Read-Named-Source, rules: []Rule, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, depth: int] -> [rel: Query-Relation, ok: bool]
   (when (< depth 0)
     (return (query-relation-empty) false))
@@ -10536,10 +10672,73 @@
           (delete-query-relation out)
           (return (query-relation-empty) false)))))))
 
+(defn db-read-source-query-relation-apply-bound-rule-call-typed-depth [source: DB-Read-Source, sources: []DB-Read-Named-Source, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, depth: int] -> [out: Query-Relation, ok: bool]
+  (when (or (< depth 0)
+            (not rel.has-typed-columns)
+            (= (query-relation-rule-call-bound-arg-count rel call) 0))
+    (return (query-relation-empty) false))
+  (let [[call-source local-call source-ok] (db-read-source-resolve-rule-call-source source sources call)]
+    (when (not source-ok)
+      (return (query-relation-empty) false))
+  (let [plan (rule-call-plan rules local-call.name)]
+    (defer (delete-rule-call-plan plan))
+    (when (or plan.recursive
+              (not (source-rule-call-typed-plan-eligible? plan local-call registry)))
+      (return (query-relation-empty) false))
+    (let [rule-rel (query-relation-empty)
+          seen (set.empty string)
+          has-rule-rel false]
+      (defer (delete seen))
+      (for [rule plan.rules]
+        (when (= rule.name local-call.name)
+          (let [[seed seed-ok] (query-relation-seed-for-rule-call rel rule local-call)]
+            (when (not seed-ok)
+              (delete-query-relation seed)
+              (when has-rule-rel
+                (delete-query-relation rule-rel))
+              (return (query-relation-empty) false))
+            (let [[body-rel body-ok] (db-read-source-query-relation-from-rule-body-seeded-typed-depth call-source sources (slice plan.rules 0) rule seed registry stats depth)]
+              (delete-query-relation seed)
+              (when (not body-ok)
+                (delete-query-relation body-rel)
+                (when has-rule-rel
+                  (delete-query-relation rule-rel))
+                (return (query-relation-empty) false))
+              (let [[projected projected-ok] (query-relation-project-rule-call-params-typed body-rel (slice rule.params 0) local-call)]
+                (delete-query-relation body-rel)
+                (when (not projected-ok)
+                  (delete-query-relation projected)
+                  (when has-rule-rel
+                    (delete-query-relation rule-rel))
+                  (return (query-relation-empty) false))
+                (when (not has-rule-rel)
+                  (delete-query-relation rule-rel)
+                  (set! rule-rel (query-relation-empty-typed-like projected))
+                  (set! has-rule-rel true))
+                (when (not (query-relation-append-typed-rows-unique! (addr rule-rel) projected (addr seen)))
+                  (delete-query-relation projected)
+                  (delete-query-relation rule-rel)
+                  (return (query-relation-empty) false))
+                (delete-query-relation projected))))))
+      (when (not has-rule-rel)
+        (delete-query-relation rule-rel)
+        (return (query-relation-empty) false))
+      (let [joined (query-relation-join (DB {}) ([]DB-Source []) rel rule-rel)
+            deduped (query-relation-dedupe-step joined)]
+        (delete-query-relation rule-rel)
+        (delete-query-relation joined)
+        (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+        (query-stats-observe-bindings! stats (query-relation-row-count deduped))
+        (return deduped deduped.has-typed-columns))))))
+
 (defn db-read-source-query-relation-apply-rule-call-typed-depth [source: DB-Read-Source, sources: []DB-Read-Named-Source, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, depth: int] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
   (set! stats^.rule-calls (+ stats^.rule-calls 1))
+  (let [[bound bound-ok] (db-read-source-query-relation-apply-bound-rule-call-typed-depth source sources rules rel call registry stats depth)]
+    (when bound-ok
+      (return bound true))
+    (delete-query-relation bound))
   (let [[rule-rel rule-ok] (db-read-source-query-relation-from-rule-call-typed-depth source sources rules call registry stats depth)]
     (when (not rule-ok)
       (delete-query-relation rule-rel)
@@ -17136,6 +17335,17 @@
         (set! out (+ out 1))))
     out))
 
+(defn query-relation-rule-call-bound-arg-count [rel: Query-Relation, call: Rule-Call] -> int
+  (let [out 0]
+    (for [arg call.args]
+      (when (= arg.kind .Var)
+        (when (query-relation-has-attr? rel arg.name)
+          (set! out (+ out 1))))
+      (when (or (= arg.kind .Value)
+                (= arg.kind .LookupRef))
+        (set! out (+ out 1))))
+    out))
+
 (defn rule-call-ready-for-binding-indexed? [rules: []Rule, index: []Rule-Name-Index-Entry, call: Rule-Call, binding: Binding] -> bool
   (let [available (binding-available-vars binding) :defer
         [ok _] (validate-rule-call-required-bindings-indexed (slice available 0) rules index call)]
@@ -21311,8 +21521,17 @@
               (arr.push! dedupe-values value)
               (set! complete false))))
         (when complete
-          (if (or (> (count pulls) 0) trust-unique-bindings)
+          (if trust-unique-bindings
             (arr.push! rows (Result-Row {values: values pulls: pulls}))
+            (if (> (count pulls) 0)
+              (let [[key key-ok] (result-row-dedupe-key (slice dedupe-values 0) (slice pulls 0))]
+                (if key-ok
+                  (let [already-seen (set.contains? seen key)]
+                    (when (not already-seen)
+                      (set.add! seen key)
+                      (arr.push! rows (Result-Row {values: values pulls: pulls}))))
+                  (when (not (row-values-exist? (slice rows 0) (slice dedupe-values 0)))
+                    (arr.push! rows (Result-Row {values: values pulls: pulls})))))
             (if (= (count dedupe-values) 1)
               (let [dedupe-value dedupe-values[0]]
                 (case dedupe-value.kind
@@ -21355,7 +21574,7 @@
                       (set.add! seen key)
                       (arr.push! rows (Result-Row {values: values pulls: pulls}))))
                   (when (not (row-values-exist? (slice rows 0) (slice dedupe-values 0)))
-                    (arr.push! rows (Result-Row {values: values pulls: pulls}))))))))))
+                    (arr.push! rows (Result-Row {values: values pulls: pulls})))))))))))
     rows))
 
 (defn bindings-after-rule-call-step [db: DB, rules: []Rule, bindings: []Binding, call: Rule-Call] -> [dynamic]Binding
@@ -23661,10 +23880,12 @@
 (defn query-relation-apply-rule-call [db: DB, sources: []DB-Source, rules: []Rule, plans: []Rule-Call-Plan, rel: Query-Relation, call: Rule-Call, call-index: int, registry: []Native-Query-Fn, stats: ^Query-Stats, cache: ^[dynamic]Materialized-Rule-Cache-Entry] -> Query-Relation
   (let [bindings (make [dynamic]Binding)
         use-cached-plan (and (>= call-index 0) (< call-index (count plans)))
-        plan (if use-cached-plan plans[call-index] (rule-call-plan rules call.name))]
-    (when (or (> (query-relation-row-count rel) 128)
-              (and (= (query-relation-row-count rel) 1)
-                   (= (count rel.attrs) 0)))
+        plan (if use-cached-plan plans[call-index] (rule-call-plan rules call.name))
+        bound-arg-count (query-relation-rule-call-bound-arg-count rel call)]
+    (when (and (= bound-arg-count 0)
+               (or (> (query-relation-row-count rel) 128)
+                   (and (= (query-relation-row-count rel) 1)
+                        (= (count rel.attrs) 0))))
       (let [[materialized materialized-ok] (query-relation-apply-materialized-rule-call db sources rel plan call registry stats cache)]
         (when materialized-ok
           (when (not use-cached-plan)
@@ -35035,6 +35256,24 @@
       (return true)))
   false)
 
+(defn pull-remove-output-attr-shallow! [out: ^[dynamic]Pull-Attr, attr: string]
+  (let [index 0]
+    (while (< index (count out^))
+      (if (= out^[index].a attr)
+        (do
+          (delete-pull-attr-shallow-owned-key out^[index])
+          (arr.remove-ordered-at! out^ index))
+        (set! index (+ index 1))))))
+
+(defn pull-remove-output-attr-owned-values! [out: ^[dynamic]Pull-Attr, attr: string]
+  (let [index 0]
+    (while (< index (count out^))
+      (if (= out^[index].a attr)
+        (do
+          (delete-pull-attr-owned-values out^[index])
+          (arr.remove-ordered-at! out^ index))
+        (set! index (+ index 1))))))
+
 (defn pull-spec-output-index [pattern: []Pull-Spec, spec: Pull-Spec] -> [index: int, ok: bool]
   (let [attr (pull-output-attr spec)]
     (for [existing index pattern]
@@ -35467,10 +35706,12 @@
           registry)))
     (return))
   (when (reverse-attr? spec.a)
+    (pull-remove-output-attr-shallow! out (pull-output-attr spec))
     (let [found (pull-reverse-attr-with-fns! out db entity spec root seen-entities seen-counts registry)]
       (when (and (not found) (or spec.has-default spec.has-xform))
         (arr.push! out^ (pull-spec-missing-attr-with-fns spec registry))))
     (return))
+  (pull-remove-output-attr-shallow! out (pull-output-attr spec))
   (let [found (pull-forward-attr-with-fns! out db entity spec root seen-entities seen-counts registry)]
     (when (and (not found) (or spec.has-default spec.has-xform))
       (arr.push! out^ (pull-spec-missing-attr-with-fns spec registry)))))

@@ -729,6 +729,12 @@
 (defn- keyed-set [return-map rows]
   (set (keyed-rows return-map rows)))
 
+(defn- normalize-rules-input [rules]
+  (if (and (seq? rules)
+           (not (vector? rules)))
+    (vec rules)
+    rules))
+
 (defn- split-rules-input [query inputs]
   (let [in-forms (query-in-forms query)
         inputv (vec inputs)]
@@ -743,7 +749,7 @@
 
             (= '% form)
             (if (< input-index (count inputv))
-              {:rules (nth inputv input-index)
+              {:rules (normalize-rules-input (nth inputv input-index))
                :inputs (vec (concat (subvec inputv 0 input-index)
                                     (subvec inputv (inc input-index))))}
               {:inputs inputs})
@@ -1333,9 +1339,10 @@
     source
     (fn [db]
       (clj-value
-       (if (and (vector? eid)
-                (= 2 (count eid))
-                (keyword? (first eid)))
+       (cond
+         (and (vector? eid)
+              (= 2 (count eid))
+              (keyword? (first eid)))
          (let [attr-text (edn-text (first eid))
                value (second eid)]
            (cond
@@ -1368,6 +1375,17 @@
              (throw (ex-info "unsupported lookup-ref pull value"
                              {:value value
                               :supported #{:string :keyword :uuid :integer :entity}}))))
+         (keyword? eid)
+         (when-let [resolved (q '[:find ?e .
+                                  :in $ ?ident
+                                  :where [?e :db/ident ?ident]]
+                                db
+                                eid)]
+           (if (instance? PreparedPullPattern pattern)
+             (.pull (:native db) ^Vev$PreparedPullPattern (:native pattern) (long resolved))
+             (.pull (:native db) (edn-text pattern) (long resolved))))
+
+         :else
          (if (instance? PreparedPullPattern pattern)
            (.pull (:native db) ^Vev$PreparedPullPattern (:native pattern) (long eid))
            (.pull (:native db) (edn-text pattern) (long eid))))))))

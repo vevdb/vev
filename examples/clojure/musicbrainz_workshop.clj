@@ -6,9 +6,16 @@
 
 ;; Port source of truth:
 ;; build/upstream/day-of-datomic-conj/src/music_brainz.clj
-;; Sections: file top through the pre-1970 release clause-order examples.
+;; Sections: file top through Pattern inputs.
+;; build/upstream/day-of-datomic/tutorial/pull.clj
+;; Sections: setup through wildcard + map specification.
 
 (def default-uri "build/musicbrainz/vev-mbrainz-tutorial.sqlite")
+
+(def led-zeppelin [:artist/gid #uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"])
+(def dark-side-of-the-moon [:release/gid #uuid "24824319-9bb8-3d1e-a2c5-b8b864dafd1b"])
+(def dylan-harrison-sessions [:release/gid #uuid "67bbc160-ac45-4caf-baae-a7e9f5180429"])
+(def concert-for-bangla-desh [:release/gid #uuid "f3bdff34-9a85-4adc-a014-922eef9cdaa5"])
 
 (defn connect []
   (d/connect default-uri))
@@ -203,6 +210,156 @@
     [?r :release/name ?name]
     [(< ?year 1970)]])
 
+(def pre-1970-track-titles-broad-query
+  '[:find ?title
+    :in $ ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?r :release/artists ?a]
+    [?r :release/year ?year]
+    [?r :release/name ?name]
+    [(< ?year 1970)]
+    [?t :track/artists ?a]
+    [?t :track/name ?title]])
+
+(def pre-1970-track-titles-with-release-name-query
+  '[:find ?title
+    :in $ ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?r :release/artists ?a]
+    [?r :release/year ?year]
+    [?r :release/name ?name]
+    [(< ?year 1970)]
+    [?r :release/media ?m]
+    [?m :medium/tracks ?t]
+    [?t :track/name ?title]])
+
+(def pre-1970-track-titles-query
+  '[:find ?title
+    :in $ ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?r :release/artists ?a]
+    [?r :release/year ?year]
+    [(< ?year 1970)]
+    [?r :release/media ?m]
+    [?m :medium/tracks ?t]
+    [?t :track/name ?title]])
+
+(def track-release-rules
+  '[[(track-release ?t ?r)
+     [?m :medium/tracks ?t]
+     [?r :release/media ?m]]])
+
+(def track-release-rule-query
+  '[:find ?title ?album ?year
+    :in $ % ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?t :track/artists ?a]
+    [?t :track/name ?title]
+    (track-release ?t ?r)
+    [?r :release/name ?album]
+    [?r :release/year ?year]])
+
+(def track-artist-rules
+  '[[(track-artist ?t ?artist-name)
+     [?t :track/artists ?a]
+     [?a :artist/name ?artist-name]]])
+
+(def track-release-detail-rules
+  '[[(track-release ?t ?release-name ?release-year)
+     [?m :medium/tracks ?t]
+     [?r :release/media ?m]
+     [?r :release/name ?release-name]
+     [?r :release/year ?release-year]]])
+
+(def track-info-rules
+  (concat
+   track-artist-rules
+   track-release-detail-rules
+   '[[(track-info ?t ?artist-name ?release-name ?release-year)
+      (track-artist ?t ?artist-name)
+      (track-release ?t ?release-name ?release-year)]]))
+
+(def track-rules-exercise-query
+  '[:find ?track-name ?artist-name ?release-name ?release-year
+    :in $ % ?track-name
+    :where
+    [?t :track/name ?track-name]
+    (track-artist ?t ?artist-name)
+    (track-release ?t ?release-name ?release-year)])
+
+(def track-info-rule-query
+  '[:find ?track-name ?artist-name ?release-name ?release-year
+    :in $ % ?track-name
+    :where
+    [?t :track/name ?track-name]
+    (track-info ?t ?artist-name ?release-name ?release-year)])
+
+(def pull-release-name-query
+  '[:find (pull ?e [:release/name])
+    :in $ ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?e :release/artists ?a]])
+
+(def pull-release-name-dynamic-pattern-query
+  '[:find (pull ?e pattern)
+    :in $ ?artist-name pattern
+    :where
+    [?a :artist/name ?artist-name]
+    [?e :release/artists ?a]])
+
+(def pull-release-and-artist-query
+  '[:find (pull ?e [:release/name]) (pull ?a [*])
+    :in $ ?artist-name pattern
+    :where
+    [?a :artist/name ?artist-name]
+    [?e :release/artists ?a]])
+
+(def pull-release-name-and-artists-query
+  '[:find (pull ?e [:release/name :release/artists])
+    :in $ ?artist-name pattern
+    :where
+    [?a :artist/name ?artist-name]
+    [?e :release/artists ?a]])
+
+(def duplicate-pull-release-query
+  '[:find (pull ?e [:release/name]) (pull ?e [:release/artists])
+    :in $ ?artist-name pattern
+    :where
+    [?a :artist/name ?artist-name]
+    [?e :release/artists ?a]])
+
+(def nested-pull-release-artists-query
+  '[:find (pull ?e [:release/name
+                    {:release/artists [*]}])
+    :in $ ?artist-name pattern
+    :where
+    [?a :artist/name ?artist-name]
+    [?e :release/artists ?a]])
+
+(def nested-pull-release-artists-country-query
+  '[:find (pull ?e [:release/name
+                    {:release/artists [*]}
+                    {:release/country [*]}])
+    :in $ ?artist-name pattern
+    :where
+    [?a :artist/name ?artist-name]
+    [?e :release/artists ?a]])
+
+(def deep-pull-release-artists-country-query
+  '[:find (pull ?e [:release/name
+                    {:release/artists [*
+                                       {:artist/country [*]}]}
+                    {:release/country [*]}])
+    :in $ ?artist-name pattern
+    :where
+    [?a :artist/name ?artist-name]
+    [?e :release/artists ?a]])
+
 (defn opening-release-pulls [db]
   (d/q john-lennon-release-pull-query db "John Lennon"))
 
@@ -298,6 +455,118 @@
   (:ret (d/query {:query pre-1970-release-names-switched-query
                   :args [db "John Lennon"]
                   :query-stats true})))
+
+(defn query-stats-result [db query]
+  (d/query {:query query
+            :args [db "John Lennon"]
+            :query-stats true}))
+
+(defn pre-1970-track-title-broad-stats [db]
+  (:query-stats (query-stats-result db pre-1970-track-titles-broad-query)))
+
+(defn pre-1970-track-title-with-release-name-stats [db]
+  (:query-stats (query-stats-result db pre-1970-track-titles-with-release-name-query)))
+
+(defn pre-1970-track-title-stats [db]
+  (:query-stats (query-stats-result db pre-1970-track-titles-query)))
+
+(defn pre-1970-track-title-results [db]
+  (:ret (query-stats-result db pre-1970-track-titles-query)))
+
+(defn track-release-rule-results [db]
+  (d/query {:query track-release-rule-query
+            :args [db track-release-rules "John Lennon"]}))
+
+(defn track-rules-exercise-results [db]
+  (d/query {:query track-rules-exercise-query
+            :args [db (concat track-artist-rules
+                              track-release-detail-rules) "Yer Blues"]}))
+
+(defn track-info-rule-results [db]
+  (d/query {:query track-info-rule-query
+            :args [db track-info-rules "Yer Blues"]}))
+
+(defn pull-release-names [db]
+  (d/query {:query pull-release-name-query
+            :args [db "Led Zeppelin"]}))
+
+(defn pull-release-names-dynamic-pattern [db]
+  (d/query {:query pull-release-name-dynamic-pattern-query
+            :args [db "Led Zeppelin" [:release/name]]}))
+
+(defn pull-release-and-artist [db]
+  (d/query {:query pull-release-and-artist-query
+            :args [db "Led Zeppelin" [:release/name]]}))
+
+(defn pull-release-name-and-artists [db]
+  (d/query {:query pull-release-name-and-artists-query
+            :args [db "Led Zeppelin" [:release/name]]}))
+
+(defn duplicate-pull-release [db]
+  (d/query {:query duplicate-pull-release-query
+            :args [db "Led Zeppelin" [:release/name]]}))
+
+(defn nested-pull-release-artists [db]
+  (d/query {:query nested-pull-release-artists-query
+            :args [db "Led Zeppelin" [:release/name]]}))
+
+(defn nested-pull-release-artists-country [db]
+  (d/query {:query nested-pull-release-artists-country-query
+            :args [db "Led Zeppelin" [:release/name]]}))
+
+(defn deep-pull-release-artists-country [db]
+  (d/query {:query deep-pull-release-artists-country-query
+            :args [db "Led Zeppelin" [:release/name]]}))
+
+(defn dylan-harrison-cd [db]
+  (d/q '[:find ?medium .
+         :in $ ?release
+         :where
+         [?release :release/media ?medium]]
+       db
+       dylan-harrison-sessions))
+
+(defn ghost-riders [db]
+  (d/q '[:find ?track .
+         :in $ ?release ?trackno
+         :where
+         [?release :release/media ?medium]
+         [?medium :medium/tracks ?track]
+         [?track :track/position ?trackno]]
+       db
+       dylan-harrison-sessions
+       11))
+
+(defn pull-artist-name-start [db]
+  (d/pull db [:artist/name :artist/startYear] led-zeppelin))
+
+(defn pull-artist-country [db]
+  (d/pull db [:artist/country] led-zeppelin))
+
+(defn pull-artists-by-country [db]
+  (d/pull db [:artist/_country] :country/GB))
+
+(defn pull-release-media-default [db]
+  (d/pull db [:release/media] dark-side-of-the-moon))
+
+(defn pull-release-by-media [db]
+  (d/pull db [:release/_media] (dylan-harrison-cd db)))
+
+(defn pull-track-artists [db]
+  (d/pull db [:track/name {:track/artists [:db/id :artist/name]}] (ghost-riders db)))
+
+(defn pull-release-media-tracks [db]
+  (d/pull db
+          [{:release/media
+            [{:medium/tracks
+              [:track/name {:track/artists [:artist/name]}]}]}]
+          concert-for-bangla-desh))
+
+(defn pull-release-wildcard [db]
+  (d/pull db '[*] concert-for-bangla-desh))
+
+(defn pull-track-wildcard-artists [db]
+  (d/pull db '[* {:track/artists [:artist/name]}] (ghost-riders db)))
 
 (defn validate-opening-bindings! []
   (with-open [conn (connect)
@@ -412,6 +681,138 @@
        :pre-1970-release-switched-names (count switched-names)
        :pre-1970-release-switched-stats switched-stats})))
 
+(defn validate-pre-1970-track-stats! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [broad (query-stats-result db pre-1970-track-titles-broad-query)
+          with-release-name (query-stats-result db pre-1970-track-titles-with-release-name-query)
+          final (query-stats-result db pre-1970-track-titles-query)
+          broad-stats (:query-stats broad)
+          with-release-name-stats (:query-stats with-release-name)
+          final-stats (:query-stats final)]
+      (assert (= 70 (count (:ret broad))))
+      (assert (= 17 (count (:ret with-release-name))))
+      (assert (= 17 (count (:ret final))))
+      (assert (= 70 (:output-rows broad-stats)))
+      (assert (= 17 (:output-rows with-release-name-stats)))
+      (assert (= 17 (:output-rows final-stats)))
+      {:pre-1970-track-titles-broad (count (:ret broad))
+       :pre-1970-track-titles-broad-stats broad-stats
+       :pre-1970-track-titles-with-release-name (count (:ret with-release-name))
+       :pre-1970-track-titles-with-release-name-stats with-release-name-stats
+       :pre-1970-track-titles (count (:ret final))
+       :pre-1970-track-titles-stats final-stats})))
+
+(defn validate-rules-intro! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [release-rows (track-release-rule-results db)
+          exercise-rows (track-rules-exercise-results db)
+          info-rows (track-info-rule-results db)]
+      (assert (= 93 (count release-rows)))
+      (assert (= 3 (count exercise-rows)))
+      (assert (= 3 (count info-rows)))
+      {:track-release-rule-query (count release-rows)
+       :track-rules-exercise (count exercise-rows)
+       :track-info-rules-composition (count info-rows)
+       :rules-seq-input-status :supported-by-wrapper})))
+
+(defn validate-pattern-inputs! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [literal (pull-release-names db)
+          dynamic (pull-release-names-dynamic-pattern db)
+          release-and-artist (pull-release-and-artist db)
+          name-and-artists (pull-release-name-and-artists db)
+          duplicate (duplicate-pull-release db)
+          nested (nested-pull-release-artists db)
+          nested-country (nested-pull-release-artists-country db)
+          deep (deep-pull-release-artists-country db)]
+      (assert (= 8 (count literal)))
+      (assert (= literal dynamic))
+      (assert (= 8 (count release-and-artist)))
+      (assert (= 8 (count name-and-artists)))
+      (assert (= 8 (count duplicate)))
+      (assert (= 8 (count nested)))
+      (assert (= 14 (count nested-country)))
+      (assert (= 14 (count deep)))
+      {:pull-release-name (count literal)
+       :dynamic-pull-pattern (count dynamic)
+       :pull-release-and-artist (count release-and-artist)
+       :pull-release-name-and-artists (count name-and-artists)
+       :duplicate-pull-same-var-status :pending-error-shape
+       :duplicate-pull-same-var-count (count duplicate)
+       :nested-pull-release-artists (count nested)
+       :nested-pull-release-artists-country (count nested-country)
+       :deep-pull-release-artists-country (count deep)})))
+
+(defn validate-pull-intro! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [artist (pull-artist-name-start db)
+          country (pull-artist-country db)
+          reverse-country (pull-artists-by-country db)
+          release-media (pull-release-media-default db)
+          reverse-media (pull-release-by-media db)
+          track-artists (pull-track-artists db)
+          reverse-country-count (count (:artist/_country reverse-country))]
+      (assert (= "Led Zeppelin" (:artist/name artist)))
+      (assert (= 1968 (:artist/startYear artist)))
+      (assert (= 1000180 (get-in country [:artist/country :db/id])))
+      (assert (= 1 (count (:release/media release-media))))
+      (assert (= 1 (count (:release/_media reverse-media))))
+      (assert (= "Ghost Riders in the Sky" (:track/name track-artists)))
+      (assert (= #{"George Harrison" "Bob Dylan"}
+                 (set (map :artist/name (:track/artists track-artists)))))
+      {:pull-attribute-name artist
+       :pull-artist-country country
+       :pull-reverse-country-status :pending-reverse-pull-cardinality
+       :pull-reverse-country-count reverse-country-count
+       :pull-release-media-count (count (:release/media release-media))
+       :pull-reverse-component-count (count (:release/_media reverse-media))
+       :pull-map-spec-artists (count (:track/artists track-artists))})))
+
+(defn validate-pull-nested-map! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-release-media-tracks db)
+          media (:release/media pulled)
+          track-counts (mapv #(count (:medium/tracks %)) media)
+          first-track (first (:medium/tracks (first media)))]
+      (assert (= 6 (count media)))
+      (assert (= [2 2 4 2 5 4] track-counts))
+      (assert (= "Jumpin' Jack Flash / Youngblood" (:track/name first-track)))
+      (assert (= ["Leon Russell"] (mapv :artist/name (:track/artists first-track))))
+      {:pull-nested-map-media-count (count media)
+       :pull-nested-map-track-counts track-counts
+       :pull-nested-map-first-track (:track/name first-track)})))
+
+(defn validate-pull-wildcard! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-release-wildcard db)]
+      (assert (= 13 (count pulled)))
+      (assert (= "The Concert for Bangla Desh" (:release/name pulled)))
+      (assert (= 1971 (:release/year pulled)))
+      (assert (= #uuid "f3bdff34-9a85-4adc-a014-922eef9cdaa5" (:release/gid pulled)))
+      {:pull-wildcard-attribute-count (count pulled)
+       :pull-wildcard-release-name (:release/name pulled)
+       :pull-wildcard-release-year (:release/year pulled)})))
+
+(defn validate-pull-wildcard-map! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [pulled (pull-track-wildcard-artists db)
+          artist-names (mapv :artist/name (:track/artists pulled))]
+      (assert (= 6 (count pulled)))
+      (assert (= "Ghost Riders in the Sky" (:track/name pulled)))
+      (assert (= 11 (:track/position pulled)))
+      (assert (= 218506 (:track/duration pulled)))
+      (assert (= ["George Harrison" "Bob Dylan"] artist-names))
+      {:pull-wildcard-map-attribute-count (count pulled)
+       :pull-wildcard-map-track-name (:track/name pulled)
+       :pull-wildcard-map-artists artist-names})))
+
 (comment
   (def conn (connect))
   (def db (db conn))
@@ -503,6 +904,64 @@
 
   ;; Same query with the release-name clause before the predicate:
   (pre-1970-release-name-switched-stats db)
+
+  ;; Bind track names from releases before 1970. The first form intentionally
+  ;; joins all artist tracks and only uses releases for the year predicate.
+  (pre-1970-track-title-broad-stats db)
+
+  ;; Try again by following release -> media -> tracks while still binding the
+  ;; release name.
+  (pre-1970-track-title-with-release-name-stats db)
+
+  ;; Final production-shaped query from the upstream section.
+  (pre-1970-track-title-results db)
+
+  ;; Rules:
+  ;; The upstream intro rule, first exercise, and rules-composition section are
+  ;; ported above. Vev accepts the Datomic-style `%` rules input, including
+  ;; `(concat track-artist-rules track-release-detail-rules)`, and validates
+  ;; composed rules through `track-info-rules`.
+  track-release-rules
+  (track-release-rule-results db)
+  (track-rules-exercise-results db)
+  (track-info-rule-results db)
+
+  ;; Pattern inputs:
+  ;; Upstream demonstrates pull expressions in `:find`, dynamic pull patterns
+  ;; as `:in` parameters, legal multiple-pull forms, an invalid duplicate pull
+  ;; on the same var, and nested ref navigation.
+  (pull-release-names db)
+  (pull-release-names-dynamic-pattern db)
+  (pull-release-and-artist db)
+  (pull-release-name-and-artists db)
+  ;; Datomic rejects this duplicate pull on `?e`; Vev currently accepts it, so
+  ;; validation keeps the error-shape gap visible.
+  (duplicate-pull-release db)
+  (nested-pull-release-artists db)
+  (nested-pull-release-artists-country db)
+  (deep-pull-release-artists-country db)
+
+  ;; Direct pull tutorial:
+  ;; Source of truth is `build/upstream/day-of-datomic/tutorial/pull.clj`,
+  ;; from "attribute name" through "wildcard + map specification".
+  (pull-artist-name-start db)
+  (pull-artist-country db)
+  ;; Upstream expects this reverse lookup to return artists. Vev currently
+  ;; returns an empty collection for this direct pull, while the equivalent
+  ;; query over `:artist/country :country/GB` has rows. Keep it visible.
+  (pull-artists-by-country db)
+  (pull-release-media-default db)
+  (pull-release-by-media db)
+  (pull-track-artists db)
+
+  ;; Nested map specifications:
+  (pull-release-media-tracks db)
+
+  ;; Wildcard specification:
+  (pull-release-wildcard db)
+
+  ;; Wildcard + map specification:
+  (pull-track-wildcard-artists db)
 
   (.close db)
   (.close conn))

@@ -35,6 +35,9 @@ Hard constraints:
 - public APIs should feel Datomic/DataScript-like unless Vev has a clear reason
   to differ; Clojure query examples should use the familiar
   `(d/q query db & inputs)` order
+- the Clojure API being close to Datomic is not enough by itself: the same
+  Day-of-Datomic/MusicBrainz tutorial path must also work cleanly from Kvist
+  using Vev's native package and literal/query conveniences
 - non-Kvist consumers are primary: EDN text APIs, native ABI handles, and host
   wrappers must be treated as product surfaces
 - docs should explain how to use Vev today, not narrate historical
@@ -44,41 +47,30 @@ Hard constraints:
 
 ## Current Status
 
-Vev has enough foundation to attempt the MusicBrainz workshop path:
+Vev is usable enough to run the current MusicBrainz workshop slice from both
+Clojure and Kvist against the same persistent local store.
 
-- in-memory connections support schema/data transactions, Datalog queries, pull,
-  rules, aggregates, inputs, lookup refs, `with`, and DB values
-- durable SQLite-backed stores support normal `connect/open -> transact -> db ->
-  q/pull/entity -> close/reopen -> q/pull/entity` workflows
-- retained `Store-DB` snapshots are immutable values and can be passed around
-- C, Java, Clojure, Python, and Rust clients/smokes exist over the native ABI
-- Clojure has a Datomic-like API shape and the full MusicBrainz wrapper matrix
-  verifies the non-Kvist EDN path
-- the real MusicBrainz query matrix matches Datomic by row count and portable
-  fingerprint across the current listed workloads
-- the README and getting-started docs now lead with the actual Vev workflow
-  instead of smoke-script setup
-- Clojure examples are in `(comment ...)` tutorial style and use
-  Datomic/DataScript query-first `q`
-- Java, Python, Rust, Go, Node, and Odin docs now show the same
-  DB-value-centered transaction, query, and pull workflow where their wrappers
-  support it
-- Python, Go, and Node now have one-shot query helpers over the existing
-  prepared-query paths; Node also has explicit close methods for connection,
-  DB, and prepared-query handles
-- Rust now has the same app-facing `q` convenience for connections and DB
-  values, plus durable `transact` over the report path
-- Rust now has a real `lib.rs` crate surface plus a smoke binary, and the
-  focused package smoke validates a temporary external Cargo project with a
-  path dependency on `clients/rust`
-- Python now has a small contact-book example that runs the same workflow in
-  in-memory and durable modes
-- the next important user-facing gap is a Clojure and Kvist MusicBrainz
-  tutorial path, not more generic wrapper polish
-- the first Clojure tutorial slice now ports the opening/query-stats prompt and
-  binding examples from `day-of-datomic-conj/src/music_brainz.clj`
-- the Clojure tutorial path now ports from the file top through the pre-1970
-  release clause-order query-stats examples in the same upstream file
+Covered in both `examples/clojure/musicbrainz_workshop.clj` and
+`examples/kvist/musicbrainz_workshop.kvist`:
+
+- opening pull query from the query-stats prompt
+- tuple, collection, and relation input/find examples
+- collection, tuple, scalar, and return-map result shapes where currently
+  supported
+- built-in function expressions and basic aggregates used by this slice
+- request-map query-stats examples around the pre-1970 John Lennon queries
+- Datomic-style `%` rules input, first rules exercise, and composed
+  `track-info` rules
+- Pattern inputs: pull expressions in `:find`, dynamic pull patterns, legal
+  multiple-pull forms, and nested pull ref navigation
+- direct pull tutorial examples from `tutorial/pull.clj` setup through map
+  specifications: attribute-name pulls, lookup refs, component defaults,
+  reverse component lookup, map specifications, nested map specifications, and
+  wildcard plus map specifications
+
+The Clojure path uses the Datomic-like `vev.core` API. The Kvist path uses the
+Vev Kvist package directly against the same persistent store. Both paths are
+validated by smoke commands listed below.
 
 Important performance signal:
 
@@ -111,35 +103,22 @@ internals:
 
 ## Remaining Work
 
-1. **Clojure MusicBrainz tutorial path**
+1. **Continue the upstream MusicBrainz tutorial port**
 
-   Status: active. `examples/clojure/musicbrainz_workshop.clj` starts from the
-   upstream `day-of-datomic-conj/src/music_brainz.clj` top section and now
-   covers through the pre-1970 release clause-order query-stats examples. The
-   exact upstream "Statistics" and custom aggregate forms are present in the
-   tutorial file but remain pending. `scripts/musicbrainz_workshop_clojure.sh`
-   validates the covered slices against a persistent Vev MusicBrainz store.
+   Status: active. `examples/clojure/musicbrainz_workshop.clj` and
+   `examples/kvist/musicbrainz_workshop.kvist` cover
+   `day-of-datomic-conj/src/music_brainz.clj` through Pattern inputs, then
+   `day-of-datomic/tutorial/pull.clj` setup through wildcard plus map
+   specification.
 
-   Covered:
+   Next upstream section:
 
-   - use the durable Vev store path, not an in-memory-only demo
-   - keep examples in `(comment ...)` form for editor-driven evaluation
-   - opening John Lennon pull query from the query-stats prompt
-   - tuple binding for `["John Lennon" "Mind Games"]`
-   - request-map `d/query` shape for Elis Regina release pulls
-   - collection binding for Paul McCartney / George Harrison
-   - relation find spec with explicit `$`
-   - collection, tuple, and scalar find specs with Datomic-like Clojure result
-     shapes
-   - return maps with `:keys`, including key destructuring
-   - built-in function expression `(quot ?millis 60000) ?minutes`
-   - built-in expression join for Janis Joplin artist type/gender
-   - basic aggregations: `min`, scalar `sum`, and `count` /
-     `count-distinct`
-   - first deeper `d/query` request-map form with `:io-context`, returning
-     John Lennon track titles
-   - `d/query` request-map forms with `:query-stats true` for the two
-     pre-1970 John Lennon release-name clause-order examples
+   - continue at "default option" in
+     `build/upstream/day-of-datomic/tutorial/pull.clj`
+
+   Keep both tutorial paths moving together. Every new Clojure tutorial slice
+   should have a matching Kvist slice unless the missing piece is explicitly
+   documented as a Kvist language/runtime blocker.
 
    Current blockers exposed by the upstream port:
 
@@ -154,29 +133,20 @@ internals:
      than indexed map rows
    - arbitrary host Clojure predicate calls such as `(user/teste ?year)` are
      parsed but not executed by the native query engine
+   - duplicate pull expressions on the same query var are accepted by Vev but
+     should be rejected like Datomic
+   - direct reverse pull `[:artist/_country] :country/GB` currently returns an
+     empty collection in Vev even though the equivalent forward query over
+     `:artist/country :country/GB` has rows
    - the upstream track-name statistics query using `median`, `avg`, `stddev`,
      and string length currently runs too slowly against the persistent
      tutorial store for the smoke path
    - custom Clojure aggregate functions such as `(user/mode ?track-count)` are
      not executed by the native query engine
 
-2. **Kvist MusicBrainz tutorial path**
+2. **MusicBrainz import and fixture setup**
 
-   Build the same tutorial/workshop path from Kvist.
-
-   Required:
-
-   - use the Vev Kvist package directly
-   - use Kvist-native query/tx/pull literals where they improve the experience
-   - use the same persistent MusicBrainz Vev store as the Clojure path where
-     practical
-   - cover the same query set as the Clojure tutorial path
-   - produce comparable timing/fingerprint output
-
-3. **MusicBrainz import and fixture setup**
-
-   Current MusicBrainz tests exist, but the tutorial path needs a clear fixture
-   story.
+   Status: active enough for local work, but still needs product-quality docs.
 
    Required:
 
@@ -186,7 +156,12 @@ internals:
    - provide one command to run Kvist tutorial validation
    - keep the generated store out of git
 
-4. **Datomic comparison harness**
+   Current smoke commands:
+
+   - `scripts/musicbrainz_workshop_clojure.sh`
+   - `scripts/musicbrainz_workshop_kvist.sh`
+
+3. **Datomic comparison harness**
 
    Required:
 
@@ -195,7 +170,7 @@ internals:
    - keep timing methodology simple and visible enough to trust
    - separate correctness failures from performance regressions
 
-5. **Only fix engine/storage issues exposed by this path**
+4. **Only fix engine/storage issues exposed by this path**
 
    Do not return to broad optimization work yet. Fix issues only when they
    block or materially slow the MusicBrainz persistent tutorial scenario:
