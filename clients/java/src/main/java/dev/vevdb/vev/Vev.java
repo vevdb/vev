@@ -43,6 +43,16 @@ public final class Vev {
     }
 
     @FunctionalInterface
+    public interface QueryPredicate {
+        boolean test(List<Object> args) throws Throwable;
+    }
+
+    @FunctionalInterface
+    public interface QueryAggregate {
+        String apply(List<Object> values) throws Throwable;
+    }
+
+    @FunctionalInterface
     public interface TxReportListener {
         void accept(Object report) throws Throwable;
     }
@@ -65,6 +75,7 @@ public final class Vev {
     private final MethodHandle connectionBasisT;
     private final MethodHandle connectionTxCount;
     private final MethodHandle connectionTxIds;
+    private final MethodHandle connectionTxDataEdn;
     private final MethodHandle connectionInfoEdn;
     private final MethodHandle connectionClose;
     private final MethodHandle connectionDb;
@@ -129,6 +140,10 @@ public final class Vev {
     private final MethodHandle txFnRegistryCreate;
     private final MethodHandle txFnRegistryFree;
     private final MethodHandle txFnRegistryRegisterEdn;
+    private final MethodHandle queryFnRegistryCreate;
+    private final MethodHandle queryFnRegistryFree;
+    private final MethodHandle queryFnRegistryRegisterPredicate;
+    private final MethodHandle queryFnRegistryRegisterAggregate;
     private final MethodHandle transactEdnReportWithTxFns;
     private final MethodHandle withEdnReportWithTxFns;
     private final MethodHandle txFnArg;
@@ -151,6 +166,9 @@ public final class Vev {
     private final MethodHandle queryPreparedColumnBatchWithInputs;
     private final MethodHandle queryPreparedResultWithInputs;
     private final MethodHandle queryDbPreparedResultWithInputs;
+    private final MethodHandle queryDbPreparedResultWithInputsAndFns;
+    private final MethodHandle queryRelationDbPreparedResultWithInputs;
+    private final MethodHandle queryRelationDbPreparedRowCountWithInputs;
     private final MethodHandle queryDbPreparedProfileEdnWithInputs;
     private final MethodHandle queryDbPreparedEntityColumnWithInputs;
     private final MethodHandle queryDbPreparedStringColumnWithInputs;
@@ -171,6 +189,7 @@ public final class Vev {
     private final MethodHandle entityIntPairsValuesData;
     private final MethodHandle queryDbPreparedEntityStringIntTriplesWithInputs;
     private final MethodHandle queryDbPreparedColumnBatchWithInputs;
+    private final MethodHandle queryRelationDbPreparedColumnBatchWithInputs;
     private final MethodHandle columnBatchFree;
     private final MethodHandle columnBatchKind;
     private final MethodHandle columnBatchCount;
@@ -354,6 +373,7 @@ public final class Vev {
         this.connectionBasisT = downcall("vev_connection_basis_t", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         this.connectionTxCount = downcall("vev_connection_tx_count", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         this.connectionTxIds = downcall("vev_connection_tx_ids", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.connectionTxDataEdn = downcall("vev_connection_tx_data_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
         this.connectionInfoEdn = downcall("vev_connection_info_edn", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.connectionClose = downcall("vev_connection_close", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.connectionDb = downcall("vev_connection_db", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -418,6 +438,10 @@ public final class Vev {
         this.txFnRegistryCreate = downcall("vev_tx_fn_registry_create", FunctionDescriptor.of(ValueLayout.ADDRESS));
         this.txFnRegistryFree = downcall("vev_tx_fn_registry_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.txFnRegistryRegisterEdn = downcall("vev_tx_fn_registry_register_edn", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryFnRegistryCreate = downcall("vev_query_fn_registry_create", FunctionDescriptor.of(ValueLayout.ADDRESS));
+        this.queryFnRegistryFree = downcall("vev_query_fn_registry_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        this.queryFnRegistryRegisterPredicate = downcall("vev_query_fn_registry_register_predicate", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryFnRegistryRegisterAggregate = downcall("vev_query_fn_registry_register_aggregate", FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.transactEdnReportWithTxFns = downcall("vev_transact_edn_report_with_tx_fns", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.withEdnReportWithTxFns = downcall("vev_with_edn_report_with_tx_fns", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.txFnArg = downcall("vev_tx_fn_arg", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
@@ -440,6 +464,9 @@ public final class Vev {
         this.queryPreparedColumnBatchWithInputs = downcall("vev_query_prepared_column_batch_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryPreparedResultWithInputs = downcall("vev_query_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithInputs = downcall("vev_query_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedResultWithInputsAndFns = downcall("vev_query_db_prepared_result_with_inputs_and_fns", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryRelationDbPreparedResultWithInputs = downcall("vev_query_relation_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryRelationDbPreparedRowCountWithInputs = downcall("vev_query_relation_db_prepared_row_count_with_inputs", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedProfileEdnWithInputs = downcall("vev_query_db_prepared_profile_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityColumnWithInputs = downcall("vev_query_db_prepared_entity_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedStringColumnWithInputs = downcall("vev_query_db_prepared_string_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -460,6 +487,7 @@ public final class Vev {
         this.entityIntPairsValuesData = downcall("vev_entity_int_pairs_values_data", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityStringIntTriplesWithInputs = downcall("vev_query_db_prepared_entity_string_int_triples_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedColumnBatchWithInputs = downcall("vev_query_db_prepared_column_batch_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryRelationDbPreparedColumnBatchWithInputs = downcall("vev_query_relation_db_prepared_column_batch_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.columnBatchFree = downcall("vev_column_batch_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.columnBatchKind = downcall("vev_column_batch_kind", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
         this.columnBatchCount = downcall("vev_column_batch_count", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
@@ -632,6 +660,36 @@ public final class Vev {
         }
     }
 
+    public ResultSet queryRelationDb(String rows, PreparedQuery query, String inputs) throws Throwable {
+        query.requireOpen();
+        try (Arena local = Arena.ofConfined()) {
+            return new ResultSet((MemorySegment) queryRelationDbPreparedResultWithInputs.invoke(
+                local.allocateUtf8String(rows),
+                query.raw,
+                local.allocateUtf8String(inputs)));
+        }
+    }
+
+    public ColumnResult queryRelationDbColumns(String rows, PreparedQuery query, String inputs) throws Throwable {
+        query.requireOpen();
+        try (Arena local = Arena.ofConfined()) {
+            return columnResultFromBatch((MemorySegment) queryRelationDbPreparedColumnBatchWithInputs.invoke(
+                local.allocateUtf8String(rows),
+                query.raw,
+                local.allocateUtf8String(inputs)));
+        }
+    }
+
+    public long queryRelationDbRowCount(String rows, PreparedQuery query, String inputs) throws Throwable {
+        query.requireOpen();
+        try (Arena local = Arena.ofConfined()) {
+            return (long) queryRelationDbPreparedRowCountWithInputs.invoke(
+                local.allocateUtf8String(rows),
+                query.raw,
+                local.allocateUtf8String(inputs));
+        }
+    }
+
     public ResultSet query(Map<String, ?> request) throws Throwable {
         Object query = request.get("query");
         Object args = request.get("args");
@@ -695,6 +753,12 @@ public final class Vev {
         return new TxFunctionRegistry(raw);
     }
 
+    public QueryFunctionRegistry queryFunctionRegistry() throws Throwable {
+        MemorySegment raw = (MemorySegment) queryFnRegistryCreate.invoke();
+        if (isNull(raw)) throw new IllegalStateException("failed to create query function registry");
+        return new QueryFunctionRegistry(raw);
+    }
+
     public void close() {
         cleanable.clean();
     }
@@ -736,7 +800,9 @@ public final class Vev {
             case 3 -> (long) valueInt.invoke(value);
             case 4 -> (double) valueFloat.invoke(value);
             case 5 -> (boolean) valueBool.invoke(value);
-            case 2, 6, 7 -> textOf(value);
+            case 2 -> textOf(value);
+            case 6 -> new Keyword(textOf(value));
+            case 7 -> new Symbol(textOf(value));
             case 10 -> UUID.fromString(textOf(value));
             case 8 -> {
                 int count = (int) valueItemCount.invoke(value);
@@ -764,7 +830,9 @@ public final class Vev {
         return switch (kind) {
             case 0 -> null;
             case 1 -> new Entity((long) resultValueEntity.invoke(result, row, column));
-            case 2, 6, 7 -> resultTextOf(result, row, column);
+            case 2 -> resultTextOf(result, row, column);
+            case 6 -> new Keyword(resultTextOf(result, row, column));
+            case 7 -> new Symbol(resultTextOf(result, row, column));
             case 10 -> UUID.fromString(resultTextOf(result, row, column));
             case 3 -> (long) resultValueInt.invoke(result, row, column);
             case 5 -> (boolean) resultValueBool.invoke(result, row, column);
@@ -908,6 +976,16 @@ public final class Vev {
             if (result == null) return MemorySegment.NULL;
             return registry.arena.allocateUtf8String(result);
         }
+    }
+
+    private boolean queryPredicateCallback(QueryPredicate predicate, MemorySegment user, int argc, MemorySegment args) throws Throwable {
+        return predicate.test(txFnArgs(argc, args));
+    }
+
+    private MemorySegment queryAggregateCallback(QueryFunctionRegistry registry, QueryAggregate aggregate, MemorySegment user, int argc, MemorySegment args) throws Throwable {
+        String result = aggregate.apply(txFnArgs(argc, args));
+        if (result == null) return MemorySegment.NULL;
+        return registry.arena.allocateUtf8String(result);
     }
 
     private void txReportListenerCallback(TxReportListener listener, MemorySegment user, MemorySegment report) throws Throwable {
@@ -1243,6 +1321,93 @@ public final class Vev {
         public void close() {
             if (!isNull(raw)) {
                 closeHandle(txFnRegistryFree, raw);
+                raw = MemorySegment.NULL;
+            }
+            arena.close();
+        }
+    }
+
+    public final class QueryFunctionRegistry implements AutoCloseable {
+        private final Arena arena;
+        private final List<Object> functions;
+        private MemorySegment raw;
+
+        private QueryFunctionRegistry(MemorySegment raw) {
+            this.raw = raw;
+            this.arena = Arena.ofShared();
+            this.functions = new ArrayList<>();
+        }
+
+        public QueryFunctionRegistry registerPredicate(String ident, QueryPredicate predicate) throws Throwable {
+            requireOpen();
+            if (ident == null || ident.isBlank()) throw new IllegalArgumentException("query predicate ident is required");
+            if (predicate == null) throw new IllegalArgumentException("query predicate callback is required");
+            MethodHandle callback = MethodHandles.lookup()
+                .findVirtual(
+                    Vev.class,
+                    "queryPredicateCallback",
+                    MethodType.methodType(
+                        boolean.class,
+                        QueryPredicate.class,
+                        MemorySegment.class,
+                        int.class,
+                        MemorySegment.class))
+                .bindTo(Vev.this)
+                .bindTo(predicate);
+            MemorySegment stub = LINKER.upcallStub(
+                callback,
+                FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS),
+                arena);
+            boolean ok = (boolean) queryFnRegistryRegisterPredicate.invoke(
+                raw,
+                arena.allocateUtf8String(ident),
+                stub,
+                MemorySegment.NULL);
+            if (!ok) throw new IllegalStateException("failed to register query predicate: " + ident);
+            functions.add(predicate);
+            return this;
+        }
+
+        public QueryFunctionRegistry registerAggregate(String ident, QueryAggregate aggregate) throws Throwable {
+            requireOpen();
+            if (ident == null || ident.isBlank()) throw new IllegalArgumentException("query aggregate ident is required");
+            if (aggregate == null) throw new IllegalArgumentException("query aggregate callback is required");
+            MethodHandle callback = MethodHandles.lookup()
+                .findVirtual(
+                    Vev.class,
+                    "queryAggregateCallback",
+                    MethodType.methodType(
+                        MemorySegment.class,
+                        QueryFunctionRegistry.class,
+                        QueryAggregate.class,
+                        MemorySegment.class,
+                        int.class,
+                        MemorySegment.class))
+                .bindTo(Vev.this)
+                .bindTo(this)
+                .bindTo(aggregate);
+            MemorySegment stub = LINKER.upcallStub(
+                callback,
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS),
+                arena);
+            boolean ok = (boolean) queryFnRegistryRegisterAggregate.invoke(
+                raw,
+                arena.allocateUtf8String(ident),
+                stub,
+                MemorySegment.NULL);
+            if (!ok) throw new IllegalStateException("failed to register query aggregate: " + ident);
+            functions.add(aggregate);
+            return this;
+        }
+
+        private void requireOpen() {
+            if (isNull(raw)) throw new IllegalStateException("query function registry is closed");
+        }
+
+        @Override
+        public void close() {
+            if (!isNull(raw)) {
+                closeHandle(queryFnRegistryFree, raw);
                 raw = MemorySegment.NULL;
             }
             arena.close();
@@ -1605,6 +1770,11 @@ public final class Vev {
             }
         }
 
+        public String txDataEdn(long tx) throws Throwable {
+            requireOpen();
+            return ownedString((MemorySegment) connectionTxDataEdn.invoke(raw, tx));
+        }
+
         public String infoEdn() throws Throwable {
             requireOpen();
             return ownedString((MemorySegment) connectionInfoEdn.invoke(raw));
@@ -1749,6 +1919,18 @@ public final class Vev {
             requireOpen();
             try (Arena local = Arena.ofConfined()) {
                 return new ResultSet((MemorySegment) queryDbPreparedResultWithInputs.invoke(handle.raw, query.raw, local.allocateUtf8String(inputs)));
+            }
+        }
+
+        public ResultSet query(PreparedQuery query, String inputs, QueryFunctionRegistry registry) throws Throwable {
+            requireOpen();
+            registry.requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return new ResultSet((MemorySegment) queryDbPreparedResultWithInputsAndFns.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(inputs),
+                    registry.raw));
             }
         }
 

@@ -7,6 +7,10 @@
 ;; Port source of truth:
 ;; build/upstream/day-of-datomic-conj/src/music_brainz.clj
 ;; Sections: file top through Pattern inputs.
+;; build/upstream/day-of-datomic/tutorial/query.clj
+;; Sections: negation/disjunction count examples, predicate/function expressions,
+;; get-else, get-some, fulltext, missing?, transaction-log examples, and
+;; dynamic attribute specs.
 ;; build/upstream/day-of-datomic/tutorial/pull.clj
 ;; Sections: setup through dynamic pattern input.
 
@@ -108,6 +112,51 @@
     [?artist :artist/name ?name]
     [?artist :artist/startYear ?year]])
 
+(def artist-not-canada-count-query
+  '[:find (count ?eid) .
+    :where
+    [?eid :artist/name]
+    (not [?eid :artist/country :country/CA])])
+
+(def artist-not-release-1970-count-query
+  '[:find (count ?artist) .
+    :where
+    [?artist :artist/name]
+    (not-join [?artist]
+      [?release :release/artists ?artist]
+      [?release :release/year 1970])])
+
+(def live-at-carnegie-not-bill-withers-count-query
+  '[:find (count ?r) .
+    :where
+    [?r :release/name "Live at Carnegie Hall"]
+    (not-join [?r]
+      [?r :release/artists ?a]
+      [?a :artist/name "Bill Withers"])])
+
+(def artist-or-type-gender-count-query
+  '[:find (count ?artist) .
+    :where
+    (or [?artist :artist/type :artist.type/group]
+        (and [?artist :artist/type :artist.type/person]
+             [?artist :artist/gender :artist.gender/female]))])
+
+(def release-or-canada-artist-or-1970-count-query
+  '[:find (count ?release) .
+    :where
+    [?release :release/name]
+    (or-join [?release]
+      (and [?release :release/artists ?artist]
+           [?artist :artist/country :country/CA])
+      [?release :release/year 1970])])
+
+(def artist-start-before-1600-query
+  '[:find ?name ?year
+    :where
+    [?artist :artist/name ?name]
+    [?artist :artist/startYear ?year]
+    [(< ?year 1600)]])
+
 (def return-map-find-query
   '[:find ?artist-name ?release-name
     :keys artist release
@@ -120,6 +169,8 @@
 (defn teste
   [?yeat]
   (< ?yeat 1600))
+
+(intern (create-ns 'user) 'teste teste)
 
 (def host-predicate-query
   '[:find ?name ?year
@@ -137,6 +188,68 @@
     [?track :track/duration ?millis]
     [(quot ?millis 60000) ?minutes]
     [?track :track/name ?track-name]])
+
+(def get-else-artist-start-query
+  '[:find ?artist-name ?year
+    :in $ [?artist-name ...]
+    :where
+    [?artist :artist/name ?artist-name]
+    [(get-else $ ?artist :artist/startYear "N/A") ?year]])
+
+(def get-some-country-query
+  '[:find [?e ?attr ?name]
+    :in $ ?e
+    :where
+    [(get-some $ ?e :country/name :artist/name) [?attr ?name]]])
+
+(def fulltext-artist-name-query
+  '[:find ?entity ?name ?tx ?score
+    :in $ ?search
+    :where
+    [(fulltext $ :artist/name ?search) [[?entity ?name ?tx ?score]]]])
+
+(def missing-artist-start-query
+  '[:find ?name
+    :where
+    [?artist :artist/name ?name]
+    [(missing? $ ?artist :artist/startYear)]])
+
+(def log-tx-ids-query
+  '[:find [?tx ...]
+    :in ?log
+    :where [(tx-ids ?log 0 10) [?tx ...]]])
+
+(def log-tx-data-entities-query
+  '[:find [?e ...]
+    :in ?log ?tx
+    :where [(tx-data ?log ?tx) [[?e]]]])
+
+(def attrs-with-value-42-query
+  '[:find [?aname ...]
+    :where
+    [?attr 42 _]
+    [?attr :db/ident ?aname]])
+
+(def attrs-with-property-query
+  '[:find [?aname ...]
+    :in $ [?property ...]
+    :where
+    [?attr ?property _]
+    [?attr :db/ident ?aname]])
+
+(def country-artists-query
+  '[:find [?artist-name ...]
+    :in $ ?country
+    :where
+    [?artist :artist/name ?artist-name]
+    [?artist :artist/country ?country]])
+
+(def dynamic-reference-country-query
+  '[:find [?artist-name ...]
+    :in $ ?country [?reference ...]
+    :where
+    [?artist :artist/name ?artist-name]
+    [?artist ?reference ?country]])
 
 (def artist-type-gender-query
   '[:find ?id ?type ?gender
@@ -176,11 +289,27 @@
     [?release :release/media ?medium]
     [?release :release/year ?year]])
 
+(defn mode
+  [vals]
+  (->> (frequencies vals)
+       (sort-by (comp - second))
+       ffirst))
+
+(intern (create-ns 'user) 'mode mode)
+
 (def custom-mode-aggregate-query
   '[:find (user/mode ?track-count) .
     :with ?media
     :where
     [?media :medium/trackCount ?track-count]])
+
+(def query-timeout-query
+  '[:find ?track-name
+    :in $ ?artist-name
+    :where
+    [?track :track/artists ?artist]
+    [?track :track/name ?track-name]
+    [?artist :artist/name ?artist-name]])
 
 (def tracks-by-artist-name-query
   '[:find ?title
@@ -407,6 +536,24 @@
 (defn scalar-find-artist-start [db]
   (d/q scalar-find-query db "John Lennon"))
 
+(defn artist-not-canada-count [db]
+  (d/q artist-not-canada-count-query db))
+
+(defn artist-not-release-1970-count [db]
+  (d/q artist-not-release-1970-count-query db))
+
+(defn live-at-carnegie-not-bill-withers-count [db]
+  (d/q live-at-carnegie-not-bill-withers-count-query db))
+
+(defn artist-or-type-gender-count [db]
+  (d/q artist-or-type-gender-count-query db))
+
+(defn release-or-canada-artist-or-1970-count [db]
+  (d/q release-or-canada-artist-or-1970-count-query db))
+
+(defn artist-start-before-1600 [db]
+  (d/q artist-start-before-1600-query db))
+
 (defn return-map-releases [db]
   (d/q return-map-find-query db "Paul McCartney"))
 
@@ -423,6 +570,42 @@
 
 (defn function-expression-track-minutes [db]
   (d/q function-expression-query db "John Lennon"))
+
+(defn get-else-artist-starts [db]
+  (d/q get-else-artist-start-query db ["Crosby, Stills & Nash" "Crosby & Nash"]))
+
+(defn get-some-country [db]
+  (d/q get-some-country-query db :country/US))
+
+(defn fulltext-artist-name [db]
+  (d/q fulltext-artist-name-query db "Jane"))
+
+(defn missing-artist-starts [db]
+  (d/q missing-artist-start-query db))
+
+(defn log-tx-ids [conn]
+  (d/q log-tx-ids-query (d/log conn)))
+
+(defn log-tx-data-entities [conn tx]
+  (d/q log-tx-data-entities-query (d/log conn) tx))
+
+(defn attrs-with-value-42 [db]
+  (d/q attrs-with-value-42-query db))
+
+(defn attrs-with-property [db]
+  (d/q attrs-with-property-query db [:db/unique]))
+
+(defn country-artists-by-lookup-ref [db]
+  (d/q country-artists-query db [:country/name "Belgium"]))
+
+(defn country-artists-by-ident [db]
+  (d/q country-artists-query db :country/BE))
+
+(defn country-artists-by-entity [db]
+  (d/q country-artists-query db 1000162))
+
+(defn dynamic-reference-country-artists [db]
+  (d/q dynamic-reference-country-query db :country/BE [:artist/country]))
 
 (defn artist-type-gender [db]
   (d/q artist-type-gender-query db "Janis Joplin"))
@@ -441,6 +624,11 @@
 
 (defn custom-mode-aggregate [db]
   (d/q custom-mode-aggregate-query db))
+
+(defn query-timeout-example [db]
+  (d/query {:query query-timeout-query
+            :args [db "John Lennon"]
+            :timeout 100}))
 
 (defn tracks-by-artist-name [db]
   (d/query {:query tracks-by-artist-name-query
@@ -645,34 +833,95 @@
           collection (collection-find-releases db)
           tuple (tuple-find-artist-start db)
           scalar (scalar-find-artist-start db)
+          artist-not-canada (artist-not-canada-count db)
+          artist-not-release-1970 (artist-not-release-1970-count db)
+          carnegie-not-bill-withers (live-at-carnegie-not-bill-withers-count db)
+          artist-or-type-gender (artist-or-type-gender-count db)
+          release-or-canada-or-1970 (release-or-canada-artist-or-1970-count db)
+          artist-start-before-1600 (artist-start-before-1600 db)
           return-map (return-map-releases db)
           positional-artist (return-map-positional-artist db)
           key-artist (return-map-key-artist db)
           host-predicate (host-predicate-artists db)
-          function-expression (function-expression-track-minutes db)]
+          function-expression (function-expression-track-minutes db)
+          get-else-starts (get-else-artist-starts db)
+          get-some-country (get-some-country db)
+          fulltext-artist-name (fulltext-artist-name db)
+          missing-artist-starts (missing-artist-starts db)
+          tx-ids (log-tx-ids conn)
+          tx-data-entities (log-tx-data-entities conn (first tx-ids))
+          attrs-42 (attrs-with-value-42 db)
+          unique-attrs (attrs-with-property db)
+          country-lookup-ref (country-artists-by-lookup-ref db)
+          country-ident (country-artists-by-ident db)
+          country-entity (country-artists-by-entity db)
+          dynamic-reference (dynamic-reference-country-artists db)]
       (assert (some? missing-db-error))
       (assert (.contains ^String missing-db-error ":in does not include $"))
       (assert (= 29 (count relation)))
       (assert (= 12 (count collection)))
       (assert (= [1940 10 9] tuple))
       (assert (= 1940 scalar))
+      (assert (= 4538 artist-not-canada))
+      (assert (= 3263 artist-not-release-1970))
+      (assert (= 2 carnegie-not-bill-withers))
+      (assert (= 2323 artist-or-type-gender))
+      (assert (= 2124 release-or-canada-or-1970))
+      (assert (= 2 (count artist-start-before-1600)))
       (assert (= 3 (count return-map)))
       (assert (= "Paul McCartney" positional-artist))
       (assert (= "Paul McCartney" key-artist))
       (assert (empty? host-predicate))
       (assert (= 71 (count function-expression)))
+      (assert (= #{["Crosby, Stills & Nash" 1968]
+                   ["Crosby & Nash" "N/A"]}
+                 get-else-starts))
+      (assert (= [:country/US :country/name "United States"] get-some-country))
+      (assert (= 3 (count fulltext-artist-name)))
+      (assert (= #{"Jane" "Jane Birkin" "Mary Jane Hooper"}
+                 (set (map second fulltext-artist-name))))
+      (assert (= #{1.0 0.625 0.5}
+                 (set (map #(nth % 3) fulltext-artist-name))))
+      (assert (= 1637 (count missing-artist-starts)))
+      (assert (= #{1 2 3 4 5 6 7 8 9} tx-ids))
+      (assert (pos? (count tx-data-entities)))
+      (assert (empty? attrs-42))
+      (assert (= #{":country/name" ":release/gid" ":artist/gid"} unique-attrs))
+      (assert (= country-lookup-ref country-ident))
+      (assert (= country-ident country-entity))
+      (assert (= 10 (count country-ident)))
+      (assert (= country-ident dynamic-reference))
       {:missing-db-status :error
        :missing-db-error missing-db-error
        :relation-find-releases (count relation)
        :collection-find-releases (count collection)
        :tuple-find-artist-start tuple
        :scalar-find-artist-start scalar
+       :artist-not-canada-count artist-not-canada
+       :artist-not-release-1970-count artist-not-release-1970
+       :live-at-carnegie-not-bill-withers-count carnegie-not-bill-withers
+       :artist-or-type-gender-count artist-or-type-gender
+       :release-or-canada-artist-or-1970-count release-or-canada-or-1970
+       :artist-start-before-1600-count (count artist-start-before-1600)
        :return-map-releases (count return-map)
        :return-map-positional-artist positional-artist
        :return-map-key-artist key-artist
-       :host-predicate-status :pending-host-function
+       :host-predicate-status :supported
        :host-predicate-count (count host-predicate)
-       :function-expression-track-minutes (count function-expression)})))
+       :function-expression-track-minutes (count function-expression)
+       :get-else-artist-starts get-else-starts
+       :get-some-country get-some-country
+       :fulltext-artist-name (count fulltext-artist-name)
+       :missing-artist-starts (count missing-artist-starts)
+       :log-tx-ids (count tx-ids)
+       :log-tx-data-entities (count tx-data-entities)
+       :attrs-with-value-42 (count attrs-42)
+       :attrs-with-property unique-attrs
+       :country-artists-by-lookup-ref (count country-lookup-ref)
+       :country-artists-by-ident (count country-ident)
+       :country-artists-by-entity (count country-entity)
+       :dynamic-reference-status :known-datomic-divergence
+       :dynamic-reference-count (count dynamic-reference)})))
 
 (defn validate-basic-aggregations! []
   (with-open [conn (connect)
@@ -680,18 +929,30 @@
     (let [janis (artist-type-gender db)
           min-duration (min-track-duration db)
           sum-track-count (sum-medium-track-count db)
-          name-counts (artist-name-counts db)]
+          name-counts (artist-name-counts db)
+          mode-track-count (custom-mode-aggregate db)
+          timeout-error (try
+                          (query-timeout-example db)
+                          nil
+                          (catch Throwable error
+                            (.getMessage error)))]
       (assert (= 1 (count janis)))
       (assert (= 1 (count min-duration)))
       (assert (= #{[3000]} min-duration))
       (assert (= 99847 sum-track-count))
       (assert (= #{[4601 4588]} name-counts))
+      (assert (= 2 mode-track-count))
+      (assert (some? timeout-error))
+      (assert (.contains ^String timeout-error "query timed out"))
       {:artist-type-gender janis
        :min-track-duration min-duration
        :sum-medium-track-count sum-track-count
        :artist-name-counts name-counts
        :track-name-statistics-status :pending-performance
-       :custom-mode-aggregate-status :pending-host-aggregate})))
+       :custom-mode-aggregate mode-track-count
+       :custom-mode-aggregate-status :supported
+       :query-timeout-status :error
+       :query-timeout-error timeout-error})))
 
 (defn validate-deeper-query-intro! []
   (with-open [conn (connect)
@@ -1020,8 +1281,8 @@
   (return-map-key-artist db)
 
   ;; Predicate expressions:
-  ;; Upstream uses `(user/teste ?year)`. Vev parses the shape but does not call
-  ;; arbitrary host Clojure predicates through the native query engine yet.
+  ;; Upstream uses `(user/teste ?year)`. Vev resolves the host function through
+  ;; the Clojure wrapper and executes it through the native query registry.
   (host-predicate-artists db)
 
   ;; Function expressions:
@@ -1043,9 +1304,13 @@
   (track-name-statistics db)
 
   ;; Custom Aggregates:
-  ;; The upstream `(user/mode ?track-count)` example requires host aggregate
-  ;; execution from the native query engine, so it remains pending.
+  ;; The upstream `(user/mode ?track-count)` example resolves through the
+  ;; Clojure wrapper and executes through the native query registry.
   (custom-mode-aggregate db)
+
+  ;; d/query timeout:
+  ;; Upstream expects this request-map form with `:timeout 100` to throw.
+  (query-timeout-example db)
 
   ;; Let's go deeper:
   ;; Upstream starts with this `d/query` request map and `:io-context`.

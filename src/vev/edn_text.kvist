@@ -1142,10 +1142,19 @@
           first-arg doc.nodes[op-node].next-sibling
           second-arg (if (= first-arg -1) -1 doc.nodes[first-arg].next-sibling)
           third-arg (if (= second-arg -1) -1 doc.nodes[second-arg].next-sibling)]
-      (when (not (edn-aggregate-op? op))
-        (return false "unsupported aggregate find expression"))
       (when (= first-arg -1)
         (return false "aggregate find expression missing variable"))
+      (if (and (not (edn-aggregate-op? op))
+               (edn-var? doc first-arg)
+               (= second-arg -1))
+        (do
+          (let [args (aggregate-single-var-args doc.nodes[first-arg].text)]
+            (arr.push! out^ (Aggregate-Find {op: op
+                                             var: doc.nodes[first-arg].text
+                                             args: (slice args 0)})))
+          (return true ""))
+        (when (not (edn-aggregate-op? op))
+          (return false "unsupported aggregate find expression")))
       (if (= op "aggregate")
         (do
           (when (or (= second-arg -1) (not (= third-arg -1)))
@@ -2800,7 +2809,7 @@
         (delete-query-shallow query-value)
         (return (result-set-error input-error)))
       (let [result (db-read-source-q-query-with-inputs source query-value (slice inputs 0))]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (delete-query-shallow query-value)
         result))))
 
@@ -2815,7 +2824,7 @@
         (return (profiled-result-set (result-set-error input-error) (query-stats-empty))))
       (let [result (db-read-source-q-query-with-inputs source query-value (slice inputs 0))
             stats (db-read-source-query-profile-stats-with-source-inputs source ([]DB-Read-Named-Source []) query-value (slice inputs 0) result)]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (delete-query-shallow query-value)
         (profiled-result-set result stats)))))
 
@@ -2829,7 +2838,7 @@
         (delete-query-shallow query-value)
         (return (result-set-error input-error)))
       (let [result (db-read-source-q-query-with-inputs-and-fns source query-value (slice inputs 0) registry)]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (delete-query-shallow query-value)
         result))))
 
@@ -2888,7 +2897,7 @@
         (return (query-result-owned-values (result-set-error input-error))))
       (let [result (db-read-source-q-query-with-inputs source query-value (slice inputs 0))
             out (query-result-db-read-source-query-result query-value result)]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (delete-query-shallow query-value)
         out))))
 
@@ -2903,7 +2912,7 @@
         (return (query-result-owned-values (result-set-error input-error))))
       (let [result (db-read-source-q-query-with-inputs source query-value (slice inputs 0))
             out (query-result-db-read-source-query-result-owned query-value result)]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (delete-query-shallow query-value)
         out))))
 
@@ -2918,7 +2927,7 @@
         (return (query-result-owned-values (result-set-error input-error))))
       (let [result (db-read-source-q-query-with-inputs-and-fns source query-value (slice inputs 0) registry)
             out (query-result-db-read-source-query-result query-value result)]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (delete-query-shallow query-value)
         out))))
 
@@ -3408,6 +3417,7 @@
                 (for [item row.items]
                   (arr.push! flat item))
               :else (arr.push! flat row))))
+        (delete value.items)
         (query-input-relation (slice flat 0) width))))
 
 (defn value-vector-all-lookup-refs? [value: Value] -> bool
@@ -3426,8 +3436,9 @@
           values (make [dynamic]Value 0 (count value.items))]
       (for [item value.items]
         (let [[attr lookup-value _] (value-lookup-ref-parts item)]
-          (arr.push! attrs attr)
-          (arr.push! values lookup-value)))
+          (arr.push! attrs (string-owned attr))
+          (arr.push! values (value-owned lookup-value))))
+      (delete-owned-value value)
       (query-input-collection-lookup-refs (slice attrs 0) (slice values 0)))
     (query-input-collection (slice value.items 0))))
 
@@ -3501,19 +3512,22 @@
           cursor doc.nodes[doc.root].first-child
           index 0]
       (while (not (= cursor -1))
-        (let [[value value-ok value-error] (edn-value-from-node doc cursor)]
-          (when (not value-ok)
-            (delete doc.nodes)
-            (return out false value-error))
-          (if (< index (count specs))
-            (if (query-input-spec-pull-pattern? query-value specs[index])
-              (let [[input input-ok input-error] (query-input-pull-pattern-from-node doc cursor)]
-                (when (not input-ok)
-                  (delete doc.nodes)
-                  (return out false input-error))
-                (arr.push! out input))
-              (arr.push! out (query-input-from-value-for-spec specs[index] value)))
-            (arr.push! out (query-input-scalar value))))
+        (if (and (< index (count specs))
+                 (query-input-spec-pull-pattern? query-value specs[index]))
+          (let [[input input-ok input-error] (query-input-pull-pattern-from-node doc cursor)]
+            (when (not input-ok)
+              (delete-owned-query-inputs out)
+              (delete doc.nodes)
+              (return (make [dynamic]Query-Input) false input-error))
+            (arr.push! out input))
+          (let [[value value-ok value-error] (edn-value-from-node doc cursor)]
+            (when (not value-ok)
+              (delete-owned-query-inputs out)
+              (delete doc.nodes)
+              (return (make [dynamic]Query-Input) false value-error))
+            (if (< index (count specs))
+              (arr.push! out (query-input-from-value-for-spec specs[index] value))
+              (arr.push! out (query-input-scalar value)))))
         (set! index (+ index 1))
         (set! cursor doc.nodes[cursor].next-sibling)))
     (delete doc.nodes)
@@ -3528,8 +3542,11 @@
     (return (result-set-error prepared.error)))
   (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query prepared.query inputs-text)]
     (when (not input-ok)
+      (delete-owned-query-inputs inputs)
       (return (result-set-error input-error)))
-    (q-prepared-with-inputs db prepared (slice inputs 0))))
+    (let [out (q-prepared-with-inputs db prepared (slice inputs 0))]
+      (delete-owned-query-inputs inputs)
+      out)))
 
 (defn q-prepared-value-with-input-text [db: DB, prepared: Prepared-Query, inputs-text: string] -> Value
   (result-set-value db (q-prepared-with-input-text db prepared inputs-text)))
@@ -3615,10 +3632,10 @@
       .Bool (return (value-bool node.bool-value) true "")
       .Int (return (value-int node.int-value) true "")
       .Float (return (value-float node.float-value) true "")
-      .String (return (value-string node.text) true "")
-      .Symbol (return (value-symbol node.text) true "")
-      .Keyword (return (value-keyword node.text) true "")
-      .Uuid (return (value-uuid node.text) true "")
+      .String (return (value-string (string-owned node.text)) true "")
+      .Symbol (return (value-symbol (string-owned node.text)) true "")
+      .Keyword (return (value-keyword (string-owned node.text)) true "")
+      .Uuid (return (value-uuid (string-owned node.text)) true "")
       .Vector (let [items (make [dynamic]Value) :defer]
                 (for [child (edn-children doc node-index)]
                   (let [[item item-ok item-error] (edn-value-from-node doc child)]

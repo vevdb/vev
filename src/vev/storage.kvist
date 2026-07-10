@@ -745,6 +745,73 @@ sqlite_tx_ids_raw :: proc(handle: rawptr) -> ([dynamic]u64, bool, string) {
     return out, true, \"\"
 }
 
+sqlite_tx_data_text_raw :: proc(handle: rawptr, tx: u64) -> (string, bool, string) {
+    if handle == nil {
+        return \"\", false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"SELECT e, a, value_text, tx, added FROM vev_datoms WHERE tx = ? ORDER BY log_index, id\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return \"\", false, \"failed to allocate sqlite SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return \"\", false, sqlite_error_text(db, \"sqlite prepare tx data read failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if sqlite3_bind_int64(stmt, 1, i64(tx)) != SQLITE_OK {
+        return \"\", false, sqlite_error_text(db, \"sqlite bind tx data read failed\")
+    }
+    parts := make([dynamic]string)
+    append(&parts, \"[\")
+    first := true
+    for {
+        rc := sqlite3_step(stmt)
+        if rc == SQLITE_DONE {
+            break
+        }
+        if rc != SQLITE_ROW {
+            delete(parts)
+            return \"\", false, sqlite_error_text(db, \"sqlite tx data read failed\")
+        }
+        a_raw := sqlite3_column_text(stmt, 1)
+        value_raw := sqlite3_column_text(stmt, 2)
+        if a_raw == nil || value_raw == nil {
+            delete(parts)
+            return \"\", false, \"sqlite tx data row had null text\"
+        }
+        a_text, a_err := strings.clone_from_cstring(a_raw)
+        if a_err != nil {
+            delete(parts)
+            return \"\", false, \"failed to clone sqlite tx data attr\"
+        }
+        value_text, value_err := strings.clone_from_cstring(value_raw)
+        if value_err != nil {
+            delete(a_text)
+            delete(parts)
+            return \"\", false, \"failed to clone sqlite tx data value\"
+        }
+        if !first {
+            append(&parts, \" \")
+        }
+        first = false
+        append(&parts, fmt.tprintf(\"[%d %s %s %d %v]\",
+            sqlite3_column_int64(stmt, 0),
+            vev__attr_serializable_text(a_text),
+            value_text,
+            sqlite3_column_int64(stmt, 3),
+            sqlite3_column_int(stmt, 4) != 0))
+        delete(a_text)
+        delete(value_text)
+    }
+    append(&parts, \"]\")
+    out := strings.concatenate(parts[:])
+    delete(parts)
+    return out, true, \"\"
+}
+
 sqlite_meta_value_raw :: proc(handle: rawptr, key: string) -> (string, bool, string) {
     if handle == nil {
         return \"\", false, \"sqlite handle was nil\"
@@ -7521,6 +7588,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn sqlite-conn-tx-ids [store: ^SQLite-Conn] -> [tx-ids: [dynamic]u64, ok: bool, error: string]
   (sqlite-tx-ids-raw store^.handle))
 
+(defn sqlite-conn-tx-data-text [store: ^SQLite-Conn, tx: u64] -> [text: string, ok: bool, error: string]
+  (sqlite-tx-data-text-raw store^.handle tx))
+
 (defn sqlite-conn-storage-architecture [store: ^SQLite-Conn] -> [architecture: string, ok: bool, error: string]
   (sqlite-meta-value-raw store^.handle "storage-architecture"))
 
@@ -11953,10 +12023,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (query-result-owned-values (result-set-error source-error))))
     (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query prepared.query inputs-text)]
       (when (not input-ok)
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (return (query-result-owned-values (result-set-error input-error))))
       (let [result (db-read-source-q-query-with-inputs source prepared.query (slice inputs 0))]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (query-result-db-read-source-query-result prepared.query result)))))
 
 (defn q-result-store-db-prepared-owned-with-input-text [snapshot: ^Store-DB, prepared: Prepared-Query, inputs-text: string] -> Query-Result
@@ -11967,10 +12037,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (query-result-owned-values (result-set-error source-error))))
     (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query prepared.query inputs-text)]
       (when (not input-ok)
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (return (query-result-owned-values (result-set-error input-error))))
       (let [result (db-read-source-q-query-with-inputs source prepared.query (slice inputs 0))]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (query-result-db-read-source-query-result-owned prepared.query result)))))
 
 (defn q-profiled-store-db-prepared-with-input-text [snapshot: ^Store-DB, prepared: Prepared-Query, inputs-text: string] -> Profiled-Result-Set
@@ -11981,10 +12051,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (profiled-result-set (result-set-error source-error) (query-stats-empty))))
     (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query prepared.query inputs-text)]
       (when (not input-ok)
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         (return (profiled-result-set (result-set-error input-error) (query-stats-empty))))
       (let [profiled (q-prepared-db-read-source-profiled-with-inputs source prepared (slice inputs 0))]
-        (delete inputs)
+        (delete-owned-query-inputs inputs)
         profiled))))
 
 (defn q-result-store-db-prepared-with-rules [snapshot: ^Store-DB, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Query-Result
@@ -12000,10 +12070,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (return (query-result-owned-values (result-set-error prepared-rules.error))))
   (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query prepared.query inputs-text)]
     (when (not input-ok)
-      (delete inputs)
+      (delete-owned-query-inputs inputs)
       (return (query-result-owned-values (result-set-error input-error))))
     (let [out (q-result-store-db-prepared-with-rules snapshot prepared prepared-rules (slice inputs 0))]
-      (delete inputs)
+      (delete-owned-query-inputs inputs)
       out)))
 
 (defn q-result-store-db-text-with-rules [snapshot: ^Store-DB, text: string, rules-text: string] -> Query-Result
@@ -13324,10 +13394,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (return (query-result-owned-values (result-set-error prepared.error))))
         (let [[inputs input-ok input-error] (parse-query-inputs-text-for-query prepared.query inputs-text)]
           (when (not input-ok)
-            (delete inputs)
+            (delete-owned-query-inputs inputs)
             (return (query-result-owned-values (result-set-error input-error))))
           (let [result (q-result-prepared-db-read-source-with-inputs (shared-conn-read-source (addr store^.shared)) prepared (slice inputs 0))]
-            (delete inputs)
+            (delete-owned-query-inputs inputs)
             result)))
      (query-result-owned-values (result-set-error "store is not open"))))
 

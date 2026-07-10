@@ -60,6 +60,22 @@ Covered in both `examples/clojure/musicbrainz_workshop.clj` and
   `:in` omits the default `$` data source while the query reads from it
 - collection, tuple, scalar, and return-map result shapes, including Clojure
   return-map rows that support both key lookup and positional destructuring
+- negation and disjunction count examples from `tutorial/query.clj`: `not`,
+  `not-join`, `or`, and `or-join`
+- predicate and function-expression examples from `tutorial/query.clj` that use
+  the MusicBrainz DB: the built-in `<` start-year predicate and `quot`
+  track-duration expression
+- `get-else` and `get-some` examples from `tutorial/query.clj`, including
+  collection input to `get-else` and scalar keyword input to `get-some`
+- `fulltext` and `missing?` examples from `tutorial/query.clj`, including
+  durable source-backed fulltext rows shaped as `[entity text tx score]`
+- transaction-log examples from `tutorial/query.clj`: Datomic-shaped
+  Clojure `(d/log conn)` queries for `tx-ids` and `tx-data`, plus Kvist
+  validation over the same durable transaction log data
+- dynamic attribute specs and equivalent country identity inputs from
+  `tutorial/query.clj`: attribute/value lookup with a numeric value,
+  collection input over attribute properties, and the three equivalent country
+  inputs by lookup ref, ident keyword, and entity id
 - built-in function expressions and basic aggregates used by this slice
 - request-map query-stats examples around the pre-1970 John Lennon queries
 - Datomic-style `%` rules input, first rules exercise, and composed
@@ -120,8 +136,10 @@ internals:
 
    Status: active. `examples/clojure/musicbrainz_workshop.clj` and
    `examples/kvist/musicbrainz_workshop.kvist` cover
-   `day-of-datomic-conj/src/music_brainz.clj` through Pattern inputs, then
-   all of `day-of-datomic/tutorial/pull.clj`.
+   `day-of-datomic-conj/src/music_brainz.clj` through Pattern inputs,
+   `day-of-datomic/tutorial/query.clj` through dynamic attribute specs and
+   equivalent country identity inputs, then all of
+   `day-of-datomic/tutorial/pull.clj`.
 
    Kvist tutorial API status:
 
@@ -139,18 +157,80 @@ internals:
    Next upstream section:
 
    - `build/upstream/day-of-datomic/tutorial/query.clj`
-   - section: Predicate Expressions / Statistics / Custom Aggregates
+   - section: aggregate examples immediately after the placeholder
+     `;; rules examples` comment, starting with the monster-heads relation
+     examples and continuing into the MusicBrainz aggregate queries:
+     `min`/`max`, `count`/`count-distinct`, `sum`, grouped
+     `median`/`avg`/`stddev`, `distinct`, top-n `min`/`max`, `rand`,
+     `sample`, custom aggregate `user/mode`, and request-map timeout.
 
    Keep both tutorial paths moving together. Every new Clojure tutorial slice
    should have a matching Kvist slice unless the missing piece is explicitly
    documented as a Kvist language/runtime blocker.
 
-   Current blockers exposed by the upstream port:
+   Current host-function status:
+
+   - the JVM-only `System/getProperties` / `.endsWith` examples and the
+     collection-only `subs` example are host/query-language examples, not
+     MusicBrainz DB-backed tutorial gates. They should live in a later general
+     host interop/query-language slice unless they become necessary for
+     MusicBrainz workshop parity.
+   - Vev covers the DB-backed dynamic attribute examples that follow those
+     host forms, except for the final upstream `datomic.api/entid` fix query
+     described below.
+   - Vev currently resolves ident keywords in dynamic attribute clauses more
+     eagerly than Datomic. The upstream form marked "this will not work as
+     desired" returns the Belgian artist rows in Vev; this is documented in
+     the Clojure tutorial as `:known-datomic-divergence` until query-time
+     `entid` support and exact Datomic dynamic-attribute semantics are fixed.
+   - query-time `datomic.api/entid` / `entid` is still missing, so the upstream
+     dynamic-attribute repair query is not yet covered.
+   - the Kvist literal query DSL currently cannot express the numeric
+     attribute-position form `[?attr 42 _]`; the EDN text API covers it today.
+     Add literal support before claiming full Kvist literal parity for this
+     section.
+   - Clojure `d/log` supports the upstream `tx-ids` and `tx-data` query shapes
+     against durable Vev connections; local Vev stores use compact tx ids
+     rather than Datomic sample tx ids, so examples preserve the upstream query
+     shape while selecting Vev-local ranges/ids
+   - native ABI/Java expose durable transaction-log tx data as EDN text for
+     host wrappers; Kvist currently validates tx ids and tx data through the
+     native store API rather than a first-class `vev.log` query source
+   - general Java/Clojure row result conversion preserves Vev keyword and
+     symbol value kinds, so Clojure tutorial queries return real Clojure
+     keywords/symbols rather than stringified EDN tokens
+   - EDN parsed query inputs own their string-like values, so scalar
+     keyword/string/symbol inputs remain valid after parsing and can safely be
+     passed through host APIs
 
    - arbitrary host Clojure predicate calls such as `(user/teste ?year)` are
-     parsed but not executed by the native query engine
+     resolved by `vev.core`, registered with the native query function
+     registry, and executed by the native query engine
    - custom Clojure aggregate functions such as `(user/mode ?track-count)` are
-     not executed by the native query engine
+     resolved by `vev.core`, registered with the native query function
+     registry, and executed by the native query engine
+   - the Clojure workshop validation now asserts the upstream custom aggregate
+     result: `(user/mode ?track-count)` returns `2` on the local MusicBrainz
+     tutorial store
+   - the Clojure workshop validation now asserts the upstream request-map
+     timeout form from `tutorial/query.clj`; `:timeout 100` throws
+     `query timed out` on the local persistent MusicBrainz store
+   - the Clojure wrapper now supports the `decomposing_a_query.clj` style
+     in-memory vector source: request-map `:args` may start with a vector of
+     `[e a v]` triples, which is queried as a relation DB source
+   - `examples/clojure/decomposing_query.clj` ports the opening `kvs`
+     relation and validates the fast decomposition queries: original slow
+     query count `1`, dropped-clause count `2000`, cross-product count
+     `4000000`, single-clause count `2000`, reordered count `1`, and optimized
+     `:in` query result `#{[10 10]}`
+   - large relation-source query results can use a delayed counted relation:
+     `(count (d/query ...))` validates dangerous cross-products without
+     materializing millions of host rows, while ordinary small results still
+     return concrete sets
+   - the matching Kvist story for tutorial-local custom predicate/aggregate
+     functions remains open; do not invent a separate example, but define how
+     Kvist native functions should be exposed to the same query function
+     registry if an upstream tutorial form requires it
 
    Current measured durable-store status for this section:
 
@@ -162,6 +242,11 @@ internals:
 
    Engine status:
 
+   - source-backed `fulltext` scans string values in the requested attribute,
+     applies token-boundary matching, and returns Datomic-shaped
+     `[entity text tx score]` rows; current scoring is sample-compatible
+     (`1.0`, `0.625`, `0.5`), while Lucene-style analyzer/scoring parity is a
+     later explicit feature if needed
    - persisted scalar/function aggregate execution now has a generic typed
      source operator for fixed-attribute ref chains plus string length
    - the operator builds typed relation columns from sequential source index
@@ -171,15 +256,34 @@ internals:
      not by exact MusicBrainz query text
    - aggregate distinctness in the direct source path includes grouping vars,
      `:with` vars, and aggregate argument values, matching Datomic behavior
+   - source-backed `not`/`not-join` now use a planned set anti-join when the
+     branch is eligible for typed relation execution, avoiding row-by-row
+     negative branch evaluation on the MusicBrainz tutorial queries
+   - source-backed `or`/`or-join` now use a planned branch-union path when the
+     branches are eligible for typed relation execution; this keeps the OR
+     examples on the generic relation engine, though broad branch scans remain
+     a legitimate later performance target
 
    Next work for this upstream section:
 
-   - execute arbitrary host Clojure predicates through the native function
-     registry without breaking pure native/Kvist execution
-   - execute custom Clojure aggregate functions such as
-     `(user/mode ?track-count)` through the native function registry
-   - decide which host-callback cases belong in the smoke path and which should
-     be documented as slower host interop checks
+   - port the aggregate examples from `tutorial/query.clj` in order, reusing
+     the existing Vev aggregate support where it already matches and fixing
+     real semantic/performance gaps when they appear
+   - add `entid` query function support and revisit exact dynamic-attribute
+     ident semantics before claiming full parity for the dynamic-attribute
+     block
+   - keep the existing Clojure host predicate/function/aggregate coverage
+     aligned with the exact upstream forms, and add matching Kvist literal
+     forms where the function is built-in and does not require host callback
+     registration
+   - add a Kvist-side decomposing-query tutorial only if the upstream
+     relation-source examples are needed for the parallel workshop path; keep
+     it query-first and literal where Kvist syntax supports the form
+   - add the Kvist-side custom predicate/aggregate function exposure only when
+     a concrete upstream tutorial form needs it, keeping the query-first native
+     literal style
+   - decide whether host-callback cases should be included in the fast smoke
+     command long term or split into a slower host-interop check
 
 2. **MusicBrainz import and fixture setup**
 
@@ -197,6 +301,7 @@ internals:
 
    - `scripts/musicbrainz_workshop_clojure.sh`
    - `scripts/musicbrainz_workshop_kvist.sh`
+   - `scripts/decomposing_query_clojure.sh`
 
 3. **Datomic comparison harness**
 

@@ -11,6 +11,10 @@
 // Port source of truth:
 // build/upstream/day-of-datomic-conj/src/music_brainz.clj
 // Sections: file top through Pattern inputs.
+// build/upstream/day-of-datomic/tutorial/query.clj
+// Sections: negation/disjunction count examples, predicate/function expressions,
+// get-else, get-some, fulltext, missing?, transaction-log examples, and
+// dynamic attribute specs.
 // build/upstream/day-of-datomic/tutorial/pull.clj
 // Sections: setup through dynamic pattern input.
 
@@ -151,6 +155,44 @@
 (defn validate-query-result! [label: string, result: vev.Query-Result, expected: int, passed: ^bool]
   (check-result! label result expected passed)
   (vev.delete-query-result result))
+
+(defn validate-log! [store: ^vev.Store-Conn, passed: ^bool]
+  (when (not (= store^.kind .SQLite))
+    (fmt.printf "source=kvist section=transaction-log ok=false rows=0 expected=1 error=expected sqlite store\n")
+    (set! passed^ false)
+    (return))
+  (let [[tx-ids tx-ids-ok tx-ids-error] (vev.sqlite-conn-tx-ids (addr store^.sqlite))]
+    (defer (delete tx-ids))
+    (when (not tx-ids-ok)
+      (fmt.printf "source=kvist section=log-tx-ids ok=false rows=0 expected=9 error=%s\n" tx-ids-error)
+      (set! passed^ false)
+      (return))
+    (let [tx-ids-count (count tx-ids)
+          tx-ids-ok-count (= tx-ids-count 9)]
+      (fmt.printf "source=kvist section=log-tx-ids ok=%v rows=%d expected=9 error=\n" tx-ids-ok-count tx-ids-count)
+      (when (not tx-ids-ok-count)
+        (set! passed^ false)))
+    (when (= (count tx-ids) 0)
+      (fmt.printf "source=kvist section=log-tx-data ok=false rows=0 expected=1 error=no tx ids\n")
+      (set! passed^ false)
+      (return))
+    (let [[tx-data tx-data-ok tx-data-error] (vev.sqlite-conn-tx-data-text (addr store^.sqlite) tx-ids[0])
+          tx-data-present (and tx-data-ok (> (count tx-data) 2))]
+      (defer (delete tx-data))
+      (fmt.printf "source=kvist section=log-tx-data ok=%v rows=%d expected=1 error=%s\n" tx-data-present (if tx-data-present 1 0) tx-data-error)
+      (when (not tx-data-present)
+        (set! passed^ false)))))
+
+(defn validate-scalar-int-result! [label: string, result: vev.Query-Result, expected: i64, passed: ^bool]
+  (let [ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 1)
+                (= result.result.rows[0].values[0].kind .Int)
+                (= result.result.rows[0].values[0].int-value expected))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=%d error=%s\n" label ok (count result.result.rows) 1 result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
 
 (defn validate-query-error! [snapshot: ^vev.Store-DB, label: string, query: string, inputs: string, expected-error: string, passed: ^bool]
   (let [result (vev.q-result-store-db-text-with-input-text snapshot query inputs)
@@ -391,6 +433,63 @@
           (addr snapshot)
           "John Lennon")
         1 (addr passed))
+      (validate-scalar-int-result! "artist-not-canada-count"
+        (vev.q-result-store-db
+          [:find (count ?eid) .
+           :where
+           [?eid :artist/name]
+           (not [?eid :artist/country :country/CA])]
+          (addr snapshot))
+        4538 (addr passed))
+      (validate-scalar-int-result! "artist-not-release-1970-count"
+        (vev.q-result-store-db
+          [:find (count ?artist) .
+           :where
+           [?artist :artist/name]
+           (not-join [?artist]
+             [?release :release/artists ?artist]
+             [?release :release/year 1970])]
+          (addr snapshot))
+        3263 (addr passed))
+      (validate-scalar-int-result! "live-at-carnegie-not-bill-withers-count"
+        (vev.q-result-store-db
+          [:find (count ?r) .
+           :where
+           [?r :release/name "Live at Carnegie Hall"]
+           (not-join [?r]
+             [?r :release/artists ?a]
+             [?a :artist/name "Bill Withers"])]
+          (addr snapshot))
+        2 (addr passed))
+      (validate-scalar-int-result! "artist-or-type-gender-count"
+        (vev.q-result-store-db
+          [:find (count ?artist) .
+           :where
+           (or [?artist :artist/type :artist.type/group]
+               (and [?artist :artist/type :artist.type/person]
+                    [?artist :artist/gender :artist.gender/female]))]
+          (addr snapshot))
+        2323 (addr passed))
+      (validate-scalar-int-result! "release-or-canada-artist-or-1970-count"
+        (vev.q-result-store-db
+          [:find (count ?release) .
+           :where
+           [?release :release/name]
+           (or-join [?release]
+             (and [?release :release/artists ?artist]
+                  [?artist :artist/country :country/CA])
+             [?release :release/year 1970])]
+          (addr snapshot))
+        2124 (addr passed))
+      (validate-query-result! "artist-start-before-1600"
+        (vev.q-result-store-db
+          [:find ?name ?year
+           :where
+           [?artist :artist/name ?name]
+           [?artist :artist/startYear ?year]
+           [(< ?year 1600)]]
+          (addr snapshot))
+        2 (addr passed))
       (validate-query-result! "return-map-releases"
         (vev.q-result-store-db
           [:find ?artist-name ?release-name
@@ -416,6 +515,84 @@
           (addr snapshot)
           "John Lennon")
         71 (addr passed))
+      (validate-query-result! "get-else-artist-starts"
+        (vev.q-result-store-db
+          [:find ?artist-name ?year
+           :in $ [?artist-name ...]
+           :where
+           [?artist :artist/name ?artist-name]
+           [(get-else $ ?artist :artist/startYear "N/A") ?year]]
+          (addr snapshot)
+          ["Crosby, Stills & Nash" "Crosby & Nash"])
+        2 (addr passed))
+      (validate-query-result! "get-some-country"
+        (vev.q-result-store-db
+          [:find [?e ?attr ?name]
+           :in $ ?e
+           :where
+           [(get-some $ ?e :country/name :artist/name) [?attr ?name]]]
+          (addr snapshot)
+          :country/US)
+        1 (addr passed))
+      (validate-query-result! "fulltext-artist-name"
+        (vev.q-result-store-db
+          [:find ?entity ?name ?tx ?score
+           :in $ ?search
+           :where
+           [(fulltext $ :artist/name ?search) [[?entity ?name ?tx ?score]]]]
+          (addr snapshot)
+          "Jane")
+        3 (addr passed))
+      (validate-query-result! "missing-artist-starts"
+        (vev.q-result-store-db
+          [:find ?name
+           :where
+           [?artist :artist/name ?name]
+           [(missing? $ ?artist :artist/startYear)]]
+          (addr snapshot))
+        1637 (addr passed))
+      (validate-log! (addr store) (addr passed))
+      (validate-query-no-input! (addr snapshot) "attrs-with-value-42" "[:find [?aname ...] :where [?attr 42 _] [?attr :db/ident ?aname]]" 0 (addr passed))
+      (validate-query-result! "attrs-with-property"
+        (vev.q-result-store-db
+          [:find [?aname ...]
+           :in $ [?property ...]
+           :where
+           [?attr ?property _]
+           [?attr :db/ident ?aname]]
+          (addr snapshot)
+          [:db/unique])
+        3 (addr passed))
+      (validate-query-result! "country-artists-lookup-ref"
+        (vev.q-result-store-db
+          [:find [?artist-name ...]
+           :in $ ?country
+           :where
+           [?artist :artist/name ?artist-name]
+           [?artist :artist/country ?country]]
+          (addr snapshot)
+          [:country/name "Belgium"])
+        10 (addr passed))
+      (validate-query-result! "country-artists-ident"
+        (vev.q-result-store-db
+          [:find [?artist-name ...]
+           :in $ ?country
+           :where
+           [?artist :artist/name ?artist-name]
+           [?artist :artist/country ?country]]
+          (addr snapshot)
+          :country/BE)
+        10 (addr passed))
+      (validate-query-result! "country-artists-entity"
+        (vev.q-result-store-db
+          [:find [?artist-name ...]
+           :in $ ?country
+           :where
+           [?artist :artist/name ?artist-name]
+           [?artist :artist/country ?country]]
+          (addr snapshot)
+          1000162)
+        10 (addr passed))
       (validate-query-result! "artist-type-gender"
         (vev.q-result-store-db
           [:find ?id ?type ?gender

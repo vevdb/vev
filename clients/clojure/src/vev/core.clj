@@ -2,9 +2,10 @@
 ;; SPDX-License-Identifier: EPL-2.0
 
 (ns vev.core
-  (:require [clojure.edn :as edn])
+  (:require [clojure.edn :as edn]
+            [clojure.set :as set])
   (:import [java.nio.file Path]
-           [dev.vevdb.vev Vev Vev$ColumnResult Vev$DB Vev$Entity Vev$EntityView Vev$MapValue Vev$PreparedPullPattern Vev$TxFunction Vev$TxReportListener]))
+           [dev.vevdb.vev Vev Vev$ColumnResult Vev$DB Vev$Entity Vev$EntityView Vev$Keyword Vev$MapValue Vev$PreparedPullPattern Vev$QueryAggregate Vev$QueryPredicate Vev$Symbol Vev$TxFunction Vev$TxReportListener]))
 
 (defn- path [value]
   (cond
@@ -45,6 +46,12 @@
     (instance? Vev$Entity value)
     (.id ^Vev$Entity value)
 
+    (instance? Vev$Keyword value)
+    (keyword (subs (.text ^Vev$Keyword value) 1))
+
+    (instance? Vev$Symbol value)
+    (symbol (.text ^Vev$Symbol value))
+
     (instance? Vev$MapValue value)
     (persistent!
      (reduce (fn [out entry]
@@ -61,6 +68,25 @@
     value))
 
 (deftype KeyedRow [m values]
+  clojure.lang.IPersistentMap
+  (assoc [_ key value]
+    (assoc m key value))
+  (assocEx [_ key value]
+    (.assocEx ^clojure.lang.IPersistentMap m key value))
+  (without [_ key]
+    (dissoc m key))
+  (containsKey [_ key]
+    (contains? m key))
+  (entryAt [_ key]
+    (find m key))
+  (cons [_ value]
+    (conj m value))
+  (empty [_]
+    (empty m))
+  (equiv [_ other]
+    (cond
+      (instance? KeyedRow other) (= m (.-m ^KeyedRow other))
+      :else (= m other)))
   clojure.lang.ILookup
   (valAt [_ key]
     (get m key))
@@ -74,9 +100,15 @@
   clojure.lang.Counted
   (count [_]
     (count values))
+  clojure.lang.IHashEq
+  (hasheq [_]
+    (clojure.lang.Util/hasheq m))
   clojure.lang.Seqable
   (seq [_]
     (seq m))
+  Iterable
+  (iterator [_]
+    (.iterator ^Iterable m))
   Object
   (equals [_ other]
     (cond
@@ -88,6 +120,17 @@
   (toString [_]
     (str m)))
 
+(deftype CountedRelationResult [n materialized]
+  clojure.lang.Counted
+  (count [_]
+    (int n))
+  clojure.lang.Seqable
+  (seq [_]
+    (seq @materialized))
+  Object
+  (toString [_]
+    (str @materialized)))
+
 (defrecord Conn [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
@@ -97,6 +140,8 @@
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
+
+(defrecord Log [conn])
 
 (defrecord SQLiteConn [^Vev engine native]
   java.lang.AutoCloseable
@@ -142,6 +187,11 @@
     (.close ^java.lang.AutoCloseable native)))
 
 (defrecord TxFnRegistry [^Vev engine native]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close ^java.lang.AutoCloseable native)))
+
+(defrecord QueryFnRegistry [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
@@ -233,6 +283,13 @@
 
     :else
     (throw (ex-info "expected Vev durable connection" {:source conn}))))
+
+(defn log
+  "Return a Datomic-style transaction log value for a durable connection."
+  [conn]
+  (when-not (instance? DurableConn conn)
+    (throw (ex-info "expected Vev durable connection" {:source conn})))
+  (->Log conn))
 
 (defn compact-indexes!
   "Compact durable index roots as an explicit maintenance operation."
@@ -639,7 +696,20 @@
   (or (instance? Conn value)
       (instance? DurableConn value)
       (instance? SQLiteConn value)
+      (instance? Log value)
       (instance? DB value)))
+
+(defn- datom-triple-source? [value]
+  (and (vector? value)
+       (every? (fn [datom]
+                 (and (vector? datom)
+                      (= 3 (count datom))))
+               value)))
+
+(defn- datom-triples->tx [datoms]
+  (mapv (fn [[e a v]]
+          [:db/add e a v])
+        datoms))
 
 (defn- normalize-query-call [first-arg second-arg inputs]
   (if (source? first-arg)
@@ -709,6 +779,94 @@
     :tuple (first rows)
     :relation (set rows)))
 
+(defn- log-input-env [query inputs]
+  (let [inputv (vec inputs)]
+    (loop [forms (rest (vec (or (query-in-forms query) [])))
+           index 0
+           out {}]
+      (if-let [form (first forms)]
+        (if (symbol? form)
+          (recur (rest forms) (inc index) (assoc out form (nth inputv index nil)))
+          (recur (rest forms) index out))
+        out))))
+
+(defn- log-term-value [env term]
+  (cond
+    (symbol? term) (get env term)
+    :else term))
+
+(defn- log-where-forms [query]
+  (cond
+    (map? query)
+    (:where query)
+
+    (vector? query)
+    (let [tail (drop-while #(not= :where %) query)]
+      (when (seq tail)
+        (take-while #(not (#{:in :keys :strs :syms} %)) (rest tail))))
+
+    :else
+    nil))
+
+(defn- log-function-clause [query]
+  (some (fn [form]
+          (when (and (vector? form)
+                     (= 2 (count form))
+                     (seq? (first form)))
+            form))
+        (log-where-forms query)))
+
+(defn- log-tx-data [^Log log-value tx]
+  (edn/read-string (.txDataEdn (:native (:conn log-value)) (long tx))))
+
+(defn- log-output-vars [binding]
+  (cond
+    (and (vector? binding)
+         (= 2 (count binding))
+         (= '... (second binding)))
+    [(first binding)]
+
+    (and (vector? binding)
+         (= 1 (count binding))
+         (vector? (first binding)))
+    (vec (first binding))
+
+    (vector? binding)
+    (vec binding)
+
+    :else
+    []))
+
+(defn- log-query-rows [^Log log-value query inputs]
+  (let [query (if (string? query) (edn/read-string query) query)
+        env (log-input-env query inputs)
+        clause (log-function-clause query)
+        call (first clause)
+        binding (second clause)
+        op (first call)]
+    (case op
+      tx-ids
+      (let [start (long (log-term-value env (nth call 2)))
+            end (long (log-term-value env (nth call 3)))
+            ids (filter #(and (<= start %) (< % end))
+                        (.txIds (:native (:conn log-value))))]
+        (mapv vector ids))
+
+      tx-data
+      (let [tx (long (log-term-value env (nth call 2)))
+            datoms (log-tx-data log-value tx)
+            vars (log-output-vars binding)
+            width (max 1 (count vars))]
+        (mapv (fn [datom]
+                (vec (take width datom)))
+              datoms))
+
+      (throw (ex-info "unsupported Vev log query function" {:op op :query query})))))
+
+(defn- log-query-output [^Log log-value query inputs]
+  (let [query (if (string? query) (edn/read-string query) query)]
+    (apply-find-shape query (log-query-rows log-value query inputs))))
+
 (defn- marker-key [marker value]
   (case marker
     :keys (cond
@@ -748,6 +906,172 @@
                         (query-return-map (edn/read-string query))
                         (catch Exception _ nil))
       :else nil)))
+
+(defn- query-where-forms [query]
+  (cond
+    (map? query)
+    (:where query)
+
+    (vector? query)
+    (let [tail (drop-while #(not= :where %) query)]
+      (when (seq tail)
+        (take-while #(not (#{:in :keys :strs :syms} %)) (rest tail))))
+
+    (string? query)
+    (try
+      (query-where-forms (edn/read-string query))
+      (catch Exception _ nil))
+
+    :else
+    nil))
+
+(defn- query-with-forms [query]
+  (cond
+    (map? query)
+    (:with query)
+
+    (vector? query)
+    (let [tail (drop-while #(not= :with %) query)]
+      (when (seq tail)
+        (take-while #(not (#{:in :where :keys :strs :syms} %)) (rest tail))))
+
+    (string? query)
+    (try
+      (query-with-forms (edn/read-string query))
+      (catch Exception _ nil))
+
+    :else
+    nil))
+
+(defn- relation-source-clause-vars [clause]
+  (set (filter symbol? clause)))
+
+(defn- relation-source-components [clauses]
+  (reduce
+   (fn [components clause]
+     (let [vars (relation-source-clause-vars clause)
+           matches (filter #(seq (set/intersection (:vars %) vars)) components)
+           others (remove #(seq (set/intersection (:vars %) vars)) components)
+           merged {:vars (apply set/union vars (map :vars matches))
+                   :clauses (vec (cons clause (mapcat :clauses matches)))}]
+       (conj (vec others) merged)))
+   []
+   clauses))
+
+(defn- relation-source-row-term-value [row position]
+  (when (and (vector? row) (< position (count row)))
+    (nth row position)))
+
+(defn- relation-source-term-matches? [binding row position term]
+  (let [actual (relation-source-row-term-value row position)]
+    (cond
+      (nil? actual) nil
+      (= '_ term) binding
+      (symbol? term) (if-let [existing (get binding term)]
+                       (when (= existing actual) binding)
+                       (assoc binding term actual))
+      :else (when (= term actual) binding))))
+
+(defn- relation-source-match-clause [row clause]
+  (when (and (vector? row) (= 3 (count clause)) (= 3 (count row)))
+    (loop [position 0
+           binding {}]
+      (if (= position 3)
+        binding
+        (when-let [next-binding (relation-source-term-matches? binding row position (nth clause position))]
+          (recur (inc position) next-binding))))))
+
+(defn- relation-source-single-clause-component-count [rows clause projection-vars]
+  (let [seen (transient #{})]
+    (doseq [row rows]
+      (when-let [binding (relation-source-match-clause row clause)]
+        (conj! seen (mapv binding projection-vars))))
+    (count (persistent! seen))))
+
+(defn- relation-source-fast-projected-count [query rows]
+  (when (and (= :relation (query-find-shape query))
+             (not (seq (query-with-forms query))))
+    (let [find-vars (vec (filter symbol? (query-find-forms query)))
+          where-forms (vec (query-where-forms query))
+          clauses (vec (filter #(and (vector? %) (= 3 (count %))) where-forms))
+          components (relation-source-components clauses)]
+      (when (and (seq find-vars)
+                 (= (count clauses) (count where-forms))
+                 (every? #(= 1 (count (:clauses %))) components))
+        (loop [remaining components
+               covered #{}
+               out 1]
+          (if (empty? remaining)
+            (when (= (set find-vars) covered)
+              out)
+            (let [component (first remaining)
+                  projection-vars (vec (filter (:vars component) find-vars))
+                  clause (first (:clauses component))]
+              (when (seq projection-vars)
+                (recur (rest remaining)
+                       (set/union covered (set projection-vars))
+                       (* out (relation-source-single-clause-component-count rows clause projection-vars)))))))))))
+
+(defn- host-symbol? [value]
+  (and (symbol? value) (some? (namespace value))))
+
+(defn- host-aggregate-symbols [query]
+  (->> (query-find-forms query)
+       (keep (fn [form]
+               (when (and (seq? form)
+                          (host-symbol? (first form)))
+                 (first form))))
+       distinct
+       vec))
+
+(defn- host-predicate-symbols [query]
+  (->> (query-where-forms query)
+       (keep (fn [form]
+               (when (and (vector? form)
+                          (= 1 (count form))
+                          (seq? (first form))
+                          (host-symbol? (ffirst form)))
+                 (ffirst form))))
+       distinct
+       vec))
+
+(defn- resolve-host-fn [sym]
+  (or (resolve sym)
+      (requiring-resolve sym)))
+
+(defn query-fns
+  "Create a query function registry from maps of namespaced Clojure callbacks.
+
+  `:predicates` callbacks return truthy/falsey values. `:aggregates` callbacks
+  receive a vector of values and return any EDN-printable Vev value."
+  [source {:keys [predicates aggregates]}]
+  (let [engine (source-engine source)
+        out (->QueryFnRegistry engine (.queryFunctionRegistry engine))]
+    (try
+      (doseq [[ident f] predicates]
+        (let [native-fn (reify Vev$QueryPredicate
+                          (test [_ args]
+                            (boolean (f (mapv clj-value args)))))]
+          (.registerPredicate (:native out) (str ident) native-fn)))
+      (doseq [[ident f] aggregates]
+        (let [native-fn (reify Vev$QueryAggregate
+                          (apply [_ values]
+                            (edn-text (f (mapv clj-value values)))))]
+          (.registerAggregate (:native out) (str ident) native-fn)))
+      out
+      (catch Throwable error
+        (.close out)
+        (throw error)))))
+
+(defn- auto-query-fns [source query]
+  (let [predicates (into {}
+                         (map (fn [sym] [sym (resolve-host-fn sym)]))
+                         (host-predicate-symbols query))
+        aggregates (into {}
+                         (map (fn [sym] [sym (resolve-host-fn sym)]))
+                         (host-aggregate-symbols query))]
+    (when (or (seq predicates) (seq aggregates))
+      (query-fns source {:predicates predicates :aggregates aggregates}))))
 
 (defn- keyed-rows [return-map rows]
   (let [keys (:keys return-map)]
@@ -805,6 +1129,29 @@
 
       (instance? DB source)
       (.query (:native source) (:native prepared) input-edn)
+
+      :else
+      (throw (ex-info "expected Vev connection or DB" {:source source})))))
+
+(defn query-result-with-fns
+  "Run a prepared query with a query function registry. Caller owns result."
+  [source ^PreparedQuery prepared ^QueryFnRegistry registry & inputs]
+  (let [input-edn (inputs-text inputs)]
+    (cond
+      (instance? Conn source)
+      (with-open [snapshot (db source)]
+        (.query (:native snapshot) (:native prepared) input-edn (:native registry)))
+
+      (instance? DurableConn source)
+      (with-open [snapshot (db source)]
+        (.query (:native snapshot) (:native prepared) input-edn (:native registry)))
+
+      (instance? SQLiteConn source)
+      (with-open [snapshot (db source)]
+        (.query (:native snapshot) (:native prepared) input-edn (:native registry)))
+
+      (instance? DB source)
+      (.query (:native source) (:native prepared) input-edn (:native registry))
 
       :else
       (throw (ex-info "expected Vev connection or DB" {:source source})))))
@@ -1188,6 +1535,11 @@
 
         (and (= (alength kinds) 2)
              (= (aget kinds 0) Vev/COLUMN_ENTITY)
+             (= (aget kinds 1) Vev/COLUMN_ENTITY))
+        (pair-fn values)
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY)
              (= (aget kinds 1) Vev/COLUMN_INT))
         (pair-fn values)
 
@@ -1221,12 +1573,123 @@
         (if-let [columns (entity-int-pair-columns source prepared inputs)]
           (pair-fn columns)
           (when-let [columns (entity-string-int-triples source prepared inputs)]
-            (triple-fn columns)))))))
+          (triple-fn columns)))))))
+
+(defn- optimized-column-output [^Vev$ColumnResult columns entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+  (when columns
+    (let [^ints kinds (.kinds columns)
+          ^objects values (.columns columns)]
+      (cond
+        (and (= (alength kinds) 1)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY))
+        (entity-fn (aget values 0))
+
+        (and (= (alength kinds) 1)
+             (= (aget kinds 0) Vev/COLUMN_STRING))
+        (string-fn (aget values 0))
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY)
+             (= (aget kinds 1) Vev/COLUMN_ENTITY))
+        (pair-fn values)
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY)
+             (= (aget kinds 1) Vev/COLUMN_INT))
+        (pair-fn values)
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY)
+             (= (aget kinds 1) Vev/COLUMN_STRING))
+        (string-pair-fn values)
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_STRING)
+             (= (aget kinds 1) Vev/COLUMN_INT))
+        (string-int-fn values)
+
+        (and (= (alength kinds) 2)
+             (= (aget kinds 0) Vev/COLUMN_STRING)
+             (= (aget kinds 1) Vev/COLUMN_STRING))
+        (string-string-fn values)
+
+        (and (= (alength kinds) 3)
+             (= (aget kinds 0) Vev/COLUMN_ENTITY)
+             (= (aget kinds 1) Vev/COLUMN_STRING)
+             (= (aget kinds 2) Vev/COLUMN_INT))
+        (triple-fn values)
+
+        :else
+        nil))))
+
+(defn- relation-db-query-output [query rows inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+  (with-open [engine (load-engine)
+              prepared (.prepare engine (edn-text query))]
+    (or (optimized-column-output (.queryRelationDbColumns engine (edn-text rows) prepared (inputs-text inputs))
+                                 entity-fn
+                                 string-fn
+                                 pair-fn
+                                 string-pair-fn
+                                 string-int-fn
+                                 string-string-fn
+                                 triple-fn)
+        (with-open [result (.queryRelationDb engine (edn-text rows) prepared (inputs-text inputs))]
+          (result-fn result)))))
+
+(defn- relation-db-result-count [query rows inputs]
+  (with-open [engine (load-engine)
+              prepared (.prepare engine (edn-text query))]
+    (let [row-count (.queryRelationDbRowCount engine (edn-text rows) prepared (inputs-text inputs))]
+      (when (not (neg? row-count))
+        row-count))))
+
+(defn- q-relation-db [query rows inputs]
+  (if-let [return-map (query-return-map query)]
+    (keyed-set return-map
+               (relation-db-query-output query rows inputs
+                                         rows-from-result
+                                         entity-column-rows
+                                         string-column-rows
+                                         entity-int-pair-rows
+                                         entity-string-pair-rows
+                                         string-int-pair-rows
+                                         string-string-pair-rows
+                                         entity-string-int-triple-rows))
+    (if (= :relation (query-find-shape query))
+      (let [materialize #(relation-db-query-output query rows inputs
+                                                   q-from-result
+                                                   entity-column-set
+                                                   string-column-set
+                                                   entity-int-pair-set
+                                                   entity-string-pair-set
+                                                   string-int-pair-set
+                                                   string-string-pair-set
+                                                   entity-string-int-triple-set)
+            row-count (or (relation-source-fast-projected-count query rows)
+                          (relation-db-result-count query rows inputs))]
+        (if (and row-count (> row-count 100000))
+          (CountedRelationResult. row-count (delay (materialize)))
+          (materialize)))
+      (apply-find-shape
+       query
+       (relation-db-query-output query rows inputs
+                                 rows-from-result
+                                 entity-column-rows
+                                 string-column-rows
+                                 entity-int-pair-rows
+                                 entity-string-pair-rows
+                                 string-int-pair-rows
+                                 string-string-pair-rows
+                                 entity-string-int-triple-rows)))))
 
 (defn- prepared-query-output [source prepared inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
   (or (optimized-query-output source prepared inputs entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn)
       (with-open [result (apply query-result source prepared inputs)]
         (result-fn result))))
+
+(defn- prepared-query-output-with-fns [source prepared inputs registry result-fn]
+  (with-open [result (apply query-result-with-fns source prepared registry inputs)]
+    (result-fn result)))
 
 (defn profile
   "Run a prepared query against a DB and return Vev's native query stats."
@@ -1239,13 +1702,24 @@
       (result-fn result))
     (prepared-query-output source prepared inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn)))
 
+(defn- query-output-with-auto-fns [source query prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+  (if-let [registry (auto-query-fns source query)]
+    (with-open [registry registry]
+      (if rules
+        (with-open [result (apply query-result-with-rules source prepared rules inputs)]
+          (result-fn result))
+        (prepared-query-output-with-fns source prepared inputs registry result-fn)))
+    (query-output source prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn)))
+
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
 
   Accepts both DB-first Vev style and query-first Datomic/DataScript style."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
-    (if (instance? PreparedQuery query)
+    (if (instance? Log source)
+      (log-query-rows source query inputs)
+      (if (instance? PreparedQuery query)
       (prepared-query-output source query inputs
                              rows-from-result
                              entity-column-rows
@@ -1257,24 +1731,26 @@
                              entity-string-int-triple-rows)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
-          (let [result (query-output source prepared rules inputs
-                                     rows-from-result
-                                     entity-column-rows
-                                     string-column-rows
-                                     entity-int-pair-rows
-                                     entity-string-pair-rows
-                                     string-int-pair-rows
-                                     string-string-pair-rows
-                                     entity-string-int-triple-rows)]
+          (let [result (query-output-with-auto-fns source query prepared rules inputs
+                                                   rows-from-result
+                                                   entity-column-rows
+                                                   string-column-rows
+                                                   entity-int-pair-rows
+                                                   entity-string-pair-rows
+                                                   string-int-pair-rows
+                                                   string-string-pair-rows
+                                                   entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
               (keyed-rows return-map result)
-              result)))))))
+              result))))))))
 
 (defn q
   "Run a query and return Datomic-style results for the query find spec."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
-    (if (instance? PreparedQuery query)
+    (if (instance? Log source)
+      (log-query-output source query inputs)
+      (if (instance? PreparedQuery query)
       (prepared-query-output source query inputs
                              q-from-result
                              entity-column-set
@@ -1286,25 +1762,26 @@
                              entity-string-int-triple-set)
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
-          (let [result (query-output source prepared rules inputs
-                                     rows-from-result
-                                     entity-column-rows
-                                     string-column-rows
-                                     entity-int-pair-rows
-                                     entity-string-pair-rows
-                                     string-int-pair-rows
-                                     string-string-pair-rows
-                                     entity-string-int-triple-rows)]
+          (let [result (query-output-with-auto-fns source query prepared rules inputs
+                                                   rows-from-result
+                                                   entity-column-rows
+                                                   string-column-rows
+                                                   entity-int-pair-rows
+                                                   entity-string-pair-rows
+                                                   string-int-pair-rows
+                                                   string-string-pair-rows
+                                                   entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
               (keyed-set return-map result)
-              (apply-find-shape query result))))))))
+              (apply-find-shape query result)))))))))
 
 (defn query
   "Run a Datomic-style query.
 
   With one argument, accepts a map shaped like `{:query q :args [db ...]}` and
   returns the same result shape as `q`. With `:query-stats true`, returns a map
-  containing `:ret` and `:query-stats`."
+  containing `:ret` and `:query-stats`. With `:timeout` in milliseconds,
+  throws if the request exceeds the timeout."
   ([request]
    (when-not (map? request)
      (throw (ex-info "expected query request map" {:request request})))
@@ -1313,16 +1790,43 @@
        (throw (ex-info "query request requires :query" {:request request})))
      (when-not (vector? args)
        (throw (ex-info "query request requires vector :args" {:request request})))
-     (let [ret (apply q query args)]
-       (if (:query-stats request)
-         (let [[source & inputs] args]
-           (when-not (instance? DB source)
-             (throw (ex-info "query-stats request requires a DB value as first arg"
-                             {:source source})))
-           (with-open [prepared (prepare source query)]
-             {:ret ret
-              :query-stats (apply profile prepared source inputs)}))
-         ret))))
+     (let [finish (fn [started result]
+                    (let [timeout-ms (:timeout request)
+                          elapsed-ms (/ (double (- (System/nanoTime) started)) 1000000.0)]
+                      (when (and timeout-ms (> elapsed-ms (double timeout-ms)))
+                        (throw (ex-info "query timed out"
+                                        {:timeout timeout-ms
+                                         :elapsed-ms elapsed-ms})))
+                      result))
+           run (fn [args]
+                 (let [timeout-ms (:timeout request)
+                       started (System/nanoTime)
+                       ret (apply q query args)
+                       result (if (:query-stats request)
+                                (let [[source & inputs] args]
+                                  (when-not (instance? DB source)
+                                    (throw (ex-info "query-stats request requires a DB value as first arg"
+                                                    {:source source})))
+                                  (with-open [prepared (prepare source query)]
+                                    {:ret ret
+                                     :query-stats (apply profile prepared source inputs)}))
+                                ret)
+                       elapsed-ms (/ (double (- (System/nanoTime) started)) 1000000.0)]
+                   (when (and timeout-ms (> elapsed-ms (double timeout-ms)))
+                     (throw (ex-info "query timed out"
+                                     {:timeout timeout-ms
+                                      :elapsed-ms elapsed-ms})))
+                   result))
+           run-relation-db (fn [rows inputs]
+                             (when (:query-stats request)
+                               (throw (ex-info "query-stats is not supported for relation DB sources yet"
+                                               {:query query})))
+                             (let [started (System/nanoTime)
+                                   ret (q-relation-db query rows inputs)]
+                               (finish started ret)))]
+       (if (datom-triple-source? (first args))
+         (run-relation-db (first args) (rest args))
+         (run args)))))
   ([query source & inputs]
    (apply q query source inputs)))
 
