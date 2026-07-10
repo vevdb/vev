@@ -726,8 +726,16 @@
       (when (seq tail)
         (take-while #(not (#{:where :with :keys :strs :syms} %)) (rest tail))))
 
-    :else
-    nil))
+	    :else
+	    nil))
+
+(defn- query-explicitly-takes-db? [query]
+  (some #(= '$ %) (query-in-forms query)))
+
+(defn- source-less-query-call? [query source]
+  (and (not (source? source))
+       (some? (query-in-forms query))
+       (not (query-explicitly-takes-db? query))))
 
 (defn- query-find-forms [query]
   (cond
@@ -747,6 +755,13 @@
     :else
     nil))
 
+(def ^:private aggregate-symbols
+  '#{count count-distinct distinct min max sum avg median variance stddev rand sample aggregate})
+
+(defn- aggregate-form? [form]
+  (and (seq? form)
+       (contains? aggregate-symbols (first form))))
+
 (defn- query-find-shape [query]
   (let [find-forms (vec (or (query-find-forms query) []))
         first-form (first find-forms)]
@@ -763,7 +778,9 @@
 
       (and (= 1 (count find-forms))
            (vector? first-form)
-           (every? symbol? first-form))
+           (not= '... (second first-form))
+           (or (every? symbol? first-form)
+               (every? aggregate-form? first-form)))
       :tuple
 
       :else
@@ -772,12 +789,44 @@
 (defn- first-row-value [rows]
   (some-> rows first first))
 
+(defn- distinct-aggregate-form? [form]
+  (and (seq? form)
+       (= 'distinct (first form))))
+
+(defn- distinct-aggregate-indexes [query]
+  (keep-indexed (fn [index form]
+                  (when (distinct-aggregate-form? form)
+                    index))
+                (or (query-find-forms query) [])))
+
+(defn- coerce-distinct-aggregate-value [value]
+  (if (sequential? value)
+    (set value)
+    value))
+
+(defn- coerce-distinct-aggregate-row [indexes row]
+  (if (seq indexes)
+    (reduce (fn [out index]
+              (if (< index (count out))
+                (assoc out index (coerce-distinct-aggregate-value (nth out index)))
+                out))
+            (vec row)
+            indexes)
+    row))
+
+(defn- coerce-distinct-aggregates [query rows]
+  (let [indexes (vec (distinct-aggregate-indexes query))]
+    (if (seq indexes)
+      (mapv #(coerce-distinct-aggregate-row indexes %) rows)
+      rows)))
+
 (defn- apply-find-shape [query rows]
-  (case (query-find-shape query)
-    :scalar (first-row-value rows)
-    :collection (set (map first rows))
-    :tuple (first rows)
-    :relation (set rows)))
+  (let [rows (coerce-distinct-aggregates query rows)]
+    (case (query-find-shape query)
+      :scalar (first-row-value rows)
+      :collection (set (map first rows))
+      :tuple (first rows)
+      :relation (set rows))))
 
 (defn- log-input-env [query inputs]
   (let [inputv (vec inputs)]
@@ -1717,10 +1766,13 @@
   Accepts both DB-first Vev style and query-first Datomic/DataScript style."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
-    (if (instance? Log source)
-      (log-query-rows source query inputs)
-      (if (instance? PreparedQuery query)
-      (prepared-query-output source query inputs
+    (if (source-less-query-call? query source)
+      (with-open [empty-source (empty-db)]
+        (apply rows query empty-source source inputs))
+      (if (instance? Log source)
+	      (log-query-rows source query inputs)
+	      (if (instance? PreparedQuery query)
+	      (prepared-query-output source query inputs
                              rows-from-result
                              entity-column-rows
                              string-column-rows
@@ -1742,16 +1794,19 @@
                                                    entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
               (keyed-rows return-map result)
-              result))))))))
+	              result)))))))))
 
 (defn q
   "Run a query and return Datomic-style results for the query find spec."
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
-    (if (instance? Log source)
-      (log-query-output source query inputs)
-      (if (instance? PreparedQuery query)
-      (prepared-query-output source query inputs
+    (if (source-less-query-call? query source)
+      (with-open [empty-source (empty-db)]
+        (apply q query empty-source source inputs))
+      (if (instance? Log source)
+	      (log-query-output source query inputs)
+	      (if (instance? PreparedQuery query)
+	      (prepared-query-output source query inputs
                              q-from-result
                              entity-column-set
                              string-column-set
@@ -1773,7 +1828,7 @@
                                                    entity-string-int-triple-rows)]
             (if-let [return-map (query-return-map query)]
               (keyed-set return-map result)
-              (apply-find-shape query result)))))))))
+	              (apply-find-shape query result))))))))))
 
 (defn query
   "Run a Datomic-style query.

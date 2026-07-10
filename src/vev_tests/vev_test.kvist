@@ -8186,6 +8186,21 @@
       (t.is (= (count result.rows) 1))
       (t.is (= result.rows[0].values[0].int-value 2))))
 
+(t.deftest datalog-supports-distinct-aggregate
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        result (vev.q conn.db
+                 [:find (distinct ?v) .
+                  :in [?v ...]]
+                 [1 1 2 2 2 3])
+        distinct-values result.rows[0].values[0]]
+    (t.is (= (count result.rows) 1))
+    (t.is (= distinct-values.kind .Vector))
+    (t.is (= (count distinct-values.items) 3))
+    (t.is (= distinct-values.items[0].int-value 1))
+    (t.is (= distinct-values.items[1].int-value 2))
+    (t.is (= distinct-values.items[2].int-value 3))))
+
 (t.deftest datascript-query-aggregate-multiple-args-subset
   (defer (free_all context.allocator))
   (let [conn (vev.create-conn)
@@ -8375,6 +8390,12 @@
                          [:find (stddev ?x)
                           :in [?x ...]]
                          [10 15 20 35 75])
+        float-stats-result (vev.q-text-with-inputs
+                              conn.db
+                              "[:find (median ?x) (variance ?x) (stddev ?x) :in [?x ...]]"
+                              ([]vev.Query-Input
+                                [(vev.query-input-collection
+                                   ([]vev.Value [(vev.value-float 1.0) (vev.value-float 2.0) (vev.value-float 3.0)]))]))
         custom-result (vev.q conn.db
                         [:find ?color (aggregate ?agg ?x)
                          :in [[?color ?x]] ?agg]
@@ -8440,6 +8461,14 @@
     (t.is (= variance-result.rows[0].values[0].float-value 554.0))
     (t.is (> stddev-result.rows[0].values[0].float-value 23.5))
     (t.is (< stddev-result.rows[0].values[0].float-value 23.6))
+    (t.is (= float-stats-result.rows[0].values[0].kind .Float))
+    (t.is (= float-stats-result.rows[0].values[0].float-value 2.0))
+    (t.is (= float-stats-result.rows[0].values[1].kind .Float))
+    (t.is (> float-stats-result.rows[0].values[1].float-value 0.66))
+    (t.is (< float-stats-result.rows[0].values[1].float-value 0.67))
+    (t.is (= float-stats-result.rows[0].values[2].kind .Float))
+    (t.is (> float-stats-result.rows[0].values[2].float-value 0.81))
+    (t.is (< float-stats-result.rows[0].values[2].float-value 0.82))
     (t.is (= (count custom-result.rows) 2))
     (t.is (= custom-result.rows[0].values[0].text ":red"))
     (t.is (= custom-result.rows[0].values[1].items[0].int-value 5))
@@ -8492,6 +8521,50 @@
     (t.is (= result.rows[0].values[0].items[1].text ":a/c"))
     (t.is (= result.rows[0].values[1].items[0].text ":a-/b"))
     (t.is (= result.rows[0].values[1].items[1].text ":a/c"))))
+
+(t.deftest datascript-query-rand-sample-aggregate-subset
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        result (vev.q conn.db
+                 [:find (rand 2 ?x) (sample 2 ?x)
+                  :in [?x ...]]
+                 ["Ada" "Grace" "Alan"])
+        scalar-rand-result (vev.q conn.db
+                             [:find (rand ?x)
+                              :in [?x ...]]
+                             ["Ada" "Grace" "Alan"])
+        text-result (vev.q-text-with-inputs
+                      conn.db
+                      "[:find (rand 2 ?x) (sample 2 ?x) :in [?x ...]]"
+                      ([]vev.Query-Input
+                        [(vev.query-input-collection
+                           ([]vev.Value [(vev.value-string "Ada")
+                                          (vev.value-string "Grace")
+                                          (vev.value-string "Alan")]))]))
+        scalar-rand-text-result (vev.q-text-with-inputs
+                                  conn.db
+                                  "[:find (rand ?x) :in [?x ...]]"
+                                  ([]vev.Query-Input
+                                    [(vev.query-input-collection
+                                       ([]vev.Value [(vev.value-string "Ada")
+                                                      (vev.value-string "Grace")
+                                                      (vev.value-string "Alan")]))]))]
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].kind .Vector))
+    (t.is (= result.rows[0].values[1].kind .Vector))
+    (t.is (= (count result.rows[0].values[0].items) 2))
+    (t.is (= (count result.rows[0].values[1].items) 2))
+    (t.is (= result.rows[0].values[0].items[0].kind .String))
+    (t.is (= result.rows[0].values[1].items[0].kind .String))
+    (t.is (= (count text-result.rows) 1))
+    (t.is (= text-result.rows[0].values[0].kind .Vector))
+    (t.is (= text-result.rows[0].values[1].kind .Vector))
+    (t.is (= (count text-result.rows[0].values[0].items) 2))
+    (t.is (= (count text-result.rows[0].values[1].items) 2))
+    (t.is (= (count scalar-rand-result.rows) 1))
+    (t.is (= scalar-rand-result.rows[0].values[0].kind .String))
+    (t.is (= (count scalar-rand-text-result.rows) 1))
+    (t.is (= scalar-rand-text-result.rows[0].values[0].kind .String))))
 
 (t.deftest datascript-query-parameterized-top-n-aggregate-subset
   (defer (free_all context.allocator))

@@ -9,8 +9,8 @@
 ;; Sections: file top through Pattern inputs.
 ;; build/upstream/day-of-datomic/tutorial/query.clj
 ;; Sections: negation/disjunction count examples, predicate/function expressions,
-;; get-else, get-some, fulltext, missing?, transaction-log examples, and
-;; dynamic attribute specs.
+;; get-else, get-some, fulltext, missing?, transaction-log examples,
+;; dynamic attribute specs, and aggregate examples.
 ;; build/upstream/day-of-datomic/tutorial/pull.clj
 ;; Sections: setup through dynamic pattern input.
 
@@ -262,10 +262,42 @@
     [?e :artist/gender ?geid]
     [?geid :db/ident ?gender]])
 
+(def monster-heads
+  [["Cerberus" 3]
+   ["Medusa" 1]
+   ["Cyclops" 1]
+   ["Chimera" 1]])
+
+(def monster-heads-sum-query
+  '[:find (sum ?heads) .
+    :in [[_ ?heads]]])
+
+(def monster-heads-sum-with-query
+  '[:find (sum ?heads) .
+    :with ?monster
+    :in [[?monster ?heads]]])
+
+(def distinct-values-query
+  '[:find (distinct ?v) .
+    :in [?v ...]])
+
+(def distinct-values-input
+  [1 1 2 2 2 3])
+
 (def min-track-duration-query
   '[:find [(min ?dur)]
     :where
     [?e :track/duration ?dur]])
+
+(def top-track-duration-query
+  '[:find [(min 5 ?millis) (max 5 ?millis)]
+    :where
+    [?track :track/duration ?millis]])
+
+(def random-artist-name-query
+  '[:find [(rand 2 ?name) (sample 2 ?name)]
+    :where
+    [_ :artist/name ?name]])
 
 (def sum-medium-track-count-query
   '[:find (sum ?count) .
@@ -610,8 +642,23 @@
 (defn artist-type-gender [db]
   (d/q artist-type-gender-query db "Janis Joplin"))
 
+(defn monster-heads-sum []
+  (d/q monster-heads-sum-query monster-heads))
+
+(defn monster-heads-sum-with []
+  (d/q monster-heads-sum-with-query monster-heads))
+
+(defn distinct-values []
+  (d/q distinct-values-query distinct-values-input))
+
 (defn min-track-duration [db]
   (d/q min-track-duration-query db))
+
+(defn top-track-duration [db]
+  (d/q top-track-duration-query db))
+
+(defn random-artist-names [db]
+  (d/q random-artist-name-query db))
 
 (defn sum-medium-track-count [db]
   (d/q sum-medium-track-count-query db))
@@ -927,7 +974,12 @@
   (with-open [conn (connect)
               db (db conn)]
     (let [janis (artist-type-gender db)
+          monster-sum (monster-heads-sum)
+          monster-sum-with (monster-heads-sum-with)
+          distinct-values-result (distinct-values)
           min-duration (min-track-duration db)
+          top-duration (top-track-duration db)
+          random-names (random-artist-names db)
           sum-track-count (sum-medium-track-count db)
           name-counts (artist-name-counts db)
           mode-track-count (custom-mode-aggregate db)
@@ -937,15 +989,31 @@
                           (catch Throwable error
                             (.getMessage error)))]
       (assert (= 1 (count janis)))
-      (assert (= 1 (count min-duration)))
-      (assert (= #{[3000]} min-duration))
+      (assert (= 4 monster-sum))
+      (assert (= 6 monster-sum-with))
+      (assert (= #{1 2 3} distinct-values-result))
+      (assert (= [3000] min-duration))
+      (assert (= [[3000 4000 5000 6000 7000]
+                  [3894000 3407000 2928000 2802000 2775000]]
+                 top-duration))
+      (assert (= 2 (count random-names)))
+      (let [[rand-names sample-names] random-names]
+        (assert (= 2 (count rand-names)))
+        (assert (= 2 (count sample-names)))
+        (assert (every? string? rand-names))
+        (assert (every? string? sample-names)))
       (assert (= 99847 sum-track-count))
       (assert (= #{[4601 4588]} name-counts))
       (assert (= 2 mode-track-count))
       (assert (some? timeout-error))
       (assert (.contains ^String timeout-error "query timed out"))
       {:artist-type-gender janis
+       :monster-heads-sum monster-sum
+       :monster-heads-sum-with monster-sum-with
+       :distinct-values distinct-values-result
        :min-track-duration min-duration
+       :top-track-duration top-duration
+       :random-artist-names random-names
        :sum-medium-track-count sum-track-count
        :artist-name-counts name-counts
        :track-name-statistics-status :pending-performance
@@ -1292,7 +1360,17 @@
   (artist-type-gender db)
 
   ;; Aggregations:
+  ;; Upstream first shows why `:with` matters for aggregate cardinality. The
+  ;; first source-less relation query returns 4 because duplicate head-count
+  ;; values collapse; the fixed query returns 6 because `?monster` preserves the
+  ;; per-monster input rows.
+  (monster-heads-sum)
+  (monster-heads-sum-with)
+  (distinct-values)
+
   (min-track-duration db)
+  (top-track-duration db)
+  (random-artist-names db)
   (sum-medium-track-count db)
   (artist-name-counts db)
 

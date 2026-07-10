@@ -13,8 +13,8 @@
 // Sections: file top through Pattern inputs.
 // build/upstream/day-of-datomic/tutorial/query.clj
 // Sections: negation/disjunction count examples, predicate/function expressions,
-// get-else, get-some, fulltext, missing?, transaction-log examples, and
-// dynamic attribute specs.
+// get-else, get-some, fulltext, missing?, transaction-log examples,
+// dynamic attribute specs, and aggregate examples.
 // build/upstream/day-of-datomic/tutorial/pull.clj
 // Sections: setup through dynamic pattern input.
 
@@ -81,6 +81,25 @@
   (if (= value.kind .Vector)
     (return (count value.items))
     (return 0)))
+
+(defn mode-track-count [values: []vev.Value] -> vev.Native-Query-Function-Result
+  (let [best: i64 0
+        best-count 0
+        found false]
+    (for [candidate values]
+      (when (= candidate.kind .Int)
+        (let [candidate-count 0]
+          (for [value values]
+            (when (and (= value.kind .Int)
+                       (= value.int-value candidate.int-value))
+              (set! candidate-count (+ candidate-count 1))))
+          (when (or (not found) (> candidate-count best-count))
+            (set! found true)
+            (set! best candidate.int-value)
+            (set! best-count candidate-count)))))
+    (if found
+      (vev.native-query-function-result (vev.value-int best))
+      (vev.native-query-function-none))))
 
 (defn value-map-count [value: vev.Value] -> int
   (if (= value.kind .Map)
@@ -189,6 +208,63 @@
                 (= (count result.result.rows[0].values) 1)
                 (= result.result.rows[0].values[0].kind .Int)
                 (= result.result.rows[0].values[0].int-value expected))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=%d error=%s\n" label ok (count result.result.rows) 1 result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn validate-scalar-int-vector-result! [label: string, result: vev.Query-Result, expected: []i64, passed: ^bool]
+  (let [ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 1)
+                (= result.result.rows[0].values[0].kind .Vector)
+                (= (count result.result.rows[0].values[0].items) (count expected)))]
+    (when ok
+      (for [expected-value index expected]
+        (when (not (and (= result.result.rows[0].values[0].items[index].kind .Int)
+                        (= result.result.rows[0].values[0].items[index].int-value expected-value)))
+          (set! ok false))))
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=%d error=%s\n" label ok (count result.result.rows) 1 result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn int-vector-equals? [value: vev.Value, expected: []i64] -> bool
+  (when (not (and (= value.kind .Vector)
+                  (= (count value.items) (count expected))))
+    (return false))
+  (for [expected-value index expected]
+    (when (not (and (= value.items[index].kind .Int)
+                    (= value.items[index].int-value expected-value)))
+      (return false)))
+  true)
+
+(defn validate-two-int-vector-result! [label: string, result: vev.Query-Result, expected-first: []i64, expected-second: []i64, passed: ^bool]
+  (let [ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 2)
+                (int-vector-equals? result.result.rows[0].values[0] expected-first)
+                (int-vector-equals? result.result.rows[0].values[1] expected-second))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=%d error=%s\n" label ok (count result.result.rows) 1 result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn string-vector-size? [value: vev.Value, expected-count: int] -> bool
+  (when (not (and (= value.kind .Vector)
+                  (= (count value.items) expected-count)))
+    (return false))
+  (for [item value.items]
+    (when (not (= item.kind .String))
+      (return false)))
+  true)
+
+(defn validate-two-string-vector-size-result! [label: string, result: vev.Query-Result, expected-count: int, passed: ^bool]
+  (let [ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 2)
+                (string-vector-size? result.result.rows[0].values[0] expected-count)
+                (string-vector-size? result.result.rows[0].values[1] expected-count))]
     (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=%d error=%s\n" label ok (count result.result.rows) 1 result.result.error)
     (when (not ok)
       (set! passed^ false))
@@ -607,12 +683,50 @@
           (addr snapshot)
           "Janis Joplin")
         1 (addr passed))
+      (let [empty-conn (vev.create-conn)]
+        (defer (vev.delete-owned-db empty-conn.db))
+        (validate-scalar-int-result! "monster-heads-sum"
+          (vev.query-result-shallow
+            (vev.q empty-conn.db
+              [:find (sum ?heads) .
+               :in [[_ ?heads]]]
+              [["Cerberus" 3] ["Medusa" 1] ["Cyclops" 1] ["Chimera" 1]]))
+          4 (addr passed))
+        (validate-scalar-int-result! "monster-heads-sum-with"
+          (vev.query-result-shallow
+            (vev.q empty-conn.db
+              [:find (sum ?heads) .
+               :with ?monster
+               :in [[?monster ?heads]]]
+              [["Cerberus" 3] ["Medusa" 1] ["Cyclops" 1] ["Chimera" 1]]))
+          6 (addr passed))
+        (validate-scalar-int-vector-result! "distinct-values"
+          (vev.query-result-shallow
+            (vev.q empty-conn.db
+              [:find (distinct ?v) .
+               :in [?v ...]]
+              [1 1 2 2 2 3]))
+          ([]i64 [1 2 3]) (addr passed)))
       (validate-query-result! "min-track-duration"
         (vev.q-result-store-db
           [:find [(min ?dur)]
            :where [?e :track/duration ?dur]]
           (addr snapshot))
         1 (addr passed))
+      (validate-two-int-vector-result! "top-track-duration"
+        (vev.q-result-store-db
+          [:find [(min 5 ?millis) (max 5 ?millis)]
+           :where [?track :track/duration ?millis]]
+          (addr snapshot))
+        ([]i64 [3000 4000 5000 6000 7000])
+        ([]i64 [3894000 3407000 2928000 2802000 2775000])
+        (addr passed))
+      (validate-two-string-vector-size-result! "random-artist-names"
+        (vev.q-result-store-db
+          [:find [(rand 2 ?name) (sample 2 ?name)]
+           :where [_ :artist/name ?name]]
+          (addr snapshot))
+        2 (addr passed))
       (validate-query-result! "sum-medium-track-count"
         (vev.q-result-store-db
           [:find (sum ?count) .
@@ -620,6 +734,14 @@
            :where [?medium :medium/trackCount ?count]]
           (addr snapshot))
         1 (addr passed))
+      (validate-scalar-int-result! "custom-mode-aggregate"
+        (vev.q-result-store-db-with-fns
+          [:find (user/mode ?track-count) .
+           :with ?media
+           :where [?media :medium/trackCount ?track-count]]
+          (addr snapshot)
+          ([]vev.Native-Query-Fn [(vev.query-aggregate-fn "user/mode" mode-track-count)]))
+        2 (addr passed))
       (validate-query-result! "artist-name-counts"
         (vev.q-result-store-db
           [:find (count ?name) (count-distinct ?name)

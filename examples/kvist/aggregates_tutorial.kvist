@@ -1,0 +1,183 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package main)
+
+(import fmt "core:fmt")
+(import math "core:math")
+(import os "core:os")
+(import vev "../../src/vev")
+
+// Port source of truth:
+// build/upstream/day-of-datomic/tutorial/aggregates.clj
+// Section: file top through largest 3 aggregate query.
+// Fixture:
+// build/upstream/day-of-datomic/resources/day-of-datomic/bigger-than-pluto.edn
+
+(def default-uri "build/day-of-datomic/vev-aggregates.sqlite")
+
+(defn validate-scalar-int-result! [label: string, result: vev.Query-Result, expected: i64, passed: ^bool]
+  (let [ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 1)
+                (= result.result.rows[0].values[0].kind .Int)
+                (= result.result.rows[0].values[0].int-value expected))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count result.result.rows) result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn validate-scalar-float-result! [label: string, result: vev.Query-Result, expected: f64, passed: ^bool]
+  (let [ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 1)
+                (= result.result.rows[0].values[0].kind .Float)
+                (= result.result.rows[0].values[0].float-value expected))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count result.result.rows) result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn validate-scalar-float-close-result! [label: string, result: vev.Query-Result, expected: f64, tolerance: f64, passed: ^bool]
+  (let [actual (if (and result.result.ok
+                        (= (count result.result.rows) 1)
+                        (= (count result.result.rows[0].values) 1)
+                        (= result.result.rows[0].values[0].kind .Float))
+                 result.result.rows[0].values[0].float-value
+                 0.0)
+        ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 1)
+                (= result.result.rows[0].values[0].kind .Float)
+                (<= (math.abs (- actual expected)) tolerance))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count result.result.rows) result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn result-has-string? [result: vev.Query-Result, text: string] -> bool
+  (when (not result.result.ok)
+    (return false))
+  (for [row result.result.rows]
+    (when (and (= (count row.values) 1)
+               (= row.values[0].kind .String)
+               (= row.values[0].text text))
+      (return true)))
+  false)
+
+(defn validate-random-name-result! [label: string, random-result: vev.Query-Result, names-result: vev.Query-Result, passed: ^bool]
+  (let [actual (if (and random-result.result.ok
+                        (= (count random-result.result.rows) 1)
+                        (= (count random-result.result.rows[0].values) 1)
+                        (= random-result.result.rows[0].values[0].kind .String))
+                 random-result.result.rows[0].values[0].text
+                 "")
+        ok (and random-result.result.ok
+                names-result.result.ok
+                (= (count random-result.result.rows) 1)
+                (= (count random-result.result.rows[0].values) 1)
+                (= random-result.result.rows[0].values[0].kind .String)
+                (result-has-string? names-result actual))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count random-result.result.rows) random-result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result random-result)
+    (vev.delete-query-result names-result)))
+
+(defn validate-float-vector-result! [label: string, result: vev.Query-Result, expected: []f64, passed: ^bool]
+  (let [ok-base (and result.result.ok
+                     (= (count result.result.rows) 1)
+                     (= (count result.result.rows[0].values) 1)
+                     (= result.result.rows[0].values[0].kind .Vector)
+                     (= (count result.result.rows[0].values[0].items) (count expected)))
+        ok ok-base]
+    (when ok-base
+      (for [i (arr.range 0 (count expected))]
+        (when (or (not (= result.result.rows[0].values[0].items[i].kind .Float))
+                  (not (= result.result.rows[0].values[0].items[i].float-value expected[i])))
+          (set! ok false))))
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count result.result.rows) result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [uri (if (> (count os.args) 1) os.args[1] default-uri)
+        [store store-ok store-error] (vev.open-store-read-only uri)
+        passed true]
+    (when (not store-ok)
+      (fmt.printf "source=kvist section=open-store ok=false rows=0 expected=1 error=%s\n" store-error)
+      (return))
+    (defer (vev.close-store store))
+    (let [[snapshot snapshot-ok snapshot-error] (vev.store-db (addr store))]
+      (when (not snapshot-ok)
+        (fmt.printf "source=kvist section=store-db ok=false rows=0 expected=1 error=%s\n" snapshot-error)
+        (return))
+      (defer (vev.close-store-db! (addr snapshot)))
+      (validate-scalar-int-result! "aggregate-object-count"
+        (vev.q-result-store-db
+          [:find (count ?e) .
+           :where [?e :object/name ?n]]
+          (addr snapshot))
+        17 (addr passed))
+      (validate-scalar-float-result! "aggregate-largest-radius"
+        (vev.q-result-store-db
+          [:find (max ?radius) .
+           :where [_ :object/meanRadius ?radius]]
+          (addr snapshot))
+        696000.0 (addr passed))
+      (validate-scalar-float-result! "aggregate-smallest-radius"
+        (vev.q-result-store-db
+          [:find (min ?radius) .
+           :where [_ :object/meanRadius ?radius]]
+          (addr snapshot))
+        1163.0 (addr passed))
+      (validate-scalar-float-close-result! "aggregate-average-radius"
+        (vev.q-result-store-db
+          [:find (avg ?radius) .
+           :with ?e
+           :where [?e :object/meanRadius ?radius]]
+          (addr snapshot))
+        53390.17647058824 0.0000001 (addr passed))
+      (validate-scalar-float-result! "aggregate-median-radius"
+        (vev.q-result-store-db
+          [:find (median ?radius) .
+           :with ?e
+           :where [?e :object/meanRadius ?radius]]
+          (addr snapshot))
+        2631.2 (addr passed))
+      (validate-scalar-float-close-result! "aggregate-stddev-radius"
+        (vev.q-result-store-db
+          [:find (stddev ?radius) .
+           :with ?e
+           :where [?e :object/meanRadius ?radius]]
+          (addr snapshot))
+        161902.52780945456 0.0000001 (addr passed))
+      (validate-random-name-result! "aggregate-random-object-name"
+        (vev.q-result-store-db
+          [:find (rand ?name) .
+           :where [?e :object/name ?name]]
+          (addr snapshot))
+        (vev.q-result-store-db
+          [:find ?name
+           :where [?e :object/name ?name]]
+          (addr snapshot))
+        (addr passed))
+      (validate-float-vector-result! "aggregate-smallest-three-radii"
+        (vev.q-result-store-db
+          [:find (min 3 ?radius) .
+           :with ?e
+           :where [?e :object/meanRadius ?radius]]
+          (addr snapshot))
+        ([]f64 [1163.0 1353.4 1561.0])
+        (addr passed))
+      (validate-float-vector-result! "aggregate-largest-three-radii"
+        (vev.q-result-store-db
+          [:find (max 3 ?radius) .
+           :with ?e
+           :where [?e :object/meanRadius ?radius]]
+          (addr snapshot))
+        ([]f64 [696000.0 69911.0 58232.0])
+        (addr passed)))
+    (fmt.printf "source=kvist section=summary ok=%v\n" passed)))

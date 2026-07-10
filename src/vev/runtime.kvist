@@ -4,6 +4,7 @@
 (package vev)
 
 (import core-strings "core:strings")
+(import rand "core:math/rand")
 (import mmap "kvist:map")
 (import set "kvist:set")
 
@@ -8329,15 +8330,23 @@
       (for [aggregate query-value.aggregates]
         (when (or (not (or (= aggregate.op "count")
                            (= aggregate.op "count-distinct")
+                           (= aggregate.op "distinct")
                            (= aggregate.op "min")
-                           (= aggregate.op "max")))
+                           (= aggregate.op "max")
+                           (= aggregate.op "rand")
+                           (= aggregate.op "sample")))
                   (and (or (= aggregate.op "count")
-                           (= aggregate.op "count-distinct"))
+                           (= aggregate.op "count-distinct")
+                           (= aggregate.op "distinct"))
                        aggregate.has-limit)
                   (and (or (= aggregate.op "min")
-                           (= aggregate.op "max"))
+                           (= aggregate.op "max")
+                           (= aggregate.op "rand")
+                           (= aggregate.op "sample"))
                        (and aggregate.has-limit
                             (<= aggregate.limit 0)))
+                  (and (= aggregate.op "sample")
+                       (not aggregate.has-limit))
                   aggregate.has-limit-var
                   aggregate.has-function-var
                   (not (db-read-source-clause-binds-var? query-clause aggregate.var)))
@@ -8374,17 +8383,26 @@
           aggregate query-value.aggregates[0]]
       (when (or (not (or (= aggregate.op "count")
                          (= aggregate.op "count-distinct")
+                         (= aggregate.op "distinct")
                          (= aggregate.op "min")
                          (= aggregate.op "max")
+                         (= aggregate.op "rand")
+                         (= aggregate.op "sample")
                          (= aggregate.op "sum")
                          (= aggregate.op "avg")))
                 (and aggregate.has-limit
                      (not (or (= aggregate.op "min")
-                              (= aggregate.op "max"))))
+                              (= aggregate.op "max")
+                              (= aggregate.op "rand")
+                              (= aggregate.op "sample"))))
                 (and aggregate.has-limit
                      (or (= aggregate.op "min")
-                         (= aggregate.op "max"))
+                         (= aggregate.op "max")
+                         (= aggregate.op "rand")
+                         (= aggregate.op "sample"))
                      (<= aggregate.limit 0))
+                (and (= aggregate.op "sample")
+                     (not aggregate.has-limit))
                 aggregate.has-limit-var
                 aggregate.has-function-var
                 (not (= query-clause.e.kind .Var))
@@ -8481,23 +8499,39 @@
                 (let [[input-value input-ok] (db-read-source-datom-value-for-var-owned clause datom aggregate.var)]
                   (when input-ok
                     (cond
-                      (= aggregate.op "count-distinct")
+                      (or (= aggregate.op "count-distinct")
+                          (= aggregate.op "distinct"))
                         (let [value-seen (value-exists? (slice distinct-values 0) input-value)]
                           (if value-seen
                             (delete-owned-value input-value)
                             (arr.push! distinct-values input-value)))
                       (or (= aggregate.op "min")
-                          (= aggregate.op "max"))
+                          (= aggregate.op "max")
+                          (numeric-aggregate-op? aggregate.op)
+                          (= aggregate.op "rand")
+                          (= aggregate.op "sample"))
                         (arr.push! aggregate-values input-value)
                       :else
                         (delete-owned-value input-value))))))))))
     (cond
       (= aggregate.op "count-distinct")
         (value-int (i64 (count distinct-values)))
+      (= aggregate.op "distinct")
+        (distinct-values-vector-owned (slice distinct-values 0))
       (and aggregate.has-limit
            (or (= aggregate.op "min")
                (= aggregate.op "max")))
         (source-top-n-values-owned (slice aggregate-values 0) aggregate.limit (= aggregate.op "max"))
+      (and (= aggregate.op "rand") (not aggregate.has-limit))
+        (random-value-owned (slice aggregate-values 0))
+      (limited-selection-aggregate-op? aggregate.op)
+        (selection-values-owned (slice aggregate-values 0) aggregate.limit aggregate.op)
+      (= aggregate.op "median")
+        (median-numeric (slice aggregate-values 0))
+      (= aggregate.op "variance")
+        (variance-numeric (slice aggregate-values 0))
+      (= aggregate.op "stddev")
+        (stddev-numeric (slice aggregate-values 0))
       (and (not aggregate.has-limit)
            (= aggregate.op "min")
            (> (count aggregate-values) 0))
@@ -8559,13 +8593,17 @@
                           (let [[input-value input-ok] (db-read-source-datom-value-for-var-owned clause datom aggregate.var)]
                             (when input-ok
                               (cond
-                                (= aggregate.op "count-distinct")
+                                (or (= aggregate.op "count-distinct")
+                                    (= aggregate.op "distinct"))
                                   (let [value-seen (value-exists? (slice distinct-values 0) input-value)]
                                     (if value-seen
                                       (delete-owned-value input-value)
                                       (arr.push! distinct-values input-value)))
                                 (or (= aggregate.op "min")
-                                    (= aggregate.op "max"))
+                                    (= aggregate.op "max")
+                                    (numeric-aggregate-op? aggregate.op)
+                                    (= aggregate.op "rand")
+                                    (= aggregate.op "sample"))
                                   (arr.push! aggregate-values input-value)
                                 :else
                                   (delete-owned-value input-value)))))))))))
@@ -8575,10 +8613,22 @@
       (cond
         (= aggregate.op "count-distinct")
           (return (value-int (i64 (count distinct-values))) true "")
+        (= aggregate.op "distinct")
+          (return (distinct-values-vector-owned (slice distinct-values 0)) true "")
         (and aggregate.has-limit
              (or (= aggregate.op "min")
                  (= aggregate.op "max")))
           (return (source-top-n-values-owned (slice aggregate-values 0) aggregate.limit (= aggregate.op "max")) true "")
+        (and (= aggregate.op "rand") (not aggregate.has-limit))
+          (return (random-value-owned (slice aggregate-values 0)) true "")
+        (limited-selection-aggregate-op? aggregate.op)
+          (return (selection-values-owned (slice aggregate-values 0) aggregate.limit aggregate.op) true "")
+        (= aggregate.op "median")
+          (return (median-numeric (slice aggregate-values 0)) true "")
+        (= aggregate.op "variance")
+          (return (variance-numeric (slice aggregate-values 0)) true "")
+        (= aggregate.op "stddev")
+          (return (stddev-numeric (slice aggregate-values 0)) true "")
         (and (not aggregate.has-limit)
              (= aggregate.op "min")
              (> (count aggregate-values) 0))
@@ -8673,7 +8723,8 @@
                   (when group-seen
                     (delete-owned-values-array group-values))
                   (if (or (= aggregate.op "count")
-                          (= aggregate.op "count-distinct"))
+                          (= aggregate.op "count-distinct")
+                          (= aggregate.op "distinct"))
                     (if (= aggregate.op "count")
                       (set! aggregate-values^[actual-group-index].int-value (+ aggregate-values^[actual-group-index].int-value 1))
                       (let [[input-value input-ok] (db-read-source-datom-value-for-var-owned clause-value datom aggregate.var)]
@@ -8685,7 +8736,9 @@
                               (delete-owned-values-array distinct-key)
                               (do
                                 (arr.push! distinct-values^ (Result-Row {values: distinct-key pulls: (make [dynamic]Pull-Result)}))
-                                (set! aggregate-values^[actual-group-index].int-value (+ aggregate-values^[actual-group-index].int-value 1)))))
+                                (if (= aggregate.op "count-distinct")
+                                  (set! aggregate-values^[actual-group-index].int-value (+ aggregate-values^[actual-group-index].int-value 1))
+                                  (arr.push! aggregate-values^[actual-group-index].items (value-owned input-value))))))
                           (delete-owned-value input-value))))
                     (let [[input-value input-ok] (db-read-source-datom-value-for-var-owned clause-value datom aggregate.var)]
                       (if input-ok
@@ -8719,6 +8772,10 @@
                                     (delete-owned-value aggregate-values^[actual-group-index])
                                     (set! aggregate-values^[actual-group-index] input-value))
                                   (delete-owned-value input-value))))
+                          (or (= aggregate.op "rand")
+                              (numeric-aggregate-op? aggregate.op)
+                              (= aggregate.op "sample"))
+                            (arr.push! group-top-values^[actual-group-index].values input-value)
                           :else
                             (delete-owned-value input-value))
                         (delete-owned-value input-value)))))))))))))
@@ -8759,17 +8816,31 @@
               (return (result-set-error advance-error)))))
         (delete-source-index-datom-stream stream)))
     (for [aggregate-value index aggregate-values]
-      (if (and aggregate.has-limit
-               (or (= aggregate.op "min")
-                   (= aggregate.op "max")))
-        (arr.push! rows[index].values (source-top-n-values-owned (slice group-top-values[index].values 0) aggregate.limit (= aggregate.op "max")))
-        (if (and (= aggregate.op "avg") (> avg-counts[index] 0))
-        (if (= aggregate-value.kind .Float)
-          (arr.push! rows[index].values (value-float (/ aggregate-value.float-value (f64 avg-counts[index]))))
-          (if (= (% aggregate-value.int-value avg-counts[index]) 0)
-            (arr.push! rows[index].values (value-int (/ aggregate-value.int-value avg-counts[index])))
-            (arr.push! rows[index].values (value-float (/ (f64 aggregate-value.int-value) (f64 avg-counts[index]))))))
-        (arr.push! rows[index].values (value-owned aggregate-value)))))
+      (cond
+        (= aggregate.op "distinct")
+          (arr.push! rows[index].values (distinct-values-vector-owned (slice aggregate-value.items 0)))
+        (and aggregate.has-limit
+             (or (= aggregate.op "min")
+                 (= aggregate.op "max")))
+          (arr.push! rows[index].values (source-top-n-values-owned (slice group-top-values[index].values 0) aggregate.limit (= aggregate.op "max")))
+        (and (= aggregate.op "rand") (not aggregate.has-limit))
+          (arr.push! rows[index].values (random-value-owned (slice group-top-values[index].values 0)))
+        (limited-selection-aggregate-op? aggregate.op)
+          (arr.push! rows[index].values (selection-values-owned (slice group-top-values[index].values 0) aggregate.limit aggregate.op))
+        (= aggregate.op "median")
+          (arr.push! rows[index].values (median-numeric (slice group-top-values[index].values 0)))
+        (= aggregate.op "variance")
+          (arr.push! rows[index].values (variance-numeric (slice group-top-values[index].values 0)))
+        (= aggregate.op "stddev")
+          (arr.push! rows[index].values (stddev-numeric (slice group-top-values[index].values 0)))
+        (and (= aggregate.op "avg") (> avg-counts[index] 0))
+          (if (= aggregate-value.kind .Float)
+            (arr.push! rows[index].values (value-float (/ aggregate-value.float-value (f64 avg-counts[index]))))
+            (if (= (% aggregate-value.int-value avg-counts[index]) 0)
+              (arr.push! rows[index].values (value-int (/ aggregate-value.int-value avg-counts[index])))
+              (arr.push! rows[index].values (value-float (/ (f64 aggregate-value.int-value) (f64 avg-counts[index]))))))
+        :else
+          (arr.push! rows[index].values (value-owned aggregate-value))))
     (delete-result-rows-owned-values group-top-values)
     (return (result-set-ok rows))))
 
@@ -20857,6 +20928,8 @@
   (validate-query-call-with-fns db query-value inputs sources ([]Native-Query-Fn [])))
 
 (defn aggregate-initial-value [aggregate: Aggregate-Find] -> Value
+  (when (= aggregate.op "distinct")
+    (return (value-vector-owned (make [dynamic]Value))))
   (if (or (= aggregate.op "count")
           (= aggregate.op "count-distinct")
           (= aggregate.op "sum")
@@ -21142,6 +21215,66 @@
         (arr.push! out value)))
     (value-vector-owned out)))
 
+(defn numeric-aggregate-op? [op: string] -> bool
+  (or (= op "median")
+      (= op "variance")
+      (= op "stddev")))
+
+(defn numeric-value? [value: Value] -> bool
+  (or (= value.kind .Int)
+      (= value.kind .Float)))
+
+(defn value-as-f64 [value: Value] -> [out: f64, ok: bool]
+  (case value.kind
+    .Int (return (f64 value.int-value) true)
+    .Float (return value.float-value true)
+     (return 0.0 false)))
+
+(defn numeric-values-to-sorted-f64 [values: []Value] -> [numbers: [dynamic]f64, all-int?: bool]
+  (let [out-values (make [dynamic]f64)
+        all-int-values? true]
+    (for [value values]
+      (let [[number number-ok] (value-as-f64 value)]
+        (when number-ok
+          (when (not (= value.kind .Int))
+            (set! all-int-values? false))
+          (arr.push! out-values number))))
+    (arr.sort! out-values)
+    (return out-values all-int-values?)))
+
+(defn median-numeric [values: []Value] -> Value
+  (let [[sorted all-int?] (numeric-values-to-sorted-f64 values)]
+    (defer (delete sorted))
+    (when (= (count sorted) 0)
+      (return (value-int 0)))
+    (let [mid (/ (count sorted) 2)]
+      (when (= (% (count sorted) 2) 1)
+        (if all-int?
+          (return (value-int (i64 sorted[mid])))
+          (return (value-float sorted[mid]))))
+      (value-float (/ (+ sorted[(- mid 1)] sorted[mid]) 2.0)))))
+
+(defn variance-numeric [values: []Value] -> Value
+  (let [[numbers _] (numeric-values-to-sorted-f64 values)]
+    (defer (delete numbers))
+    (when (= (count numbers) 0)
+      (return (value-int 0)))
+    (let [sum: f64 0.0]
+      (for [value numbers]
+        (set! sum (+ sum value)))
+      (let [mean (/ sum (f64 (count numbers)))
+            squared: f64 0.0]
+        (for [value numbers]
+          (let [diff (- value mean)]
+            (set! squared (+ squared (* diff diff)))))
+        (value-float (/ squared (f64 (count numbers))))))))
+
+(defn stddev-numeric [values: []Value] -> Value
+  (let [variance (variance-numeric values)]
+    (when (= variance.kind .Float)
+      (return (value-float (math.sqrt variance.float-value))))
+    (value-float (math.sqrt (f64 variance.int-value)))))
+
 (defn median-int [values: []i64] -> Value
   (when (= (count values) 0)
     (return (value-int 0)))
@@ -21175,6 +21308,7 @@
 (defn builtin-aggregate-op? [op: string] -> bool
   (or (= op "count")
       (= op "count-distinct")
+      (= op "distinct")
       (= op "min")
       (= op "max")
       (= op "sum")
@@ -21182,6 +21316,8 @@
       (= op "median")
       (= op "variance")
       (= op "stddev")
+      (= op "rand")
+      (= op "sample")
       (= op "aggregate")))
 
 (defn custom-aggregate-op? [aggregate: Aggregate-Find] -> bool
@@ -21243,6 +21379,53 @@
       (if (value-less? current value) value current)
       current)))
 
+(defn distinct-values-vector-owned [values: []Value] -> Value
+  (let [out (make [dynamic]Value 0 (count values))]
+    (for [value values]
+      (arr.push! out (value-owned value)))
+    (value-vector-owned out)))
+
+(defn random-values-owned [values: []Value, limit: int] -> Value
+  (let [out (make [dynamic]Value)]
+    (when (= (count values) 0)
+      (return (value-vector-owned out)))
+    (for [_ (arr.range 0 limit)]
+      (arr.push! out (value-owned values[(rand.int_max (count values))])))
+    (value-vector-owned out)))
+
+(defn sample-values-owned [values: []Value, limit: int] -> Value
+  (let [out (make [dynamic]Value)
+        available (make [dynamic]int) :defer
+        take-count (min limit (count values))]
+    (for [index (arr.range 0 (count values))]
+      (arr.push! available index))
+    (for [_ (arr.range 0 take-count)]
+      (let [available-index (rand.int_max (count available))
+            value-index available[available-index]]
+        (arr.push! out (value-owned values[value-index]))
+        (arr.remove-unordered-at! available available-index)))
+    (value-vector-owned out)))
+
+(defn random-value-owned [values: []Value] -> Value
+  (when (= (count values) 0)
+    (return (Value {})))
+  (value-owned values[(rand.int_max (count values))]))
+
+(defn selection-values-owned [values: []Value, limit: int, op: string] -> Value
+  (if (= op "rand")
+    (random-values-owned values limit)
+    (sample-values-owned values limit)))
+
+(defn limited-selection-aggregate-op? [op: string] -> bool
+  (or (= op "rand")
+      (= op "sample")))
+
+(defn aggregate-collects-limited-values? [aggregate: Aggregate-Find] -> bool
+  (or (limited-selection-aggregate-op? aggregate.op)
+      (and (or aggregate.has-limit aggregate.has-limit-var)
+           (or (= aggregate.op "min")
+               (= aggregate.op "max")))))
+
 (defn binding-values-for-vars [binding: Binding, names: []string] -> [values: [dynamic]Value, ok: bool]
   (let [out (make [dynamic]Value 0 (count names))]
     (for [name names]
@@ -21292,13 +21475,11 @@
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
         resolved-limit aggregate.limit
-        aggregate-ints (make [dynamic]i64)
         aggregate-values (make [dynamic]Value)
         distinct-values (make [dynamic]Value)
         seen-keys (make [dynamic]Result-Row)
         custom-name ""
         custom-name-ok false]
-    (defer (delete aggregate-ints))
     (defer (delete aggregate-values))
     (defer (delete distinct-values))
     (defer (delete seen-keys))
@@ -21316,18 +21497,15 @@
                 (when has-value
                   (if (= aggregate.op "count")
                     (set! current.int-value (+ current.int-value 1))
-                    (if (= aggregate.op "count-distinct")
+                    (if (or (= aggregate.op "count-distinct")
+                            (= aggregate.op "distinct"))
                       (when (not (value-exists? (slice distinct-values 0) value))
                         (arr.push! distinct-values value))
                       (do
-                        (when (and (or (= aggregate.op "median")
-                                       (= aggregate.op "variance")
-                                       (= aggregate.op "stddev"))
-                                   (= value.kind .Int))
-                          (arr.push! aggregate-ints value.int-value))
-                        (when (and (or aggregate.has-limit aggregate.has-limit-var)
-                                   (or (= aggregate.op "min")
-                                       (= aggregate.op "max")))
+                        (when (and (numeric-aggregate-op? aggregate.op)
+                                   (numeric-value? value))
+                          (arr.push! aggregate-values value))
+                        (when (aggregate-collects-limited-values? aggregate)
                           (arr.push! aggregate-values value))
                         (when (or (= aggregate.op "aggregate")
                                   (custom-aggregate-op? aggregate))
@@ -21348,10 +21526,16 @@
                         (set! current (apply-aggregate-value current aggregate value))))))))))))
     (when (= aggregate.op "count-distinct")
       (return (value-int (i64 (count distinct-values)))))
+    (when (= aggregate.op "distinct")
+      (return (distinct-values-vector-owned (slice distinct-values 0))))
     (when (and (or aggregate.has-limit aggregate.has-limit-var)
                (or (= aggregate.op "min")
                    (= aggregate.op "max")))
       (return (top-n-values (slice aggregate-values 0) resolved-limit (= aggregate.op "max"))))
+    (when (and (= aggregate.op "rand") (not (or aggregate.has-limit aggregate.has-limit-var)))
+      (return (random-value-owned (slice aggregate-values 0))))
+    (when (limited-selection-aggregate-op? aggregate.op)
+      (return (selection-values-owned (slice aggregate-values 0) resolved-limit aggregate.op)))
     (when (and (= aggregate.op "avg") (> avg-count 0))
       (if (= current.kind .Float)
         (return (value-float (/ current.float-value (f64 avg-count))))
@@ -21359,11 +21543,11 @@
           (return (value-int (/ current.int-value avg-count)))
           (return (value-float (/ (f64 current.int-value) (f64 avg-count)))))))
     (when (= aggregate.op "median")
-      (return (median-int (slice aggregate-ints 0))))
+      (return (median-numeric (slice aggregate-values 0))))
     (when (= aggregate.op "variance")
-      (return (variance-float (slice aggregate-ints 0))))
+      (return (variance-numeric (slice aggregate-values 0))))
     (when (= aggregate.op "stddev")
-      (return (stddev-float (slice aggregate-ints 0))))
+      (return (stddev-numeric (slice aggregate-values 0))))
     (when (or (= aggregate.op "aggregate")
               (custom-aggregate-op? aggregate))
       (let [[value ok] (apply-named-aggregate-with-fns custom-name (slice aggregate-values 0) registry)]
@@ -21443,14 +21627,12 @@
     (return (Value {}) false))
   (let [current (aggregate-initial-value aggregate)
         avg-count: i64 0
-        aggregate-ints (make [dynamic]i64)
         aggregate-values (make [dynamic]Value)
         distinct-values (make [dynamic]Value)
         seen-keys (make [dynamic]Result-Row)
         custom-name ""
         custom-name-ok false
         row 0]
-    (defer (delete aggregate-ints))
     (defer (delete aggregate-values))
     (defer (delete distinct-values))
     (defer (delete seen-keys))
@@ -21464,18 +21646,15 @@
                 (when input-ok
                   (if (= aggregate.op "count")
                     (set! current.int-value (+ current.int-value 1))
-                    (if (= aggregate.op "count-distinct")
+                    (if (or (= aggregate.op "count-distinct")
+                            (= aggregate.op "distinct"))
                       (when (not (value-exists? (slice distinct-values 0) input-value))
                         (arr.push! distinct-values input-value))
                       (do
-                        (when (and (or (= aggregate.op "median")
-                                       (= aggregate.op "variance")
-                                       (= aggregate.op "stddev"))
-                                   (= input-value.kind .Int))
-                          (arr.push! aggregate-ints input-value.int-value))
-                        (when (and aggregate.has-limit
-                                   (or (= aggregate.op "min")
-                                       (= aggregate.op "max")))
+                        (when (and (numeric-aggregate-op? aggregate.op)
+                                   (numeric-value? input-value))
+                          (arr.push! aggregate-values input-value))
+                        (when (aggregate-collects-limited-values? aggregate)
                           (arr.push! aggregate-values input-value))
                         (when (or (= aggregate.op "aggregate")
                                   (custom-aggregate-op? aggregate))
@@ -21499,10 +21678,16 @@
       (set! row (+ row 1)))
     (when (= aggregate.op "count-distinct")
       (return (value-int (i64 (count distinct-values))) true))
+    (when (= aggregate.op "distinct")
+      (return (distinct-values-vector-owned (slice distinct-values 0)) true))
     (when (and aggregate.has-limit
                (or (= aggregate.op "min")
                    (= aggregate.op "max")))
       (return (top-n-values (slice aggregate-values 0) aggregate.limit (= aggregate.op "max")) true))
+    (when (and (= aggregate.op "rand") (not aggregate.has-limit))
+      (return (random-value-owned (slice aggregate-values 0)) true))
+    (when (limited-selection-aggregate-op? aggregate.op)
+      (return (selection-values-owned (slice aggregate-values 0) aggregate.limit aggregate.op) true))
     (when (and (= aggregate.op "avg") (> avg-count 0))
       (if (= current.kind .Float)
         (return (value-float (/ current.float-value (f64 avg-count))) true)
@@ -21510,11 +21695,11 @@
           (return (value-int (/ current.int-value avg-count)) true)
           (return (value-float (/ (f64 current.int-value) (f64 avg-count))) true))))
     (when (= aggregate.op "median")
-      (return (median-int (slice aggregate-ints 0)) true))
+      (return (median-numeric (slice aggregate-values 0)) true))
     (when (= aggregate.op "variance")
-      (return (variance-float (slice aggregate-ints 0)) true))
+      (return (variance-numeric (slice aggregate-values 0)) true))
     (when (= aggregate.op "stddev")
-      (return (stddev-float (slice aggregate-ints 0)) true))
+      (return (stddev-numeric (slice aggregate-values 0)) true))
     (when (or (= aggregate.op "aggregate")
               (custom-aggregate-op? aggregate))
       (let [[value value-ok] (apply-named-aggregate-with-fns custom-name (slice aggregate-values 0) registry)]
@@ -21572,7 +21757,6 @@
 (defstruct Typed-Aggregate-Accumulator {
   current: Value
   avg-count: i64
-  aggregate-ints: [dynamic]i64
   aggregate-values: [dynamic]Value
   distinct-values: [dynamic]Value
   seen-keys: set[string]
@@ -21584,7 +21768,6 @@
 (defn typed-aggregate-accumulator [aggregate: Aggregate-Find] -> Typed-Aggregate-Accumulator
   (Typed-Aggregate-Accumulator {current: (aggregate-initial-value aggregate)
                                 avg-count: 0
-                                aggregate-ints: (make [dynamic]i64)
                                 aggregate-values: (make [dynamic]Value)
                                 distinct-values: (make [dynamic]Value)
                                 seen-keys: (set.empty string)
@@ -21593,7 +21776,6 @@
                                 custom-name-ok: false}))
 
 (defn delete-typed-aggregate-accumulator [state: Typed-Aggregate-Accumulator]
-  (delete state.aggregate-ints)
   (delete state.aggregate-values)
   (delete state.distinct-values)
   (delete state.seen-keys)
@@ -21621,18 +21803,15 @@
 (defn typed-aggregate-accumulate-value! [state: ^Typed-Aggregate-Accumulator, aggregate: Aggregate-Find, input-value: Value]
   (if (= aggregate.op "count")
     (set! state^.current.int-value (+ state^.current.int-value 1))
-    (if (= aggregate.op "count-distinct")
+    (if (or (= aggregate.op "count-distinct")
+            (= aggregate.op "distinct"))
       (when (not (value-exists? (slice state^.distinct-values 0) input-value))
         (arr.push! state^.distinct-values input-value))
       (do
-        (when (and (or (= aggregate.op "median")
-                       (= aggregate.op "variance")
-                       (= aggregate.op "stddev"))
-                   (= input-value.kind .Int))
-          (arr.push! state^.aggregate-ints input-value.int-value))
-        (when (and aggregate.has-limit
-                   (or (= aggregate.op "min")
-                       (= aggregate.op "max")))
+        (when (and (numeric-aggregate-op? aggregate.op)
+                   (numeric-value? input-value))
+          (arr.push! state^.aggregate-values input-value))
+        (when (aggregate-collects-limited-values? aggregate)
           (arr.push! state^.aggregate-values input-value))
         (when (or (= aggregate.op "aggregate")
                   (custom-aggregate-op? aggregate))
@@ -21646,10 +21825,16 @@
 (defn typed-aggregate-accumulator-value [state: Typed-Aggregate-Accumulator, aggregate: Aggregate-Find, registry: []Native-Query-Fn] -> [value: Value, ok: bool]
   (when (= aggregate.op "count-distinct")
     (return (value-int (i64 (count state.distinct-values))) true))
+  (when (= aggregate.op "distinct")
+    (return (distinct-values-vector-owned (slice state.distinct-values 0)) true))
   (when (and aggregate.has-limit
              (or (= aggregate.op "min")
                  (= aggregate.op "max")))
     (return (top-n-values (slice state.aggregate-values 0) aggregate.limit (= aggregate.op "max")) true))
+  (when (and (= aggregate.op "rand") (not aggregate.has-limit))
+    (return (random-value-owned (slice state.aggregate-values 0)) true))
+  (when (limited-selection-aggregate-op? aggregate.op)
+    (return (selection-values-owned (slice state.aggregate-values 0) aggregate.limit aggregate.op) true))
   (when (and (= aggregate.op "avg") (> state.avg-count 0))
     (if (= state.current.kind .Float)
       (return (value-float (/ state.current.float-value (f64 state.avg-count))) true)
@@ -21657,11 +21842,11 @@
         (return (value-int (/ state.current.int-value state.avg-count)) true)
         (return (value-float (/ (f64 state.current.int-value) (f64 state.avg-count))) true))))
   (when (= aggregate.op "median")
-    (return (median-int (slice state.aggregate-ints 0)) true))
+    (return (median-numeric (slice state.aggregate-values 0)) true))
   (when (= aggregate.op "variance")
-    (return (variance-float (slice state.aggregate-ints 0)) true))
+    (return (variance-numeric (slice state.aggregate-values 0)) true))
   (when (= aggregate.op "stddev")
-    (return (stddev-float (slice state.aggregate-ints 0)) true))
+    (return (stddev-numeric (slice state.aggregate-values 0)) true))
   (when (or (= aggregate.op "aggregate")
             (custom-aggregate-op? aggregate))
     (when state.custom-name-ok

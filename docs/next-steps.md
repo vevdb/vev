@@ -22,6 +22,9 @@ files that are checked out locally under ignored `build/upstream`:
   at `daa457f766e16f55243a95513e759573b8827329`
 - `build/upstream/day-of-datomic/tutorial/pull.clj`
   at `daa457f766e16f55243a95513e759573b8827329`
+- `build/upstream/day-of-datomic/tutorial/aggregates.clj` and
+  `build/upstream/day-of-datomic/resources/day-of-datomic/bigger-than-pluto.edn`
+  at `daa457f766e16f55243a95513e759573b8827329`
 - `build/upstream/mbrainz-sample/schema.edn`,
   `build/upstream/mbrainz-sample/resources/rules.edn`, and
   `build/upstream/mbrainz-sample/examples/clj/datomic/samples/mbrainz.clj`
@@ -76,7 +79,17 @@ Covered in both `examples/clojure/musicbrainz_workshop.clj` and
   `tutorial/query.clj`: attribute/value lookup with a numeric value,
   collection input over attribute properties, and the three equivalent country
   inputs by lookup ref, ident keyword, and entity id
-- built-in function expressions and basic aggregates used by this slice
+- opening aggregate examples from `tutorial/query.clj`: source-less relation
+  input over the monster-heads data, demonstrating the incorrect aggregate
+  without `:with` and the corrected aggregate with `:with`
+- built-in function expressions and aggregate examples used by this slice:
+  min duration, count/count-distinct artist names, sum medium track count,
+  source-less distinct collection aggregate, top-n min/max track durations,
+  `rand`/`sample` artist-name aggregate selections, and custom aggregate
+  callback registration for `(user/mode ?track-count)`. In the Clojure API,
+  aggregate tuple finds such as `[:find [(min ?x) (max ?x)]]` use the
+  Datomic tuple result shape rather than a one-row relation shape. The
+  Clojure request-map `:timeout` example is also covered as host API behavior.
 - request-map query-stats examples around the pre-1970 John Lennon queries
 - Datomic-style `%` rules input, first rules exercise, and composed
   `track-info` rules
@@ -92,6 +105,17 @@ Covered in both `examples/clojure/musicbrainz_workshop.clj` and
   subspec, limit with subspec plus `:as`, no limit, and empty results including
   empty nested results in a collection, pull expressions in queries, and dynamic
   pull-pattern query inputs
+- opening aggregate tutorial examples from `tutorial/aggregates.clj` over
+  `bigger-than-pluto.edn`: count objects, largest radius, smallest radius,
+  average radius, median radius, standard deviation of radius, and random
+  object name selection, plus the `min 3` and `max 3` radius top-n aggregates.
+  Vev loads the upstream object transaction into a persistent store for both
+  Clojure and Kvist. The Datomic schema bootstrap transaction is skipped
+  because Vev does not need `:db.install/_attribute` for these queries and the
+  queried facts are in the second upstream transaction. Statistical aggregates
+  handle float inputs in the relation, typed, and persisted source-backed
+  aggregate paths, scalar `(rand ?x)` works from both EDN text and Kvist
+  literal queries, and scalar top-n aggregates return the Datomic vector shape.
 
 The Clojure path uses the Datomic-like `vev.core` API. The Kvist path uses the
 Vev Kvist package directly against the same persistent store. The Kvist query
@@ -137,9 +161,11 @@ internals:
    Status: active. `examples/clojure/musicbrainz_workshop.clj` and
    `examples/kvist/musicbrainz_workshop.kvist` cover
    `day-of-datomic-conj/src/music_brainz.clj` through Pattern inputs,
-   `day-of-datomic/tutorial/query.clj` through dynamic attribute specs and
-   equivalent country identity inputs, then all of
-   `day-of-datomic/tutorial/pull.clj`.
+   `day-of-datomic/tutorial/query.clj` through the final aggregate/request-map
+   examples, then all of `day-of-datomic/tutorial/pull.clj`.
+   `examples/clojure/aggregates_tutorial.clj` and
+   `examples/kvist/aggregates_tutorial.kvist` cover
+   `day-of-datomic/tutorial/aggregates.clj` through the `largest 3` query.
 
    Kvist tutorial API status:
 
@@ -153,16 +179,6 @@ internals:
    - direct pull helpers still use text pull patterns today; migrate them only
      when there is a clean native pull-pattern store API, not by inventing a
      parallel tutorial shape
-
-   Next upstream section:
-
-   - `build/upstream/day-of-datomic/tutorial/query.clj`
-   - section: aggregate examples immediately after the placeholder
-     `;; rules examples` comment, starting with the monster-heads relation
-     examples and continuing into the MusicBrainz aggregate queries:
-     `min`/`max`, `count`/`count-distinct`, `sum`, grouped
-     `median`/`avg`/`stddev`, `distinct`, top-n `min`/`max`, `rand`,
-     `sample`, custom aggregate `user/mode`, and request-map timeout.
 
    Keep both tutorial paths moving together. Every new Clojure tutorial slice
    should have a matching Kvist slice unless the missing piece is explicitly
@@ -202,13 +218,32 @@ internals:
    - EDN parsed query inputs own their string-like values, so scalar
      keyword/string/symbol inputs remain valid after parsing and can safely be
      passed through host APIs
+   - Clojure `d/q` now supports source-less queries whose `:in` does not name
+     `$`, using a temporary empty in-memory Vev DB only as the native query
+     engine source. This covers the exact upstream monster-heads relation
+     aggregate call shape. Kvist validates the same query/input data through
+     an empty in-memory Vev DB because the query has no DB clauses.
+   - `(distinct ?v)` aggregate parsing and execution is supported through the
+     Kvist literal macro, EDN text parser, generic aggregate reducer, typed
+     aggregate reducer, and source aggregate reducer. Native Vev represents
+     the aggregate value as a vector of unique values; the Clojure `d/q` wrapper
+     exposes it as a Clojure set to match the DataScript/Datomic aggregate
+     shape. The exact upstream source-less collection-input form now passes in
+     both `examples/clojure/musicbrainz_workshop.clj` and
+     `examples/kvist/musicbrainz_workshop.kvist`.
 
    - arbitrary host Clojure predicate calls such as `(user/teste ?year)` are
      resolved by `vev.core`, registered with the native query function
      registry, and executed by the native query engine
    - custom Clojure aggregate functions such as `(user/mode ?track-count)` are
      resolved by `vev.core`, registered with the native query function
-     registry, and executed by the native query engine
+     registry, and executed by the native query engine. Kvist can now call the
+     same native query-function registry against persistent store snapshots
+     through `vev.q-result-store-db-with-fns`; the workshop validates
+     `(user/mode ?track-count)` with a native Kvist callback and literal
+     query form.
+   - built-in aggregate tuple finds in the Clojure API now match Datomic's
+     tuple shape for the covered `min`/`max` and `rand`/`sample` examples
    - the Clojure workshop validation now asserts the upstream custom aggregate
      result: `(user/mode ?track-count)` returns `2` on the local MusicBrainz
      tutorial store
@@ -227,10 +262,10 @@ internals:
      `(count (d/query ...))` validates dangerous cross-products without
      materializing millions of host rows, while ordinary small results still
      return concrete sets
-   - the matching Kvist story for tutorial-local custom predicate/aggregate
-     functions remains open; do not invent a separate example, but define how
-     Kvist native functions should be exposed to the same query function
-     registry if an upstream tutorial form requires it
+   - the matching Kvist story for tutorial-local custom aggregate functions is
+     covered for the upstream `user/mode` aggregate. A Kvist custom predicate
+     example should only be added if a concrete upstream tutorial form requires
+     it.
 
    Current measured durable-store status for this section:
 
@@ -264,11 +299,20 @@ internals:
      examples on the generic relation engine, though broad branch scans remain
      a legitimate later performance target
 
+   Next upstream section:
+
+   - `build/upstream/day-of-datomic/tutorial/aggregates.clj`
+   - section: `;; 5 random (duplicates possible)`, the next aggregate form
+     after `largest 3`:
+     `[:find (rand 5 ?name) . :with ?e :where [?e :object/name ?name]]`
+
    Next work for this upstream section:
 
-   - port the aggregate examples from `tutorial/query.clj` in order, reusing
-     the existing Vev aggregate support where it already matches and fixing
-     real semantic/performance gaps when they appear
+   - port the concrete `aggregates.clj` `rand 5` block over object names from
+     `bigger-than-pluto.edn`
+   - add Clojure and Kvist tutorial validation for the same upstream form
+   - reuse existing Vev aggregate support where it already matches and fix real
+     semantic/performance gaps when they appear
    - add `entid` query function support and revisit exact dynamic-attribute
      ident semantics before claiming full parity for the dynamic-attribute
      block
@@ -301,6 +345,8 @@ internals:
 
    - `scripts/musicbrainz_workshop_clojure.sh`
    - `scripts/musicbrainz_workshop_kvist.sh`
+   - `scripts/aggregates_tutorial_clojure.sh`
+   - `scripts/aggregates_tutorial_kvist.sh`
    - `scripts/decomposing_query_clojure.sh`
 
 3. **Datomic comparison harness**

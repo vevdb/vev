@@ -1,0 +1,147 @@
+;; Copyright (c) Andreas Flakstad and Vev contributors
+;; SPDX-License-Identifier: EPL-2.0
+
+(ns aggregates-tutorial
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [vev.core :as d]))
+
+;; Port source of truth:
+;; build/upstream/day-of-datomic/tutorial/aggregates.clj
+;; Section: file top through largest 3 aggregate query.
+;; Fixture:
+;; build/upstream/day-of-datomic/resources/day-of-datomic/bigger-than-pluto.edn
+
+(def default-uri "build/day-of-datomic/vev-aggregates.sqlite")
+(def fixture-path "build/upstream/day-of-datomic/resources/day-of-datomic/bigger-than-pluto.edn")
+
+(def object-count-query
+  '[:find (count ?e) .
+    :where [?e :object/name ?n]])
+
+(def object-names-query
+  '[:find ?name
+    :where [?e :object/name ?name]])
+
+(def largest-radius-query
+  '[:find (max ?radius) .
+    :where [_ :object/meanRadius ?radius]])
+
+(def smallest-radius-query
+  '[:find (min ?radius) .
+    :where [_ :object/meanRadius ?radius]])
+
+(def average-radius-query
+  '[:find (avg ?radius) .
+    :with ?e
+    :where [?e :object/meanRadius ?radius]])
+
+(def median-radius-query
+  '[:find (median ?radius) .
+    :with ?e
+    :where [?e :object/meanRadius ?radius]])
+
+(def stddev-radius-query
+  '[:find (stddev ?radius) .
+    :with ?e
+    :where [?e :object/meanRadius ?radius]])
+
+(def random-object-name-query
+  '[:find (rand ?name) .
+    :where [?e :object/name ?name]])
+
+(def smallest-three-radii-query
+  '[:find (min 3 ?radius) .
+    :with ?e
+    :where [?e :object/meanRadius ?radius]])
+
+(def largest-three-radii-query
+  '[:find (max 3 ?radius) .
+    :with ?e
+    :where [?e :object/meanRadius ?radius]])
+
+(defn- remove-store! [uri]
+  (doseq [suffix ["" "-wal" "-shm"]]
+    (let [file (io/file (str uri suffix))]
+      (when (.exists file)
+        (when-not (.delete file)
+          (throw (ex-info "could not delete existing Vev store"
+                          {:path (.getPath file)})))))))
+
+(defn- normalize-upstream-entity [entity]
+  (if (map? entity)
+    (dissoc entity :db.install/_attribute)
+    entity))
+
+(defn- normalize-upstream-form [form]
+  (if (vector? form)
+    (mapv normalize-upstream-entity form)
+    form))
+
+(defn- aggregate-fact-form? [form]
+  (and (vector? form)
+       (some #(and (map? %)
+                   (contains? % :object/name)
+                   (contains? % :object/meanRadius))
+             form)))
+
+(defn- read-upstream-forms []
+  (let [counter (atom 0)
+        eof (Object.)]
+    (with-open [reader (java.io.PushbackReader. (io/reader fixture-path))]
+      (loop [forms []]
+        (let [form (edn/read {:eof eof
+                              :readers {'db/id (fn [_]
+                                                 (str "__dbid_" (swap! counter inc)))}}
+                             reader)]
+          (if (identical? eof form)
+            forms
+            (recur (conj forms (normalize-upstream-form form)))))))))
+
+(defn setup! []
+  (remove-store! default-uri)
+  (io/make-parents default-uri)
+  (with-open [conn (d/connect default-uri)]
+    (doseq [[tx-index tx] (map-indexed vector (filter aggregate-fact-form? (read-upstream-forms)))]
+      (let [report (d/transact conn tx)]
+        (when-not (:ok report)
+          (throw (ex-info "failed to transact upstream aggregate fixture"
+                          {:tx-index tx-index
+                           :error (:error report)})))))
+    (d/connection-info conn)))
+
+(defn- close-enough? [expected actual tolerance]
+  (<= (Math/abs (- expected actual)) tolerance))
+
+(defn validate-opening-aggregates! []
+  (with-open [conn (d/connect default-uri)]
+    (let [db (d/db conn)
+          object-count (d/q object-count-query db)
+          largest-radius (d/q largest-radius-query db)
+          smallest-radius (d/q smallest-radius-query db)
+          average-radius (d/q average-radius-query db)
+          median-radius (d/q median-radius-query db)
+          stddev-radius (d/q stddev-radius-query db)
+          random-object-name (d/q random-object-name-query db)
+          smallest-three-radii (d/q smallest-three-radii-query db)
+          largest-three-radii (d/q largest-three-radii-query db)
+          object-names (set (map first (d/q object-names-query db)))]
+      (assert (= 17 object-count))
+      (assert (= 696000.0 largest-radius))
+      (assert (= 1163.0 smallest-radius))
+      (assert (= 53390.17647058824 average-radius))
+      (assert (= 2631.2 median-radius))
+      (assert (close-enough? 161902.52780945456 stddev-radius 0.0000001))
+      (assert (string? random-object-name))
+      (assert (contains? object-names random-object-name))
+      (assert (= [1163.0 1353.4 1561.0] smallest-three-radii))
+      (assert (= [696000.0 69911.0 58232.0] largest-three-radii))
+      {:object-count object-count
+       :largest-radius largest-radius
+       :smallest-radius smallest-radius
+       :average-radius average-radius
+       :median-radius median-radius
+       :stddev-radius stddev-radius
+       :random-object-name random-object-name
+       :smallest-three-radii smallest-three-radii
+       :largest-three-radii largest-three-radii})))

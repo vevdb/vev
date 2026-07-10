@@ -532,7 +532,7 @@
   (symbol? form))
 
 (defmacro- aggregate-op? [op]
-  (contains? ["count" "count-distinct" "min" "max" "sum" "avg" "median" "variance" "stddev" "aggregate"] op))
+  (contains? ["count" "count-distinct" "distinct" "min" "max" "sum" "avg" "median" "variance" "stddev" "rand" "sample" "aggregate"] op))
 
 (defmacro- query-op-var? [op]
   (starts-with? op "?"))
@@ -542,7 +542,15 @@
       (contains? ["count" "+" "-" "*" "/" "quot" "rem" "mod" "min" "max" "compare" "inc" "dec" "range" "identity" "ground" "fulltext" "name" "str" "keyword" "subs" "vector" "tuple" "untuple" "hash-map" "get" "first" "second" "contains?" "clojure.string/includes?" "clojure.string/starts-with?" "clojure.string/ends-with?" "re-pattern" "re-find"] op)))
 
 (defmacro- top-n-aggregate-op? [op]
-  (contains? ["min" "max"] op))
+  (contains? ["min" "max" "rand" "sample"] op))
+
+(defmacro- selection-aggregate-op? [op]
+  (contains? ["rand" "sample"] op))
+
+(defmacro- macro-custom-aggregate-op? [op]
+  (and (not (query-op-var? op))
+       (not (aggregate-op? op))
+       (not (= op "pull"))))
 
 (defmacro- find-scalar-marker? [form]
   (if (symbol? form)
@@ -612,10 +620,14 @@
                            (find-var? (nth form 1)))
                        (find-var? (nth form 2)))
                   (and (= (count form) 2)
+                       (or (= op "rand")
+                           (not (selection-aggregate-op? op)))
                        (find-var? (nth form 1))
                        (aggregate-op? op)))
                 (and (find-var? (nth form 1))
-                     (aggregate-op? op)))))))
+                     (or (aggregate-op? op)
+                         (and (= (count form) 2)
+                              (macro-custom-aggregate-op? op)))))))))
 
 (defmacro- emit-aggregate-arg-terms [forms]
   (if (= (count forms) 0)
@@ -2055,7 +2067,7 @@
         (Aggregate-Find {op: (unquote (source (first form)))
                          var: (unquote (emit-find-var (nth form 1)))
                          args: ([]Term [(splice (emit-aggregate-value-args form))])})))
-    (error "aggregate find expressions currently support count, count-distinct, min, max, sum, avg, median, variance, stddev, and aggregate")))
+    (error "aggregate find expressions currently support count, count-distinct, distinct, min, max, sum, avg, median, variance, stddev, rand, sample, and aggregate")))
 
 (defmacro- emit-aggregate-finds [forms]
   (if (= (count forms) 0)
@@ -2517,6 +2529,27 @@
         (unquote snapshot)
         (unquote query-form)
         ([]Query-Input [(splice (emit-query-input-list-without-rules inputs))])))))
+
+(defmacro q-result-store-db-with-fns [query-form snapshot registry & inputs]
+  (if (vector? query-form)
+    (let [tail (rest query-form)
+          find-items (datalog-find-items tail)
+          input-items (datalog-input-items tail)]
+      (quasiquote
+        (q-result-store-db-query-with-inputs-and-fns
+          (unquote snapshot)
+          (query-with-rule-call-plans
+            (query-with-rules
+              (unquote (datalog query-form))
+              ([]Rule [(splice (emit-rule-input-rules inputs))])))
+          ([]Query-Input [(splice (emit-query-input-list-for-query find-items input-items inputs))])
+          (unquote registry))))
+    (quasiquote
+      (q-result-store-db-prepared-with-inputs-and-fns
+        (unquote snapshot)
+        (unquote query-form)
+        ([]Query-Input [(splice (emit-query-input-list-without-rules inputs))])
+        (unquote registry)))))
 
 (defmacro q-scalar [query-or-db db-or-query & inputs]
   (quasiquote
