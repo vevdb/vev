@@ -621,59 +621,54 @@
           tuple (tuple-binding-release-pulls db)
           request (request-map-release-pulls db)
           collection (collection-binding-releases db)
-          relation-error (try
-                           (relation-binding-releases db)
-                           nil
-                           (catch Throwable error
-                             (.getMessage error)))]
+          relation (relation-binding-releases db)]
       (assert (= 21 (count opening)))
       (assert (= 4 (count tuple)))
       (assert (= 10 (count request)))
       (assert (= 14 (count collection)))
-      (assert (some? relation-error))
+      (assert (= 5 (count relation)))
       {:opening-release-pulls (count opening)
        :tuple-binding-release-pulls (count tuple)
        :request-map-release-pulls (count request)
        :collection-binding-releases (count collection)
-       :relation-binding-status :pending
-       :relation-binding-error relation-error})))
+       :relation-binding-releases (count relation)})))
 
 (defn validate-find-specifications! []
   (with-open [conn (connect)
               db (db conn)]
-    (let [missing-db (relation-find-missing-db db)
+    (let [missing-db-error (try
+                             (relation-find-missing-db db)
+                             nil
+                             (catch Throwable error
+                               (.getMessage error)))
           relation (relation-find-releases db)
           collection (collection-find-releases db)
           tuple (tuple-find-artist-start db)
           scalar (scalar-find-artist-start db)
           return-map (return-map-releases db)
-          positional-error (try
-                             (return-map-positional-artist db)
-                             nil
-                             (catch Throwable error
-                               (.getMessage error)))
+          positional-artist (return-map-positional-artist db)
           key-artist (return-map-key-artist db)
           host-predicate (host-predicate-artists db)
           function-expression (function-expression-track-minutes db)]
-      (assert (empty? missing-db))
+      (assert (some? missing-db-error))
+      (assert (.contains ^String missing-db-error ":in does not include $"))
       (assert (= 29 (count relation)))
       (assert (= 12 (count collection)))
       (assert (= [1940 10 9] tuple))
       (assert (= 1940 scalar))
       (assert (= 3 (count return-map)))
-      (assert (some? positional-error))
+      (assert (= "Paul McCartney" positional-artist))
       (assert (= "Paul McCartney" key-artist))
       (assert (empty? host-predicate))
       (assert (= 71 (count function-expression)))
-      {:missing-db-status :pending-error-shape
-       :missing-db-count (count missing-db)
+      {:missing-db-status :error
+       :missing-db-error missing-db-error
        :relation-find-releases (count relation)
        :collection-find-releases (count collection)
        :tuple-find-artist-start tuple
        :scalar-find-artist-start scalar
        :return-map-releases (count return-map)
-       :return-map-positional-status :pending-indexed-map-row
-       :return-map-positional-error positional-error
+       :return-map-positional-artist positional-artist
        :return-map-key-artist key-artist
        :host-predicate-status :pending-host-function
        :host-predicate-count (count host-predicate)
@@ -770,7 +765,11 @@
           dynamic (pull-release-names-dynamic-pattern db)
           release-and-artist (pull-release-and-artist db)
           name-and-artists (pull-release-name-and-artists db)
-          duplicate (duplicate-pull-release db)
+          duplicate-error (try
+                            (duplicate-pull-release db)
+                            nil
+                            (catch Throwable error
+                              (.getMessage error)))
           nested (nested-pull-release-artists db)
           nested-country (nested-pull-release-artists-country db)
           deep (deep-pull-release-artists-country db)]
@@ -778,7 +777,8 @@
       (assert (= literal dynamic))
       (assert (= 8 (count release-and-artist)))
       (assert (= 8 (count name-and-artists)))
-      (assert (= 8 (count duplicate)))
+      (assert (some? duplicate-error))
+      (assert (.contains ^String duplicate-error "duplicate pull"))
       (assert (= 8 (count nested)))
       (assert (= 14 (count nested-country)))
       (assert (= 14 (count deep)))
@@ -786,8 +786,8 @@
        :dynamic-pull-pattern (count dynamic)
        :pull-release-and-artist (count release-and-artist)
        :pull-release-name-and-artists (count name-and-artists)
-       :duplicate-pull-same-var-status :pending-error-shape
-       :duplicate-pull-same-var-count (count duplicate)
+       :duplicate-pull-same-var-status :error
+       :duplicate-pull-same-var-error duplicate-error
        :nested-pull-release-artists (count nested)
        :nested-pull-release-artists-country (count nested-country)
        :deep-pull-release-artists-country (count deep)})))
@@ -805,6 +805,7 @@
       (assert (= "Led Zeppelin" (:artist/name artist)))
       (assert (= 1968 (:artist/startYear artist)))
       (assert (= 1000180 (get-in country [:artist/country :db/id])))
+      (assert (= 482 reverse-country-count))
       (assert (= 1 (count (:release/media release-media))))
       (assert (= 1 (count (:release/_media reverse-media))))
       (assert (= "Ghost Riders in the Sky" (:track/name track-artists)))
@@ -812,7 +813,6 @@
                  (set (map :artist/name (:track/artists track-artists)))))
       {:pull-attribute-name artist
        :pull-artist-country country
-       :pull-reverse-country-status :pending-reverse-pull-cardinality
        :pull-reverse-country-count reverse-country-count
        :pull-release-media-count (count (:release/media release-media))
        :pull-reverse-component-count (count (:release/_media reverse-media))
@@ -994,10 +994,6 @@
   (collection-binding-releases db)
 
   ;; Relation binding:
-  ;; This is the next wrapper gap. The upstream Datomic form is ported above,
-  ;; but the current Clojure durable Vev path rejects vector-of-tuples relation
-  ;; input until Java/Clojure expose the typed relation binding helpers that
-  ;; already exist lower in the native ABI/Python wrapper.
   (relation-binding-releases db)
 
   ;; Find specifications:
@@ -1092,8 +1088,7 @@
   (pull-release-names-dynamic-pattern db)
   (pull-release-and-artist db)
   (pull-release-name-and-artists db)
-  ;; Datomic rejects this duplicate pull on `?e`; Vev currently accepts it, so
-  ;; validation keeps the error-shape gap visible.
+  ;; Datomic rejects this duplicate pull on `?e`; Vev should also reject it.
   (duplicate-pull-release db)
   (nested-pull-release-artists db)
   (nested-pull-release-artists-country db)

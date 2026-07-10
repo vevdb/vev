@@ -1164,7 +1164,7 @@ func Smoke() {
 
 	result := conn.QueryText(`
 		[:find ?name
-		 :in [?email ...]
+		 :in $ [?email ...]
 		 :where [?e :user/email ?email]
 		        [?e :user/name ?name]]
 	`, `[["ada@example.com" "grace@example.com"]]`)
@@ -1185,7 +1185,7 @@ func Smoke() {
 
 	query, err := Prepare(`
 		[:find ?e ?email
-		 :in ?needle
+		 :in $ ?needle
 		 :where [?e :user/email ?email]
 		        [(= ?email ?needle)]]
 	`)

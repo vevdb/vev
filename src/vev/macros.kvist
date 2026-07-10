@@ -2473,7 +2473,7 @@
         (emit-query-input (first forms))
         (emit-query-input-list-without-rules (rest forms))))))
 
-(defmacro q [db query-form & inputs]
+(defmacro- q-db-first [db query-form inputs]
   (if (vector? query-form)
     (let [tail (rest query-form)
           find-items (datalog-find-items tail)
@@ -2492,56 +2492,101 @@
         (unquote query-form)
         ([]Query-Input [(splice (emit-query-input-list-without-rules inputs))])))))
 
-(defmacro q-scalar [db query-form & inputs]
-  (quasiquote
-    (result-scalar (q (unquote db) (unquote query-form) (splice inputs)))))
+(defmacro- q-query-first [query-form db inputs]
+  (q-db-first db query-form inputs))
 
-(defmacro q-collection [db query-form & inputs]
-  (quasiquote
-    (result-collection (q (unquote db) (unquote query-form) (splice inputs)))))
+(defmacro q [query-or-db db-or-query & inputs]
+  (if (vector? query-or-db)
+    (q-query-first query-or-db db-or-query inputs)
+    (q-db-first query-or-db db-or-query inputs)))
 
-(defmacro q-tuple [db query-form & inputs]
-  (quasiquote
-    (result-tuple (q (unquote db) (unquote query-form) (splice inputs)))))
-
-(defmacro q-pull-scalar [db query-form & inputs]
-  (quasiquote
-    (result-pull-scalar (q (unquote db) (unquote query-form) (splice inputs)))))
-
-(defmacro q-pull-collection [db query-form & inputs]
-  (quasiquote
-    (result-pull-collection (q (unquote db) (unquote query-form) (splice inputs)))))
-
-(defmacro q-row-tuple [db query-form & inputs]
-  (quasiquote
-    (result-row-tuple (q (unquote db) (unquote query-form) (splice inputs)))))
-
-(defmacro q-keys [db query-form & inputs]
+(defmacro q-result-store-db [query-form snapshot & inputs]
   (if (vector? query-form)
+    (let [tail (rest query-form)
+          find-items (datalog-find-items tail)
+          input-items (datalog-input-items tail)]
+      (quasiquote
+        (q-result-store-db-query-with-inputs
+          (unquote snapshot)
+          (query-with-rule-call-plans
+            (query-with-rules
+              (unquote (datalog query-form))
+              ([]Rule [(splice (emit-rule-input-rules inputs))])))
+          ([]Query-Input [(splice (emit-query-input-list-for-query find-items input-items inputs))]))))
+    (quasiquote
+      (q-result-store-db-prepared-with-inputs
+        (unquote snapshot)
+        (unquote query-form)
+        ([]Query-Input [(splice (emit-query-input-list-without-rules inputs))])))))
+
+(defmacro q-scalar [query-or-db db-or-query & inputs]
+  (quasiquote
+    (result-scalar (q (unquote query-or-db) (unquote db-or-query) (splice inputs)))))
+
+(defmacro q-collection [query-or-db db-or-query & inputs]
+  (quasiquote
+    (result-collection (q (unquote query-or-db) (unquote db-or-query) (splice inputs)))))
+
+(defmacro q-tuple [query-or-db db-or-query & inputs]
+  (quasiquote
+    (result-tuple (q (unquote query-or-db) (unquote db-or-query) (splice inputs)))))
+
+(defmacro q-pull-scalar [query-or-db db-or-query & inputs]
+  (quasiquote
+    (result-pull-scalar (q (unquote query-or-db) (unquote db-or-query) (splice inputs)))))
+
+(defmacro q-pull-collection [query-or-db db-or-query & inputs]
+  (quasiquote
+    (result-pull-collection (q (unquote query-or-db) (unquote db-or-query) (splice inputs)))))
+
+(defmacro q-row-tuple [query-or-db db-or-query & inputs]
+  (quasiquote
+    (result-row-tuple (q (unquote query-or-db) (unquote db-or-query) (splice inputs)))))
+
+(defmacro q-keys [query-or-db db-or-query & inputs]
+  (if (vector? query-or-db)
     (quasiquote
       (result-keys
-        (q (unquote db) (unquote query-form) (splice inputs))
+        (q (unquote query-or-db) (unquote db-or-query) (splice inputs))
         .Keyword
-        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":keys")))])))
-    (error "q-keys expects a literal datalog query")))
+        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-or-db) ":keys")))])))
+    (if (vector? db-or-query)
+      (quasiquote
+        (result-keys
+          (q (unquote query-or-db) (unquote db-or-query) (splice inputs))
+          .Keyword
+          ([]string [(splice (emit-result-keys (datalog-return-map-items (rest db-or-query) ":keys")))])))
+      (error "q-keys expects a literal datalog query"))))
 
-(defmacro q-strs [db query-form & inputs]
-  (if (vector? query-form)
+(defmacro q-strs [query-or-db db-or-query & inputs]
+  (if (vector? query-or-db)
     (quasiquote
       (result-keys
-        (q (unquote db) (unquote query-form) (splice inputs))
+        (q (unquote query-or-db) (unquote db-or-query) (splice inputs))
         .String
-        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":strs")))])))
-    (error "q-strs expects a literal datalog query")))
+        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-or-db) ":strs")))])))
+    (if (vector? db-or-query)
+      (quasiquote
+        (result-keys
+          (q (unquote query-or-db) (unquote db-or-query) (splice inputs))
+          .String
+          ([]string [(splice (emit-result-keys (datalog-return-map-items (rest db-or-query) ":strs")))])))
+      (error "q-strs expects a literal datalog query"))))
 
-(defmacro q-syms [db query-form & inputs]
-  (if (vector? query-form)
+(defmacro q-syms [query-or-db db-or-query & inputs]
+  (if (vector? query-or-db)
     (quasiquote
       (result-keys
-        (q (unquote db) (unquote query-form) (splice inputs))
+        (q (unquote query-or-db) (unquote db-or-query) (splice inputs))
         .Symbol
-        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-form) ":syms")))])))
-    (error "q-syms expects a literal datalog query")))
+        ([]string [(splice (emit-result-keys (datalog-return-map-items (rest query-or-db) ":syms")))])))
+    (if (vector? db-or-query)
+      (quasiquote
+        (result-keys
+          (q (unquote query-or-db) (unquote db-or-query) (splice inputs))
+          .Symbol
+          ([]string [(splice (emit-result-keys (datalog-return-map-items (rest db-or-query) ":syms")))])))
+      (error "q-syms expects a literal datalog query"))))
 
 (defmacro datoms [db order & args]
   (if (keyword? order)

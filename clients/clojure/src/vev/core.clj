@@ -60,6 +60,34 @@
     :else
     value))
 
+(deftype KeyedRow [m values]
+  clojure.lang.ILookup
+  (valAt [_ key]
+    (get m key))
+  (valAt [_ key not-found]
+    (get m key not-found))
+  clojure.lang.Indexed
+  (nth [_ index]
+    (nth values index))
+  (nth [_ index not-found]
+    (nth values index not-found))
+  clojure.lang.Counted
+  (count [_]
+    (count values))
+  clojure.lang.Seqable
+  (seq [_]
+    (seq m))
+  Object
+  (equals [_ other]
+    (cond
+      (instance? KeyedRow other) (= m (.-m ^KeyedRow other))
+      (map? other) (= m other)
+      :else false))
+  (hashCode [_]
+    (hash m))
+  (toString [_]
+    (str m)))
+
 (defrecord Conn [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
@@ -723,7 +751,9 @@
 
 (defn- keyed-rows [return-map rows]
   (let [keys (:keys return-map)]
-    (mapv (fn [row] (zipmap keys row)) rows)))
+    (mapv (fn [row]
+            (KeyedRow. (zipmap keys row) (vec row)))
+          rows)))
 
 (defn- keyed-set [return-map rows]
   (set (keyed-rows return-map rows)))
@@ -1375,14 +1405,9 @@
                              {:value value
                               :supported #{:string :keyword :uuid :integer :entity}}))))
          (keyword? eid)
-         (when-let [resolved (q '[:find ?e .
-                                  :in $ ?ident
-                                  :where [?e :db/ident ?ident]]
-                                db
-                                eid)]
-           (if (instance? PreparedPullPattern pattern)
-             (.pull (:native db) ^Vev$PreparedPullPattern (:native pattern) (long resolved))
-             (.pull (:native db) (edn-text pattern) (long resolved))))
+         (if (instance? PreparedPullPattern pattern)
+           (.pullLookupRefKeyword (:native db) ^Vev$PreparedPullPattern (:native pattern) ":db/ident" (str eid))
+           (.pullLookupRefKeyword (:native db) (edn-text pattern) ":db/ident" (str eid)))
 
          :else
          (if (instance? PreparedPullPattern pattern)

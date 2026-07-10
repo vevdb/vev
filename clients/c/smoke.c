@@ -915,28 +915,28 @@ int main(void) {
         "input-scalar",
         vev_query_edn_with_inputs(
             conn,
-            "[:find ?name :in ?email :where [?e :user/email ?email] [?e :user/name ?name]]",
+            "[:find ?name :in $ ?email :where [?e :user/email ?email] [?e :user/name ?name]]",
             "[\"ada@example.com\"]"));
 
     print_and_free(
         "input-collection",
         vev_query_edn_with_inputs(
             conn,
-            "[:find ?name :in [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]",
+            "[:find ?name :in $ [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]",
             "[[\"ada@example.com\" \"grace@example.com\"]]"));
 
     print_and_free(
         "input-tuple",
         vev_query_edn_with_inputs(
             conn,
-            "[:find ?e :in [?name ?email] :where [?e :user/name ?name] [?e :user/email ?email]]",
+            "[:find ?e :in $ [?name ?email] :where [?e :user/name ?name] [?e :user/email ?email]]",
             "[[\"Ada\" \"ada@example.com\"]]"));
 
     print_and_free(
         "input-relation",
         vev_query_edn_with_inputs(
             conn,
-            "[:find ?name :in [[?email ?label]] :where [?e :user/email ?email] [?e :user/name ?name]]",
+            "[:find ?name :in $ [[?email ?label]] :where [?e :user/email ?email] [?e :user/name ?name]]",
             "[[[\"ada@example.com\" :primary] [\"missing@example.com\" :missing]]]"));
 
     print_and_free(
@@ -989,7 +989,7 @@ int main(void) {
     vev_tx_fn_registry_free(tx_fns);
 
     vev_prepared_query_t query =
-        vev_prepare_query_edn("[:find ?e ?email :in ?needle :where [?e :user/email ?email] [(= ?email ?needle)]]");
+        vev_prepare_query_edn("[:find ?e ?email :in $ ?needle :where [?e :user/email ?email] [(= ?email ?needle)]]");
     if (query == NULL) {
         fprintf(stderr, "failed to prepare query\n");
         vev_conn_close(conn);
@@ -2074,7 +2074,7 @@ int main(void) {
     }
 
     vev_prepared_query_t stmt_batch_query =
-        vev_prepare_query_edn("[:find ?name :in ?email :where [?e :user/email ?email] [?e :user/name ?name]]");
+        vev_prepare_query_edn("[:find ?name :in $ ?email :where [?e :user/email ?email] [?e :user/name ?name]]");
     if (stmt_batch_query == NULL ||
         !vev_prepared_query_ok(stmt_batch_query)) {
         fprintf(stderr, "failed to prepare statement column batch query\n");
@@ -2132,7 +2132,7 @@ int main(void) {
     vev_prepared_query_free(stmt_batch_query);
 
     vev_prepared_query_t collection_query =
-        vev_prepare_query_edn("[:find ?name :in [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]");
+        vev_prepare_query_edn("[:find ?name :in $ [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]");
     if (collection_query == NULL) {
         fprintf(stderr, "failed to prepare collection query\n");
         vev_stmt_free(stmt);
@@ -2176,7 +2176,7 @@ int main(void) {
     vev_prepared_query_free(collection_query);
 
     vev_prepared_query_t tuple_query =
-        vev_prepare_query_edn("[:find ?e :in [?name ?email] :where [?e :user/name ?name] [?e :user/email ?email]]");
+        vev_prepare_query_edn("[:find ?e :in $ [?name ?email] :where [?e :user/name ?name] [?e :user/email ?email]]");
     if (tuple_query == NULL) {
         fprintf(stderr, "failed to prepare tuple query\n");
         vev_stmt_free(stmt);
@@ -2220,7 +2220,7 @@ int main(void) {
     vev_prepared_query_free(tuple_query);
 
     vev_prepared_query_t relation_query =
-        vev_prepare_query_edn("[:find ?name ?label :in [[?email ?label]] :where [?e :user/email ?email] [?e :user/name ?name]]");
+        vev_prepare_query_edn("[:find ?name ?label :in $ [[?email ?label]] :where [?e :user/email ?email] [?e :user/name ?name]]");
     if (relation_query == NULL) {
         fprintf(stderr, "failed to prepare relation query\n");
         vev_stmt_free(stmt);
@@ -2274,7 +2274,7 @@ int main(void) {
     vev_prepared_query_free(relation_query);
 
     vev_prepared_query_t lookup_query =
-        vev_prepare_query_edn("[:find ?name :in ?person :where [?person :user/name ?name]]");
+        vev_prepare_query_edn("[:find ?name :in $ ?person :where [?person :user/name ?name]]");
     if (lookup_query == NULL) {
         fprintf(stderr, "failed to prepare lookup-ref query\n");
         vev_stmt_free(stmt);
@@ -2319,7 +2319,7 @@ int main(void) {
     vev_prepared_query_free(lookup_query);
 
     vev_prepared_query_t lookup_collection_query =
-        vev_prepare_query_edn("[:find ?name :in [?person ...] :where [?person :user/name ?name]]");
+        vev_prepare_query_edn("[:find ?name :in $ [?person ...] :where [?person :user/name ?name]]");
     if (lookup_collection_query == NULL) {
         fprintf(stderr, "failed to prepare lookup-ref collection query\n");
         vev_stmt_free(stmt);
@@ -2741,7 +2741,7 @@ int main(void) {
     vev_prepared_pull_pattern_free(prepared_pull_pattern);
 
     vev_prepared_query_t pull_pattern_query =
-        vev_prepare_query_edn("[:find (pull ?e ?pattern) :in ?pattern ?name :where [?e :user/name ?name]]");
+        vev_prepare_query_edn("[:find (pull ?e ?pattern) :in $ ?pattern ?name :where [?e :user/name ?name]]");
     if (pull_pattern_query == NULL) {
         fprintf(stderr, "failed to prepare pull-pattern statement query\n");
         vev_stmt_free(stmt);

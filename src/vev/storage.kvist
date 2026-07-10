@@ -6373,6 +6373,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   merge-current-entries: [dynamic]int
   merge-current-datoms: [dynamic]Datom
   merge-has-current: [dynamic]bool
+  merge-loaded-pages: [dynamic]SQLite-Loaded-Index-Page
+  merge-loaded-page-valid: [dynamic]bool
   merge-page0: [dynamic]int
   merge-page-start0: int
   merge-page-end0: int
@@ -8136,6 +8138,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                   merge-current-entries: (make [dynamic]int)
                                   merge-current-datoms: (make [dynamic]Datom)
                                   merge-has-current: (make [dynamic]bool)
+                                  merge-loaded-pages: (make [dynamic]SQLite-Loaded-Index-Page)
+                                  merge-loaded-page-valid: (make [dynamic]bool)
                                   merge-page0: (make [dynamic]int)
                                   merge-page-start0: -1
                                   merge-page-end0: -1
@@ -8225,6 +8229,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                                       merge-current-entries: (make [dynamic]int)
                                       merge-current-datoms: (make [dynamic]Datom)
                                       merge-has-current: (make [dynamic]bool)
+                                      merge-loaded-pages: (make [dynamic]SQLite-Loaded-Index-Page)
+                                      merge-loaded-page-valid: (make [dynamic]bool)
                                       merge-page0: (make [dynamic]int)
                                       merge-page-start0: -1
                                       merge-page-end0: -1
@@ -8846,6 +8852,24 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     :else
       (sqlite-index-root-ordered-entry-at handle roots[child-index] position)))
 
+(defn sqlite-index-merge-child-entry-and-datom-at-cached [cursor: ^SQLite-Index-Cursor, child-index: int, position: int] -> [entry: int, datom: Datom, ok: bool, error: string]
+  (when (or (< child-index 0)
+            (>= child-index (count cursor^.merge-roots))
+            (>= child-index (count cursor^.merge-counts))
+            (>= child-index (count cursor^.merge-loaded-pages))
+            (>= child-index (count cursor^.merge-loaded-page-valid)))
+    (return 0 (Datom {}) false "sqlite merge child index out of range"))
+  (sqlite-index-root-ordered-datom-at-retained-page-cache
+    cursor^.handle
+    cursor^.datom-stmt
+    cursor^.merge-roots[child-index]
+    position
+    cursor^.merge-counts[child-index]
+    cursor^.page-size
+    (addr cursor^.page-cache)
+    (addr cursor^.merge-loaded-pages[child-index])
+    (addr cursor^.merge-loaded-page-valid[child-index])))
+
 (defn sqlite-index-root-entry-less? [handle: rawptr, order: string, left: int, right: int] -> [less: bool, ok: bool, error: string]
   (let [[left-text left-text-ok left-text-error] (sqlite-load-datom-by-log-index-text-raw handle (i64 left))]
     (when (not left-text-ok)
@@ -9389,16 +9413,14 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (set! cursor^.merge-counts counts)
     (for [child-index (arr.range 0 (count cursor^.merge-roots))]
       (arr.push! cursor^.merge-positions 0)
+      (arr.push! cursor^.merge-loaded-pages (SQLite-Loaded-Index-Page {}))
+      (arr.push! cursor^.merge-loaded-page-valid false)
       (if (> cursor^.merge-counts[child-index] 0)
-        (let [[entry entry-ok entry-error] (sqlite-index-merge-child-entry-at-cached cursor^.handle (slice cursor^.merge-roots 0) (slice cursor^.merge-counts 0) child-index 0 cursor^.page-size (addr cursor^.merge-page0) (addr cursor^.merge-page-start0) (addr cursor^.merge-page-end0) (addr cursor^.merge-page1) (addr cursor^.merge-page-start1) (addr cursor^.merge-page-end1) (addr cursor^.merge-page2) (addr cursor^.merge-page-start2) (addr cursor^.merge-page-end2) (addr cursor^.merge-page3) (addr cursor^.merge-page-start3) (addr cursor^.merge-page-end3))]
+        (let [[entry datom entry-ok entry-error] (sqlite-index-merge-child-entry-and-datom-at-cached cursor child-index 0)]
           (when (not entry-ok)
             (sqlite-index-cursor-clear-merge-state! cursor)
             (return false entry-error))
-          (let [[datom datom-ok datom-error] (sqlite-load-datom-by-log-index-handle-stmt cursor^.handle cursor^.datom-stmt entry)]
-            (when (not datom-ok)
-              (sqlite-index-cursor-clear-merge-state! cursor)
-              (return false datom-error))
-            (arr.push! cursor^.merge-current-datoms datom))
+          (arr.push! cursor^.merge-current-datoms datom)
           (arr.push! cursor^.merge-current-entries entry)
           (arr.push! cursor^.merge-has-current true))
         (do
@@ -9429,15 +9451,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (set! cursor^.merge-has-current[best-child] false)
     (set! cursor^.merge-current-datoms[best-child] (Datom {}))
     (if (< cursor^.merge-positions[best-child] cursor^.merge-counts[best-child])
-      (let [[next-entry next-ok next-error] (sqlite-index-merge-child-entry-at-cached cursor^.handle (slice cursor^.merge-roots 0) (slice cursor^.merge-counts 0) best-child cursor^.merge-positions[best-child] cursor^.page-size (addr cursor^.merge-page0) (addr cursor^.merge-page-start0) (addr cursor^.merge-page-end0) (addr cursor^.merge-page1) (addr cursor^.merge-page-start1) (addr cursor^.merge-page-end1) (addr cursor^.merge-page2) (addr cursor^.merge-page-start2) (addr cursor^.merge-page-end2) (addr cursor^.merge-page3) (addr cursor^.merge-page-start3) (addr cursor^.merge-page-end3))]
+      (let [[next-entry next-datom next-ok next-error] (sqlite-index-merge-child-entry-and-datom-at-cached cursor best-child cursor^.merge-positions[best-child])]
         (when (not next-ok)
           (delete-owned-datom out-datom)
           (return 0 (Datom {}) false next-error))
-        (let [[next-datom next-datom-ok next-datom-error] (sqlite-load-datom-by-log-index-handle-stmt cursor^.handle cursor^.datom-stmt next-entry)]
-          (when (not next-datom-ok)
-            (delete-owned-datom out-datom)
-            (return 0 (Datom {}) false next-datom-error))
-          (set! cursor^.merge-current-datoms[best-child] next-datom))
+        (set! cursor^.merge-current-datoms[best-child] next-datom)
         (set! cursor^.merge-current-entries[best-child] next-entry)
         (set! cursor^.merge-has-current[best-child] true))
       (set! cursor^.merge-has-current[best-child] false))
@@ -9594,6 +9612,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (delete cursor^.merge-current-entries)
   (delete cursor^.merge-current-datoms)
   (delete cursor^.merge-has-current)
+  (for [loaded-page page-index cursor^.merge-loaded-pages]
+    (when cursor^.merge-loaded-page-valid[page-index]
+      (release-sqlite-loaded-index-page! loaded-page)))
+  (delete cursor^.merge-loaded-pages)
+  (delete cursor^.merge-loaded-page-valid)
   (delete cursor^.merge-page0)
   (delete cursor^.merge-page1)
   (delete cursor^.merge-page2)
@@ -9606,6 +9629,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (set! cursor^.merge-current-entries (make [dynamic]int))
   (set! cursor^.merge-current-datoms (make [dynamic]Datom))
   (set! cursor^.merge-has-current (make [dynamic]bool))
+  (set! cursor^.merge-loaded-pages (make [dynamic]SQLite-Loaded-Index-Page))
+  (set! cursor^.merge-loaded-page-valid (make [dynamic]bool))
   (set! cursor^.merge-page0 (make [dynamic]int))
   (set! cursor^.merge-page-start0 -1)
   (set! cursor^.merge-page-end0 -1)
@@ -11891,10 +11916,27 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (q-result-prepared-db-read-source source prepared)
       (query-result-owned-values (result-set-error source-error)))))
 
+(defn q-result-store-db-prepared-with-inputs [snapshot: ^Store-DB, prepared: Prepared-Query, inputs: []Query-Input] -> Query-Result
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (if source-ok
+      (q-result-prepared-db-read-source-with-inputs source prepared inputs)
+      (query-result-owned-values (result-set-error source-error)))))
+
+(defn q-result-store-db-query-with-inputs [snapshot: ^Store-DB, query: Query, inputs: []Query-Input] -> Query-Result
+  (let [prepared (Prepared-Query {ok: true error: "" query: query})]
+    (defer (delete-prepared-query-shallow prepared))
+    (q-result-store-db-prepared-with-inputs snapshot prepared inputs)))
+
 (defn q-result-store-db-prepared-owned [snapshot: ^Store-DB, prepared: Prepared-Query] -> Query-Result
   (let [[source source-ok source-error] (store-db-read-source snapshot)]
     (if source-ok
       (q-result-prepared-db-read-source-owned source prepared)
+      (query-result-owned-values (result-set-error source-error)))))
+
+(defn q-result-store-db-prepared-owned-with-inputs [snapshot: ^Store-DB, prepared: Prepared-Query, inputs: []Query-Input] -> Query-Result
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (if source-ok
+      (q-result-prepared-db-read-source-owned-with-inputs source prepared inputs)
       (query-result-owned-values (result-set-error source-error)))))
 
 (defn q-profiled-store-db-prepared [snapshot: ^Store-DB, prepared: Prepared-Query] -> Profiled-Result-Set

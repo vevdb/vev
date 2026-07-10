@@ -46,7 +46,7 @@
             names (vev/q
                    db
                    '[:find ?name
-                     :in [?email ...]
+                     :in $ [?email ...]
                      :where [?e :user/email ?email]
                      [?e :user/name ?name]]
                    ["ada@example.com" "grace@example.com"])]
@@ -126,7 +126,7 @@
 
       (with-open [email-query (vev/prepare conn
                                            '[:find ?e ?email
-                                             :in ?needle
+                                             :in $ ?needle
                                              :where [?e :user/email ?email]
                                              [(= ?email ?needle)]])]
         (let [prepared-ast (vev/prepared-edn email-query)]

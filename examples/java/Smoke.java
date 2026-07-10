@@ -34,7 +34,7 @@ public final class Smoke {
 
             String collectionText = conn.queryText("""
                 [:find ?name
-                 :in [?email ...]
+                 :in $ [?email ...]
                  :where [?e :user/email ?email]
                         [?e :user/name ?name]]
                 """, "[[\"ada@example.com\" \"grace@example.com\"]]");
@@ -98,7 +98,7 @@ public final class Smoke {
 
             try (Vev.PreparedQuery emailQuery = vev.prepare("""
                     [:find ?e ?email
-                     :in ?needle
+                     :in $ ?needle
                      :where [?e :user/email ?email]
                             [(= ?email ?needle)]]
                     """);
@@ -122,7 +122,7 @@ public final class Smoke {
 
                 try (Vev.PreparedQuery collectionQuery = vev.prepare("""
                         [:find ?name
-                         :in [?email ...]
+                         :in $ [?email ...]
                          :where [?e :user/email ?email]
                                 [?e :user/name ?name]]
                         """);
@@ -144,7 +144,7 @@ public final class Smoke {
 
                 try (Vev.PreparedQuery nameQuery = vev.prepare("""
                         [:find ?name
-                         :in ?email
+                         :in $ ?email
                          :where [?e :user/email ?email]
                                 [?e :user/name ?name]]
                         """);
@@ -253,7 +253,7 @@ public final class Smoke {
 
                 try (Vev.PreparedQuery pullPatternQuery = vev.prepare("""
                         [:find (pull ?e ?pattern)
-                         :in ?pattern ?name
+                         :in $ ?pattern ?name
                          :where [?e :user/name ?name]]
                         """);
                      Vev.PreparedPullPattern preparedPattern =

@@ -57,6 +57,24 @@
 (def beatles-duration-sum-query
   "[:find ?year (sum ?millis) :with ?track :where [?artist :artist/name \"The Beatles\"] [?release :release/artists ?artist] [?release :release/year ?year] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/duration ?millis]]")
 
+(def track-name-statistics-query
+  "[:find ?year (median ?namelen) (avg ?namelen) (stddev ?namelen) :with ?track :where [?track :track/name ?name] [(count ?name) ?namelen] [?medium :medium/tracks ?track] [?release :release/media ?medium] [?release :release/year ?year]]")
+
+(def track-name-length-avg-query
+  "[:find ?year (avg ?namelen) :with ?track :where [?track :track/name ?name] [(count ?name) ?namelen] [?medium :medium/tracks ?track] [?release :release/media ?medium] [?release :release/year ?year]]")
+
+(def store-release-year-count-query
+  "[:find ?year (count ?release) :where [?release :release/year ?year]]")
+
+(def store-release-media-year-count-query
+  "[:find ?year (count ?medium) :where [?release :release/year ?year] [?release :release/media ?medium]]")
+
+(def store-track-year-count-query
+  "[:find ?year (count ?track) :where [?release :release/year ?year] [?release :release/media ?medium] [?medium :medium/tracks ?track]]")
+
+(def store-track-name-year-count-query
+  "[:find ?year (count ?track) :where [?release :release/year ?year] [?release :release/media ?medium] [?medium :medium/tracks ?track] [?track :track/name ?name]]")
+
 (def lookup-country-query
   "[:find ?name :where [[:country/name \"United Kingdom\"] :country/name ?name]]")
 
@@ -156,6 +174,11 @@
   timing: bench.Timing
 })
 
+(defstruct Store-Profile-Timing {
+  profiled: vev.Profiled-Result-Set
+  timing: bench.Timing
+})
+
 (defstruct Value-Timing {
   value: vev.Value
   timing: bench.Timing
@@ -181,6 +204,9 @@
 
 (defn profile-timing [profiled: vev.Profiled-Result-Set, timing: bench.Timing] -> Profile-Timing
   (Profile-Timing {profiled: profiled timing: timing}))
+
+(defn store-profile-timing [profiled: vev.Profiled-Result-Set, timing: bench.Timing] -> Store-Profile-Timing
+  (Store-Profile-Timing {profiled: profiled timing: timing}))
 
 (defn value-timing [value: vev.Value, timing: bench.Timing] -> Value-Timing
   (Value-Timing {value: value timing: timing}))
@@ -264,6 +290,24 @@
       (if use-rules
         (vev.q-text-profiled-with-rules db query rules inputs)
         (vev.q-text-profiled-with-inputs db query inputs))
+      (bench.timing-from-samples (slice samples 0)))))
+
+(defn time-store-profiled-query [snapshot: ^vev.Store-DB, query: string, warmups: int, samples-count: int] -> Store-Profile-Timing
+  (for [warmup-index (arr.range 0 warmups)]
+    (discard warmup-index)
+    (let [warmup (vev.q-profiled-store-db-text snapshot query)]
+      (vev.delete-profiled-result-set-shallow warmup)))
+  (let [samples (make [dynamic]f64 0 samples-count)]
+    (defer (delete samples))
+    (for [sample-index (arr.range 0 samples-count)]
+      (discard sample-index)
+      (let [start (time.now)
+            profiled (vev.q-profiled-store-db-text snapshot query)
+            elapsed (bench.elapsed-us start)]
+        (arr.push! samples elapsed)
+        (vev.delete-profiled-result-set-shallow profiled)))
+    (store-profile-timing
+      (vev.q-profiled-store-db-text snapshot query)
       (bench.timing-from-samples (slice samples 0)))))
 
 (defn fingerprint-text [seed: u64, text: string] -> u64
@@ -453,6 +497,22 @@
         (delete part))
       out)))
 
+(defn result-row-key-normalized-floats-values-only [row: vev.Result-Row] -> string
+  (let [parts (make [dynamic]string) :defer
+        owned-parts (make [dynamic]string) :defer]
+    (for [value index row.values]
+      (when (> index 0)
+        (let [[separator _] (strings.clone "|")]
+          (arr.push! parts separator)
+          (arr.push! owned-parts separator)))
+      (let [text (normalized-float-value-text value)]
+        (arr.push! parts text)
+        (arr.push! owned-parts text)))
+    (let [out (strings.concatenate (slice parts 0))]
+      (for [part owned-parts]
+        (delete part))
+      out)))
+
 (defn result-fingerprint [db: vev.DB, result: vev.Result-Set] -> u64
   (let [keys (make [dynamic]string) :defer]
     (for [row result.rows]
@@ -470,6 +530,19 @@
   (let [keys (make [dynamic]string) :defer]
     (for [row result.rows]
       (arr.push! keys (result-row-key-normalized-floats db row)))
+    (arr.sort! keys)
+    (let [hash (u64 0)]
+      (for [key keys]
+        (set! hash (fingerprint-text hash key))
+        (set! hash (fingerprint-text hash "\n")))
+      (for [key keys]
+        (delete key))
+      hash)))
+
+(defn result-fingerprint-normalized-floats-values-only [result: vev.Result-Set] -> u64
+  (let [keys (make [dynamic]string) :defer]
+    (for [row result.rows]
+      (arr.push! keys (result-row-key-normalized-floats-values-only row)))
     (arr.sort! keys)
     (let [hash (u64 0)]
       (for [key keys]
@@ -548,6 +621,37 @@
     result.profiled.stats.max-intermediate-bindings
     result.profiled.stats.output-rows))
 
+(defn print-store-profile-normalized-floats [workload: string, result: Store-Profile-Timing]
+  (if result.profiled.result.ok
+    (fmt.printf
+      "engine=vev-store workload=%s ok=true rows=%d fingerprint=%016x min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
+      workload
+      (count result.profiled.result.rows)
+      (result-fingerprint-normalized-floats-values-only result.profiled.result)
+      result.timing.min-us
+      result.timing.median-us
+      result.timing.p90-us
+      result.timing.max-us
+      result.profiled.stats.steps
+      result.profiled.stats.clauses
+      result.profiled.stats.clause-candidates
+      result.profiled.stats.max-intermediate-bindings
+      result.profiled.stats.output-rows)
+    (fmt.printf
+      "engine=vev-store workload=%s ok=false rows=%d error=%s min_us=%.0f median_us=%.0f p90_us=%.0f max_us=%.0f steps=%d clauses=%d candidates=%d max_bindings=%d output_rows=%d\n"
+      workload
+      (count result.profiled.result.rows)
+      result.profiled.result.error
+      result.timing.min-us
+      result.timing.median-us
+      result.timing.p90-us
+      result.timing.max-us
+      result.profiled.stats.steps
+      result.profiled.stats.clauses
+      result.profiled.stats.clause-candidates
+      result.profiled.stats.max-intermediate-bindings
+      result.profiled.stats.output-rows)))
+
 (defn print-result-rows [db: vev.DB, workload: string, result: vev.Result-Set]
   (let [keys (make [dynamic]string) :defer]
     (for [row result.rows]
@@ -561,7 +665,8 @@
   (or (= selected "all")
       (= selected workload)
       (= selected (strings.trim_prefix workload "musicbrainz-mini-"))
-      (= selected (strings.trim_prefix workload "musicbrainz-real-"))))
+      (= selected (strings.trim_prefix workload "musicbrainz-real-"))
+      (= selected (strings.trim_prefix workload "musicbrainz-store-"))))
 
 (defn print-workload-with-rules! [db: vev.DB, workload: string, query: string, inputs: []vev.Query-Input, rules: string, use-rules: bool, warmups: int, samples: int, print-rows: bool]
   (let [result (time-profiled-query db query inputs rules use-rules warmups samples)]
@@ -577,7 +682,43 @@
   (let [result (time-profiled-query db query inputs "" false warmups samples)]
     (print-profile-normalized-floats db workload result)
     (when print-rows
-      (print-result-rows db workload result.profiled.result))))
+      (print-result-rows db workload result.profiled.result))
+    (vev.delete-profiled-result-set-shallow result.profiled)))
+
+(defn print-store-workload-normalized-floats! [snapshot: ^vev.Store-DB, workload: string, query: string, warmups: int, samples: int]
+  (let [result (time-store-profiled-query snapshot query warmups samples)]
+    (print-store-profile-normalized-floats workload result)
+    (vev.delete-profiled-result-set-shallow result.profiled)))
+
+(defn run-store-workloads! [store-path: string, selected: string, warmups: int, samples: int]
+  (let [[store store-ok store-error] (vev.open-store-read-only store-path)]
+    (when (not store-ok)
+      (fmt.printf "engine=vev-store workload=musicbrainz-store-open ok=false error=%s\n" store-error)
+      (return))
+    (defer (vev.close-store store))
+    (let [[snapshot snapshot-ok snapshot-error] (vev.store-db (addr store))]
+      (when (not snapshot-ok)
+        (fmt.printf "engine=vev-store workload=musicbrainz-store-db ok=false error=%s\n" snapshot-error)
+        (return))
+      (defer (vev.close-store-db! (addr snapshot)))
+      (let [release-year-count-workload "musicbrainz-store-release-year-count"
+            release-media-year-count-workload "musicbrainz-store-release-media-year-count"
+            track-year-count-workload "musicbrainz-store-track-year-count"
+            track-name-year-count-workload "musicbrainz-store-track-name-year-count"
+            track-name-length-avg-workload "musicbrainz-store-track-name-length-avg"
+            track-name-statistics-workload "musicbrainz-store-track-name-statistics"]
+        (when (should-run? selected release-year-count-workload)
+          (print-store-workload-normalized-floats! (addr snapshot) release-year-count-workload store-release-year-count-query warmups samples))
+        (when (should-run? selected release-media-year-count-workload)
+          (print-store-workload-normalized-floats! (addr snapshot) release-media-year-count-workload store-release-media-year-count-query warmups samples))
+        (when (should-run? selected track-year-count-workload)
+          (print-store-workload-normalized-floats! (addr snapshot) track-year-count-workload store-track-year-count-query warmups samples))
+        (when (should-run? selected track-name-year-count-workload)
+          (print-store-workload-normalized-floats! (addr snapshot) track-name-year-count-workload store-track-name-year-count-query warmups samples))
+        (when (should-run? selected track-name-length-avg-workload)
+          (print-store-workload-normalized-floats! (addr snapshot) track-name-length-avg-workload track-name-length-avg-query warmups samples))
+        (when (should-run? selected track-name-statistics-workload)
+          (print-store-workload-normalized-floats! (addr snapshot) track-name-statistics-workload track-name-statistics-query warmups samples))))))
 
 (defn run-find-value [db: vev.DB, query: string, kind: Find-Value-Kind] -> [value: vev.Value, ok: bool]
   (case kind
@@ -871,6 +1012,7 @@
   (defer (free_all context.allocator))
   (let [selected (cli.option os.args "--workload" "all")
         dataset (cli.option os.args "--dataset" "mini")
+        store-path (cli.option os.args "--store" "")
         schema-path (cli.option os.args "--schema" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked-schema.edn")
         values-path (cli.option os.args "--values" "")
         values-prefix (cli.option os.args "--values-prefix" "/Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-full-chunked")
@@ -894,6 +1036,9 @@
         relation-artist-release-input ([]vev.Query-Input [(vev.query-input-relation ([]vev.Value [(vev.value-string "The Beatles") (vev.value-string "Abbey Road") (vev.value-string "Miles Davis") (vev.value-string "Bitches Brew")]) 2)])
         short-track-input ([]vev.Query-Input [(vev.query-input-scalar (vev.value-int 200000))])
         selected-releases-input ([]vev.Query-Input [(vev.query-input-collection ([]vev.Value [(vev.value-string "Abbey Road") (vev.value-string "In a Silent Way")]))])]
+    (when (!= store-path "")
+      (run-store-workloads! store-path selected warmups samples)
+      (return))
     (when (= dataset "real")
       (when (not (load-real! (addr conn) schema-path values-path values-prefix values-chunks progress))
         (return)))
@@ -911,6 +1056,7 @@
           beatles-duration-stats-workload (fmt.tprintf "musicbrainz-%s-beatles-duration-stats" dataset)
           beatles-duration-stddev-workload (fmt.tprintf "musicbrainz-%s-beatles-duration-stddev" dataset)
           beatles-duration-sum-workload (fmt.tprintf "musicbrainz-%s-beatles-duration-sum" dataset)
+          track-name-statistics-workload (fmt.tprintf "musicbrainz-%s-track-name-statistics" dataset)
           lookup-country-workload (fmt.tprintf "musicbrainz-%s-lookup-country" dataset)
           selected-artists-releases-workload (fmt.tprintf "musicbrainz-%s-selected-artists-releases" dataset)
           release-date-workload (fmt.tprintf "musicbrainz-%s-release-date" dataset)
@@ -969,6 +1115,8 @@
         (print-workload-normalized-floats! conn.db beatles-duration-stddev-workload beatles-duration-stddev-query no-inputs warmups samples print-rows))
       (when (should-run? selected beatles-duration-sum-workload)
         (print-workload! conn.db beatles-duration-sum-workload beatles-duration-sum-query no-inputs warmups samples print-rows))
+      (when (should-run? selected track-name-statistics-workload)
+        (print-workload-normalized-floats! conn.db track-name-statistics-workload track-name-statistics-query no-inputs warmups samples print-rows))
       (when (should-run? selected lookup-country-workload)
         (print-workload! conn.db lookup-country-workload lookup-country-query no-inputs warmups samples print-rows))
       (when (should-run? selected selected-artists-releases-workload)

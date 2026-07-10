@@ -699,9 +699,13 @@
           (delete where-steps)
           (prepared-clause-error error))))))
 
-(defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
+(defn append-edn-input-spec! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, has-default-source-input: ^bool, doc: EDN-Doc, node-index: int, db-sources: []DB-Source] -> [ok: bool, error: string]
   (let [node doc.nodes[node-index]]
     (cond
+      (and (= node.kind .Symbol) (= node.text "$"))
+        (do
+          (set! has-default-source-input^ true)
+          (return true ""))
       (and (= node.kind .Symbol) (db-source-name? db-sources node.text))
         (return true "")
       (and (= node.kind .Symbol) (= node.text "%"))
@@ -2190,6 +2194,7 @@
           has-return-map false
           return-map-allowed true
           return-map-scalar false
+          has-default-source-input false
           has-rules-input false
           cursor (edn-child-at doc doc.root 1)]
     (defer (delete-get-somes get-somes))
@@ -2250,7 +2255,7 @@
       (while (and (not (= cursor -1)) (not (edn-keyword-text? doc cursor ":where")))
         (when (edn-symbol-text? doc cursor "%")
           (set! has-rules-input true))
-        (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) doc cursor db-sources)]
+        (let [[input-ok input-error] (append-edn-input-spec! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) (addr has-default-source-input) doc cursor db-sources)]
           (when (not input-ok)
             (return false input-error)))
         (set! cursor doc.nodes[cursor].next-sibling)))
@@ -2264,6 +2269,7 @@
     (let [query-value (query-with-rules-input
                         (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
                         has-rules-input)]
+      (set! query-value.has-default-source-input has-default-source-input)
       (set! out^ (if has-return-map (query-with-return-map query-value return-map-marker (slice return-map-keys 0)) query-value))
       (return true ""))))
 
@@ -2392,14 +2398,14 @@
       (set! cursor doc.nodes[cursor].next-sibling)))
   (return true ""))
 
-(defn append-edn-in-section! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, doc: EDN-Doc, section: int, db-sources: []DB-Source] -> [ok: bool, error: string]
+(defn append-edn-in-section! [inputs: ^[dynamic]string, collection-inputs: ^[dynamic]string, tuple-inputs: ^[dynamic]Tuple-Input, relation-inputs: ^[dynamic]Relation-Input, input-specs: ^[dynamic]Query-Input-Spec, has-default-source-input: ^bool, doc: EDN-Doc, section: int, db-sources: []DB-Source] -> [ok: bool, error: string]
   (when (= section -1)
     (return true ""))
   (when (not (= doc.nodes[section].kind .Vector))
     (return false "query map :in must be a vector"))
   (let [cursor doc.nodes[section].first-child]
     (while (not (= cursor -1))
-      (let [[input-ok input-error] (append-edn-input-spec! inputs collection-inputs tuple-inputs relation-inputs input-specs doc cursor db-sources)]
+      (let [[input-ok input-error] (append-edn-input-spec! inputs collection-inputs tuple-inputs relation-inputs input-specs has-default-source-input doc cursor db-sources)]
         (when (not input-ok)
           (return false input-error)))
       (set! cursor doc.nodes[cursor].next-sibling)))
@@ -2448,6 +2454,7 @@
         return-map-keys (make [dynamic]string) :defer
         return-map-marker ""
         has-return-map false
+        has-default-source-input false
         find-node (edn-map-value-node doc doc.root ":find")
         with-node (edn-map-value-node doc doc.root ":with")
         in-node (edn-map-value-node doc doc.root ":in")
@@ -2476,7 +2483,7 @@
     (let [[with-ok with-error] (append-edn-with-section! (addr with) doc with-node)]
       (when (not with-ok)
         (return false with-error)))
-    (let [[in-ok in-error] (append-edn-in-section! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) doc in-node db-sources)]
+    (let [[in-ok in-error] (append-edn-in-section! (addr inputs) (addr collection-inputs) (addr tuple-inputs) (addr relation-inputs) (addr input-specs) (addr has-default-source-input) doc in-node db-sources)]
       (when (not in-ok)
         (return false in-error)))
     (let [[where-ok where-error] (append-edn-where-section! (addr clauses) (addr predicates) (addr function-clauses) (addr get-elses) (addr get-somes) (addr grounds) (addr not-groups) (addr or-groups) (addr rule-calls) (addr where-steps) doc where-node)]
@@ -2488,6 +2495,7 @@
     (let [query-value (query-with-rules-input
                         (query-with-where-steps (query-from-text-parts (slice find 0) (slice with 0) (slice inputs 0) (slice collection-inputs 0) (slice tuple-inputs 0) (slice relation-inputs 0) (slice input-specs 0) (slice clauses 0) (slice predicates 0) (slice function-clauses 0) (slice rule-calls 0) (slice get-elses 0) (slice get-somes 0) (slice grounds 0) (slice not-groups 0) (slice or-groups 0) (slice pulls 0) (slice aggregates 0)) (slice where-steps 0))
                         (or has-rules-input (> (count inline-rules) 0)))]
+      (set! query-value.has-default-source-input has-default-source-input)
       (when has-return-map
         (set! query-value (query-with-return-map query-value return-map-marker (slice return-map-keys 0))))
       (delete query-value.rules)
@@ -2565,9 +2573,13 @@
 
 (defn q-prepared-db-read-source-profiled-with-sources-inputs-and-fns [source: DB-Read-Source, sources: []DB-Read-Named-Source, prepared: Prepared-Query, inputs: []Query-Input, registry: []Native-Query-Fn] -> Profiled-Result-Set
   (if prepared.ok
-    (let [result (db-read-source-q-query-with-sources-inputs-and-fns source sources prepared.query inputs registry)
-          stats (db-read-source-query-profile-stats-with-source-inputs-and-fns source sources prepared.query inputs result registry)]
-      (profiled-result-set result stats))
+    (let [[typed-result typed-stats typed-used] (db-read-source-q-query-relation-value-typed-with-sources-inputs-and-fns source sources prepared.query inputs registry)]
+      (when typed-used
+        (return (profiled-result-set typed-result typed-stats)))
+      (delete-result-rows-owned-values typed-result.rows)
+      (let [result (db-read-source-q-query-with-sources-inputs-and-fns source sources prepared.query inputs registry)
+            stats (db-read-source-query-profile-stats-with-source-inputs-and-fns source sources prepared.query inputs result registry)]
+        (profiled-result-set result stats)))
     (profiled-result-set (result-set-error prepared.error) (query-stats-empty))))
 
 (defn q-prepared-db-read-source [source: DB-Read-Source, prepared: Prepared-Query] -> Result-Set
@@ -2753,6 +2765,11 @@
         [query-ok query-error] (parse-query-text! (addr query-value) text)]
     (when (not query-ok)
       (return (profiled-result-set (result-set-error query-error) (query-stats-empty))))
+    (let [[typed-result typed-stats typed-used] (db-read-source-q-query-relation-value-typed-with-sources-inputs-and-fns source sources query-value inputs registry)]
+      (when typed-used
+        (delete-query-shallow query-value)
+        (return (profiled-result-set typed-result typed-stats)))
+      (delete-result-rows-owned-values typed-result.rows))
     (let [result (db-read-source-q-query-with-sources-inputs-and-fns source sources query-value inputs registry)
           stats (db-read-source-query-profile-stats-with-source-inputs-and-fns source sources query-value inputs result registry)]
       (delete-query-shallow query-value)
@@ -3380,15 +3397,17 @@
   (cond
     (= value.kind .Map) (query-input-scalar value)
     (not (= value.kind .Vector)) (query-input-scalar value)
-    (not (= relation.binding.kind .None)) (query-input-collection (slice value.items 0))
     :else
       (let [width (relation-input-value-width relation)
             flat (make [dynamic]Value)]
         (for [row value.items]
-          (if (= row.kind .Vector)
-            (for [item row.items]
-              (arr.push! flat item))
-            (arr.push! flat row)))
+          (let [[_ _ row-lookup-ref-ok] (value-lookup-ref-parts row)]
+            (cond
+              row-lookup-ref-ok (arr.push! flat row)
+              (= row.kind .Vector)
+                (for [item row.items]
+                  (arr.push! flat item))
+              :else (arr.push! flat row))))
         (query-input-relation (slice flat 0) width))))
 
 (defn value-vector-all-lookup-refs? [value: Value] -> bool

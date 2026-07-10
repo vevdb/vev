@@ -34,7 +34,8 @@ Hard constraints:
   at database creation/opening and operational setup boundaries
 - public APIs should feel Datomic/DataScript-like unless Vev has a clear reason
   to differ; Clojure query examples should use the familiar
-  `(d/q query db & inputs)` order
+  `(d/q query db & inputs)` order, and Kvist query examples should use the
+  same query-first order
 - the Clojure API being close to Datomic is not enough by itself: the same
   Day-of-Datomic/MusicBrainz tutorial path must also work cleanly from Kvist
   using Vev's native package and literal/query conveniences
@@ -54,27 +55,36 @@ Covered in both `examples/clojure/musicbrainz_workshop.clj` and
 `examples/kvist/musicbrainz_workshop.kvist`:
 
 - opening pull query from the query-stats prompt
-- tuple, collection, and relation input/find examples
-- collection, tuple, scalar, and return-map result shapes where currently
-  supported
+- tuple, collection, and relation input/find examples, including
+  vector-of-tuples relation binding and Datomic-like errors when explicit
+  `:in` omits the default `$` data source while the query reads from it
+- collection, tuple, scalar, and return-map result shapes, including Clojure
+  return-map rows that support both key lookup and positional destructuring
 - built-in function expressions and basic aggregates used by this slice
 - request-map query-stats examples around the pre-1970 John Lennon queries
 - Datomic-style `%` rules input, first rules exercise, and composed
   `track-info` rules
 - Pattern inputs: pull expressions in `:find`, dynamic pull patterns, legal
-  multiple-pull forms, and nested pull ref navigation
+  multiple-pull forms, Datomic-like duplicate-pull rejection for the same
+  query var, and nested pull ref navigation
 - direct pull tutorial examples from `tutorial/pull.clj` setup through map
-  specifications: attribute-name pulls, lookup refs, component defaults,
-  reverse component lookup, map specifications, nested map specifications, and
-  wildcard plus map specifications, default option, and default option with a
-  different value type, absent attributes omitted from results, explicit
-  limit, limit with subspec, limit with subspec plus `:as`, no limit, and
-  empty results including empty nested results in a collection, pull
-  expressions in queries, and dynamic pull-pattern query inputs
+  specifications: attribute-name pulls, lookup refs including ident keywords,
+  reverse noncomponent lookup, component defaults, reverse component lookup,
+  map specifications, nested map specifications, and wildcard plus map
+  specifications, default option, and default option with a different value
+  type, absent attributes omitted from results, explicit limit, limit with
+  subspec, limit with subspec plus `:as`, no limit, and empty results including
+  empty nested results in a collection, pull expressions in queries, and dynamic
+  pull-pattern query inputs
 
 The Clojure path uses the Datomic-like `vev.core` API. The Kvist path uses the
-Vev Kvist package directly against the same persistent store. Both paths are
-validated by smoke commands listed below.
+Vev Kvist package directly against the same persistent store. The Kvist query
+surface now has query-first macros, including `vev.q` for in-memory DB values
+and `vev.q-result-store-db` for persistent store DB snapshots. The workshop
+Kvist file is being migrated to native literal Datalog forms where the data DSL
+already supports the upstream syntax; EDN strings remain for interop/parser
+coverage and any tutorial form that still needs explicit migration. Both paths
+are validated by smoke commands listed below.
 
 Important performance signal:
 
@@ -82,9 +92,8 @@ Important performance signal:
   DataScript in the current query/rule benchmarks
 - MusicBrainz vs Datomic is broadly healthy; most representative rows are
   faster in Vev, with a small number of known slower rows
-- durable/source-backed storage has remaining internal bottlenecks, especially
-  persisted cursor scans and result/page materialization, but this should now be
-  addressed only when the MusicBrainz tutorial path exposes it
+- the upstream MusicBrainz statistics query now matches Datomic exactly and is
+  faster than local Datomic in the comparison harness
 
 ## Exit Criteria
 
@@ -114,10 +123,23 @@ internals:
    `day-of-datomic-conj/src/music_brainz.clj` through Pattern inputs, then
    all of `day-of-datomic/tutorial/pull.clj`.
 
+   Kvist tutorial API status:
+
+   - simple query, tuple input, collection input, relation input, find-shape,
+     return-map, function-expression, and aggregate examples now use
+     `vev.q-result-store-db` with literal Datalog forms and query-first order
+   - the remaining EDN strings in `examples/kvist/musicbrainz_workshop.kvist`
+     should be migrated to literal forms when touching those sections, except
+     for cases deliberately exercising the EDN text parser or non-Kvist
+     interop surface
+   - direct pull helpers still use text pull patterns today; migrate them only
+     when there is a clean native pull-pattern store API, not by inventing a
+     parallel tutorial shape
+
    Next upstream section:
 
-   - close the remaining documented blockers exposed by the already-ported
-     upstream tutorial/workshop files before inventing new examples
+   - `build/upstream/day-of-datomic/tutorial/query.clj`
+   - section: Predicate Expressions / Statistics / Custom Aggregates
 
    Keep both tutorial paths moving together. Every new Clojure tutorial slice
    should have a matching Kvist slice unless the missing piece is explicitly
@@ -125,27 +147,39 @@ internals:
 
    Current blockers exposed by the upstream port:
 
-   - relation binding with vector-of-tuples is ported but pending for the
-     durable Clojure wrapper; the native/Python layers have typed relation
-     helpers, but Java/Clojure do not yet expose the needed relation binding
-     path for this source-backed query shape
-   - the upstream missing-`$` teaching query returns no rows in Vev instead of
-     Datomic's helpful "missing data source" error
-   - return-map rows support key destructuring but not Datomic's positional
-     destructuring, because Vev currently returns ordinary Clojure maps rather
-     than indexed map rows
    - arbitrary host Clojure predicate calls such as `(user/teste ?year)` are
      parsed but not executed by the native query engine
-   - duplicate pull expressions on the same query var are accepted by Vev but
-     should be rejected like Datomic
-   - direct reverse pull `[:artist/_country] :country/GB` currently returns an
-     empty collection in Vev even though the equivalent forward query over
-     `:artist/country :country/GB` has rows
-   - the upstream track-name statistics query using `median`, `avg`, `stddev`,
-     and string length currently runs too slowly against the persistent
-     tutorial store for the smoke path
    - custom Clojure aggregate functions such as `(user/mode ?track-count)` are
      not executed by the native query engine
+
+   Current measured durable-store status for this section:
+
+   - `musicbrainz-real-track-name-statistics`, from the upstream Statistics
+     section, matches local Datomic by row count and portable fingerprint
+   - latest local run: Vev median about 326ms, Datomic median about 426ms
+   - Datalog `(count ?string)` now follows Datomic/Clojure Java string length
+     semantics by counting UTF-16 code units from Vev's UTF-8 strings
+
+   Engine status:
+
+   - persisted scalar/function aggregate execution now has a generic typed
+     source operator for fixed-attribute ref chains plus string length
+   - the operator builds typed relation columns from sequential source index
+     streams and lets the normal typed aggregate reducer handle `:with`,
+     grouping, `avg`, `median`, and `stddev`
+   - this is generic ref-chain engine work keyed by query shape and variables,
+     not by exact MusicBrainz query text
+   - aggregate distinctness in the direct source path includes grouping vars,
+     `:with` vars, and aggregate argument values, matching Datomic behavior
+
+   Next work for this upstream section:
+
+   - execute arbitrary host Clojure predicates through the native function
+     registry without breaking pure native/Kvist execution
+   - execute custom Clojure aggregate functions such as
+     `(user/mode ?track-count)` through the native function registry
+   - decide which host-callback cases belong in the smoke path and which should
+     be documented as slower host interop checks
 
 2. **MusicBrainz import and fixture setup**
 

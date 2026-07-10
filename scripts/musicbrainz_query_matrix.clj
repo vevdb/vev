@@ -165,6 +165,17 @@
              [?medium :medium/tracks ?track]
              [?track :track/duration ?millis]]
     :args []}
+   {:name "musicbrainz-real-track-name-statistics"
+    :float-places 6
+    :query '[:find ?year (median ?namelen) (avg ?namelen) (stddev ?namelen)
+             :with ?track
+             :where
+             [?track :track/name ?name]
+             [(count ?name) ?namelen]
+             [?medium :medium/tracks ?track]
+             [?release :release/media ?medium]
+             [?release :release/year ?year]]
+    :args []}
    {:name "musicbrainz-real-lookup-country"
     :query '[:find ?name
              :where

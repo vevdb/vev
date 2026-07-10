@@ -39,7 +39,7 @@ def main() -> int:
         collection = conn.query_text(
             """
             [:find ?name
-             :in [?email ...]
+             :in $ [?email ...]
              :where [?e :user/email ?email]
                     [?e :user/name ?name]]
             """,
@@ -74,7 +74,7 @@ def main() -> int:
         email_query = conn.prepare(
             """
             [:find ?e ?email
-             :in ?needle
+             :in $ ?needle
              :where [?e :user/email ?email]
                     [(= ?email ?needle)]]
             """
@@ -113,7 +113,7 @@ def main() -> int:
             collection_query = conn.prepare(
                 """
                 [:find ?name
-                 :in [?email ...]
+                 :in $ [?email ...]
                  :where [?e :user/email ?email]
                         [?e :user/name ?name]]
                 """
@@ -179,7 +179,7 @@ def main() -> int:
             tuple_query = conn.prepare(
                 """
                 [:find ?e
-                 :in [?name ?email]
+                 :in $ [?name ?email]
                  :where [?e :user/name ?name]
                         [?e :user/email ?email]]
                 """
@@ -196,7 +196,7 @@ def main() -> int:
             relation_query = conn.prepare(
                 """
                 [:find ?name ?label
-                 :in [[?email ?label]]
+                 :in $ [[?email ?label]]
                  :where [?e :user/email ?email]
                         [?e :user/name ?name]]
                 """
@@ -220,7 +220,7 @@ def main() -> int:
             lookup_query = conn.prepare(
                 """
                 [:find ?name
-                 :in ?person
+                 :in $ ?person
                  :where [?person :user/name ?name]]
                 """
             )
@@ -245,7 +245,7 @@ def main() -> int:
             lookup_collection_query = conn.prepare(
                 """
                 [:find ?name
-                 :in [?person ...]
+                 :in $ [?person ...]
                  :where [?person :user/name ?name]]
                 """
             )
@@ -410,7 +410,7 @@ def main() -> int:
             pull_pattern_query = conn.prepare(
                 """
                 [:find (pull ?e ?pattern)
-                 :in ?pattern ?name
+                 :in $ ?pattern ?name
                  :where [?e :user/name ?name]]
                 """
             )

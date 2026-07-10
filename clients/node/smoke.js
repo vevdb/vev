@@ -37,7 +37,7 @@ mustContain("tx", tx, ":ok true");
 
 const collection = conn.queryText(`
   [:find ?name
-   :in [?email ...]
+   :in $ [?email ...]
    :where [?e :user/email ?email]
           [?e :user/name ?name]]
 `, `[["ada@example.com" "grace@example.com"]]`);
@@ -52,7 +52,7 @@ if (JSON.stringify(oneShotNames) !== JSON.stringify(["Ada", "Grace"])) {
 
 const query = conn.prepare(`
   [:find ?e ?email
-   :in ?needle
+   :in $ ?needle
    :where [?e :user/email ?email]
           [(= ?email ?needle)]]
 `);
@@ -155,7 +155,7 @@ try {
   if (durable.basisT() !== 1 || durable.txCount() !== 1) {
     throw new Error("unexpected durable metadata after transact");
   }
-  const durableQuery = conn.prepare(`[:find ?e ?email :in ?needle :where [?e :user/email ?email] [(= ?email ?needle)]]`);
+  const durableQuery = conn.prepare(`[:find ?e ?email :in $ ?needle :where [?e :user/email ?email] [(= ?email ?needle)]]`);
   const durableDb = durable.db();
   const durableRows = durableDb.rows(durableQuery, `["durable-ada@example.com"]`);
   if (durableRows.length !== 1 || durableRows[0][0].id !== 1) {

@@ -181,7 +181,7 @@ the call. Use `prepare` when the same query should be reused:
 (def email-query
   (d/prepare conn
     '[:find ?e ?email
-      :in ?needle
+      :in $ ?needle
       :where [?e :user/email ?email]
              [(= ?email ?needle)]]))
 

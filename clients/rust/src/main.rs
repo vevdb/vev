@@ -30,7 +30,7 @@ fn main() -> Result<(), String> {
 
     let collection_text = conn.query_text_with_inputs(
         r#"[:find ?name
-           :in [?email ...]
+           :in $ [?email ...]
            :where [?e :user/email ?email]
                   [?e :user/name ?name]]"#,
         r#"[["ada@example.com" "grace@example.com"]]"#,
@@ -64,7 +64,7 @@ fn main() -> Result<(), String> {
 
     let email_query = conn.prepare(
         r#"[:find ?e ?email
-           :in ?needle
+           :in $ ?needle
            :where [?e :user/email ?email]
                   [(= ?email ?needle)]]"#,
     )?;
@@ -93,7 +93,7 @@ fn main() -> Result<(), String> {
 
     let collection_query = conn.prepare(
         r#"[:find ?name
-           :in [?email ...]
+           :in $ [?email ...]
            :where [?e :user/email ?email]
                   [?e :user/name ?name]]"#,
     )?;
@@ -290,7 +290,7 @@ fn main() -> Result<(), String> {
 
     let pull_pattern_query = conn.prepare(
         r#"[:find (pull ?e ?pattern)
-           :in ?pattern ?name
+           :in $ ?pattern ?name
            :where [?e :user/name ?name]]"#,
     )?;
     let mut pull_pattern_stmt = pull_pattern_query.statement()?;
